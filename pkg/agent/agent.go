@@ -4,6 +4,13 @@ import (
 	"context"
 	"fmt"
 
+	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	"github.com/faroshq/faros-kedge/pkg/agent/reconciler"
+	agentStatus "github.com/faroshq/faros-kedge/pkg/agent/status"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
@@ -11,12 +18,13 @@ import (
 
 // Options holds configuration for the agent.
 type Options struct {
-	HubURL     string
-	Token      string
-	SiteName   string
-	Kubeconfig string
-	Context    string
-	Labels     map[string]string
+	HubURL        string
+	HubKubeconfig string
+	Token         string
+	SiteName      string
+	Kubeconfig    string
+	Context       string
+	Labels        map[string]string
 }
 
 // NewOptions returns default agent options.
@@ -29,16 +37,34 @@ func NewOptions() *Options {
 // Agent is the kedge agent that connects a site to the hub.
 type Agent struct {
 	opts             *Options
+	hubConfig        *rest.Config
 	downstreamConfig *rest.Config
 }
 
 // New creates a new agent.
 func New(opts *Options) (*Agent, error) {
-	if opts.HubURL == "" {
-		return nil, fmt.Errorf("hub URL is required")
-	}
 	if opts.SiteName == "" {
 		return nil, fmt.Errorf("site name is required")
+	}
+
+	// Build hub config
+	var hubConfig *rest.Config
+	var err error
+	if opts.HubKubeconfig != "" {
+		hubConfig, err = clientcmd.BuildConfigFromFlags("", opts.HubKubeconfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build hub config from kubeconfig: %w", err)
+		}
+	} else if opts.HubURL != "" {
+		hubConfig = &rest.Config{
+			Host:        opts.HubURL,
+			BearerToken: opts.Token,
+			TLSClientConfig: rest.TLSClientConfig{
+				Insecure: true,
+			},
+		}
+	} else {
+		return nil, fmt.Errorf("hub URL or hub kubeconfig is required")
 	}
 
 	// Build downstream (target cluster) config
@@ -57,6 +83,7 @@ func New(opts *Options) (*Agent, error) {
 
 	return &Agent{
 		opts:             opts,
+		hubConfig:        hubConfig,
 		downstreamConfig: downstreamConfig,
 	}, nil
 }
@@ -65,24 +92,106 @@ func New(opts *Options) (*Agent, error) {
 func (a *Agent) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting kedge agent",
-		"hubURL", a.opts.HubURL,
 		"siteName", a.opts.SiteName,
 		"labels", a.opts.Labels,
 	)
 
-	// 1. Connect tunnel: WebSocket dial to hub's edge-proxy VW
-	logger.Info("Connecting tunnel to hub")
+	// Create hub clients
+	hubDynamic, err := dynamic.NewForConfig(a.hubConfig)
+	if err != nil {
+		return fmt.Errorf("creating hub dynamic client: %w", err)
+	}
+	hubClient := kedgeclient.NewFromDynamic(hubDynamic)
 
-	// 2. Create revdial.Listener from connection
-	// 3. Start local HTTP server on revdial.Listener
-	// 4. Register/update Site on hub
-	// 5. Start workload reconciler
-	// 6. Start status reporter (heartbeat + workload status)
-	// 7. Reconnect loop with exponential backoff
+	// Create downstream client
+	downstreamClient, err := kubernetes.NewForConfig(a.downstreamConfig)
+	if err != nil {
+		return fmt.Errorf("creating downstream client: %w", err)
+	}
+
+	// Register/update Site on hub
+	if err := a.registerSite(ctx, hubClient); err != nil {
+		return fmt.Errorf("registering site: %w", err)
+	}
+
+	// Start workload reconciler
+	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubDynamic, downstreamClient)
+	go func() {
+		if err := wkr.Run(ctx); err != nil {
+			logger.Error(err, "Workload reconciler failed")
+		}
+	}()
+
+	// Start status reporter (heartbeat + workload status)
+	reporter := agentStatus.NewReporter(a.opts.SiteName, hubClient, downstreamClient)
+	go func() {
+		if err := reporter.Run(ctx); err != nil {
+			logger.Error(err, "Status reporter failed")
+		}
+	}()
 
 	logger.Info("Agent started successfully")
 	<-ctx.Done()
 	logger.Info("Agent shutting down")
+
+	return nil
+}
+
+func (a *Agent) registerSite(ctx context.Context, client *kedgeclient.Client) error {
+	logger := klog.FromContext(ctx)
+
+	site := &kedgev1alpha1.Site{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
+			Kind:       "Site",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   a.opts.SiteName,
+			Labels: a.opts.Labels,
+		},
+		Spec: kedgev1alpha1.SiteSpec{
+			DisplayName: a.opts.SiteName,
+		},
+	}
+
+	existing, err := client.Sites().Get(ctx, a.opts.SiteName, metav1.GetOptions{})
+	if err != nil {
+		// Create new site
+		logger.Info("Creating Site", "name", a.opts.SiteName)
+		_, err = client.Sites().Create(ctx, site, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("creating site: %w", err)
+		}
+	} else {
+		// Update existing site labels
+		logger.Info("Updating Site", "name", a.opts.SiteName)
+		existing.Labels = a.opts.Labels
+		_, err = client.Sites().Update(ctx, existing, metav1.UpdateOptions{})
+		if err != nil {
+			return fmt.Errorf("updating site: %w", err)
+		}
+	}
+
+	// Update status to connected
+	now := metav1.Now()
+	statusSite := &kedgev1alpha1.Site{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
+			Kind:       "Site",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: a.opts.SiteName,
+		},
+		Status: kedgev1alpha1.SiteStatus{
+			Phase:             kedgev1alpha1.SitePhaseConnected,
+			TunnelConnected:   true,
+			LastHeartbeatTime: &now,
+		},
+	}
+	_, err = client.Sites().UpdateStatus(ctx, statusSite, metav1.UpdateOptions{})
+	if err != nil {
+		logger.Error(err, "Failed to update site status to connected")
+	}
 
 	return nil
 }

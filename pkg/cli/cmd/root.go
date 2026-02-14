@@ -18,6 +18,8 @@ enabling secure workload deployment across distributed sites.`,
 		SilenceErrors: true,
 	}
 
+	cmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig file")
+
 	cmd.AddCommand(
 		newInitCommand(),
 		newLoginCommand(),

@@ -13,17 +13,14 @@ import (
 )
 
 func main() {
+	opts := hub.NewOptions()
+
 	cmd := &cobra.Command{
 		Use:   "kedge-hub",
 		Short: "Kedge hub server - multi-tenant control plane",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
-
-			opts := hub.NewOptions()
-			cmd.Flags().StringVar(&opts.DataDir, "data-dir", opts.DataDir, "Data directory for KCP state")
-			cmd.Flags().StringVar(&opts.ListenAddr, "listen-addr", opts.ListenAddr, "Address to listen on")
-			cmd.Flags().StringVar(&opts.ExternalKCPKubeconfig, "external-kcp-kubeconfig", "", "Kubeconfig for external KCP (empty for embedded)")
 
 			server, err := hub.NewServer(opts)
 			if err != nil {
@@ -33,6 +30,11 @@ func main() {
 			return server.Run(ctx)
 		},
 	}
+
+	cmd.Flags().StringVar(&opts.DataDir, "data-dir", opts.DataDir, "Data directory for state")
+	cmd.Flags().StringVar(&opts.ListenAddr, "listen-addr", opts.ListenAddr, "Address to listen on")
+	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Kubeconfig for hub cluster")
+	cmd.Flags().StringVar(&opts.ExternalKCPKubeconfig, "external-kcp-kubeconfig", "", "Kubeconfig for external KCP (empty for embedded)")
 
 	if err := cmd.Execute(); err != nil {
 		klog.Fatal(err)

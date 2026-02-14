@@ -13,20 +13,14 @@ import (
 )
 
 func main() {
+	opts := agent.NewOptions()
+
 	cmd := &cobra.Command{
 		Use:   "kedge-agent",
 		Short: "Kedge agent - connects a site to the hub via reverse tunnel",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
-
-			opts := agent.NewOptions()
-			cmd.Flags().StringVar(&opts.HubURL, "hub-url", opts.HubURL, "Hub server URL")
-			cmd.Flags().StringVar(&opts.Token, "token", opts.Token, "Bootstrap token")
-			cmd.Flags().StringVar(&opts.SiteName, "site-name", opts.SiteName, "Name of this site")
-			cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", opts.Kubeconfig, "Path to target cluster kubeconfig")
-			cmd.Flags().StringVar(&opts.Context, "context", opts.Context, "Kubeconfig context to use")
-			cmd.Flags().StringToStringVar(&opts.Labels, "labels", opts.Labels, "Labels for this site (key=value pairs)")
 
 			a, err := agent.New(opts)
 			if err != nil {
@@ -36,6 +30,14 @@ func main() {
 			return a.Run(ctx)
 		},
 	}
+
+	cmd.Flags().StringVar(&opts.HubURL, "hub-url", "", "Hub server URL")
+	cmd.Flags().StringVar(&opts.HubKubeconfig, "hub-kubeconfig", "", "Kubeconfig for hub cluster")
+	cmd.Flags().StringVar(&opts.Token, "token", "", "Bootstrap token")
+	cmd.Flags().StringVar(&opts.SiteName, "site-name", "", "Name of this site")
+	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Path to target cluster kubeconfig")
+	cmd.Flags().StringVar(&opts.Context, "context", "", "Kubeconfig context to use")
+	cmd.Flags().StringToStringVar(&opts.Labels, "labels", nil, "Labels for this site (key=value pairs)")
 
 	if err := cmd.Execute(); err != nil {
 		klog.Fatal(err)

@@ -1,0 +1,107 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sites.kedge.faros.sh
+spec:
+  group: kedge.faros.sh
+  names:
+    kind: Site
+    listKind: SiteList
+    plural: sites
+    singular: site
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: K8s Version
+          type: string
+          jsonPath: .status.kubernetesVersion
+        - name: Provider
+          type: string
+          jsonPath: .spec.provider
+        - name: Region
+          type: string
+          jsonPath: .spec.region
+        - name: Connected
+          type: boolean
+          jsonPath: .status.tunnelConnected
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              properties:
+                displayName:
+                  type: string
+                provider:
+                  type: string
+                region:
+                  type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                kubernetesVersion:
+                  type: string
+                capacity:
+                  type: object
+                  additionalProperties:
+                    anyOf:
+                      - type: integer
+                      - type: string
+                    x-kubernetes-int-or-string: true
+                allocatable:
+                  type: object
+                  additionalProperties:
+                    anyOf:
+                      - type: integer
+                      - type: string
+                    x-kubernetes-int-or-string: true
+                lastHeartbeatTime:
+                  type: string
+                  format: date-time
+                tunnelConnected:
+                  type: boolean
+                tunnels:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      url:
+                        type: string
+                      type:
+                        type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string

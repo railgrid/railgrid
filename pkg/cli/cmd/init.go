@@ -30,7 +30,9 @@ func newInitCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.DataDir, "data-dir", opts.DataDir, "Data directory for KCP state")
+	cmd.Flags().StringVar(&opts.DataDir, "data-dir", opts.DataDir, "Data directory for state")
+	cmd.Flags().StringVar(&opts.Kubeconfig, "hub-kubeconfig", "", "Kubeconfig for hub cluster")
+	cmd.Flags().StringVar(&opts.ListenAddr, "listen-addr", opts.ListenAddr, "Address to listen on")
 	cmd.Flags().StringVar(&opts.ExternalKCPKubeconfig, "external-kcp", "", "Kubeconfig for external KCP")
 
 	return cmd

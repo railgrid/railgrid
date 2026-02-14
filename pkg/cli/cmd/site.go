@@ -1,9 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"os"
 
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/spf13/cobra"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func newSiteCommand() *cobra.Command {
@@ -25,9 +29,37 @@ func newSiteListCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List all connected sites",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// TODO: Fetch sites from hub
-			fmt.Println("NAME\tSTATUS\tK8S VERSION\tREGION\tAGE")
-			fmt.Println("(no sites found - connect to hub first)")
+			ctx := context.Background()
+
+			dynClient, err := loadDynamicClient()
+			if err != nil {
+				return err
+			}
+
+			list, err := dynClient.Resource(kedgeclient.SiteGVR).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return fmt.Errorf("listing sites: %w", err)
+			}
+
+			if len(list.Items) == 0 {
+				fmt.Println("No sites found.")
+				return nil
+			}
+
+			tw := newTabWriter(os.Stdout)
+			printRow(tw, "NAME", "STATUS", "K8S VERSION", "PROVIDER", "REGION", "AGE")
+
+			for _, item := range list.Items {
+				phase := getNestedString(item, "status", "phase")
+				k8sVersion := getNestedString(item, "status", "kubernetesVersion")
+				provider := getNestedString(item, "spec", "provider")
+				region := getNestedString(item, "spec", "region")
+				age := formatAge(item.GetCreationTimestamp().Time)
+				printRow(tw, item.GetName(), formatStringOrDash(phase), formatStringOrDash(k8sVersion),
+					formatStringOrDash(provider), formatStringOrDash(region), age)
+			}
+
+			tw.Flush()
 			return nil
 		},
 	}
@@ -40,9 +72,71 @@ func newSiteGetCommand() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			// TODO: Fetch site from hub
-			fmt.Printf("Site: %s (not connected to hub)\n", name)
+			ctx := context.Background()
+
+			dynClient, err := loadDynamicClient()
+			if err != nil {
+				return err
+			}
+
+			site, err := dynClient.Resource(kedgeclient.SiteGVR).Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("getting site %q: %w", name, err)
+			}
+
+			phase := getNestedString(*site, "status", "phase")
+			k8sVersion := getNestedString(*site, "status", "kubernetesVersion")
+			provider := getNestedString(*site, "spec", "provider")
+			region := getNestedString(*site, "spec", "region")
+			tunnelConnected, _, _ := unstructuredNestedBool(site.Object, "status", "tunnelConnected")
+			lastHeartbeat := getNestedString(*site, "status", "lastHeartbeatTime")
+
+			fmt.Printf("Name:              %s\n", site.GetName())
+			fmt.Printf("Status:            %s\n", formatStringOrDash(phase))
+			fmt.Printf("Provider:          %s\n", formatStringOrDash(provider))
+			fmt.Printf("Region:            %s\n", formatStringOrDash(region))
+			fmt.Printf("Kubernetes:        %s\n", formatStringOrDash(k8sVersion))
+			fmt.Printf("Tunnel Connected:  %v\n", tunnelConnected)
+			fmt.Printf("Last Heartbeat:    %s\n", formatStringOrDash(lastHeartbeat))
+			fmt.Printf("Created:           %s\n", site.GetCreationTimestamp().Format("2006-01-02 15:04:05"))
+
+			// Print labels if any
+			labels := site.GetLabels()
+			if len(labels) > 0 {
+				fmt.Println("Labels:")
+				for k, v := range labels {
+					fmt.Printf("  %s=%s\n", k, v)
+				}
+			}
+
 			return nil
 		},
 	}
+}
+
+func unstructuredNestedBool(obj map[string]interface{}, fields ...string) (bool, bool, error) {
+	val, found, err := unstructuredNestedField(obj, fields...)
+	if err != nil || !found {
+		return false, found, err
+	}
+	b, ok := val.(bool)
+	if !ok {
+		return false, true, fmt.Errorf("expected bool, got %T", val)
+	}
+	return b, true, nil
+}
+
+func unstructuredNestedField(obj map[string]interface{}, fields ...string) (interface{}, bool, error) {
+	var val interface{} = obj
+	for _, field := range fields {
+		m, ok := val.(map[string]interface{})
+		if !ok {
+			return nil, false, nil
+		}
+		val, ok = m[field]
+		if !ok {
+			return nil, false, nil
+		}
+	}
+	return val, true, nil
 }
