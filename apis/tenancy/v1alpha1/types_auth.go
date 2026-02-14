@@ -7,14 +7,14 @@ type LoginRequest struct {
 
 // LoginResponse contains login callback data.
 type LoginResponse struct {
-	Token      string `json:"token,omitempty"`
 	Kubeconfig []byte `json:"kubeconfig,omitempty"`
 	ExpiresAt  int64  `json:"expiresAt,omitempty"`
+	Email      string `json:"email,omitempty"`
+	UserID     string `json:"userId,omitempty"`
 }
 
-// AuthCode represents an OAuth2 authorization code.
+// AuthCode carries the CLI callback port and session through the OAuth2 state parameter.
 type AuthCode struct {
-	Code        string `json:"code"`
-	State       string `json:"state"`
-	RedirectURL string `json:"redirectUrl"`
+	RedirectURL string `json:"redirectURL"` // CLI localhost callback URL
+	SessionID   string `json:"sid"`
 }

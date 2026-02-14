@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -80,6 +81,13 @@ func (c *Client) Sites() *TypedResource[kedgev1alpha1.Site, kedgev1alpha1.SiteLi
 func (c *Client) Placements(namespace string) *TypedResource[kedgev1alpha1.Placement, kedgev1alpha1.PlacementList] {
 	return &TypedResource[kedgev1alpha1.Placement, kedgev1alpha1.PlacementList]{
 		client: c.dynamic.Resource(PlacementGVR).Namespace(namespace),
+	}
+}
+
+// Users returns a typed interface for User resources (cluster-scoped).
+func (c *Client) Users() *TypedResource[tenancyv1alpha1.User, tenancyv1alpha1.UserList] {
+	return &TypedResource[tenancyv1alpha1.User, tenancyv1alpha1.UserList]{
+		client: c.dynamic.Resource(UserGVR),
 	}
 }
 

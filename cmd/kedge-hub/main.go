@@ -35,6 +35,13 @@ func main() {
 	cmd.Flags().StringVar(&opts.ListenAddr, "listen-addr", opts.ListenAddr, "Address to listen on")
 	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Kubeconfig for hub cluster")
 	cmd.Flags().StringVar(&opts.ExternalKCPKubeconfig, "external-kcp-kubeconfig", "", "Kubeconfig for external KCP (empty for embedded)")
+	cmd.Flags().StringVar(&opts.DexIssuerURL, "dex-issuer-url", "", "Dex OIDC issuer URL")
+	cmd.Flags().StringVar(&opts.DexClientID, "dex-client-id", "kedge", "Dex OAuth2 client ID")
+	cmd.Flags().StringVar(&opts.DexClientSecret, "dex-client-secret", "", "Dex OAuth2 client secret")
+	cmd.Flags().StringVar(&opts.ServingCertFile, "serving-cert-file", "", "TLS certificate file for HTTPS serving")
+	cmd.Flags().StringVar(&opts.ServingKeyFile, "serving-key-file", "", "TLS key file for HTTPS serving")
+	cmd.Flags().StringVar(&opts.HubExternalURL, "hub-external-url", opts.HubExternalURL, "External URL of this hub (for kubeconfig generation)")
+	cmd.Flags().BoolVar(&opts.DevMode, "dev-mode", false, "Enable dev mode (skip TLS verification for OIDC)")
 
 	if err := cmd.Execute(); err != nil {
 		klog.Fatal(err)

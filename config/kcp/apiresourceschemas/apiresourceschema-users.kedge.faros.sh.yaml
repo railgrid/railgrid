@@ -1,0 +1,88 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260214-c012858.users.kedge.faros.sh
+spec:
+  group: kedge.faros.sh
+  names:
+    kind: User
+    listKind: UserList
+    plural: users
+    singular: user
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.email
+      name: Email
+      type: string
+    - jsonPath: .spec.name
+      name: Name
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      properties:
+        apiVersion:
+          type: string
+        kind:
+          type: string
+        metadata:
+          type: object
+        spec:
+          properties:
+            email:
+              type: string
+            name:
+              type: string
+            oidcProviders:
+              items:
+                properties:
+                  accessToken:
+                    type: string
+                  email:
+                    type: string
+                  expiresAt:
+                    format: date-time
+                    type: string
+                  name:
+                    type: string
+                  providerID:
+                    type: string
+                  refreshToken:
+                    type: string
+                type: object
+              type: array
+            rbacIdentity:
+              type: string
+          type: object
+        status:
+          properties:
+            active:
+              type: boolean
+            conditions:
+              items:
+                properties:
+                  lastTransitionTime:
+                    format: date-time
+                    type: string
+                  message:
+                    type: string
+                  reason:
+                    type: string
+                  status:
+                    type: string
+                  type:
+                    type: string
+                type: object
+              type: array
+            lastLogin:
+              format: date-time
+              type: string
+          type: object
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

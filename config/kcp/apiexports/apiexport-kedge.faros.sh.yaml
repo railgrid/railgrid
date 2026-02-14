@@ -1,0 +1,27 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: kedge.faros.sh
+spec:
+  resources:
+  - group: kedge.faros.sh
+    name: placements
+    schema: v260214-c012858.placements.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: kedge.faros.sh
+    name: sites
+    schema: v260214-c012858.sites.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: kedge.faros.sh
+    name: users
+    schema: v260214-c012858.users.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: kedge.faros.sh
+    name: virtualworkloads
+    schema: v260214-c012858.virtualworkloads.kedge.faros.sh
+    storage:
+      crd: {}
+status: {}

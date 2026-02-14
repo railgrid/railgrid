@@ -1,0 +1,36 @@
+issuer: https://localhost:5554/dex
+
+storage:
+  type: sqlite3
+  config:
+    file: dex.db
+
+web:
+  https: 0.0.0.0:5554
+  http: 0.0.0.0:5556
+  tlsCert: certs/apiserver.crt
+  tlsKey: certs/apiserver.key
+
+oauth2:
+  skipApprovalScreen: true
+
+staticClients:
+  - id: kedge
+    secret: ZXhhbXBsZS1hcHAtc2VjcmV0
+    name: Kedge
+    redirectURIs:
+      - https://localhost:8443/auth/callback
+      - http://127.0.0.1:8080/auth/callback
+
+connectors:
+  - type: mockCallback
+    id: mock
+    name: Example
+
+enablePasswordDB: true
+
+staticPasswords:
+  - email: admin@example.com
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: admin
+    userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"

@@ -1,0 +1,12 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: tenancy.kedge.faros.sh
+spec:
+  resources:
+  - group: tenancy.kedge.faros.sh
+    name: users
+    schema: v260214-c012858.users.tenancy.kedge.faros.sh
+    storage:
+      crd: {}
+status: {}

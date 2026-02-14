@@ -22,6 +22,7 @@ func (e *EmbeddedKCP) Start(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting embedded KCP", "dataDir", e.dataDir)
 
-	// TODO: Initialize and start KCP via server.NewServer(completedConfig) with embedded etcd
-	return fmt.Errorf("embedded KCP not yet implemented")
+	return fmt.Errorf("embedded KCP is not yet implemented; " +
+		"please start an external KCP instance and pass its kubeconfig " +
+		"via --external-kcp-kubeconfig flag")
 }

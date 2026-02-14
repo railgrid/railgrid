@@ -11,6 +11,8 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/site"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
+	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	"github.com/faroshq/faros-kedge/pkg/server/auth"
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
 	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
 	"github.com/gorilla/mux"
@@ -61,11 +63,40 @@ func (s *Server) Run(ctx context.Context) error {
 	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
 	informerFactory := kedgeclient.NewInformerFactory(dynamicClient, kedgeclient.DefaultResyncPeriod)
 
-	// 4. Create connection manager for tunnels
+	// 4. KCP bootstrap (if external KCP kubeconfig is provided)
+	if s.opts.ExternalKCPKubeconfig != "" {
+		kcpConfig, err := clientcmd.BuildConfigFromFlags("", s.opts.ExternalKCPKubeconfig)
+		if err != nil {
+			return fmt.Errorf("building KCP rest config: %w", err)
+		}
+		bootstrapper := kcp.NewBootstrapper(kcpConfig)
+		if err := bootstrapper.Bootstrap(ctx); err != nil {
+			return fmt.Errorf("bootstrapping KCP: %w", err)
+		}
+		logger.Info("KCP bootstrap complete")
+	}
+
+	// 5. Create connection manager for tunnels
 	connManager := connman.New()
 
-	// 5. Create HTTP mux
+	// 6. Create HTTP mux
 	router := mux.NewRouter()
+
+	// Auth routes (OIDC via Dex)
+	if s.opts.DexIssuerURL != "" {
+		oidcConfig := auth.DefaultOIDCConfig()
+		oidcConfig.IssuerURL = s.opts.DexIssuerURL
+		oidcConfig.ClientID = s.opts.DexClientID
+		oidcConfig.ClientSecret = s.opts.DexClientSecret
+		oidcConfig.RedirectURL = s.opts.HubExternalURL + "/auth/callback"
+
+		authHandler, err := auth.NewHandler(ctx, oidcConfig, kedgeClient, s.opts.HubExternalURL, s.opts.DevMode)
+		if err != nil {
+			return fmt.Errorf("creating auth handler: %w", err)
+		}
+		authHandler.RegisterRoutes(router)
+		logger.Info("OIDC auth routes registered", "issuer", s.opts.DexIssuerURL)
+	}
 
 	// Tunnel handlers
 	vws := builder.NewVirtualWorkspaces(connManager, logger)
@@ -82,7 +113,7 @@ func (s *Server) Run(ctx context.Context) error {
 		fmt.Fprint(w, "ok")
 	})
 
-	// 6. Create and start controllers
+	// 7. Create and start controllers
 	schedulerCtrl := scheduler.NewScheduler(kedgeClient, informerFactory)
 	siteCtrl := site.NewController(kedgeClient, informerFactory)
 	statusCtrl := status.NewAggregator(kedgeClient, informerFactory)
@@ -111,7 +142,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
-	// 7. Start HTTP server
+	// 8. Start HTTP server
 	httpServer := &http.Server{
 		Addr:              s.opts.ListenAddr,
 		Handler:           router,
@@ -128,9 +159,17 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
-	logger.Info("Hub server started successfully", "addr", s.opts.ListenAddr)
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("HTTP server error: %w", err)
+	// Use TLS if cert and key files are provided.
+	if s.opts.ServingCertFile != "" && s.opts.ServingKeyFile != "" {
+		logger.Info("Hub server starting with TLS", "addr", s.opts.ListenAddr)
+		if err := httpServer.ListenAndServeTLS(s.opts.ServingCertFile, s.opts.ServingKeyFile); err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("HTTPS server error: %w", err)
+		}
+	} else {
+		logger.Info("Hub server starting without TLS", "addr", s.opts.ListenAddr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("HTTP server error: %w", err)
+		}
 	}
 
 	return nil

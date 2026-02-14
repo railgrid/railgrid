@@ -35,3 +35,9 @@ _artifacts/
 # Data dirs
 data/
 *.kubeconfig
+
+# Dev tools and certs
+hack/tools/
+certs/
+dex.db
+.kcp/

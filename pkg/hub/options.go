@@ -9,12 +9,17 @@ type Options struct {
 	DexIssuerURL          string
 	DexClientID           string
 	DexClientSecret       string
+	ServingCertFile       string
+	ServingKeyFile        string
+	HubExternalURL        string
+	DevMode               bool
 }
 
 // NewOptions returns default Options.
 func NewOptions() *Options {
 	return &Options{
-		DataDir:    "/tmp/kedge-data",
-		ListenAddr: ":8443",
+		DataDir:        "/tmp/kedge-data",
+		ListenAddr:     ":8443",
+		HubExternalURL: "https://localhost:8443",
 	}
 }
