@@ -23,6 +23,7 @@ enabling secure workload deployment across distributed sites.`,
 	cmd.AddCommand(
 		newInitCommand(),
 		newLoginCommand(),
+		newGetTokenCommand(),
 		newAgentCommand(),
 		newSiteCommand(),
 		newApplyCommand(),

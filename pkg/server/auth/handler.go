@@ -20,6 +20,7 @@ import (
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 )
 
 // Handler provides OAuth2/OIDC authentication endpoints.
@@ -28,13 +29,14 @@ type Handler struct {
 	oauth2Config   *oauth2.Config
 	oidcConfig     *OIDCConfig
 	kedgeClient    *kedgeclient.Client
+	bootstrapper   *kcp.Bootstrapper
 	hubExternalURL string
 	devMode        bool
 	logger         klog.Logger
 }
 
 // NewHandler creates a new OIDC auth handler.
-func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclient.Client, hubExternalURL string, devMode bool) (*Handler, error) {
+func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclient.Client, bootstrapper *kcp.Bootstrapper, hubExternalURL string, devMode bool) (*Handler, error) {
 	if config.IssuerURL == "" {
 		return nil, fmt.Errorf("OIDC issuer URL is required")
 	}
@@ -67,6 +69,7 @@ func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclien
 		oauth2Config:   oauth2Config,
 		oidcConfig:     config,
 		kedgeClient:    kedgeClient,
+		bootstrapper:   bootstrapper,
 		hubExternalURL: hubExternalURL,
 		devMode:        devMode,
 		logger:         klog.Background().WithName("auth-handler"),
@@ -166,8 +169,6 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logger.Info("User authenticated", "email", claims.Email, "name", claims.Name)
-
 	// Create or update User CRD.
 	userID, err := h.seedUser(ctx, claims.Email, claims.Name, claims.Sub, h.oidcConfig.IssuerURL)
 	if err != nil {
@@ -176,20 +177,34 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate kubeconfig for the user.
-	kubeconfigBytes, err := h.generateKubeconfig(userID, claims.Email, token.AccessToken)
+	// Create tenant workspace for the user in KCP.
+	if h.bootstrapper != nil {
+		if err := h.bootstrapper.CreateTenantWorkspace(ctx, userID); err != nil {
+			h.logger.Error(err, "failed to create tenant workspace", "userID", userID)
+			http.Error(w, "failed to create tenant workspace", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Generate kubeconfig using exec credential plugin for automatic token refresh.
+	kubeconfigBytes, err := h.generateKubeconfig(userID, claims.Email)
 	if err != nil {
 		h.logger.Error(err, "failed to generate kubeconfig")
 		http.Error(w, "failed to generate kubeconfig", http.StatusInternalServerError)
 		return
 	}
 
-	// Build response and redirect back to CLI.
+	// Build response with OIDC credentials so the CLI can cache and refresh tokens.
 	resp := tenancyv1alpha1.LoginResponse{
-		Kubeconfig: kubeconfigBytes,
-		ExpiresAt:  token.Expiry.Unix(),
-		Email:      claims.Email,
-		UserID:     userID,
+		Kubeconfig:   kubeconfigBytes,
+		ExpiresAt:    token.Expiry.Unix(),
+		Email:        claims.Email,
+		UserID:       userID,
+		IDToken:      rawIDToken,
+		RefreshToken: token.RefreshToken,
+		IssuerURL:    h.oidcConfig.IssuerURL,
+		ClientID:     h.oidcConfig.ClientID,
+		ClientSecret: h.oidcConfig.ClientSecret,
 	}
 	respJSON, err := json.Marshal(resp)
 	if err != nil {
@@ -204,6 +219,11 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 // HandleRefresh handles token refresh requests.
 func (h *Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+// Verifier returns the OIDC token verifier for use by other components (e.g., API proxy).
+func (h *Handler) Verifier() *oidc.IDTokenVerifier {
+	return h.oidcProvider.Verifier(&oidc.Config{ClientID: h.oidcConfig.ClientID})
 }
 
 // RegisterRoutes registers auth routes on the given gorilla/mux router.
@@ -279,8 +299,9 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 	return created.Name, nil
 }
 
-// generateKubeconfig builds a kubeconfig pointing to the hub with an embedded access token.
-func (h *Handler) generateKubeconfig(userID, email, accessToken string) ([]byte, error) {
+// generateKubeconfig builds a kubeconfig pointing to the hub using an exec
+// credential plugin (kedge get-token) for automatic OIDC token refresh.
+func (h *Handler) generateKubeconfig(userID, email string) ([]byte, error) {
 	config := clientcmdapi.NewConfig()
 
 	config.Clusters["kedge"] = &clientcmdapi.Cluster{
@@ -288,9 +309,23 @@ func (h *Handler) generateKubeconfig(userID, email, accessToken string) ([]byte,
 		InsecureSkipTLSVerify: h.devMode,
 	}
 
-	userName := "kedge-" + email
+	userName := userID
+	execArgs := []string{
+		"get-token",
+		"--oidc-issuer-url=" + h.oidcConfig.IssuerURL,
+		"--oidc-client-id=" + h.oidcConfig.ClientID,
+		"--oidc-client-secret=" + h.oidcConfig.ClientSecret,
+	}
+	if h.devMode {
+		execArgs = append(execArgs, "--insecure-skip-tls-verify")
+	}
+
 	config.AuthInfos[userName] = &clientcmdapi.AuthInfo{
-		Token: accessToken,
+		Exec: &clientcmdapi.ExecConfig{
+			APIVersion: "client.authentication.k8s.io/v1beta1",
+			Command:    "kedge",
+			Args:       execArgs,
+		},
 	}
 
 	config.Contexts["kedge"] = &clientcmdapi.Context{

@@ -120,6 +120,9 @@ run-hub: build-hub certs
 run-kcp: $(KCP)
 	$(KCP) start --root-directory=$(KCP_DATA_DIR)
 
+dev-login:
+	go run ./cmd/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify
+
 clean:
 	rm -rf $(BINDIR)
 	rm -rf $(TOOLSDIR)

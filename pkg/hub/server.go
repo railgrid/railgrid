@@ -13,6 +13,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	"github.com/faroshq/faros-kedge/pkg/server/auth"
+	"github.com/faroshq/faros-kedge/pkg/server/proxy"
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
 	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
 	"github.com/gorilla/mux"
@@ -64,12 +65,15 @@ func (s *Server) Run(ctx context.Context) error {
 	informerFactory := kedgeclient.NewInformerFactory(dynamicClient, kedgeclient.DefaultResyncPeriod)
 
 	// 4. KCP bootstrap (if external KCP kubeconfig is provided)
+	var kcpConfig *rest.Config
+	var bootstrapper *kcp.Bootstrapper
 	if s.opts.ExternalKCPKubeconfig != "" {
-		kcpConfig, err := clientcmd.BuildConfigFromFlags("", s.opts.ExternalKCPKubeconfig)
+		var err error
+		kcpConfig, err = clientcmd.BuildConfigFromFlags("", s.opts.ExternalKCPKubeconfig)
 		if err != nil {
 			return fmt.Errorf("building KCP rest config: %w", err)
 		}
-		bootstrapper := kcp.NewBootstrapper(kcpConfig)
+		bootstrapper = kcp.NewBootstrapper(kcpConfig)
 		if err := bootstrapper.Bootstrap(ctx); err != nil {
 			return fmt.Errorf("bootstrapping KCP: %w", err)
 		}
@@ -83,6 +87,7 @@ func (s *Server) Run(ctx context.Context) error {
 	router := mux.NewRouter()
 
 	// Auth routes (OIDC via Dex)
+	var authHandler *auth.Handler
 	if s.opts.DexIssuerURL != "" {
 		oidcConfig := auth.DefaultOIDCConfig()
 		oidcConfig.IssuerURL = s.opts.DexIssuerURL
@@ -90,7 +95,7 @@ func (s *Server) Run(ctx context.Context) error {
 		oidcConfig.ClientSecret = s.opts.DexClientSecret
 		oidcConfig.RedirectURL = s.opts.HubExternalURL + "/auth/callback"
 
-		authHandler, err := auth.NewHandler(ctx, oidcConfig, kedgeClient, s.opts.HubExternalURL, s.opts.DevMode)
+		authHandler, err = auth.NewHandler(ctx, oidcConfig, kedgeClient, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode)
 		if err != nil {
 			return fmt.Errorf("creating auth handler: %w", err)
 		}
@@ -112,6 +117,17 @@ func (s *Server) Run(ctx context.Context) error {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
 	})
+
+	// KCP API proxy: catch-all that forwards authenticated kubectl requests to KCP.
+	var kcpProxy http.Handler
+	if kcpConfig != nil && authHandler != nil {
+		var err error
+		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, authHandler.Verifier(), kedgeClient, s.opts.DevMode)
+		if err != nil {
+			return fmt.Errorf("creating KCP proxy: %w", err)
+		}
+		logger.Info("KCP API proxy enabled")
+	}
 
 	// 7. Create and start controllers
 	schedulerCtrl := scheduler.NewScheduler(kedgeClient, informerFactory)
@@ -142,10 +158,24 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
-	// 8. Start HTTP server
+	// 8. Start HTTP server.
+	// Wrap the gorilla/mux router with a fallback to the KCP proxy.
+	// If the router has a matching route, use it; otherwise forward to KCP.
+	var handler http.Handler = router
+	if kcpProxy != nil {
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var match mux.RouteMatch
+			if router.Match(r, &match) {
+				router.ServeHTTP(w, r)
+				return
+			}
+			kcpProxy.ServeHTTP(w, r)
+		})
+	}
+
 	httpServer := &http.Server{
 		Addr:              s.opts.ListenAddr,
-		Handler:           router,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

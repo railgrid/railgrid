@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"time"
@@ -80,7 +81,22 @@ func runLogin(ctx context.Context, hubURL string, insecure bool) error {
 		return fmt.Errorf("waiting for login response: %w", err)
 	}
 
-	// 7. Merge the received kubeconfig into ~/.kube/config.
+	// 7. Save OIDC token cache so the exec credential plugin can use it.
+	if resp.IDToken != "" && resp.IssuerURL != "" {
+		cache := &cliauth.TokenCache{
+			IDToken:      resp.IDToken,
+			RefreshToken: resp.RefreshToken,
+			ExpiresAt:    resp.ExpiresAt,
+			IssuerURL:    resp.IssuerURL,
+			ClientID:     resp.ClientID,
+			ClientSecret: resp.ClientSecret,
+		}
+		if err := cliauth.SaveTokenCache(cache); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to save token cache: %v\n", err)
+		}
+	}
+
+	// 8. Merge the received kubeconfig into ~/.kube/config.
 	if err := mergeKubeconfig(resp.Kubeconfig); err != nil {
 		return fmt.Errorf("merging kubeconfig: %w", err)
 	}
