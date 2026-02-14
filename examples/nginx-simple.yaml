@@ -1,0 +1,15 @@
+apiVersion: kedge.faros.sh/v1alpha1
+kind: VirtualWorkload
+metadata:
+  name: nginx-test
+spec:
+  simple:
+    image: nginx:latest
+    ports:
+    - containerPort: 80
+  replicas: 2
+  placement:
+    siteSelector:
+      matchLabels:
+        env: prod
+    strategy: Spread

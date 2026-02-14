@@ -1,0 +1,11 @@
+apiVersion: kedge.faros.sh/v1alpha1
+kind: Site
+metadata:
+  name: test-site
+  labels:
+    env: prod
+    region: us-east
+spec:
+  displayName: Test Site
+  provider: onprem
+  region: us-east
