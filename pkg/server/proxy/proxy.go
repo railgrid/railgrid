@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -93,29 +95,40 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 	}, nil
 }
 
-// ServeHTTP validates the OIDC token, resolves the user's tenant workspace,
-// and proxies the request to KCP.
+// ServeHTTP validates the bearer token and proxies the request to KCP.
+// Two token types are supported:
+//   - OIDC id_tokens (from Dex): resolved to a tenant workspace via User CRD lookup,
+//     forwarded with admin credentials.
+//   - KCP ServiceAccount tokens: the clusterName claim identifies the workspace,
+//     forwarded with the original SA token so KCP handles authn/authz natively.
 func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Extract bearer token.
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Unauthorized","reason":"Unauthorized","code":401}`)
+		writeUnauthorized(w)
 		return
 	}
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
-	// Verify the OIDC id_token.
+	// Try OIDC verification first (user tokens from Dex).
 	idToken, err := p.verifier.Verify(p.verifyCtx, token)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Unauthorized","reason":"Unauthorized","code":401}`)
+	if err == nil {
+		p.serveOIDC(w, r, token, idToken)
 		return
 	}
 
-	// Extract sub claim to look up the user's workspace.
+	// If OIDC fails, check if this is a KCP ServiceAccount token.
+	if saClaims, ok := parseServiceAccountToken(token); ok {
+		p.serveServiceAccount(w, r, token, saClaims.ClusterName)
+		return
+	}
+
+	writeUnauthorized(w)
+}
+
+// serveOIDC handles OIDC-authenticated requests by resolving the user's tenant
+// workspace and proxying with admin credentials.
+func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token string, idToken *oidc.IDToken) {
 	var claims struct {
 		Sub string `json:"sub"`
 	}
@@ -126,7 +139,6 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up the User CRD to get the userID (workspace name).
 	userID, err := p.resolveUserID(r.Context(), idToken.Issuer, claims.Sub)
 	if err != nil {
 		p.logger.Error(err, "failed to resolve user workspace", "sub", claims.Sub)
@@ -136,10 +148,8 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build the target path for the user's tenant workspace.
 	tenantClusterPath := "root:kedge:tenants:" + userID
 
-	// Create a per-request reverse proxy targeting the user's workspace.
 	target := *p.kcpTarget
 	bearerToken := p.bearerToken
 	logger := p.logger
@@ -167,6 +177,69 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy.ServeHTTP(w, r)
+}
+
+// serveServiceAccount handles KCP ServiceAccount tokens by forwarding the
+// request to the workspace identified by the clusterName claim, keeping the
+// original SA token so KCP performs native authn/authz.
+func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, token, clusterName string) {
+	target := *p.kcpTarget
+	logger := p.logger
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.URL.Path = "/clusters/" + clusterName + req.URL.Path
+			req.Host = target.Host
+
+			// Keep the SA token — KCP authenticates it natively.
+			req.Header.Set("Authorization", "Bearer "+token)
+		},
+		Transport: p.transport,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			logger.Error(err, "proxy upstream error (SA)", "method", r.Method, "path", r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			fmt.Fprintf(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"proxy error: %s","reason":"ServiceUnavailable","code":502}`, err.Error())
+		},
+	}
+
+	proxy.ServeHTTP(w, r)
+}
+
+// saTokenClaims holds the claims we extract from a KCP ServiceAccount JWT.
+type saTokenClaims struct {
+	Issuer      string `json:"iss"`
+	ClusterName string `json:"kubernetes.io/serviceaccount/clusterName"`
+}
+
+// parseServiceAccountToken decodes a JWT without signature verification and
+// checks whether it is a KCP ServiceAccount token. KCP will verify the
+// signature when the request is forwarded.
+func parseServiceAccountToken(token string) (saTokenClaims, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return saTokenClaims{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return saTokenClaims{}, false
+	}
+	var claims saTokenClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return saTokenClaims{}, false
+	}
+	if claims.Issuer != "kubernetes/serviceaccount" || claims.ClusterName == "" {
+		return saTokenClaims{}, false
+	}
+	return claims, true
+}
+
+func writeUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Unauthorized","reason":"Unauthorized","code":401}`)
 }
 
 // resolveUserID looks up the User CRD by OIDC issuer+sub hash and returns the user's name
