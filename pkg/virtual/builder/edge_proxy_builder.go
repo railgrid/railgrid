@@ -1,12 +1,12 @@
 package builder
 
 import (
-	"net"
 	"net/http"
 	"net/url"
 
-	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 	utilhttp "github.com/faroshq/faros-kedge/pkg/util/http"
+	"github.com/faroshq/faros-kedge/pkg/util/revdial"
+	"github.com/function61/holepunch-server/pkg/wsconnadapter"
 	"github.com/gorilla/websocket"
 )
 
@@ -39,32 +39,17 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 		key := p.getKey(clusterName, siteName)
 		p.logger.Info("Agent connecting", "key", key)
 
-		p.withHijackedWebSocketConnection(w, r, func(conn net.Conn) {
-			p.connManager.Set(key, conn)
-			p.logger.Info("Agent tunnel established", "key", key)
-		})
+		wsConn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			p.logger.Error(err, "failed to upgrade WebSocket connection")
+			return
+		}
+		conn := wsconnadapter.New(wsConn)
+		p.connManager.Set(key, conn)
+		p.logger.Info("Agent tunnel established", "key", key)
 	})
 
 	return mux
-}
-
-// withHijackedWebSocketConnection upgrades the request to a WebSocket connection,
-// then hijacks it and passes the raw net.Conn to the callback.
-func (p *virtualWorkspaces) withHijackedWebSocketConnection(w http.ResponseWriter, r *http.Request, f func(net.Conn)) {
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
-	}
-
-	wsConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		p.logger.Error(err, "failed to upgrade WebSocket connection")
-		return
-	}
-
-	conn := wsConn.UnderlyingConn()
-	f(conn)
 }
 
 // getKey creates a unique key for a site connection.

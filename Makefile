@@ -131,10 +131,12 @@ dev-site-create: build-kedge
 -include .env
 export
 
-run-agent: build-agent
+dev-run-agent: build-agent
 	@test -f .env || (echo "Run 'make dev-site-create' first"; exit 1)
+	hack/scripts/ensure-kind-cluster.sh
 	$(BINDIR)/kedge-agent join \
 		--hub-kubeconfig=$(KEDGE_SITE_KUBECONFIG) \
+		--kubeconfig=.kind-kubeconfig \
 		--tunnel-url=https://localhost:8443 \
 		--site-name=$(KEDGE_SITE_NAME) \
 		--labels=$(KEDGE_LABELS)
@@ -142,5 +144,6 @@ run-agent: build-agent
 clean:
 	rm -rf $(BINDIR)
 	rm -rf $(TOOLSDIR)
+	-kind delete cluster --name kedge-agent 2>/dev/null
 
 verify: vet lint test
