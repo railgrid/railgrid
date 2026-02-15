@@ -18,9 +18,9 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
 
+	kcpconfig "github.com/faroshq/faros-kedge/config/kcp"
 	"github.com/faroshq/faros-kedge/config/kcp/apiexports"
 	"github.com/faroshq/faros-kedge/config/kcp/apiresourceschemas"
-	kcpconfig "github.com/faroshq/faros-kedge/config/kcp"
 )
 
 // KCP resource GVRs (no kcp-dev/kcp Go dependency).
@@ -190,6 +190,8 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 		return fmt.Errorf("creating APIBinding in tenant workspace %s: %w", userID, err)
 	}
 
+	// TODO: Wait for APIBinding to be ready before returning, to ensure the tenant can use the API immediately after login.
+
 	logger.Info("Tenant workspace created", "userID", userID)
 	return nil
 }
@@ -271,6 +273,7 @@ func applyYAML(ctx context.Context, client dynamic.Interface, data []byte) error
 }
 
 // kindToResource maps KCP kinds to their plural resource names.
+// TODO: Move to restMapper-based approach.
 var kindToResource = map[string]string{
 	"Workspace":         "workspaces",
 	"APIResourceSchema": "apiresourceschemas",

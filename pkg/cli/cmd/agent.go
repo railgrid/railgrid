@@ -46,6 +46,8 @@ func newAgentJoinCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.HubURL, "hub-url", "", "Hub server URL")
 	cmd.Flags().StringVar(&opts.HubKubeconfig, "hub-kubeconfig", "", "Kubeconfig for hub cluster")
+	cmd.Flags().StringVar(&opts.HubContext, "hub-context", "", "Kubeconfig context for hub cluster")
+	cmd.Flags().StringVar(&opts.TunnelURL, "tunnel-url", "", "Hub tunnel URL (defaults to hub URL)")
 	cmd.Flags().StringVar(&opts.Token, "token", "", "Bootstrap token")
 	cmd.Flags().StringVar(&opts.SiteName, "site-name", "", "Name of this site")
 	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Path to target cluster kubeconfig")

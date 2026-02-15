@@ -27,7 +27,7 @@ func New() *ConnectionManager {
 
 func (m *ConnectionManager) Set(key string, conn net.Conn) {
 	m.lock.Lock()
-	m.deviceDialers[key] = revdial.NewDialer(conn, "/proxy")
+	m.deviceDialers[key] = revdial.NewDialer(conn, "/tunnel/proxy")
 	m.lock.Unlock()
 }
 

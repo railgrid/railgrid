@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260214-c012858.sites.kedge.faros.sh
+  name: v260215-f3ac411.sites.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -138,6 +138,8 @@ spec:
                 - type
                 type: object
               type: array
+            credentialsSecretRef:
+              type: string
             kubernetesVersion:
               type: string
             lastHeartbeatTime:

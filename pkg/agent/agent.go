@@ -5,9 +5,10 @@ import (
 	"fmt"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/agent/reconciler"
 	agentStatus "github.com/faroshq/faros-kedge/pkg/agent/status"
+	"github.com/faroshq/faros-kedge/pkg/agent/tunnel"
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -20,6 +21,8 @@ import (
 type Options struct {
 	HubURL        string
 	HubKubeconfig string
+	HubContext    string
+	TunnelURL     string // Separate URL for reverse tunnel (defaults to hubConfig.Host)
 	Token         string
 	SiteName      string
 	Kubeconfig    string
@@ -51,7 +54,12 @@ func New(opts *Options) (*Agent, error) {
 	var hubConfig *rest.Config
 	var err error
 	if opts.HubKubeconfig != "" {
-		hubConfig, err = clientcmd.BuildConfigFromFlags("", opts.HubKubeconfig)
+		rules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: opts.HubKubeconfig}
+		overrides := &clientcmd.ConfigOverrides{}
+		if opts.HubContext != "" {
+			overrides.CurrentContext = opts.HubContext
+		}
+		hubConfig, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
 		if err != nil {
 			return nil, fmt.Errorf("failed to build hub config from kubeconfig: %w", err)
 		}
@@ -113,6 +121,14 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.registerSite(ctx, hubClient); err != nil {
 		return fmt.Errorf("registering site: %w", err)
 	}
+
+	// Start reverse tunnel to hub
+	tunnelURL := a.opts.TunnelURL
+	if tunnelURL == "" {
+		tunnelURL = a.hubConfig.Host
+	}
+	tunnelState := make(chan bool, 1)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, a.downstreamConfig, tunnelState)
 
 	// Start workload reconciler
 	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubDynamic, downstreamClient)

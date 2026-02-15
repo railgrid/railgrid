@@ -6,22 +6,22 @@ spec:
   resources:
   - group: kedge.faros.sh
     name: placements
-    schema: v260214-c012858.placements.kedge.faros.sh
+    schema: v260215-f3ac411.placements.kedge.faros.sh
     storage:
       crd: {}
   - group: kedge.faros.sh
     name: sites
-    schema: v260214-c012858.sites.kedge.faros.sh
+    schema: v260215-f3ac411.sites.kedge.faros.sh
     storage:
       crd: {}
   - group: kedge.faros.sh
     name: users
-    schema: v260214-c012858.users.kedge.faros.sh
+    schema: v260215-f3ac411.users.kedge.faros.sh
     storage:
       crd: {}
   - group: kedge.faros.sh
     name: virtualworkloads
-    schema: v260214-c012858.virtualworkloads.kedge.faros.sh
+    schema: v260215-f3ac411.virtualworkloads.kedge.faros.sh
     storage:
       crd: {}
 status: {}

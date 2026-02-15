@@ -142,6 +142,8 @@ spec:
                   - type
                   type: object
                 type: array
+              credentialsSecretRef:
+                type: string
               kubernetesVersion:
                 type: string
               lastHeartbeatTime:

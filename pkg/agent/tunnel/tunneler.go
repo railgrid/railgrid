@@ -60,8 +60,8 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 func startTunneler(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, stateChannel chan<- bool) error {
 	logger := klog.FromContext(ctx)
 
-	// Connect to hub's edge-proxy endpoint
-	edgeProxyURL := fmt.Sprintf("%s/services/edge-proxy/?cluster=default&site=%s", hubURL, siteName)
+	// Connect to hub's tunnel endpoint
+	edgeProxyURL := fmt.Sprintf("%s/tunnel/?cluster=default&site=%s", hubURL, siteName)
 
 	conn, err := initiateConnection(ctx, edgeProxyURL, token)
 	if err != nil {

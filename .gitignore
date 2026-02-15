@@ -41,3 +41,4 @@ hack/tools/
 certs/
 dex.db
 .kcp/
+.env

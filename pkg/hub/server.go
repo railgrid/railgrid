@@ -18,6 +18,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
 	"github.com/gorilla/mux"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
@@ -59,6 +60,11 @@ func (s *Server) Run(ctx context.Context) error {
 	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
 		return fmt.Errorf("creating dynamic client: %w", err)
+	}
+
+	kubeClient, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("creating kubernetes client: %w", err)
 	}
 
 	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
@@ -132,6 +138,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// 7. Create and start controllers
 	schedulerCtrl := scheduler.NewScheduler(kedgeClient, informerFactory)
 	siteCtrl := site.NewController(kedgeClient, informerFactory)
+	siteRBACCtrl := site.NewRBACController(kedgeClient, kubeClient, informerFactory, s.opts.HubExternalURL)
 	statusCtrl := status.NewAggregator(kedgeClient, informerFactory)
 
 	// Start informers
@@ -150,6 +157,11 @@ func (s *Server) Run(ctx context.Context) error {
 	go func() {
 		if err := siteCtrl.Run(ctx); err != nil {
 			logger.Error(err, "Site controller failed")
+		}
+	}()
+	go func() {
+		if err := siteRBACCtrl.Run(ctx); err != nil {
+			logger.Error(err, "Site RBAC controller failed")
 		}
 	}()
 	go func() {

@@ -61,14 +61,15 @@ type SiteSpec struct {
 
 // SiteStatus defines the observed state of Site.
 type SiteStatus struct {
-	Phase             SitePhase           `json:"phase"`
-	KubernetesVersion string              `json:"kubernetesVersion,omitempty"`
-	Capacity          corev1.ResourceList `json:"capacity,omitempty"`
-	Allocatable       corev1.ResourceList `json:"allocatable,omitempty"`
-	LastHeartbeatTime *metav1.Time        `json:"lastHeartbeatTime,omitempty"`
-	TunnelConnected   bool                `json:"tunnelConnected"`
-	Tunnels           []Tunnel            `json:"tunnels,omitempty"`
-	Conditions        []metav1.Condition  `json:"conditions,omitempty"`
+	Phase                SitePhase           `json:"phase"`
+	KubernetesVersion    string              `json:"kubernetesVersion,omitempty"`
+	Capacity             corev1.ResourceList `json:"capacity,omitempty"`
+	Allocatable          corev1.ResourceList `json:"allocatable,omitempty"`
+	LastHeartbeatTime    *metav1.Time        `json:"lastHeartbeatTime,omitempty"`
+	TunnelConnected      bool                `json:"tunnelConnected"`
+	Tunnels              []Tunnel            `json:"tunnels,omitempty"`
+	Conditions           []metav1.Condition  `json:"conditions,omitempty"`
+	CredentialsSecretRef string              `json:"credentialsSecretRef,omitempty"`
 }
 
 // Tunnel describes a tunnel endpoint.

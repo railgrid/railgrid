@@ -8,6 +8,7 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 func newSiteCommand() *cobra.Command {
@@ -17,9 +18,71 @@ func newSiteCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(
+		newSiteCreateCommand(),
 		newSiteListCommand(),
 		newSiteGetCommand(),
 	)
+
+	return cmd
+}
+
+func newSiteCreateCommand() *cobra.Command {
+	var labels map[string]string
+	var provider, region string
+
+	cmd := &cobra.Command{
+		Use:   "create <name>",
+		Short: "Create a site",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			ctx := context.Background()
+
+			dynClient, err := loadDynamicClient()
+			if err != nil {
+				return err
+			}
+
+			site := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": kedgeclient.SiteGVR.Group + "/" + kedgeclient.SiteGVR.Version,
+					"kind":       "Site",
+					"metadata": map[string]interface{}{
+						"name": name,
+					},
+					"spec": map[string]interface{}{
+						"displayName": name,
+					},
+				},
+			}
+
+			if len(labels) > 0 {
+				lbls := make(map[string]interface{}, len(labels))
+				for k, v := range labels {
+					lbls[k] = v
+				}
+				site.Object["metadata"].(map[string]interface{})["labels"] = lbls
+			}
+			if provider != "" {
+				site.Object["spec"].(map[string]interface{})["provider"] = provider
+			}
+			if region != "" {
+				site.Object["spec"].(map[string]interface{})["region"] = region
+			}
+
+			_, err = dynClient.Resource(kedgeclient.SiteGVR).Create(ctx, site, metav1.CreateOptions{})
+			if err != nil {
+				return fmt.Errorf("creating site %q: %w", name, err)
+			}
+
+			fmt.Printf("Site %q created.\n", name)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringToStringVar(&labels, "labels", nil, "Labels for this site (key=value pairs)")
+	cmd.Flags().StringVar(&provider, "provider", "", "Provider (e.g. aws, gcp, onprem, edge)")
+	cmd.Flags().StringVar(&region, "region", "", "Region")
 
 	return cmd
 }
