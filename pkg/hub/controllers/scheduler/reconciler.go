@@ -1,0 +1,168 @@
+package scheduler
+
+import (
+	"context"
+	"fmt"
+
+	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
+)
+
+// Reconciler implements the multicluster scheduler reconciler.
+type Reconciler struct {
+	mgr mcmanager.Manager
+}
+
+// SetupWithManager registers the scheduler controller with the multicluster manager.
+func SetupWithManager(mgr mcmanager.Manager) error {
+	r := &Reconciler{mgr: mgr}
+	return mcbuilder.ControllerManagedBy(mgr).
+		Named(controllerName).
+		For(&kedgev1alpha1.VirtualWorkload{}).
+		Watches(&kedgev1alpha1.Site{}, mchandler.EnqueueRequestsFromMapFunc(r.mapSiteToVirtualWorkloads)).
+		Complete(r)
+}
+
+// Reconcile handles a single VirtualWorkload reconciliation across workspaces.
+func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+	logger := klog.FromContext(ctx).WithValues("key", req.NamespacedName, "cluster", req.ClusterName)
+
+	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("getting cluster %s: %w", req.ClusterName, err)
+	}
+	c := cl.GetClient()
+
+	// Get VirtualWorkload
+	var vw kedgev1alpha1.VirtualWorkload
+	if err := c.Get(ctx, req.NamespacedName, &vw); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	// List all Sites in this workspace
+	var siteList kedgev1alpha1.SiteList
+	if err := c.List(ctx, &siteList); err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing sites: %w", err)
+	}
+
+	// Match and select sites
+	matched, err := MatchSites(siteList.Items, vw.Spec.Placement)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("matching sites: %w", err)
+	}
+	selected := SelectSites(matched, vw.Spec.Placement.Strategy)
+	logger.V(4).Info("Scheduling", "matched", len(matched), "selected", len(selected))
+
+	// List existing placements for this VW
+	var placementList kedgev1alpha1.PlacementList
+	if err := c.List(ctx, &placementList,
+		client.InNamespace(vw.Namespace),
+		client.MatchingLabels{"kedge.faros.sh/virtualworkload": vw.Name}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing placements: %w", err)
+	}
+
+	// Build desired site set
+	desiredSites := make(map[string]bool)
+	for _, site := range selected {
+		desiredSites[site.Name] = true
+	}
+
+	// Delete placements for sites no longer selected
+	for i := range placementList.Items {
+		p := &placementList.Items[i]
+		if !desiredSites[p.Spec.SiteName] {
+			logger.Info("Deleting stale placement", "placement", p.Name, "site", p.Spec.SiteName)
+			if err := c.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
+				logger.Error(err, "Failed to delete placement", "name", p.Name)
+			}
+		}
+	}
+
+	// Build existing site set
+	existingSites := make(map[string]bool)
+	for _, p := range placementList.Items {
+		existingSites[p.Spec.SiteName] = true
+	}
+
+	// Create placements for newly selected sites
+	for _, site := range selected {
+		if existingSites[site.Name] {
+			continue
+		}
+
+		placement := &kedgev1alpha1.Placement{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("%s-%s", vw.Name, site.Name),
+				Namespace: vw.Namespace,
+				Labels: map[string]string{
+					"kedge.faros.sh/virtualworkload": vw.Name,
+					"kedge.faros.sh/site":            site.Name,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
+						Kind:       "VirtualWorkload",
+						Name:       vw.Name,
+						UID:        vw.UID,
+					},
+				},
+			},
+			Spec: kedgev1alpha1.PlacementObjSpec{
+				WorkloadRef: corev1.ObjectReference{
+					APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
+					Kind:       "VirtualWorkload",
+					Name:       vw.Name,
+					Namespace:  vw.Namespace,
+					UID:        vw.UID,
+				},
+				SiteName: site.Name,
+				Replicas: vw.Spec.Replicas,
+			},
+		}
+
+		logger.Info("Creating placement", "placement", placement.Name, "site", site.Name)
+		if err := c.Create(ctx, placement); err != nil && !apierrors.IsAlreadyExists(err) {
+			logger.Error(err, "Failed to create placement", "name", placement.Name)
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// mapSiteToVirtualWorkloads re-enqueues all VirtualWorkloads in the same
+// workspace whenever a Site changes.
+func (r *Reconciler) mapSiteToVirtualWorkloads(ctx context.Context, obj client.Object) []reconcile.Request {
+	cl, err := r.mgr.GetCluster(ctx, obj.GetAnnotations()["kcp.io/cluster"])
+	if err != nil {
+		return nil
+	}
+	var vwList kedgev1alpha1.VirtualWorkloadList
+	if err := cl.GetClient().List(ctx, &vwList); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(vwList.Items))
+	for _, vw := range vwList.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: vw.Namespace,
+				Name:      vw.Name,
+			},
+		})
+	}
+	return requests
+}

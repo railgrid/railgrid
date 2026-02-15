@@ -35,7 +35,7 @@ var (
 		Group: "apis.kcp.io", Version: "v1alpha1", Resource: "apiexports",
 	}
 	apiBindingGVR = schema.GroupVersionResource{
-		Group: "apis.kcp.io", Version: "v1alpha1", Resource: "apibindings",
+		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings",
 	}
 )
 
@@ -77,7 +77,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 
 	// 3. Client targeting root:kedge.
 	kedgeConfig := rest.CopyConfig(b.config)
-	kedgeConfig.Host = appendClusterPath(kedgeConfig.Host, "root:kedge")
+	kedgeConfig.Host = AppendClusterPath(kedgeConfig.Host, "root:kedge")
 	kedgeClient, err := dynamic.NewForConfig(kedgeConfig)
 	if err != nil {
 		return fmt.Errorf("creating kedge client: %w", err)
@@ -98,7 +98,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 
 	// 5. Client targeting root:kedge:providers.
 	providersConfig := rest.CopyConfig(b.config)
-	providersConfig.Host = appendClusterPath(providersConfig.Host, "root:kedge:providers")
+	providersConfig.Host = AppendClusterPath(providersConfig.Host, "root:kedge:providers")
 	providersClient, err := dynamic.NewForConfig(providersConfig)
 	if err != nil {
 		return fmt.Errorf("creating providers client: %w", err)
@@ -126,7 +126,7 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 
 	// Client targeting root:kedge:tenants.
 	tenantsConfig := rest.CopyConfig(b.config)
-	tenantsConfig.Host = appendClusterPath(tenantsConfig.Host, "root:kedge:tenants")
+	tenantsConfig.Host = AppendClusterPath(tenantsConfig.Host, "root:kedge:tenants")
 	tenantsClient, err := dynamic.NewForConfig(tenantsConfig)
 	if err != nil {
 		return fmt.Errorf("creating tenants client: %w", err)
@@ -160,16 +160,16 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 
 	// Client targeting root:kedge:tenants:<userID>.
 	tenantConfig := rest.CopyConfig(b.config)
-	tenantConfig.Host = appendClusterPath(tenantConfig.Host, "root:kedge:tenants:"+userID)
+	tenantConfig.Host = AppendClusterPath(tenantConfig.Host, "root:kedge:tenants:"+userID)
 	tenantClient, err := dynamic.NewForConfig(tenantConfig)
 	if err != nil {
 		return fmt.Errorf("creating tenant client: %w", err)
 	}
 
-	// Create APIBinding.
+	// Create APIBinding with accepted permission claims for core resources.
 	binding := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "apis.kcp.io/v1alpha1",
+			"apiVersion": "apis.kcp.io/v1alpha2",
 			"kind":       "APIBinding",
 			"metadata": map[string]interface{}{
 				"name": "kedge",
@@ -181,12 +181,66 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 						"name": "kedge.faros.sh",
 					},
 				},
+				"permissionClaims": []interface{}{
+					map[string]interface{}{
+						"group":    "",
+						"resource": "secrets",
+						"state":    "Accepted",
+						"verbs":    []interface{}{"get", "list", "watch", "create", "update", "delete"},
+						"selector": map[string]interface{}{"matchAll": true},
+					},
+					map[string]interface{}{
+						"group":    "",
+						"resource": "namespaces",
+						"state":    "Accepted",
+						"verbs":    []interface{}{"get", "list", "watch", "create"},
+						"selector": map[string]interface{}{"matchAll": true},
+					},
+					map[string]interface{}{
+						"group":    "",
+						"resource": "configmaps",
+						"state":    "Accepted",
+						"verbs":    []interface{}{"get", "list", "watch", "create", "update", "delete"},
+						"selector": map[string]interface{}{"matchAll": true},
+					},
+					map[string]interface{}{
+						"group":    "",
+						"resource": "serviceaccounts",
+						"state":    "Accepted",
+						"verbs":    []interface{}{"get", "list", "watch", "create", "update", "delete"},
+						"selector": map[string]interface{}{"matchAll": true},
+					},
+					map[string]interface{}{
+						"group":    "rbac.authorization.k8s.io",
+						"resource": "clusterroles",
+						"state":    "Accepted",
+						"verbs":    []interface{}{"get", "list", "watch", "create", "update", "delete"},
+						"selector": map[string]interface{}{"matchAll": true},
+					},
+					map[string]interface{}{
+						"group":    "rbac.authorization.k8s.io",
+						"resource": "clusterrolebindings",
+						"state":    "Accepted",
+						"verbs":    []interface{}{"get", "list", "watch", "create", "update", "delete"},
+						"selector": map[string]interface{}{"matchAll": true},
+					},
+				},
 			},
 		},
 	}
 
 	_, err = tenantClient.Resource(apiBindingGVR).Create(ctx, binding, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
+	if errors.IsAlreadyExists(err) {
+		// Update existing binding to ensure permission claims are current.
+		existing, getErr := tenantClient.Resource(apiBindingGVR).Get(ctx, "kedge", metav1.GetOptions{})
+		if getErr != nil {
+			return fmt.Errorf("getting existing APIBinding in tenant workspace %s: %w", userID, getErr)
+		}
+		binding.SetResourceVersion(existing.GetResourceVersion())
+		if _, err := tenantClient.Resource(apiBindingGVR).Update(ctx, binding, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("updating APIBinding in tenant workspace %s: %w", userID, err)
+		}
+	} else if err != nil {
 		return fmt.Errorf("creating APIBinding in tenant workspace %s: %w", userID, err)
 	}
 
@@ -310,10 +364,10 @@ func waitForWorkspaceReady(ctx context.Context, client dynamic.Interface, name s
 	})
 }
 
-// appendClusterPath sets the /clusters/<path> segment on a KCP URL.
+// AppendClusterPath sets the /clusters/<path> segment on a KCP URL.
 // If the host already contains a /clusters/ path (e.g. from the admin
 // kubeconfig), it is replaced rather than appended.
-func appendClusterPath(host, clusterPath string) string {
+func AppendClusterPath(host, clusterPath string) string {
 	host = strings.TrimSuffix(host, "/")
 	if idx := strings.Index(host, "/clusters/"); idx != -1 {
 		host = host[:idx]

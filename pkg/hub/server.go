@@ -17,11 +17,15 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
 	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
 	"github.com/gorilla/mux"
+	"github.com/kcp-dev/multicluster-provider/apiexport"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
 // Server is the kedge hub server orchestrator.
@@ -56,19 +60,13 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("installing CRDs: %w", err)
 	}
 
-	// 3. Create dynamic client and informer factory
+	// 3. Create dynamic client (still used by auth handler + KCP proxy)
 	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
 		return fmt.Errorf("creating dynamic client: %w", err)
 	}
 
-	kubeClient, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("creating kubernetes client: %w", err)
-	}
-
 	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
-	informerFactory := kedgeclient.NewInformerFactory(dynamicClient, kedgeclient.DefaultResyncPeriod)
 
 	// 4. KCP bootstrap (if external KCP kubeconfig is provided)
 	var kcpConfig *rest.Config
@@ -135,40 +133,48 @@ func (s *Server) Run(ctx context.Context) error {
 		logger.Info("KCP API proxy enabled")
 	}
 
-	// 7. Create and start controllers
-	schedulerCtrl := scheduler.NewScheduler(kedgeClient, informerFactory)
-	siteCtrl := site.NewController(kedgeClient, informerFactory)
-	siteRBACCtrl := site.NewRBACController(kedgeClient, kubeClient, informerFactory, s.opts.HubExternalURL)
-	statusCtrl := status.NewAggregator(kedgeClient, informerFactory)
+	// 7. Create and start multicluster controllers (when KCP is configured)
+	if kcpConfig != nil {
+		// Initialize controller-runtime logger (bridges to klog).
+		ctrl.SetLogger(klog.NewKlogr())
 
-	// Start informers
-	stopCh := ctx.Done()
-	informerFactory.Start(stopCh)
-	logger.Info("Waiting for informer cache sync")
-	informerFactory.WaitForCacheSync(stopCh)
-	logger.Info("Informer caches synced")
+		scheme := NewScheme()
 
-	// Start controllers in goroutines
-	go func() {
-		if err := schedulerCtrl.Run(ctx); err != nil {
-			logger.Error(err, "Scheduler controller failed")
+		// The multicluster provider watches APIExportEndpointSlice which
+		// lives in the root:kedge:providers workspace.
+		providersConfig := rest.CopyConfig(kcpConfig)
+		providersConfig.Host = kcp.AppendClusterPath(providersConfig.Host, "root:kedge:providers")
+
+		provider, err := apiexport.New(providersConfig, "kedge.faros.sh", apiexport.Options{Scheme: scheme})
+		if err != nil {
+			return fmt.Errorf("creating multicluster provider: %w", err)
 		}
-	}()
-	go func() {
-		if err := siteCtrl.Run(ctx); err != nil {
-			logger.Error(err, "Site controller failed")
+
+		mgr, err := mcmanager.New(providersConfig, provider, manager.Options{Scheme: scheme})
+		if err != nil {
+			return fmt.Errorf("creating multicluster manager: %w", err)
 		}
-	}()
-	go func() {
-		if err := siteRBACCtrl.Run(ctx); err != nil {
-			logger.Error(err, "Site RBAC controller failed")
+
+		if err := scheduler.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("setting up scheduler controller: %w", err)
 		}
-	}()
-	go func() {
-		if err := statusCtrl.Run(ctx); err != nil {
-			logger.Error(err, "Status aggregator failed")
+		if err := status.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("setting up status aggregator: %w", err)
 		}
-	}()
+		if err := site.SetupLifecycleWithManager(mgr); err != nil {
+			return fmt.Errorf("setting up site lifecycle controller: %w", err)
+		}
+		if err := site.SetupRBACWithManager(mgr, s.opts.HubExternalURL); err != nil {
+			return fmt.Errorf("setting up site RBAC controller: %w", err)
+		}
+
+		go func() {
+			logger.Info("Starting multicluster manager")
+			if err := mgr.Start(ctx); err != nil {
+				logger.Error(err, "Multicluster manager failed")
+			}
+		}()
+	}
 
 	// 8. Start HTTP server.
 	// Wrap the gorilla/mux router with a fallback to the KCP proxy.
