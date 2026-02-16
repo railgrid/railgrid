@@ -1,0 +1,17 @@
+apiVersion: kedge.faros.sh/v1alpha1
+kind: VirtualWorkload
+metadata:
+  name: nginx-demo
+  namespace: default
+spec:
+  simple:
+    image: nginx:latest
+    ports:
+    - containerPort: 80
+      protocol: TCP
+  replicas: 1
+  placement:
+    siteSelector:
+      matchLabels:
+        env: dev
+    strategy: Singleton

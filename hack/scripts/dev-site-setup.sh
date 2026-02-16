@@ -59,4 +59,4 @@ EOF
 echo "Done!"
 echo "  Site kubeconfig: ${OUTPUT_FILE}"
 echo "  .env updated"
-echo "  Run 'make run-agent' to start the agent"
+echo "  Run 'make dev-run-agent' to start the agent"

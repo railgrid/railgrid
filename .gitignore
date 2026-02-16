@@ -45,3 +45,6 @@ dex.db
 .kind-kubeconfig
 .gitignore
 .site-kubeconfig
+
+# Air (live reload)
+tmp/

@@ -1,0 +1,20 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/kedge-hub ./cmd/kedge-hub/ && go build -o ./tmp/kedge-agent ./cmd/kedge-agent/"
+  full_bin = "hack/scripts/dev-apps.sh"
+  delay = 1000
+  exclude_dir = ["tmp", "vendor", "hack", ".kcp", "certs", ".git", "bin", "hack/tools", "config", "test"]
+  exclude_regex = ["_test\\.go$"]
+  include_ext = ["go"]
+  kill_delay = "2s"
+  send_interrupt = true
+  stop_on_error = false
+
+[log]
+  time = false
+  main_only = true
+
+[misc]
+  clean_on_exit = true

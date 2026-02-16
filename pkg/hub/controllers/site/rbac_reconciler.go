@@ -193,10 +193,43 @@ func ensureServiceAccount(ctx context.Context, c client.Client, name string, own
 	return nil
 }
 
+// desiredAgentRules returns the PolicyRules that the site agent ClusterRole should have.
+func desiredAgentRules() []rbacv1.PolicyRule {
+	return []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{"kedge.faros.sh"},
+			Resources: []string{"sites", "sites/status"},
+			Verbs:     []string{"get", "list", "watch", "update", "patch"},
+		},
+		{
+			APIGroups: []string{"kedge.faros.sh"},
+			Resources: []string{"placements", "placements/status"},
+			Verbs:     []string{"get", "list", "watch", "update", "patch"},
+		},
+		{
+			APIGroups: []string{"kedge.faros.sh"},
+			Resources: []string{"virtualworkloads", "virtualworkloads/status"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+	}
+}
+
 func ensureClusterRole(ctx context.Context, c client.Client, ownerRef metav1.OwnerReference) error {
+	desired := desiredAgentRules()
 	cr := &rbacv1.ClusterRole{}
 	if err := c.Get(ctx, client.ObjectKey{Name: siteAgentClusterRole}, cr); err == nil {
-		return ensureOwnerRef(ctx, c, cr, ownerRef)
+		if err := ensureOwnerRef(ctx, c, cr, ownerRef); err != nil {
+			return err
+		}
+		// Re-read after potential ownerRef update.
+		if err := c.Get(ctx, client.ObjectKey{Name: siteAgentClusterRole}, cr); err != nil {
+			return err
+		}
+		if !rulesEqual(cr.Rules, desired) {
+			cr.Rules = desired
+			return c.Update(ctx, cr)
+		}
+		return nil
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -205,22 +238,44 @@ func ensureClusterRole(ctx context.Context, c client.Client, ownerRef metav1.Own
 			Name:            siteAgentClusterRole,
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
 		},
-		Rules: []rbacv1.PolicyRule{
-			{
-				APIGroups: []string{"kedge.faros.sh"},
-				Resources: []string{"sites", "sites/status"},
-				Verbs:     []string{"get", "list", "watch", "update", "patch"},
-			},
-			{
-				APIGroups: []string{"kedge.faros.sh"},
-				Resources: []string{"placements", "placements/status"},
-				Verbs:     []string{"get", "list", "watch", "update", "patch"},
-			},
-		},
+		Rules: desired,
 	}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
 	return nil
+}
+
+// rulesEqual compares two PolicyRule slices for equality.
+func rulesEqual(a, b []rbacv1.PolicyRule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !ruleEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func ruleEqual(a, b rbacv1.PolicyRule) bool {
+	return slicesEqual(a.APIGroups, b.APIGroups) &&
+		slicesEqual(a.Resources, b.Resources) &&
+		slicesEqual(a.Verbs, b.Verbs) &&
+		slicesEqual(a.ResourceNames, b.ResourceNames) &&
+		slicesEqual(a.NonResourceURLs, b.NonResourceURLs)
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName string, ownerRef metav1.OwnerReference) error {
