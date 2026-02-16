@@ -42,3 +42,6 @@ certs/
 dex.db
 .kcp/
 .env
+.kind-kubeconfig
+.gitignore
+.site-kubeconfig

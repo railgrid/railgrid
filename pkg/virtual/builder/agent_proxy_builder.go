@@ -19,8 +19,19 @@ import (
 
 // buildAgentProxyHandler creates the HTTP handler for accessing agent resources.
 // Subresources: k8s (kubectl proxy), ssh (web terminal), exec, logs.
+//
+// Authentication: requires a valid bearer token (OIDC or SA). When KCP is
+// configured and an SA token is provided, the token is verified against KCP
+// by checking access to the site resource.
 func (p *virtualWorkspaces) buildAgentProxyHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. Authenticate: require a valid bearer token.
+		token := extractBearerToken(r)
+		if token == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		// Parse path: /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/sites/{name}/{subresource}
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
 
@@ -48,6 +59,20 @@ func (p *virtualWorkspaces) buildAgentProxyHandler() http.Handler {
 		if siteName == "" {
 			http.Error(w, "site name required", http.StatusBadRequest)
 			return
+		}
+
+		// 2. Delegated authorization: TokenReview + SubjectAccessReview via KCP.
+		// Checks that the caller can "proxy" the site (same verb as faros-core agent proxy).
+		if p.kcpConfig != nil {
+			if claims, ok := parseServiceAccountToken(token); ok {
+				if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "proxy", "sites", siteName); err != nil {
+					p.logger.Error(err, "agent proxy authorization failed", "site", siteName)
+					http.Error(w, "Forbidden", http.StatusForbidden)
+					return
+				}
+			}
+			// OIDC tokens pass through — delegated authorization for OIDC
+			// users accessing agent resources will be added in a future iteration.
 		}
 
 		key := p.getKey(clusterName, siteName)

@@ -13,6 +13,11 @@ import (
 // buildEdgeProxyHandler creates the HTTP handler for agent tunnel registration.
 // Agents connect via WebSocket, the connection is hijacked, and a revdial.Dialer
 // is stored in the connection manager.
+//
+// Authentication follows the faros-core delegated authorizer pattern:
+// TokenReview (authn) + SubjectAccessReview (authz) against KCP using admin
+// credentials. The agent's SA token must be authenticated and authorized to
+// "get" sites in its workspace.
 func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
@@ -22,12 +27,22 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 
 	mux := http.NewServeMux()
 
-	// Handle revdial pickup connections
+	// Handle revdial pickup connections.
+	// These are authenticated by the random 128-bit dialer unique ID.
 	mux.Handle("/proxy", revdial.ConnHandler(upgrader))
 
-	// Handle initial agent connection
+	// Handle initial agent connection.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Extract cluster and site name from path
+		// 1. Extract bearer token.
+		token := extractBearerToken(r)
+		claims, ok := parseServiceAccountToken(token)
+		if !ok {
+			p.logger.Info("Rejected tunnel connection: invalid or missing SA token")
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// 2. Extract cluster and site name from query parameters.
 		clusterName := r.URL.Query().Get("cluster")
 		siteName := r.URL.Query().Get("site")
 
@@ -36,8 +51,19 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 			return
 		}
 
+		// 3. Delegated authorization: TokenReview + SubjectAccessReview via KCP.
+		// Checks that the SA token can "get" the site (same verb as faros-core edge proxy).
+		if p.kcpConfig != nil {
+			if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "get", "sites", siteName); err != nil {
+				p.logger.Error(err, "edge proxy authorization failed", "tokenCluster", claims.ClusterName, "site", siteName)
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+		}
+
+		// 4. Upgrade to WebSocket and register the tunnel.
 		key := p.getKey(clusterName, siteName)
-		p.logger.Info("Agent connecting", "key", key)
+		p.logger.Info("Agent connecting", "key", key, "tokenCluster", claims.ClusterName)
 
 		wsConn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -46,7 +72,7 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 		}
 		conn := wsconnadapter.New(wsConn)
 		p.connManager.Set(key, conn)
-		p.logger.Info("Agent tunnel established", "key", key)
+		p.logger.Info("Agent tunnel established", "key", key, "tokenCluster", claims.ClusterName)
 	})
 
 	return mux

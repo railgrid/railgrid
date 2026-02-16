@@ -107,8 +107,8 @@ func (s *Server) Run(ctx context.Context) error {
 		logger.Info("OIDC auth routes registered", "issuer", s.opts.DexIssuerURL)
 	}
 
-	// Tunnel handlers
-	vws := builder.NewVirtualWorkspaces(connManager, logger)
+	// Tunnel handlers (kcpConfig is used for SA token verification; nil if KCP not configured)
+	vws := builder.NewVirtualWorkspaces(connManager, kcpConfig, logger)
 	router.PathPrefix("/tunnel/").Handler(http.StripPrefix("/tunnel", vws.EdgeProxyHandler()))
 	router.PathPrefix("/proxy/").Handler(http.StripPrefix("/proxy", vws.AgentProxyHandler()))
 

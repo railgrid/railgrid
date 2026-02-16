@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 )
 
@@ -31,6 +32,7 @@ type NamedVirtualWorkspace struct {
 type VirtualWorkspaceConfig struct {
 	RootPathPrefix string
 	ConnManager    *connman.ConnectionManager
+	KCPConfig      *rest.Config // KCP rest config for token verification (nil if KCP not configured)
 }
 
 // BuildVirtualWorkspaces creates the virtual workspaces for the kedge hub.
@@ -40,6 +42,7 @@ func BuildVirtualWorkspaces(config VirtualWorkspaceConfig) []NamedVirtualWorkspa
 	vw := &virtualWorkspaces{
 		rootPathPrefix: config.RootPathPrefix,
 		connManager:    config.ConnManager,
+		kcpConfig:      config.KCPConfig,
 		logger:         logger,
 	}
 

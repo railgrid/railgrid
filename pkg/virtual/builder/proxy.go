@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 )
 
@@ -11,6 +12,7 @@ import (
 type virtualWorkspaces struct {
 	rootPathPrefix string
 	connManager    *connman.ConnectionManager
+	kcpConfig      *rest.Config // KCP rest config for token verification (nil if KCP not configured)
 	logger         klog.Logger
 }
 
@@ -20,10 +22,13 @@ type VirtualWorkspaceHandlers struct {
 }
 
 // NewVirtualWorkspaces creates a new VirtualWorkspaceHandlers.
-func NewVirtualWorkspaces(cm *connman.ConnectionManager, logger klog.Logger) *VirtualWorkspaceHandlers {
+// kcpConfig is used for SA token verification against KCP. If nil, token
+// verification is skipped (dev mode only).
+func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, logger klog.Logger) *VirtualWorkspaceHandlers {
 	return &VirtualWorkspaceHandlers{
 		vws: &virtualWorkspaces{
 			connManager: cm,
+			kcpConfig:   kcpConfig,
 			logger:      logger.WithName("virtual-workspaces"),
 		},
 	}
