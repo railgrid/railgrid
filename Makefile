@@ -159,10 +159,6 @@ dev-run-agent: build-agent
 dev-infra: $(KCP) $(DEX) certs ## Run infra only (KCP + Dex)
 	hack/scripts/dev-infra.sh
 
-dev-hub: $(AIR) certs ## Run hub + agent with hot reload (requires dev-infra running)
-	@if [ -f .env ]; then hack/scripts/ensure-kind-cluster.sh; fi
-	hack/scripts/dev-hub.sh
-
 # dev runs everything in one terminal. KCP and Dex start once and stay up.
 # Hub and Agent hot-reload on Go file changes via air.
 # Usage: make dev

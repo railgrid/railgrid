@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,8 +32,8 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 		Duration: 1 * time.Second,
 		Factor:   2.0,
 		Jitter:   0.1,
-		Steps:    10,
-		Cap:      5 * time.Minute,
+		Steps:    math.MaxInt32,
+		Cap:      30 * time.Second,
 	}
 
 	for {
@@ -44,14 +45,13 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 
 		err := startTunneler(ctx, hubURL, token, siteName, downstream, stateChannel)
 		if err != nil {
-			logger.Error(err, "tunnel connection failed, retrying")
+			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
 
 		if stateChannel != nil {
 			stateChannel <- false
 		}
 
-		// Backoff before retry
 		select {
 		case <-ctx.Done():
 			return
@@ -120,7 +120,7 @@ func initiateConnection(ctx context.Context, wsURL string, token string) (net.Co
 	}
 
 	dialer := websocket.Dialer{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
 		HandshakeTimeout: 30 * time.Second,
 	}
 
@@ -173,10 +173,18 @@ func revdialFunc(baseURL string, token string) func(context.Context, string) (*w
 		case "http":
 			u.Scheme = "ws"
 		}
-		u.Path = path
+
+		// Parse path+query separately so the query string is preserved
+		// correctly (setting u.Path directly would escape "?" as "%3F").
+		pathURL, err := url.Parse(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		u.Path = pathURL.Path
+		u.RawQuery = pathURL.RawQuery
 
 		dialer := websocket.Dialer{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
 			HandshakeTimeout: 30 * time.Second,
 		}
 

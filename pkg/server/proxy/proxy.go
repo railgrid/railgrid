@@ -165,7 +165,8 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		if slashIdx >= 0 {
 			clusterID = rest[:slashIdx]
 		}
-		if user.Spec.DefaultCluster != clusterID {
+		// Allow exact match or mount access ({clusterName}:{mountName}).
+		if clusterID != user.Spec.DefaultCluster && !strings.HasPrefix(clusterID, user.Spec.DefaultCluster+":") {
 			p.logger.Info("cluster access denied", "user", user.Name, "requested", clusterID, "allowed", user.Spec.DefaultCluster)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
@@ -173,9 +174,6 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 			return
 		}
 		kcpPath = r.URL.Path // already in /clusters/{id}/... format
-	} else {
-		// Backward compat: construct workspace path from userID.
-		kcpPath = "/clusters/root:kedge:tenants:" + user.Name + r.URL.Path
 	}
 
 	target := *p.kcpTarget
