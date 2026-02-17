@@ -1,4 +1,4 @@
-.PHONY: build test lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra dev-hub path boilerplate verify-boilerplate
+.PHONY: build test lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra path boilerplate verify-boilerplate
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -23,10 +23,6 @@ KCP_APIGEN_VER := v0.30.0
 KCP_APIGEN_BIN := apigen
 KCP_APIGEN_GEN := $(TOOLSDIR)/$(KCP_APIGEN_BIN)-$(KCP_APIGEN_VER)
 export KCP_APIGEN_GEN
-
-AIR_VER := v1.64.5
-AIR_BIN := air
-AIR := $(TOOLSDIR)/$(AIR_BIN)-$(AIR_VER)
 
 OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 ARCH := $(shell uname -m)
@@ -83,9 +79,6 @@ $(CONTROLLER_GEN):
 $(KCP_APIGEN_GEN):
 	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) github.com/kcp-dev/sdk/cmd/apigen $(KCP_APIGEN_BIN) $(KCP_APIGEN_VER)
 
-$(AIR):
-	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) github.com/air-verse/air $(AIR_BIN) $(AIR_VER)
-
 # --- Dev environment ---
 
 certs: certs/apiserver.crt
@@ -120,23 +113,6 @@ $(KCP):
 	ln -sf $(notdir $(KCP)) $(TOOLSDIR)/kcp
 	@echo "kcp binary: $(KCP)"
 
-run-dex: $(DEX) certs
-	$(DEX) serve hack/dev/dex/dex-config-dev.yaml
-
-run-hub: build-hub certs
-	$(BINDIR)/kedge-hub \
-		--dex-issuer-url=https://localhost:5554/dex \
-		--dex-client-id=kedge \
-		--dex-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0 \
-		--serving-cert-file=certs/apiserver.crt \
-		--serving-key-file=certs/apiserver.key \
-		--hub-external-url=https://localhost:8443 \
-		--external-kcp-kubeconfig=.kcp/admin.kubeconfig \
-		--dev-mode
-
-run-kcp: $(KCP)
-	$(KCP) start --root-directory=$(KCP_DATA_DIR) --feature-gates=WorkspaceMounts=true
-
 dev-login: build-kedge
 	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify
 
@@ -156,7 +132,7 @@ dev-run-agent: build-agent
 	hack/scripts/ensure-kind-cluster.sh
 	$(BINDIR)/kedge-agent join \
 		--hub-kubeconfig=$(KEDGE_SITE_KUBECONFIG) \
-		--kubeconfig=.kind-kubeconfig \
+		--kubeconfig=.kubeconfig-kedge-agent \
 		--tunnel-url=https://localhost:8443 \
 		--site-name=$(KEDGE_SITE_NAME) \
 		--labels=$(KEDGE_LABELS)
@@ -165,13 +141,24 @@ dev-run-agent: build-agent
 dev-infra: $(KCP) $(DEX) certs ## Run infra only (kcp + Dex)
 	hack/scripts/dev-infra.sh
 
-# dev runs everything in one terminal. kcp and Dex start once and stay up.
-# Hub and Agent hot-reload on Go file changes via air.
-# Usage: make dev
-dev: $(AIR) $(KCP) $(DEX) certs ## Run full dev stack (kcp + Dex + Hub + Agent)
-	@if [ -f .env ]; then hack/scripts/ensure-kind-cluster.sh; fi
-	hack/scripts/dev-all.sh
+dev-run-kcp: $(KCP)
+	$(KCP) start --root-directory=$(KCP_DATA_DIR) --feature-gates=WorkspaceMounts=true
 
+
+run-dex: $(DEX) certs
+	$(DEX) serve hack/dev/dex/dex-config-dev.yaml
+
+run-hub: build-hub certs
+	$(BINDIR)/kedge-hub \
+		--dex-issuer-url=https://localhost:5554/dex \
+		--dex-client-id=kedge \
+		--dex-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0 \
+		--serving-cert-file=certs/apiserver.crt \
+		--serving-key-file=certs/apiserver.key \
+		--hub-external-url=https://localhost:8443 \
+		--external-kcp-kubeconfig=.kcp/admin.kubeconfig \
+		--dev-mode
+		
 clean:
 	rm -rf $(BINDIR)
 	rm -rf $(TOOLSDIR)

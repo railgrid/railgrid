@@ -10,7 +10,7 @@
 set -euo pipefail
 
 CLUSTER_NAME="${1:-kedge-agent}"
-KUBECONFIG_FILE=".kind-kubeconfig"
+KUBECONFIG_FILE=".kubeconfig-${CLUSTER_NAME}"
 
 if ! command -v kind &>/dev/null; then
   echo "ERROR: kind is not installed. Install from https://kind.sigs.k8s.io/" >&2

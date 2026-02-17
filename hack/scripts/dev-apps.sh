@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Runs hub and agent. Called by air on each rebuild cycle.
-# kcp and Dex are managed by dev-all.sh and stay up across restarts.
+# Runs hub. kcp and Dex are managed by dev-all.sh and stay up across restarts.
 set -euo pipefail
 
 trap 'kill 0; wait' EXIT
 
-./tmp/kedge-hub \
+./bin/kedge-hub \
   --dex-issuer-url=https://localhost:5554/dex \
   --dex-client-id=kedge \
   --dex-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0 \
