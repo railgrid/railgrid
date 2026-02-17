@@ -28,6 +28,7 @@ enabling secure workload deployment across distributed sites.`,
 		newSiteCommand(),
 		newApplyCommand(),
 		newGetCommand(),
+		newWorkspaceCommand(),
 		newVersionCommand(),
 	)
 
