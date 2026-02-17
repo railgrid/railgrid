@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package proxy
 
 import (
@@ -26,7 +42,7 @@ import (
 )
 
 // KCPProxy is a reverse proxy that authenticates requests via OIDC
-// and forwards them to the user's dedicated KCP tenant workspace.
+// and forwards them to the user's dedicated kcp tenant workspace.
 type KCPProxy struct {
 	kcpTarget   *url.URL
 	transport   http.RoundTripper
@@ -37,7 +53,7 @@ type KCPProxy struct {
 	logger      klog.Logger
 }
 
-// NewKCPProxy creates a reverse proxy to KCP.
+// NewKCPProxy creates a reverse proxy to kcp.
 // It validates bearer tokens as OIDC id_tokens before proxying.
 func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeClient *kedgeclient.Client, devMode bool) (*KCPProxy, error) {
 	target, err := url.Parse(kcpConfig.Host)
@@ -49,21 +65,21 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 		MinVersion: tls.VersionTLS12,
 	}
 
-	// Load CA data from KCP config for TLS verification.
+	// Load CA data from kcp config for TLS verification.
 	// Handle both CAData (inline) and CAFile (file path).
 	caData := kcpConfig.TLSClientConfig.CAData
 	if len(caData) == 0 && kcpConfig.TLSClientConfig.CAFile != "" {
 		var err error
 		caData, err = os.ReadFile(kcpConfig.TLSClientConfig.CAFile)
 		if err != nil {
-			return nil, fmt.Errorf("reading KCP CA file %s: %w", kcpConfig.TLSClientConfig.CAFile, err)
+			return nil, fmt.Errorf("reading kcp CA file %s: %w", kcpConfig.TLSClientConfig.CAFile, err)
 		}
 	}
 
 	if len(caData) > 0 {
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caData) {
-			return nil, fmt.Errorf("failed to parse KCP CA certificate")
+			return nil, fmt.Errorf("failed to parse kcp CA certificate")
 		}
 		tlsConfig.RootCAs = pool
 	} else if kcpConfig.TLSClientConfig.Insecure || devMode {
@@ -96,12 +112,12 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 	}, nil
 }
 
-// ServeHTTP validates the bearer token and proxies the request to KCP.
+// ServeHTTP validates the bearer token and proxies the request to kcp.
 // Two token types are supported:
 //   - OIDC id_tokens (from Dex): resolved to a tenant workspace via User CRD lookup,
 //     forwarded with admin credentials.
-//   - KCP ServiceAccount tokens: the clusterName claim identifies the workspace,
-//     forwarded with the original SA token so KCP handles authn/authz natively.
+//   - kcp ServiceAccount tokens: the clusterName claim identifies the workspace,
+//     forwarded with the original SA token so kcp handles authn/authz natively.
 func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Extract bearer token.
 	authHeader := r.Header.Get("Authorization")
@@ -118,7 +134,7 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If OIDC fails, check if this is a KCP ServiceAccount token.
+	// If OIDC fails, check if this is a kcp ServiceAccount token.
 	if saClaims, ok := parseServiceAccountToken(token); ok {
 		p.serveServiceAccount(w, r, token, saClaims.ClusterName)
 		return
@@ -131,7 +147,7 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // workspace and proxying with admin credentials.
 //
 // Two path formats are supported:
-//   - /clusters/{logicalClusterName}/... — KCP-syntax (new kubeconfigs). The
+//   - /clusters/{logicalClusterName}/... — kcp-syntax (new kubeconfigs). The
 //     cluster ID is verified against user.spec.defaultCluster.
 //   - /api/... or /apis/... — bare path (legacy kubeconfigs). The workspace
 //     path is constructed from the userID.
@@ -155,10 +171,10 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		return
 	}
 
-	// Determine KCP path based on incoming request format.
+	// Determine kcp path based on incoming request format.
 	var kcpPath string
 	if strings.HasPrefix(r.URL.Path, "/clusters/") {
-		// KCP-syntax: /clusters/{logicalClusterName}/api/...
+		// kcp-syntax: /clusters/{logicalClusterName}/api/...
 		rest := strings.TrimPrefix(r.URL.Path, "/clusters/")
 		slashIdx := strings.Index(rest, "/")
 		clusterID := rest
@@ -187,7 +203,7 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 			req.URL.Path = kcpPath
 			req.Host = target.Host
 
-			// Replace user auth with KCP admin credentials.
+			// Replace user auth with kcp admin credentials.
 			req.Header.Del("Authorization")
 			if bearerToken != "" {
 				req.Header.Set("Authorization", "Bearer "+bearerToken)
@@ -205,9 +221,9 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 	proxy.ServeHTTP(w, r)
 }
 
-// serveServiceAccount handles KCP ServiceAccount tokens by forwarding the
+// serveServiceAccount handles kcp ServiceAccount tokens by forwarding the
 // request to the workspace identified by the clusterName claim, keeping the
-// original SA token so KCP performs native authn/authz.
+// original SA token so kcp performs native authn/authz.
 func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, token, clusterName string) {
 	target := *p.kcpTarget
 	logger := p.logger
@@ -219,7 +235,7 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 			req.URL.Path = "/clusters/" + clusterName + req.URL.Path
 			req.Host = target.Host
 
-			// Keep the SA token — KCP authenticates it natively.
+			// Keep the SA token — kcp authenticates it natively.
 			req.Header.Set("Authorization", "Bearer "+token)
 		},
 		Transport: p.transport,
@@ -234,14 +250,14 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 	proxy.ServeHTTP(w, r)
 }
 
-// saTokenClaims holds the claims we extract from a KCP ServiceAccount JWT.
+// saTokenClaims holds the claims we extract from a kcp ServiceAccount JWT.
 type saTokenClaims struct {
 	Issuer      string `json:"iss"`
 	ClusterName string `json:"kubernetes.io/serviceaccount/clusterName"`
 }
 
 // parseServiceAccountToken decodes a JWT without signature verification and
-// checks whether it is a KCP ServiceAccount token. KCP will verify the
+// checks whether it is a kcp ServiceAccount token. kcp will verify the
 // signature when the request is forwarded.
 func parseServiceAccountToken(token string) (saTokenClaims, bool) {
 	parts := strings.Split(token, ".")

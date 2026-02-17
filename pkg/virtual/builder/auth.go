@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package builder
 
 import (
@@ -16,14 +32,14 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// saTokenClaims holds the claims extracted from a KCP ServiceAccount JWT.
+// saTokenClaims holds the claims extracted from a kcp ServiceAccount JWT.
 type saTokenClaims struct {
 	Issuer      string `json:"iss"`
 	ClusterName string `json:"kubernetes.io/serviceaccount/clusterName"`
 }
 
 // parseServiceAccountToken decodes a JWT without signature verification and
-// checks whether it is a KCP ServiceAccount token. KCP verifies the actual
+// checks whether it is a kcp ServiceAccount token. kcp verifies the actual
 // signature when the request is forwarded.
 func parseServiceAccountToken(token string) (saTokenClaims, bool) {
 	if token == "" {
@@ -61,7 +77,7 @@ func extractBearerToken(r *http.Request) string {
 	return strings.TrimPrefix(auth, "Bearer ")
 }
 
-// authorize performs delegated authentication and authorization against KCP.
+// authorize performs delegated authentication and authorization against kcp.
 // It follows the same pattern as kcp-dev/kcp's delegated.NewDelegatedAuthorizer:
 //  1. TokenReview — authenticates the bearer token and extracts user identity.
 //  2. SubjectAccessReview — checks if the authenticated user is allowed to

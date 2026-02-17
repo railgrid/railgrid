@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260217-6fee47f.virtualworkloads.kedge.faros.sh
+  name: v260217-7570c9b.virtualworkloads.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:

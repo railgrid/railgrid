@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package tunnel
 
 import (
@@ -64,7 +80,7 @@ func startTunneler(ctx context.Context, hubURL string, token string, siteName st
 	logger := klog.FromContext(ctx)
 
 	// Connect to hub's tunnel endpoint.
-	// Extract the real KCP logical cluster name from the SA token so the tunnel
+	// Extract the real kcp logical cluster name from the SA token so the tunnel
 	// key matches what the mount controller expects.
 	clusterName := extractClusterNameFromToken(token)
 	edgeProxyURL := fmt.Sprintf("%s/tunnel/?cluster=%s&site=%s", hubURL, clusterName, siteName)
@@ -137,7 +153,7 @@ func initiateConnection(ctx context.Context, wsURL string, token string) (net.Co
 	return wsconnadapter.New(wsConn), nil
 }
 
-// extractClusterNameFromToken decodes a KCP ServiceAccount JWT (without
+// extractClusterNameFromToken decodes a kcp ServiceAccount JWT (without
 // signature verification) and returns the clusterName claim. Returns "default"
 // if the token cannot be parsed or lacks the claim.
 func extractClusterNameFromToken(token string) string {

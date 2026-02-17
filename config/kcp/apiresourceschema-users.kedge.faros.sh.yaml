@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260217-6fee47f.users.kedge.faros.sh
+  name: v260217-7570c9b.users.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -32,6 +32,8 @@ spec:
           type: object
         spec:
           properties:
+            defaultCluster:
+              type: string
             email:
               type: string
             name:

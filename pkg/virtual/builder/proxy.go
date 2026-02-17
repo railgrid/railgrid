@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package builder
 
 import (
@@ -37,7 +53,7 @@ func (m *SiteRouteMap) Get(routeKey string) (string, bool) {
 type virtualWorkspaces struct {
 	rootPathPrefix string
 	connManager    *connman.ConnectionManager
-	kcpConfig      *rest.Config // KCP rest config for token verification (nil if KCP not configured)
+	kcpConfig      *rest.Config // kcp rest config for token verification (nil if kcp not configured)
 	siteRoutes     *SiteRouteMap
 	logger         klog.Logger
 }
@@ -48,7 +64,7 @@ type VirtualWorkspaceHandlers struct {
 }
 
 // NewVirtualWorkspaces creates a new VirtualWorkspaceHandlers.
-// kcpConfig is used for SA token verification against KCP. If nil, token
+// kcpConfig is used for SA token verification against kcp. If nil, token
 // verification is skipped (dev mode only).
 func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, siteRoutes *SiteRouteMap, logger klog.Logger) *VirtualWorkspaceHandlers {
 	return &VirtualWorkspaceHandlers{

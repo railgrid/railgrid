@@ -1,32 +1,38 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260217-6fee47f.placements.kedge.faros.sh
+  name: v260217-7570c9b.sites.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
-    kind: Placement
-    listKind: PlacementList
-    plural: placements
-    singular: placement
-  scope: Namespaced
+    kind: Site
+    listKind: SiteList
+    plural: sites
+    singular: site
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.siteName
-      name: Site
-      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.readyReplicas
-      name: Ready
-      type: integer
+    - jsonPath: .status.kubernetesVersion
+      name: K8s Version
+      type: string
+    - jsonPath: .spec.provider
+      name: Provider
+      type: string
+    - jsonPath: .spec.region
+      name: Region
+      type: string
+    - jsonPath: .status.tunnelConnected
+      name: Connected
+      type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
     name: v1alpha1
     schema:
-      description: Placement binds a VirtualWorkload to a specific Site.
+      description: Site represents a connected cluster (edge site).
       properties:
         apiVersion:
           description: |-
@@ -46,64 +52,38 @@ spec:
         metadata:
           type: object
         spec:
-          description: PlacementObjSpec defines the desired state of a Placement.
+          description: SiteSpec defines the desired state of Site.
           properties:
-            replicas:
-              format: int32
-              type: integer
-            siteName:
+            displayName:
               type: string
-            workloadRef:
-              description: ObjectReference contains enough information to let you
-                inspect or modify the referred object.
-              properties:
-                apiVersion:
-                  description: API version of the referent.
-                  type: string
-                fieldPath:
-                  description: |-
-                    If referring to a piece of an object instead of an entire object, this string
-                    should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
-                    For example, if the object reference is to a container within a pod, this would take on a value like:
-                    "spec.containers{name}" (where "name" refers to the name of the container that triggered
-                    the event) or if no container name is specified "spec.containers[2]" (container with
-                    index 2 in this pod). This syntax is chosen only to have some well-defined way of
-                    referencing a part of an object.
-                  type: string
-                kind:
-                  description: |-
-                    Kind of the referent.
-                    More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-                  type: string
-                name:
-                  description: |-
-                    Name of the referent.
-                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                  type: string
-                namespace:
-                  description: |-
-                    Namespace of the referent.
-                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-                  type: string
-                resourceVersion:
-                  description: |-
-                    Specific resourceVersion to which this reference is made, if any.
-                    More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
-                  type: string
-                uid:
-                  description: |-
-                    UID of the referent.
-                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
-                  type: string
-              type: object
-              x-kubernetes-map-type: atomic
-          required:
-          - siteName
-          - workloadRef
+            provider:
+              type: string
+            region:
+              type: string
           type: object
         status:
-          description: PlacementObjStatus defines the observed state of a Placement.
+          description: SiteStatus defines the observed state of Site.
           properties:
+            URL:
+              type: string
+            allocatable:
+              additionalProperties:
+                anyOf:
+                - type: integer
+                - type: string
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+              description: ResourceList is a set of (resource name, quantity) pairs.
+              type: object
+            capacity:
+              additionalProperties:
+                anyOf:
+                - type: integer
+                - type: string
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+              description: ResourceList is a set of (resource name, quantity) pairs.
+              type: object
             conditions:
               items:
                 description: Condition contains details for one aspect of the current
@@ -160,14 +140,35 @@ spec:
                 - type
                 type: object
               type: array
-            phase:
+            credentialsSecretRef:
               type: string
-            readyReplicas:
-              format: int32
-              type: integer
+            kubernetesVersion:
+              type: string
+            lastHeartbeatTime:
+              format: date-time
+              type: string
+            phase:
+              description: SitePhase describes the phase of a Site.
+              type: string
+            tunnelConnected:
+              type: boolean
+            tunnels:
+              items:
+                description: Tunnel describes a tunnel endpoint.
+                properties:
+                  type:
+                    description: TunnelType describes the type of tunnel.
+                    type: string
+                  url:
+                    type: string
+                required:
+                - type
+                - url
+                type: object
+              type: array
           required:
           - phase
-          - readyReplicas
+          - tunnelConnected
           type: object
       type: object
     served: true

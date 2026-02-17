@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package auth
 
 import (
@@ -177,7 +193,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create tenant workspace for the user in KCP and get the logical cluster name.
+	// Create tenant workspace for the user in kcp and get the logical cluster name.
 	var clusterName string
 	if h.bootstrapper != nil {
 		var err error
@@ -324,7 +340,7 @@ func (h *Handler) setDefaultCluster(ctx context.Context, userID, clusterName str
 // generateKubeconfig builds a kubeconfig pointing to the hub using an exec
 // credential plugin (kedge get-token) for automatic OIDC token refresh.
 // When clusterName is set, the server URL includes /clusters/{clusterName}
-// for KCP-syntax compatibility.
+// for kcp-syntax compatibility.
 func (h *Handler) generateKubeconfig(userID, clusterName, email string) ([]byte, error) {
 	config := clientcmdapi.NewConfig()
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs hub and agent. Called by air on each rebuild cycle.
-# KCP and Dex are managed by dev-all.sh and stay up across restarts.
+# kcp and Dex are managed by dev-all.sh and stay up across restarts.
 set -euo pipefail
 
 trap 'kill 0; wait' EXIT

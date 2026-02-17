@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the full dev stack in one terminal.
-# KCP and Dex start once and stay up. Air manages hub+agent with hot reload.
+# kcp and Dex start once and stay up. Air manages hub+agent with hot reload.
 # Ctrl-C kills everything.
 set -euo pipefail
 
@@ -34,8 +34,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1. Start KCP
-echo "==> Starting KCP..."
+# 1. Start kcp
+echo "==> Starting kcp..."
 "${KCP_BIN}" start --root-directory=.kcp --feature-gates=WorkspaceMounts=true &
 KCP_PID=$!
 sleep 3

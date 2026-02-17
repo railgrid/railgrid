@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package site
 
 import (
@@ -25,8 +41,8 @@ var workspaceGVR = schema.GroupVersionResource{
 	Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces",
 }
 
-// MountReconciler watches Sites and creates mount Workspaces in KCP so that
-// users can access site kube APIs through KCP workspace navigation.
+// MountReconciler watches Sites and creates mount Workspaces in kcp so that
+// users can access site kube APIs through kcp workspace navigation.
 type MountReconciler struct {
 	mgr            mcmanager.Manager
 	kcpConfig      *rest.Config
@@ -79,7 +95,7 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 
 	// Set the mount URL on the site status if not already set.
 	// This URL is served by the hub's site-proxy virtual workspace handler,
-	// NOT by /clusters/ which is KCP's own workspace routing prefix.
+	// NOT by /clusters/ which is kcp's own workspace routing prefix.
 	expectedURL := r.hubExternalURL + "/services/site-proxy/" + req.ClusterName + "/" + site.Name
 	if site.Status.URL != expectedURL {
 		logger.Info("Setting site mount URL", "url", expectedURL)
@@ -89,7 +105,7 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 		}
 	}
 
-	// Create mount workspace in KCP via admin dynamic client.
+	// Create mount workspace in kcp via admin dynamic client.
 	if err := r.ensureMountWorkspace(ctx, logger, req.ClusterName, site.Name); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring mount workspace: %w", err)
 	}

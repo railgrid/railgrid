@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package kcp
 
 import (
@@ -21,15 +37,13 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
 
-	kcpconfig "github.com/faroshq/faros-kedge/config/kcp"
-	"github.com/faroshq/faros-kedge/config/kcp/apiexports"
-	"github.com/faroshq/faros-kedge/config/kcp/apiresourceschemas"
+	"github.com/faroshq/faros-kedge/config/kcp"
 )
 
 //go:embed user-crd/kedge.faros.sh_users.yaml
 var userCRDFS embed.FS
 
-// KCP resource GVRs (no kcp-dev/kcp Go dependency).
+// kcp resource GVRs (no kcp-dev/kcp Go dependency).
 var (
 	workspaceGVR = schema.GroupVersionResource{
 		Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces",
@@ -45,7 +59,7 @@ var (
 	}
 )
 
-// Bootstrapper sets up the KCP workspace hierarchy and API exports.
+// Bootstrapper sets up the kcp workspace hierarchy and API exports.
 type Bootstrapper struct {
 	config *rest.Config
 }
@@ -64,7 +78,7 @@ func NewBootstrapper(config *rest.Config) *Bootstrapper {
 //	root:kedge:users               - Stores User CRDs
 func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
-	logger.Info("Bootstrapping KCP workspace hierarchy")
+	logger.Info("Bootstrapping kcp workspace hierarchy")
 
 	// 1. Create dynamic client targeting root workspace.
 	rootClient, err := dynamic.NewForConfig(b.config)
@@ -74,7 +88,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 
 	// 2. Apply the root:kedge workspace.
 	logger.Info("Creating root:kedge workspace")
-	if err := applyResourcesFromFS(ctx, rootClient, kcpconfig.WorkspaceFS(), "workspace-kedge.yaml"); err != nil {
+	if err := applyResourcesFromFS(ctx, rootClient, kcp.WorkspaceFS, "workspace-kedge.yaml"); err != nil {
 		return fmt.Errorf("applying kedge workspace: %w", err)
 	}
 
@@ -92,7 +106,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 
 	// 4. Apply child workspaces: providers, tenants, users.
 	logger.Info("Creating child workspaces: providers, tenants, users")
-	if err := applyResourcesFromFS(ctx, kedgeClient, kcpconfig.WorkspaceFS(), "workspace-providers.yaml", "workspace-tenants.yaml", "workspace-users.yaml"); err != nil {
+	if err := applyResourcesFromFS(ctx, kedgeClient, kcp.WorkspaceFS, "workspace-providers.yaml", "workspace-tenants.yaml", "workspace-users.yaml"); err != nil {
 		return fmt.Errorf("applying child workspaces: %w", err)
 	}
 
@@ -116,13 +130,13 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 
 	// 6. Apply APIResourceSchemas.
 	logger.Info("Applying APIResourceSchemas")
-	if err := applyAllFromFS(ctx, providersClient, apiresourceschemas.FS); err != nil {
+	if err := applyAllFromFS(ctx, providersClient, kcp.APIResourceSchemaFS); err != nil {
 		return fmt.Errorf("applying APIResourceSchemas: %w", err)
 	}
 
 	// 7. Apply APIExport.
 	logger.Info("Applying APIExport")
-	if err := applyAllFromFS(ctx, providersClient, apiexports.FS); err != nil {
+	if err := applyAllFromFS(ctx, providersClient, kcp.APIExportFS); err != nil {
 		return fmt.Errorf("applying APIExport: %w", err)
 	}
 
@@ -132,7 +146,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("installing User CRD: %w", err)
 	}
 
-	logger.Info("KCP bootstrap complete")
+	logger.Info("kcp bootstrap complete")
 	return nil
 }
 
@@ -193,7 +207,7 @@ func (b *Bootstrapper) installUserCRD(ctx context.Context) error {
 }
 
 // CreateTenantWorkspace creates a workspace for a user, binds the kedge API,
-// and returns the workspace's logical cluster name assigned by KCP.
+// and returns the workspace's logical cluster name assigned by kcp.
 func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string) (string, error) {
 	logger := klog.FromContext(ctx)
 
@@ -231,7 +245,7 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 		return "", fmt.Errorf("waiting for tenant workspace %s: %w", userID, err)
 	}
 
-	// Read the workspace to get the logical cluster name assigned by KCP.
+	// Read the workspace to get the logical cluster name assigned by kcp.
 	readyWS, err := tenantsClient.Resource(workspaceGVR).Get(ctx, userID, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("getting workspace %s: %w", userID, err)
@@ -369,7 +383,7 @@ func applyAllFromFS(ctx context.Context, client dynamic.Interface, fsys fs.FS) e
 }
 
 // applyYAML unmarshals YAML to unstructured, determines GVR, and create-or-updates.
-// Workspaces are create-only (skip if exists) because the KCP system sets spec.URL
+// Workspaces are create-only (skip if exists) because the kcp system sets spec.URL
 // and spec.cluster after creation, and those fields cannot be unset on update.
 func applyYAML(ctx context.Context, client dynamic.Interface, data []byte) error {
 	jsonData, err := yaml.YAMLToJSON(data)
@@ -409,7 +423,7 @@ func applyYAML(ctx context.Context, client dynamic.Interface, data []byte) error
 	return err
 }
 
-// kindToResource maps KCP kinds to their plural resource names.
+// kindToResource maps kcp kinds to their plural resource names.
 // TODO: Move to restMapper-based approach.
 var kindToResource = map[string]string{
 	"Workspace":         "workspaces",
@@ -447,7 +461,7 @@ func waitForWorkspaceReady(ctx context.Context, client dynamic.Interface, name s
 	})
 }
 
-// AppendClusterPath sets the /clusters/<path> segment on a KCP URL.
+// AppendClusterPath sets the /clusters/<path> segment on a kcp URL.
 // If the host already contains a /clusters/ path (e.g. from the admin
 // kubeconfig), it is replaced rather than appended.
 func AppendClusterPath(host, clusterPath string) string {

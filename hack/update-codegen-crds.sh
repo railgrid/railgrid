@@ -34,20 +34,13 @@ rm -rf "${REPO_ROOT}/pkg/hub/bootstrap/crds"
 mkdir -p "${REPO_ROOT}/pkg/hub/bootstrap/crds"
 cp "${REPO_ROOT}"/config/crds/*.yaml "${REPO_ROOT}/pkg/hub/bootstrap/crds/"
 
-# Step 2: Generate KCP APIResourceSchemas and APIExport from CRDs using apigen.
-echo "Generating KCP APIResourceSchemas with apigen..."
-rm -rf "${REPO_ROOT}/config/kcp/apiresourceschemas/"*.yaml
-rm -rf "${REPO_ROOT}/config/kcp/apiexports/"*.yaml
+# Step 2: Generate kcp APIResourceSchemas and APIExport from CRDs using apigen.
+echo "Generating kcp APIResourceSchemas with apigen..."
 (
     cd "${REPO_ROOT}"
     "./${KCP_APIGEN_GEN}" \
         --input-dir "${REPO_ROOT}/config/crds" \
-        --output-dir "${REPO_ROOT}/config/kcp/apiresourceschemas"
+        --output-dir "${REPO_ROOT}/config/kcp"
 )
-
-# apigen puts both APIResourceSchemas and the APIExport in the output dir.
-# Move the APIExport file to the apiexports directory.
-mv "${REPO_ROOT}"/config/kcp/apiresourceschemas/apiexport-*.yaml \
-   "${REPO_ROOT}/config/kcp/apiexports/" 2>/dev/null || true
 
 echo "Codegen complete."

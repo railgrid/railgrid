@@ -1,0 +1,76 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: kedge.faros.sh
+spec:
+  permissionClaims:
+  - resource: secrets
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  - resource: namespaces
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+  - resource: configmaps
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  - resource: serviceaccounts
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  - group: rbac.authorization.k8s.io
+    resource: clusterroles
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  - group: rbac.authorization.k8s.io
+    resource: clusterrolebindings
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  resources:
+  - group: kedge.faros.sh
+    name: placements
+    schema: v260217-7570c9b.placements.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: kedge.faros.sh
+    name: sites
+    schema: v260217-7570c9b.sites.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: kedge.faros.sh
+    name: users
+    schema: v260217-7570c9b.users.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: kedge.faros.sh
+    name: virtualworkloads
+    schema: v260217-7570c9b.virtualworkloads.kedge.faros.sh
+    storage:
+      crd: {}
+status: {}

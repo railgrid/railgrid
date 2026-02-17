@@ -1,4 +1,4 @@
-.PHONY: build test lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra dev-hub path
+.PHONY: build test lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra dev-hub path boilerplate verify-boilerplate
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -64,10 +64,16 @@ vet:
 
 # --- Code generation ---
 
-crds: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Generate CRDs and KCP APIResourceSchemas
+boilerplate: ## Ensure license boilerplate on all Go files
+	./hack/ensure-boilerplate.sh
+
+verify-boilerplate: ## Verify license boilerplate on all Go files
+	./hack/ensure-boilerplate.sh --verify
+
+crds: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Generate CRDs and kcp APIResourceSchemas
 	./hack/update-codegen-crds.sh
 
-codegen: crds ## Generate all (CRDs + KCP resources)
+codegen: crds boilerplate ## Generate all (CRDs + kcp resources + boilerplate)
 
 # --- Tool installation ---
 
@@ -105,14 +111,14 @@ $(DEX):
 
 $(KCP):
 	@mkdir -p $(TOOLSDIR)
-	@echo "Downloading KCP $(KCP_VER) for $(OS)/$(ARCH)..."
+	@echo "Downloading kcp $(KCP_VER) for $(OS)/$(ARCH)..."
 	curl -sL "https://github.com/kcp-dev/kcp/releases/download/$(KCP_VER)/kcp_$(subst v,,$(KCP_VER))_$(OS)_$(ARCH).tar.gz" | \
 		tar xz -C $(TOOLSDIR) bin/kcp
 	mv $(TOOLSDIR)/bin/kcp $(KCP)
 	rmdir $(TOOLSDIR)/bin 2>/dev/null || true
 	chmod +x $(KCP)
 	ln -sf $(notdir $(KCP)) $(TOOLSDIR)/kcp
-	@echo "KCP binary: $(KCP)"
+	@echo "kcp binary: $(KCP)"
 
 run-dex: $(DEX) certs
 	$(DEX) serve hack/dev/dex/dex-config-dev.yaml
@@ -156,13 +162,13 @@ dev-run-agent: build-agent
 		--labels=$(KEDGE_LABELS)
 
 
-dev-infra: $(KCP) $(DEX) certs ## Run infra only (KCP + Dex)
+dev-infra: $(KCP) $(DEX) certs ## Run infra only (kcp + Dex)
 	hack/scripts/dev-infra.sh
 
-# dev runs everything in one terminal. KCP and Dex start once and stay up.
+# dev runs everything in one terminal. kcp and Dex start once and stay up.
 # Hub and Agent hot-reload on Go file changes via air.
 # Usage: make dev
-dev: $(AIR) $(KCP) $(DEX) certs ## Run full dev stack (KCP + Dex + Hub + Agent)
+dev: $(AIR) $(KCP) $(DEX) certs ## Run full dev stack (kcp + Dex + Hub + Agent)
 	@if [ -f .env ]; then hack/scripts/ensure-kind-cluster.sh; fi
 	hack/scripts/dev-all.sh
 
@@ -175,4 +181,4 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: vet lint test
+verify: vet lint test verify-boilerplate

@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package builder
 
 import (
@@ -15,7 +31,7 @@ import (
 // is stored in the connection manager.
 //
 // Authentication follows the faros-core delegated authorizer pattern:
-// TokenReview (authn) + SubjectAccessReview (authz) against KCP using admin
+// TokenReview (authn) + SubjectAccessReview (authz) against kcp using admin
 // credentials. The agent's SA token must be authenticated and authorized to
 // "get" sites in its workspace.
 func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
@@ -51,7 +67,7 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 			return
 		}
 
-		// 3. Delegated authorization: TokenReview + SubjectAccessReview via KCP.
+		// 3. Delegated authorization: TokenReview + SubjectAccessReview via kcp.
 		// Checks that the SA token can "get" the site (same verb as faros-core edge proxy).
 		if p.kcpConfig != nil {
 			if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "get", "sites", siteName); err != nil {

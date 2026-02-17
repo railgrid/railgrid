@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package kcp
 
 import (
@@ -7,22 +23,22 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// EmbeddedKCP manages an embedded KCP server.
+// EmbeddedKCP manages an embedded kcp server.
 type EmbeddedKCP struct {
 	dataDir string
 }
 
-// NewEmbeddedKCP creates a new embedded KCP instance.
+// NewEmbeddedKCP creates a new embedded kcp instance.
 func NewEmbeddedKCP(dataDir string) *EmbeddedKCP {
 	return &EmbeddedKCP{dataDir: dataDir}
 }
 
-// Start starts the embedded KCP server.
+// Start starts the embedded kcp server.
 func (e *EmbeddedKCP) Start(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
-	logger.Info("Starting embedded KCP", "dataDir", e.dataDir)
+	logger.Info("Starting embedded kcp", "dataDir", e.dataDir)
 
-	return fmt.Errorf("embedded KCP is not yet implemented; " +
-		"please start an external KCP instance and pass its kubeconfig " +
+	return fmt.Errorf("embedded kcp is not yet implemented; " +
+		"please start an external kcp instance and pass its kubeconfig " +
 		"via --external-kcp-kubeconfig flag")
 }

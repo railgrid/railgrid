@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs hub with hot reload via air.
-# Requires KCP and Dex to be running (make dev-infra).
+# Requires kcp and Dex to be running (make dev-infra).
 # Ctrl-C kills air.
 set -euo pipefail
 

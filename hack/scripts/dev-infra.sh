@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs KCP and Dex only. Use in a separate terminal from dev-hub.
+# Runs kcp and Dex only. Use in a separate terminal from dev-hub.
 # Ctrl-C kills both.
 set -euo pipefail
 
@@ -30,7 +30,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> Starting KCP..."
+echo "==> Starting kcp..."
 "${KCP_BIN}" start --root-directory=.kcp --feature-gates=WorkspaceMounts=true &
 KCP_PID=$!
 sleep 3
@@ -39,5 +39,5 @@ echo "==> Starting Dex..."
 "${DEX_BIN}" serve hack/dev/dex/dex-config-dev.yaml &
 DEX_PID=$!
 
-echo "==> Infra ready (KCP + Dex). Run 'make dev-hub' in another terminal."
+echo "==> Infra ready (kcp + Dex). Run 'make dev-hub' in another terminal."
 wait

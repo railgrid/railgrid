@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package site
 
 import (
@@ -103,7 +119,7 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 		return ctrl.Result{}, fmt.Errorf("ensuring token secret: %w", err)
 	}
 
-	// 6. Read the SA token. If not yet populated by KCP, requeue.
+	// 6. Read the SA token. If not yet populated by kcp, requeue.
 	tokenSecret := &corev1.Secret{}
 	if err := c.Get(ctx, client.ObjectKey{Namespace: siteNamespace, Name: tokenSecretName}, tokenSecret); err != nil {
 		return ctrl.Result{}, fmt.Errorf("getting token secret: %w", err)

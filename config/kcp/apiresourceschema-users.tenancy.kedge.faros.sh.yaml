@@ -1,38 +1,29 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260217-6fee47f.sites.kedge.faros.sh
+  name: v260217-7570c9b.users.tenancy.kedge.faros.sh
 spec:
-  group: kedge.faros.sh
+  group: tenancy.kedge.faros.sh
   names:
-    kind: Site
-    listKind: SiteList
-    plural: sites
-    singular: site
+    kind: User
+    listKind: UserList
+    plural: users
+    singular: user
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.phase
-      name: Phase
+    - jsonPath: .spec.email
+      name: Email
       type: string
-    - jsonPath: .status.kubernetesVersion
-      name: K8s Version
+    - jsonPath: .spec.name
+      name: Name
       type: string
-    - jsonPath: .spec.provider
-      name: Provider
-      type: string
-    - jsonPath: .spec.region
-      name: Region
-      type: string
-    - jsonPath: .status.tunnelConnected
-      name: Connected
-      type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
     name: v1alpha1
     schema:
-      description: Site represents a connected cluster (edge site).
+      description: User represents a user in the system.
       properties:
         apiVersion:
           description: |-
@@ -52,38 +43,51 @@ spec:
         metadata:
           type: object
         spec:
-          description: SiteSpec defines the desired state of Site.
+          description: UserSpec defines the desired state of a User.
           properties:
-            displayName:
+            defaultCluster:
               type: string
-            provider:
+            email:
               type: string
-            region:
+            name:
               type: string
+            oidcProviders:
+              items:
+                description: OIDCProvider stores OIDC provider information for a user.
+                properties:
+                  accessToken:
+                    type: string
+                  email:
+                    type: string
+                  expiresAt:
+                    format: date-time
+                    type: string
+                  name:
+                    type: string
+                  providerID:
+                    type: string
+                  refreshToken:
+                    type: string
+                required:
+                - accessToken
+                - email
+                - name
+                - providerID
+                - refreshToken
+                type: object
+              type: array
+            rbacIdentity:
+              type: string
+          required:
+          - email
+          - name
+          - rbacIdentity
           type: object
         status:
-          description: SiteStatus defines the observed state of Site.
+          description: UserStatus defines the observed state of a User.
           properties:
-            URL:
-              type: string
-            allocatable:
-              additionalProperties:
-                anyOf:
-                - type: integer
-                - type: string
-                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                x-kubernetes-int-or-string: true
-              description: ResourceList is a set of (resource name, quantity) pairs.
-              type: object
-            capacity:
-              additionalProperties:
-                anyOf:
-                - type: integer
-                - type: string
-                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                x-kubernetes-int-or-string: true
-              description: ResourceList is a set of (resource name, quantity) pairs.
-              type: object
+            active:
+              type: boolean
             conditions:
               items:
                 description: Condition contains details for one aspect of the current
@@ -140,35 +144,9 @@ spec:
                 - type
                 type: object
               type: array
-            credentialsSecretRef:
-              type: string
-            kubernetesVersion:
-              type: string
-            lastHeartbeatTime:
+            lastLogin:
               format: date-time
               type: string
-            phase:
-              description: SitePhase describes the phase of a Site.
-              type: string
-            tunnelConnected:
-              type: boolean
-            tunnels:
-              items:
-                description: Tunnel describes a tunnel endpoint.
-                properties:
-                  type:
-                    description: TunnelType describes the type of tunnel.
-                    type: string
-                  url:
-                    type: string
-                required:
-                - type
-                - url
-                type: object
-              type: array
-          required:
-          - phase
-          - tunnelConnected
           type: object
       type: object
     served: true

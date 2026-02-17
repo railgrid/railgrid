@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package hub
 
 import (
@@ -68,23 +84,23 @@ func (s *Server) Run(ctx context.Context) error {
 
 	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
 
-	// 4. KCP bootstrap (if external KCP kubeconfig is provided)
+	// 4. kcp bootstrap (if external kcp kubeconfig is provided)
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
 	// userClient is a kedge client targeting the workspace where User CRDs live.
-	// Defaults to the base kedgeClient; overridden to root:kedge:users when KCP is configured.
+	// Defaults to the base kedgeClient; overridden to root:kedge:users when kcp is configured.
 	userClient := kedgeClient
 	if s.opts.ExternalKCPKubeconfig != "" {
 		var err error
 		kcpConfig, err = clientcmd.BuildConfigFromFlags("", s.opts.ExternalKCPKubeconfig)
 		if err != nil {
-			return fmt.Errorf("building KCP rest config: %w", err)
+			return fmt.Errorf("building kcp rest config: %w", err)
 		}
 		bootstrapper = kcp.NewBootstrapper(kcpConfig)
 		if err := bootstrapper.Bootstrap(ctx); err != nil {
-			return fmt.Errorf("bootstrapping KCP: %w", err)
+			return fmt.Errorf("bootstrapping kcp: %w", err)
 		}
-		logger.Info("KCP bootstrap complete")
+		logger.Info("kcp bootstrap complete")
 
 		// Create user client targeting root:kedge:users workspace.
 		userDynamic, err := dynamic.NewForConfig(bootstrapper.UsersConfig())
@@ -117,7 +133,7 @@ func (s *Server) Run(ctx context.Context) error {
 		logger.Info("OIDC auth routes registered", "issuer", s.opts.DexIssuerURL)
 	}
 
-	// Tunnel handlers (kcpConfig is used for SA token verification; nil if KCP not configured)
+	// Tunnel handlers (kcpConfig is used for SA token verification; nil if kcp not configured)
 	siteRoutes := builder.NewSiteRouteMap()
 	vws := builder.NewVirtualWorkspaces(connManager, kcpConfig, siteRoutes, logger)
 	router.PathPrefix("/tunnel/").Handler(http.StripPrefix("/tunnel", vws.EdgeProxyHandler()))
@@ -134,18 +150,18 @@ func (s *Server) Run(ctx context.Context) error {
 		fmt.Fprint(w, "ok")
 	})
 
-	// KCP API proxy: catch-all that forwards authenticated kubectl requests to KCP.
+	// kcp API proxy: catch-all that forwards authenticated kubectl requests to kcp.
 	var kcpProxy http.Handler
 	if kcpConfig != nil && authHandler != nil {
 		var err error
 		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, authHandler.Verifier(), userClient, s.opts.DevMode)
 		if err != nil {
-			return fmt.Errorf("creating KCP proxy: %w", err)
+			return fmt.Errorf("creating kcp proxy: %w", err)
 		}
-		logger.Info("KCP API proxy enabled")
+		logger.Info("kcp API proxy enabled")
 	}
 
-	// 7. Create and start multicluster controllers (when KCP is configured)
+	// 7. Create and start multicluster controllers (when kcp is configured)
 	if kcpConfig != nil {
 		// Initialize controller-runtime logger (bridges to klog).
 		ctrl.SetLogger(klog.NewKlogr())
@@ -192,7 +208,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// 8. Start HTTP server.
-	// Wrap the gorilla/mux router with a fallback to the KCP proxy for
+	// Wrap the gorilla/mux router with a fallback to the kcp proxy for
 	// kubectl requests that aren't handled by explicit mux routes.
 	var handler http.Handler = router
 	if kcpProxy != nil {
