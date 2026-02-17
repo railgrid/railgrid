@@ -24,12 +24,13 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
+	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 )
 
 // saTokenClaims holds the claims extracted from a kcp ServiceAccount JWT.

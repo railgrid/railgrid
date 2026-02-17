@@ -1,4 +1,4 @@
-.PHONY: build test lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra path boilerplate verify-boilerplate verify-codegen ldflags tools
+.PHONY: build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra path boilerplate verify-boilerplate verify-codegen ldflags tools
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -68,6 +68,9 @@ test-util:
 
 lint: $(GOLANGCI_LINT) ## Run golangci-lint
 	$(GOLANGCI_LINT) run ./...
+
+fix-lint: $(GOLANGCI_LINT) ## Run golangci-lint with auto-fix
+	$(GOLANGCI_LINT) run --fix ./...
 
 vet:
 	go vet ./...

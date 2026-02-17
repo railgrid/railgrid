@@ -24,8 +24,8 @@ type DexConfig struct {
 
 // ConnectorConfig defines an identity provider connector.
 type ConnectorConfig struct {
-	Type   string `json:"type"`   // github, google, ldap, etc.
-	ID     string `json:"id"`
-	Name   string `json:"name"`
+	Type   string                 `json:"type"` // github, google, ldap, etc.
+	ID     string                 `json:"id"`
+	Name   string                 `json:"name"`
 	Config map[string]interface{} `json:"config,omitempty"`
 }

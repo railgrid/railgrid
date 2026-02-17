@@ -29,8 +29,9 @@ import (
 	"github.com/gorilla/websocket"
 	gossh "golang.org/x/crypto/ssh"
 
-	utilssh "github.com/faroshq/faros-kedge/pkg/util/ssh"
 	"k8s.io/klog/v2"
+
+	utilssh "github.com/faroshq/faros-kedge/pkg/util/ssh"
 )
 
 // buildAgentProxyHandler creates the HTTP handler for accessing agent resources.
@@ -262,4 +263,3 @@ func extractK8sPath(path string) string {
 	}
 	return path
 }
-

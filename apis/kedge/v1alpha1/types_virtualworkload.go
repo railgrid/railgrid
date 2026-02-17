@@ -25,10 +25,10 @@ import (
 type VirtualWorkloadPhase string
 
 const (
-	VirtualWorkloadPhasePending  VirtualWorkloadPhase = "Pending"
-	VirtualWorkloadPhaseRunning  VirtualWorkloadPhase = "Running"
-	VirtualWorkloadPhaseFailed   VirtualWorkloadPhase = "Failed"
-	VirtualWorkloadPhaseUnknown  VirtualWorkloadPhase = "Unknown"
+	VirtualWorkloadPhasePending VirtualWorkloadPhase = "Pending"
+	VirtualWorkloadPhaseRunning VirtualWorkloadPhase = "Running"
+	VirtualWorkloadPhaseFailed  VirtualWorkloadPhase = "Failed"
+	VirtualWorkloadPhaseUnknown VirtualWorkloadPhase = "Unknown"
 )
 
 // PlacementStrategy defines how workloads are placed across sites.
@@ -78,12 +78,12 @@ type VirtualWorkloadSpec struct {
 
 // SimpleWorkloadSpec is a simplified workload definition.
 type SimpleWorkloadSpec struct {
-	Image     string                        `json:"image"`
-	Ports     []corev1.ContainerPort        `json:"ports,omitempty"`
-	Env       []corev1.EnvVar               `json:"env,omitempty"`
-	Resources *corev1.ResourceRequirements  `json:"resources,omitempty"`
-	Command   []string                      `json:"command,omitempty"`
-	Args      []string                      `json:"args,omitempty"`
+	Image     string                       `json:"image"`
+	Ports     []corev1.ContainerPort       `json:"ports,omitempty"`
+	Env       []corev1.EnvVar              `json:"env,omitempty"`
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	Command   []string                     `json:"command,omitempty"`
+	Args      []string                     `json:"args,omitempty"`
 }
 
 // PlacementSpec defines how to place the workload on sites.

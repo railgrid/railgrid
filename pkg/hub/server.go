@@ -22,6 +22,15 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gorilla/mux"
+	"github.com/kcp-dev/multicluster-provider/apiexport"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
@@ -32,14 +41,6 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/server/proxy"
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
 	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
-	"github.com/gorilla/mux"
-	"github.com/kcp-dev/multicluster-provider/apiexport"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/klog/v2"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )

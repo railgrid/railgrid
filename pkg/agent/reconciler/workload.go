@@ -18,17 +18,13 @@ package reconciler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
-	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
@@ -37,6 +33,9 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+
+	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
 const controllerName = "workload-reconciler"
@@ -84,11 +83,14 @@ func (r *WorkloadReconciler) Run(ctx context.Context) error {
 
 	placementInformer := factory.ForResource(kedgeclient.PlacementGVR).Informer()
 
-	placementInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, err := placementInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(obj interface{}) { r.enqueue(obj) },
 		UpdateFunc: func(_, obj interface{}) { r.enqueue(obj) },
 		DeleteFunc: func(obj interface{}) { r.enqueue(obj) },
 	})
+	if err != nil {
+		return fmt.Errorf("adding event handler: %w", err)
+	}
 
 	factory.Start(ctx.Done())
 	factory.WaitForCacheSync(ctx.Done())
@@ -279,20 +281,4 @@ func buildPodSpecFromSimple(simple *kedgev1alpha1.SimpleWorkloadSpec) corev1.Pod
 	return corev1.PodSpec{
 		Containers: []corev1.Container{container},
 	}
-}
-
-func convertToPlacement(obj interface{}) (*kedgev1alpha1.Placement, error) {
-	u, ok := obj.(*unstructured.Unstructured)
-	if !ok {
-		return nil, fmt.Errorf("expected *unstructured.Unstructured, got %T", obj)
-	}
-	data, err := json.Marshal(u.Object)
-	if err != nil {
-		return nil, err
-	}
-	var p kedgev1alpha1.Placement
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
 }

@@ -20,10 +20,11 @@ import (
 	"net/http"
 	"net/url"
 
-	utilhttp "github.com/faroshq/faros-kedge/pkg/util/http"
-	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 	"github.com/function61/holepunch-server/pkg/wsconnadapter"
 	"github.com/gorilla/websocket"
+
+	utilhttp "github.com/faroshq/faros-kedge/pkg/util/http"
+	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
 
 // buildEdgeProxyHandler creates the HTTP handler for agent tunnel registration.

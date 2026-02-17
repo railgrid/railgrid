@@ -23,8 +23,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/faroshq/faros-kedge/pkg/agent"
 	"github.com/spf13/cobra"
+
+	"github.com/faroshq/faros-kedge/pkg/agent"
 )
 
 func newAgentCommand() *cobra.Command {

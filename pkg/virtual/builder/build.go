@@ -19,9 +19,10 @@ package builder
 import (
 	"net/http"
 
-	"github.com/faroshq/faros-kedge/pkg/util/connman"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	"github.com/faroshq/faros-kedge/pkg/util/connman"
 )
 
 const (

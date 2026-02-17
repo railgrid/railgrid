@@ -20,30 +20,31 @@ import (
 	"context"
 	"fmt"
 
-	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
-	"github.com/faroshq/faros-kedge/pkg/agent/reconciler"
-	agentStatus "github.com/faroshq/faros-kedge/pkg/agent/status"
-	"github.com/faroshq/faros-kedge/pkg/agent/tunnel"
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
+
+	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
+	"github.com/faroshq/faros-kedge/pkg/agent/reconciler"
+	agentStatus "github.com/faroshq/faros-kedge/pkg/agent/status"
+	"github.com/faroshq/faros-kedge/pkg/agent/tunnel"
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
 // Options holds configuration for the agent.
 type Options struct {
-	HubURL                 string
-	HubKubeconfig          string
-	HubContext             string
-	TunnelURL              string // Separate URL for reverse tunnel (defaults to hubConfig.Host)
-	Token                  string
-	SiteName               string
-	Kubeconfig             string
-	Context                string
-	Labels                 map[string]string
+	HubURL        string
+	HubKubeconfig string
+	HubContext    string
+	TunnelURL     string // Separate URL for reverse tunnel (defaults to hubConfig.Host)
+	Token         string
+	SiteName      string
+	Kubeconfig    string
+	Context       string
+	Labels        map[string]string
 }
 
 // NewOptions returns default agent options.

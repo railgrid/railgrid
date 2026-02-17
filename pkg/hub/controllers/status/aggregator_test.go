@@ -19,8 +19,9 @@ package status
 import (
 	"testing"
 
-	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 )
 
 func TestAggregateStatus_AllRunning(t *testing.T) {

@@ -20,9 +20,10 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/faroshq/faros-kedge/pkg/util/connman"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	"github.com/faroshq/faros-kedge/pkg/util/connman"
 )
 
 // SiteRouteMap maps URL route keys to connManager tunnel keys.

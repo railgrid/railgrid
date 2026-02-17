@@ -32,10 +32,11 @@ import (
 	"github.com/function61/holepunch-server/pkg/wsconnadapter"
 	"github.com/gorilla/websocket"
 
-	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
 
 // StartProxyTunnel establishes a reverse tunnel to the hub server.
@@ -113,7 +114,7 @@ func startTunneler(ctx context.Context, hubURL string, token string, siteName st
 
 	select {
 	case <-ctx.Done():
-		server.Shutdown(context.Background())
+		_ = server.Shutdown(context.Background())
 		return nil
 	case err := <-errCh:
 		return err

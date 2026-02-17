@@ -28,10 +28,11 @@ import (
 	"runtime"
 	"time"
 
-	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+
+	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
 )
 
 func newLoginCommand() *cobra.Command {

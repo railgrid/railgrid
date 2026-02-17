@@ -24,7 +24,7 @@ import (
 
 const (
 	GroupName = "kedge.faros.sh"
-	Version  = "v1alpha1"
+	Version   = "v1alpha1"
 )
 
 var (

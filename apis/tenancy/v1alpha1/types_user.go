@@ -67,7 +67,7 @@ type OIDCProvider struct {
 
 // UserStatus defines the observed state of a User.
 type UserStatus struct {
-	Active     bool           `json:"active,omitempty"`
-	LastLogin  *metav1.Time   `json:"lastLogin,omitempty"`
+	Active     bool               `json:"active,omitempty"`
+	LastLogin  *metav1.Time       `json:"lastLogin,omitempty"`
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }

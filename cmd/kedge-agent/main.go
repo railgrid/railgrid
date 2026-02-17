@@ -23,9 +23,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/faroshq/faros-kedge/pkg/agent"
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
+
+	"github.com/faroshq/faros-kedge/pkg/agent"
 )
 
 func main() {

@@ -21,11 +21,12 @@ import (
 	"fmt"
 	"os"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
+
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
 func newGetCommand() *cobra.Command {
