@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260215-f3ac411.sites.kedge.faros.sh
+  name: v260217-6fee47f.sites.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -64,6 +64,8 @@ spec:
         status:
           description: SiteStatus defines the observed state of Site.
           properties:
+            URL:
+              type: string
             allocatable:
               additionalProperties:
                 anyOf:

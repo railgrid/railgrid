@@ -2,12 +2,15 @@ package kcp
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"strings"
 	"time"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -22,6 +25,9 @@ import (
 	"github.com/faroshq/faros-kedge/config/kcp/apiexports"
 	"github.com/faroshq/faros-kedge/config/kcp/apiresourceschemas"
 )
+
+//go:embed user-crd/kedge.faros.sh_users.yaml
+var userCRDFS embed.FS
 
 // KCP resource GVRs (no kcp-dev/kcp Go dependency).
 var (
@@ -55,6 +61,7 @@ func NewBootstrapper(config *rest.Config) *Bootstrapper {
 //	root:kedge:providers           - Holds APIExport "kedge.faros.sh"
 //	root:kedge:tenants             - Parent for tenant workspaces
 //	  root:kedge:tenants:{userID}  - Per-user workspace (created on login)
+//	root:kedge:users               - Stores User CRDs
 func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Bootstrapping KCP workspace hierarchy")
@@ -83,9 +90,9 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("creating kedge client: %w", err)
 	}
 
-	// 4. Apply child workspaces: providers, tenants.
-	logger.Info("Creating child workspaces: providers, tenants")
-	if err := applyResourcesFromFS(ctx, kedgeClient, kcpconfig.WorkspaceFS(), "workspace-providers.yaml", "workspace-tenants.yaml"); err != nil {
+	// 4. Apply child workspaces: providers, tenants, users.
+	logger.Info("Creating child workspaces: providers, tenants, users")
+	if err := applyResourcesFromFS(ctx, kedgeClient, kcpconfig.WorkspaceFS(), "workspace-providers.yaml", "workspace-tenants.yaml", "workspace-users.yaml"); err != nil {
 		return fmt.Errorf("applying child workspaces: %w", err)
 	}
 
@@ -94,6 +101,9 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	}
 	if err := waitForWorkspaceReady(ctx, kedgeClient, "tenants"); err != nil {
 		return fmt.Errorf("waiting for tenants workspace: %w", err)
+	}
+	if err := waitForWorkspaceReady(ctx, kedgeClient, "users"); err != nil {
+		return fmt.Errorf("waiting for users workspace: %w", err)
 	}
 
 	// 5. Client targeting root:kedge:providers.
@@ -116,12 +126,75 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("applying APIExport: %w", err)
 	}
 
+	// 8. Install User CRD in root:kedge:users workspace.
+	logger.Info("Installing User CRD in root:kedge:users")
+	if err := b.installUserCRD(ctx); err != nil {
+		return fmt.Errorf("installing User CRD: %w", err)
+	}
+
 	logger.Info("KCP bootstrap complete")
 	return nil
 }
 
-// CreateTenantWorkspace creates a workspace for a user and binds the kedge API.
-func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string) error {
+// UsersConfig returns a rest.Config targeting the root:kedge:users workspace
+// where User CRDs are stored.
+func (b *Bootstrapper) UsersConfig() *rest.Config {
+	usersConfig := rest.CopyConfig(b.config)
+	usersConfig.Host = AppendClusterPath(usersConfig.Host, "root:kedge:users")
+	return usersConfig
+}
+
+// installUserCRD installs the User CRD in the root:kedge:users workspace.
+func (b *Bootstrapper) installUserCRD(ctx context.Context) error {
+	usersConfig := b.UsersConfig()
+
+	apiextClient, err := apiextensionsclient.NewForConfig(usersConfig)
+	if err != nil {
+		return fmt.Errorf("creating apiextensions client: %w", err)
+	}
+
+	data, err := userCRDFS.ReadFile("user-crd/kedge.faros.sh_users.yaml")
+	if err != nil {
+		return fmt.Errorf("reading embedded User CRD: %w", err)
+	}
+
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(data, &crd); err != nil {
+		return fmt.Errorf("unmarshaling User CRD: %w", err)
+	}
+
+	existing, err := apiextClient.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crd.Name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		if _, err := apiextClient.ApiextensionsV1().CustomResourceDefinitions().Create(ctx, &crd, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("creating User CRD: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("getting User CRD: %w", err)
+	} else {
+		crd.ResourceVersion = existing.ResourceVersion
+		if _, err := apiextClient.ApiextensionsV1().CustomResourceDefinitions().Update(ctx, &crd, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("updating User CRD: %w", err)
+		}
+	}
+
+	// Wait for CRD to be established.
+	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		c, err := apiextClient.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crd.Name, metav1.GetOptions{})
+		if err != nil {
+			return false, nil
+		}
+		for _, cond := range c.Status.Conditions {
+			if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+}
+
+// CreateTenantWorkspace creates a workspace for a user, binds the kedge API,
+// and returns the workspace's logical cluster name assigned by KCP.
+func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string) (string, error) {
 	logger := klog.FromContext(ctx)
 
 	// Client targeting root:kedge:tenants.
@@ -129,7 +202,7 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 	tenantsConfig.Host = AppendClusterPath(tenantsConfig.Host, "root:kedge:tenants")
 	tenantsClient, err := dynamic.NewForConfig(tenantsConfig)
 	if err != nil {
-		return fmt.Errorf("creating tenants client: %w", err)
+		return "", fmt.Errorf("creating tenants client: %w", err)
 	}
 
 	// Create workspace for the user.
@@ -151,11 +224,21 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 
 	_, err = tenantsClient.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{})
 	if err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating tenant workspace %s: %w", userID, err)
+		return "", fmt.Errorf("creating tenant workspace %s: %w", userID, err)
 	}
 
 	if err := waitForWorkspaceReady(ctx, tenantsClient, userID); err != nil {
-		return fmt.Errorf("waiting for tenant workspace %s: %w", userID, err)
+		return "", fmt.Errorf("waiting for tenant workspace %s: %w", userID, err)
+	}
+
+	// Read the workspace to get the logical cluster name assigned by KCP.
+	readyWS, err := tenantsClient.Resource(workspaceGVR).Get(ctx, userID, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("getting workspace %s: %w", userID, err)
+	}
+	clusterName, _, _ := unstructured.NestedString(readyWS.Object, "spec", "cluster")
+	if clusterName == "" {
+		return "", fmt.Errorf("workspace %s has no spec.cluster after becoming ready", userID)
 	}
 
 	// Client targeting root:kedge:tenants:<userID>.
@@ -163,7 +246,7 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 	tenantConfig.Host = AppendClusterPath(tenantConfig.Host, "root:kedge:tenants:"+userID)
 	tenantClient, err := dynamic.NewForConfig(tenantConfig)
 	if err != nil {
-		return fmt.Errorf("creating tenant client: %w", err)
+		return "", fmt.Errorf("creating tenant client: %w", err)
 	}
 
 	// Create APIBinding with accepted permission claims for core resources.
@@ -234,20 +317,20 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 		// Update existing binding to ensure permission claims are current.
 		existing, getErr := tenantClient.Resource(apiBindingGVR).Get(ctx, "kedge", metav1.GetOptions{})
 		if getErr != nil {
-			return fmt.Errorf("getting existing APIBinding in tenant workspace %s: %w", userID, getErr)
+			return "", fmt.Errorf("getting existing APIBinding in tenant workspace %s: %w", userID, getErr)
 		}
 		binding.SetResourceVersion(existing.GetResourceVersion())
 		if _, err := tenantClient.Resource(apiBindingGVR).Update(ctx, binding, metav1.UpdateOptions{}); err != nil {
-			return fmt.Errorf("updating APIBinding in tenant workspace %s: %w", userID, err)
+			return "", fmt.Errorf("updating APIBinding in tenant workspace %s: %w", userID, err)
 		}
 	} else if err != nil {
-		return fmt.Errorf("creating APIBinding in tenant workspace %s: %w", userID, err)
+		return "", fmt.Errorf("creating APIBinding in tenant workspace %s: %w", userID, err)
 	}
 
 	// TODO: Wait for APIBinding to be ready before returning, to ensure the tenant can use the API immediately after login.
 
-	logger.Info("Tenant workspace created", "userID", userID)
-	return nil
+	logger.Info("Tenant workspace created", "userID", userID, "clusterName", clusterName)
+	return clusterName, nil
 }
 
 // applyResourcesFromFS reads specific YAML files from an embed.FS and applies them.

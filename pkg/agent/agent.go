@@ -19,15 +19,15 @@ import (
 
 // Options holds configuration for the agent.
 type Options struct {
-	HubURL        string
-	HubKubeconfig string
-	HubContext    string
-	TunnelURL     string // Separate URL for reverse tunnel (defaults to hubConfig.Host)
-	Token         string
-	SiteName      string
-	Kubeconfig    string
-	Context       string
-	Labels        map[string]string
+	HubURL                 string
+	HubKubeconfig          string
+	HubContext             string
+	TunnelURL              string // Separate URL for reverse tunnel (defaults to hubConfig.Host)
+	Token                  string
+	SiteName               string
+	Kubeconfig             string
+	Context                string
+	Labels                 map[string]string
 }
 
 // NewOptions returns default agent options.
@@ -117,10 +117,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		return fmt.Errorf("creating downstream client: %w", err)
 	}
 
-	// Register/update Site on hub
+	// Register/update Site on hub.
 	if err := a.registerSite(ctx, hubClient); err != nil {
 		return fmt.Errorf("registering site: %w", err)
 	}
+	logger.Info("Site registered")
 
 	// Start reverse tunnel to hub
 	tunnelURL := a.opts.TunnelURL
@@ -174,7 +175,7 @@ func (a *Agent) registerSite(ctx context.Context, client *kedgeclient.Client) er
 	if err != nil {
 		// Create new site
 		logger.Info("Creating Site", "name", a.opts.SiteName)
-		_, err = client.Sites().Create(ctx, site, metav1.CreateOptions{})
+		_, err := client.Sites().Create(ctx, site, metav1.CreateOptions{})
 		if err != nil {
 			return fmt.Errorf("creating site: %w", err)
 		}
@@ -182,7 +183,7 @@ func (a *Agent) registerSite(ctx context.Context, client *kedgeclient.Client) er
 		// Update existing site labels
 		logger.Info("Updating Site", "name", a.opts.SiteName)
 		existing.Labels = a.opts.Labels
-		_, err = client.Sites().Update(ctx, existing, metav1.UpdateOptions{})
+		_, err := client.Sites().Update(ctx, existing, metav1.UpdateOptions{})
 		if err != nil {
 			return fmt.Errorf("updating site: %w", err)
 		}

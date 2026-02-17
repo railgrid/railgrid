@@ -2,7 +2,7 @@ root = "."
 tmp_dir = "tmp"
 
 [build]
-  cmd = "go build -o ./tmp/kedge-hub ./cmd/kedge-hub/ && go build -o ./tmp/kedge-agent ./cmd/kedge-agent/"
+  cmd = "go build -o ./tmp/kedge-hub ./cmd/kedge-hub/"
   full_bin = "hack/scripts/dev-apps.sh"
   delay = 1000
   exclude_dir = ["tmp", "vendor", "hack", ".kcp", "certs", ".git", "bin", "hack/tools", "config", "test"]

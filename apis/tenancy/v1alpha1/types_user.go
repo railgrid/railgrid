@@ -32,10 +32,11 @@ type UserList struct {
 
 // UserSpec defines the desired state of a User.
 type UserSpec struct {
-	Email        string         `json:"email"`
-	Name         string         `json:"name"`
-	RBACIdentity string         `json:"rbacIdentity"`
-	OIDCProviders []OIDCProvider `json:"oidcProviders,omitempty"`
+	Email          string         `json:"email"`
+	Name           string         `json:"name"`
+	RBACIdentity   string         `json:"rbacIdentity"`
+	DefaultCluster string         `json:"defaultCluster,omitempty"`
+	OIDCProviders  []OIDCProvider `json:"oidcProviders,omitempty"`
 }
 
 // OIDCProvider stores OIDC provider information for a user.

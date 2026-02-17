@@ -36,7 +36,7 @@ trap cleanup EXIT
 
 # 1. Start KCP
 echo "==> Starting KCP..."
-"${KCP_BIN}" start --root-directory=.kcp &
+"${KCP_BIN}" start --root-directory=.kcp --feature-gates=WorkspaceMounts=true &
 KCP_PID=$!
 sleep 3
 
@@ -47,7 +47,7 @@ DEX_PID=$!
 sleep 1
 
 # 3. Start air (manages hub+agent with hot reload)
-echo "==> Starting air (hub + agent with hot reload)..."
+echo "==> Starting air (hub with hot reload)..."
 "${AIR_BIN}" -c .air.toml &
 AIR_PID=$!
 

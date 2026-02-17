@@ -1,4 +1,4 @@
-.PHONY: build test lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev path
+.PHONY: build test lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra dev-hub path
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -129,7 +129,7 @@ run-hub: build-hub certs
 		--dev-mode
 
 run-kcp: $(KCP)
-	$(KCP) start --root-directory=$(KCP_DATA_DIR)
+	$(KCP) start --root-directory=$(KCP_DATA_DIR) --feature-gates=WorkspaceMounts=true
 
 dev-login: build-kedge
 	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify
@@ -155,6 +155,13 @@ dev-run-agent: build-agent
 		--site-name=$(KEDGE_SITE_NAME) \
 		--labels=$(KEDGE_LABELS)
 
+
+dev-infra: $(KCP) $(DEX) certs ## Run infra only (KCP + Dex)
+	hack/scripts/dev-infra.sh
+
+dev-hub: $(AIR) certs ## Run hub + agent with hot reload (requires dev-infra running)
+	@if [ -f .env ]; then hack/scripts/ensure-kind-cluster.sh; fi
+	hack/scripts/dev-hub.sh
 
 # dev runs everything in one terminal. KCP and Dex start once and stay up.
 # Hub and Agent hot-reload on Go file changes via air.

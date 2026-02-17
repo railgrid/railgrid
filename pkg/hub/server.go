@@ -60,7 +60,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("installing CRDs: %w", err)
 	}
 
-	// 3. Create dynamic client (still used by auth handler + KCP proxy)
+	// 3. Create dynamic client (used by controllers for kedge resources)
 	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
 		return fmt.Errorf("creating dynamic client: %w", err)
@@ -71,6 +71,9 @@ func (s *Server) Run(ctx context.Context) error {
 	// 4. KCP bootstrap (if external KCP kubeconfig is provided)
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
+	// userClient is a kedge client targeting the workspace where User CRDs live.
+	// Defaults to the base kedgeClient; overridden to root:kedge:users when KCP is configured.
+	userClient := kedgeClient
 	if s.opts.ExternalKCPKubeconfig != "" {
 		var err error
 		kcpConfig, err = clientcmd.BuildConfigFromFlags("", s.opts.ExternalKCPKubeconfig)
@@ -82,6 +85,13 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("bootstrapping KCP: %w", err)
 		}
 		logger.Info("KCP bootstrap complete")
+
+		// Create user client targeting root:kedge:users workspace.
+		userDynamic, err := dynamic.NewForConfig(bootstrapper.UsersConfig())
+		if err != nil {
+			return fmt.Errorf("creating user dynamic client: %w", err)
+		}
+		userClient = kedgeclient.NewFromDynamic(userDynamic)
 	}
 
 	// 5. Create connection manager for tunnels
@@ -99,7 +109,7 @@ func (s *Server) Run(ctx context.Context) error {
 		oidcConfig.ClientSecret = s.opts.DexClientSecret
 		oidcConfig.RedirectURL = s.opts.HubExternalURL + "/auth/callback"
 
-		authHandler, err = auth.NewHandler(ctx, oidcConfig, kedgeClient, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode)
+		authHandler, err = auth.NewHandler(ctx, oidcConfig, userClient, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode)
 		if err != nil {
 			return fmt.Errorf("creating auth handler: %w", err)
 		}
@@ -108,9 +118,11 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Tunnel handlers (kcpConfig is used for SA token verification; nil if KCP not configured)
-	vws := builder.NewVirtualWorkspaces(connManager, kcpConfig, logger)
+	siteRoutes := builder.NewSiteRouteMap()
+	vws := builder.NewVirtualWorkspaces(connManager, kcpConfig, siteRoutes, logger)
 	router.PathPrefix("/tunnel/").Handler(http.StripPrefix("/tunnel", vws.EdgeProxyHandler()))
 	router.PathPrefix("/proxy/").Handler(http.StripPrefix("/proxy", vws.AgentProxyHandler()))
+	router.PathPrefix("/services/site-proxy/").Handler(http.StripPrefix("/services/site-proxy", vws.SiteProxyHandler()))
 
 	// Health check
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -126,7 +138,7 @@ func (s *Server) Run(ctx context.Context) error {
 	var kcpProxy http.Handler
 	if kcpConfig != nil && authHandler != nil {
 		var err error
-		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, authHandler.Verifier(), kedgeClient, s.opts.DevMode)
+		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, authHandler.Verifier(), userClient, s.opts.DevMode)
 		if err != nil {
 			return fmt.Errorf("creating KCP proxy: %w", err)
 		}
@@ -167,6 +179,9 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := site.SetupRBACWithManager(mgr, s.opts.HubExternalURL); err != nil {
 			return fmt.Errorf("setting up site RBAC controller: %w", err)
 		}
+		if err := site.SetupMountWithManager(mgr, kcpConfig, s.opts.HubExternalURL, siteRoutes); err != nil {
+			return fmt.Errorf("setting up site mount controller: %w", err)
+		}
 
 		go func() {
 			logger.Info("Starting multicluster manager")
@@ -177,8 +192,8 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// 8. Start HTTP server.
-	// Wrap the gorilla/mux router with a fallback to the KCP proxy.
-	// If the router has a matching route, use it; otherwise forward to KCP.
+	// Wrap the gorilla/mux router with a fallback to the KCP proxy for
+	// kubectl requests that aren't handled by explicit mux routes.
 	var handler http.Handler = router
 	if kcpProxy != nil {
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

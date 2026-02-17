@@ -21,6 +21,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
@@ -128,6 +129,12 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // serveOIDC handles OIDC-authenticated requests by resolving the user's tenant
 // workspace and proxying with admin credentials.
+//
+// Two path formats are supported:
+//   - /clusters/{logicalClusterName}/... — KCP-syntax (new kubeconfigs). The
+//     cluster ID is verified against user.spec.defaultCluster.
+//   - /api/... or /apis/... — bare path (legacy kubeconfigs). The workspace
+//     path is constructed from the userID.
 func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token string, idToken *oidc.IDToken) {
 	var claims struct {
 		Sub string `json:"sub"`
@@ -139,7 +146,7 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		return
 	}
 
-	userID, err := p.resolveUserID(r.Context(), idToken.Issuer, claims.Sub)
+	user, err := p.resolveUser(r.Context(), idToken.Issuer, claims.Sub)
 	if err != nil {
 		p.logger.Error(err, "failed to resolve user workspace", "sub", claims.Sub)
 		w.Header().Set("Content-Type", "application/json")
@@ -148,7 +155,28 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		return
 	}
 
-	tenantClusterPath := "root:kedge:tenants:" + userID
+	// Determine KCP path based on incoming request format.
+	var kcpPath string
+	if strings.HasPrefix(r.URL.Path, "/clusters/") {
+		// KCP-syntax: /clusters/{logicalClusterName}/api/...
+		rest := strings.TrimPrefix(r.URL.Path, "/clusters/")
+		slashIdx := strings.Index(rest, "/")
+		clusterID := rest
+		if slashIdx >= 0 {
+			clusterID = rest[:slashIdx]
+		}
+		if user.Spec.DefaultCluster != clusterID {
+			p.logger.Info("cluster access denied", "user", user.Name, "requested", clusterID, "allowed", user.Spec.DefaultCluster)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"cluster access denied","reason":"Forbidden","code":403}`)
+			return
+		}
+		kcpPath = r.URL.Path // already in /clusters/{id}/... format
+	} else {
+		// Backward compat: construct workspace path from userID.
+		kcpPath = "/clusters/root:kedge:tenants:" + user.Name + r.URL.Path
+	}
 
 	target := *p.kcpTarget
 	bearerToken := p.bearerToken
@@ -158,7 +186,7 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
-			req.URL.Path = "/clusters/" + tenantClusterPath + req.URL.Path
+			req.URL.Path = kcpPath
 			req.Host = target.Host
 
 			// Replace user auth with KCP admin credentials.
@@ -242,31 +270,18 @@ func writeUnauthorized(w http.ResponseWriter) {
 	fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Unauthorized","reason":"Unauthorized","code":401}`)
 }
 
-// resolveUserID looks up the User CRD by OIDC issuer+sub hash and returns the user's name
-// (which is also the KCP tenant workspace name).
-func (p *KCPProxy) resolveUserID(ctx context.Context, issuer, sub string) (string, error) {
+// resolveUser looks up the User CRD by OIDC issuer+sub hash and returns the full User object.
+func (p *KCPProxy) resolveUser(ctx context.Context, issuer, sub string) (*tenancyv1alpha1.User, error) {
 	hash := sha256.Sum256([]byte(issuer + "/" + sub))
 	subHash := hex.EncodeToString(hash[:])[:63]
 
 	labelSelector := fmt.Sprintf("kedge.faros.sh/sub=%s", subHash)
 	users, err := p.kedgeClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
-		return "", fmt.Errorf("listing users: %w", err)
+		return nil, fmt.Errorf("listing users: %w", err)
 	}
 	if len(users.Items) == 0 {
-		return "", fmt.Errorf("no user found for sub hash %s", subHash)
+		return nil, fmt.Errorf("no user found for sub hash %s", subHash)
 	}
-	return users.Items[0].Name, nil
-}
-
-func singleJoiningSlash(a, b string) string {
-	aslash := strings.HasSuffix(a, "/")
-	bslash := strings.HasPrefix(b, "/")
-	switch {
-	case aslash && bslash:
-		return a + b[1:]
-	case !aslash && !bslash:
-		return a + "/" + b
-	}
-	return a + b
+	return &users.Items[0], nil
 }

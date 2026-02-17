@@ -62,6 +62,7 @@ type SiteSpec struct {
 // SiteStatus defines the observed state of Site.
 type SiteStatus struct {
 	Phase                SitePhase           `json:"phase"`
+	URL                  string              `json:"URL,omitempty"`
 	KubernetesVersion    string              `json:"kubernetesVersion,omitempty"`
 	Capacity             corev1.ResourceList `json:"capacity,omitempty"`
 	Allocatable          corev1.ResourceList `json:"allocatable,omitempty"`

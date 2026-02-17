@@ -15,18 +15,4 @@ trap 'kill 0; wait' EXIT
   --external-kcp-kubeconfig=.kcp/admin.kubeconfig \
   --dev-mode &
 
-sleep 2
-
-if [[ -f .env ]]; then
-  source .env
-  ./tmp/kedge-agent join \
-    --hub-kubeconfig="${KEDGE_SITE_KUBECONFIG}" \
-    --kubeconfig=.kind-kubeconfig \
-    --tunnel-url=https://localhost:8443 \
-    --site-name="${KEDGE_SITE_NAME}" \
-    --labels="${KEDGE_LABELS}" &
-else
-  echo "WARN: .env not found, skipping agent (run 'make dev-login && make dev-site-create')"
-fi
-
 wait

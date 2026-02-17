@@ -45,6 +45,8 @@ spec:
                   type: string
                 rbacIdentity:
                   type: string
+                defaultCluster:
+                  type: string
                 oidcProviders:
                   type: array
                   items:

@@ -8,6 +8,7 @@ import (
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -48,6 +49,9 @@ func (r *Reporter) Run(ctx context.Context) error {
 	workloadTicker := time.NewTicker(WorkloadStatusInterval)
 	defer workloadTicker.Stop()
 
+	// First heartbeat immediately to mark the site as ready on the hub, then start the tickers
+	r.sendHeartbeat(ctx, logger)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -66,7 +70,7 @@ func (r *Reporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 	now := metav1.Now()
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
-			"phase":             string(kedgev1alpha1.SitePhaseConnected),
+			"phase":             string(kedgev1alpha1.SitePhaseReady),
 			"tunnelConnected":   true,
 			"lastHeartbeatTime": now.Format(time.RFC3339),
 		},
@@ -121,6 +125,16 @@ func (r *Reporter) reportWorkloadStatus(ctx context.Context, logger klog.Logger)
 
 		_, err = r.hubClient.Placements(placementNs).Patch(ctx, placementName, types.MergePatchType, patchData, metav1.PatchOptions{}, "status")
 		if err != nil {
+			if apierrors.IsNotFound(err) {
+				// Placement was deleted on the hub — clean up local deployment
+				logger.Info("Placement not found on hub, deleting local deployment",
+					"placement", fmt.Sprintf("%s/%s", placementNs, placementName),
+					"deployment", d.Name)
+				if delErr := r.downstreamClient.AppsV1().Deployments(d.Namespace).Delete(ctx, d.Name, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
+					logger.Error(delErr, "Failed to delete local deployment", "name", d.Name)
+				}
+				continue
+			}
 			logger.V(4).Error(err, "Failed to update placement status",
 				"placement", fmt.Sprintf("%s/%s", placementNs, placementName))
 		}

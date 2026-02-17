@@ -177,17 +177,21 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create tenant workspace for the user in KCP.
+	// Create tenant workspace for the user in KCP and get the logical cluster name.
+	var clusterName string
 	if h.bootstrapper != nil {
-		if err := h.bootstrapper.CreateTenantWorkspace(ctx, userID); err != nil {
+		var err error
+		clusterName, err = h.bootstrapper.CreateTenantWorkspace(ctx, userID)
+		if err != nil {
 			h.logger.Error(err, "failed to create tenant workspace", "userID", userID)
 			http.Error(w, "failed to create tenant workspace", http.StatusInternalServerError)
 			return
 		}
+		h.setDefaultCluster(ctx, userID, clusterName)
 	}
 
 	// Generate kubeconfig using exec credential plugin for automatic token refresh.
-	kubeconfigBytes, err := h.generateKubeconfig(userID, claims.Email)
+	kubeconfigBytes, err := h.generateKubeconfig(userID, clusterName, claims.Email)
 	if err != nil {
 		h.logger.Error(err, "failed to generate kubeconfig")
 		http.Error(w, "failed to generate kubeconfig", http.StatusInternalServerError)
@@ -299,13 +303,38 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 	return created.Name, nil
 }
 
+// setDefaultCluster updates the user's spec.defaultCluster if it differs.
+func (h *Handler) setDefaultCluster(ctx context.Context, userID, clusterName string) {
+	user, err := h.kedgeClient.Users().Get(ctx, userID, metav1.GetOptions{})
+	if err != nil {
+		h.logger.Error(err, "failed to get user for default cluster update", "userID", userID)
+		return
+	}
+	if user.Spec.DefaultCluster == clusterName {
+		return
+	}
+	user.Spec.DefaultCluster = clusterName
+	user.APIVersion = "kedge.faros.sh/v1alpha1"
+	user.Kind = "User"
+	if _, err := h.kedgeClient.Users().Update(ctx, user, metav1.UpdateOptions{}); err != nil {
+		h.logger.Error(err, "failed to update user default cluster", "userID", userID, "cluster", clusterName)
+	}
+}
+
 // generateKubeconfig builds a kubeconfig pointing to the hub using an exec
 // credential plugin (kedge get-token) for automatic OIDC token refresh.
-func (h *Handler) generateKubeconfig(userID, email string) ([]byte, error) {
+// When clusterName is set, the server URL includes /clusters/{clusterName}
+// for KCP-syntax compatibility.
+func (h *Handler) generateKubeconfig(userID, clusterName, email string) ([]byte, error) {
 	config := clientcmdapi.NewConfig()
 
+	serverURL := h.hubExternalURL
+	if clusterName != "" {
+		serverURL += "/clusters/" + clusterName
+	}
+
 	config.Clusters["kedge"] = &clientcmdapi.Cluster{
-		Server:                h.hubExternalURL,
+		Server:                serverURL,
 		InsecureSkipTLSVerify: h.devMode,
 	}
 

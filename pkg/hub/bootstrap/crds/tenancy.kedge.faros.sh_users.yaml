@@ -49,6 +49,8 @@ spec:
           spec:
             description: UserSpec defines the desired state of a User.
             properties:
+              defaultCluster:
+                type: string
               email:
                 type: string
               name:

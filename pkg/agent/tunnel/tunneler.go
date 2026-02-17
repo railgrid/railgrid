@@ -3,10 +3,13 @@ package tunnel
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/function61/holepunch-server/pkg/wsconnadapter"
@@ -60,8 +63,11 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 func startTunneler(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, stateChannel chan<- bool) error {
 	logger := klog.FromContext(ctx)
 
-	// Connect to hub's tunnel endpoint
-	edgeProxyURL := fmt.Sprintf("%s/tunnel/?cluster=default&site=%s", hubURL, siteName)
+	// Connect to hub's tunnel endpoint.
+	// Extract the real KCP logical cluster name from the SA token so the tunnel
+	// key matches what the mount controller expects.
+	clusterName := extractClusterNameFromToken(token)
+	edgeProxyURL := fmt.Sprintf("%s/tunnel/?cluster=%s&site=%s", hubURL, clusterName, siteName)
 
 	conn, err := initiateConnection(ctx, edgeProxyURL, token)
 	if err != nil {
@@ -129,6 +135,27 @@ func initiateConnection(ctx context.Context, wsURL string, token string) (net.Co
 	}
 
 	return wsconnadapter.New(wsConn), nil
+}
+
+// extractClusterNameFromToken decodes a KCP ServiceAccount JWT (without
+// signature verification) and returns the clusterName claim. Returns "default"
+// if the token cannot be parsed or lacks the claim.
+func extractClusterNameFromToken(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "default"
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "default"
+	}
+	var claims struct {
+		ClusterName string `json:"kubernetes.io/serviceaccount/clusterName"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.ClusterName == "" {
+		return "default"
+	}
+	return claims.ClusterName
 }
 
 // revdialFunc returns the dial function used by the revdial.Listener to

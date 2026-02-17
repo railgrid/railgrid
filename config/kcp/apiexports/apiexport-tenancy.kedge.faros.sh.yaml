@@ -6,7 +6,7 @@ spec:
   resources:
   - group: tenancy.kedge.faros.sh
     name: users
-    schema: v260215-f3ac411.users.tenancy.kedge.faros.sh
+    schema: v260217-6fee47f.users.tenancy.kedge.faros.sh
     storage:
       crd: {}
 status: {}
