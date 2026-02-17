@@ -158,7 +158,7 @@ run-hub: build-hub certs
 		--hub-external-url=https://localhost:8443 \
 		--external-kcp-kubeconfig=.kcp/admin.kubeconfig \
 		--dev-mode
-		
+
 clean:
 	rm -rf $(BINDIR)
 	rm -rf $(TOOLSDIR)

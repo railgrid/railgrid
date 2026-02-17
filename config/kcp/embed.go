@@ -18,11 +18,17 @@ package kcp
 
 import "embed"
 
-//go:embed workspace-*.yaml
-var WorkspaceFS embed.FS
+// RootWorkspaceFS contains the kedge workspace definition applied to the root workspace.
+//
+//go:embed workspace-kedge.yaml
+var RootWorkspaceFS embed.FS
 
-//go:embed apiresourceschema-*.yaml
-var APIResourceSchemaFS embed.FS
+// KedgeWorkspaceFS contains workspace definitions for children of root:kedge.
+//
+//go:embed workspace-providers.yaml workspace-tenants.yaml workspace-users.yaml
+var KedgeWorkspaceFS embed.FS
 
-//go:embed apiexport-*.yaml
-var APIExportFS embed.FS
+// ProvidersFS contains APIResourceSchemas and APIExport applied to root:kedge:providers.
+//
+//go:embed apiresourceschema-*.yaml apiexport-*.yaml
+var ProvidersFS embed.FS

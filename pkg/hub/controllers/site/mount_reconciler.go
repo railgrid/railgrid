@@ -23,9 +23,11 @@ import (
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
+	kcptenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -61,6 +63,7 @@ func SetupMountWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExt
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("site-mount").
 		For(&kedgev1alpha1.Site{}).
+		Owns(&kcptenancyv1alpha1.Workspace{}).
 		Complete(r)
 }
 
@@ -106,15 +109,16 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 	}
 
 	// Create mount workspace in kcp via admin dynamic client.
-	if err := r.ensureMountWorkspace(ctx, logger, req.ClusterName, site.Name); err != nil {
+	if err := r.ensureMountWorkspace(ctx, logger, req.ClusterName, &site); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring mount workspace: %w", err)
 	}
 
 	return ctrl.Result{}, nil
 }
 
-// ensureMountWorkspace creates a Workspace with mount.ref pointing to the Site.
-func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.Logger, clusterName, siteName string) error {
+// ensureMountWorkspace creates a Workspace with mount.ref pointing to the Site,
+// owned by the Site so that workspace is garbage-collected when the Site is deleted.
+func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.Logger, clusterName string, site *kedgev1alpha1.Site) error {
 	cfg := rest.CopyConfig(r.kcpConfig)
 	cfg.Host = kcp.AppendClusterPath(cfg.Host, clusterName)
 
@@ -123,34 +127,61 @@ func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.
 		return fmt.Errorf("creating dynamic client: %w", err)
 	}
 
-	ws := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "tenancy.kcp.io/v1alpha1",
-			"kind":       "Workspace",
-			"metadata": map[string]interface{}{
-				"name": siteName,
+	blockOwnerDeletion := true
+	isController := true
+
+	ws := &kcptenancyv1alpha1.Workspace{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: kcptenancyv1alpha1.SchemeGroupVersion.String(),
+			Kind:       "Workspace",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: site.Name,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         kedgev1alpha1.SchemeGroupVersion.String(),
+					Kind:               "Site",
+					Name:               site.Name,
+					UID:                site.UID,
+					BlockOwnerDeletion: &blockOwnerDeletion,
+					Controller:         &isController,
+				},
 			},
-			"spec": map[string]interface{}{
-				"mount": map[string]interface{}{
-					"ref": map[string]interface{}{
-						"apiVersion": kedgev1alpha1.SchemeGroupVersion.String(),
-						"kind":       "Site",
-						"name":       siteName,
-					},
+		},
+		Spec: kcptenancyv1alpha1.WorkspaceSpec{
+			Mount: &kcptenancyv1alpha1.Mount{
+				Reference: kcptenancyv1alpha1.ObjectReference{
+					APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
+					Kind:       "Site",
+					Name:       site.Name,
 				},
 			},
 		},
 	}
 
-	_, err = client.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{})
+	u, err := toUnstructured(ws)
+	if err != nil {
+		return fmt.Errorf("converting workspace to unstructured: %w", err)
+	}
+
+	_, err = client.Resource(workspaceGVR).Create(ctx, u, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
-		logger.V(4).Info("Mount workspace already exists", "site", siteName)
+		logger.V(4).Info("Mount workspace already exists", "site", site.Name)
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("creating mount workspace %s: %w", siteName, err)
+		return fmt.Errorf("creating mount workspace %s: %w", site.Name, err)
 	}
 
-	logger.Info("Mount workspace created", "site", siteName, "cluster", clusterName)
+	logger.Info("Mount workspace created", "site", site.Name, "cluster", clusterName)
 	return nil
+}
+
+// toUnstructured converts a typed runtime.Object to an Unstructured object.
+func toUnstructured(obj runtime.Object) (*unstructured.Unstructured, error) {
+	data, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+	return &unstructured.Unstructured{Object: data}, nil
 }

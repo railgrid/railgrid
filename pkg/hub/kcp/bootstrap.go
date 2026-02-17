@@ -19,37 +19,36 @@ package kcp
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"fmt"
-	"io/fs"
 	"strings"
 	"time"
 
+	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
 
 	"github.com/faroshq/faros-kedge/config/kcp"
+	"github.com/faroshq/faros-kedge/pkg/util/confighelpers"
 )
 
 //go:embed user-crd/kedge.faros.sh_users.yaml
 var userCRDFS embed.FS
 
-// kcp resource GVRs (no kcp-dev/kcp Go dependency).
+// kcp resource GVRs.
 var (
 	workspaceGVR = schema.GroupVersionResource{
 		Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces",
-	}
-	apiResourceSchemaGVR = schema.GroupVersionResource{
-		Group: "apis.kcp.io", Version: "v1alpha1", Resource: "apiresourceschemas",
 	}
 	apiExportGVR = schema.GroupVersionResource{
 		Group: "apis.kcp.io", Version: "v1alpha1", Resource: "apiexports",
@@ -62,6 +61,9 @@ var (
 // Bootstrapper sets up the kcp workspace hierarchy and API exports.
 type Bootstrapper struct {
 	config *rest.Config
+	// workspaceIdentityHash is the identity hash of the tenancy.kcp.io APIExport
+	// from the root workspace. Needed for permission claims on workspaces.
+	workspaceIdentityHash string
 }
 
 // NewBootstrapper creates a new bootstrapper.
@@ -80,67 +82,68 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Bootstrapping kcp workspace hierarchy")
 
-	// 1. Create dynamic client targeting root workspace.
-	rootClient, err := dynamic.NewForConfig(b.config)
+	// 1. Clients targeting root workspace.
+	rootDynamic, rootDiscovery, err := newClients(b.config)
 	if err != nil {
-		return fmt.Errorf("creating dynamic client: %w", err)
+		return fmt.Errorf("creating root clients: %w", err)
 	}
 
-	// 2. Apply the root:kedge workspace.
-	logger.Info("Creating root:kedge workspace")
-	if err := applyResourcesFromFS(ctx, rootClient, kcp.WorkspaceFS, "workspace-kedge.yaml"); err != nil {
-		return fmt.Errorf("applying kedge workspace: %w", err)
+	// 2. Bootstrap root:kedge workspace.
+	logger.Info("Bootstrapping root:kedge workspace")
+	if err := confighelpers.Bootstrap(ctx, rootDiscovery, rootDynamic, kcp.RootWorkspaceFS); err != nil {
+		return fmt.Errorf("bootstrapping root:kedge workspace: %w", err)
 	}
-
-	if err := waitForWorkspaceReady(ctx, rootClient, "kedge"); err != nil {
+	if err := waitForWorkspaceReady(ctx, rootDynamic, "kedge"); err != nil {
 		return fmt.Errorf("waiting for kedge workspace: %w", err)
 	}
 
-	// 3. Client targeting root:kedge.
-	kedgeConfig := rest.CopyConfig(b.config)
-	kedgeConfig.Host = AppendClusterPath(kedgeConfig.Host, "root:kedge")
-	kedgeClient, err := dynamic.NewForConfig(kedgeConfig)
+	// 3. Bootstrap child workspaces: providers, tenants, users.
+	kedgeConfig := configForPath(b.config, "root:kedge")
+	kedgeDynamic, kedgeDiscovery, err := newClients(kedgeConfig)
 	if err != nil {
-		return fmt.Errorf("creating kedge client: %w", err)
+		return fmt.Errorf("creating kedge clients: %w", err)
 	}
 
-	// 4. Apply child workspaces: providers, tenants, users.
-	logger.Info("Creating child workspaces: providers, tenants, users")
-	if err := applyResourcesFromFS(ctx, kedgeClient, kcp.WorkspaceFS, "workspace-providers.yaml", "workspace-tenants.yaml", "workspace-users.yaml"); err != nil {
-		return fmt.Errorf("applying child workspaces: %w", err)
+	logger.Info("Bootstrapping child workspaces: providers, tenants, users")
+	if err := confighelpers.Bootstrap(ctx, kedgeDiscovery, kedgeDynamic, kcp.KedgeWorkspaceFS); err != nil {
+		return fmt.Errorf("bootstrapping child workspaces: %w", err)
+	}
+	for _, name := range []string{"providers", "tenants", "users"} {
+		if err := waitForWorkspaceReady(ctx, kedgeDynamic, name); err != nil {
+			return fmt.Errorf("waiting for %s workspace: %w", name, err)
+		}
 	}
 
-	if err := waitForWorkspaceReady(ctx, kedgeClient, "providers"); err != nil {
-		return fmt.Errorf("waiting for providers workspace: %w", err)
-	}
-	if err := waitForWorkspaceReady(ctx, kedgeClient, "tenants"); err != nil {
-		return fmt.Errorf("waiting for tenants workspace: %w", err)
-	}
-	if err := waitForWorkspaceReady(ctx, kedgeClient, "users"); err != nil {
-		return fmt.Errorf("waiting for users workspace: %w", err)
-	}
-
-	// 5. Client targeting root:kedge:providers.
-	providersConfig := rest.CopyConfig(b.config)
-	providersConfig.Host = AppendClusterPath(providersConfig.Host, "root:kedge:providers")
-	providersClient, err := dynamic.NewForConfig(providersConfig)
+	// 4. Fetch tenancy.kcp.io identity hash from root workspace.
+	logger.Info("Fetching tenancy.kcp.io identity hash from root workspace")
+	tenancyExport, err := rootDynamic.Resource(apiExportGVR).Get(ctx, "tenancy.kcp.io", metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("creating providers client: %w", err)
+		return fmt.Errorf("getting tenancy.kcp.io APIExport from root: %w", err)
+	}
+	identityHash, _, _ := unstructured.NestedString(tenancyExport.Object, "status", "identityHash")
+	if identityHash == "" {
+		return fmt.Errorf("tenancy.kcp.io APIExport has no identity hash yet")
+	}
+	b.workspaceIdentityHash = identityHash
+	logger.Info("Got tenancy.kcp.io identity hash", "hash", identityHash)
+
+	// 5. Bootstrap APIResourceSchemas and APIExport in root:kedge:providers.
+	//    The __TENANCY_IDENTITY_HASH__ placeholder in the APIExport YAML is
+	//    replaced with the actual identity hash from step 4.
+	providersConfig := configForPath(b.config, "root:kedge:providers")
+	providersDynamic, providersDiscovery, err := newClients(providersConfig)
+	if err != nil {
+		return fmt.Errorf("creating providers clients: %w", err)
 	}
 
-	// 6. Apply APIResourceSchemas.
-	logger.Info("Applying APIResourceSchemas")
-	if err := applyAllFromFS(ctx, providersClient, kcp.APIResourceSchemaFS); err != nil {
-		return fmt.Errorf("applying APIResourceSchemas: %w", err)
+	logger.Info("Bootstrapping APIResourceSchemas and APIExport")
+	if err := confighelpers.Bootstrap(ctx, providersDiscovery, providersDynamic, kcp.ProvidersFS,
+		confighelpers.ReplaceOption("__TENANCY_IDENTITY_HASH__", identityHash),
+	); err != nil {
+		return fmt.Errorf("bootstrapping providers: %w", err)
 	}
 
-	// 7. Apply APIExport.
-	logger.Info("Applying APIExport")
-	if err := applyAllFromFS(ctx, providersClient, kcp.APIExportFS); err != nil {
-		return fmt.Errorf("applying APIExport: %w", err)
-	}
-
-	// 8. Install User CRD in root:kedge:users workspace.
+	// 6. Install User CRD in root:kedge:users workspace.
 	logger.Info("Installing User CRD in root:kedge:users")
 	if err := b.installUserCRD(ctx); err != nil {
 		return fmt.Errorf("installing User CRD: %w", err)
@@ -153,9 +156,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 // UsersConfig returns a rest.Config targeting the root:kedge:users workspace
 // where User CRDs are stored.
 func (b *Bootstrapper) UsersConfig() *rest.Config {
-	usersConfig := rest.CopyConfig(b.config)
-	usersConfig.Host = AppendClusterPath(usersConfig.Host, "root:kedge:users")
-	return usersConfig
+	return configForPath(b.config, "root:kedge:users")
 }
 
 // installUserCRD installs the User CRD in the root:kedge:users workspace.
@@ -212,8 +213,7 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 	logger := klog.FromContext(ctx)
 
 	// Client targeting root:kedge:tenants.
-	tenantsConfig := rest.CopyConfig(b.config)
-	tenantsConfig.Host = AppendClusterPath(tenantsConfig.Host, "root:kedge:tenants")
+	tenantsConfig := configForPath(b.config, "root:kedge:tenants")
 	tenantsClient, err := dynamic.NewForConfig(tenantsConfig)
 	if err != nil {
 		return "", fmt.Errorf("creating tenants client: %w", err)
@@ -256,85 +256,55 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 	}
 
 	// Client targeting root:kedge:tenants:<userID>.
-	tenantConfig := rest.CopyConfig(b.config)
-	tenantConfig.Host = AppendClusterPath(tenantConfig.Host, "root:kedge:tenants:"+userID)
+	tenantConfig := configForPath(b.config, "root:kedge:tenants:"+userID)
 	tenantClient, err := dynamic.NewForConfig(tenantConfig)
 	if err != nil {
 		return "", fmt.Errorf("creating tenant client: %w", err)
 	}
 
 	// Create APIBinding with accepted permission claims for core resources.
-	binding := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "apis.kcp.io/v1alpha2",
-			"kind":       "APIBinding",
-			"metadata": map[string]interface{}{
-				"name": "kedge",
+	allVerbs := []string{"get", "list", "watch", "create", "update", "delete"}
+	binding := &apisv1alpha2.APIBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
+			Kind:       "APIBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "kedge",
+		},
+		Spec: apisv1alpha2.APIBindingSpec{
+			Reference: apisv1alpha2.BindingReference{
+				Export: &apisv1alpha2.ExportBindingReference{
+					Path: "root:kedge:providers",
+					Name: "kedge.faros.sh",
+				},
 			},
-			"spec": map[string]interface{}{
-				"reference": map[string]interface{}{
-					"export": map[string]interface{}{
-						"path": "root:kedge:providers",
-						"name": "kedge.faros.sh",
-					},
-				},
-				"permissionClaims": []interface{}{
-					map[string]interface{}{
-						"group":    "",
-						"resource": "secrets",
-						"state":    "Accepted",
-						"verbs":    []interface{}{"get", "list", "watch", "create", "update", "delete"},
-						"selector": map[string]interface{}{"matchAll": true},
-					},
-					map[string]interface{}{
-						"group":    "",
-						"resource": "namespaces",
-						"state":    "Accepted",
-						"verbs":    []interface{}{"get", "list", "watch", "create"},
-						"selector": map[string]interface{}{"matchAll": true},
-					},
-					map[string]interface{}{
-						"group":    "",
-						"resource": "configmaps",
-						"state":    "Accepted",
-						"verbs":    []interface{}{"get", "list", "watch", "create", "update", "delete"},
-						"selector": map[string]interface{}{"matchAll": true},
-					},
-					map[string]interface{}{
-						"group":    "",
-						"resource": "serviceaccounts",
-						"state":    "Accepted",
-						"verbs":    []interface{}{"get", "list", "watch", "create", "update", "delete"},
-						"selector": map[string]interface{}{"matchAll": true},
-					},
-					map[string]interface{}{
-						"group":    "rbac.authorization.k8s.io",
-						"resource": "clusterroles",
-						"state":    "Accepted",
-						"verbs":    []interface{}{"get", "list", "watch", "create", "update", "delete"},
-						"selector": map[string]interface{}{"matchAll": true},
-					},
-					map[string]interface{}{
-						"group":    "rbac.authorization.k8s.io",
-						"resource": "clusterrolebindings",
-						"state":    "Accepted",
-						"verbs":    []interface{}{"get", "list", "watch", "create", "update", "delete"},
-						"selector": map[string]interface{}{"matchAll": true},
-					},
-				},
+			PermissionClaims: []apisv1alpha2.AcceptablePermissionClaim{
+				acceptedClaim("", "secrets", "", allVerbs),
+				acceptedClaim("", "namespaces", "", []string{"get", "list", "watch", "create"}),
+				acceptedClaim("", "configmaps", "", allVerbs),
+				acceptedClaim("", "serviceaccounts", "", allVerbs),
+				acceptedClaim("rbac.authorization.k8s.io", "clusterroles", "", allVerbs),
+				acceptedClaim("rbac.authorization.k8s.io", "clusterrolebindings", "", allVerbs),
+				acceptedClaim("tenancy.kcp.io", "workspaces", b.workspaceIdentityHash, allVerbs),
 			},
 		},
 	}
 
-	_, err = tenantClient.Resource(apiBindingGVR).Create(ctx, binding, metav1.CreateOptions{})
+	u, err := toUnstructured(binding)
+	if err != nil {
+		return "", fmt.Errorf("converting APIBinding to unstructured: %w", err)
+	}
+
+	_, err = tenantClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
 		// Update existing binding to ensure permission claims are current.
 		existing, getErr := tenantClient.Resource(apiBindingGVR).Get(ctx, "kedge", metav1.GetOptions{})
 		if getErr != nil {
 			return "", fmt.Errorf("getting existing APIBinding in tenant workspace %s: %w", userID, getErr)
 		}
-		binding.SetResourceVersion(existing.GetResourceVersion())
-		if _, err := tenantClient.Resource(apiBindingGVR).Update(ctx, binding, metav1.UpdateOptions{}); err != nil {
+		u.SetResourceVersion(existing.GetResourceVersion())
+		if _, err := tenantClient.Resource(apiBindingGVR).Update(ctx, u, metav1.UpdateOptions{}); err != nil {
 			return "", fmt.Errorf("updating APIBinding in tenant workspace %s: %w", userID, err)
 		}
 	} else if err != nil {
@@ -347,106 +317,24 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 	return clusterName, nil
 }
 
-// applyResourcesFromFS reads specific YAML files from an embed.FS and applies them.
-func applyResourcesFromFS(ctx context.Context, client dynamic.Interface, fsys fs.FS, filenames ...string) error {
-	for _, name := range filenames {
-		data, err := fs.ReadFile(fsys, name)
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", name, err)
-		}
-		if err := applyYAML(ctx, client, data); err != nil {
-			return fmt.Errorf("applying %s: %w", name, err)
-		}
-	}
-	return nil
-}
-
-// applyAllFromFS reads all YAML files from an embed.FS and applies them.
-func applyAllFromFS(ctx context.Context, client dynamic.Interface, fsys fs.FS) error {
-	entries, err := fs.ReadDir(fsys, ".")
+// newClients creates dynamic and discovery clients from a rest.Config.
+func newClients(cfg *rest.Config) (dynamic.Interface, discovery.DiscoveryInterface, error) {
+	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
-		return fmt.Errorf("reading directory: %w", err)
+		return nil, nil, fmt.Errorf("creating dynamic client: %w", err)
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
-			continue
-		}
-		data, err := fs.ReadFile(fsys, entry.Name())
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", entry.Name(), err)
-		}
-		if err := applyYAML(ctx, client, data); err != nil {
-			return fmt.Errorf("applying %s: %w", entry.Name(), err)
-		}
-	}
-	return nil
-}
-
-// applyYAML unmarshals YAML to unstructured, determines GVR, and create-or-updates.
-// Workspaces are create-only (skip if exists) because the kcp system sets spec.URL
-// and spec.cluster after creation, and those fields cannot be unset on update.
-func applyYAML(ctx context.Context, client dynamic.Interface, data []byte) error {
-	jsonData, err := yaml.YAMLToJSON(data)
+	discClient, err := discovery.NewDiscoveryClientForConfig(cfg)
 	if err != nil {
-		return fmt.Errorf("converting YAML to JSON: %w", err)
+		return nil, nil, fmt.Errorf("creating discovery client: %w", err)
 	}
-
-	obj := &unstructured.Unstructured{}
-	if err := json.Unmarshal(jsonData, &obj.Object); err != nil {
-		return fmt.Errorf("unmarshaling JSON: %w", err)
-	}
-
-	gvr := gvkToGVR(obj.GetObjectKind().GroupVersionKind())
-	name := obj.GetName()
-
-	// Workspaces have system-managed fields (URL, cluster) that cannot be
-	// unset on update, so we only create and skip if already exists.
-	if obj.GetKind() == "Workspace" {
-		_, err := client.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
-		if errors.IsAlreadyExists(err) {
-			return nil
-		}
-		return err
-	}
-
-	existing, err := client.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
-	if errors.IsNotFound(err) {
-		_, err = client.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
-		return err
-	} else if err != nil {
-		return err
-	}
-
-	// Update: carry over resource version.
-	obj.SetResourceVersion(existing.GetResourceVersion())
-	_, err = client.Resource(gvr).Update(ctx, obj, metav1.UpdateOptions{})
-	return err
+	return dynClient, discClient, nil
 }
 
-// kindToResource maps kcp kinds to their plural resource names.
-// TODO: Move to restMapper-based approach.
-var kindToResource = map[string]string{
-	"Workspace":         "workspaces",
-	"APIResourceSchema": "apiresourceschemas",
-	"APIExport":         "apiexports",
-	"APIBinding":        "apibindings",
-}
-
-// gvkToGVR converts a GVK to a GVR using the version from the object.
-func gvkToGVR(gvk schema.GroupVersionKind) schema.GroupVersionResource {
-	if resource, ok := kindToResource[gvk.Kind]; ok {
-		return schema.GroupVersionResource{
-			Group:    gvk.Group,
-			Version:  gvk.Version,
-			Resource: resource,
-		}
-	}
-	// Best-effort: lowercase + "s" pluralization.
-	return schema.GroupVersionResource{
-		Group:    gvk.Group,
-		Version:  gvk.Version,
-		Resource: strings.ToLower(gvk.Kind) + "s",
-	}
+// configForPath returns a rest.Config targeting the given kcp workspace path.
+func configForPath(base *rest.Config, clusterPath string) *rest.Config {
+	cfg := rest.CopyConfig(base)
+	cfg.Host = AppendClusterPath(cfg.Host, clusterPath)
+	return cfg
 }
 
 // waitForWorkspaceReady polls until a workspace has phase "Ready".
@@ -459,6 +347,33 @@ func waitForWorkspaceReady(ctx context.Context, client dynamic.Interface, name s
 		phase, _, _ := unstructured.NestedString(ws.Object, "status", "phase")
 		return phase == "Ready", nil
 	})
+}
+
+// acceptedClaim builds an AcceptablePermissionClaim with matchAll selector.
+func acceptedClaim(group, resource, identityHash string, verbs []string) apisv1alpha2.AcceptablePermissionClaim {
+	return apisv1alpha2.AcceptablePermissionClaim{
+		ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{
+			PermissionClaim: apisv1alpha2.PermissionClaim{
+				GroupResource: apisv1alpha2.GroupResource{
+					Group:    group,
+					Resource: resource,
+				},
+				Verbs:        verbs,
+				IdentityHash: identityHash,
+			},
+			Selector: apisv1alpha2.PermissionClaimSelector{MatchAll: true},
+		},
+		State: apisv1alpha2.ClaimAccepted,
+	}
+}
+
+// toUnstructured converts a typed runtime.Object to an Unstructured object.
+func toUnstructured(obj runtime.Object) (*unstructured.Unstructured, error) {
+	data, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+	return &unstructured.Unstructured{Object: data}, nil
 }
 
 // AppendClusterPath sets the /clusters/<path> segment on a kcp URL.

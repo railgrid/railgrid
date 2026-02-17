@@ -20,7 +20,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -28,7 +27,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
 	"strings"
 
 	oidc "github.com/coreos/go-oidc"
@@ -44,11 +42,10 @@ import (
 // KCPProxy is a reverse proxy that authenticates requests via OIDC
 // and forwards them to the user's dedicated kcp tenant workspace.
 type KCPProxy struct {
-	kcpTarget   *url.URL
-	transport   http.RoundTripper
-	bearerToken string
-	verifier    *oidc.IDTokenVerifier
-	verifyCtx   context.Context // context with HTTP client for OIDC key fetches
+	kcpTarget *url.URL
+	transport http.RoundTripper // built from kcp admin config; handles TLS + auth
+	verifier  *oidc.IDTokenVerifier
+	verifyCtx context.Context // context with HTTP client for OIDC key fetches
 	kedgeClient *kedgeclient.Client
 	logger      klog.Logger
 }
@@ -61,33 +58,18 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 		return nil, err
 	}
 
-	tlsConfig := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-	}
-
-	// Load CA data from kcp config for TLS verification.
-	// Handle both CAData (inline) and CAFile (file path).
-	caData := kcpConfig.TLSClientConfig.CAData
-	if len(caData) == 0 && kcpConfig.TLSClientConfig.CAFile != "" {
-		var err error
-		caData, err = os.ReadFile(kcpConfig.TLSClientConfig.CAFile)
-		if err != nil {
-			return nil, fmt.Errorf("reading kcp CA file %s: %w", kcpConfig.TLSClientConfig.CAFile, err)
+	// Build transport from the kcp admin rest.Config so that all auth methods
+	// (client certificates, bearer tokens, token files, exec plugins) are
+	// handled automatically. In dev mode with no explicit CA, skip TLS verify.
+	transportConfig := rest.CopyConfig(kcpConfig)
+	if devMode {
+		if len(transportConfig.TLSClientConfig.CAData) == 0 && transportConfig.TLSClientConfig.CAFile == "" {
+			transportConfig.TLSClientConfig.Insecure = true
 		}
 	}
-
-	if len(caData) > 0 {
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caData) {
-			return nil, fmt.Errorf("failed to parse kcp CA certificate")
-		}
-		tlsConfig.RootCAs = pool
-	} else if kcpConfig.TLSClientConfig.Insecure || devMode {
-		tlsConfig.InsecureSkipVerify = true //nolint:gosec // explicitly configured
-	}
-
-	transport := &http.Transport{
-		TLSClientConfig: tlsConfig,
+	transport, err := rest.TransportFor(transportConfig)
+	if err != nil {
+		return nil, fmt.Errorf("building kcp transport: %w", err)
 	}
 
 	// Build a context with an insecure HTTP client for OIDC key fetches.
@@ -104,7 +86,6 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 	return &KCPProxy{
 		kcpTarget:   target,
 		transport:   transport,
-		bearerToken: kcpConfig.BearerToken,
 		verifier:    verifier,
 		verifyCtx:   verifyCtx,
 		kedgeClient: kedgeClient,
@@ -193,7 +174,6 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 	}
 
 	target := *p.kcpTarget
-	bearerToken := p.bearerToken
 	logger := p.logger
 
 	proxy := &httputil.ReverseProxy{
@@ -203,11 +183,9 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 			req.URL.Path = kcpPath
 			req.Host = target.Host
 
-			// Replace user auth with kcp admin credentials.
+			// Remove user auth — the transport adds kcp admin credentials
+			// automatically (client certs, bearer token, etc.).
 			req.Header.Del("Authorization")
-			if bearerToken != "" {
-				req.Header.Set("Authorization", "Bearer "+bearerToken)
-			}
 		},
 		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

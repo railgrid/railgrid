@@ -146,10 +146,7 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 	}
 
 	logger.Info("Site credentials provisioned", "secret", secretRef)
-	// TODO: Owns() watches should trigger re-reconciliation when child objects
-	// are deleted, but the OwnerReference-based event mapping is not working yet.
-	// Investigate and remove this periodic requeue once Owns() works correctly.
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	return ctrl.Result{}, nil
 }
 
 // siteOwnerRef returns an OwnerReference for the given Site.

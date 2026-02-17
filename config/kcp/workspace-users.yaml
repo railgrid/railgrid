@@ -2,6 +2,8 @@ apiVersion: tenancy.kcp.io/v1alpha1
 kind: Workspace
 metadata:
   name: users
+  annotations:
+    bootstrap.kcp.io/create-only: "true"
 spec:
   type:
     name: universal

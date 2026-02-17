@@ -52,6 +52,16 @@ spec:
     - create
     - update
     - delete
+  - group: tenancy.kcp.io
+    resource: workspaces
+    identityHash: __TENANCY_IDENTITY_HASH__
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
   resources:
   - group: kedge.faros.sh
     name: placements
