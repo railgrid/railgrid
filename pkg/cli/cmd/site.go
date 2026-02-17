@@ -139,7 +139,7 @@ func newSiteListCommand() *cobra.Command {
 					formatStringOrDash(provider), formatStringOrDash(region), age)
 			}
 
-			tw.Flush()
+			_ = tw.Flush()
 			return nil
 		},
 	}

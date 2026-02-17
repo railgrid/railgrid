@@ -98,7 +98,7 @@ func startTunneler(ctx context.Context, hubURL string, token string, siteName st
 
 	// Create revdial listener
 	ln := revdial.NewListener(conn, revdialFunc(hubURL, token))
-	defer ln.Close()
+	defer ln.Close() //nolint:errcheck
 
 	// Create and serve local HTTP server
 	server, err := newRemoteServer(downstream)

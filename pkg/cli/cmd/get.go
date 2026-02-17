@@ -79,7 +79,7 @@ func listVirtualWorkloads(ctx context.Context, dynClient dynamic.Interface) erro
 			age)
 	}
 
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 
@@ -100,7 +100,7 @@ func listPlacements(ctx context.Context, dynClient dynamic.Interface) error {
 		printRow(tw, item.GetName(), siteName, phase, fmt.Sprintf("%d", readyReplicas), age)
 	}
 
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 
@@ -123,7 +123,7 @@ func listSites(ctx context.Context, dynClient dynamic.Interface) error {
 			formatStringOrDash(provider), formatStringOrDash(region), age)
 	}
 
-	tw.Flush()
+	_ = tw.Flush()
 	return nil
 }
 

@@ -26,8 +26,8 @@ import (
 func TestSaveAndGetConn(t *testing.T) {
 	// Create a pair of connected pipes as our net.Conn
 	server, client := net.Pipe()
-	defer server.Close()
-	defer client.Close()
+	defer server.Close() //nolint:errcheck
+	defer client.Close() //nolint:errcheck
 
 	ctx := SaveConn(context.Background(), client)
 

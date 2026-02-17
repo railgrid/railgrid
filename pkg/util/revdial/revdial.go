@@ -135,7 +135,7 @@ func (d *Dialer) Close() error {
 
 func (d *Dialer) close() {
 	d.unregister()
-	d.conn.Close()
+	d.conn.Close() //nolint:errcheck
 	close(d.donec)
 }
 
@@ -173,9 +173,9 @@ func (d *Dialer) matchConn(c net.Conn) {
 // serve blocks and runs the control message loop, keeping the peer
 // alive and notifying the peer when new connections are available.
 func (d *Dialer) serve() error {
-	defer d.Close()
+	defer d.Close() //nolint:errcheck
 	go func() {
-		defer d.Close()
+		defer d.Close() //nolint:errcheck
 		br := bufio.NewReader(d.conn)
 		for {
 			line, err := br.ReadSlice('\n')
@@ -276,7 +276,7 @@ type controlMsg struct {
 // run reads control messages from the public server forever until the connection dies, which
 // then closes the listener.
 func (ln *Listener) run() {
-	defer ln.Close()
+	defer ln.Close() //nolint:errcheck
 
 	// Write loop
 	writec := make(chan []byte, 8)
@@ -289,7 +289,7 @@ func (ln *Listener) run() {
 			case msg := <-writec:
 				if _, err := ln.sc.Write(msg); err != nil {
 					log.Printf("revdial.Listener: error writing message to server: %v", err)
-					ln.Close()
+					ln.Close() //nolint:errcheck
 					return
 				}
 			}
@@ -335,7 +335,7 @@ func (ln *Listener) grabConn(path string) {
 
 	wsConn, resp, err := ln.dial(ctx, path)
 	if resp != nil && resp.Body != nil {
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 	}
 	if err != nil {
 		ln.sendMessage(controlMsg{Command: "pickup-failed", ConnPath: path, Err: err.Error()})
@@ -343,7 +343,7 @@ func (ln *Listener) grabConn(path string) {
 	}
 
 	failPickup := func(err error) {
-		wsConn.Close()
+		wsConn.Close() //nolint:errcheck
 		log.Printf("revdial.Listener: failed to pick up connection to %s: %v", path, err)
 		ln.sendMessage(controlMsg{Command: "pickup-failed", ConnPath: path, Err: err.Error()})
 	}
@@ -392,7 +392,7 @@ func (ln *Listener) Close() error {
 	if ln.closed {
 		return nil
 	}
-	go ln.sc.Close()
+	go ln.sc.Close() //nolint:errcheck
 	ln.closed = true
 	close(ln.connc)
 	close(ln.donec)

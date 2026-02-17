@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package auth handles OIDC authentication for the CLI.
 package auth
 
 import (
@@ -116,7 +117,7 @@ func (a *LocalhostCallbackAuthenticator) callback(w http.ResponseWriter, r *http
 	a.response = resp
 
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, `<!DOCTYPE html><html><body><h2>Login successful!</h2><p>You can close this tab and return to the terminal.</p></body></html>`)
+	_, _ = fmt.Fprint(w, `<!DOCTYPE html><html><body><h2>Login successful!</h2><p>You can close this tab and return to the terminal.</p></body></html>`)
 
 	a.once.Do(func() { close(a.done) })
 }

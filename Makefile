@@ -1,4 +1,4 @@
-.PHONY: build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra path boilerplate verify-boilerplate verify-codegen ldflags tools
+.PHONY: build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -24,7 +24,7 @@ KCP_APIGEN_BIN := apigen
 KCP_APIGEN_GEN := $(TOOLSDIR)/$(KCP_APIGEN_BIN)-$(KCP_APIGEN_VER)
 export KCP_APIGEN_GEN
 
-GOLANGCI_LINT_VER := v1.64.8
+GOLANGCI_LINT_VER := v2.9.0
 GOLANGCI_LINT_BIN := golangci-lint
 GOLANGCI_LINT := $(TOOLSDIR)/$(GOLANGCI_LINT_BIN)-$(GOLANGCI_LINT_VER)
 
@@ -106,7 +106,7 @@ $(KCP_APIGEN_GEN):
 	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) github.com/kcp-dev/sdk/cmd/apigen $(KCP_APIGEN_BIN) $(KCP_APIGEN_VER)
 
 $(GOLANGCI_LINT):
-	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) github.com/golangci/golangci-lint/cmd/golangci-lint $(GOLANGCI_LINT_BIN) $(GOLANGCI_LINT_VER)
+	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) github.com/golangci/golangci-lint/v2/cmd/golangci-lint $(GOLANGCI_LINT_BIN) $(GOLANGCI_LINT_VER)
 
 # --- Dev environment ---
 
@@ -187,6 +187,22 @@ run-hub: build-hub certs
 		--hub-external-url=https://localhost:8443 \
 		--external-kcp-kubeconfig=.kcp/admin.kubeconfig \
 		--dev-mode
+
+docker-build: docker-build-hub docker-build-agent ## Build all container images
+
+docker-build-hub: ## Build kedge-hub container image
+	docker build -f deploy/Dockerfile.hub \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		-t ghcr.io/faroshq/kedge-hub:$(VERSION) .
+
+docker-build-agent: ## Build kedge-agent container image
+	docker build -f deploy/Dockerfile.agent \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		-t ghcr.io/faroshq/kedge-agent:$(VERSION) .
 
 clean:
 	rm -rf $(BINDIR)

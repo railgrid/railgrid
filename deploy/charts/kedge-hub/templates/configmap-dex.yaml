@@ -1,0 +1,44 @@
+{{- if .Values.dex.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kedge-hub.fullname" . }}-dex
+  labels:
+    {{- include "kedge-hub.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    issuer: {{ .Values.dex.issuerURL }}
+
+    storage:
+      type: sqlite3
+      config:
+        file: /data/dex.db
+
+    web:
+      https: 0.0.0.0:5554
+      http: 0.0.0.0:5556
+      tlsCert: /tls/tls.crt
+      tlsKey: /tls/tls.key
+
+    oauth2:
+      skipApprovalScreen: true
+
+    staticClients:
+      - id: {{ .Values.dex.clientID }}
+        secretEnv: DEX_CLIENT_SECRET
+        name: Kedge
+        redirectURIs:
+          - {{ .Values.hub.hubExternalURL }}/auth/callback
+
+    {{- if .Values.dex.connectors }}
+    connectors:
+      {{- toYaml .Values.dex.connectors | nindent 6 }}
+    {{- end }}
+
+    enablePasswordDB: {{ .Values.dex.enablePasswordDB }}
+
+    {{- if .Values.dex.staticPasswords }}
+    staticPasswords:
+      {{- toYaml .Values.dex.staticPasswords | nindent 6 }}
+    {{- end }}
+{{- end }}

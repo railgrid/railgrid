@@ -78,5 +78,5 @@ func formatStringOrDash(s string) string {
 }
 
 func printRow(tw *tabwriter.Writer, cols ...string) {
-	fmt.Fprintln(tw, strings.Join(cols, "\t"))
+	_, _ = fmt.Fprintln(tw, strings.Join(cols, "\t"))
 }

@@ -160,7 +160,7 @@ func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWrite
 		logger.Error(err, "failed to upgrade to WebSocket")
 		return
 	}
-	defer wsConn.Close()
+	defer wsConn.Close() //nolint:errcheck
 
 	// Create SSH client through the device connection
 	sshClient, err := newSSHClient(ctx, deviceConn, logger)
@@ -168,7 +168,7 @@ func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWrite
 		logger.Error(err, "failed to create SSH client")
 		return
 	}
-	defer sshClient.Close()
+	defer sshClient.Close() //nolint:errcheck
 
 	// Create SSH session over WebSocket
 	session, err := utilssh.NewSocketSSHSession(logger, 120, 40, sshClient, wsConn)
@@ -199,8 +199,8 @@ func (p *virtualWorkspaces) handleK8sUpgrade(ctx context.Context, w http.Respons
 		logger.Error(err, "failed to hijack connection")
 		return
 	}
-	defer clientConn.Close()
-	defer deviceConn.Close()
+	defer clientConn.Close() //nolint:errcheck
+	defer deviceConn.Close() //nolint:errcheck
 
 	// Write the original request to the device connection
 	if err := r.Write(deviceConn); err != nil {

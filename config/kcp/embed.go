@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package kcp embeds kcp configuration files.
 package kcp
 
 import "embed"

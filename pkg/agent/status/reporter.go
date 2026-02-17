@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package status reports agent status back to the hub.
 package status
 
 import (
