@@ -1,0 +1,63 @@
+project_name: kubectl-kedge
+version: 2
+env:
+  - CGO_ENABLED=0
+  - LDFLAGS={{ .Env.LDFLAGS }}
+
+builds:
+  - id: kubectl-kedge
+    dir: cmd/kedge
+    binary: kubectl-kedge
+    ldflags: "{{ .Env.LDFLAGS }}"
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - ppc64le
+    ignore:
+      - goos: darwin
+        goarch: ppc64le
+      - goos: windows
+        goarch: ppc64le
+
+archives:
+  - id: kubectl-kedge-plugin
+    builds:
+    - kubectl-kedge
+    name_template: "kubectl-kedge_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+release:
+  prerelease: auto
+  mode: keep-existing
+  github:
+    owner: faroshq
+
+blobs:
+  - provider: s3
+    endpoint: https://d7fc6dd1a6252d2a0ea1a629770cd3a8.r2.cloudflarestorage.com
+    region: auto
+    ids:
+    - kubectl-kedge-plugin
+    bucket: faros
+    directory: "cli/kedge/{{.Tag}}"
+
+krews:
+- name: kedge
+  ids:
+  - kubectl-kedge-plugin
+  repository:
+    owner: faroshq
+    name: krew-index
+    token: "{{ .Env.KREW_GITHUB_TOKEN }}"
+  homepage: "https://faros.sh/"
+  url_template: "https://downloads.faros.sh/cli/kedge/{{ .Tag }}/{{ .ArtifactName }}"
+  description: |
+    Manage kedge edge sites and workloads from the command line.
+    kubectl kedge login - Log in to a kedge hub
+    kubectl kedge ws - Navigate kcp workspaces
+    kubectl kedge site - Manage edge sites
+  short_description: "Manage kedge edge sites and workloads from the command line."
+  skip_upload: auto

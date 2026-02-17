@@ -53,8 +53,8 @@ spec:
     - update
     - delete
   - group: tenancy.kcp.io
-    resource: workspaces
     identityHash: __TENANCY_IDENTITY_HASH__
+    resource: workspaces
     verbs:
     - get
     - list
