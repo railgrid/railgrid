@@ -127,26 +127,14 @@ func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.
 		return fmt.Errorf("creating dynamic client: %w", err)
 	}
 
-	blockOwnerDeletion := true
-	isController := true
-
 	ws := &kcptenancyv1alpha1.Workspace{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: kcptenancyv1alpha1.SchemeGroupVersion.String(),
 			Kind:       "Workspace",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: site.Name,
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion:         kedgev1alpha1.SchemeGroupVersion.String(),
-					Kind:               "Site",
-					Name:               site.Name,
-					UID:                site.UID,
-					BlockOwnerDeletion: &blockOwnerDeletion,
-					Controller:         &isController,
-				},
-			},
+			Name:            site.Name,
+			OwnerReferences: []metav1.OwnerReference{siteOwnerRef(site)},
 		},
 		Spec: kcptenancyv1alpha1.WorkspaceSpec{
 			Mount: &kcptenancyv1alpha1.Mount{

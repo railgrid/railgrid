@@ -29,6 +29,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -150,12 +151,16 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 }
 
 // siteOwnerRef returns an OwnerReference for the given Site.
+// Controller is set to true so that Owns() watches (which default to
+// OnlyControllerOwner) can map child object changes back to the parent Site.
 func siteOwnerRef(site *kedgev1alpha1.Site) metav1.OwnerReference {
 	return metav1.OwnerReference{
-		APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
-		Kind:       "Site",
-		Name:       site.Name,
-		UID:        site.UID,
+		APIVersion:         kedgev1alpha1.SchemeGroupVersion.String(),
+		Kind:               "Site",
+		Name:               site.Name,
+		UID:                site.UID,
+		Controller:         ptr.To(true),
+		BlockOwnerDeletion: ptr.To(true),
 	}
 }
 
