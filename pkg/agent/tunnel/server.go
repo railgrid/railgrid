@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package tunnel implements reverse-dial tunneling between agent and hub.
 package tunnel
 
 import (
@@ -159,7 +160,7 @@ func handleK8sUpgrade(w http.ResponseWriter, r *http.Request, config *rest.Confi
 		http.Error(w, fmt.Sprintf("failed to connect to K8s API: %v", err), http.StatusBadGateway)
 		return
 	}
-	defer backendConn.Close()
+	defer backendConn.Close() //nolint:errcheck
 
 	// Hijack the client connection
 	hijacker, ok := w.(http.Hijacker)
@@ -173,7 +174,7 @@ func handleK8sUpgrade(w http.ResponseWriter, r *http.Request, config *rest.Confi
 		logger.Error(err, "failed to hijack connection")
 		return
 	}
-	defer clientConn.Close()
+	defer clientConn.Close() //nolint:errcheck
 
 	// Modify and forward the request to the backend
 	r.URL.Path = k8sPath

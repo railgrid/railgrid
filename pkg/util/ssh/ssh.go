@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package ssh provides SSH session utilities over WebSocket connections.
 package ssh
 
 import (
@@ -80,7 +81,7 @@ func NewSocketSSHSession(l klog.Logger, cols, rows int, sshClient *ssh.Client, w
 
 func (s *SocketSSHSession) Close() {
 	if s.session != nil {
-		s.session.Close()
+		s.session.Close() //nolint:errcheck
 	}
 	if s.comboOutput != nil {
 		s.comboOutput = nil
@@ -226,7 +227,7 @@ func (s *SocketSSHSession) wait(stop <-chan struct{}) error {
 
 	select {
 	case <-stop:
-		s.session.Close()
+		s.session.Close() //nolint:errcheck
 		return nil
 	case err := <-done:
 		return err
