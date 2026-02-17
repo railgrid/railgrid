@@ -1,4 +1,4 @@
-.PHONY: build test lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra path boilerplate verify-boilerplate
+.PHONY: build test lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra path boilerplate verify-boilerplate verify-codegen ldflags tools
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -24,6 +24,10 @@ KCP_APIGEN_BIN := apigen
 KCP_APIGEN_GEN := $(TOOLSDIR)/$(KCP_APIGEN_BIN)-$(KCP_APIGEN_VER)
 export KCP_APIGEN_GEN
 
+GOLANGCI_LINT_VER := v1.64.8
+GOLANGCI_LINT_BIN := golangci-lint
+GOLANGCI_LINT := $(TOOLSDIR)/$(GOLANGCI_LINT_BIN)-$(GOLANGCI_LINT_VER)
+
 OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
@@ -33,18 +37,28 @@ ifeq ($(ARCH),aarch64)
   ARCH := arm64
 endif
 
+# --- Version info ---
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+LDFLAGS_PKG := github.com/faroshq/faros-kedge/pkg/cli/cmd
+LDFLAGS := -s -w -X $(LDFLAGS_PKG).version=$(VERSION) -X $(LDFLAGS_PKG).gitCommit=$(GIT_COMMIT) -X $(LDFLAGS_PKG).buildDate=$(BUILD_DATE)
+
+ldflags: ## Print ldflags for goreleaser
+	@echo "$(LDFLAGS)"
+
 all: build
 
 build: build-kedge build-hub build-agent
 
 build-kedge:
-	go build $(GOFLAGS) -o $(BINDIR)/kedge ./cmd/kedge/
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge ./cmd/kedge/
 
 build-hub:
-	go build $(GOFLAGS) -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
 build-agent:
-	go build $(GOFLAGS) -o $(BINDIR)/kedge-agent ./cmd/kedge-agent/
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-agent ./cmd/kedge-agent/
 
 test:
 	go test ./...
@@ -52,8 +66,8 @@ test:
 test-util:
 	go test ./pkg/util/...
 
-lint:
-	golangci-lint run ./...
+lint: $(GOLANGCI_LINT) ## Run golangci-lint
+	$(GOLANGCI_LINT) run ./...
 
 vet:
 	go vet ./...
@@ -71,13 +85,25 @@ crds: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Generate CRDs and kcp APIResourceSc
 
 codegen: crds boilerplate ## Generate all (CRDs + kcp resources + boilerplate)
 
+verify-codegen: codegen ## Verify codegen is up to date
+	@if ! git diff --quiet HEAD; then \
+		echo "ERROR: codegen produced a diff. Please run 'make codegen' and commit the result."; \
+		git diff --stat; \
+		exit 1; \
+	fi
+
 # --- Tool installation ---
+
+tools: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) $(GOLANGCI_LINT) ## Install all dev tools
 
 $(CONTROLLER_GEN):
 	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) sigs.k8s.io/controller-tools/cmd/controller-gen $(CONTROLLER_GEN_BIN) $(CONTROLLER_GEN_VER)
 
 $(KCP_APIGEN_GEN):
 	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) github.com/kcp-dev/sdk/cmd/apigen $(KCP_APIGEN_BIN) $(KCP_APIGEN_VER)
+
+$(GOLANGCI_LINT):
+	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) github.com/golangci/golangci-lint/cmd/golangci-lint $(GOLANGCI_LINT_BIN) $(GOLANGCI_LINT_VER)
 
 # --- Dev environment ---
 
@@ -168,4 +194,4 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: vet lint test verify-boilerplate
+verify: verify-boilerplate verify-codegen vet lint build test ## Run all checks
