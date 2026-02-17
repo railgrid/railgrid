@@ -1,0 +1,22 @@
+{{- if .Values.dex.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kedge-hub.fullname" . }}-dex
+  labels:
+    {{- include "kedge-hub.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: https
+      port: {{ .Values.service.dex.httpsPort }}
+      targetPort: dex-https
+      protocol: TCP
+    - name: http
+      port: {{ .Values.service.dex.httpPort }}
+      targetPort: dex-http
+      protocol: TCP
+  selector:
+    {{- include "kedge-hub.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: dex
+{{- end }}

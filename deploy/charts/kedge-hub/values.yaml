@@ -1,0 +1,124 @@
+# -- Image settings
+image:
+  hub:
+    repository: ghcr.io/faroshq/kedge-hub
+    tag: ""  # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  kcp:
+    repository: ghcr.io/kcp-dev/kcp
+    tag: "v0.30.0"
+    pullPolicy: IfNotPresent
+  dex:
+    repository: ghcr.io/dexidp/dex
+    tag: "v2.41.1"
+    pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- kcp settings (embedded etcd, single instance)
+kcp:
+  featureGates: "WorkspaceMounts=true"
+  extraArgs: []
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+# -- kedge-hub settings
+hub:
+  # Required: external URL for kubeconfig generation and OIDC callbacks
+  hubExternalURL: ""
+  listenAddr: ":8443"
+  devMode: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+# -- Dex OIDC settings
+dex:
+  enabled: true
+  # Required: issuer URL reachable by hub and end-user browsers
+  issuerURL: ""
+  clientID: "kedge"
+  # Auto-generated if empty
+  clientSecret: ""
+  replicas: 1
+  connectors: []
+  #  - type: github
+  #    id: github
+  #    name: GitHub
+  #    config:
+  #      clientID: ""
+  #      clientSecret: ""
+  #      redirectURI: https://example.com/auth/callback
+  enablePasswordDB: false
+  staticPasswords: []
+  #  - email: admin@example.com
+  #    hash: "$2a$10$..."
+  #    username: admin
+  #    userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+  persistence:
+    size: 1Gi
+    storageClass: ""
+
+# -- TLS configuration
+tls:
+  # Provide an existing Secret with tls.crt and tls.key
+  existingSecret: ""
+  # Auto-generate self-signed cert if no existingSecret
+  selfSigned:
+    enabled: true
+    dnsNames: []
+    ipAddresses:
+      - "127.0.0.1"
+
+# -- kcp data PVC
+persistence:
+  size: 10Gi
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+
+# -- Service configuration
+service:
+  type: ClusterIP
+  hub:
+    port: 8443
+  dex:
+    httpsPort: 5554
+    httpPort: 5556
+
+# -- Ingress (optional, for hub)
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  #  - host: kedge.example.com
+  #    paths:
+  #      - path: /
+  #        pathType: Prefix
+  tls: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podSecurityContext:
+  fsGroup: 65534
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534

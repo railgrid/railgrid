@@ -1,0 +1,17 @@
+{{- if .Values.dex.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "kedge-hub.fullname" . }}-dex
+  labels:
+    {{- include "kedge-hub.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.dex.persistence.storageClass }}
+  storageClassName: {{ .Values.dex.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.dex.persistence.size }}
+{{- end }}

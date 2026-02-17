@@ -1,0 +1,162 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kedge-hub.fullname" . }}
+  labels:
+    {{- include "kedge-hub.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "kedge-hub.fullname" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kedge-hub.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "kedge-hub.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        # --- kcp ---
+        - name: kcp
+          image: {{ printf "%s:%s" .Values.image.kcp.repository .Values.image.kcp.tag }}
+          imagePullPolicy: {{ .Values.image.kcp.pullPolicy }}
+          command:
+            - /kcp
+            - start
+            - --root-directory=/data
+            - --feature-gates={{ .Values.kcp.featureGates }}
+            {{- range .Values.kcp.extraArgs }}
+            - {{ . }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: kcp
+              containerPort: 6443
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 6443
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 6443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.kcp.resources | nindent 12 }}
+          volumeMounts:
+            - name: kcp-data
+              mountPath: /data
+
+        # --- kedge-hub ---
+        - name: hub
+          image: {{ include "kedge-hub.hubImage" . }}
+          imagePullPolicy: {{ .Values.image.hub.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for kcp admin.kubeconfig..."
+              while [ ! -f /data/admin.kubeconfig ]; do sleep 1; done
+              echo "Found admin.kubeconfig, rewriting server URL..."
+              sed 's|server: https://[^:]*:6443|server: https://localhost:6443|g' /data/admin.kubeconfig > /tmp/admin.kubeconfig
+              exec /kedge-hub \
+                --listen-addr={{ .Values.hub.listenAddr }} \
+                --external-kcp-kubeconfig=/tmp/admin.kubeconfig \
+                --serving-cert-file=/tls/tls.crt \
+                --serving-key-file=/tls/tls.key \
+                --hub-external-url={{ required "hub.hubExternalURL is required" .Values.hub.hubExternalURL }} \
+                {{- if .Values.dex.enabled }}
+                --dex-issuer-url={{ required "dex.issuerURL is required when dex is enabled" .Values.dex.issuerURL }} \
+                --dex-client-id={{ .Values.dex.clientID }} \
+                --dex-client-secret=$(cat /dex-secret/client-secret) \
+                {{- end }}
+                {{- if .Values.hub.devMode }}
+                --dev-mode \
+                {{- end }}
+                --data-dir=/data/hub
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 20
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.hub.resources | nindent 12 }}
+          volumeMounts:
+            - name: kcp-data
+              mountPath: /data
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- if .Values.dex.enabled }}
+            - name: dex-secret
+              mountPath: /dex-secret
+              readOnly: true
+            {{- end }}
+
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ include "kedge-hub.tlsSecretName" . }}
+        {{- if .Values.dex.enabled }}
+        - name: dex-secret
+          secret:
+            secretName: {{ include "kedge-hub.fullname" . }}-dex
+        {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+  volumeClaimTemplates:
+    - metadata:
+        name: kcp-data
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}

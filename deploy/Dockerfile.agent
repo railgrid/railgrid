@@ -1,0 +1,27 @@
+FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
+
+ARG TARGETARCH
+ARG TARGETOS=linux
+
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -ldflags="-s -w \
+      -X github.com/faroshq/faros-kedge/pkg/cli/cmd.version=${VERSION} \
+      -X github.com/faroshq/faros-kedge/pkg/cli/cmd.gitCommit=${GIT_COMMIT} \
+      -X github.com/faroshq/faros-kedge/pkg/cli/cmd.buildDate=${BUILD_DATE}" \
+    -o /kedge-agent ./cmd/kedge-agent/
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /kedge-agent /kedge-agent
+USER 65534:65534
+ENTRYPOINT ["/kedge-agent"]

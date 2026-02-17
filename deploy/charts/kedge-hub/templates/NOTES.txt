@@ -1,0 +1,25 @@
+Kedge Hub has been deployed!
+
+{{- if .Values.ingress.enabled }}
+
+Hub is accessible via Ingress:
+{{- range .Values.ingress.hosts }}
+  https://{{ .host }}
+{{- end }}
+
+{{- else }}
+
+Hub service: {{ include "kedge-hub.fullname" . }}:{{ .Values.service.hub.port }}
+
+To access the hub locally:
+  kubectl port-forward svc/{{ include "kedge-hub.fullname" . }} {{ .Values.service.hub.port }}:{{ .Values.service.hub.port }}
+
+{{- end }}
+
+{{- if .Values.dex.enabled }}
+
+Dex service: {{ include "kedge-hub.fullname" . }}-dex:{{ .Values.service.dex.httpsPort }}
+{{- end }}
+
+Login:
+  kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} {{ if or .Values.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}

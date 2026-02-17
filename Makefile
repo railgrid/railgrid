@@ -1,4 +1,4 @@
-.PHONY: build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra path boilerplate verify-boilerplate verify-codegen ldflags tools
+.PHONY: build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -187,6 +187,22 @@ run-hub: build-hub certs
 		--hub-external-url=https://localhost:8443 \
 		--external-kcp-kubeconfig=.kcp/admin.kubeconfig \
 		--dev-mode
+
+docker-build: docker-build-hub docker-build-agent ## Build all container images
+
+docker-build-hub: ## Build kedge-hub container image
+	docker build -f deploy/Dockerfile.hub \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		-t ghcr.io/faroshq/kedge-hub:$(VERSION) .
+
+docker-build-agent: ## Build kedge-agent container image
+	docker build -f deploy/Dockerfile.agent \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		-t ghcr.io/faroshq/kedge-agent:$(VERSION) .
 
 clean:
 	rm -rf $(BINDIR)
