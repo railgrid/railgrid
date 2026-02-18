@@ -1,0 +1,14 @@
+services:
+  jekyll:
+    image: jekyll/jekyll:4
+    container_name: kedge-docs
+    command: jekyll serve --force_polling --livereload
+    ports:
+      - "4000:4000"
+      - "35729:35729"
+    volumes:
+      - .:/srv/jekyll
+      - jekyll_bundle:/usr/local/bundle
+
+volumes:
+  jekyll_bundle:

@@ -1,14 +1,17 @@
 source "https://rubygems.org"
 
-# GitHub Pages gem for compatibility
-gem "github-pages", group: :jekyll_plugins
-
-# Just the Docs theme
+# Use Just the Docs theme directly for local development
 gem "just-the-docs"
 
+# Jekyll
+gem "jekyll", "~> 4.3"
+
+# Use sassc instead of sass-embedded (fixes Alpine Linux compatibility)
+gem "jekyll-sass-converter", "~> 2.0"
+
 group :jekyll_plugins do
-  gem "jekyll-remote-theme"
   gem "jekyll-seo-tag"
+  gem "jekyll-include-cache"
 end
 
 # Windows and JRuby support
