@@ -145,6 +145,9 @@ $(KCP):
 dev-login: build-kedge
 	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify
 
+dev-login-static: build-kedge ## Login using static token auth (for use with run-hub-static)
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
+
 DEV_SITE_NAME ?= dev-site-1
 
 dev-site-create: build-kedge

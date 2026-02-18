@@ -154,18 +154,24 @@ func (s *Server) Run(ctx context.Context) error {
 	})
 
 	// kcp API proxy: catch-all that forwards authenticated kubectl requests to kcp.
-	var kcpProxy http.Handler
-	if kcpConfig != nil && (authHandler != nil || s.opts.StaticAuthToken != "") {
+	var kcpProxy *proxy.KCPProxy
+	if kcpConfig != nil && (authHandler != nil || len(s.opts.StaticAuthTokens) > 0) {
 		var verifier *oidc.IDTokenVerifier
 		if authHandler != nil {
 			verifier = authHandler.Verifier()
 		}
 		var err error
-		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, verifier, userClient, s.opts.StaticAuthToken, s.opts.DevMode)
+		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, verifier, userClient, bootstrapper, s.opts.StaticAuthTokens, s.opts.HubExternalURL, s.opts.DevMode)
 		if err != nil {
 			return fmt.Errorf("creating kcp proxy: %w", err)
 		}
 		logger.Info("kcp API proxy enabled")
+
+		// Register static token login endpoint if static tokens are configured.
+		if len(s.opts.StaticAuthTokens) > 0 {
+			router.HandleFunc("/auth/token-login", kcpProxy.HandleTokenLogin).Methods("POST")
+			logger.Info("Static token login endpoint registered at /auth/token-login")
+		}
 	}
 
 	// 7. Create and start multicluster controllers (when kcp is configured)

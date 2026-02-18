@@ -89,8 +89,8 @@ spec:
                 --idp-client-id={{ .Values.idp.clientID }} \
                 --idp-client-secret={{ .Values.idp.clientSecret }} \
                 {{- end }}
-                {{- if .Values.hub.staticAuthToken }}
-                --static-auth-token={{ .Values.hub.staticAuthToken }} \
+                {{- range .Values.hub.staticAuthTokens }}
+                --static-auth-token={{ . }} \
                 {{- end }}
                 {{- if .Values.hub.devMode }}
                 --dev-mode \

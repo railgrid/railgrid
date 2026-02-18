@@ -28,8 +28,8 @@ type Options struct {
 	ServingCertFile       string
 	ServingKeyFile        string
 	HubExternalURL        string
-	DevMode               bool
-	StaticAuthToken       string
+	DevMode           bool
+	StaticAuthTokens  []string
 }
 
 // NewOptions returns default Options.

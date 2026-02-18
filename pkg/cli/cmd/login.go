@@ -21,7 +21,9 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -32,6 +34,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
 )
 
@@ -66,31 +69,46 @@ func newLoginCommand() *cobra.Command {
 }
 
 func runStaticTokenLogin(hubURL, token string, insecure bool) error {
-	// Build a kubeconfig with the static token embedded directly.
-	newConfig := clientcmdapi.NewConfig()
-	newConfig.Clusters["kedge"] = &clientcmdapi.Cluster{
-		Server:                hubURL,
-		InsecureSkipTLSVerify: insecure,
+	// Call the server's token-login endpoint to provision user/workspace
+	// and get a kubeconfig with the correct cluster URL.
+	client := &http.Client{}
+	if insecure {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		}
 	}
-	newConfig.AuthInfos["kedge"] = &clientcmdapi.AuthInfo{
-		Token: token,
-	}
-	newConfig.Contexts["kedge"] = &clientcmdapi.Context{
-		Cluster:  "kedge",
-		AuthInfo: "kedge",
-	}
-	newConfig.CurrentContext = "kedge"
 
-	kubeconfigBytes, err := clientcmd.Write(*newConfig)
+	req, err := http.NewRequest(http.MethodPost, hubURL+"/auth/token-login", nil)
 	if err != nil {
-		return fmt.Errorf("serializing kubeconfig: %w", err)
+		return fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("calling token-login endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response: %w", err)
 	}
 
-	if err := mergeKubeconfig(kubeconfigBytes); err != nil {
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("token-login failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var loginResp tenancyv1alpha1.LoginResponse
+	if err := json.Unmarshal(body, &loginResp); err != nil {
+		return fmt.Errorf("parsing login response: %w", err)
+	}
+
+	if err := mergeKubeconfig(loginResp.Kubeconfig); err != nil {
 		return fmt.Errorf("merging kubeconfig: %w", err)
 	}
 
-	fmt.Printf("Login successful! Using static token authentication.\n")
+	fmt.Printf("Login successful! Logged in as %s (user: %s)\n", loginResp.Email, loginResp.UserID)
 	fmt.Printf("Kubeconfig context \"kedge\" has been set.\n")
 	fmt.Printf("Run: kubectl --context=kedge get namespaces\n")
 	return nil

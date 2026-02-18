@@ -60,7 +60,7 @@ func main() {
 	cmd.Flags().StringVar(&opts.ServingKeyFile, "serving-key-file", "", "TLS key file for HTTPS serving")
 	cmd.Flags().StringVar(&opts.HubExternalURL, "hub-external-url", opts.HubExternalURL, "External URL of this hub (for kubeconfig generation)")
 	cmd.Flags().BoolVar(&opts.DevMode, "dev-mode", false, "Enable dev mode (skip TLS verification for OIDC)")
-	cmd.Flags().StringVar(&opts.StaticAuthToken, "static-auth-token", "", "Static bearer token for admin access (no OIDC required)")
+	cmd.Flags().StringSliceVar(&opts.StaticAuthTokens, "static-auth-token", nil, "Static bearer tokens for access (can be specified multiple times)")
 
 	if err := cmd.Execute(); err != nil {
 		klog.Fatal(err)
