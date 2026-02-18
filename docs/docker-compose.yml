@@ -2,13 +2,17 @@ services:
   jekyll:
     image: jekyll/jekyll:4
     container_name: kedge-docs
-    command: jekyll serve --force_polling --livereload
+    environment:
+      - JEKYLL_ENV=development
+    command: >
+      sh -c "bundle install && bundle exec jekyll serve --host 0.0.0.0 --force_polling --livereload"
     ports:
       - "4000:4000"
       - "35729:35729"
     volumes:
       - .:/srv/jekyll
-      - jekyll_bundle:/usr/local/bundle
+      - bundle_cache:/usr/local/bundle
+    working_dir: /srv/jekyll
 
 volumes:
-  jekyll_bundle:
+  bundle_cache:

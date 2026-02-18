@@ -1,16 +1,14 @@
 # Site settings
 title: Kedge Documentation
 description: Multi-tenant control plane for deploying and managing workloads across distributed edge sites
-baseurl: "" # Use "" for local dev, "/faros-kedge" for GitHub Pages
-url: "" # Use "" for local dev, "https://faroshq.github.io" for GitHub Pages
+baseurl: ""
+url: ""
 
 # Repository
 gh_repo: faroshq/faros-kedge
 
-# Theme settings - Just the Docs
-# For local development, use 'theme'. For GitHub Pages, use 'remote_theme'.
+# Theme - use 'theme' for local, 'remote_theme' for GitHub Pages
 theme: just-the-docs
-# remote_theme: just-the-docs/just-the-docs@v0.10.0
 
 color_scheme: dark
 
@@ -80,3 +78,4 @@ exclude:
   - Gemfile.lock
   - node_modules/
   - vendor/
+  - docker-compose.yml
