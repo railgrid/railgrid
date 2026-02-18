@@ -79,13 +79,18 @@ spec:
               exec /kedge-hub \
                 --listen-addr={{ .Values.hub.listenAddr }} \
                 --external-kcp-kubeconfig=/tmp/admin.kubeconfig \
+                {{- if include "kedge-hub.tlsEnabled" . }}
                 --serving-cert-file=/tls/tls.crt \
                 --serving-key-file=/tls/tls.key \
+                {{- end }}
                 --hub-external-url={{ required "hub.hubExternalURL is required" .Values.hub.hubExternalURL }} \
-                {{- if .Values.dex.enabled }}
-                --dex-issuer-url={{ required "dex.issuerURL is required when dex is enabled" .Values.dex.issuerURL }} \
-                --dex-client-id={{ .Values.dex.clientID }} \
-                --dex-client-secret=$(cat /dex-secret/client-secret) \
+                {{- if .Values.idp.issuerURL }}
+                --idp-issuer-url={{ .Values.idp.issuerURL }} \
+                --idp-client-id={{ .Values.idp.clientID }} \
+                --idp-client-secret={{ .Values.idp.clientSecret }} \
+                {{- end }}
+                {{- range .Values.hub.staticAuthTokens }}
+                --static-auth-token={{ . }} \
                 {{- end }}
                 {{- if .Values.hub.devMode }}
                 --dev-mode \
@@ -116,23 +121,17 @@ spec:
           volumeMounts:
             - name: kcp-data
               mountPath: /data
+            {{- if include "kedge-hub.tlsEnabled" . }}
             - name: tls
               mountPath: /tls
-              readOnly: true
-            {{- if .Values.dex.enabled }}
-            - name: dex-secret
-              mountPath: /dex-secret
               readOnly: true
             {{- end }}
 
       volumes:
+        {{- if include "kedge-hub.tlsEnabled" . }}
         - name: tls
           secret:
             secretName: {{ include "kedge-hub.tlsSecretName" . }}
-        {{- if .Values.dex.enabled }}
-        - name: dex-secret
-          secret:
-            secretName: {{ include "kedge-hub.fullname" . }}-dex
         {{- end }}
 
       {{- with .Values.nodeSelector }}

@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"time"
 
+	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	"k8s.io/client-go/dynamic"
@@ -118,13 +119,13 @@ func (s *Server) Run(ctx context.Context) error {
 	// 6. Create HTTP mux
 	router := mux.NewRouter()
 
-	// Auth routes (OIDC via Dex)
+	// Auth routes (OIDC)
 	var authHandler *auth.Handler
-	if s.opts.DexIssuerURL != "" {
+	if s.opts.IDPIssuerURL != "" {
 		oidcConfig := auth.DefaultOIDCConfig()
-		oidcConfig.IssuerURL = s.opts.DexIssuerURL
-		oidcConfig.ClientID = s.opts.DexClientID
-		oidcConfig.ClientSecret = s.opts.DexClientSecret
+		oidcConfig.IssuerURL = s.opts.IDPIssuerURL
+		oidcConfig.ClientID = s.opts.IDPClientID
+		oidcConfig.ClientSecret = s.opts.IDPClientSecret
 		oidcConfig.RedirectURL = s.opts.HubExternalURL + "/auth/callback"
 
 		authHandler, err = auth.NewHandler(ctx, oidcConfig, userClient, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode)
@@ -132,7 +133,7 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("creating auth handler: %w", err)
 		}
 		authHandler.RegisterRoutes(router)
-		logger.Info("OIDC auth routes registered", "issuer", s.opts.DexIssuerURL)
+		logger.Info("OIDC auth routes registered", "issuer", s.opts.IDPIssuerURL)
 	}
 
 	// Tunnel handlers (kcpConfig is used for SA token verification; nil if kcp not configured)
@@ -153,14 +154,24 @@ func (s *Server) Run(ctx context.Context) error {
 	})
 
 	// kcp API proxy: catch-all that forwards authenticated kubectl requests to kcp.
-	var kcpProxy http.Handler
-	if kcpConfig != nil && authHandler != nil {
+	var kcpProxy *proxy.KCPProxy
+	if kcpConfig != nil && (authHandler != nil || len(s.opts.StaticAuthTokens) > 0) {
+		var verifier *oidc.IDTokenVerifier
+		if authHandler != nil {
+			verifier = authHandler.Verifier()
+		}
 		var err error
-		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, authHandler.Verifier(), userClient, s.opts.DevMode)
+		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, verifier, userClient, bootstrapper, s.opts.StaticAuthTokens, s.opts.HubExternalURL, s.opts.DevMode)
 		if err != nil {
 			return fmt.Errorf("creating kcp proxy: %w", err)
 		}
 		logger.Info("kcp API proxy enabled")
+
+		// Register static token login endpoint if static tokens are configured.
+		if len(s.opts.StaticAuthTokens) > 0 {
+			router.HandleFunc("/auth/token-login", kcpProxy.HandleTokenLogin).Methods("POST")
+			logger.Info("Static token login endpoint registered at /auth/token-login")
+		}
 	}
 
 	// 7. Create and start multicluster controllers (when kcp is configured)

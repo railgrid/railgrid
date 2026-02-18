@@ -8,10 +8,6 @@ image:
     repository: ghcr.io/kcp-dev/kcp
     tag: "v0.30.0"
     pullPolicy: IfNotPresent
-  dex:
-    repository: ghcr.io/dexidp/dex
-    tag: "v2.41.1"
-    pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 nameOverride: ""
@@ -34,56 +30,39 @@ hub:
   hubExternalURL: ""
   listenAddr: ":8443"
   devMode: false
+  # Static bearer tokens for access (each token creates its own user/workspace. Example: openssl rand -base64 32)
+  staticAuthTokens: []
   resources:
     requests:
       cpu: 100m
       memory: 256Mi
     limits:
       memory: 512Mi
+  # -- TLS configuration for hub serving
+  tls:
+    # Provide an existing Secret with tls.crt and tls.key
+    existingSecret: ""
+    # Auto-generate self-signed cert (dev/local only)
+    selfSigned:
+      enabled: true
+      dnsNames: []
+      ipAddresses:
+        - "127.0.0.1"
+    # Use cert-manager to issue a certificate (recommended for production)
+    certManager:
+      enabled: false
+      issuerRef:
+        name: ""
+        kind: ClusterIssuer
+        group: cert-manager.io
+      dnsNames: []
 
-# -- Dex OIDC settings
-dex:
-  enabled: true
-  # Required: issuer URL reachable by hub and end-user browsers
+# -- Identity provider (OIDC) settings (see docs/idp.md)
+idp:
+  # Required: OIDC issuer URL reachable by hub and end-user browsers
   issuerURL: ""
   clientID: "kedge"
-  # Auto-generated if empty
   clientSecret: ""
-  replicas: 1
-  connectors: []
-  #  - type: github
-  #    id: github
-  #    name: GitHub
-  #    config:
-  #      clientID: ""
-  #      clientSecret: ""
-  #      redirectURI: https://example.com/auth/callback
-  enablePasswordDB: false
-  staticPasswords: []
-  #  - email: admin@example.com
-  #    hash: "$2a$10$..."
-  #    username: admin
-  #    userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      memory: 128Mi
-  persistence:
-    size: 1Gi
-    storageClass: ""
-
-# -- TLS configuration
-tls:
-  # Provide an existing Secret with tls.crt and tls.key
-  existingSecret: ""
-  # Auto-generate self-signed cert if no existingSecret
-  selfSigned:
-    enabled: true
-    dnsNames: []
-    ipAddresses:
-      - "127.0.0.1"
 
 # -- kcp data PVC
 persistence:
@@ -97,11 +76,8 @@ service:
   type: ClusterIP
   hub:
     port: 8443
-  dex:
-    httpsPort: 5554
-    httpPort: 5556
 
-# -- Ingress (optional, for hub)
+# -- Ingress (optional, passthrough to hub TLS)
 ingress:
   enabled: false
   className: ""
@@ -110,8 +86,7 @@ ingress:
   #  - host: kedge.example.com
   #    paths:
   #      - path: /
-  #        pathType: Prefix
-  tls: []
+  #        pathType: ImplementationSpecific
 
 nodeSelector: {}
 tolerations: []

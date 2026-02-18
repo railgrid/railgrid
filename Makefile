@@ -145,6 +145,9 @@ $(KCP):
 dev-login: build-kedge
 	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify
 
+dev-login-static: build-kedge ## Login using static token auth (for use with run-hub-static)
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
+
 DEV_SITE_NAME ?= dev-site-1
 
 dev-site-create: build-kedge
@@ -179,9 +182,20 @@ run-dex: $(DEX) certs
 
 run-hub: build-hub certs
 	$(BINDIR)/kedge-hub \
-		--dex-issuer-url=https://localhost:5554/dex \
-		--dex-client-id=kedge \
-		--dex-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0 \
+		--idp-issuer-url=https://localhost:5554/dex \
+		--idp-client-id=kedge \
+		--idp-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0 \
+		--serving-cert-file=certs/apiserver.crt \
+		--serving-key-file=certs/apiserver.key \
+		--hub-external-url=https://localhost:8443 \
+		--external-kcp-kubeconfig=.kcp/admin.kubeconfig \
+		--dev-mode
+
+STATIC_AUTH_TOKEN ?= dev-token
+
+run-hub-static: build-hub certs ## Run hub with static token auth (no OIDC)
+	$(BINDIR)/kedge-hub \
+		--static-auth-token=$(STATIC_AUTH_TOKEN) \
 		--serving-cert-file=certs/apiserver.crt \
 		--serving-key-file=certs/apiserver.key \
 		--hub-external-url=https://localhost:8443 \
