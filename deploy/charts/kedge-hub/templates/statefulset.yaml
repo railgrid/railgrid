@@ -84,9 +84,14 @@ spec:
                 --serving-key-file=/tls/tls.key \
                 {{- end }}
                 --hub-external-url={{ required "hub.hubExternalURL is required" .Values.hub.hubExternalURL }} \
-                --idp-issuer-url={{ required "idp.issuerURL is required" .Values.idp.issuerURL }} \
+                {{- if .Values.idp.issuerURL }}
+                --idp-issuer-url={{ .Values.idp.issuerURL }} \
                 --idp-client-id={{ .Values.idp.clientID }} \
-                --idp-client-secret={{ required "idp.clientSecret is required" .Values.idp.clientSecret }} \
+                --idp-client-secret={{ .Values.idp.clientSecret }} \
+                {{- end }}
+                {{- if .Values.hub.staticAuthToken }}
+                --static-auth-token={{ .Values.hub.staticAuthToken }} \
+                {{- end }}
                 {{- if .Values.hub.devMode }}
                 --dev-mode \
                 {{- end }}

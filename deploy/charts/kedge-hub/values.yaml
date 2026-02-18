@@ -30,6 +30,8 @@ hub:
   hubExternalURL: ""
   listenAddr: ":8443"
   devMode: false
+  # Static bearer token for admin access (bypasses OIDC entirely. Example: openssl rand -base64 32)
+  staticAuthToken: ""
   resources:
     requests:
       cpu: 100m

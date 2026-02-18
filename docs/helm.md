@@ -2,7 +2,10 @@
 
 This guide walks through deploying kedge-hub into a local [kind](https://kind.sigs.k8s.io/) cluster.
 
-The kedge-hub chart deploys **kcp + kedge-hub** only. The identity provider (e.g., Dex) is deployed separately — see [idp.md](idp.md).
+The kedge-hub chart deploys **kcp + kedge-hub** only. Authentication can be configured in two ways:
+
+- **OIDC** (production) — deploy an identity provider (e.g., Dex) separately. See [idp.md](idp.md).
+- **Static token** (dev/CI) — set `hub.staticAuthToken` to bypass OIDC entirely. See [Static token authentication](#static-token-authentication-no-oidc) below.
 
 ## Prerequisites
 
@@ -10,7 +13,7 @@ The kedge-hub chart deploys **kcp + kedge-hub** only. The identity provider (e.g
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [Helm](https://helm.sh/docs/intro/install/) v3+
 - [Docker](https://docs.docker.com/get-docker/)
-- A running OIDC identity provider (see [idp.md](idp.md))
+- A running OIDC identity provider (see [idp.md](idp.md)) — **or** a static auth token for dev/minimal setups
 
 ## 1. Create a kind cluster
 
@@ -96,6 +99,77 @@ kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify
 
 This opens a browser for the OIDC login flow.
 
+## Static token authentication (no OIDC)
+
+For dev, CI, or minimal setups you can skip the OIDC provider entirely and use a pre-shared static bearer token. The static token grants full kcp admin access through the hub proxy.
+
+### 1. Generate a token
+
+```bash
+openssl rand -hex 32
+```
+
+### 2. Deploy with the static token
+
+Create a `values-static.yaml`:
+
+```yaml
+hub:
+  hubExternalURL: "https://localhost:8443"
+  devMode: true
+  staticAuthToken: "<generated-token>"
+
+# No idp section needed
+```
+
+Install:
+
+```bash
+helm upgrade --install kedge deploy/charts/kedge-hub/ \
+  -f values-static.yaml \
+  --namespace kedge-system \
+  --create-namespace
+```
+
+### 3. Log in
+
+```bash
+kedge login \
+  --hub-url https://localhost:8443 \
+  --token <generated-token> \
+  --insecure-skip-tls-verify
+```
+
+This writes a kubeconfig context named `kedge` with the token embedded directly (no exec plugin, no browser flow).
+
+### 4. Verify
+
+```bash
+kubectl --context=kedge get namespaces
+```
+
+### Local development (without Helm)
+
+You can also run the hub binary directly with `make`:
+
+```bash
+make run-hub-static STATIC_AUTH_TOKEN=<generated-token>
+```
+
+Or manually:
+
+```bash
+kedge-hub \
+  --static-auth-token=<generated-token> \
+  --serving-cert-file=certs/apiserver.crt \
+  --serving-key-file=certs/apiserver.key \
+  --hub-external-url=https://localhost:8443 \
+  --external-kcp-kubeconfig=.kcp/admin.kubeconfig \
+  --dev-mode
+```
+
+> **Security note:** The static token grants unrestricted kcp admin access. Do not use this in production — use OIDC authentication with a proper identity provider instead.
+
 ## Checking logs
 
 ```bash
@@ -158,7 +232,8 @@ See the companion guides for production-oriented setups:
 | `hub.hubExternalURL` | **(required)** External URL of the hub for kubeconfig generation and OIDC callbacks | `""` |
 | `hub.listenAddr` | Hub listen address | `":8443"` |
 | `hub.devMode` | Skip TLS verification for OIDC issuer | `false` |
-| `idp.issuerURL` | **(required)** OIDC identity provider issuer URL | `""` |
+| `hub.staticAuthToken` | Static bearer token for admin access (bypasses OIDC) | `""` |
+| `idp.issuerURL` | OIDC identity provider issuer URL (required unless `hub.staticAuthToken` is set) | `""` |
 | `idp.clientID` | OIDC client ID (must match IDP client config) | `"kedge"` |
 | `idp.clientSecret` | **(required)** OIDC client secret (must match IDP client config) | `""` |
 | `hub.tls.existingSecret` | Name of existing TLS Secret (skips self-signed generation) | `""` |

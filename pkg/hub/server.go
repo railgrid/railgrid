@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"time"
 
+	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	"k8s.io/client-go/dynamic"
@@ -154,9 +155,13 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// kcp API proxy: catch-all that forwards authenticated kubectl requests to kcp.
 	var kcpProxy http.Handler
-	if kcpConfig != nil && authHandler != nil {
+	if kcpConfig != nil && (authHandler != nil || s.opts.StaticAuthToken != "") {
+		var verifier *oidc.IDTokenVerifier
+		if authHandler != nil {
+			verifier = authHandler.Verifier()
+		}
 		var err error
-		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, authHandler.Verifier(), userClient, s.opts.DevMode)
+		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, verifier, userClient, s.opts.StaticAuthToken, s.opts.DevMode)
 		if err != nil {
 			return fmt.Errorf("creating kcp proxy: %w", err)
 		}

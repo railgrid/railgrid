@@ -39,14 +39,18 @@ func newLoginCommand() *cobra.Command {
 	var (
 		hubURL                string
 		insecureSkipTLSVerify bool
+		token                 string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Authenticate with the kedge hub via OIDC",
+		Short: "Authenticate with the kedge hub via OIDC or static token",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hubURL == "" {
 				return fmt.Errorf("--hub-url is required")
+			}
+			if token != "" {
+				return runStaticTokenLogin(hubURL, token, insecureSkipTLSVerify)
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 			defer cancel()
@@ -56,8 +60,40 @@ func newLoginCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&hubURL, "hub-url", "", "Hub server URL (required)")
 	cmd.Flags().BoolVar(&insecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification")
+	cmd.Flags().StringVar(&token, "token", "", "Static bearer token (skips OIDC browser flow)")
 
 	return cmd
+}
+
+func runStaticTokenLogin(hubURL, token string, insecure bool) error {
+	// Build a kubeconfig with the static token embedded directly.
+	newConfig := clientcmdapi.NewConfig()
+	newConfig.Clusters["kedge"] = &clientcmdapi.Cluster{
+		Server:                hubURL,
+		InsecureSkipTLSVerify: insecure,
+	}
+	newConfig.AuthInfos["kedge"] = &clientcmdapi.AuthInfo{
+		Token: token,
+	}
+	newConfig.Contexts["kedge"] = &clientcmdapi.Context{
+		Cluster:  "kedge",
+		AuthInfo: "kedge",
+	}
+	newConfig.CurrentContext = "kedge"
+
+	kubeconfigBytes, err := clientcmd.Write(*newConfig)
+	if err != nil {
+		return fmt.Errorf("serializing kubeconfig: %w", err)
+	}
+
+	if err := mergeKubeconfig(kubeconfigBytes); err != nil {
+		return fmt.Errorf("merging kubeconfig: %w", err)
+	}
+
+	fmt.Printf("Login successful! Using static token authentication.\n")
+	fmt.Printf("Kubeconfig context \"kedge\" has been set.\n")
+	fmt.Printf("Run: kubectl --context=kedge get namespaces\n")
+	return nil
 }
 
 func runLogin(ctx context.Context, hubURL string, insecure bool) error {

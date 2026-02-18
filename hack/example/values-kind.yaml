@@ -1,7 +1,7 @@
 image:
   hub:
     repository: ghcr.io/faroshq/kedge-hub
-    tag: "4acb1b5-dirty"  # defaults to .Chart.AppVersion
+    tag: "7558a55-dirty"  # defaults to .Chart.AppVersion
     pullPolicy: IfNotPresent
   kcp:
     repository: ghcr.io/kcp-dev/kcp
@@ -12,6 +12,7 @@ hub:
   hubExternalURL: "https://hub.faros.sh"
   devMode: false
   # -- TLS configuration for hub serving
+  staticAuthToken: "qxdo7t3qXY1hak233FJhTZtsMA2kFXfzXQhYw8ZU8e8="
   tls:
     certManager:
       enabled: true 
@@ -24,10 +25,10 @@ hub:
       enabled: false
   
     
-idp:
-  issuerURL: "https://idp.faros.sh"
-  clientID: "kedge"
-  clientSecret: "Z2Fyc2lha2FsYmlzdmFuZGVuekWplCg=="
+#idp:
+#  issuerURL: "https://idp.faros.sh"
+#  clientID: "kedge"
+#  clientSecret: "Z2Fyc2lha2FsYmlzdmFuZGVuekWplCg=="
 
 ingress:
   enabled: true

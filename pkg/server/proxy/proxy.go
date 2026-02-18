@@ -43,17 +43,19 @@ import (
 // KCPProxy is a reverse proxy that authenticates requests via OIDC
 // and forwards them to the user's dedicated kcp tenant workspace.
 type KCPProxy struct {
-	kcpTarget   *url.URL
-	transport   http.RoundTripper // built from kcp admin config; handles TLS + auth
-	verifier    *oidc.IDTokenVerifier
-	verifyCtx   context.Context // context with HTTP client for OIDC key fetches
-	kedgeClient *kedgeclient.Client
-	logger      klog.Logger
+	kcpTarget        *url.URL
+	transport        http.RoundTripper // built from kcp admin config; handles TLS + auth
+	verifier         *oidc.IDTokenVerifier
+	verifyCtx        context.Context // context with HTTP client for OIDC key fetches
+	kedgeClient      *kedgeclient.Client
+	staticAuthToken  string
+	logger           klog.Logger
 }
 
 // NewKCPProxy creates a reverse proxy to kcp.
 // It validates bearer tokens as OIDC id_tokens before proxying.
-func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeClient *kedgeclient.Client, devMode bool) (*KCPProxy, error) {
+// verifier may be nil when only static token auth is used.
+func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeClient *kedgeclient.Client, staticAuthToken string, devMode bool) (*KCPProxy, error) {
 	target, err := url.Parse(kcpConfig.Host)
 	if err != nil {
 		return nil, err
@@ -85,12 +87,13 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 	}
 
 	return &KCPProxy{
-		kcpTarget:   target,
-		transport:   transport,
-		verifier:    verifier,
-		verifyCtx:   verifyCtx,
-		kedgeClient: kedgeClient,
-		logger:      klog.Background().WithName("kcp-proxy"),
+		kcpTarget:       target,
+		transport:       transport,
+		verifier:        verifier,
+		verifyCtx:       verifyCtx,
+		kedgeClient:     kedgeClient,
+		staticAuthToken: staticAuthToken,
+		logger:          klog.Background().WithName("kcp-proxy"),
 	}, nil
 }
 
@@ -109,14 +112,22 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
-	// Try OIDC verification first (user tokens from Dex).
-	idToken, err := p.verifier.Verify(p.verifyCtx, token)
-	if err == nil {
-		p.serveOIDC(w, r, token, idToken)
+	// Static token: proxy to kcp with admin credentials, path as-is.
+	if p.staticAuthToken != "" && token == p.staticAuthToken {
+		p.serveStaticToken(w, r)
 		return
 	}
 
-	// If OIDC fails, check if this is a kcp ServiceAccount token.
+	// Try OIDC verification (user tokens from Dex).
+	if p.verifier != nil {
+		idToken, err := p.verifier.Verify(p.verifyCtx, token)
+		if err == nil {
+			p.serveOIDC(w, r, token, idToken)
+			return
+		}
+	}
+
+	// If OIDC fails or is not configured, check if this is a kcp ServiceAccount token.
 	if saClaims, ok := parseServiceAccountToken(token); ok {
 		p.serveServiceAccount(w, r, token, saClaims.ClusterName)
 		return
@@ -191,6 +202,35 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error(err, "proxy upstream error", "method", r.Method, "path", r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = fmt.Fprintf(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"proxy error: %s","reason":"ServiceUnavailable","code":502}`, err.Error())
+		},
+	}
+
+	proxy.ServeHTTP(w, r)
+}
+
+// serveStaticToken handles static-token-authenticated requests by proxying
+// to kcp with admin credentials. The request path is forwarded as-is,
+// giving the static token user full kcp admin access.
+func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request) {
+	target := *p.kcpTarget
+	logger := p.logger
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.URL.Path = r.URL.Path
+			req.Host = target.Host
+
+			// Remove user auth — the transport adds kcp admin credentials.
+			req.Header.Del("Authorization")
+		},
+		Transport: p.transport,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			logger.Error(err, "proxy upstream error (static token)", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = fmt.Fprintf(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"proxy error: %s","reason":"ServiceUnavailable","code":502}`, err.Error())

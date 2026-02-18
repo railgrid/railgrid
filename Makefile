@@ -188,6 +188,17 @@ run-hub: build-hub certs
 		--external-kcp-kubeconfig=.kcp/admin.kubeconfig \
 		--dev-mode
 
+STATIC_AUTH_TOKEN ?= dev-token
+
+run-hub-static: build-hub certs ## Run hub with static token auth (no OIDC)
+	$(BINDIR)/kedge-hub \
+		--static-auth-token=$(STATIC_AUTH_TOKEN) \
+		--serving-cert-file=certs/apiserver.crt \
+		--serving-key-file=certs/apiserver.key \
+		--hub-external-url=https://localhost:8443 \
+		--external-kcp-kubeconfig=.kcp/admin.kubeconfig \
+		--dev-mode
+
 docker-build: docker-build-hub docker-build-agent ## Build all container images
 
 docker-build-hub: ## Build kedge-hub container image

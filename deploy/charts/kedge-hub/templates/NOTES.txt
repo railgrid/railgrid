@@ -16,9 +16,17 @@ To access the hub locally:
 
 {{- end }}
 
+{{- if .Values.hub.staticAuthToken }}
+
+Login (static token):
+  kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} --token {{ .Values.hub.staticAuthToken }} {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
+
+{{- else }}
+
 IDP (external): {{ .Values.idp.issuerURL }}
 
 Login:
   kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
 
 For identity provider deployment, see docs/idp.md.
+{{- end }}
