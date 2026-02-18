@@ -1,6 +1,27 @@
-# External Dex (Identity Provider)
+---
+layout: default
+title: Identity Provider
+nav_order: 4
+description: "Configure Dex as an external OIDC identity provider for Kedge"
+---
 
-This guide deploys Dex as a standalone identity provider using the upstream [dex Helm chart](https://github.com/dexidp/helm-charts), separate from the kedge-hub chart. This is the recommended approach for production deployments where you want:
+# Identity Provider
+{: .no_toc }
+
+Deploy Dex as a standalone OIDC identity provider for Kedge.
+{: .fs-6 .fw-300 }
+
+## Table of contents
+{: .no_toc .text-delta }
+
+1. TOC
+{:toc}
+
+---
+
+## Overview
+
+This guide deploys Dex using the upstream [dex Helm chart](https://github.com/dexidp/helm-charts), separate from the kedge-hub chart. This is the recommended approach for production deployments where you want:
 
 - Dex accessible on a public URL (e.g., `auth.example.com`)
 - Persistent sqlite3 storage on a PVC
@@ -17,19 +38,23 @@ The hub is configured with `idp.issuerURL` pointing to the external Dex instance
 
 ## Prerequisites
 
-- A running Kubernetes cluster with ingress configured (see [ingress.md](ingress.md))
+- A running Kubernetes cluster with ingress configured (see [Ingress Setup]({% link ingress.md %}))
 - A GitHub OAuth app (or other identity connector)
 
-## 1. Install the Dex Helm chart
+---
+
+## Installation
+
+### 1. Add the Dex Helm repository
 
 ```bash
 helm repo add dex https://charts.dexidp.io
 helm repo update
 ```
 
-## 2. Create the Dex data PVC
+### 2. Create the Dex data PVC
 
-The upstream dex Helm chart does not include built-in persistence. Create a PVC manually before installing:
+The upstream dex Helm chart does not include built-in persistence. Create a PVC manually:
 
 ```bash
 kubectl create namespace dex
@@ -49,7 +74,7 @@ spec:
 EOF
 ```
 
-## 3. Create a Dex values file
+### 3. Create a Dex values file
 
 Create `dex-values.yaml`:
 
@@ -99,21 +124,19 @@ ingress:
         - path: /
           pathType: ImplementationSpecific
   tls:
-   # This tells the Ingress to use a certificate for the specified host.
-   # Cert-manager will see this, create a Certificate resource,
-   # and automatically populate the 'dex-tls' secret with the new cert.
+   # cert-manager will create and populate this secret
    - secretName: dex-tls
      hosts:
        - auth.faros.sh
 ```
 
-Key points:
-- **`volumes` + `volumeMounts`** — the upstream dex chart has no built-in persistence. We create a PVC separately and inject it via the chart's generic `volumes`/`volumeMounts` values. The sqlite3 database at `/var/dex/dex.db` is persisted across pod restarts.
-- **`web.http`** — Dex listens on plain HTTP. TLS is terminated by the ingress (Cloudflare Tunnel handles HTTPS at the edge).
-- **`staticClients`** — the `id` must match what kedge-hub is configured with (`idp.clientID`), and the `redirectURIs` must include the hub's `/auth/callback` endpoint.
-- **`connectors`** — configure your identity provider. GitHub is shown here; Dex supports LDAP, SAML, OIDC, Google, and many others.
+{: .important }
+**Key configuration points:**
+- **`volumes` + `volumeMounts`** — The upstream chart has no built-in persistence. We inject our PVC manually.
+- **`web.http`** — Dex listens on plain HTTP. TLS is terminated at the ingress.
+- **`staticClients`** — The `id` must match `idp.clientID` in kedge-hub, and `redirectURIs` must include the hub's callback endpoint.
 
-## 4. Deploy Dex
+### 4. Deploy Dex
 
 ```bash
 helm upgrade --install \
@@ -129,41 +152,131 @@ Verify it's running:
 kubectl -n dex get pods
 ```
 
-If cloudflare tunnel is set up correctly, you should be able to see it:
+### 5. Verify the deployment
 
-```
-kubectl get ingress -A                                                                                  17:04:01
-NAMESPACE   NAME   CLASS               HOSTS          ADDRESS                                                 PORTS     AGE
-dex         dex    cloudflare-tunnel   idp.faros.sh   a1fa66c5-7766-40e7-87fd-9d42391f07da.cfargotunnel.com   80, 443   5m54s
+If Cloudflare Tunnel is set up correctly:
+
+```bash
+kubectl get ingress -A
+# NAMESPACE   NAME   CLASS               HOSTS          ADDRESS                                                 PORTS     AGE
+# dex         dex    cloudflare-tunnel   idp.faros.sh   a1fa66c5-7766-40e7-87fd-9d42391f07da.cfargotunnel.com   80, 443   5m
 ```
 
-Check the OIDC discovery endpoint is reachable:
+Check the OIDC discovery endpoint:
 
 ```bash
 curl -s https://idp.faros.sh/.well-known/openid-configuration | head -20
 ```
 
-## GitHub OAuth app setup
+---
+
+## Identity Connectors
+
+Dex supports many identity providers. Here's how to configure common ones.
+
+### GitHub OAuth
 
 1. Go to **GitHub > Settings > Developer settings > OAuth Apps > New OAuth App**
-2. Set:
+2. Configure:
    - **Application name:** Kedge Auth
    - **Homepage URL:** `https://api.example.com`
    - **Authorization callback URL:** `https://auth.example.com/callback`
-3. After creating, copy the **Client ID** and generate a **Client Secret**
-4. Use these in the `connectors[0].config` section of `dex-values.yaml`
+3. Copy the **Client ID** and generate a **Client Secret**
+4. Add to your `dex-values.yaml`:
 
-If you want to restrict access to a GitHub organization, set `org: your-org` in the connector config.
+```yaml
+config:
+  connectors:
+    - type: github
+      id: github
+      name: GitHub
+      config:
+        clientID: <github-client-id>
+        clientSecret: <github-client-secret>
+        redirectURI: https://idp.faros.sh/callback
+        # Optional: restrict to an organization
+        # org: your-org
+```
+
+{: .note }
+To restrict access to a GitHub organization, set `org: your-org` in the connector config.
+
+### Google
+
+```yaml
+config:
+  connectors:
+    - type: google
+      id: google
+      name: Google
+      config:
+        clientID: <google-client-id>
+        clientSecret: <google-client-secret>
+        redirectURI: https://idp.faros.sh/callback
+        # Optional: restrict to a hosted domain
+        # hostedDomains:
+        #   - example.com
+```
+
+### LDAP
+
+```yaml
+config:
+  connectors:
+    - type: ldap
+      id: ldap
+      name: LDAP
+      config:
+        host: ldap.example.com:636
+        insecureNoSSL: false
+        bindDN: cn=admin,dc=example,dc=com
+        bindPW: admin-password
+        userSearch:
+          baseDN: ou=users,dc=example,dc=com
+          filter: "(objectClass=person)"
+          username: uid
+          idAttr: uid
+          emailAttr: mail
+          nameAttr: cn
+        groupSearch:
+          baseDN: ou=groups,dc=example,dc=com
+          filter: "(objectClass=groupOfNames)"
+          userAttr: DN
+          groupAttr: member
+          nameAttr: cn
+```
+
+---
 
 ## Troubleshooting
 
-Check Dex logs:
+### Check Dex logs
 
 ```bash
 kubectl -n dex logs -l app.kubernetes.io/name=dex
 ```
 
-Common issues:
-- **"invalid issuer"** — the `issuer` URL in Dex config must exactly match what the hub is configured with, including the scheme and path.
-- **sqlite3 data lost on restart** — verify the PVC is bound and the `volumeMounts` map `/var/dex` to the `dex-data` volume. Check with `kubectl -n dex get pvc dex-data`.
-- **Callback URL mismatch** — the `redirectURIs` in `staticClients` must exactly match the hub's callback URL (`<hubExternalURL>/auth/callback`).
+### Common issues
+
+| Issue | Solution |
+|:------|:---------|
+| **"invalid issuer"** | The `issuer` URL in Dex config must exactly match `idp.issuerURL` in kedge-hub, including scheme and path |
+| **sqlite3 data lost on restart** | Verify the PVC is bound and `volumeMounts` maps `/var/dex` correctly. Check with `kubectl -n dex get pvc dex-data` |
+| **Callback URL mismatch** | The `redirectURIs` in `staticClients` must exactly match `<hubExternalURL>/auth/callback` |
+| **Certificate errors** | Ensure cert-manager is issuing certificates correctly. Check with `kubectl -n dex get certificate,certificaterequest` |
+
+### Verify PVC is bound
+
+```bash
+kubectl -n dex get pvc dex-data
+# NAME       STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+# dex-data   Bound    pvc-xxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx      1Gi        RWO            standard       10m
+```
+
+### Check OIDC discovery
+
+```bash
+curl -s https://idp.faros.sh/.well-known/openid-configuration | jq .
+```
+
+This should return a JSON document with the issuer URL, authorization endpoint, token endpoint, and other OIDC metadata.
