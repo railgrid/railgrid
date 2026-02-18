@@ -47,16 +47,16 @@ import (
 // KCPProxy is a reverse proxy that authenticates requests via OIDC
 // and forwards them to the user's dedicated kcp tenant workspace.
 type KCPProxy struct {
-	kcpTarget         *url.URL
-	transport         http.RoundTripper // built from kcp admin config; handles TLS + auth
-	verifier          *oidc.IDTokenVerifier
-	verifyCtx         context.Context // context with HTTP client for OIDC key fetches
-	kedgeClient       *kedgeclient.Client
-	bootstrapper      *kcp.Bootstrapper
-	staticAuthTokens  []string
-	hubExternalURL    string
-	devMode           bool
-	logger            klog.Logger
+	kcpTarget        *url.URL
+	transport        http.RoundTripper // built from kcp admin config; handles TLS + auth
+	verifier         *oidc.IDTokenVerifier
+	verifyCtx        context.Context // context with HTTP client for OIDC key fetches
+	kedgeClient      *kedgeclient.Client
+	bootstrapper     *kcp.Bootstrapper
+	staticAuthTokens []string
+	hubExternalURL   string
+	devMode          bool
+	logger           klog.Logger
 }
 
 // NewKCPProxy creates a reverse proxy to kcp.

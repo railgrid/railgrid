@@ -88,7 +88,7 @@ func runStaticTokenLogin(hubURL, token string, insecure bool) error {
 	if err != nil {
 		return fmt.Errorf("calling token-login endpoint: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() // nolint:errcheck
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
