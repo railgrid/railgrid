@@ -22,9 +22,9 @@ type Options struct {
 	ListenAddr            string
 	Kubeconfig            string
 	ExternalKCPKubeconfig string
-	DexIssuerURL          string
-	DexClientID           string
-	DexClientSecret       string
+	IDPIssuerURL          string
+	IDPClientID           string
+	IDPClientSecret       string
 	ServingCertFile       string
 	ServingKeyFile        string
 	HubExternalURL        string

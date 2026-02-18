@@ -1,0 +1,71 @@
+config:
+  issuer: https://idp.faros.sh
+
+  logger:
+    level: "debug"
+
+  storage:
+    type: sqlite3
+    config:
+      file: /var/dex/dex.db
+
+  # Dex listens on plain HTTP inside the cluster.
+  # TLS termination is handled by the Ingress / Cloudflare Tunnel.
+  web:
+    http: 0.0.0.0:5556
+
+  connectors:
+  # - type: github
+  #    id: github
+  #    name: GitHub
+  #    config:
+  #      clientID: 83181f3e886c3442fd4f
+  #      clientSecret: 0fc5a7e734f4cb87e17590bf5f789dcc62634e3b
+  #      redirectURI: https://auth.faros.sh/callback
+  #      org: faroshq
+
+  enablePasswordDB: true
+  staticClients:
+    - id: kedge
+      name: kedge
+      secret: "Z2Fyc2lha2FsYmlzdmFuZGVuekWplCg=="
+      redirectURIs:
+        - https://hub.faros.sh/auth/callback
+
+  staticPasswords:
+    - email: "admin@faros.sh"
+      # bcrypt hash of the string "password": $(echo password | htpasswd -BinC 10 admin | cut -d: -f2)
+      hash: "$2y$10$sGpDSwXTqboKyNMhyKClkeFiHnO09uz7jDsyoHqRxheIwY14qurIK"
+      username: "admin"
+      userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
+  oauth2:
+    passwordConnector: local
+
+# Mount the PVC so sqlite3 data survives pod restarts
+volumes:
+  - name: dex-data
+    persistentVolumeClaim:
+      claimName: dex-data
+
+volumeMounts:
+  - name: dex-data
+    mountPath: /var/dex
+
+service:
+  type: ClusterIP
+
+ingress:
+  enabled: true
+  className: "cloudflare-tunnel"
+  hosts:
+    - host: idp.faros.sh
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls:
+   # This tells the Ingress to use a certificate for the specified host.
+   # Cert-manager will see this, create a Certificate resource,
+   # and automatically populate the 'dex-tls' secret with the new cert.
+   - secretName: dex-tls
+     hosts:
+       - idp.faros.sh

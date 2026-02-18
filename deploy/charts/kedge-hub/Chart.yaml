@@ -1,6 +1,6 @@
 apiVersion: v2
 name: kedge-hub
-description: Kedge Hub - multi-tenant edge control plane (kcp + kedge-hub + dex)
+description: Kedge Hub - multi-tenant edge control plane (kcp + kedge-hub)
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

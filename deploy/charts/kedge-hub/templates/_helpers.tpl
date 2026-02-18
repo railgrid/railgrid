@@ -53,23 +53,21 @@ Hub container image.
 {{- end }}
 
 {{/*
-TLS Secret name.
+Whether TLS is enabled (any of: selfSigned, certManager, existingSecret).
 */}}
-{{- define "kedge-hub.tlsSecretName" -}}
-{{- if .Values.tls.existingSecret }}
-{{- .Values.tls.existingSecret }}
-{{- else }}
-{{- printf "%s-tls" (include "kedge-hub.fullname" .) }}
-{{- end }}
+{{- define "kedge-hub.tlsEnabled" -}}
+{{- if or .Values.hub.tls.selfSigned.enabled .Values.hub.tls.certManager.enabled .Values.hub.tls.existingSecret -}}
+true
+{{- end -}}
 {{- end }}
 
 {{/*
-Dex client secret value. Uses provided value or generates one.
+TLS Secret name.
 */}}
-{{- define "kedge-hub.dexClientSecret" -}}
-{{- if .Values.dex.clientSecret }}
-{{- .Values.dex.clientSecret }}
+{{- define "kedge-hub.tlsSecretName" -}}
+{{- if .Values.hub.tls.existingSecret }}
+{{- .Values.hub.tls.existingSecret }}
 {{- else }}
-{{- randAlphaNum 32 }}
+{{- printf "%s-tls" (include "kedge-hub.fullname" .) }}
 {{- end }}
 {{- end }}

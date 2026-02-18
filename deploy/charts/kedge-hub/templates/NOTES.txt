@@ -16,10 +16,9 @@ To access the hub locally:
 
 {{- end }}
 
-{{- if .Values.dex.enabled }}
-
-Dex service: {{ include "kedge-hub.fullname" . }}-dex:{{ .Values.service.dex.httpsPort }}
-{{- end }}
+IDP (external): {{ .Values.idp.issuerURL }}
 
 Login:
-  kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} {{ if or .Values.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
+  kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
+
+For identity provider deployment, see docs/idp.md.

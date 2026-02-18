@@ -1,0 +1,42 @@
+image:
+  hub:
+    repository: ghcr.io/faroshq/kedge-hub
+    tag: "4acb1b5-dirty"  # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  kcp:
+    repository: ghcr.io/kcp-dev/kcp
+    tag: "v0.30.0"
+    pullPolicy: IfNotPresent
+
+hub:
+  hubExternalURL: "https://hub.faros.sh"
+  devMode: false
+  # -- TLS configuration for hub serving
+  tls:
+    certManager:
+      enabled: true 
+      issuerRef:
+        name: letsencrypt-prod
+        kind: ClusterIssuer
+      dnsNames:
+        - "hub.faros.sh"
+    selfSigned:
+      enabled: false
+  
+    
+idp:
+  issuerURL: "https://idp.faros.sh"
+  clientID: "kedge"
+  clientSecret: "Z2Fyc2lha2FsYmlzdmFuZGVuekWplCg=="
+
+ingress:
+  enabled: true
+  className: "cloudflare-tunnel"
+  annotations:
+    cloudflare-tunnel-ingress-controller.strrl.dev/backend-protocol: "https"
+    cloudflare-tunnel-ingress-controller.strrl.dev/proxy-ssl-verify: "off"
+  hosts:
+    - host: hub.faros.sh
+      paths:
+        - path: /
+          pathType: ImplementationSpecific

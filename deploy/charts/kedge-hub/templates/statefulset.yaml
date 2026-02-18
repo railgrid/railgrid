@@ -79,14 +79,14 @@ spec:
               exec /kedge-hub \
                 --listen-addr={{ .Values.hub.listenAddr }} \
                 --external-kcp-kubeconfig=/tmp/admin.kubeconfig \
+                {{- if include "kedge-hub.tlsEnabled" . }}
                 --serving-cert-file=/tls/tls.crt \
                 --serving-key-file=/tls/tls.key \
-                --hub-external-url={{ required "hub.hubExternalURL is required" .Values.hub.hubExternalURL }} \
-                {{- if .Values.dex.enabled }}
-                --dex-issuer-url={{ required "dex.issuerURL is required when dex is enabled" .Values.dex.issuerURL }} \
-                --dex-client-id={{ .Values.dex.clientID }} \
-                --dex-client-secret=$(cat /dex-secret/client-secret) \
                 {{- end }}
+                --hub-external-url={{ required "hub.hubExternalURL is required" .Values.hub.hubExternalURL }} \
+                --idp-issuer-url={{ required "idp.issuerURL is required" .Values.idp.issuerURL }} \
+                --idp-client-id={{ .Values.idp.clientID }} \
+                --idp-client-secret={{ required "idp.clientSecret is required" .Values.idp.clientSecret }} \
                 {{- if .Values.hub.devMode }}
                 --dev-mode \
                 {{- end }}
@@ -116,23 +116,17 @@ spec:
           volumeMounts:
             - name: kcp-data
               mountPath: /data
+            {{- if include "kedge-hub.tlsEnabled" . }}
             - name: tls
               mountPath: /tls
-              readOnly: true
-            {{- if .Values.dex.enabled }}
-            - name: dex-secret
-              mountPath: /dex-secret
               readOnly: true
             {{- end }}
 
       volumes:
+        {{- if include "kedge-hub.tlsEnabled" . }}
         - name: tls
           secret:
             secretName: {{ include "kedge-hub.tlsSecretName" . }}
-        {{- if .Values.dex.enabled }}
-        - name: dex-secret
-          secret:
-            secretName: {{ include "kedge-hub.fullname" . }}-dex
         {{- end }}
 
       {{- with .Values.nodeSelector }}

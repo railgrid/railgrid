@@ -13,10 +13,6 @@ spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
-  {{- if .Values.ingress.tls }}
-  tls:
-    {{- toYaml .Values.ingress.tls | nindent 4 }}
-  {{- end }}
   rules:
     {{- range .Values.ingress.hosts }}
     - host: {{ .host | quote }}
@@ -29,7 +25,7 @@ spec:
               service:
                 name: {{ include "kedge-hub.fullname" $ }}
                 port:
-                  name: https
+                  number: {{ $.Values.service.hub.port }}
           {{- end }}
     {{- end }}
 {{- end }}

@@ -1,0 +1,19 @@
+{{- if and .Values.hub.tls.certManager.enabled (not .Values.hub.tls.existingSecret) }}
+{{- $fullname := include "kedge-hub.fullname" . }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "kedge-hub.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "kedge-hub.tlsSecretName" . }}
+  issuerRef:
+    name: {{ required "hub.tls.certManager.issuerRef.name is required" .Values.hub.tls.certManager.issuerRef.name }}
+    kind: {{ .Values.hub.tls.certManager.issuerRef.kind }}
+    group: {{ .Values.hub.tls.certManager.issuerRef.group }}
+  dnsNames:
+    {{- range .Values.hub.tls.certManager.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+{{- end }}
