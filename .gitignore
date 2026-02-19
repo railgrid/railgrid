@@ -46,8 +46,6 @@ dex.db
 .gitignore
 .site-kubeconfig
 
-# Air (live reload)
-tmp/
 .kubeconfig-kedge-agent
 kk
 docs/Gemfile.lock
