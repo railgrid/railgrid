@@ -10,6 +10,7 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write
 
 jobs:
   build-hub:
@@ -63,15 +64,18 @@ jobs:
         with:
           version: v3.14.0
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Log in to GHCR for Helm
-        env:
-          HELM_EXPERIMENTAL_OCI: "1"
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
+          echo "${{ github.token }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
 
       - name: Package and push Helm charts
-        env:
-          HELM_EXPERIMENTAL_OCI: "1"
         run: |
           # Determine chart version
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
