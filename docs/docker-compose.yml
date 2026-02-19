@@ -4,8 +4,9 @@ services:
     container_name: kedge-docs
     environment:
       - JEKYLL_ENV=development
+      - PAGES_REPO_NWO=faroshq/faros-kedge
     command: >
-      sh -c "bundle install && bundle exec jekyll serve --host 0.0.0.0 --force_polling --livereload"
+      sh -c "bundle install && bundle exec jekyll serve --host 0.0.0.0 --baseurl '' --force_polling --livereload"
     ports:
       - "4000:4000"
       - "35729:35729"

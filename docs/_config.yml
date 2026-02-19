@@ -1,14 +1,14 @@
 # Site settings
 title: Kedge Documentation
 description: Multi-tenant control plane for deploying and managing workloads across distributed edge sites
-baseurl: ""
-url: ""
+baseurl: "/faros-kedge"
+url: "https://faroshq.github.io"
 
 # Repository
 gh_repo: faroshq/faros-kedge
 
-# Theme - use 'theme' for local, 'remote_theme' for GitHub Pages
-theme: just-the-docs
+# Theme - remote_theme works for both local and GitHub Pages
+remote_theme: just-the-docs/just-the-docs@v0.10.0
 
 color_scheme: dark
 
@@ -68,6 +68,7 @@ callouts:
 plugins:
   - jekyll-seo-tag
   - jekyll-include-cache
+  - jekyll-remote-theme
 
 # Exclude from processing
 exclude:
