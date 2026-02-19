@@ -50,3 +50,4 @@ dex.db
 tmp/
 .kubeconfig-kedge-agent
 kk
+docs/Gemfile.lock
