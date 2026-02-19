@@ -73,7 +73,7 @@ jobs:
 
       - name: Log in to GHCR for Helm
         run: |
-          echo "${{ github.token }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
 
       - name: Package and push Helm charts
         run: |
