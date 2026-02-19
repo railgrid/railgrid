@@ -26,76 +26,39 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        # --- kcp ---
-        - name: kcp
-          image: {{ printf "%s:%s" .Values.image.kcp.repository .Values.image.kcp.tag }}
-          imagePullPolicy: {{ .Values.image.kcp.pullPolicy }}
-          command:
-            - /kcp
-            - start
-            - --root-directory=/data
-            - --feature-gates={{ .Values.kcp.featureGates }}
-            {{- range .Values.kcp.extraArgs }}
-            - {{ . }}
-            {{- end }}
-          securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
-          ports:
-            - name: kcp
-              containerPort: 6443
-              protocol: TCP
-          livenessProbe:
-            httpGet:
-              path: /livez
-              port: 6443
-              scheme: HTTPS
-            initialDelaySeconds: 15
-            periodSeconds: 10
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: 6443
-              scheme: HTTPS
-            initialDelaySeconds: 10
-            periodSeconds: 5
-          resources:
-            {{- toYaml .Values.kcp.resources | nindent 12 }}
-          volumeMounts:
-            - name: kcp-data
-              mountPath: /data
-
         # --- kedge-hub ---
         - name: hub
           image: {{ include "kedge-hub.hubImage" . }}
           imagePullPolicy: {{ .Values.image.hub.pullPolicy }}
-          command:
-            - /bin/sh
-            - -c
-            - |
-              echo "Waiting for kcp admin.kubeconfig..."
-              while [ ! -f /data/admin.kubeconfig ]; do sleep 1; done
-              echo "Found admin.kubeconfig, rewriting server URL..."
-              sed 's|server: https://[^:]*:6443|server: https://localhost:6443|g' /data/admin.kubeconfig > /tmp/admin.kubeconfig
-              exec /kedge-hub \
-                --listen-addr={{ .Values.hub.listenAddr }} \
-                --external-kcp-kubeconfig=/tmp/admin.kubeconfig \
-                {{- if include "kedge-hub.tlsEnabled" . }}
-                --serving-cert-file=/tls/tls.crt \
-                --serving-key-file=/tls/tls.key \
-                {{- end }}
-                --hub-external-url={{ required "hub.hubExternalURL is required" .Values.hub.hubExternalURL }} \
-                {{- if .Values.idp.issuerURL }}
-                --idp-issuer-url={{ .Values.idp.issuerURL }} \
-                --idp-client-id={{ .Values.idp.clientID }} \
-                --idp-client-secret={{ .Values.idp.clientSecret }} \
-                {{- end }}
-                {{- range .Values.hub.staticAuthTokens }}
-                --static-auth-token={{ . }} \
-                {{- end }}
-                {{- if .Values.hub.devMode }}
-                --dev-mode \
-                {{- end }}
-                --data-dir=/data/hub
+          args:
+            - --listen-addr={{ .Values.hub.listenAddr }}
+            {{- if .Values.kcp.external.enabled }}
+            # External kcp mode: connect to kcp running outside the cluster
+            - --external-kcp-kubeconfig=/kcp-kubeconfig/admin.kubeconfig
+            {{- else }}
+            # Embedded kcp mode (default): kcp runs in-process
+            - --embedded-kcp
+            - --kcp-root-dir=/data/kcp
+            - --kcp-secure-port={{ .Values.kcp.embedded.securePort }}
+            - --kcp-batteries-include={{ .Values.kcp.embedded.batteriesInclude }}
+            {{- end }}
+            {{- if include "kedge-hub.tlsEnabled" . }}
+            - --serving-cert-file=/tls/tls.crt
+            - --serving-key-file=/tls/tls.key
+            {{- end }}
+            - --hub-external-url={{ required "hub.hubExternalURL is required" .Values.hub.hubExternalURL }}
+            {{- if .Values.idp.issuerURL }}
+            - --idp-issuer-url={{ .Values.idp.issuerURL }}
+            - --idp-client-id={{ .Values.idp.clientID }}
+            - --idp-client-secret={{ .Values.idp.clientSecret }}
+            {{- end }}
+            {{- range .Values.hub.staticAuthTokens }}
+            - --static-auth-token={{ . }}
+            {{- end }}
+            {{- if .Values.hub.devMode }}
+            - --dev-mode
+            {{- end }}
+            - --data-dir=/data/hub
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
@@ -126,12 +89,22 @@ spec:
               mountPath: /tls
               readOnly: true
             {{- end }}
+            {{- if .Values.kcp.external.enabled }}
+            - name: kcp-kubeconfig
+              mountPath: /kcp-kubeconfig
+              readOnly: true
+            {{- end }}
 
       volumes:
         {{- if include "kedge-hub.tlsEnabled" . }}
         - name: tls
           secret:
             secretName: {{ include "kedge-hub.tlsSecretName" . }}
+        {{- end }}
+        {{- if .Values.kcp.external.enabled }}
+        - name: kcp-kubeconfig
+          secret:
+            secretName: {{ include "kedge-hub.kcpKubeconfigSecretName" . }}
         {{- end }}
 
       {{- with .Values.nodeSelector }}

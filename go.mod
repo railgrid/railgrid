@@ -68,16 +68,6 @@ replace (
 	k8s.io/sample-controller => github.com/kcp-dev/kubernetes/staging/src/k8s.io/sample-controller v0.0.0-20251216144411-4b3495fdcb9d
 )
 
-// Use local KCP for development - comment out for releases
-replace github.com/kcp-dev/kcp => /Users/mjudeikis/go/src/github.com/kcp-dev/kcp
-
-// KCP staging modules - use local KCP staging
-replace (
-	github.com/kcp-dev/apimachinery/v2 => /Users/mjudeikis/go/src/github.com/kcp-dev/kcp/staging/src/github.com/kcp-dev/apimachinery
-	github.com/kcp-dev/client-go => /Users/mjudeikis/go/src/github.com/kcp-dev/kcp/staging/src/github.com/kcp-dev/client-go
-	github.com/kcp-dev/sdk => /Users/mjudeikis/go/src/github.com/kcp-dev/kcp/staging/src/github.com/kcp-dev/sdk
-)
-
 require (
 	al.essio.dev/pkg/shellescape v1.5.1 // indirect
 	cel.dev/expr v0.24.0 // indirect

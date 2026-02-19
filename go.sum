@@ -256,10 +256,16 @@ github.com/json-iterator/go v1.1.7/go.mod h1:KdQUCv79m/52Kvf8AW2vK1V8akMuk1QjK/u
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
 github.com/julienschmidt/httprouter v1.2.0/go.mod h1:SYymIcj16QtmaHHD7aYtjjsJG7VTCxuUUipMqKk8s4w=
+github.com/kcp-dev/apimachinery/v2 v2.30.0 h1:bj7lVVPJj5UnQFCWhXVAKC+eNaIMKGGxpq+fE5edRU0=
+github.com/kcp-dev/apimachinery/v2 v2.30.0/go.mod h1:DOv0iw5tcgzFBhudwLFe2WHCLqtlgNkuO4AcqbZ4zVo=
 github.com/kcp-dev/cli v0.30.0 h1:dQTignTcNM94HjuyP6Mm1ED4ZH6u8OOTQM07E7mShIM=
 github.com/kcp-dev/cli v0.30.0/go.mod h1:DgLYIZ6pOEvR5gc+Z27nZgz/EQaClBbZlquKF6i/1i4=
+github.com/kcp-dev/client-go v0.30.0 h1:dhVSWorJM6i0/FRkVrz7Urb5+AqiXMkywBRA8emcQck=
+github.com/kcp-dev/client-go v0.30.0/go.mod h1:WuQlgKuTwrMYmJPE5oCSZAvVfBT9MneZF59C0kFmzrI=
 github.com/kcp-dev/embeddedetcd v1.1.0 h1:4u5BwZdD43rMnZc3VOpj/VS/+WgJDknv1wuyy4rVkzM=
 github.com/kcp-dev/embeddedetcd v1.1.0/go.mod h1:KNR9s+3UcXtNamapwLH7M/8ZMZCHpIU5YalOAEjOwJg=
+github.com/kcp-dev/kcp v0.30.0 h1:yDveMb5UMt6Xx6r/UFFEAJVwXpf6N6FA37b3wZJfv1U=
+github.com/kcp-dev/kcp v0.30.0/go.mod h1:EPyJfonNAprfanSifVCHqF9lWvKJh50pyal7Hc23ivA=
 github.com/kcp-dev/kubernetes v0.0.0-20251216144411-4b3495fdcb9d h1:yuX74pYzl7juxEYv8o90uTMX64KEQitb5kiq3XxLh1Y=
 github.com/kcp-dev/kubernetes v0.0.0-20251216144411-4b3495fdcb9d/go.mod h1:5abjPkqQJKTbeBJpHD8ssZvASKmoYs0WN2WPyyhkwrw=
 github.com/kcp-dev/kubernetes/staging/src/k8s.io/api v0.0.0-20251216144411-4b3495fdcb9d h1:ADbmSRHVYRyJa07ulqPyeCC4dMuuh24N1IjCHdfeeOg=
@@ -314,6 +320,8 @@ github.com/kcp-dev/logicalcluster/v3 v3.0.5 h1:JbYakokb+5Uinz09oTXomSUJVQsqfxEvU
 github.com/kcp-dev/logicalcluster/v3 v3.0.5/go.mod h1:EWBUBxdr49fUB1cLMO4nOdBWmYifLbP1LfoL20KkXYY=
 github.com/kcp-dev/multicluster-provider v0.4.1-0.20260205123258-494f80b8be01 h1:zY4A23hhdqLVT6CYZ9w5rbSrh+Cka50Ah1m4bu4l5g4=
 github.com/kcp-dev/multicluster-provider v0.4.1-0.20260205123258-494f80b8be01/go.mod h1:eJohrSXqLmpjfTSFBbZMoq4Osr57UKg9ZokvhCPNmHc=
+github.com/kcp-dev/sdk v0.30.0 h1:BdDiKJ7SeVfzLIxueQwbADTrH7bfZ7b5ACYSrx6P93Y=
+github.com/kcp-dev/sdk v0.30.0/go.mod h1:H3PkpM33QqwPMgGOOw3dfqbQ8dF2gu4NeIsufSlS5KE=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
 github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zttxdo=

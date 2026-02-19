@@ -71,3 +71,14 @@ TLS Secret name.
 {{- printf "%s-tls" (include "kedge-hub.fullname" .) }}
 {{- end }}
 {{- end }}
+
+{{/*
+KCP kubeconfig Secret name (for external kcp mode).
+*/}}
+{{- define "kedge-hub.kcpKubeconfigSecretName" -}}
+{{- if .Values.kcp.external.existingSecret }}
+{{- .Values.kcp.external.existingSecret }}
+{{- else }}
+{{- printf "%s-kcp-kubeconfig" (include "kedge-hub.fullname" .) }}
+{{- end }}
+{{- end }}

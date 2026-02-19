@@ -76,7 +76,7 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 	return &DevOptions{
 		Streams:        streams,
 		HubClusterName: "kedge-hub",
-		ChartPath:      "oci://ghcr.io/faroshq/charts/kedge",
+		ChartPath:      "oci://ghcr.io/faroshq/charts/kedge-hub",
 		ChartVersion:   fallbackAssetVersion,
 	}
 }
@@ -87,7 +87,7 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().DurationVar(&o.WaitForReadyTimeout, "wait-for-ready-timeout", 2*time.Minute, "Timeout for waiting for the cluster to be ready")
 	cmd.Flags().StringVar(&o.ChartPath, "chart-path", o.ChartPath, "Helm chart path or OCI registry URL")
 	cmd.Flags().StringVar(&o.ChartVersion, "chart-version", o.ChartVersion, "Helm chart version")
-	cmd.Flags().StringVar(&o.Image, "image", "ghcr.io/faroshq/kedge", "kedge hub image to use in dev mode")
+	cmd.Flags().StringVar(&o.Image, "image", "ghcr.io/faroshq/kedge-hub", "kedge hub image to use in dev mode")
 	cmd.Flags().StringVar(&o.Tag, "tag", "", "kedge hub image tag to use in dev mode")
 	cmd.Flags().StringVar(&o.KindNetwork, "kind-network", "kedge-dev", "kind network to use in dev mode")
 }
@@ -216,7 +216,8 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	// Configuration
 	fmt.Fprint(o.Streams.ErrOut, "Configuration:\n")
 	fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster kubeconfig: %s.kubeconfig\n", o.HubClusterName)
-	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: http://kedge.localhost:8080\n")
+	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:8443\n")
+	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")
 	if hubIP != "" {
 		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP: %s\n", hubIP)
 	}
@@ -239,11 +240,11 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	stepNum++
 
 	fmt.Fprintf(o.Streams.ErrOut, "%d. Login to authenticate to the hub:\n", stepNum)
-	fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge login http://kedge.localhost:8080"))
+	fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge login --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify --token=dev-token"))
 	stepNum++
 
 	fmt.Fprintf(o.Streams.ErrOut, "%d. Connect an agent from a remote cluster:\n", stepNum)
-	fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kedge agent start --hub-url http://kedge.localhost:8080"))
+	fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kedge agent start --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify"))
 
 	return nil
 }
@@ -376,27 +377,24 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 
 	values := map[string]any{
 		"image": map[string]any{
-			"repository": o.Image,
-			"tag":        o.Tag,
+			"hub": map[string]any{
+				"repository": o.Image,
+				"tag":        o.Tag,
+			},
 		},
 		"hub": map[string]any{
-			"listenAddress":   "0.0.0.0:8080",
-			"externalAddress": "https://kedge.localhost:6443",
-			"oidc": map[string]any{
-				"callbackUrl": "http://kedge.localhost:8080/api/callback",
-				"issuerUrl":   "http://kedge.localhost:8080/oidc",
-				"type":        "embedded",
+			"hubExternalURL": "https://kedge.localhost:8443",
+			"listenAddr":     ":8443",
+			"devMode":        true,
+			"staticAuthTokens": []string{
+				"dev-token",
 			},
 		},
 		"service": map[string]any{
-			"type":     "NodePort",
-			"port":     8080,
-			"nodePort": 31000,
-		},
-		"hostAliases": []map[string]any{
-			{
-				"ip":        "0.0.0.0",
-				"hostnames": []string{"kedge.localhost"},
+			"type": "NodePort",
+			"hub": map[string]any{
+				"port":     8443,
+				"nodePort": 31443,
 			},
 		},
 	}
