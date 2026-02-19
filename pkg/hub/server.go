@@ -74,6 +74,9 @@ func (s *Server) Run(ctx context.Context) error {
 	var bootstrapper *kcp.Bootstrapper
 	var embeddedKCP *kcp.EmbeddedKCP
 
+	// kcpErrCh receives errors from the embedded kcp server goroutine.
+	kcpErrCh := make(chan error, 1)
+
 	// Start embedded kcp if enabled.
 	if s.opts.EmbeddedKCP {
 		kcpRootDir := s.opts.KCPRootDir
@@ -92,18 +95,22 @@ func (s *Server) Run(ctx context.Context) error {
 			BatteriesInclude: batteries,
 		})
 
-		// Start kcp in a goroutine.
+		// Start kcp in a goroutine. It will block until context is cancelled
+		// or an error occurs.
 		go func() {
 			if err := embeddedKCP.Run(ctx); err != nil {
 				logger.Error(err, "Embedded kcp server failed")
+				kcpErrCh <- err
 			}
 		}()
 
-		// Wait for kcp to be ready.
+		// Wait for kcp to be ready or fail.
 		logger.Info("Waiting for embedded kcp to be ready...")
 		select {
 		case <-embeddedKCP.Ready():
 			logger.Info("Embedded kcp is ready")
+		case err := <-kcpErrCh:
+			return fmt.Errorf("embedded kcp failed to start: %w", err)
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -128,14 +135,16 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// 1. Build rest.Config for the base cluster (used for CRDs when no kcp).
-	config, err := s.buildRestConfig()
-	if err != nil {
-		return fmt.Errorf("building rest config: %w", err)
-	}
-
-	// If kcp is configured, use its config for CRDs and bootstrapping.
+	// If kcp is configured (embedded or external), use its config directly.
+	var config *rest.Config
 	if kcpConfig != nil {
 		config = kcpConfig
+	} else {
+		var err error
+		config, err = s.buildRestConfig()
+		if err != nil {
+			return fmt.Errorf("building rest config: %w", err)
+		}
 	}
 
 	// 2. Bootstrap CRDs
@@ -299,9 +308,17 @@ func (s *Server) Run(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Channel to receive HTTP server errors.
+	httpErrCh := make(chan error, 1)
+
+	// Shutdown handler - triggered by context cancellation or kcp failure.
 	go func() {
-		<-ctx.Done()
-		logger.Info("Shutting down HTTP server")
+		select {
+		case <-ctx.Done():
+			logger.Info("Shutting down HTTP server (context cancelled)")
+		case err := <-kcpErrCh:
+			logger.Error(err, "Embedded kcp server failed, shutting down hub")
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
@@ -309,17 +326,33 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
-	// Use TLS if cert and key files are provided.
-	if s.opts.ServingCertFile != "" && s.opts.ServingKeyFile != "" {
-		logger.Info("Hub server starting with TLS", "addr", s.opts.ListenAddr)
-		if err := httpServer.ListenAndServeTLS(s.opts.ServingCertFile, s.opts.ServingKeyFile); err != nil && err != http.ErrServerClosed {
-			return fmt.Errorf("HTTPS server error: %w", err)
+	// Start HTTP server in a goroutine.
+	go func() {
+		var err error
+		if s.opts.ServingCertFile != "" && s.opts.ServingKeyFile != "" {
+			logger.Info("Hub server starting with TLS", "addr", s.opts.ListenAddr)
+			err = httpServer.ListenAndServeTLS(s.opts.ServingCertFile, s.opts.ServingKeyFile)
+		} else {
+			logger.Info("Hub server starting without TLS", "addr", s.opts.ListenAddr)
+			err = httpServer.ListenAndServe()
 		}
-	} else {
-		logger.Info("Hub server starting without TLS", "addr", s.opts.ListenAddr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err != nil && err != http.ErrServerClosed {
+			httpErrCh <- err
+		}
+		close(httpErrCh)
+	}()
+
+	// Wait for either HTTP server error, kcp error, or context cancellation.
+	select {
+	case err := <-httpErrCh:
+		if err != nil {
 			return fmt.Errorf("HTTP server error: %w", err)
 		}
+	case err := <-kcpErrCh:
+		return fmt.Errorf("embedded kcp server failed: %w", err)
+	case <-ctx.Done():
+		// Wait for HTTP server to finish shutting down.
+		<-httpErrCh
 	}
 
 	return nil
