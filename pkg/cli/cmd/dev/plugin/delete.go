@@ -36,7 +36,7 @@ func (o *DevOptions) RunDelete() error {
 }
 
 func (o *DevOptions) deleteCluster(clusterName string) error {
-	fmt.Fprintf(o.Streams.ErrOut, "Deleting kind cluster %s\n", clusterName)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "Deleting kind cluster %s\n", clusterName)
 	provider := cluster.NewProvider()
 
 	err := provider.Delete(clusterName, "")
@@ -46,9 +46,9 @@ func (o *DevOptions) deleteCluster(clusterName string) error {
 
 	kubeconfigPath := fmt.Sprintf("%s.kubeconfig", clusterName)
 	if err := os.Remove(kubeconfigPath); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(o.Streams.ErrOut, "Failed to remove kubeconfig file %s: %v\n", kubeconfigPath, err)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Failed to remove kubeconfig file %s: %v\n", kubeconfigPath, err)
 	} else {
-		fmt.Fprintf(o.Streams.ErrOut, "Removed kubeconfig file %s\n", kubeconfigPath)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Removed kubeconfig file %s\n", kubeconfigPath)
 	}
 
 	return nil
@@ -56,15 +56,15 @@ func (o *DevOptions) deleteCluster(clusterName string) error {
 
 func (o *DevOptions) cleanupHostEntries() error {
 	if err := removeHostEntry("kedge.localhost"); err != nil {
-		fmt.Fprintf(o.Streams.ErrOut, "Failed to remove host entry: %v\n", err)
-		fmt.Fprintf(o.Streams.ErrOut, "Warning: Could not automatically remove host entry. Please run:\n")
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Failed to remove host entry: %v\n", err)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: Could not automatically remove host entry. Please run:\n")
 		if runtime.GOOS == "windows" {
-			fmt.Fprintf(o.Streams.ErrOut, "  Remove '127.0.0.1 kedge.localhost' line from C:\\Windows\\System32\\drivers\\etc\\hosts\n")
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Remove '127.0.0.1 kedge.localhost' line from C:\\Windows\\System32\\drivers\\etc\\hosts\n")
 		} else {
-			fmt.Fprintf(o.Streams.ErrOut, "  sudo sed -i '/127.0.0.1 kedge.localhost/d' /etc/hosts\n")
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  sudo sed -i '/127.0.0.1 kedge.localhost/d' /etc/hosts\n")
 		}
 	} else {
-		fmt.Fprintf(o.Streams.ErrOut, "Removed host entry kedge.localhost\n")
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Removed host entry kedge.localhost\n")
 	}
 	return nil
 }
@@ -76,7 +76,7 @@ func removeHostEntry(hostname string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open hosts file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var lines []string
 	scanner := bufio.NewScanner(file)

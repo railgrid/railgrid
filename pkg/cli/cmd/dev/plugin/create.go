@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package plugin provides the implementation for kedge dev command plugins.
 package plugin
 
 import (
@@ -100,7 +101,7 @@ func (o *DevOptions) Complete(args []string) error {
 		version, err := fetchLatestRelease()
 		if err != nil {
 			// Log the error but continue with fallback version
-			fmt.Fprintf(o.Streams.ErrOut, "Warning: Failed to fetch latest release version: %v. Using fallback version %s\n", err, fallbackAssetVersion)
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: Failed to fetch latest release version: %v. Using fallback version %s\n", err, fallbackAssetVersion)
 			assetVersion = fallbackAssetVersion
 		} else {
 			assetVersion = version
@@ -132,7 +133,7 @@ func fetchLatestRelease() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch latest release: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() // nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
@@ -190,14 +191,14 @@ func redText(text string) string {
 
 func (o *DevOptions) runWithColors(ctx context.Context) error {
 	// Display experimental warning header with red "EXPERIMENTAL"
-	fmt.Fprintf(o.Streams.ErrOut, "kedge Development Environment Setup\n\n")
-	fmt.Fprintf(o.Streams.ErrOut, "%s kedge dev command is in preview\n", redText("EXPERIMENTAL:"))
-	fmt.Fprintf(o.Streams.ErrOut, "Requirements: Docker must be installed and running\n\n")
+	fmt.Fprintf(o.Streams.ErrOut, "kedge Development Environment Setup\n\n")                        // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "%s kedge dev command is in preview\n", redText("EXPERIMENTAL:")) // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "Requirements: Docker must be installed and running\n\n")         // nolint:errcheck
 
 	hostEntryExists := o.setupHostEntries()
 
 	if err := o.checkFileLimits(); err != nil {
-		fmt.Fprintf(o.Streams.ErrOut, "Warning: File limit check: %v\n", err)
+		fmt.Fprintf(o.Streams.ErrOut, "Warning: File limit check: %v\n", err) // nolint:errcheck
 	}
 
 	if err := o.createCluster(ctx, o.HubClusterName, hubClusterConfig, true); err != nil {
@@ -206,45 +207,46 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 
 	hubIP, err := o.getClusterIPAddress(ctx, o.HubClusterName, o.KindNetwork)
 	if err != nil {
-		fmt.Fprintf(o.Streams.ErrOut, "Warning: Failed to get hub cluster IP address: %v\n", err)
+		fmt.Fprintf(o.Streams.ErrOut, "Warning: Failed to get hub cluster IP address: %v\n", err) // nolint:errcheck
 		hubIP = ""
 	}
 
 	// Success message
-	fmt.Fprint(o.Streams.ErrOut, "kedge dev environment is ready!\n\n")
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "kedge dev environment is ready!\n\n")
 
 	// Configuration
-	fmt.Fprint(o.Streams.ErrOut, "Configuration:\n")
-	fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster kubeconfig: %s.kubeconfig\n", o.HubClusterName)
-	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:8443\n")
-	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")
+	fmt.Fprint(o.Streams.ErrOut, "Configuration:\n")                                             // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster kubeconfig: %s.kubeconfig\n", o.HubClusterName) // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:8443\n")           // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                             // nolint:errcheck
 	if hubIP != "" {
-		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP: %s\n", hubIP)
+		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP: %s\n", hubIP) // nolint:errcheck
 	}
-	fmt.Fprint(o.Streams.ErrOut, "\n")
+	fmt.Fprint(o.Streams.ErrOut, "\n") // nolint:errcheck
 
 	// Next steps with colored commands
-	fmt.Fprint(o.Streams.ErrOut, "Next Steps:\n\n")
+	fmt.Fprint(o.Streams.ErrOut, "Next Steps:\n\n") // nolint:errcheck
 
 	stepNum := 1
 
 	// Only show /etc/hosts step if entry didn't already exist
 	if !hostEntryExists {
-		fmt.Fprintf(o.Streams.ErrOut, "%d. Add to /etc/hosts (if not already done):\n", stepNum)
-		fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("echo '127.0.0.1 kedge.localhost' | sudo tee -a /etc/hosts"))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Add to /etc/hosts (if not already done):\n", stepNum)
+
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("echo '127.0.0.1 kedge.localhost' | sudo tee -a /etc/hosts"))
 		stepNum++
 	}
 
-	fmt.Fprintf(o.Streams.ErrOut, "%d. Set kubeconfig to access hub cluster:\n", stepNum)
-	fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf("export KUBECONFIG=%s.kubeconfig", o.HubClusterName)))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Set kubeconfig to access hub cluster:\n", stepNum)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf("export KUBECONFIG=%s.kubeconfig", o.HubClusterName)))
 	stepNum++
 
-	fmt.Fprintf(o.Streams.ErrOut, "%d. Login to authenticate to the hub:\n", stepNum)
-	fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge login --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify --token=dev-token"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Login to authenticate to the hub:\n", stepNum)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge login --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify --token=dev-token"))
 	stepNum++
 
-	fmt.Fprintf(o.Streams.ErrOut, "%d. Connect an agent from a remote cluster:\n", stepNum)
-	fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kedge agent start --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Connect an agent from a remote cluster:\n", stepNum)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kedge agent start --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify"))
 
 	return nil
 }
@@ -256,23 +258,23 @@ func (o *DevOptions) Run(ctx context.Context) error {
 
 func (o *DevOptions) setupHostEntries() bool {
 	if err := addHostEntry("kedge.localhost"); err != nil {
-		fmt.Fprintf(o.Streams.ErrOut, "Warning: Could not automatically add host entry. Please run:\n")
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: Could not automatically add host entry. Please run:\n")
 		if runtime.GOOS == "windows" {
-			fmt.Fprintf(o.Streams.ErrOut, "  echo 127.0.0.1 kedge.localhost >> C:\\Windows\\System32\\drivers\\etc\\hosts\n")
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  echo 127.0.0.1 kedge.localhost >> C:\\Windows\\System32\\drivers\\etc\\hosts\n")
 		} else {
-			fmt.Fprintf(o.Streams.ErrOut, "  echo '127.0.0.1 kedge.localhost' | sudo tee -a /etc/hosts\n")
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  echo '127.0.0.1 kedge.localhost' | sudo tee -a /etc/hosts\n")
 		}
 
 		return false
 	}
 
-	fmt.Fprint(o.Streams.ErrOut, "Host entry exists for kedge.localhost\n")
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "Host entry exists for kedge.localhost\n")
 	return true
 }
 
 func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConfig string, installKedge bool) error {
 	// Set experimental Docker network for kind clusters to communicate
-	os.Setenv("KIND_EXPERIMENTAL_DOCKER_NETWORK", o.KindNetwork)
+	_ = os.Setenv("KIND_EXPERIMENTAL_DOCKER_NETWORK", o.KindNetwork)
 
 	provider := cluster.NewProvider()
 
@@ -284,7 +286,7 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 	kubeconfigPath := fmt.Sprintf("%s.kubeconfig", clusterName)
 
 	if slices.Contains(clusters, clusterName) {
-		fmt.Fprint(o.Streams.ErrOut, "Kind cluster "+clusterName+" already exists, skipping creation\n")
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "Kind cluster "+clusterName+" already exists, skipping creation\n")
 
 		// Export kubeconfig for existing cluster
 		err := provider.ExportKubeConfig(clusterName, kubeconfigPath, false)
@@ -292,7 +294,7 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 			return fmt.Errorf("failed to export kubeconfig for existing cluster %s: %w", clusterName, err)
 		}
 	} else {
-		fmt.Fprintf(o.Streams.ErrOut, "Creating kind cluster %s with network %s\n", clusterName, o.KindNetwork)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Creating kind cluster %s with network %s\n", clusterName, o.KindNetwork)
 		err := provider.Create(clusterName,
 			cluster.CreateWithRawConfig([]byte(clusterConfig)),
 			cluster.CreateWithWaitForReady(o.WaitForReadyTimeout),
@@ -302,7 +304,7 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 		if err != nil {
 			return err
 		}
-		fmt.Fprint(o.Streams.ErrOut, "Kind cluster "+clusterName+" created\n")
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "Kind cluster "+clusterName+" created\n")
 	}
 
 	if installKedge {
@@ -311,10 +313,10 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 			return err
 		}
 		if err := o.installHelmChart(ctx, restConfig); err != nil {
-			fmt.Fprint(o.Streams.ErrOut, "Failed to install Helm chart\n")
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "Failed to install Helm chart\n")
 			return err
 		}
-		fmt.Fprint(o.Streams.ErrOut, "Helm chart installed successfully\n")
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "Helm chart installed successfully\n")
 	}
 
 	return nil
@@ -329,7 +331,7 @@ func (o *DevOptions) getClusterIPAddress(ctx context.Context, clusterName, netwo
 	if err != nil {
 		return "", fmt.Errorf("failed to create docker client: %w", err)
 	}
-	defer dockerClient.Close()
+	defer func() { _ = dockerClient.Close() }()
 
 	// Get the container name for the kind cluster control plane
 	containerName := fmt.Sprintf("%s-control-plane", clusterName)
@@ -404,8 +406,8 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 
 	if strings.HasPrefix(o.ChartPath, "oci://") {
 		tempInstallAction := action.NewInstall(actionConfig)
-		tempInstallAction.ChartPathOptions.Version = o.ChartVersion
-		chartPath, err := tempInstallAction.ChartPathOptions.LocateChart(o.ChartPath, cli.New())
+		tempInstallAction.Version = o.ChartVersion
+		chartPath, err := tempInstallAction.LocateChart(o.ChartPath, cli.New())
 		if err != nil {
 			return fmt.Errorf("failed to locate OCI chart: %w", err)
 		}
@@ -499,7 +501,7 @@ func addHostEntry(hostname string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open hosts file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	if _, err := fmt.Fprintf(file, "\n%s\n", entry); err != nil {
 		return fmt.Errorf("failed to write to hosts file: %w", err)
@@ -513,7 +515,7 @@ func hostEntryExists(hostsPath, hostname string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to open hosts file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -537,8 +539,8 @@ func (o *DevOptions) checkFileLimits() error {
 	watchesOutput, err := watchesCmd.Output()
 	if err == nil {
 		if watches, err := strconv.Atoi(strings.TrimSpace(string(watchesOutput))); err == nil && watches < 524288 {
-			fmt.Fprintf(o.Streams.ErrOut, "Warning: fs.inotify.max_user_watches is %d (recommended: 524288)\n", watches)
-			fmt.Fprintf(o.Streams.ErrOut, "To increase: sudo sysctl fs.inotify.max_user_watches=524288\n")
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: fs.inotify.max_user_watches is %d (recommended: 524288)\n", watches)
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "To increase: sudo sysctl fs.inotify.max_user_watches=524288\n")
 		}
 	}
 
@@ -547,8 +549,8 @@ func (o *DevOptions) checkFileLimits() error {
 	instancesOutput, err := instancesCmd.Output()
 	if err == nil {
 		if instances, err := strconv.Atoi(strings.TrimSpace(string(instancesOutput))); err == nil && instances < 512 {
-			fmt.Fprintf(o.Streams.ErrOut, "Warning: fs.inotify.max_user_instances is %d (recommended: 512)\n", instances)
-			fmt.Fprintf(o.Streams.ErrOut, "To increase: sudo sysctl fs.inotify.max_user_instances=512\n")
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: fs.inotify.max_user_instances is %d (recommended: 512)\n", instances)
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "To increase: sudo sysctl fs.inotify.max_user_instances=512\n")
 		}
 	}
 
