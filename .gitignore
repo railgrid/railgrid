@@ -45,6 +45,7 @@ dex.db
 .kind-kubeconfig
 .gitignore
 .site-kubeconfig
+.hooks/
 
 .kubeconfig-kedge-agent
 kk

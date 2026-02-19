@@ -1,4 +1,4 @@
-.PHONY: build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-kcp dev-login dev-site-create dev-create-workload dev-run-agent dev dev-infra path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent
+.PHONY: build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-site-create dev-create-workload dev-run-agent dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -173,34 +173,133 @@ dev-run-agent: build-agent
 dev-infra: $(KCP) $(DEX) certs ## Run infra only (kcp + Dex)
 	hack/scripts/dev-infra.sh
 
-dev-run-kcp: $(KCP)
-	$(KCP) start --root-directory=$(KCP_DATA_DIR) --feature-gates=WorkspaceMounts=true
+# Service hooks for dependency tracking
+HOOKS_DIR := .hooks
+SERVICE_HOOKS := hack/scripts/service-hooks.sh
 
+# Helper to check if a service is running
+define check_service
+	@source $(SERVICE_HOOKS) && service_is_running $(1) || (echo "ERROR: $(1) is not running. Start with: $(2)" && exit 1)
+endef
 
-run-dex: $(DEX) certs
-	$(DEX) serve hack/dev/dex/dex-config-dev.yaml
+# Helper to require service not running
+define check_no_service
+	@source $(SERVICE_HOOKS) && ! service_is_running $(1) || (echo "ERROR: $(1) is running. Stop it first or use a different mode." && exit 1)
+endef
 
-run-hub: build-hub certs
-	$(BINDIR)/kedge-hub \
-		--idp-issuer-url=https://localhost:5554/dex \
-		--idp-client-id=kedge \
-		--idp-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0 \
-		--serving-cert-file=certs/apiserver.crt \
-		--serving-key-file=certs/apiserver.key \
-		--hub-external-url=https://localhost:8443 \
-		--external-kcp-kubeconfig=.kcp/admin.kubeconfig \
-		--dev-mode
+dev-run-kcp: $(KCP) ## Run external kcp server
+	@source $(SERVICE_HOOKS) && cleanup_stale_hooks
+	@echo "Starting kcp..."
+	@source $(SERVICE_HOOKS) && \
+		($(KCP) start --root-directory=$(KCP_DATA_DIR) --feature-gates=WorkspaceMounts=true & \
+		KCP_PID=$$!; \
+		service_start kcp $$KCP_PID; \
+		wait $$KCP_PID)
+
+run-dex: $(DEX) certs ## Run Dex OIDC server
+	@source $(SERVICE_HOOKS) && cleanup_stale_hooks
+	@echo "Starting Dex..."
+	@source $(SERVICE_HOOKS) && \
+		($(DEX) serve hack/dev/dex/dex-config-dev.yaml & \
+		DEX_PID=$$!; \
+		service_start dex $$DEX_PID; \
+		wait $$DEX_PID)
+
+# --- Hub configuration options ---
+# These can be combined to create different run configurations.
 
 STATIC_AUTH_TOKEN ?= dev-token
 
-run-hub-static: build-hub certs ## Run hub with static token auth (no OIDC)
-	$(BINDIR)/kedge-hub \
-		--static-auth-token=$(STATIC_AUTH_TOKEN) \
-		--serving-cert-file=certs/apiserver.crt \
-		--serving-key-file=certs/apiserver.key \
-		--hub-external-url=https://localhost:8443 \
-		--external-kcp-kubeconfig=.kcp/admin.kubeconfig \
-		--dev-mode
+# Base hub flags (always needed)
+HUB_FLAGS_BASE := \
+	--serving-cert-file=certs/apiserver.crt \
+	--serving-key-file=certs/apiserver.key \
+	--hub-external-url=https://localhost:8443 \
+	--dev-mode
+
+# Auth: OIDC via Dex
+HUB_FLAGS_OIDC := \
+	--idp-issuer-url=https://localhost:5554/dex \
+	--idp-client-id=kedge \
+	--idp-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0
+
+# Auth: Static token
+HUB_FLAGS_STATIC := \
+	--static-auth-token=$(STATIC_AUTH_TOKEN)
+
+# KCP: External (requires running kcp separately)
+HUB_FLAGS_KCP_EXTERNAL := \
+	--external-kcp-kubeconfig=.kcp/admin.kubeconfig
+
+# KCP: Embedded (runs kcp in-process)
+HUB_FLAGS_KCP_EMBEDDED := \
+	--embedded-kcp \
+	--kcp-root-dir=.kcp \
+	--kcp-secure-port=6443
+
+# --- Run targets ---
+# Naming convention: run-hub-[auth]-[kcp]
+# auth: oidc | static
+# kcp: external | embedded
+
+## External KCP + OIDC auth (requires: make run-dex, make dev-run-kcp)
+run-hub: build-hub certs
+	@source $(SERVICE_HOOKS) && require_service dex "make run-dex"
+	@source $(SERVICE_HOOKS) && require_service kcp "make dev-run-kcp"
+	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EXTERNAL)
+
+## External KCP + static token auth (requires: make dev-run-kcp)
+run-hub-static: build-hub certs
+	@source $(SERVICE_HOOKS) && require_service kcp "make dev-run-kcp"
+	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EXTERNAL)
+
+## Embedded KCP + OIDC auth (requires: make run-dex)
+run-hub-embedded: build-hub certs
+	@source $(SERVICE_HOOKS) && require_service dex "make run-dex"
+	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
+	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED)
+
+## Embedded KCP + static token auth (standalone - no external deps)
+run-hub-embedded-static: build-hub certs
+	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
+	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED)
+
+## Alias for the simplest standalone mode
+run-hub-standalone: run-hub-embedded-static
+
+dev-status: ## Show status of dev services (dex, kcp)
+	@source $(SERVICE_HOOKS) && list_services
+
+dev-clean-hooks: ## Clean up stale service hooks
+	@source $(SERVICE_HOOKS) && cleanup_stale_hooks
+	@echo "Hooks cleaned."
+
+# --- Dev environment quick start ---
+# These targets help you get started quickly
+
+help-dev: ## Show development environment options
+	@echo ""
+	@echo "=== Kedge Hub Development Modes ==="
+	@echo ""
+	@echo "STANDALONE (no external dependencies):"
+	@echo "  make run-hub-standalone     - Embedded kcp + static token"
+	@echo "                                Just run this and use: make dev-login-static"
+	@echo ""
+	@echo "WITH DEX (OIDC authentication):"
+	@echo "  Terminal 1: make run-dex"
+	@echo "  Terminal 2: make run-hub-embedded    - Embedded kcp + OIDC"
+	@echo "              make dev-login           - Login via browser"
+	@echo ""
+	@echo "WITH EXTERNAL KCP:"
+	@echo "  Terminal 1: make dev-run-kcp"
+	@echo "  Terminal 2: make run-dex             - (optional, for OIDC)"
+	@echo "  Terminal 3: make run-hub             - External kcp + OIDC"
+	@echo "          or: make run-hub-static      - External kcp + static token"
+	@echo ""
+	@echo "ENVIRONMENT VARIABLES:"
+	@echo "  STATIC_AUTH_TOKEN  - Token for static auth (default: dev-token)"
+	@echo "  KCP_DATA_DIR       - Directory for kcp data (default: .kcp)"
+	@echo ""
 
 docker-build: docker-build-hub docker-build-agent ## Build all container images
 
