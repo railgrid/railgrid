@@ -4,25 +4,31 @@ image:
     repository: ghcr.io/faroshq/kedge-hub
     tag: ""  # defaults to .Chart.AppVersion
     pullPolicy: IfNotPresent
-  kcp:
-    repository: ghcr.io/kcp-dev/kcp
-    tag: "v0.30.0"
-    pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# -- kcp settings (embedded etcd, single instance)
+# -- kcp settings
 kcp:
-  featureGates: "WorkspaceMounts=true"
-  extraArgs: []
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      memory: 1Gi
+  # -- Embedded kcp (default, runs in-process with kedge-hub)
+  embedded:
+    enabled: true
+    # Secure port for embedded kcp API server
+    securePort: 6443
+    # Comma-separated list of batteries to include
+    batteriesInclude: "admin,user"
+
+  # -- External kcp (running outside the cluster)
+  # Enable this to connect to an external kcp instance
+  external:
+    enabled: false
+    # Kubeconfig for connecting to external kcp
+    # Can be provided via:
+    # 1. existingSecret - name of a secret containing admin.kubeconfig key
+    # 2. kubeconfig - inline kubeconfig content (not recommended for production)
+    existingSecret: ""
+    kubeconfig: ""
 
 # -- kedge-hub settings
 hub:
@@ -37,7 +43,7 @@ hub:
       cpu: 100m
       memory: 256Mi
     limits:
-      memory: 512Mi
+      memory: 1Gi  # Includes embedded kcp overhead
   # -- TLS configuration for hub serving
   tls:
     # Provide an existing Secret with tls.crt and tls.key
@@ -64,7 +70,7 @@ idp:
   clientID: "kedge"
   clientSecret: ""
 
-# -- kcp data PVC
+# -- kcp data PVC (used for embedded kcp data and hub state)
 persistence:
   size: 10Gi
   storageClass: ""

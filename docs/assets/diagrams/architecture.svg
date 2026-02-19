@@ -1,0 +1,73 @@
+<svg viewBox="0 0 750 600" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .box { stroke: #1e1e1e; stroke-width: 2; rx: 8; }
+    .text { font-family: 'Segoe UI', system-ui, sans-serif; fill: #1e1e1e; }
+    .title { font-size: 18px; font-weight: 600; }
+    .subtitle { font-size: 14px; }
+    .label { font-size: 13px; }
+    .small { font-size: 11px; }
+    .arrow { stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+    .tunnel-text { font-size: 11px; fill: #2f9e44; }
+  </style>
+
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2f9e44"/>
+    </marker>
+    <marker id="arrowhead-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#1971c2"/>
+    </marker>
+  </defs>
+
+  <!-- Home Lab -->
+  <rect x="40" y="40" width="200" height="110" class="box" fill="#a5d8ff"/>
+  <text x="140" y="65" class="text title" text-anchor="middle">Home Lab</text>
+  <rect x="60" y="80" width="160" height="55" class="box" fill="#b2f2bb"/>
+  <text x="140" y="115" class="text label" text-anchor="middle">k3s + Agent</text>
+
+  <!-- Remote Site -->
+  <rect x="40" y="180" width="200" height="110" class="box" fill="#a5d8ff"/>
+  <text x="140" y="205" class="text title" text-anchor="middle">Remote Site</text>
+  <rect x="60" y="220" width="160" height="55" class="box" fill="#b2f2bb"/>
+  <text x="140" y="255" class="text label" text-anchor="middle">k0s + Agent</text>
+
+  <!-- Edge Device -->
+  <rect x="40" y="320" width="200" height="110" class="box" fill="#a5d8ff"/>
+  <text x="140" y="345" class="text title" text-anchor="middle">Edge Device</text>
+  <rect x="60" y="360" width="160" height="55" class="box" fill="#b2f2bb"/>
+  <text x="140" y="395" class="text label" text-anchor="middle">k8s + Agent</text>
+
+  <!-- Hub -->
+  <rect x="480" y="100" width="220" height="280" class="box" fill="#ffc9c9"/>
+  <text x="590" y="140" class="text title" text-anchor="middle">Hub</text>
+  <text x="590" y="165" class="text subtitle" text-anchor="middle">(cloud / VPS)</text>
+
+  <!-- Hub internal details -->
+  <rect x="500" y="190" width="180" height="40" class="box" fill="#ffb3b3" stroke-dasharray="4"/>
+  <text x="590" y="215" class="text small" text-anchor="middle">kcp API Server</text>
+
+  <rect x="500" y="245" width="180" height="40" class="box" fill="#ffb3b3" stroke-dasharray="4"/>
+  <text x="590" y="270" class="text small" text-anchor="middle">Tunnel Endpoints</text>
+
+  <rect x="500" y="300" width="180" height="40" class="box" fill="#ffb3b3" stroke-dasharray="4"/>
+  <text x="590" y="325" class="text small" text-anchor="middle">Scheduling</text>
+
+  <!-- Arrows with tunnel labels -->
+  <path d="M 245 107 Q 360 107 475 200" class="arrow" stroke="#2f9e44"/>
+  <text x="340" y="130" class="tunnel-text">reverse tunnel</text>
+
+  <path d="M 245 247 L 475 260" class="arrow" stroke="#2f9e44"/>
+  <text x="340" y="235" class="tunnel-text">reverse tunnel</text>
+
+  <path d="M 245 387 Q 360 387 475 320" class="arrow" stroke="#2f9e44"/>
+  <text x="340" y="380" class="tunnel-text">reverse tunnel</text>
+
+  <!-- User -->
+  <rect x="520" y="460" width="140" height="90" class="box" fill="#ffec99"/>
+  <text x="590" y="495" class="text title" text-anchor="middle">You</text>
+  <text x="590" y="520" class="text subtitle" text-anchor="middle">(anywhere)</text>
+  <text x="590" y="540" class="text small" text-anchor="middle">kedge CLI</text>
+
+  <!-- User to Hub arrow -->
+  <path d="M 590 455 L 590 385" stroke="#1971c2" stroke-width="2" fill="none" marker-end="url(#arrowhead-blue)"/>
+</svg>

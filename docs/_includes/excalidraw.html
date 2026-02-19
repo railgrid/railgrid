@@ -1,0 +1,19 @@
+{% comment %}
+  Excalidraw diagram include for Jekyll
+  Usage: {% include excalidraw.html file="architecture.excalidraw" %}
+  Optional: {% include excalidraw.html file="architecture.excalidraw" alt="Architecture diagram" %}
+{% endcomment %}
+
+<div class="excalidraw-diagram" style="width: 100%; margin: 1.5rem 0; background: #fff; border-radius: 8px; padding: 1rem; border: 1px solid #e1e4e8;">
+  <a href="{{ site.baseurl }}/assets/diagrams/{{ include.file }}" target="_blank" title="Click to open in Excalidraw">
+    <img
+      src="{{ site.baseurl }}/assets/diagrams/{{ include.file | replace: '.excalidraw', '.svg' }}"
+      alt="{{ include.alt | default: 'Diagram' }}"
+      style="width: 100%; height: auto; display: block;"
+      loading="lazy"
+    />
+  </a>
+  <p style="text-align: center; margin-top: 0.5rem; font-size: 0.8rem; color: #586069;">
+    <a href="{{ site.baseurl }}/assets/diagrams/{{ include.file }}" target="_blank">Open in Excalidraw</a>
+  </p>
+</div>

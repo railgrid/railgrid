@@ -1,0 +1,36 @@
+<svg viewBox="0 0 600 450" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .box { stroke: #1e1e1e; stroke-width: 2; rx: 8; }
+    .text { font-family: 'Segoe UI', system-ui, sans-serif; fill: #1e1e1e; }
+    .title { font-size: 20px; font-weight: 600; }
+    .step { font-size: 14px; }
+    .arrow { stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+    .tunnel-text { font-size: 12px; fill: #2f9e44; }
+  </style>
+
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2f9e44"/>
+    </marker>
+  </defs>
+
+  <!-- Hub Box -->
+  <rect x="50" y="30" width="500" height="150" class="box" fill="#ffc9c9"/>
+  <text x="300" y="60" class="text title" text-anchor="middle">Hub</text>
+
+  <text x="70" y="95" class="text step">1. You created a VirtualWorkload</text>
+  <text x="70" y="120" class="text step">2. Hub found matching Sites (via placement rules)</text>
+  <text x="70" y="145" class="text step">3. Hub created a Placement binding workload → site</text>
+
+  <!-- Arrow -->
+  <path d="M 300 185 L 300 250" class="arrow" stroke="#2f9e44"/>
+  <text x="315" y="220" class="tunnel-text">reverse tunnel</text>
+
+  <!-- Agent Box -->
+  <rect x="50" y="255" width="500" height="160" class="box" fill="#a5d8ff"/>
+  <text x="300" y="290" class="text title" text-anchor="middle">Agent (kind cluster)</text>
+
+  <text x="70" y="330" class="text step">4. Agent saw the Placement</text>
+  <text x="70" y="355" class="text step">5. Agent created the actual Pod/Deployment on the cluster</text>
+  <text x="70" y="380" class="text step">6. Agent reported status back to the Hub</text>
+</svg>

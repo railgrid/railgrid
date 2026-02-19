@@ -18,7 +18,13 @@ limitations under the License.
 package cmd
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/spf13/cobra"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
+
+	devcmd "github.com/faroshq/faros-kedge/pkg/cli/cmd/dev/cmd"
 )
 
 // NewRootCommand creates the root cobra command for the kedge CLI.
@@ -37,6 +43,13 @@ enabling secure workload deployment across distributed sites.`,
 
 	cmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig file")
 
+	// Add dev command
+	devCmd, err := devcmd.New(genericclioptions.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v", err)
+		os.Exit(1)
+	}
+
 	cmd.AddCommand(
 		newInitCommand(),
 		newLoginCommand(),
@@ -47,6 +60,7 @@ enabling secure workload deployment across distributed sites.`,
 		newGetCommand(),
 		newWorkspaceCommand(),
 		newVersionCommand(),
+		devCmd,
 	)
 
 	return cmd
