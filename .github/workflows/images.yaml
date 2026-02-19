@@ -1,96 +1,94 @@
-name: Build and Push Images
+name: Container Image Build and Push
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*"
+  release:
+    types: [created]
 
 permissions:
   contents: read
   packages: write
   id-token: write
 
+env:
+  REGISTRY: ghcr.io
+  HUB_IMAGE_NAME: ${{ github.repository }}
+  AGENT_IMAGE_NAME: ${{ github.repository }}-agent
+
 jobs:
-  build-hub:
+  build-and-push-hub-image:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GitHub Container Registry  
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install Helm
-        uses: azure/setup-helm@v3
-        with:
-          version: 'v3.12.0'
-
-      - name: Extract metadata
+      - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/faroshq/kedge-hub
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
+          images: ${{ env.REGISTRY }}/${{ env.HUB_IMAGE_NAME }}
 
-      - name: Build and push
+      - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/Dockerfile.hub
+          file: ./deploy/Dockerfile.hub
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ github.ref_name }}
             GIT_COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64,linux/arm64
+            BUILD_DATE=${{ github.event.release.created_at }}
 
-      - name: Package and push Helm charts as OCI
-        env:
-          HELM_EXPERIMENTAL_OCI: 1
-        run: |
-          # Login to GitHub Container Registry for Helm
-          echo "${{ github.token }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
-          
-          # Set chart version - use tag name if available, otherwise use semver format
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            CHART_VERSION="${{ github.ref_name }}"
-            # Remove 'v' prefix if present
-            CHART_VERSION="${CHART_VERSION#v}"
-          else
-            CHART_VERSION="0.0.0-${{ github.sha }}"
-          fi
-          
-          # Package and push each chart in deploy/charts/
-          for chart_dir in deploy/charts/*/; do
-            if [ -f "${chart_dir}Chart.yaml" ]; then
-              chart_name=$(basename "$chart_dir")
-              echo "Processing chart: $chart_name"
-              
-              # Update chart version and appVersion in Chart.yaml
-              sed -i "s/^version:.*/version: ${CHART_VERSION}/" "${chart_dir}Chart.yaml"
-              sed -i "s/^appVersion:.*/appVersion: ${CHART_VERSION}/" "${chart_dir}Chart.yaml"
-              
-              # Package the chart
-              helm package "$chart_dir" --version "${CHART_VERSION}"
-              
-              # Push to GitHub Container Registry
-              helm push "${chart_name}-${CHART_VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
-              
-              echo "Helm chart pushed to oci://ghcr.io/${{ github.repository_owner }}/charts/${chart_name}:${CHART_VERSION}"
-            fi
-          done
+  build-and-push-agent-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE_NAME }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/Dockerfile.agent
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.release.created_at }}
