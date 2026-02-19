@@ -1,14 +1,14 @@
 ---
 layout: default
-title: Ingress Setup
-nav_order: 5
-description: "Expose Kedge Hub via Cloudflare Tunnel"
+title: Ingress
+nav_order: 4
+description: "Expose Kedge Hub publicly for remote agents"
 ---
 
-# Ingress Setup
+# Ingress
 {: .no_toc }
 
-Set up public ingress for Kedge Hub using Cloudflare Tunnel.
+Make your hub reachable from anywhere so remote agents can connect.
 {: .fs-6 .fw-300 }
 
 ## Table of contents
@@ -21,49 +21,78 @@ Set up public ingress for Kedge Hub using Cloudflare Tunnel.
 
 ## Overview
 
-[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) exposes cluster services to the internet without requiring a public IP or cloud LoadBalancer. This is particularly useful for:
+Remote agents need to reach your hub over the internet. This guide covers the most common approach for home labs: **Cloudflare Tunnel**.
 
-- Home labs
-- Edge deployments
-- kind clusters
-- Environments without public IPs
+### Why Cloudflare Tunnel?
+
+| Challenge | Cloudflare Tunnel Solution |
+|:----------|:---------------------------|
+| No public IP | Tunnel connects outbound — no inbound ports needed |
+| Dynamic IP | DNS managed automatically |
+| NAT/CGNAT | Works through any NAT |
+| TLS certificates | Free certs via Let's Encrypt + DNS validation |
+| DDoS protection | Built-in |
+
+This is the recommended approach for home labs where you don't have a static public IP or don't want to expose ports.
+
+---
 
 ## How It Works
 
-The Cloudflare Tunnel Ingress Controller runs inside the cluster and establishes an outbound connection to Cloudflare's edge network. The tunnel operates in **passthrough** mode — TLS is **not** terminated at Cloudflare's edge. Traffic flows encrypted end-to-end:
+```
+Remote Agent                 Cloudflare Edge              Your Cluster
+     │                             │                           │
+     │ ──── TLS ─────────────────▶ │                           │
+     │                             │ ◀── tunnel (outbound) ─── │
+     │                             │                           │
+     └─────────────────────────────┴───────────────────────────┘
+         Traffic flows through Cloudflare to your hub
+```
 
-```
-Browser/CLI --TLS--> Cloudflare Edge --passthrough--> Tunnel --> k8s Service --> Hub (TLS on :8443)
-```
+The tunnel runs inside your cluster and connects **outbound** to Cloudflare. No port forwarding or firewall rules needed.
+
+---
 
 ## Prerequisites
 
 | Requirement | Description |
 |:------------|:------------|
-| Cloudflare account | With a domain configured |
-| Cloudflare API token | With `Account:Cloudflare Tunnel:Edit` and `Zone:DNS:Edit` permissions |
-| Account ID | Found in the Cloudflare dashboard URL |
-| Tunnel name | Will be auto-created if it doesn't exist |
+| Cloudflare account | Free tier works |
+| Domain on Cloudflare | Your domain's DNS must be managed by Cloudflare |
+| API token | With `Cloudflare Tunnel:Edit` and `DNS:Edit` permissions |
+| Account ID | Found in the Cloudflare dashboard sidebar |
+
+### Create a Cloudflare API Token
+
+1. Go to [Cloudflare Dashboard](https://dash.cloudflare.com) → **My Profile** → **API Tokens**
+2. Click **Create Token**
+3. Use **Custom token** with permissions:
+   - `Account` → `Cloudflare Tunnel` → `Edit`
+   - `Zone` → `DNS` → `Edit`
+4. Copy the token
+
+### Find Your Account ID
+
+1. Go to [Cloudflare Dashboard](https://dash.cloudflare.com)
+2. Select your domain
+3. Account ID is in the right sidebar
 
 ---
 
-## Installation
+## Step 1: Install cert-manager
 
-### 1. Install cert-manager
-
-The hub serves TLS directly (no TLS termination at the tunnel). cert-manager issues certificates via Cloudflare DNS01 challenges:
+cert-manager issues TLS certificates via Cloudflare DNS validation:
 
 ```bash
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.18.0/cert-manager.yaml
 kubectl -n cert-manager wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager --timeout=120s
 ```
 
-{: .note }
-DNS01 challenges work without the app being publicly reachable — cert-manager validates domain ownership by creating DNS TXT records through the Cloudflare API.
+---
 
-### 2. Configure Cloudflare API token
+## Step 2: Configure Cloudflare DNS Validation
 
-Create a Secret with your Cloudflare API token:
+Create a secret with your API token:
 
 ```bash
 kubectl create secret generic cloudflare-api-token \
@@ -71,7 +100,7 @@ kubectl create secret generic cloudflare-api-token \
   --from-literal=api-token="<your-cloudflare-api-token>"
 ```
 
-### 3. Create a ClusterIssuer
+Create a ClusterIssuer for Let's Encrypt:
 
 ```bash
 cat <<EOF | kubectl apply -f -
@@ -93,13 +122,15 @@ spec:
 EOF
 ```
 
-Verify the issuer is ready:
+Verify it's ready:
 
 ```bash
 kubectl get clusterissuer letsencrypt-prod
 ```
 
-### 4. Install the Cloudflare Tunnel Ingress Controller
+---
+
+## Step 3: Install Cloudflare Tunnel Controller
 
 ```bash
 helm repo add strrl.dev https://helm.strrl.dev
@@ -114,22 +145,25 @@ helm upgrade --install --wait \
   --set=cloudflare.tunnelName="kedge-tunnel"
 ```
 
-Verify the controller is running:
+Verify:
 
 ```bash
 kubectl -n cloudflare-tunnel-ingress-controller get pods
 ```
 
+Check in [Cloudflare Zero Trust](https://one.dash.cloudflare.com) → **Networks** → **Tunnels** — you should see `kedge-tunnel` as healthy.
+
 ---
 
-## Configure Kedge Hub
+## Step 4: Deploy the Hub with Ingress
 
-Update your kedge-hub values file to use the Cloudflare Tunnel ingress and cert-manager for TLS:
+Update your Helm values:
 
 ```yaml
 hub:
-  hubExternalURL: "https://hub.faros.sh"
+  hubExternalURL: "https://hub.yourdomain.com"
   devMode: false
+
   tls:
     selfSigned:
       enabled: false
@@ -139,131 +173,159 @@ hub:
         name: letsencrypt-prod
         kind: ClusterIssuer
       dnsNames:
-        - "hub.faros.sh"
+        - "hub.yourdomain.com"
 
+# Authentication (choose one)
+hub:
+  staticAuthToken: "<your-token>"  # For simple setup
+# OR
 idp:
-  issuerURL: "https://idp.faros.sh"
+  issuerURL: "https://idp.yourdomain.com"
   clientID: "kedge"
-  clientSecret: "<your-idp-client-secret>"
+  clientSecret: "<secret>"
 
 ingress:
   enabled: true
   className: "cloudflare-tunnel"
   hosts:
-    - host: hub.faros.sh
+    - host: hub.yourdomain.com
       paths:
         - path: /
           pathType: ImplementationSpecific
 ```
 
-### Install kedge-hub
+Deploy:
 
 ```bash
 helm upgrade --install kedge deploy/charts/kedge-hub/ \
-  -f values-production.yaml \
+  -f values.yaml \
   --namespace kedge-system \
   --create-namespace
 ```
 
 ---
 
-## Verify the Setup
+## Step 5: Verify
 
-### Check Ingress status
+Check ingress status:
 
 ```bash
-kubectl get ingress -A
+kubectl get ingress -n kedge-system
 ```
 
 Expected output:
 
 ```
-NAMESPACE      NAME              CLASS               HOSTS           ADDRESS                                                 PORTS     AGE
-kedge-system   kedge-kedge-hub   cloudflare-tunnel   hub.faros.sh    a1fa66c5-7766-40e7-87fd-9d42391f07da.cfargotunnel.com   80, 443   5m
+NAME              CLASS               HOSTS                ADDRESS                              PORTS     AGE
+kedge-kedge-hub   cloudflare-tunnel   hub.yourdomain.com   xxxx.cfargotunnel.com               80, 443   5m
 ```
 
-### Test connectivity
+Test connectivity:
 
 ```bash
-curl -s https://hub.faros.sh/healthz
+curl -s https://hub.yourdomain.com/healthz
+```
+
+Try logging in:
+
+```bash
+kedge login --hub-url https://hub.yourdomain.com
 ```
 
 ---
 
-## DNS Configuration
+## Exposing Dex (OIDC)
 
-The Cloudflare Tunnel Ingress Controller automatically manages DNS records. You don't need to manually create them.
-
-When an Ingress resource is created, the controller:
-
-1. Creates a route in the tunnel for the specified hostname
-2. Creates a CNAME record: `hub.faros.sh -> <tunnel-id>.cfargotunnel.com`
-
----
-
-## Multiple Services
-
-You can expose both the hub and Dex through the same tunnel by creating separate Ingress resources.
-
-If running Dex in the same cluster (see [Identity Provider]({% link idp.md %})), its Ingress uses the same `cloudflare-tunnel` class with a different hostname:
+If you're using OIDC authentication, Dex also needs to be publicly reachable. Add an ingress to Dex in its values:
 
 ```yaml
-# Dex ingress
 ingress:
   enabled: true
   className: "cloudflare-tunnel"
   hosts:
-    - host: idp.faros.sh
+    - host: idp.yourdomain.com
       paths:
         - path: /
           pathType: ImplementationSpecific
 ```
 
+Both services share the same tunnel — just different hostnames.
+
+---
+
+## Alternative: Port Forwarding
+
+If you have a static IP and can forward ports, you can skip Cloudflare Tunnel:
+
+1. Forward port 443 to your cluster's ingress controller
+2. Use a standard ingress controller (nginx, traefik)
+3. Point DNS to your public IP
+
+This is simpler but requires:
+- A static public IP (or dynamic DNS)
+- Router access for port forwarding
+- No CGNAT from your ISP
+
 ---
 
 ## Troubleshooting
 
-### Check tunnel controller logs
+### Tunnel not connecting
+
+Check controller logs:
 
 ```bash
 kubectl -n cloudflare-tunnel-ingress-controller logs -l app.kubernetes.io/name=cloudflare-tunnel-ingress-controller
 ```
 
-### Verify tunnel in Cloudflare dashboard
+Verify the tunnel in [Cloudflare Zero Trust](https://one.dash.cloudflare.com) → **Networks** → **Tunnels**.
 
-Go to **Zero Trust > Networks > Tunnels** to see if the tunnel is connected.
+### Certificate not issuing
 
-### Check cert-manager certificates
+Check cert-manager:
 
 ```bash
 kubectl -n kedge-system get certificate,certificaterequest,order,challenge
+
+# Detailed status
+kubectl describe certificate -n kedge-system
+
+# cert-manager logs
+kubectl -n cert-manager logs -l app=cert-manager
 ```
 
-For detailed certificate status:
+DNS01 challenges create TXT records at `_acme-challenge.hub.yourdomain.com`. Verify:
 
 ```bash
-kubectl describe certificate -n kedge-system
+dig _acme-challenge.hub.yourdomain.com TXT
 ```
+
+### DNS not resolving
+
+The tunnel controller auto-creates CNAME records. Verify:
+
+```bash
+dig hub.yourdomain.com CNAME
+```
+
+Should return something like `xxxx.cfargotunnel.com`.
 
 ### Common issues
 
 | Issue | Solution |
 |:------|:---------|
-| **API token permissions** | Token needs `Account:Cloudflare Tunnel:Edit` and `Zone:DNS:Edit` permissions |
-| **Certificate not issuing** | Check cert-manager logs: `kubectl -n cert-manager logs -l app=cert-manager`. DNS01 challenges create TXT records under `_acme-challenge.<domain>` |
-| **Tunnel name conflicts** | If a tunnel with the same name exists, the controller reuses it. Delete stale tunnels from the dashboard |
-| **DNS propagation** | New CNAME records may take a few minutes to propagate |
+| API token permissions | Needs `Cloudflare Tunnel:Edit` and `DNS:Edit` |
+| Wrong account ID | Double-check in the Cloudflare dashboard |
+| Tunnel name conflict | Delete stale tunnels from the dashboard |
+| Certificate stuck | Check cert-manager logs, ensure DNS is on Cloudflare |
+| Slow certificate | DNS propagation can take a few minutes |
 
-### Check cert-manager logs
+---
 
-```bash
-kubectl -n cert-manager logs -l app=cert-manager
-```
+## Next Steps
 
-### Verify DNS records
+Once your hub is publicly accessible:
 
-```bash
-dig hub.faros.sh CNAME
-```
-
-Should return a CNAME pointing to `<tunnel-id>.cfargotunnel.com`.
+1. Connect remote agents using the public URL
+2. Set up [Security]({% link security.md %}) (static token or OIDC)
+3. Deploy workloads to your distributed clusters

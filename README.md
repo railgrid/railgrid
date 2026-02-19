@@ -1,34 +1,63 @@
 # Kedge
 
-Multi-tenant control plane for deploying and managing workloads across distributed edge sites.
+The ultimate home lab tool for managing distributed Kubernetes clusters.
 
-## What it does
+## Why Kedge?
 
-Kedge connects remote Kubernetes clusters ("sites") to a central hub via reverse tunnels. Users define `VirtualWorkloads` with placement rules, and the hub schedules them onto matching sites. Agents running on each site pull workload specs through the tunnel and reconcile them locally.
+Managing multiple Kubernetes clusters across your home lab, remote locations, or edge sites is painful. You end up juggling kubeconfigs, SSH tunnels, VPNs, and port forwards. Kedge solves this by providing a single control plane that connects all your clusters through secure reverse tunnels.
+
+**Perfect for:**
+
+- **Home labs** — Manage k3s/k0s clusters on Raspberry Pis, NUCs, or old laptops from anywhere
+- **Remote sites** — Connect clusters behind NAT, firewalls, or without public IPs
+- **Edge deployments** — Deploy workloads to distributed locations with simple placement rules
+- **Small teams** — Multi-tenant workspaces with OIDC authentication
+
+## How It Works
+
+```
+┌─────────────────┐                              ┌─────────────────┐
+│  Home Lab       │                              │                 │
+│  ┌───────────┐  │      reverse tunnel          │   Hub           │
+│  │ k3s + Agent│─────────────────────────────▶  │   (cloud/VPS)   │
+│  └───────────┘  │                              │                 │
+└─────────────────┘                              │                 │
+                                                 │                 │
+┌─────────────────┐                              │                 │
+│  Remote Site    │      reverse tunnel          │                 │
+│  ┌───────────┐  │                              │                 │
+│  │ k0s + Agent│──────────────────────────────▶ │                 │
+│  └───────────┘  │                              │                 │
+└─────────────────┘                              │                 │
+                                                 │                 │
+┌─────────────────┐                              │                 │
+│  Edge Device    │      reverse tunnel          │                 │
+│  ┌───────────┐  │                              │                 │
+│  │ k8s + Agent│──────────────────────────────▶ │                 │
+│  └───────────┘  │                              └────────┬────────┘
+└─────────────────┘                                       │
+                                                          │
+                            ┌─────────────────────────────┘
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │   You         │
+                    │   (anywhere)  │
+                    │   kedge CLI   │
+                    └───────────────┘
+```
 
 Built on [kcp](https://github.com/kcp-dev/kcp) for multi-tenant workspace isolation and [Dex](https://github.com/dexidp/dex) for OIDC authentication.
 
-## Architecture
+## Components
 
-```
-┌──────────┐        reverse tunnel        ┌──────────────┐
-│  Agent   │ ─────────────────────────▶   │   Hub        │
-│  (site)  │                              │  (kcp+Dex)   │
-└──────────┘                              └──────┬───────┘
-                                                 │
-┌──────────┐        reverse tunnel               │
-│  Agent   │ ──────────────────────────▶─────────┘
-│  (site)  │
-└──────────┘
-```
+| Component | Description |
+|---|---|
+| **Hub** (`kedge-hub`) | Central control plane — hosts the API, authentication, tunnel endpoints, and scheduling |
+| **Agent** (`kedge-agent`) | Runs on each site — establishes tunnels, reports status, reconciles workloads |
+| **CLI** (`kedge`) | User tool — login, register sites, deploy workloads |
 
-**Hub** (`kedge-hub`) — Central server that hosts the kcp API, OIDC auth, tunnel endpoints, and controllers for scheduling/status.
-
-**Agent** (`kedge-agent`) — Runs on each site. Establishes a reverse tunnel to the hub, reports site status, and reconciles workloads.
-
-**CLI** (`kedge`) — User-facing tool for login, site registration, and workload management.
-
-## Key resources
+## Key Resources
 
 | Resource | Scope | Description |
 |---|---|---|
@@ -36,23 +65,35 @@ Built on [kcp](https://github.com/kcp-dev/kcp) for multi-tenant workspace isolat
 | `VirtualWorkload` | Namespace | Workload definition with placement rules |
 | `Placement` | Namespace | Binding of a workload to a specific site |
 
-## Quick start
+## Quick Start
 
 ```bash
-# Build all binaries
+# Clone and build
+git clone https://github.com/faroshq/kedge.git
+cd kedge
 make build
 
-# Run full dev stack (kcp + Dex + Hub + Agent with hot-reload)
+# Run the full dev stack locally
 make dev
 
-# In another terminal: login, create a site, deploy a workload
-make dev-login
-make dev-site-create
-make dev-run-agent
-make dev-create-workload
+# In another terminal
+make dev-login           # Authenticate
+make dev-site-create     # Register a site
+make dev-run-agent       # Start the agent
+make dev-create-workload # Deploy a sample workload
 ```
 
 ## Requirements
 
 - Go 1.25+
 - kind (for local agent cluster in dev mode)
+- Docker
+
+## Documentation
+
+Full documentation is available at the [docs site](https://faroshq.github.io/kedge/).
+
+- [Getting Started](https://faroshq.github.io/kedge/getting-started.html)
+- [Security (tokens & OIDC)](https://faroshq.github.io/kedge/security.html)
+- [Ingress Setup](https://faroshq.github.io/kedge/ingress.html)
+- [Helm Deployment](https://faroshq.github.io/kedge/helm.html)
