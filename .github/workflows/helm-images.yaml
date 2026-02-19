@@ -48,7 +48,7 @@ jobs:
           HELM_EXPERIMENTAL_OCI: 1
         run: |
           # Login to GitHub Container Registry for Helm
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
+          echo "${{ github.token }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
           
           # Set chart version - use tag name if available, otherwise use semver format
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
