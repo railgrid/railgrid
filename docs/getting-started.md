@@ -173,27 +173,7 @@ kubectl --context=kind-kedge-dev get pods
 
 ## What Just Happened?
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                          Hub                                     │
-│                                                                  │
-│  1. You created a VirtualWorkload                                │
-│  2. Hub found matching Sites (via placement rules)               │
-│  3. Hub created a Placement binding workload → site              │
-│                                                                  │
-└──────────────────────────┬───────────────────────────────────────┘
-                           │
-                           │ reverse tunnel
-                           ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                        Agent (kind cluster)                      │
-│                                                                  │
-│  4. Agent saw the Placement                                      │
-│  5. Agent created the actual Pod/Deployment on the cluster       │
-│  6. Agent reported status back to the Hub                        │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
+{% include excalidraw.html file="getting-started-flow.excalidraw" alt="Getting started flow showing workload deployment from hub to agent" %}
 
 ---
 
@@ -235,7 +215,7 @@ kubectl --context=kedge get sites
 | Guide | Description |
 |:------|:------------|
 | [Security]({% link security.md %}) | Configure authentication — static tokens for personal use, OIDC for teams |
-| [Ingress]({% link ingress.md %}) | Expose the hub publicly so remote agents can connect |
+| [Ingress]({% link ingress/index.md %}) | Expose the hub publicly so remote agents can connect |
 | [Helm Deployment]({% link helm.md %}) | Deploy the hub to a real Kubernetes cluster |
 
 ---
@@ -246,7 +226,7 @@ kubectl --context=kedge get sites
 
 - Check that the hub is reachable from the agent
 - For local dev, both run on the same machine so `localhost` works
-- For remote agents, see [Ingress]({% link ingress.md %}) to expose the hub
+- For remote agents, see [Ingress]({% link ingress/index.md %}) to expose the hub
 
 ### Login fails
 

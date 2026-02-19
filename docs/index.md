@@ -30,37 +30,7 @@ Managing multiple Kubernetes clusters across your home lab, remote locations, or
 
 ## How It Works
 
-```
-┌─────────────────┐                              ┌─────────────────┐
-│  Home Lab       │                              │                 │
-│  ┌───────────┐  │      reverse tunnel          │   Hub           │
-│  │ k3s + Agent│─────────────────────────────▶  │   (cloud/VPS)   │
-│  └───────────┘  │                              │                 │
-└─────────────────┘                              │                 │
-                                                 │                 │
-┌─────────────────┐                              │                 │
-│  Remote Site    │      reverse tunnel          │                 │
-│  ┌───────────┐  │                              │                 │
-│  │ k0s + Agent│──────────────────────────────▶ │                 │
-│  └───────────┘  │                              │                 │
-└─────────────────┘                              │                 │
-                                                 │                 │
-┌─────────────────┐                              │                 │
-│  Edge Device    │      reverse tunnel          │                 │
-│  ┌───────────┐  │                              │                 │
-│  │ k8s + Agent│──────────────────────────────▶ │                 │
-│  └───────────┘  │                              └────────┬────────┘
-└─────────────────┘                                       │
-                                                          │
-                            ┌─────────────────────────────┘
-                            │
-                            ▼
-                    ┌───────────────┐
-                    │   You         │
-                    │   (anywhere)  │
-                    │   kedge CLI   │
-                    └───────────────┘
-```
+{% include excalidraw.html file="architecture.excalidraw" alt="Kedge architecture diagram showing agents connecting to hub via reverse tunnels" %}
 
 1. **Deploy a Hub** — Run the Kedge hub on any reachable server (cloud VM, VPS, or your main home server)
 2. **Connect Sites** — Install the agent on each cluster; it establishes outbound tunnels to the hub
@@ -75,6 +45,20 @@ Managing multiple Kubernetes clusters across your home lab, remote locations, or
 | **Flexible auth** | OIDC via [Dex](https://github.com/dexidp/dex) or simple static tokens for personal use |
 | **Placement rules** | Deploy workloads to clusters matching labels (location, arch, resources) |
 | **Lightweight** | Works with k3s, k0s, kind, or full Kubernetes |
+| **Simple networking** | HTTP/1.1 + WebSockets — works with any proxy, load balancer, or tunnel |
+
+## Why HTTP/1.1?
+
+Kedge intentionally uses HTTP/1.1 with WebSockets for all communication. While HTTP/2 or HTTP/3 offer some benefits, they create significant deployment complexity — especially for home labs and small setups.
+
+With HTTP/1.1:
+
+- **Works everywhere** — Compatible with nginx, Cloudflare, Caddy, HAProxy, and any reverse proxy
+- **Easy debugging** — Standard tools like `curl` and browser DevTools work out of the box
+- **No special configuration** — No need for gRPC passthrough, HTTP/2 termination, or ALPN setup
+- **Tunnel-friendly** — WebSockets work through Cloudflare Tunnel, ngrok, and similar services
+
+This design choice prioritizes ease of deployment over marginal performance gains. For home labs managing a handful of clusters, simplicity wins.
 
 ## Components
 
@@ -100,7 +84,7 @@ Managing multiple Kubernetes clusters across your home lab, remote locations, or
 |:------|:------------|
 | [Getting Started]({% link getting-started.md %}) | Set up your first hub and connect a site |
 | [Security]({% link security.md %}) | Authentication options — static tokens and OIDC |
-| [Ingress]({% link ingress.md %}) | Expose the hub publicly via Cloudflare Tunnel |
+| [Ingress]({% link ingress/index.md %}) | Expose the hub publicly for remote access |
 | [Helm Deployment]({% link helm.md %}) | Production deployment with Helm charts |
 
 ---

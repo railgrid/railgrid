@@ -1,0 +1,52 @@
+<svg viewBox="0 0 750 280" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .box { stroke: #1e1e1e; stroke-width: 2; rx: 8; }
+    .text { font-family: 'Segoe UI', system-ui, sans-serif; fill: #1e1e1e; }
+    .title { font-size: 16px; font-weight: 600; }
+    .subtitle { font-size: 13px; }
+    .label { font-size: 12px; }
+    .arrow { stroke-width: 2; fill: none; }
+    .desc { font-size: 14px; fill: #586069; }
+  </style>
+
+  <defs>
+    <marker id="arrowhead-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#1971c2"/>
+    </marker>
+    <marker id="arrowhead-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2f9e44"/>
+    </marker>
+  </defs>
+
+  <!-- Remote Agent -->
+  <rect x="40" y="70" width="150" height="100" class="box" fill="#a5d8ff"/>
+  <text x="115" y="110" class="text title" text-anchor="middle">Remote</text>
+  <text x="115" y="130" class="text title" text-anchor="middle">Agent</text>
+
+  <!-- Cloudflare Edge -->
+  <rect x="280" y="50" width="180" height="140" class="box" fill="#ffec99"/>
+  <text x="370" y="100" class="text title" text-anchor="middle">Cloudflare</text>
+  <text x="370" y="125" class="text title" text-anchor="middle">Edge</text>
+  <text x="370" y="150" class="text subtitle" text-anchor="middle">(DDoS protection)</text>
+  <text x="370" y="170" class="text subtitle" text-anchor="middle">(TLS termination)</text>
+
+  <!-- Your Cluster -->
+  <rect x="550" y="50" width="160" height="140" class="box" fill="#b2f2bb"/>
+  <text x="630" y="100" class="text title" text-anchor="middle">Your Cluster</text>
+  <text x="630" y="125" class="text subtitle" text-anchor="middle">(Hub)</text>
+  <rect x="565" y="140" width="130" height="35" class="box" fill="#8ce99a" stroke-dasharray="3"/>
+  <text x="630" y="163" class="text label" text-anchor="middle">Tunnel Pod</text>
+
+  <!-- Arrow: Agent to Cloudflare -->
+  <path d="M 195 120 L 275 120" class="arrow" stroke="#1971c2" marker-end="url(#arrowhead-blue)"/>
+  <text x="235" y="110" class="label" fill="#1971c2" text-anchor="middle">TLS</text>
+
+  <!-- Arrow: Cluster to Cloudflare (outbound tunnel) -->
+  <path d="M 545 140 L 465 140" class="arrow" stroke="#2f9e44" marker-end="url(#arrowhead-green)"/>
+  <text x="505" y="130" class="label" fill="#2f9e44" text-anchor="middle">outbound</text>
+  <text x="505" y="160" class="label" fill="#2f9e44" text-anchor="middle">tunnel</text>
+
+  <!-- Description -->
+  <text x="375" y="230" class="desc" text-anchor="middle">Traffic flows through Cloudflare to your hub</text>
+  <text x="375" y="250" class="desc" text-anchor="middle">No public IP or port forwarding needed</text>
+</svg>

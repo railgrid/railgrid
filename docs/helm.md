@@ -120,7 +120,7 @@ kedge login \
 
 For production, you need:
 
-1. **Public ingress** — So remote agents can connect (see [Ingress]({% link ingress.md %}))
+1. **Public ingress** — So remote agents can connect (see [Ingress]({% link ingress/index.md %}))
 2. **Proper TLS** — Via cert-manager or your own certificates
 3. **Authentication** — Static token or OIDC (see [Security]({% link security.md %}))
 

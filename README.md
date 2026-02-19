@@ -15,37 +15,7 @@ Managing multiple Kubernetes clusters across your home lab, remote locations, or
 
 ## How It Works
 
-```
-┌─────────────────┐                              ┌─────────────────┐
-│  Home Lab       │                              │                 │
-│  ┌───────────┐  │      reverse tunnel          │   Hub           │
-│  │ k3s + Agent│─────────────────────────────▶  │   (cloud/VPS)   │
-│  └───────────┘  │                              │                 │
-└─────────────────┘                              │                 │
-                                                 │                 │
-┌─────────────────┐                              │                 │
-│  Remote Site    │      reverse tunnel          │                 │
-│  ┌───────────┐  │                              │                 │
-│  │ k0s + Agent│──────────────────────────────▶ │                 │
-│  └───────────┘  │                              │                 │
-└─────────────────┘                              │                 │
-                                                 │                 │
-┌─────────────────┐                              │                 │
-│  Edge Device    │      reverse tunnel          │                 │
-│  ┌───────────┐  │                              │                 │
-│  │ k8s + Agent│──────────────────────────────▶ │                 │
-│  └───────────┘  │                              └────────┬────────┘
-└─────────────────┘                                       │
-                                                          │
-                            ┌─────────────────────────────┘
-                            │
-                            ▼
-                    ┌───────────────┐
-                    │   You         │
-                    │   (anywhere)  │
-                    │   kedge CLI   │
-                    └───────────────┘
-```
+![Kedge Architecture](docs/assets/diagrams/architecture.svg)
 
 Built on [kcp](https://github.com/kcp-dev/kcp) for multi-tenant workspace isolation and [Dex](https://github.com/dexidp/dex) for OIDC authentication.
 
@@ -95,5 +65,5 @@ Full documentation is available at the [docs site](https://faroshq.github.io/ked
 
 - [Getting Started](https://faroshq.github.io/kedge/getting-started.html)
 - [Security (tokens & OIDC)](https://faroshq.github.io/kedge/security.html)
-- [Ingress Setup](https://faroshq.github.io/kedge/ingress.html)
+- [Ingress Setup](https://faroshq.github.io/kedge/ingress/)
 - [Helm Deployment](https://faroshq.github.io/kedge/helm.html)
