@@ -21,6 +21,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
 	oidc "github.com/coreos/go-oidc"
@@ -65,12 +67,75 @@ func (s *Server) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting kedge hub server",
 		"listenAddr", s.opts.ListenAddr,
+		"embeddedKCP", s.opts.EmbeddedKCP,
 	)
 
-	// 1. Build rest.Config
+	var kcpConfig *rest.Config
+	var bootstrapper *kcp.Bootstrapper
+	var embeddedKCP *kcp.EmbeddedKCP
+
+	// Start embedded kcp if enabled.
+	if s.opts.EmbeddedKCP {
+		kcpRootDir := s.opts.KCPRootDir
+		if kcpRootDir == "" {
+			kcpRootDir = filepath.Join(s.opts.DataDir, "kcp")
+		}
+
+		batteries := []string{"admin", "user"}
+		if s.opts.KCPBatteriesInclude != "" {
+			batteries = strings.Split(s.opts.KCPBatteriesInclude, ",")
+		}
+
+		embeddedKCP = kcp.NewEmbeddedKCP(kcp.EmbeddedKCPOptions{
+			RootDir:          kcpRootDir,
+			SecurePort:       s.opts.KCPSecurePort,
+			BatteriesInclude: batteries,
+		})
+
+		// Start kcp in a goroutine.
+		go func() {
+			if err := embeddedKCP.Run(ctx); err != nil {
+				logger.Error(err, "Embedded kcp server failed")
+			}
+		}()
+
+		// Wait for kcp to be ready.
+		logger.Info("Waiting for embedded kcp to be ready...")
+		select {
+		case <-embeddedKCP.Ready():
+			logger.Info("Embedded kcp is ready")
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		// Use the admin config from embedded kcp.
+		kcpConfig = embeddedKCP.AdminConfig()
+		if kcpConfig == nil {
+			// Fall back to loading from file.
+			var err error
+			kcpConfig, err = clientcmd.BuildConfigFromFlags("", embeddedKCP.AdminKubeconfigPath())
+			if err != nil {
+				return fmt.Errorf("loading embedded kcp admin kubeconfig: %w", err)
+			}
+		}
+	} else if s.opts.ExternalKCPKubeconfig != "" {
+		// Use external kcp.
+		var err error
+		kcpConfig, err = clientcmd.BuildConfigFromFlags("", s.opts.ExternalKCPKubeconfig)
+		if err != nil {
+			return fmt.Errorf("building kcp rest config: %w", err)
+		}
+	}
+
+	// 1. Build rest.Config for the base cluster (used for CRDs when no kcp).
 	config, err := s.buildRestConfig()
 	if err != nil {
 		return fmt.Errorf("building rest config: %w", err)
+	}
+
+	// If kcp is configured, use its config for CRDs and bootstrapping.
+	if kcpConfig != nil {
+		config = kcpConfig
 	}
 
 	// 2. Bootstrap CRDs
@@ -87,18 +152,11 @@ func (s *Server) Run(ctx context.Context) error {
 
 	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
 
-	// 4. kcp bootstrap (if external kcp kubeconfig is provided)
-	var kcpConfig *rest.Config
-	var bootstrapper *kcp.Bootstrapper
+	// 4. kcp bootstrap (if kcp is configured - either embedded or external)
 	// userClient is a kedge client targeting the workspace where User CRDs live.
 	// Defaults to the base kedgeClient; overridden to root:kedge:users when kcp is configured.
 	userClient := kedgeClient
-	if s.opts.ExternalKCPKubeconfig != "" {
-		var err error
-		kcpConfig, err = clientcmd.BuildConfigFromFlags("", s.opts.ExternalKCPKubeconfig)
-		if err != nil {
-			return fmt.Errorf("building kcp rest config: %w", err)
-		}
+	if kcpConfig != nil {
 		bootstrapper = kcp.NewBootstrapper(kcpConfig)
 		if err := bootstrapper.Bootstrap(ctx); err != nil {
 			return fmt.Errorf("bootstrapping kcp: %w", err)

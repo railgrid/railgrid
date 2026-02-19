@@ -30,13 +30,22 @@ type Options struct {
 	HubExternalURL        string
 	DevMode               bool
 	StaticAuthTokens      []string
+
+	// Embedded kcp options
+	EmbeddedKCP         bool   // Enable embedded kcp server
+	KCPRootDir          string // Root directory for kcp data (default: <DataDir>/kcp)
+	KCPSecurePort       int    // Secure port for kcp API server (default: 6443)
+	KCPBatteriesInclude string // Comma-separated list of batteries to include (default: "admin,user")
 }
 
 // NewOptions returns default Options.
 func NewOptions() *Options {
 	return &Options{
-		DataDir:        "/tmp/kedge-data",
-		ListenAddr:     ":8443",
-		HubExternalURL: "https://localhost:8443",
+		DataDir:             "/tmp/kedge-data",
+		ListenAddr:          ":8443",
+		HubExternalURL:      "https://localhost:8443",
+		EmbeddedKCP:         false,
+		KCPSecurePort:       6443,
+		KCPBatteriesInclude: "admin,user",
 	}
 }
