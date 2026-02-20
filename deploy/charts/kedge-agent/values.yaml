@@ -1,0 +1,66 @@
+# -- Image settings
+image:
+  repository: ghcr.io/faroshq/kedge-agent
+  tag: ""  # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Agent settings
+agent:
+  # -- Site name (required)
+  siteName: ""
+
+  # -- Labels for this site (key=value pairs)
+  labels: {}
+
+  # -- Hub connection settings
+  hub:
+    # -- Hub kubeconfig (required)
+    # Provide via:
+    # 1. existingSecret - name of a secret containing kubeconfig key
+    # 2. kubeconfig - inline kubeconfig content (not recommended for production)
+    existingSecret: ""
+    kubeconfig: ""
+    # -- Optional: kubeconfig context to use
+    context: ""
+
+  # -- Optional: separate tunnel URL (defaults to hub URL from kubeconfig)
+  tunnelURL: ""
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# -- Service account
+serviceAccount:
+  # -- Create a service account for the agent
+  create: true
+  # -- Name of the service account (auto-generated if empty)
+  name: ""
+  # -- Annotations for the service account
+  annotations: {}
+
+# -- RBAC settings
+rbac:
+  # -- Create ClusterRole and ClusterRoleBinding for the agent
+  # The agent needs cluster-wide permissions to manage workloads
+  create: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podSecurityContext:
+  fsGroup: 65534
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+
+# -- Number of replicas (typically 1 per site)
+replicaCount: 1

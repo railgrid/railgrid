@@ -43,27 +43,45 @@ git clone https://github.com/faroshq/kedge.git
 cd kedge
 make build
 
-# Run the full dev stack locally
-make dev
+# Terminal 1: Run the hub (embedded kcp + static token auth)
+make run-hub-embedded-static
 
-# In another terminal
-make dev-login           # Authenticate
+# Terminal 2: Login and register a site
+make dev-login-static    # Authenticate with static token
 make dev-site-create     # Register a site
-make dev-run-agent       # Start the agent
-make dev-create-workload # Deploy a sample workload
+make dev-run-agent       # Start the agent on a local kind cluster
 ```
+
+That's it! The hub runs with embedded kcp and static token authentication — no external dependencies required.
+
+### Deploy a test workload
+
+```bash
+make dev-create-workload  # Deploy a sample nginx workload
+```
+
+### Other development modes
+
+Run `make help-dev` to see all available modes:
+
+| Mode | Command | Description |
+|------|---------|-------------|
+| **Standalone** | `make run-hub-embedded-static` | Embedded kcp + static token (no deps) |
+| **With OIDC** | `make run-dex` + `make run-hub-embedded` | Embedded kcp + Dex OIDC |
+| **External kcp** | `make dev-run-kcp` + `make run-hub-static` | External kcp + static token |
 
 ## Requirements
 
 - Go 1.25+
-- kind (for local agent cluster in dev mode)
 - Docker
+- kind (for local agent cluster)
 
 ## Documentation
 
 Full documentation is available at the [docs site](https://faroshq.github.io/kedge/).
 
 - [Getting Started](https://faroshq.github.io/kedge/getting-started.html)
+- [Developer Guide](https://faroshq.github.io/kedge/developers.html)
 - [Security (tokens & OIDC)](https://faroshq.github.io/kedge/security.html)
 - [Ingress Setup](https://faroshq.github.io/kedge/ingress/)
 - [Helm Deployment](https://faroshq.github.io/kedge/helm.html)

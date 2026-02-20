@@ -28,8 +28,20 @@ import (
 
 // RunDelete deletes the development environment
 func (o *DevOptions) RunDelete() error {
+	// Delete hub cluster
 	if err := o.deleteCluster(o.HubClusterName); err != nil {
 		return err
+	}
+
+	// Delete agent cluster
+	if err := o.deleteCluster(o.AgentClusterName); err != nil {
+		return err
+	}
+
+	// Also clean up the site kubeconfig if it exists
+	siteKubeconfigPath := "site-kubeconfig"
+	if err := os.Remove(siteKubeconfigPath); err != nil && !os.IsNotExist(err) {
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Failed to remove site kubeconfig file %s: %v\n", siteKubeconfigPath, err)
 	}
 
 	return o.cleanupHostEntries()
