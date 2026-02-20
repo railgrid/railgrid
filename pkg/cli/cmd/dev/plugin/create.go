@@ -233,11 +233,11 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "kedge dev environment is ready!\n\n")
 
 	// Configuration
-	fmt.Fprint(o.Streams.ErrOut, "Configuration:\n")                                               // nolint:errcheck
-	fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster kubeconfig: %s.kubeconfig\n", o.HubClusterName)   // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "Configuration:\n")                                                 // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster kubeconfig: %s.kubeconfig\n", o.HubClusterName)     // nolint:errcheck
 	fmt.Fprintf(o.Streams.ErrOut, "  Agent cluster kubeconfig: %s.kubeconfig\n", o.AgentClusterName) // nolint:errcheck
-	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:8443\n")             // nolint:errcheck
-	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                               // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:8443\n")               // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                                 // nolint:errcheck
 	if hubIP != "" {
 		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP (for agent): %s\n", hubIP) // nolint:errcheck
 	}
