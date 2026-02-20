@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kedge-agent.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kedge-agent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kedge-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "kedge-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "kedge-agent.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: agent
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "kedge-agent.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --site-name={{ required "agent.siteName is required" .Values.agent.siteName }}
+            - --hub-kubeconfig=/etc/kedge/hub-kubeconfig/kubeconfig
+            {{- if .Values.agent.hub.context }}
+            - --hub-context={{ .Values.agent.hub.context }}
+            {{- end }}
+            {{- if .Values.agent.tunnelURL }}
+            - --tunnel-url={{ .Values.agent.tunnelURL }}
+            {{- end }}
+            {{- range $key, $value := .Values.agent.labels }}
+            - --labels={{ $key }}={{ $value }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          volumeMounts:
+            - name: hub-kubeconfig
+              mountPath: /etc/kedge/hub-kubeconfig
+              readOnly: true
+      volumes:
+        - name: hub-kubeconfig
+          secret:
+            secretName: {{ include "kedge-agent.hubKubeconfigSecretName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

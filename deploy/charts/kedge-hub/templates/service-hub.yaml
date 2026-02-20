@@ -11,5 +11,8 @@ spec:
       port: {{ .Values.service.hub.port }}
       targetPort: https
       protocol: TCP
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.hub.nodePort }}
+      nodePort: {{ .Values.service.hub.nodePort }}
+      {{- end }}
   selector:
     {{- include "kedge-hub.selectorLabels" . | nindent 4 }}

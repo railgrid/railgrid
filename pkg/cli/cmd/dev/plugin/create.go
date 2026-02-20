@@ -58,6 +58,7 @@ type DevOptions struct {
 	Image               string
 	Tag                 string
 	HubClusterName      string
+	AgentClusterName    string
 	WaitForReadyTimeout time.Duration
 	ChartPath           string
 	ChartVersion        string
@@ -75,16 +76,18 @@ type gitHubRelease struct {
 // NewDevOptions creates a new DevOptions
 func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 	return &DevOptions{
-		Streams:        streams,
-		HubClusterName: "kedge-hub",
-		ChartPath:      "oci://ghcr.io/faroshq/charts/kedge-hub",
-		ChartVersion:   fallbackAssetVersion,
+		Streams:          streams,
+		HubClusterName:   "kedge-hub",
+		AgentClusterName: "kedge-agent",
+		ChartPath:        "deploy/charts/kedge-hub",
+		ChartVersion:     fallbackAssetVersion,
 	}
 }
 
 // AddCmdFlags adds command line flags
 func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.HubClusterName, "hub-cluster-name", "kedge-hub", "Name of the hub cluster in dev mode")
+	cmd.Flags().StringVar(&o.AgentClusterName, "agent-cluster-name", "kedge-agent", "Name of the agent cluster in dev mode")
 	cmd.Flags().DurationVar(&o.WaitForReadyTimeout, "wait-for-ready-timeout", 2*time.Minute, "Timeout for waiting for the cluster to be ready")
 	cmd.Flags().StringVar(&o.ChartPath, "chart-path", o.ChartPath, "Helm chart path or OCI registry URL")
 	cmd.Flags().StringVar(&o.ChartVersion, "chart-version", o.ChartVersion, "Helm chart version")
@@ -180,6 +183,15 @@ nodes:
     listenAddress: "127.0.0.1"
 `
 
+var agentClusterConfig = `apiVersion: kind.x-k8s.io/v1alpha4
+kind: Cluster
+networking:
+  apiServerAddress: "0.0.0.0"
+  apiServerPort: 6443
+nodes:
+- role: control-plane
+`
+
 // Color helper functions
 func blueCommand(text string) string {
 	return "\033[38;5;67m" + text + "\033[0m"
@@ -201,7 +213,13 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 		fmt.Fprintf(o.Streams.ErrOut, "Warning: File limit check: %v\n", err) // nolint:errcheck
 	}
 
+	// Create hub cluster with kedge-hub installed
 	if err := o.createCluster(ctx, o.HubClusterName, hubClusterConfig, true); err != nil {
+		return err
+	}
+
+	// Create agent cluster (no kedge installed, just a plain cluster)
+	if err := o.createCluster(ctx, o.AgentClusterName, agentClusterConfig, false); err != nil {
 		return err
 	}
 
@@ -215,12 +233,13 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "kedge dev environment is ready!\n\n")
 
 	// Configuration
-	fmt.Fprint(o.Streams.ErrOut, "Configuration:\n")                                             // nolint:errcheck
-	fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster kubeconfig: %s.kubeconfig\n", o.HubClusterName) // nolint:errcheck
-	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:8443\n")           // nolint:errcheck
-	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                             // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "Configuration:\n")                                                 // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster kubeconfig: %s.kubeconfig\n", o.HubClusterName)     // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  Agent cluster kubeconfig: %s.kubeconfig\n", o.AgentClusterName) // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:8443\n")               // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                                 // nolint:errcheck
 	if hubIP != "" {
-		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP: %s\n", hubIP) // nolint:errcheck
+		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP (for agent): %s\n", hubIP) // nolint:errcheck
 	}
 	fmt.Fprint(o.Streams.ErrOut, "\n") // nolint:errcheck
 
@@ -232,7 +251,6 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	// Only show /etc/hosts step if entry didn't already exist
 	if !hostEntryExists {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Add to /etc/hosts (if not already done):\n", stepNum)
-
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("echo '127.0.0.1 kedge.localhost' | sudo tee -a /etc/hosts"))
 		stepNum++
 	}
@@ -245,8 +263,36 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge login --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify --token=dev-token"))
 	stepNum++
 
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Connect an agent from a remote cluster:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kedge agent start --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Create a site in the hub:\n", stepNum)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge site create my-site --labels env=dev"))
+	stepNum++
+
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Wait for the site kubeconfig secret and extract it:\n", stepNum)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kubectl get secret -n kedge-system site-my-site-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > site-kubeconfig"))
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "   (The secret is created automatically after the site is registered)\n\n")
+	stepNum++
+
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Deploy the agent into the agent cluster using Helm:\n", stepNum)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "   First, create a secret with the site kubeconfig in the agent cluster:\n")
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
+		"kubectl --kubeconfig %s.kubeconfig create namespace kedge-system && \\\n   kubectl --kubeconfig %s.kubeconfig create secret generic site-kubeconfig -n kedge-system --from-file=kubeconfig=site-kubeconfig",
+		o.AgentClusterName, o.AgentClusterName)))
+
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then install the agent Helm chart:\n")
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
+		"helm install kedge-agent deploy/charts/kedge-agent \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-system \\\n     --set agent.siteName=my-site \\\n     --set agent.hub.existingSecret=site-kubeconfig",
+		o.AgentClusterName)))
+
+	if hubIP != "" {
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Note: The agent connects to the hub via the Docker network.\n")
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "   Hub is reachable at: https://%s:8443 from within the kind network.\n\n", hubIP)
+	}
+
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "Useful commands:\n")
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  List sites:       %s\n", blueCommand("kedge site list"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get site info:    %s\n", blueCommand("kedge site get my-site"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Check agent logs: %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig logs -n kedge-system -l app.kubernetes.io/name=kedge-agent -f", o.AgentClusterName)))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Delete env:       %s\n", blueCommand("kedge dev delete"))
 
 	return nil
 }
@@ -366,7 +412,7 @@ func (o *DevOptions) getClusterIPAddress(ctx context.Context, clusterName, netwo
 func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config) error {
 	actionConfig := new(action.Configuration)
 
-	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, "kedge", "secret", func(format string, v ...any) {}); err != nil {
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, "kedge-system", "secret", func(format string, v ...any) {}); err != nil {
 		return fmt.Errorf("failed to initialize helm action config: %w", err)
 	}
 
@@ -424,17 +470,17 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 
 	histClient := action.NewHistory(actionConfig)
 	histClient.Max = 1
-	if _, err := histClient.Run("kedge"); err == nil {
+	if _, err := histClient.Run("kedge-hub"); err == nil {
 		upgradeAction := action.NewUpgrade(actionConfig)
-		upgradeAction.Namespace = "kedge"
-		_, err = upgradeAction.Run("kedge", chartObj, values)
+		upgradeAction.Namespace = "kedge-system"
+		_, err = upgradeAction.Run("kedge-hub", chartObj, values)
 		if err != nil {
 			return fmt.Errorf("failed to upgrade chart: %w", err)
 		}
 	} else {
 		installAction := action.NewInstall(actionConfig)
-		installAction.ReleaseName = "kedge"
-		installAction.Namespace = "kedge"
+		installAction.ReleaseName = "kedge-hub"
+		installAction.Namespace = "kedge-system"
 		installAction.CreateNamespace = true
 		_, err = installAction.Run(chartObj, values)
 		if err != nil {
@@ -473,7 +519,7 @@ func (r *restConfigGetter) ToRESTMapper() (meta.RESTMapper, error) {
 func (r *restConfigGetter) ToRawKubeConfigLoader() clientcmd.ClientConfig {
 	return clientcmd.NewNonInteractiveClientConfig(clientcmdapi.Config{}, "", &clientcmd.ConfigOverrides{
 		Context: clientcmdapi.Context{
-			Namespace: "kedge",
+			Namespace: "kedge-system",
 		},
 	}, nil)
 }
