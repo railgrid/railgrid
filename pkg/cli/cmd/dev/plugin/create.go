@@ -66,7 +66,7 @@ type DevOptions struct {
 }
 
 // fallbackAssetVersion is used when unable to fetch the latest version
-const fallbackAssetVersion = "0.1.0"
+const fallbackAssetVersion = "0.0.1"
 
 // gitHubRelease represents a GitHub release response
 type gitHubRelease struct {
@@ -127,7 +127,7 @@ func fetchLatestRelease() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/faroshq/faros-kedge/releases/latest", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/faroshq/kedge/releases/latest", nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
