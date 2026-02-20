@@ -185,9 +185,6 @@ nodes:
 
 var agentClusterConfig = `apiVersion: kind.x-k8s.io/v1alpha4
 kind: Cluster
-networking:
-  apiServerAddress: "0.0.0.0"
-  apiServerPort: 6443
 nodes:
 - role: control-plane
 `
