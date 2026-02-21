@@ -1,0 +1,67 @@
+name: E2E
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, "hex/*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-standalone:
+    name: Standalone (embedded kcp + static token)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: v1.25.0
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Add kedge.localhost to /etc/hosts
+        run: echo "127.0.0.1 kedge.localhost" | sudo tee -a /etc/hosts
+
+      - name: Build binaries
+        run: make build
+
+      - name: Determine hub image tag
+        id: hub-tag
+        run: |
+          TAG=$(curl -sf https://api.github.com/repos/faroshq/kedge/releases/latest \
+            | jq -r '.tag_name // "v0.0.1-rc10"')
+          # Fallback if curl/jq fail or release has no tag
+          [ -z "$TAG" ] || [ "$TAG" = "null" ] && TAG="v0.0.1-rc10"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build hub Docker image
+        run: |
+          docker build -f deploy/Dockerfile.hub \
+            -t ghcr.io/faroshq/kedge-hub:${{ steps.hub-tag.outputs.tag }} .
+
+      - name: Run standalone e2e
+        env:
+          KEDGE_HUB_IMAGE_PULL_POLICY: Never
+          KEDGE_HUB_IMAGE_TAG: ${{ steps.hub-tag.outputs.tag }}
+        run: make e2e-standalone E2E_TIMEOUT=20m
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-standalone-logs
+          path: |
+            *.kubeconfig
+            *.log
+          retention-days: 3

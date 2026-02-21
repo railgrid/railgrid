@@ -61,7 +61,7 @@ build-agent:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-agent ./cmd/kedge-agent/
 
 test:
-	go test ./...
+	go test $(shell go list ./... | grep -v '/test/e2e')
 
 test-util:
 	go test ./pkg/util/...
@@ -338,3 +338,19 @@ helm-push-local: ## Push Helm charts to IMAGE_REPO registry
 
 helm-clean: ## Clean up built helm charts
 	rm -f ./bin/*.tgz
+
+# --- E2E Tests ---
+
+E2E_FLAGS ?=
+E2E_TIMEOUT ?= 10m
+
+e2e: e2e-standalone ## Run default e2e suite (standalone)
+
+e2e-standalone: build ## Run standalone e2e suite (embedded kcp + static token, no Dex)
+	go test ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(E2E_FLAGS)
+
+e2e-all: build ## Run all e2e suites
+	go test ./test/e2e/... -v -timeout 30m $(E2E_FLAGS)
+
+e2e-keep: ## Run standalone e2e, keep clusters on failure for debugging
+	$(MAKE) e2e-standalone E2E_FLAGS="--keep-clusters"

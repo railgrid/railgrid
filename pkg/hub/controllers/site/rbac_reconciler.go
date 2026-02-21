@@ -61,7 +61,6 @@ func SetupRBACWithManager(mgr mcmanager.Manager, hubExternalURL string) error {
 		For(&kedgev1alpha1.Site{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.ServiceAccount{}).
-		Owns(&rbacv1.ClusterRole{}).
 		Owns(&rbacv1.ClusterRoleBinding{}).
 		Complete(r)
 }
@@ -107,7 +106,12 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 	}
 
 	// 3. Ensure ClusterRole for site agents.
-	if err := ensureClusterRole(ctx, c, ownerRef); err != nil {
+	// NOTE: the ClusterRole is a shared cluster-wide resource, not owned by
+	// individual sites.  Attaching per-site ownerRefs caused garbage-collection
+	// races: when one site was deleted the ClusterRole entered Terminating state
+	// while a new site's reconciler tried to adopt it, causing an exponential
+	// backoff loop.
+	if err := ensureClusterRole(ctx, c); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring cluster role: %w", err)
 	}
 
@@ -233,17 +237,13 @@ func desiredAgentRules() []rbacv1.PolicyRule {
 	}
 }
 
-func ensureClusterRole(ctx context.Context, c client.Client, ownerRef metav1.OwnerReference) error {
+// ensureClusterRole creates or updates the shared kedge-site-agent ClusterRole.
+// It intentionally carries no owner reference so that it is never garbage-collected
+// when an individual site is deleted; the role is a cluster-wide shared resource.
+func ensureClusterRole(ctx context.Context, c client.Client) error {
 	desired := desiredAgentRules()
 	cr := &rbacv1.ClusterRole{}
 	if err := c.Get(ctx, client.ObjectKey{Name: siteAgentClusterRole}, cr); err == nil {
-		if err := ensureOwnerRef(ctx, c, cr, ownerRef); err != nil {
-			return err
-		}
-		// Re-read after potential ownerRef update.
-		if err := c.Get(ctx, client.ObjectKey{Name: siteAgentClusterRole}, cr); err != nil {
-			return err
-		}
 		if !rulesEqual(cr.Rules, desired) {
 			cr.Rules = desired
 			return c.Update(ctx, cr)
@@ -254,8 +254,7 @@ func ensureClusterRole(ctx context.Context, c client.Client, ownerRef metav1.Own
 	}
 	if err := c.Create(ctx, &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            siteAgentClusterRole,
-			OwnerReferences: []metav1.OwnerReference{ownerRef},
+			Name: siteAgentClusterRole,
 		},
 		Rules: desired,
 	}); err != nil && !apierrors.IsAlreadyExists(err) {

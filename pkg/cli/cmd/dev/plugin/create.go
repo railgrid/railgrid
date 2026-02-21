@@ -67,6 +67,7 @@ type DevOptions struct {
 	APIServerPort       int
 	HubHTTPSPort        int
 	HubHTTPPort         int
+	ImagePullPolicy     string
 }
 
 // fallbackAssetVersion is used when unable to fetch the latest version
@@ -106,6 +107,7 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&o.APIServerPort, "api-server-port", 6443, "Kubernetes API server port for hub kind cluster (change if 6443 is already in use)")
 	cmd.Flags().IntVar(&o.HubHTTPSPort, "hub-https-port", 8443, "HTTPS port for kedge hub (change if 8443 is already in use)")
 	cmd.Flags().IntVar(&o.HubHTTPPort, "hub-http-port", 8080, "HTTP port for kedge hub (change if 8080 is already in use)")
+	cmd.Flags().StringVar(&o.ImagePullPolicy, "image-pull-policy", "IfNotPresent", "Image pull policy for the hub (use Never when the image is pre-loaded into kind)")
 }
 
 // Complete completes the options
@@ -372,6 +374,20 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 	}
 
 	if installKedge {
+		// When pull policy is Never, pre-load the hub image into the kind cluster
+		// so helm install can start without hitting the registry.
+		if o.ImagePullPolicy == "Never" {
+			imageRef := fmt.Sprintf("%s:%s", o.Image, o.Tag)
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "Loading hub image %s into cluster %s\n", imageRef, clusterName)
+			loadCmd := exec.CommandContext(ctx, "kind", "load", "docker-image", imageRef, "--name", clusterName)
+			loadCmd.Stdout = os.Stdout
+			loadCmd.Stderr = os.Stderr
+			if err := loadCmd.Run(); err != nil {
+				// Non-fatal: image may already be present or name may differ; helm will surface the real error.
+				_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: kind load docker-image failed (image may be missing): %v\n", err)
+			}
+		}
+
 		restConfig, err := loadRestConfigFromFile(kubeconfigPath)
 		if err != nil {
 			return err
@@ -446,6 +462,7 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 			"hub": map[string]any{
 				"repository": o.Image,
 				"tag":        o.Tag,
+				"pullPolicy": o.ImagePullPolicy,
 			},
 		},
 		"hub": map[string]any{
@@ -491,6 +508,8 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 	if _, err := histClient.Run("kedge-hub"); err == nil {
 		upgradeAction := action.NewUpgrade(actionConfig)
 		upgradeAction.Namespace = "kedge-system"
+		upgradeAction.Wait = true
+		upgradeAction.Timeout = o.WaitForReadyTimeout
 		_, err = upgradeAction.Run("kedge-hub", chartObj, values)
 		if err != nil {
 			return fmt.Errorf("failed to upgrade chart: %w", err)
@@ -500,6 +519,8 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 		installAction.ReleaseName = "kedge-hub"
 		installAction.Namespace = "kedge-system"
 		installAction.CreateNamespace = true
+		installAction.Wait = true
+		installAction.Timeout = o.WaitForReadyTimeout
 		_, err = installAction.Run(chartObj, values)
 		if err != nil {
 			return fmt.Errorf("failed to install chart: %w", err)
