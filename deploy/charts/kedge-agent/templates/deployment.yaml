@@ -23,6 +23,10 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       serviceAccountName: {{ include "kedge-agent.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -37,6 +41,9 @@ spec:
             - --hub-kubeconfig=/etc/kedge/hub-kubeconfig/kubeconfig
             {{- if .Values.agent.hub.context }}
             - --hub-context={{ .Values.agent.hub.context }}
+            {{- end }}
+            {{- if .Values.agent.hub.url }}
+            - --hub-url={{ .Values.agent.hub.url }}
             {{- end }}
             {{- if .Values.agent.tunnelURL }}
             - --tunnel-url={{ .Values.agent.tunnelURL }}
