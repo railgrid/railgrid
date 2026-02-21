@@ -61,6 +61,7 @@ type DevOptions struct {
 	AgentClusterName    string
 	WaitForReadyTimeout time.Duration
 	ChartPath           string
+	AgentChartPath      string
 	ChartVersion        string
 	KindNetwork         string
 }
@@ -80,6 +81,7 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 		HubClusterName:   "kedge-hub",
 		AgentClusterName: "kedge-agent",
 		ChartPath:        "deploy/charts/kedge-hub",
+		AgentChartPath:   "oci://ghcr.io/faroshq/charts/kedge-agent",
 		ChartVersion:     fallbackAssetVersion,
 	}
 }
@@ -89,7 +91,8 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.HubClusterName, "hub-cluster-name", "kedge-hub", "Name of the hub cluster in dev mode")
 	cmd.Flags().StringVar(&o.AgentClusterName, "agent-cluster-name", "kedge-agent", "Name of the agent cluster in dev mode")
 	cmd.Flags().DurationVar(&o.WaitForReadyTimeout, "wait-for-ready-timeout", 2*time.Minute, "Timeout for waiting for the cluster to be ready")
-	cmd.Flags().StringVar(&o.ChartPath, "chart-path", o.ChartPath, "Helm chart path or OCI registry URL")
+	cmd.Flags().StringVar(&o.ChartPath, "chart-path", o.ChartPath, "Helm chart path or OCI registry URL for hub")
+	cmd.Flags().StringVar(&o.AgentChartPath, "agent-chart-path", o.AgentChartPath, "Helm chart path or OCI registry URL for agent")
 	cmd.Flags().StringVar(&o.ChartVersion, "chart-version", o.ChartVersion, "Helm chart version")
 	cmd.Flags().StringVar(&o.Image, "image", "ghcr.io/faroshq/kedge-hub", "kedge hub image to use in dev mode")
 	cmd.Flags().StringVar(&o.Tag, "tag", "", "kedge hub image tag to use in dev mode")
@@ -276,13 +279,20 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 		o.AgentClusterName, o.AgentClusterName)))
 
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then install the agent Helm chart:\n")
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-		"helm install kedge-agent deploy/charts/kedge-agent \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-system \\\n     --set agent.siteName=my-site \\\n     --set agent.hub.existingSecret=site-kubeconfig",
-		o.AgentClusterName)))
-
 	if hubIP != "" {
-		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Note: The agent connects to the hub via the Docker network.\n")
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "   Hub is reachable at: https://%s:8443 from within the kind network.\n\n", hubIP)
+		// Use hub.url to override the kubeconfig server URL with the correct NodePort address
+		// The kubeconfig has kedge.localhost:8443 which works from host, but from within
+		// the Docker network we need to use the hub's IP and NodePort 31443
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
+			"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-system \\\n     --set agent.siteName=my-site \\\n     --set agent.hub.existingSecret=site-kubeconfig \\\n     --set agent.hub.url=https://%s:31443",
+			o.AgentChartPath, o.ChartVersion, o.AgentClusterName, hubIP)))
+	} else {
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
+			"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-system \\\n     --set agent.siteName=my-site \\\n     --set agent.hub.existingSecret=site-kubeconfig",
+			o.AgentChartPath, o.ChartVersion, o.AgentClusterName)))
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Note: You may need to set agent.hub.url to the hub's Docker network IP and NodePort.\n")
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Get hub IP: docker inspect kedge-hub-control-plane | jq -r '.[0].NetworkSettings.Networks[\"kedge-dev\"].IPAddress'\n")
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then add: --set agent.hub.url=https://<HUB_IP>:31443\n\n")
 	}
 
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "Useful commands:\n")

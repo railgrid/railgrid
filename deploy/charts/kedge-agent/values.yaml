@@ -26,6 +26,9 @@ agent:
     kubeconfig: ""
     # -- Optional: kubeconfig context to use
     context: ""
+    # -- Optional: override hub URL (useful for dev environments where the
+    # kubeconfig server URL differs from the actual reachable URL)
+    url: ""
 
   # -- Optional: separate tunnel URL (defaults to hub URL from kubeconfig)
   tunnelURL: ""
@@ -56,6 +59,14 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 podAnnotations: {}
+
+# -- Host aliases to add to the pod (useful for dev environments)
+# Example:
+#   hostAliases:
+#     - ip: "172.18.0.2"
+#       hostnames:
+#         - "kedge.localhost"
+hostAliases: []
 podSecurityContext:
   fsGroup: 65534
 securityContext:

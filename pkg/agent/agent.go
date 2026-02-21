@@ -81,6 +81,10 @@ func New(opts *Options) (*Agent, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to build hub config from kubeconfig: %w", err)
 		}
+		// Allow HubURL to override the kubeconfig's server URL (useful for dev environments)
+		if opts.HubURL != "" {
+			hubConfig.Host = opts.HubURL
+		}
 	} else if opts.HubURL != "" {
 		hubConfig = &rest.Config{
 			Host:        opts.HubURL,
