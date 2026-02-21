@@ -64,6 +64,9 @@ type DevOptions struct {
 	AgentChartPath      string
 	ChartVersion        string
 	KindNetwork         string
+	APIServerPort       int
+	HubHTTPSPort        int
+	HubHTTPPort         int
 }
 
 // fallbackAssetVersion is used when unable to fetch the latest version
@@ -83,6 +86,9 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 		ChartPath:        "deploy/charts/kedge-hub",
 		AgentChartPath:   "oci://ghcr.io/faroshq/charts/kedge-agent",
 		ChartVersion:     fallbackAssetVersion,
+		APIServerPort:    6443,
+		HubHTTPSPort:     8443,
+		HubHTTPPort:      8080,
 	}
 }
 
@@ -97,6 +103,9 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.Image, "image", "ghcr.io/faroshq/kedge-hub", "kedge hub image to use in dev mode")
 	cmd.Flags().StringVar(&o.Tag, "tag", "", "kedge hub image tag to use in dev mode")
 	cmd.Flags().StringVar(&o.KindNetwork, "kind-network", "kedge-dev", "kind network to use in dev mode")
+	cmd.Flags().IntVar(&o.APIServerPort, "api-server-port", 6443, "Kubernetes API server port for hub kind cluster (change if 6443 is already in use)")
+	cmd.Flags().IntVar(&o.HubHTTPSPort, "hub-https-port", 8443, "HTTPS port for kedge hub (change if 8443 is already in use)")
+	cmd.Flags().IntVar(&o.HubHTTPPort, "hub-http-port", 8080, "HTTP port for kedge hub (change if 8080 is already in use)")
 }
 
 // Complete completes the options
@@ -168,23 +177,25 @@ func (o *DevOptions) Validate() error {
 	return nil
 }
 
-var hubClusterConfig = `apiVersion: kind.x-k8s.io/v1alpha4
+func (o *DevOptions) hubClusterConfig() string {
+	return fmt.Sprintf(`apiVersion: kind.x-k8s.io/v1alpha4
 kind: Cluster
 networking:
   apiServerAddress: "0.0.0.0"
-  apiServerPort: 6443
+  apiServerPort: %d
 nodes:
 - role: control-plane
   extraPortMappings:
   - containerPort: 31000
-    hostPort: 8080
+    hostPort: %d
     protocol: TCP
     listenAddress: "127.0.0.1"
   - containerPort: 31443
-    hostPort: 8443
+    hostPort: %d
     protocol: TCP
     listenAddress: "127.0.0.1"
-`
+`, o.APIServerPort, o.HubHTTPPort, o.HubHTTPSPort)
+}
 
 var agentClusterConfig = `apiVersion: kind.x-k8s.io/v1alpha4
 kind: Cluster
@@ -214,7 +225,7 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	}
 
 	// Create hub cluster with kedge-hub installed
-	if err := o.createCluster(ctx, o.HubClusterName, hubClusterConfig, true); err != nil {
+	if err := o.createCluster(ctx, o.HubClusterName, o.hubClusterConfig(), true); err != nil {
 		return err
 	}
 
@@ -438,8 +449,8 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 			},
 		},
 		"hub": map[string]any{
-			"hubExternalURL": "https://kedge.localhost:8443",
-			"listenAddr":     ":8443",
+			"hubExternalURL": fmt.Sprintf("https://kedge.localhost:%d", o.HubHTTPSPort),
+			"listenAddr":     fmt.Sprintf(":%d", o.HubHTTPSPort),
 			"devMode":        true,
 			"staticAuthTokens": []string{
 				"dev-token",
@@ -448,7 +459,7 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 		"service": map[string]any{
 			"type": "NodePort",
 			"hub": map[string]any{
-				"port":     8443,
+				"port":     o.HubHTTPSPort,
 				"nodePort": 31443,
 			},
 		},
