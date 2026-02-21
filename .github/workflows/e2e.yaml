@@ -36,24 +36,13 @@ jobs:
       - name: Build binaries
         run: make build
 
-      - name: Determine hub image tag
-        id: hub-tag
-        run: |
-          TAG=$(curl -sf https://api.github.com/repos/faroshq/kedge/releases/latest \
-            | jq -r '.tag_name // "v0.0.1-rc10"')
-          # Fallback if curl/jq fail or release has no tag
-          [ -z "$TAG" ] || [ "$TAG" = "null" ] && TAG="v0.0.1-rc10"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
       - name: Build hub Docker image
-        run: |
-          docker build -f deploy/Dockerfile.hub \
-            -t ghcr.io/faroshq/kedge-hub:${{ steps.hub-tag.outputs.tag }} .
+        run: docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
 
       - name: Run standalone e2e
         env:
           KEDGE_HUB_IMAGE_PULL_POLICY: Never
-          KEDGE_HUB_IMAGE_TAG: ${{ steps.hub-tag.outputs.tag }}
+          KEDGE_HUB_IMAGE_TAG: test
         run: make e2e-standalone E2E_TIMEOUT=20m
 
       - name: Upload test logs on failure
