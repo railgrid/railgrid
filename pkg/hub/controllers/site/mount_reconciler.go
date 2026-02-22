@@ -51,6 +51,10 @@ type MountReconciler struct {
 	kcpConfig      *rest.Config
 	hubExternalURL string
 	siteRoutes     *builder.SiteRouteMap
+
+	// workspaceEnsureFn creates or adopts the kcp mount workspace for a site.
+	// Defaults to r.ensureMountWorkspace; injectable for unit testing.
+	workspaceEnsureFn func(ctx context.Context, logger klog.Logger, clusterName string, site *kedgev1alpha1.Site) error
 }
 
 // SetupMountWithManager registers the mount controller with the multicluster manager.
@@ -61,6 +65,7 @@ func SetupMountWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExt
 		hubExternalURL: hubExternalURL,
 		siteRoutes:     siteRoutes,
 	}
+	r.workspaceEnsureFn = r.ensureMountWorkspace
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("site-mount").
 		For(&kedgev1alpha1.Site{}).
@@ -110,7 +115,7 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 	}
 
 	// Create mount workspace in kcp via admin dynamic client.
-	if err := r.ensureMountWorkspace(ctx, logger, req.ClusterName, &site); err != nil {
+	if err := r.workspaceEnsureFn(ctx, logger, req.ClusterName, &site); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring mount workspace: %w", err)
 	}
 
