@@ -17,12 +17,13 @@ limitations under the License.
 package auth
 
 // OIDCConfig holds OIDC provider configuration.
+// ClientSecret is intentionally absent: kedge uses PKCE (public client flow)
+// so no client secret is required on the hub side.
 type OIDCConfig struct {
-	IssuerURL    string
-	ClientID     string
-	ClientSecret string
-	RedirectURL  string
-	Scopes       []string
+	IssuerURL   string
+	ClientID    string
+	RedirectURL string
+	Scopes      []string
 }
 
 // DefaultOIDCConfig returns default OIDC configuration.

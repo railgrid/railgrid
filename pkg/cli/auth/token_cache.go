@@ -27,13 +27,14 @@ import (
 )
 
 // TokenCache stores OIDC tokens for the exec credential plugin.
+// ClientSecret is intentionally absent: kedge uses PKCE (public client) so
+// token refresh requires only the refresh token, issuer URL, and client ID.
 type TokenCache struct {
 	IDToken      string `json:"idToken"`
 	RefreshToken string `json:"refreshToken"`
 	ExpiresAt    int64  `json:"expiresAt"` // Unix timestamp
 	IssuerURL    string `json:"issuerUrl"`
 	ClientID     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret"`
 }
 
 // IsExpired returns true if the cached token has expired (with 30s buffer).

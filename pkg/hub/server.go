@@ -192,7 +192,6 @@ func (s *Server) Run(ctx context.Context) error {
 		oidcConfig := auth.DefaultOIDCConfig()
 		oidcConfig.IssuerURL = s.opts.IDPIssuerURL
 		oidcConfig.ClientID = s.opts.IDPClientID
-		oidcConfig.ClientSecret = s.opts.IDPClientSecret
 		oidcConfig.RedirectURL = s.opts.HubExternalURL + "/auth/callback"
 
 		authHandler, err = auth.NewHandler(ctx, oidcConfig, userClient, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode)

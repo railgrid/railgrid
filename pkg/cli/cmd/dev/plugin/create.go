@@ -88,7 +88,6 @@ const fallbackAssetVersion = "0.0.1"
 const (
 	devDexIssuerURL    = "http://dex.kedge-system.svc.cluster.local:5556/dex"
 	devDexClientID     = "kedge"
-	devDexClientSecret = "kedge-test-secret"
 	devDexChartRef     = "dexidp/dex" // from https://charts.dexidp.io, added as a repo
 	devDexChartVersion = "0.24.0"
 	devDexReleaseName  = "dex"
@@ -543,7 +542,7 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 			"oauth2":  map[string]any{"skipApprovalScreen": true},
 			"staticClients": []map[string]any{{
 				"id":           devDexClientID,
-				"secret":       devDexClientSecret,
+				"public":       true,
 				"name":         "Kedge Hub",
 				"redirectURIs": []string{redirectURI},
 			}},
@@ -686,9 +685,8 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 	}
 	if withIDP && o.WithDex {
 		values["idp"] = map[string]any{
-			"issuerURL":    devDexIssuerURL,
-			"clientID":     devDexClientID,
-			"clientSecret": devDexClientSecret,
+			"issuerURL": devDexIssuerURL,
+			"clientID":  devDexClientID,
 		}
 	}
 

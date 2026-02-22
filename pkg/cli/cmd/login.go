@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/oauth2"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
@@ -121,15 +122,19 @@ func runLogin(ctx context.Context, hubURL string, insecure bool) error {
 		return fmt.Errorf("starting callback server: %w", err)
 	}
 
-	// 2. Generate a random session ID.
+	// 2. Generate a random session ID and PKCE code_verifier.
 	sessionBytes := make([]byte, 3)
 	if _, err := rand.Read(sessionBytes); err != nil {
 		return fmt.Errorf("generating session ID: %w", err)
 	}
 	sessionID := hex.EncodeToString(sessionBytes)
 
-	// 3. Build the authorize URL.
-	authorizeURL := fmt.Sprintf("%s/auth/authorize?p=%d&s=%s", hubURL, authenticator.Port(), sessionID)
+	codeVerifier := oauth2.GenerateVerifier()
+
+	// 3. Build the authorize URL — include the PKCE verifier so the hub can
+	//    exchange the auth code without a client secret.
+	authorizeURL := fmt.Sprintf("%s/auth/authorize?p=%d&s=%s&v=%s",
+		hubURL, authenticator.Port(), sessionID, codeVerifier)
 
 	// 4. Open browser.
 	fmt.Printf("Opening browser for login...\n")
@@ -153,6 +158,8 @@ func runLogin(ctx context.Context, hubURL string, insecure bool) error {
 	}
 
 	// 7. Save OIDC token cache so the exec credential plugin can use it.
+	// ClientSecret is intentionally not cached — PKCE public client refresh
+	// needs only the refresh token, issuer URL, and client ID.
 	if resp.IDToken != "" && resp.IssuerURL != "" {
 		cache := &cliauth.TokenCache{
 			IDToken:      resp.IDToken,
@@ -160,7 +167,6 @@ func runLogin(ctx context.Context, hubURL string, insecure bool) error {
 			ExpiresAt:    resp.ExpiresAt,
 			IssuerURL:    resp.IssuerURL,
 			ClientID:     resp.ClientID,
-			ClientSecret: resp.ClientSecret,
 		}
 		if err := cliauth.SaveTokenCache(cache); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to save token cache: %v\n", err)

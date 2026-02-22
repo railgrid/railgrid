@@ -152,7 +152,6 @@ func TestOIDCUserCanListSites(t *testing.T) {
 					ExpiresAt:    result.ExpiresAt,
 					IssuerURL:    result.IssuerURL,
 					ClientID:     result.ClientID,
-					ClientSecret: result.ClientSecret,
 				}
 				if err := cliauth.SaveTokenCache(tokenCache); err != nil {
 					t.Fatalf("caching OIDC token: %v", err)

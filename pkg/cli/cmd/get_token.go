@@ -36,7 +36,6 @@ func newGetTokenCommand() *cobra.Command {
 	var (
 		issuerURL             string
 		clientID              string
-		clientSecret          string
 		insecureSkipTLSVerify bool
 	)
 
@@ -45,13 +44,12 @@ func newGetTokenCommand() *cobra.Command {
 		Short:  "Get an OIDC token for kubectl exec credential plugin",
 		Hidden: true, // Called by kubectl, not directly by users.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runGetToken(cmd.Context(), issuerURL, clientID, clientSecret, insecureSkipTLSVerify)
+			return runGetToken(cmd.Context(), issuerURL, clientID, insecureSkipTLSVerify)
 		},
 	}
 
 	cmd.Flags().StringVar(&issuerURL, "oidc-issuer-url", "", "OIDC issuer URL")
 	cmd.Flags().StringVar(&clientID, "oidc-client-id", "", "OIDC client ID")
-	cmd.Flags().StringVar(&clientSecret, "oidc-client-secret", "", "OIDC client secret")
 	cmd.Flags().BoolVar(&insecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS verification for OIDC provider")
 
 	return cmd
@@ -69,7 +67,7 @@ type execCredentialStatus struct {
 	ExpirationTimestamp string `json:"expirationTimestamp,omitempty"`
 }
 
-func runGetToken(ctx context.Context, issuerURL, clientID, clientSecret string, insecure bool) error {
+func runGetToken(ctx context.Context, issuerURL, clientID string, insecure bool) error {
 	if issuerURL == "" || clientID == "" {
 		return fmt.Errorf("--oidc-issuer-url and --oidc-client-id are required")
 	}
@@ -85,7 +83,8 @@ func runGetToken(ctx context.Context, issuerURL, clientID, clientSecret string, 
 		return fmt.Errorf("no valid token found; please run 'kedge login' first")
 	}
 
-	newIDToken, newRefreshToken, expiry, err := refreshToken(ctx, issuerURL, clientID, clientSecret, cache.RefreshToken, insecure)
+	// Public client refresh: no client secret needed (PKCE flow).
+	newIDToken, newRefreshToken, expiry, err := refreshToken(ctx, issuerURL, clientID, "", cache.RefreshToken, insecure)
 	if err != nil {
 		return fmt.Errorf("token refresh failed (run 'kedge login' to re-authenticate): %w", err)
 	}

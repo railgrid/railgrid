@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"golang.org/x/net/html"
+	"golang.org/x/oauth2"
 )
 
 // OIDCLoginResult holds the result of a headless OIDC login.
@@ -50,8 +51,6 @@ type OIDCLoginResult struct {
 	IssuerURL string
 	// ClientID is the OAuth2 client ID.
 	ClientID string
-	// ClientSecret is the OAuth2 client secret.
-	ClientSecret string
 }
 
 // HeadlessOIDCLogin drives the full OIDC authorization-code flow headlessly.
@@ -132,7 +131,10 @@ func HeadlessOIDCLogin(ctx context.Context, hubURL, email, password string) (*OI
 	}
 
 	// ── Step 2: hit hub /auth/authorize → get Dex auth URL ───────────────────
-	authorizeURL := fmt.Sprintf("%s/auth/authorize?p=%d&s=e2etest", hubURL, callbackPort)
+	// PKCE (public client): generate a code_verifier so the hub can include
+	// the S256 code_challenge in the upstream auth URL and verify on exchange.
+	codeVerifier := oauth2.GenerateVerifier()
+	authorizeURL := fmt.Sprintf("%s/auth/authorize?p=%d&s=e2etest&v=%s", hubURL, callbackPort, url.QueryEscape(codeVerifier))
 	dexAuthURL, err := doRedirect(ctx, client, authorizeURL)
 	if err != nil {
 		return nil, fmt.Errorf("following hub /auth/authorize: %w", err)
@@ -237,7 +239,6 @@ func HeadlessOIDCLogin(ctx context.Context, hubURL, email, password string) (*OI
 			ExpiresAt:    res.payload.ExpiresAt,
 			IssuerURL:    res.payload.IssuerURL,
 			ClientID:     res.payload.ClientID,
-			ClientSecret: res.payload.ClientSecret,
 		}, nil
 	case <-time.After(45 * time.Second):
 		return nil, fmt.Errorf("timed out (45s) waiting for OIDC callback on localhost:%d/callback", callbackPort)
@@ -256,7 +257,6 @@ type loginResponse struct {
 	RefreshToken string `json:"refreshToken"`
 	IssuerURL    string `json:"issuerURL"`
 	ClientID     string `json:"clientID"`
-	ClientSecret string `json:"clientSecret"`
 }
 
 // doRedirect performs a GET to rawURL, follows zero redirects, and returns the

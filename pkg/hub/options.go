@@ -24,7 +24,6 @@ type Options struct {
 	ExternalKCPKubeconfig string
 	IDPIssuerURL          string
 	IDPClientID           string
-	IDPClientSecret       string
 	ServingCertFile       string
 	ServingKeyFile        string
 	HubExternalURL        string

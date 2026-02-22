@@ -50,7 +50,6 @@ spec:
             {{- if .Values.idp.issuerURL }}
             - --idp-issuer-url={{ .Values.idp.issuerURL }}
             - --idp-client-id={{ .Values.idp.clientID }}
-            - --idp-client-secret={{ .Values.idp.clientSecret }}
             {{- end }}
             {{- range .Values.hub.staticAuthTokens }}
             - --static-auth-token={{ . }}

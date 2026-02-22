@@ -74,12 +74,13 @@ func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclien
 		return nil, fmt.Errorf("failed to create OIDC provider: %w", err)
 	}
 
+	// No ClientSecret: kedge uses PKCE (public client). Dex must be configured
+	// with public: true for this client ID.
 	oauth2Config := &oauth2.Config{
-		ClientID:     config.ClientID,
-		ClientSecret: config.ClientSecret,
-		RedirectURL:  config.RedirectURL,
-		Endpoint:     provider.Endpoint(),
-		Scopes:       config.Scopes,
+		ClientID:    config.ClientID,
+		RedirectURL: config.RedirectURL,
+		Endpoint:    provider.Endpoint(),
+		Scopes:      config.Scopes,
 	}
 
 	return &Handler{
@@ -95,13 +96,23 @@ func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclien
 }
 
 // HandleAuthorize redirects to the OIDC provider for authentication.
-// GET /auth/authorize?p=<port>&s=<sessionID>
+// GET /auth/authorize?p=<port>&s=<sessionID>&v=<codeVerifier>
+//
+// The CLI generates a PKCE code_verifier and passes it as "v". The hub stores
+// it in the OAuth2 state and sends the corresponding S256 code_challenge to
+// the OIDC provider. The verifier is recovered from state in HandleCallback
+// and used to exchange the auth code — no client secret needed.
 func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	port := r.URL.Query().Get("p")
 	sessionID := r.URL.Query().Get("s")
+	codeVerifier := r.URL.Query().Get("v")
 
 	if port == "" || sessionID == "" {
 		http.Error(w, "missing p (port) or s (session) parameter", http.StatusBadRequest)
+		return
+	}
+	if codeVerifier == "" {
+		http.Error(w, "missing v (PKCE code_verifier) parameter", http.StatusBadRequest)
 		return
 	}
 
@@ -114,8 +125,9 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authCode := tenancyv1alpha1.AuthCode{
-		RedirectURL: fmt.Sprintf("http://127.0.0.1:%d/callback", portNum),
-		SessionID:   sessionID,
+		RedirectURL:  fmt.Sprintf("http://127.0.0.1:%d/callback", portNum),
+		SessionID:    sessionID,
+		CodeVerifier: codeVerifier,
 	}
 
 	stateJSON, err := json.Marshal(authCode)
@@ -125,8 +137,9 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	state := base64.URLEncoding.EncodeToString(stateJSON)
 
-	url := h.oauth2Config.AuthCodeURL(state)
-	http.Redirect(w, r, url, http.StatusFound)
+	// Include S256 code_challenge derived from the verifier in the auth URL.
+	authURL := h.oauth2Config.AuthCodeURL(state, oauth2.S256ChallengeOption(codeVerifier))
+	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
 // HandleCallback handles the OIDC callback after authentication.
@@ -153,7 +166,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Exchange code for tokens.
+	// Exchange code for tokens using the PKCE code_verifier (no client secret).
 	exchangeCtx := ctx
 	if h.devMode {
 		tr := &http.Transport{
@@ -163,7 +176,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		exchangeCtx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 	}
 
-	token, err := h.oauth2Config.Exchange(exchangeCtx, code)
+	token, err := h.oauth2Config.Exchange(exchangeCtx, code, oauth2.VerifierOption(authCode.CodeVerifier))
 	if err != nil {
 		h.logger.Error(err, "failed to exchange code for token")
 		http.Error(w, "token exchange failed", http.StatusInternalServerError)
@@ -225,6 +238,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build response with OIDC credentials so the CLI can cache and refresh tokens.
+	// ClientSecret is intentionally absent — PKCE public client flow needs none.
 	resp := tenancyv1alpha1.LoginResponse{
 		Kubeconfig:   kubeconfigBytes,
 		ExpiresAt:    token.Expiry.Unix(),
@@ -234,7 +248,6 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		RefreshToken: token.RefreshToken,
 		IssuerURL:    h.oidcConfig.IssuerURL,
 		ClientID:     h.oidcConfig.ClientID,
-		ClientSecret: h.oidcConfig.ClientSecret,
 	}
 	respJSON, err := json.Marshal(resp)
 	if err != nil {
@@ -365,11 +378,12 @@ func (h *Handler) generateKubeconfig(userID, clusterName, email string) ([]byte,
 	}
 
 	userName := userID
+	// No --oidc-client-secret: PKCE public client refresh requires only the
+	// issuer URL and client ID. The refresh token is stored in the token cache.
 	execArgs := []string{
 		"get-token",
 		"--oidc-issuer-url=" + h.oidcConfig.IssuerURL,
 		"--oidc-client-id=" + h.oidcConfig.ClientID,
-		"--oidc-client-secret=" + h.oidcConfig.ClientSecret,
 	}
 	if h.devMode {
 		execArgs = append(execArgs, "--insecure-skip-tls-verify")

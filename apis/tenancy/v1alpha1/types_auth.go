@@ -33,13 +33,16 @@ type LoginResponse struct {
 	RefreshToken string `json:"refreshToken,omitempty"`
 
 	// OIDC provider config so the exec plugin can refresh tokens.
-	IssuerURL    string `json:"issuerUrl,omitempty"`
-	ClientID     string `json:"clientId,omitempty"`
-	ClientSecret string `json:"clientSecret,omitempty"`
+	// ClientSecret is intentionally omitted: kedge uses PKCE (public client)
+	// so no client secret is ever issued or sent to CLI users.
+	IssuerURL string `json:"issuerUrl,omitempty"`
+	ClientID  string `json:"clientId,omitempty"`
 }
 
-// AuthCode carries the CLI callback port and session through the OAuth2 state parameter.
+// AuthCode carries the CLI callback port, session, and PKCE code verifier
+// through the OAuth2 state parameter.
 type AuthCode struct {
-	RedirectURL string `json:"redirectURL"` // CLI localhost callback URL
-	SessionID   string `json:"sid"`
+	RedirectURL  string `json:"redirectURL"` // CLI localhost callback URL
+	SessionID    string `json:"sid"`
+	CodeVerifier string `json:"cv"` // PKCE code verifier (RFC 7636)
 }

@@ -106,7 +106,6 @@ func WaitForSiteAPIWithOIDC(ctx context.Context, workDir, hubURL string) error {
 			ExpiresAt:    result.ExpiresAt,
 			IssuerURL:    result.IssuerURL,
 			ClientID:     result.ClientID,
-			ClientSecret: result.ClientSecret,
 		}
 		if err := cliauth.SaveTokenCache(tokenCache); err != nil {
 			return fmt.Errorf("caching OIDC token for site API wait: %w", err)

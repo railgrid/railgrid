@@ -67,8 +67,9 @@ hub:
 idp:
   # Required: OIDC issuer URL reachable by hub and end-user browsers
   issuerURL: ""
+  # Client ID for the OIDC provider. Must be registered as a public client
+  # (no client secret) in your IdP (e.g. Dex: public: true).
   clientID: "kedge"
-  clientSecret: ""
 
 # -- kcp data PVC (used for embedded kcp data and hub state)
 persistence:
