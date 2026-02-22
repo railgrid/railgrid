@@ -20,6 +20,7 @@ package proxy
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
@@ -123,8 +124,9 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
 	// Static token: create user/workspace if needed and proxy to user's workspace.
+	// Use constant-time comparison to prevent timing side-channel attacks.
 	for _, staticToken := range p.staticAuthTokens {
-		if staticToken != "" && token == staticToken {
+		if staticToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(staticToken)) == 1 {
 			p.serveStaticToken(w, r, token)
 			return
 		}
@@ -541,9 +543,10 @@ func (p *KCPProxy) HandleTokenLogin(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
 	// Validate token against static tokens.
+	// Use constant-time comparison to prevent timing side-channel attacks.
 	validToken := false
 	for _, staticToken := range p.staticAuthTokens {
-		if staticToken != "" && token == staticToken {
+		if staticToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(staticToken)) == 1 {
 			validToken = true
 			break
 		}

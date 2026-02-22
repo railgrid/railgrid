@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
@@ -104,8 +105,16 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate port is a number in [1, 65535] to prevent path injection
+	// into the redirect URL (fix for #26).
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum < 1 || portNum > 65535 {
+		http.Error(w, "invalid port parameter: must be a number between 1 and 65535", http.StatusBadRequest)
+		return
+	}
+
 	authCode := tenancyv1alpha1.AuthCode{
-		RedirectURL: fmt.Sprintf("http://127.0.0.1:%s/callback", port),
+		RedirectURL: fmt.Sprintf("http://127.0.0.1:%d/callback", portNum),
 		SessionID:   sessionID,
 	}
 
