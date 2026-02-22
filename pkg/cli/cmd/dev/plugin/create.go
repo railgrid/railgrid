@@ -74,11 +74,6 @@ type DevOptions struct {
 	// configured with the Dex issuer URL automatically.
 	WithDex     bool
 	DexHTTPPort int // host port for the Dex NodePort mapping (default 5556)
-
-	// WithExternalKCP deploys kcp via Helm into the hub kind cluster and
-	// configures the hub to use it instead of embedded kcp.
-	WithExternalKCP bool
-	KCPHTTPSPort    int // host port for the kcp NodePort mapping (default 7443)
 }
 
 // fallbackAssetVersion is used when unable to fetch the latest version
@@ -115,7 +110,6 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 		HubHTTPSPort:     8443,
 		HubHTTPPort:      8080,
 		DexHTTPPort:      5556,
-		KCPHTTPSPort:     7443,
 	}
 }
 
@@ -136,8 +130,6 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.ImagePullPolicy, "image-pull-policy", "IfNotPresent", "Image pull policy for the hub (use Never when the image is pre-loaded into kind)")
 	cmd.Flags().BoolVar(&o.WithDex, "with-dex", false, "Deploy Dex as OIDC identity provider into the hub kind cluster")
 	cmd.Flags().IntVar(&o.DexHTTPPort, "dex-http-port", 5556, "Host port for the Dex NodePort mapping (default 5556)")
-	cmd.Flags().BoolVar(&o.WithExternalKCP, "with-external-kcp", false, "Deploy kcp via Helm into the hub kind cluster instead of using embedded kcp")
-	cmd.Flags().IntVar(&o.KCPHTTPSPort, "kcp-https-port", 7443, "Host port for the kcp front-proxy NodePort mapping (default 7443)")
 }
 
 // Complete completes the options
@@ -210,20 +202,13 @@ func (o *DevOptions) Validate() error {
 }
 
 func (o *DevOptions) hubClusterConfig() string {
-	extraMappings := ""
+	dexMapping := ""
 	if o.WithDex {
-		extraMappings += fmt.Sprintf(`  - containerPort: 31556
+		dexMapping = fmt.Sprintf(`  - containerPort: 31556
     hostPort: %d
     protocol: TCP
     listenAddress: "127.0.0.1"
 `, o.DexHTTPPort)
-	}
-	if o.WithExternalKCP {
-		extraMappings += fmt.Sprintf(`  - containerPort: %d
-    hostPort: %d
-    protocol: TCP
-    listenAddress: "127.0.0.1"
-`, kcpNodePort, o.KCPHTTPSPort)
 	}
 	return fmt.Sprintf(`apiVersion: kind.x-k8s.io/v1alpha4
 kind: Cluster
@@ -241,7 +226,7 @@ nodes:
     hostPort: %d
     protocol: TCP
     listenAddress: "127.0.0.1"
-%s`, o.APIServerPort, o.HubHTTPPort, o.HubHTTPSPort, extraMappings)
+%s`, o.APIServerPort, o.HubHTTPPort, o.HubHTTPSPort, dexMapping)
 }
 
 var agentClusterConfig = `apiVersion: kind.x-k8s.io/v1alpha4
@@ -438,37 +423,6 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 			return err
 		}
 
-		if o.WithExternalKCP {
-			// External kcp path: cert-manager → kcp → kubeconfigs → hub (with external kcp)
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "Installing cert-manager (required by kcp)...\n")
-			if err := ensureCertManager(ctx, kubeconfigPath); err != nil {
-				return fmt.Errorf("installing cert-manager: %w", err)
-			}
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "cert-manager ready\n")
-
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "Deploying kcp via Helm...\n")
-			if err := o.deployKCPViaHelm(ctx, restConfig); err != nil {
-				return fmt.Errorf("deploying kcp: %w", err)
-			}
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "kcp deployed\n")
-
-			// workDir is where the kubeconfig files are written (same as cluster name prefix)
-			workDir := "."
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "Building kcp admin kubeconfigs...\n")
-			if err := o.buildKCPKubeconfigs(ctx, restConfig, kubeconfigPath, workDir); err != nil {
-				return fmt.Errorf("building kcp kubeconfigs: %w", err)
-			}
-			_, _ = fmt.Fprintf(o.Streams.ErrOut, "kcp admin kubeconfig written to %s/%s\n", workDir, kcpExternalKubeconfigFile)
-
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "Installing kedge-hub with external kcp...\n")
-			if err := o.installHelmChartWithExternalKCP(ctx, restConfig); err != nil {
-				_, _ = fmt.Fprint(o.Streams.ErrOut, "Failed to install kedge-hub Helm chart\n")
-				return err
-			}
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "Helm chart installed successfully\n")
-			return nil
-		}
-
 		// Deploy Dex FIRST so the hub can be installed once, with IDP settings
 		// already wired in. Dex creates the namespace (CreateNamespace=true).
 		if o.WithDex {
@@ -515,7 +469,7 @@ func ensureDexHelmRepo() error {
 // and blocks until the Dex pod is Running/Ready.
 func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kubeconfigPath string) error {
 	actionConfig := new(action.Configuration)
-	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "kedge-system"}, "kedge-system", "secret",
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, "kedge-system", "secret",
 		func(format string, v ...any) {}); err != nil {
 		return fmt.Errorf("initialising helm action config for dex: %w", err)
 	}
@@ -641,7 +595,7 @@ func (o *DevOptions) getClusterIPAddress(ctx context.Context, clusterName, netwo
 func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config, withIDP bool) error {
 	actionConfig := new(action.Configuration)
 
-	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "kedge-system"}, "kedge-system", "secret", func(format string, v ...any) {}); err != nil {
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, "kedge-system", "secret", func(format string, v ...any) {}); err != nil {
 		return fmt.Errorf("failed to initialize helm action config: %w", err)
 	}
 
@@ -741,8 +695,7 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 }
 
 type restConfigGetter struct {
-	config    *rest.Config
-	namespace string // default namespace for Helm operations
+	config *rest.Config
 }
 
 func (r *restConfigGetter) ToRESTConfig() (*rest.Config, error) {
@@ -769,7 +722,7 @@ func (r *restConfigGetter) ToRESTMapper() (meta.RESTMapper, error) {
 func (r *restConfigGetter) ToRawKubeConfigLoader() clientcmd.ClientConfig {
 	return clientcmd.NewNonInteractiveClientConfig(clientcmdapi.Config{}, "", &clientcmd.ConfigOverrides{
 		Context: clientcmdapi.Context{
-			Namespace: r.namespace,
+			Namespace: "kedge-system",
 		},
 	}, nil)
 }
