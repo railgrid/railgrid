@@ -19,6 +19,7 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,6 +47,9 @@ type Options struct {
 	Kubeconfig    string
 	Context       string
 	Labels        map[string]string
+	// InsecureSkipTLSVerify disables TLS certificate verification for the hub
+	// connection. Should only be used in development/testing; never in production.
+	InsecureSkipTLSVerify bool
 }
 
 // NewOptions returns default agent options.
@@ -59,6 +63,7 @@ func NewOptions() *Options {
 type Agent struct {
 	opts             *Options
 	hubConfig        *rest.Config
+	hubTLSConfig     *tls.Config
 	downstreamConfig *rest.Config
 }
 
@@ -90,7 +95,7 @@ func New(opts *Options) (*Agent, error) {
 			Host:        opts.HubURL,
 			BearerToken: opts.Token,
 			TLSClientConfig: rest.TLSClientConfig{
-				Insecure: true,
+				Insecure: opts.InsecureSkipTLSVerify,
 			},
 		}
 	} else {
@@ -111,9 +116,15 @@ func New(opts *Options) (*Agent, error) {
 		return nil, fmt.Errorf("failed to build downstream config: %w", err)
 	}
 
+	hubTLSConfig, err := rest.TLSConfigFor(hubConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build hub TLS config: %w", err)
+	}
+
 	return &Agent{
 		opts:             opts,
 		hubConfig:        hubConfig,
+		hubTLSConfig:     hubTLSConfig,
 		downstreamConfig: downstreamConfig,
 	}, nil
 }
@@ -151,7 +162,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		tunnelURL = a.hubConfig.Host
 	}
 	tunnelState := make(chan bool, 1)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, a.downstreamConfig, tunnelState)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, a.downstreamConfig, a.hubTLSConfig, tunnelState)
 
 	// Start workload reconciler
 	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubDynamic, downstreamClient)

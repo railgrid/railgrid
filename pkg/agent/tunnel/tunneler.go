@@ -41,7 +41,10 @@ import (
 
 // StartProxyTunnel establishes a reverse tunnel to the hub server.
 // It runs an exponential backoff retry loop to maintain the connection.
-func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, stateChannel chan<- bool) {
+// tlsConfig controls TLS verification for the WebSocket connection to the hub.
+// Pass nil to use a default (secure) TLS config; use InsecureSkipVerify only
+// in development environments.
+func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool) {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "siteName", siteName)
 
@@ -60,7 +63,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 		default:
 		}
 
-		err := startTunneler(ctx, hubURL, token, siteName, downstream, stateChannel)
+		err := startTunneler(ctx, hubURL, token, siteName, downstream, tlsConfig, stateChannel)
 		if err != nil {
 			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
@@ -77,7 +80,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 	}
 }
 
-func startTunneler(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, stateChannel chan<- bool) error {
+func startTunneler(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool) error {
 	logger := klog.FromContext(ctx)
 
 	// Connect to hub's tunnel endpoint.
@@ -86,7 +89,7 @@ func startTunneler(ctx context.Context, hubURL string, token string, siteName st
 	clusterName := extractClusterNameFromToken(token)
 	edgeProxyURL := fmt.Sprintf("%s/tunnel/?cluster=%s&site=%s", hubURL, clusterName, siteName)
 
-	conn, err := initiateConnection(ctx, edgeProxyURL, token)
+	conn, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig)
 	if err != nil {
 		return fmt.Errorf("failed to initiate connection: %w", err)
 	}
@@ -97,7 +100,7 @@ func startTunneler(ctx context.Context, hubURL string, token string, siteName st
 	}
 
 	// Create revdial listener
-	ln := revdial.NewListener(conn, revdialFunc(hubURL, token))
+	ln := revdial.NewListener(conn, revdialFunc(hubURL, token, tlsConfig))
 	defer ln.Close() //nolint:errcheck
 
 	// Create and serve local HTTP server
@@ -122,7 +125,7 @@ func startTunneler(ctx context.Context, hubURL string, token string, siteName st
 }
 
 // initiateConnection dials the hub via WebSocket and returns the underlying net.Conn.
-func initiateConnection(ctx context.Context, wsURL string, token string) (net.Conn, error) {
+func initiateConnection(ctx context.Context, wsURL string, token string, tlsConfig *tls.Config) (net.Conn, error) {
 	u, err := url.Parse(wsURL)
 	if err != nil {
 		return nil, err
@@ -137,7 +140,7 @@ func initiateConnection(ctx context.Context, wsURL string, token string) (net.Co
 	}
 
 	dialer := websocket.Dialer{
-		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig:  tlsConfig,
 		HandshakeTimeout: 30 * time.Second,
 	}
 
@@ -177,7 +180,7 @@ func extractClusterNameFromToken(token string) string {
 
 // revdialFunc returns the dial function used by the revdial.Listener to
 // pick up new connections from the hub.
-func revdialFunc(baseURL string, token string) func(context.Context, string) (*websocket.Conn, *http.Response, error) {
+func revdialFunc(baseURL string, token string, tlsConfig *tls.Config) func(context.Context, string) (*websocket.Conn, *http.Response, error) {
 	return func(ctx context.Context, path string) (*websocket.Conn, *http.Response, error) {
 		u, err := url.Parse(baseURL)
 		if err != nil {
@@ -201,7 +204,7 @@ func revdialFunc(baseURL string, token string) func(context.Context, string) (*w
 		u.RawQuery = pathURL.RawQuery
 
 		dialer := websocket.Dialer{
-			TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig:  tlsConfig,
 			HandshakeTimeout: 30 * time.Second,
 		}
 

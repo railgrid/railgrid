@@ -45,6 +45,9 @@ spec:
             {{- if .Values.agent.hub.url }}
             - --hub-url={{ .Values.agent.hub.url }}
             {{- end }}
+            {{- if .Values.agent.hub.insecureSkipTLSVerify }}
+            - --hub-insecure-skip-tls-verify
+            {{- end }}
             {{- if .Values.agent.tunnelURL }}
             - --tunnel-url={{ .Values.agent.tunnelURL }}
             {{- end }}

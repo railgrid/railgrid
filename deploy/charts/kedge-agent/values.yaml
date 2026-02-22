@@ -29,6 +29,9 @@ agent:
     # -- Optional: override hub URL (useful for dev environments where the
     # kubeconfig server URL differs from the actual reachable URL)
     url: ""
+    # -- Skip TLS certificate verification for the hub connection.
+    # Only set to true in development/testing environments.
+    insecureSkipTLSVerify: false
 
   # -- Optional: separate tunnel URL (defaults to hub URL from kubeconfig)
   tunnelURL: ""
