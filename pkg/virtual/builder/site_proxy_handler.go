@@ -63,20 +63,38 @@ func (p *virtualWorkspaces) buildSiteProxyHandler() http.Handler {
 
 		logger.V(4).Info("Site proxy request", "cluster", clusterName, "site", siteName, "apiPath", apiPath)
 
-		// Auth: trust kcp admin bearer token (mount proxy), or validate SA token.
+		// Auth: kcp backend config is required for authorization.
+		// Refuse to serve any request when kcpConfig is nil — there is no way
+		// to validate tokens without a kcp backend (fix for #27).
+		if p.kcpConfig == nil {
+			logger.Error(nil, "site proxy has no kcp backend config; rejecting request")
+			http.Error(w, "Service Unavailable: site proxy not configured", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Extract and validate the bearer token.
 		token := extractBearerToken(r)
 		if token == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		if p.kcpConfig != nil && token != p.kcpConfig.BearerToken {
-			if claims, ok := parseServiceAccountToken(token); ok {
-				if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "proxy", "sites", siteName); err != nil {
-					logger.Error(err, "site proxy authorization failed", "site", siteName)
-					http.Error(w, "Forbidden", http.StatusForbidden)
-					return
-				}
+		// Trust the kcp admin bearer token (used by the mount proxy internally).
+		// For all other tokens, require a valid ServiceAccount token that passes
+		// kcp RBAC authorization. Unknown/opaque tokens are explicitly rejected
+		// rather than silently passed through (fix for #20).
+		if token != p.kcpConfig.BearerToken {
+			claims, ok := parseServiceAccountToken(token)
+			if !ok {
+				// Token is not a recognized ServiceAccount JWT — reject.
+				logger.Info("site proxy rejected unrecognized token type", "site", siteName)
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+			if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "proxy", "sites", siteName); err != nil {
+				logger.Error(err, "site proxy authorization failed", "site", siteName)
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
 			}
 		}
 

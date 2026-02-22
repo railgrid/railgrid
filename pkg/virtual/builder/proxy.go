@@ -65,8 +65,8 @@ type VirtualWorkspaceHandlers struct {
 }
 
 // NewVirtualWorkspaces creates a new VirtualWorkspaceHandlers.
-// kcpConfig is used for SA token verification against kcp. If nil, token
-// verification is skipped (dev mode only).
+// kcpConfig is required for SA token authorization against kcp. A nil
+// kcpConfig causes the site-proxy handler to reject all requests with 503.
 func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, siteRoutes *SiteRouteMap, logger klog.Logger) *VirtualWorkspaceHandlers {
 	return &VirtualWorkspaceHandlers{
 		vws: &virtualWorkspaces{
