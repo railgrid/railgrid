@@ -349,8 +349,11 @@ e2e: e2e-standalone ## Run default e2e suite (standalone)
 e2e-standalone: build ## Run standalone e2e suite (embedded kcp + static token, no Dex)
 	go test ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(E2E_FLAGS)
 
+e2e-oidc: build ## Run OIDC e2e suite (Dex OIDC provider, requires --with-dex cluster)
+	go test ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(E2E_FLAGS)
+
 e2e-all: build ## Run all e2e suites
-	go test ./test/e2e/... -v -timeout 30m $(E2E_FLAGS)
+	go test ./test/e2e/suites/... -v -timeout 30m $(E2E_FLAGS)
 
 e2e-keep: ## Run standalone e2e, keep clusters on failure for debugging
 	$(MAKE) e2e-standalone E2E_FLAGS="--keep-clusters"

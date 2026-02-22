@@ -44,13 +44,12 @@ func TestMain(m *testing.M) {
 
 	testenv = env.NewWithConfig(cfg)
 
-	testenv.Setup(
-		framework.SetupClusters(repoRoot),
-	)
-
-	testenv.Finish(
-		framework.TeardownClusters(repoRoot),
-	)
+	if os.Getenv("KEDGE_USE_EXISTING_CLUSTERS") == "true" {
+		testenv.Setup(framework.UseExistingClusters(repoRoot))
+	} else {
+		testenv.Setup(framework.SetupClusters(repoRoot))
+		testenv.Finish(framework.TeardownClusters(repoRoot))
+	}
 
 	os.Exit(testenv.Run(m))
 }

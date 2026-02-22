@@ -20,8 +20,13 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
+
+	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
 )
 
 // ConditionFunc is a function that returns (done bool, err error).
@@ -86,6 +91,38 @@ func WaitForSiteAPI(ctx context.Context, client *KedgeClient, token string) erro
 	})
 }
 
+// WaitForSiteAPIWithOIDC is like WaitForSiteAPI but authenticates via headless
+// OIDC login instead of a static token. Used when the hub runs in OIDC-only
+// mode (no staticAuthTokens configured), e.g. when --with-dex is active.
+func WaitForSiteAPIWithOIDC(ctx context.Context, workDir, hubURL string) error {
+	result, err := HeadlessOIDCLogin(ctx, hubURL, DexTestUserEmail, DexTestUserPassword)
+	if err != nil {
+		return fmt.Errorf("OIDC headless login for site API wait: %w", err)
+	}
+	if result.IDToken != "" {
+		tokenCache := &cliauth.TokenCache{
+			IDToken:      result.IDToken,
+			RefreshToken: result.RefreshToken,
+			ExpiresAt:    result.ExpiresAt,
+			IssuerURL:    result.IssuerURL,
+			ClientID:     result.ClientID,
+			ClientSecret: result.ClientSecret,
+		}
+		if err := cliauth.SaveTokenCache(tokenCache); err != nil {
+			return fmt.Errorf("caching OIDC token for site API wait: %w", err)
+		}
+	}
+	oidcKubeconfig := filepath.Join(workDir, "oidc-wait.kubeconfig")
+	if err := os.WriteFile(oidcKubeconfig, result.Kubeconfig, 0o600); err != nil {
+		return fmt.Errorf("writing OIDC kubeconfig for site API wait: %w", err)
+	}
+	client := NewKedgeClient(workDir, oidcKubeconfig, hubURL)
+	return Poll(ctx, 5*time.Second, 3*time.Minute, func(ctx context.Context) (bool, error) {
+		_, err := client.SiteList(ctx)
+		return err == nil, nil
+	})
+}
+
 // HTTPGet performs a GET to url using an insecure client (self-signed certs in
 // dev) and returns the HTTP status code.
 func HTTPGet(ctx context.Context, url string) (int, error) {
@@ -99,4 +136,24 @@ func HTTPGet(ctx context.Context, url string) (int, error) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	return resp.StatusCode, nil
+}
+
+// HTTPGetBody performs a GET to url using a plain (non-insecure) HTTP client
+// and returns the status code and response body as a string.
+// Use this for plain HTTP endpoints (e.g. in-cluster Dex via kind port mapping).
+func HTTPGetBody(ctx context.Context, url string) (int, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, "", fmt.Errorf("reading response body: %w", err)
+	}
+	return resp.StatusCode, string(body), nil
 }

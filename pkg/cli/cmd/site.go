@@ -38,6 +38,7 @@ func newSiteCommand() *cobra.Command {
 		newSiteCreateCommand(),
 		newSiteListCommand(),
 		newSiteGetCommand(),
+		newSiteDeleteCommand(),
 	)
 
 	return cmd
@@ -189,6 +190,30 @@ func newSiteGetCommand() *cobra.Command {
 				}
 			}
 
+			return nil
+		},
+	}
+}
+
+func newSiteDeleteCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <name>",
+		Short: "Delete a site",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			ctx := context.Background()
+
+			dynClient, err := loadDynamicClient()
+			if err != nil {
+				return err
+			}
+
+			if err := dynClient.Resource(kedgeclient.SiteGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+				return fmt.Errorf("deleting site %q: %w", name, err)
+			}
+
+			fmt.Printf("Site %q deleted.\n", name)
 			return nil
 		},
 	}

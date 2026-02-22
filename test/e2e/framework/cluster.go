@@ -22,11 +22,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 )
+
+// RepoRoot returns the absolute path to the kedge repository root, derived
+// from the location of this source file at compile time.
+func RepoRoot() string {
+	_, thisFile, _, _ := runtime.Caller(0)
+	// thisFile = .../test/e2e/framework/cluster.go
+	// go up 3 levels: framework/ → e2e/ → test/ → repo root
+	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
+}
 
 const (
 	// hubImagePullPolicyEnv overrides the hub image pull policy passed to
@@ -36,6 +47,13 @@ const (
 	// hubImageTagEnv overrides the hub image tag passed to `kedge dev create`.
 	// Use this in CI to ensure the built image tag matches what the chart uses.
 	hubImageTagEnv = "KEDGE_HUB_IMAGE_TAG"
+
+	// hubClusterNameEnv overrides the hub kind cluster name.
+	// Useful when running against the dev cluster instead of the e2e cluster.
+	hubClusterNameEnv = "KEDGE_HUB_CLUSTER_NAME"
+
+	// agentClusterNameEnv overrides the agent kind cluster name.
+	agentClusterNameEnv = "KEDGE_AGENT_CLUSTER_NAME"
 )
 
 const (
@@ -45,6 +63,22 @@ const (
 	DefaultChartPath        = "deploy/charts/kedge-hub"
 	DefaultHubURL           = "https://kedge.localhost:8443"
 )
+
+// effectiveHubClusterName returns the hub cluster name from env or default.
+func effectiveHubClusterName() string {
+	if v := os.Getenv(hubClusterNameEnv); v != "" {
+		return v
+	}
+	return DefaultHubClusterName
+}
+
+// effectiveAgentClusterName returns the agent cluster name from env or default.
+func effectiveAgentClusterName() string {
+	if v := os.Getenv(agentClusterNameEnv); v != "" {
+		return v
+	}
+	return DefaultAgentClusterName
+}
 
 // ClusterEnv holds runtime paths and names for a test cluster environment.
 type ClusterEnv struct {
@@ -135,6 +169,187 @@ func SetupClusters(workDir string) env.Func {
 		}
 
 		return WithClusterEnv(ctx, clusterEnv), nil
+	}
+}
+
+// SetupClustersWithOIDC is like SetupClusters but also deploys Dex as an OIDC
+// provider inside the hub kind cluster (via --with-dex).
+//
+// Networking: Dex is exposed as NodePort 31556 on the hub kind node; the kind
+// cluster maps that to localhost:5556.  The test runner adds a /etc/hosts entry
+// (127.0.0.1 dex.kedge-system.svc.cluster.local) so it can reach the in-cluster
+// Dex on the same hostname that the hub pod uses via cluster DNS.
+func SetupClustersWithOIDC(workDir string) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		kedge := filepath.Join(workDir, KedgeBin)
+
+		args := []string{
+			"dev", "create",
+			"--hub-cluster-name", DefaultHubClusterName,
+			"--agent-cluster-name", DefaultAgentClusterName,
+			"--kind-network", DefaultKindNetwork,
+			"--chart-path", filepath.Join(workDir, DefaultChartPath),
+			"--wait-for-ready-timeout", "10m",
+			"--with-dex",
+		}
+		if pullPolicy := os.Getenv(hubImagePullPolicyEnv); pullPolicy != "" {
+			args = append(args, "--image-pull-policy", pullPolicy)
+		}
+		if tag := os.Getenv(hubImageTagEnv); tag != "" {
+			args = append(args, "--tag", tag)
+		}
+
+		cmd := exec.CommandContext(ctx, kedge, args...)
+		cmd.Dir = workDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return ctx, fmt.Errorf("kedge dev create --with-dex failed: %w", err)
+		}
+
+		// Ensure the test runner resolves the Dex hostname to localhost so it can
+		// reach the in-cluster Dex via the kind port mapping.
+		if err := ensureDexHostsEntry(); err != nil {
+			fmt.Printf("WARNING: could not add Dex /etc/hosts entry: %v\n"+
+				"  Manually add: 127.0.0.1 %s\n", err, DexExternalHost)
+		}
+
+		clusterEnv := &ClusterEnv{
+			HubClusterName:   DefaultHubClusterName,
+			AgentClusterName: DefaultAgentClusterName,
+			HubKubeconfig:    filepath.Join(workDir, DefaultHubClusterName+".kubeconfig"),
+			AgentKubeconfig:  filepath.Join(workDir, DefaultAgentClusterName+".kubeconfig"),
+			HubURL:           DefaultHubURL,
+			Token:            DevToken,
+			WorkDir:          workDir,
+		}
+
+		// Wait for hub health.
+		healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer healthCancel()
+		if err := WaitForHubReady(healthCtx, DefaultHubURL); err != nil {
+			return ctx, fmt.Errorf("hub did not become healthy after OIDC setup: %w", err)
+		}
+
+		// Wait for Dex (reachable via localhost kind port mapping).
+		dexCtx, dexCancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer dexCancel()
+		if err := WaitForDexReady(dexCtx); err != nil {
+			return ctx, fmt.Errorf("dex did not become ready: %w", err)
+		}
+
+		// Wait for site API via OIDC login — static tokens are not configured
+		// in Dex mode, so we authenticate with the test Dex user instead.
+		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer apiCancel()
+		if err := WaitForSiteAPIWithOIDC(apiCtx, workDir, DefaultHubURL); err != nil {
+			return ctx, fmt.Errorf("site API did not become available after OIDC setup: %w", err)
+		}
+
+		ctx = WithClusterEnv(ctx, clusterEnv)
+		ctx = WithDexEnv(ctx, DefaultDexEnv())
+		return ctx, nil
+	}
+}
+
+// ensureDexHostsEntry adds "127.0.0.1 dex.kedge-system.svc.cluster.local" to
+// /etc/hosts if it is not already there.
+func ensureDexHostsEntry() error {
+	const hostsFile = "/etc/hosts"
+	const entry = "127.0.0.1 " + DexExternalHost
+
+	data, err := os.ReadFile(hostsFile)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", hostsFile, err)
+	}
+	if strings.Contains(string(data), DexExternalHost) {
+		return nil // already present
+	}
+	f, err := os.OpenFile(hostsFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("opening %s for writing: %w", hostsFile, err)
+	}
+	defer f.Close() //nolint:errcheck
+	_, err = fmt.Fprintf(f, "\n%s\n", entry)
+	return err
+}
+
+// UseExistingClusters wires up ClusterEnv from already-running clusters without
+// creating or destroying anything.  It verifies that the hub is healthy before
+// returning.  Cluster names can be overridden via KEDGE_HUB_CLUSTER_NAME and
+// KEDGE_AGENT_CLUSTER_NAME.
+func UseExistingClusters(workDir string) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		hubName := effectiveHubClusterName()
+		agentName := effectiveAgentClusterName()
+		clusterEnv := &ClusterEnv{
+			HubClusterName:   hubName,
+			AgentClusterName: agentName,
+			HubKubeconfig:    filepath.Join(workDir, hubName+".kubeconfig"),
+			AgentKubeconfig:  filepath.Join(workDir, agentName+".kubeconfig"),
+			HubURL:           DefaultHubURL,
+			Token:            DevToken,
+			WorkDir:          workDir,
+		}
+
+		healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer healthCancel()
+		if err := WaitForHubReady(healthCtx, DefaultHubURL); err != nil {
+			return ctx, fmt.Errorf("hub not reachable for existing clusters: %w", err)
+		}
+
+		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
+		apiCtx, apiCancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer apiCancel()
+		if err := WaitForSiteAPI(apiCtx, client, clusterEnv.Token); err != nil {
+			return ctx, fmt.Errorf("site API not ready for existing clusters: %w", err)
+		}
+
+		return WithClusterEnv(ctx, clusterEnv), nil
+	}
+}
+
+// UseExistingClustersWithOIDC wires up ClusterEnv and DexEnv from already-running
+// clusters (KEDGE_USE_EXISTING_CLUSTERS=true path).  It verifies that the hub
+// and Dex are reachable but does NOT create or destroy any clusters.
+//
+// Cluster names can be overridden via KEDGE_HUB_CLUSTER_NAME and
+// KEDGE_AGENT_CLUSTER_NAME environment variables.  This is useful when testing
+// against the dev cluster (kedge-hub / kedge-agent) instead of the e2e cluster.
+func UseExistingClustersWithOIDC(workDir string) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		hubName := effectiveHubClusterName()
+		agentName := effectiveAgentClusterName()
+		clusterEnv := &ClusterEnv{
+			HubClusterName:   hubName,
+			AgentClusterName: agentName,
+			HubKubeconfig:    filepath.Join(workDir, hubName+".kubeconfig"),
+			AgentKubeconfig:  filepath.Join(workDir, agentName+".kubeconfig"),
+			HubURL:           DefaultHubURL,
+			Token:            DevToken,
+			WorkDir:          workDir,
+		}
+
+		if err := ensureDexHostsEntry(); err != nil {
+			fmt.Printf("WARNING: could not add Dex /etc/hosts entry: %v\n"+
+				"  Manually add: 127.0.0.1 %s\n", err, DexExternalHost)
+		}
+
+		healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer healthCancel()
+		if err := WaitForHubReady(healthCtx, DefaultHubURL); err != nil {
+			return ctx, fmt.Errorf("hub not reachable for existing OIDC clusters: %w", err)
+		}
+
+		dexCtx, dexCancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer dexCancel()
+		if err := WaitForDexReady(dexCtx); err != nil {
+			return ctx, fmt.Errorf("dex not reachable for existing OIDC clusters: %w", err)
+		}
+
+		ctx = WithClusterEnv(ctx, clusterEnv)
+		ctx = WithDexEnv(ctx, DefaultDexEnv())
+		return ctx, nil
 	}
 }
 

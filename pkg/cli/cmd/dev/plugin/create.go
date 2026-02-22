@@ -68,10 +68,29 @@ type DevOptions struct {
 	HubHTTPSPort        int
 	HubHTTPPort         int
 	ImagePullPolicy     string
+
+	// WithDex enables Dex as an embedded OIDC identity provider.
+	// When true, Dex is deployed into the hub kind cluster and the hub is
+	// configured with the Dex issuer URL automatically.
+	WithDex     bool
+	DexHTTPPort int // host port for the Dex NodePort mapping (default 5556)
 }
 
 // fallbackAssetVersion is used when unable to fetch the latest version
 const fallbackAssetVersion = "0.0.1"
+
+// Dex constants used when --with-dex is set.
+const (
+	devDexIssuerURL    = "http://dex.kedge-system.svc.cluster.local:5556/dex"
+	devDexClientID     = "kedge"
+	devDexClientSecret = "kedge-test-secret"
+	devDexChartRef     = "dexidp/dex" // from https://charts.dexidp.io, added as a repo
+	devDexChartVersion = "0.24.0"
+	devDexReleaseName  = "dex"
+	devDexNodePort     = 31556
+	// bcrypt of "Password1!" for the dev Dex static user
+	devDexUserHash = "$2a$10$ntVcHD0gEYObjVin2ti7XuMILVz0rTQl//HVPc3cR8z7AAVbQGrkO"
+)
 
 // gitHubRelease represents a GitHub release response
 type gitHubRelease struct {
@@ -90,6 +109,7 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 		APIServerPort:    6443,
 		HubHTTPSPort:     8443,
 		HubHTTPPort:      8080,
+		DexHTTPPort:      5556,
 	}
 }
 
@@ -108,6 +128,8 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&o.HubHTTPSPort, "hub-https-port", 8443, "HTTPS port for kedge hub (change if 8443 is already in use)")
 	cmd.Flags().IntVar(&o.HubHTTPPort, "hub-http-port", 8080, "HTTP port for kedge hub (change if 8080 is already in use)")
 	cmd.Flags().StringVar(&o.ImagePullPolicy, "image-pull-policy", "IfNotPresent", "Image pull policy for the hub (use Never when the image is pre-loaded into kind)")
+	cmd.Flags().BoolVar(&o.WithDex, "with-dex", false, "Deploy Dex as OIDC identity provider into the hub kind cluster")
+	cmd.Flags().IntVar(&o.DexHTTPPort, "dex-http-port", 5556, "Host port for the Dex NodePort mapping (default 5556)")
 }
 
 // Complete completes the options
@@ -180,6 +202,14 @@ func (o *DevOptions) Validate() error {
 }
 
 func (o *DevOptions) hubClusterConfig() string {
+	dexMapping := ""
+	if o.WithDex {
+		dexMapping = fmt.Sprintf(`  - containerPort: 31556
+    hostPort: %d
+    protocol: TCP
+    listenAddress: "127.0.0.1"
+`, o.DexHTTPPort)
+	}
 	return fmt.Sprintf(`apiVersion: kind.x-k8s.io/v1alpha4
 kind: Cluster
 networking:
@@ -196,7 +226,7 @@ nodes:
     hostPort: %d
     protocol: TCP
     listenAddress: "127.0.0.1"
-`, o.APIServerPort, o.HubHTTPPort, o.HubHTTPSPort)
+%s`, o.APIServerPort, o.HubHTTPPort, o.HubHTTPSPort, dexMapping)
 }
 
 var agentClusterConfig = `apiVersion: kind.x-k8s.io/v1alpha4
@@ -392,7 +422,20 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 		if err != nil {
 			return err
 		}
-		if err := o.installHelmChart(ctx, restConfig); err != nil {
+
+		// Deploy Dex FIRST so the hub can be installed once, with IDP settings
+		// already wired in. Dex creates the namespace (CreateNamespace=true).
+		if o.WithDex {
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "Deploying Dex OIDC provider...\n")
+			if err := o.deployDex(ctx, restConfig, kubeconfigPath); err != nil {
+				return fmt.Errorf("deploying dex: %w", err)
+			}
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "Dex deployed\n")
+		}
+
+		// Single hub install: pass withIDP=o.WithDex so IDP settings are
+		// included from the start when Dex is enabled.
+		if err := o.installHelmChart(ctx, restConfig, o.WithDex); err != nil {
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "Failed to install Helm chart\n")
 			return err
 		}
@@ -404,6 +447,108 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 
 func loadRestConfigFromFile(kubeconfigPath string) (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+}
+
+// ensureDexHelmRepo adds the dexidp helm repo if it isn't already present.
+// This is needed so that `helm install dexidp/dex` can resolve the chart.
+func ensureDexHelmRepo() error {
+	addCmd := exec.Command("helm", "repo", "add", "dexidp", "https://charts.dexidp.io")
+	// "already exists" is not an error; any other failure is.
+	out, err := addCmd.CombinedOutput()
+	if err != nil && !strings.Contains(string(out), "already exists") {
+		return fmt.Errorf("adding dexidp helm repo: %w\noutput: %s", err, string(out))
+	}
+	updateCmd := exec.Command("helm", "repo", "update", "dexidp")
+	if out, err := updateCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("updating dexidp helm repo: %w\noutput: %s", err, string(out))
+	}
+	return nil
+}
+
+// deployDex installs or upgrades the Dex Helm chart into the hub kind cluster
+// and blocks until the Dex pod is Running/Ready.
+func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kubeconfigPath string) error {
+	actionConfig := new(action.Configuration)
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, "kedge-system", "secret",
+		func(format string, v ...any) {}); err != nil {
+		return fmt.Errorf("initialising helm action config for dex: %w", err)
+	}
+	regClient, err := registry.NewClient()
+	if err != nil {
+		return fmt.Errorf("creating helm registry client for dex: %w", err)
+	}
+	actionConfig.RegistryClient = regClient
+
+	hubExternalURL := fmt.Sprintf("https://kedge.localhost:%d", o.HubHTTPSPort)
+	redirectURI := hubExternalURL + "/auth/callback"
+
+	dexValues := map[string]any{
+		"image": map[string]any{"tag": "v2.44.0"},
+		"service": map[string]any{
+			"type": "NodePort",
+			"ports": map[string]any{
+				"http": map[string]any{"nodePort": devDexNodePort},
+			},
+		},
+		"config": map[string]any{
+			"issuer":  devDexIssuerURL,
+			"storage": map[string]any{"type": "memory"},
+			"web":     map[string]any{"http": "0.0.0.0:5556"},
+			"oauth2":  map[string]any{"skipApprovalScreen": true},
+			"staticClients": []map[string]any{{
+				"id":           devDexClientID,
+				"secret":       devDexClientSecret,
+				"name":         "Kedge Hub",
+				"redirectURIs": []string{redirectURI},
+			}},
+			"enablePasswordDB": true,
+			"staticPasswords": []map[string]any{{
+				"email":    "admin@test.kedge.local",
+				"hash":     devDexUserHash,
+				"username": "admin",
+				"userID":   "test-user-id-01",
+			}},
+		},
+	}
+
+	if err := ensureDexHelmRepo(); err != nil {
+		return fmt.Errorf("ensuring dex helm repo: %w", err)
+	}
+
+	tmp := action.NewInstall(actionConfig)
+	tmp.Version = devDexChartVersion
+	chartPath, err := tmp.LocateChart(devDexChartRef, cli.New())
+	if err != nil {
+		return fmt.Errorf("locating dex chart: %w", err)
+	}
+	chartObj, err := loader.Load(chartPath)
+	if err != nil {
+		return fmt.Errorf("loading dex chart: %w", err)
+	}
+
+	hist := action.NewHistory(actionConfig)
+	hist.Max = 1
+	if _, err := hist.Run(devDexReleaseName); err == nil {
+		upg := action.NewUpgrade(actionConfig)
+		upg.Namespace = "kedge-system"
+		upg.Wait = true
+		upg.Timeout = 3 * time.Minute
+		if _, err := upg.Run(devDexReleaseName, chartObj, dexValues); err != nil {
+			return fmt.Errorf("upgrading dex chart: %w", err)
+		}
+	} else {
+		inst := action.NewInstall(actionConfig)
+		inst.ReleaseName = devDexReleaseName
+		inst.Namespace = "kedge-system"
+		inst.CreateNamespace = true // Dex is deployed before the hub; create namespace here.
+		inst.Wait = true
+		inst.Timeout = 3 * time.Minute
+		if _, err := inst.Run(chartObj, dexValues); err != nil {
+			return fmt.Errorf("installing dex chart: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (o *DevOptions) getClusterIPAddress(ctx context.Context, clusterName, networkName string) (string, error) {
@@ -443,7 +588,11 @@ func (o *DevOptions) getClusterIPAddress(ctx context.Context, clusterName, netwo
 	return "", fmt.Errorf("could not find IP address for cluster %s in network %s", clusterName, networkName)
 }
 
-func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config) error {
+// installHelmChart installs or upgrades the kedge-hub Helm chart.
+// withIDP controls whether IDP/OIDC values are included; pass false for the
+// initial install (before Dex is deployed) and true for the upgrade after Dex
+// is up, so the hub never tries to contact a non-existent issuer at startup.
+func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config, withIDP bool) error {
 	actionConfig := new(action.Configuration)
 
 	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, "kedge-system", "secret", func(format string, v ...any) {}); err != nil {
@@ -457,6 +606,21 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 	}
 	actionConfig.RegistryClient = registryClient
 
+	hubExternalURL := fmt.Sprintf("https://kedge.localhost:%d", o.HubHTTPSPort)
+
+	hubValues := map[string]any{
+		"hubExternalURL": hubExternalURL,
+		"listenAddr":     fmt.Sprintf(":%d", o.HubHTTPSPort),
+		"devMode":        true,
+	}
+	// Static auth token is only used in token mode. In OIDC/IDP mode the hub
+	// authenticates via Dex; mixing both would be confusing and unnecessary.
+	if !withIDP {
+		hubValues["staticAuthTokens"] = []string{"dev-token"}
+	}
+	// IDP settings are passed via the top-level `idp` helm values (not under `hub`).
+	// See deploy/charts/kedge-hub/templates/statefulset.yaml.
+
 	values := map[string]any{
 		"image": map[string]any{
 			"hub": map[string]any{
@@ -465,14 +629,7 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 				"pullPolicy": o.ImagePullPolicy,
 			},
 		},
-		"hub": map[string]any{
-			"hubExternalURL": fmt.Sprintf("https://kedge.localhost:%d", o.HubHTTPSPort),
-			"listenAddr":     fmt.Sprintf(":%d", o.HubHTTPSPort),
-			"devMode":        true,
-			"staticAuthTokens": []string{
-				"dev-token",
-			},
-		},
+		"hub": hubValues,
 		"service": map[string]any{
 			"type": "NodePort",
 			"hub": map[string]any{
@@ -480,6 +637,13 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 				"nodePort": 31443,
 			},
 		},
+	}
+	if withIDP && o.WithDex {
+		values["idp"] = map[string]any{
+			"issuerURL":    devDexIssuerURL,
+			"clientID":     devDexClientID,
+			"clientSecret": devDexClientSecret,
+		}
 	}
 
 	var chartObj *chart.Chart
