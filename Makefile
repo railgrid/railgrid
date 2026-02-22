@@ -352,6 +352,9 @@ e2e-standalone: build ## Run standalone e2e suite (embedded kcp + static token, 
 e2e-oidc: build ## Run OIDC e2e suite (Dex OIDC provider, requires --with-dex cluster)
 	go test ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(E2E_FLAGS)
 
+e2e-external-kcp: build ## Run external KCP e2e suite (kcp via Helm in kind, push-to-main only in CI)
+	go test ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(E2E_FLAGS)
+
 e2e-all: build ## Run all e2e suites
 	go test ./test/e2e/suites/... -v -timeout 30m $(E2E_FLAGS)
 
