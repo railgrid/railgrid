@@ -54,3 +54,7 @@ site-kubeconfig
 *.kubeconfig
 .env
 .site-kubeconfig
+.planning/autopilot.sh
+.planning/autopilot.lock
+.planning/logs/
+.planning/checkpoints/

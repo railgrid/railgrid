@@ -29,6 +29,8 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Add kedge.localhost to /etc/hosts
         run: echo "127.0.0.1 kedge.localhost" | sudo tee -a /etc/hosts
@@ -73,6 +75,8 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Add kedge.localhost to /etc/hosts
         run: echo "127.0.0.1 kedge.localhost" | sudo tee -a /etc/hosts
@@ -127,6 +131,8 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Add kedge.localhost to /etc/hosts
         run: echo "127.0.0.1 kedge.localhost" | sudo tee -a /etc/hosts

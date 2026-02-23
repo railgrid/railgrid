@@ -1,0 +1,24 @@
+{
+  "mode": "interactive",
+  "depth": "standard",
+  "parallelization": true,
+  "commit_docs": true,
+  "model_profile": "balanced",
+  "workflow": {
+    "research": false,
+    "plan_check": true,
+    "verifier": true
+  },
+  "branch": {
+    "feature": "ssh",
+    "base": "main",
+    "pr_target": "ssh"
+  },
+  "autopilot": {
+    "checkpoint_mode": "queue",
+    "max_retries": 3,
+    "budget_limit_usd": 0,
+    "notify_webhook": "",
+    "model": "default"
+  }
+}
