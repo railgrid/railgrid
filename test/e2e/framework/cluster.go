@@ -62,7 +62,18 @@ const (
 	DefaultKindNetwork      = "kedge-e2e"
 	DefaultChartPath        = "deploy/charts/kedge-hub"
 	DefaultHubURL           = "https://kedge.localhost:8443"
+
+	// DefaultAgentCount is the number of agent clusters created by the e2e
+	// test suites. All suites create 2 agent clusters so multi-site tests run
+	// in every flavour.
+	DefaultAgentCount = 2
 )
+
+// AgentClusterInfo holds the name and kubeconfig path for a single agent cluster.
+type AgentClusterInfo struct {
+	Name       string
+	Kubeconfig string
+}
 
 // effectiveHubClusterName returns the hub cluster name from env or default.
 func effectiveHubClusterName() string {
@@ -82,13 +93,20 @@ func effectiveAgentClusterName() string {
 
 // ClusterEnv holds runtime paths and names for a test cluster environment.
 type ClusterEnv struct {
-	HubClusterName   string
+	HubClusterName string
+	HubKubeconfig  string
+	HubURL         string
+	Token          string
+	WorkDir        string
+
+	// AgentClusters holds all agent clusters in creation order.
+	// Use AgentClusters[0] for single-agent tests (backwards-compat).
+	AgentClusters []AgentClusterInfo
+
+	// AgentClusterName and AgentKubeconfig are shims for AgentClusters[0]
+	// kept for backwards compatibility with existing single-agent test cases.
 	AgentClusterName string
-	HubKubeconfig    string
 	AgentKubeconfig  string
-	HubURL           string
-	Token            string
-	WorkDir          string
 
 	// KCPKubeconfig is the path to the external kcp admin kubeconfig written
 	// to WorkDir. Only populated by SetupClustersWithExternalKCP.
@@ -115,6 +133,46 @@ func ClusterEnvFrom(ctx context.Context) *ClusterEnv {
 	return v
 }
 
+// agentClusterInfos builds the AgentClusterInfo list from a base name and count,
+// mirroring the naming logic in DevOptions.agentClusterNames().
+func agentClusterInfos(workDir, baseName string, count int) []AgentClusterInfo {
+	if count <= 1 {
+		return []AgentClusterInfo{{
+			Name:       baseName,
+			Kubeconfig: filepath.Join(workDir, baseName+".kubeconfig"),
+		}}
+	}
+	infos := make([]AgentClusterInfo, count)
+	for i := range infos {
+		name := fmt.Sprintf("%s-%d", baseName, i+1)
+		infos[i] = AgentClusterInfo{
+			Name:       name,
+			Kubeconfig: filepath.Join(workDir, name+".kubeconfig"),
+		}
+	}
+	return infos
+}
+
+// probeAgentClusters discovers agent clusters whose kubeconfigs already exist
+// on disk. Used by UseExisting* variants.
+func probeAgentClusters(workDir, baseName string) []AgentClusterInfo {
+	// Try numbered names first (multi-agent: baseName-1, baseName-2, …)
+	var infos []AgentClusterInfo
+	for i := 1; i <= 10; i++ {
+		name := fmt.Sprintf("%s-%d", baseName, i)
+		kc := filepath.Join(workDir, name+".kubeconfig")
+		if _, err := os.Stat(kc); err == nil {
+			infos = append(infos, AgentClusterInfo{Name: name, Kubeconfig: kc})
+		}
+	}
+	if len(infos) > 0 {
+		return infos
+	}
+	// Fall back to unnumbered single-agent kubeconfig.
+	kc := filepath.Join(workDir, baseName+".kubeconfig")
+	return []AgentClusterInfo{{Name: baseName, Kubeconfig: kc}}
+}
+
 // SetupClusters returns an env.Func that creates the hub and agent kind clusters
 // using `kedge dev create` with the local Helm chart. It stores a ClusterEnv
 // in the context for use by tests.
@@ -129,6 +187,7 @@ func SetupClusters(workDir string) env.Func {
 			"dev", "create",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
+			"--agent-count", fmt.Sprintf("%d", DefaultAgentCount),
 			"--kind-network", DefaultKindNetwork,
 			"--chart-path", filepath.Join(workDir, DefaultChartPath),
 			"--wait-for-ready-timeout", "10m",
@@ -150,14 +209,16 @@ func SetupClusters(workDir string) env.Func {
 			return ctx, fmt.Errorf("kedge dev create failed: %w", err)
 		}
 
+		agents := agentClusterInfos(workDir, DefaultAgentClusterName, DefaultAgentCount)
 		clusterEnv := &ClusterEnv{
 			HubClusterName:   DefaultHubClusterName,
-			AgentClusterName: DefaultAgentClusterName,
 			HubKubeconfig:    filepath.Join(workDir, DefaultHubClusterName+".kubeconfig"),
-			AgentKubeconfig:  filepath.Join(workDir, DefaultAgentClusterName+".kubeconfig"),
 			HubURL:           DefaultHubURL,
 			Token:            DevToken,
 			WorkDir:          workDir,
+			AgentClusters:    agents,
+			AgentClusterName: agents[0].Name,
+			AgentKubeconfig:  agents[0].Kubeconfig,
 		}
 
 		// Belt-and-suspenders: wait for the hub /healthz even if kedge dev create
@@ -197,6 +258,7 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 			"dev", "create",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
+			"--agent-count", fmt.Sprintf("%d", DefaultAgentCount),
 			"--kind-network", DefaultKindNetwork,
 			"--chart-path", filepath.Join(workDir, DefaultChartPath),
 			"--wait-for-ready-timeout", "10m",
@@ -224,14 +286,16 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 				"  Manually add: 127.0.0.1 %s\n", err, DexExternalHost)
 		}
 
+		agents := agentClusterInfos(workDir, DefaultAgentClusterName, DefaultAgentCount)
 		clusterEnv := &ClusterEnv{
 			HubClusterName:   DefaultHubClusterName,
-			AgentClusterName: DefaultAgentClusterName,
 			HubKubeconfig:    filepath.Join(workDir, DefaultHubClusterName+".kubeconfig"),
-			AgentKubeconfig:  filepath.Join(workDir, DefaultAgentClusterName+".kubeconfig"),
 			HubURL:           DefaultHubURL,
 			Token:            DevToken,
 			WorkDir:          workDir,
+			AgentClusters:    agents,
+			AgentClusterName: agents[0].Name,
+			AgentKubeconfig:  agents[0].Kubeconfig,
 		}
 
 		// Wait for hub health.
@@ -292,14 +356,16 @@ func UseExistingClusters(workDir string) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
 		hubName := effectiveHubClusterName()
 		agentName := effectiveAgentClusterName()
+		agents := probeAgentClusters(workDir, agentName)
 		clusterEnv := &ClusterEnv{
 			HubClusterName:   hubName,
-			AgentClusterName: agentName,
 			HubKubeconfig:    filepath.Join(workDir, hubName+".kubeconfig"),
-			AgentKubeconfig:  filepath.Join(workDir, agentName+".kubeconfig"),
 			HubURL:           DefaultHubURL,
 			Token:            DevToken,
 			WorkDir:          workDir,
+			AgentClusters:    agents,
+			AgentClusterName: agents[0].Name,
+			AgentKubeconfig:  agents[0].Kubeconfig,
 		}
 
 		healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -330,14 +396,16 @@ func UseExistingClustersWithOIDC(workDir string) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
 		hubName := effectiveHubClusterName()
 		agentName := effectiveAgentClusterName()
+		agents := probeAgentClusters(workDir, agentName)
 		clusterEnv := &ClusterEnv{
 			HubClusterName:   hubName,
-			AgentClusterName: agentName,
 			HubKubeconfig:    filepath.Join(workDir, hubName+".kubeconfig"),
-			AgentKubeconfig:  filepath.Join(workDir, agentName+".kubeconfig"),
 			HubURL:           DefaultHubURL,
 			Token:            DevToken,
 			WorkDir:          workDir,
+			AgentClusters:    agents,
+			AgentClusterName: agents[0].Name,
+			AgentKubeconfig:  agents[0].Kubeconfig,
 		}
 
 		if err := ensureDexHostsEntry(); err != nil {
@@ -378,6 +446,7 @@ func TeardownClusters(workDir string) env.Func {
 			"dev", "delete",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
+			"--agent-count", fmt.Sprintf("%d", DefaultAgentCount),
 		}
 
 		// Best-effort: log but don't fail if delete fails.
@@ -424,6 +493,7 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 			"dev", "create",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
+			"--agent-count", fmt.Sprintf("%d", DefaultAgentCount),
 			"--kind-network", DefaultKindNetwork,
 			"--chart-path", filepath.Join(workDir, DefaultChartPath),
 			"--wait-for-ready-timeout", "20m",
@@ -455,16 +525,18 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 			_ = os.WriteFile(hubAdminKubeconfig, data, 0o600)
 		}
 
+		agents := agentClusterInfos(workDir, DefaultAgentClusterName, DefaultAgentCount)
 		clusterEnv := &ClusterEnv{
 			HubClusterName:     DefaultHubClusterName,
-			AgentClusterName:   DefaultAgentClusterName,
 			HubKubeconfig:      hubKubeconfig,
-			AgentKubeconfig:    filepath.Join(workDir, DefaultAgentClusterName+".kubeconfig"),
 			HubAdminKubeconfig: hubAdminKubeconfig,
 			HubURL:             DefaultHubURL,
 			Token:              DevToken,
 			WorkDir:            workDir,
 			KCPKubeconfig:      filepath.Join(workDir, DefaultKCPExternalKubeconfigFile),
+			AgentClusters:      agents,
+			AgentClusterName:   agents[0].Name,
+			AgentKubeconfig:    agents[0].Kubeconfig,
 		}
 
 		// Wait for hub health.
@@ -498,21 +570,19 @@ func UseExistingClustersWithExternalKCP(workDir string) env.Func {
 		if hubKubeconfig == "" {
 			hubKubeconfig = filepath.Join(workDir, hubCluster+".kubeconfig")
 		}
-		agentKubeconfig := os.Getenv("KEDGE_AGENT_KUBECONFIG")
-		if agentKubeconfig == "" {
-			agentKubeconfig = filepath.Join(workDir, agentCluster+".kubeconfig")
-		}
 		kcpKubeconfig := filepath.Join(workDir, DefaultKCPExternalKubeconfigFile)
 
+		agents := probeAgentClusters(workDir, agentCluster)
 		clusterEnv := &ClusterEnv{
 			HubClusterName:   hubCluster,
-			AgentClusterName: agentCluster,
 			HubKubeconfig:    hubKubeconfig,
-			AgentKubeconfig:  agentKubeconfig,
 			HubURL:           DefaultHubURL,
 			Token:            DevToken,
 			WorkDir:          workDir,
 			KCPKubeconfig:    kcpKubeconfig,
+			AgentClusters:    agents,
+			AgentClusterName: agents[0].Name,
+			AgentKubeconfig:  agents[0].Kubeconfig,
 		}
 
 		healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Minute)

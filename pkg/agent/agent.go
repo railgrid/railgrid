@@ -213,35 +213,21 @@ func (a *Agent) registerSite(ctx context.Context, client *kedgeclient.Client) er
 			return fmt.Errorf("creating site: %w", err)
 		}
 	} else {
-		// Update existing site labels
+		// Merge agent labels into existing site labels; don't wipe labels the
+		// agent doesn't own (e.g. user-assigned routing labels).
 		logger.Info("Updating Site", "name", a.opts.SiteName)
-		existing.Labels = a.opts.Labels
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+		}
+		for k, v := range a.opts.Labels {
+			existing.Labels[k] = v
+		}
 		_, err := client.Sites().Update(ctx, existing, metav1.UpdateOptions{})
 		if err != nil {
 			return fmt.Errorf("updating site: %w", err)
 		}
 	}
 
-	// Update status to connected
-	now := metav1.Now()
-	statusSite := &kedgev1alpha1.Site{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
-			Kind:       "Site",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: a.opts.SiteName,
-		},
-		Status: kedgev1alpha1.SiteStatus{
-			Phase:             kedgev1alpha1.SitePhaseConnected,
-			TunnelConnected:   true,
-			LastHeartbeatTime: &now,
-		},
-	}
-	_, err = client.Sites().UpdateStatus(ctx, statusSite, metav1.UpdateOptions{})
-	if err != nil {
-		logger.Error(err, "Failed to update site status to connected")
-	}
-
+	// Status is set to Ready by the heartbeat reporter immediately on start.
 	return nil
 }

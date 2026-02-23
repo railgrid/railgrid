@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Agent manages a kedge-agent process for e2e tests.
@@ -31,6 +32,7 @@ type Agent struct {
 	hubKubeconfig   string
 	agentKubeconfig string
 	siteName        string
+	labels          map[string]string
 	cmd             *exec.Cmd
 	cancel          context.CancelFunc
 }
@@ -46,6 +48,12 @@ func NewAgent(workDir, hubKubeconfig, agentKubeconfig, siteName string) *Agent {
 	}
 }
 
+// WithLabels sets site labels the agent will report when registering.
+func (a *Agent) WithLabels(labels map[string]string) *Agent {
+	a.labels = labels
+	return a
+}
+
 // Start launches the kedge-agent process. It runs until Stop is called or the
 // parent context is cancelled.
 func (a *Agent) Start(ctx context.Context) error {
@@ -57,6 +65,13 @@ func (a *Agent) Start(ctx context.Context) error {
 		"--kubeconfig", a.agentKubeconfig,
 		"--tunnel-url", DefaultHubURL,
 		"--site-name", a.siteName,
+	}
+	if len(a.labels) > 0 {
+		var pairs []string
+		for k, v := range a.labels {
+			pairs = append(pairs, k+"="+v)
+		}
+		args = append(args, "--labels", strings.Join(pairs, ","))
 	}
 
 	cmd := exec.CommandContext(agentCtx, a.bin, args...)

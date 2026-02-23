@@ -19,6 +19,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,6 +33,7 @@ import (
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -45,6 +47,7 @@ type Reconciler struct {
 // SetupWithManager registers the scheduler controller with the multicluster manager.
 func SetupWithManager(mgr mcmanager.Manager) error {
 	r := &Reconciler{mgr: mgr}
+	klog.Info("Registering VirtualWorkload scheduler controller")
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named(controllerName).
 		For(&kedgev1alpha1.VirtualWorkload{}).
@@ -55,9 +58,11 @@ func SetupWithManager(mgr mcmanager.Manager) error {
 // Reconcile handles a single VirtualWorkload reconciliation across workspaces.
 func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := klog.FromContext(ctx).WithValues("key", req.NamespacedName, "cluster", req.ClusterName)
+	logger.V(4).Info("Reconciling VirtualWorkload")
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
+		logger.Error(err, "Failed to get cluster", "clusterName", req.ClusterName)
 		return ctrl.Result{}, fmt.Errorf("getting cluster %s: %w", req.ClusterName, err)
 	}
 	c := cl.GetClient()
@@ -68,12 +73,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
+		logger.Error(err, "Failed to get VirtualWorkload")
 		return ctrl.Result{}, err
 	}
 
 	// List all Sites in this workspace
 	var siteList kedgev1alpha1.SiteList
 	if err := c.List(ctx, &siteList); err != nil {
+		logger.Error(err, "Failed to list Sites")
 		return ctrl.Result{}, fmt.Errorf("listing sites: %w", err)
 	}
 
@@ -83,7 +90,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("matching sites: %w", err)
 	}
 	selected := SelectSites(matched, vw.Spec.Placement.Strategy)
-	logger.V(4).Info("Scheduling", "matched", len(matched), "selected", len(selected))
+	logger.V(4).Info("Scheduling", "sites", len(siteList.Items), "matched", len(matched), "selected", len(selected))
 
 	// List existing placements for this VW
 	var placementList kedgev1alpha1.PlacementList
@@ -158,14 +165,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		}
 	}
 
-	return ctrl.Result{}, nil
+	// Requeue periodically so site reconnects are picked up even if the watch
+	// event is missed (e.g. status-only changes may not always fire the mapper).
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 // mapSiteToVirtualWorkloads re-enqueues all VirtualWorkloads in the same
 // workspace whenever a Site changes.
 func (r *Reconciler) mapSiteToVirtualWorkloads(ctx context.Context, obj client.Object) []reconcile.Request {
-	cl, err := r.mgr.GetCluster(ctx, obj.GetAnnotations()["kcp.io/cluster"])
+	// Prefer the cluster name from the multicluster-runtime context (canonical),
+	// fall back to the kcp annotation if the context value is absent.
+	clusterKey, ok := mccontext.ClusterFrom(ctx)
+	if !ok {
+		clusterKey = obj.GetAnnotations()["kcp.io/cluster"]
+	}
+	klog.V(2).InfoS("mapSiteToVirtualWorkloads", "site", obj.GetName(), "cluster", clusterKey)
+	cl, err := r.mgr.GetCluster(ctx, clusterKey)
 	if err != nil {
+		klog.V(2).InfoS("mapSiteToVirtualWorkloads: GetCluster failed", "cluster", clusterKey, "err", err)
 		return nil
 	}
 	var vwList kedgev1alpha1.VirtualWorkloadList

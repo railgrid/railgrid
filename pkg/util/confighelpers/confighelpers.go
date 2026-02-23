@@ -29,6 +29,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"sort"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -75,7 +78,8 @@ const annotationCreateOnly = "bootstrap.kcp.io/create-only"
 // Bootstrap reads all YAML files from an embed.FS and applies them to the
 // cluster using a discovery-based REST mapper. It retries continuously until
 // all resources are successfully applied or the context is cancelled.
-func Bootstrap(ctx context.Context, discoveryClient discovery.DiscoveryInterface, dynamicClient dynamic.Interface, fs embed.FS, opts ...Option) error {
+// Files are applied in dependency order: APIResourceSchemas before APIExports.
+func Bootstrap(ctx context.Context, discoveryClient discovery.DiscoveryInterface, dynamicClient dynamic.Interface, embedFS embed.FS, opts ...Option) error {
 	cache := memory.NewMemCacheClient(discoveryClient)
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cache)
 
@@ -87,7 +91,7 @@ func Bootstrap(ctx context.Context, discoveryClient discovery.DiscoveryInterface
 	}
 
 	return wait.PollUntilContextCancel(ctx, time.Second, true, func(ctx context.Context) (bool, error) {
-		if err := createResourcesFromFS(ctx, dynamicClient, mapper, fs, transformers...); err != nil {
+		if err := createResourcesFromFS(ctx, dynamicClient, mapper, embedFS, transformers...); err != nil {
 			klog.FromContext(ctx).V(2).Info("Failed to bootstrap resources, retrying", "err", err)
 			cache.Invalidate()
 			return false, nil
@@ -96,19 +100,46 @@ func Bootstrap(ctx context.Context, discoveryClient discovery.DiscoveryInterface
 	})
 }
 
+// bootstrapFileOrder returns a sort-key that ensures APIResourceSchemas are
+// applied before APIExports (which reference them), and both before any other
+// resources.  Within each tier files are ordered alphabetically.
+func bootstrapFileOrder(name string) int {
+	switch {
+	case strings.HasPrefix(name, "apiresourceschema-"):
+		return 0
+	case strings.HasPrefix(name, "apiexport-"):
+		return 1
+	default:
+		return 2
+	}
+}
+
 // createResourcesFromFS reads all YAML files from an embed.FS and applies them.
-func createResourcesFromFS(ctx context.Context, client dynamic.Interface, mapper meta.RESTMapper, fs embed.FS, transformers ...TransformFileFunc) error {
-	files, err := fs.ReadDir(".")
+// Files are applied in dependency order: APIResourceSchemas first, then
+// APIExports (which reference schemas), then all other resources.
+func createResourcesFromFS(ctx context.Context, client dynamic.Interface, mapper meta.RESTMapper, embedFS embed.FS, transformers ...TransformFileFunc) error {
+	entries, err := embedFS.ReadDir(".")
 	if err != nil {
 		return err
 	}
 
+	files := make([]fs.DirEntry, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			files = append(files, e)
+		}
+	}
+	sort.Slice(files, func(i, j int) bool {
+		oi, oj := bootstrapFileOrder(files[i].Name()), bootstrapFileOrder(files[j].Name())
+		if oi != oj {
+			return oi < oj
+		}
+		return files[i].Name() < files[j].Name()
+	})
+
 	var errs []error
 	for _, f := range files {
-		if f.IsDir() {
-			continue
-		}
-		if err := createResourceFromFS(ctx, client, mapper, f.Name(), fs, transformers...); err != nil {
+		if err := createResourceFromFS(ctx, client, mapper, f.Name(), embedFS, transformers...); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -117,8 +148,8 @@ func createResourcesFromFS(ctx context.Context, client dynamic.Interface, mapper
 
 // createResourceFromFS reads a single YAML file (possibly multi-document),
 // applies transformers, and upserts each resource.
-func createResourceFromFS(ctx context.Context, client dynamic.Interface, mapper meta.RESTMapper, filename string, fs embed.FS, transformers ...TransformFileFunc) error {
-	raw, err := fs.ReadFile(filename)
+func createResourceFromFS(ctx context.Context, client dynamic.Interface, mapper meta.RESTMapper, filename string, embedFS embed.FS, transformers ...TransformFileFunc) error {
+	raw, err := embedFS.ReadFile(filename)
 	if err != nil {
 		return fmt.Errorf("could not read %s: %w", filename, err)
 	}

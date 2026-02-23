@@ -140,7 +140,31 @@ func (k *KedgeClient) WaitForSiteReady(ctx context.Context, siteName string, tim
 	})
 }
 
-// Kubectl runs a kubectl command against the hub cluster kubeconfig.
+// RunCmd runs an arbitrary command and returns its combined output (package-level helper).
+func RunCmd(ctx context.Context, name string, args ...string) (string, error) {
+	var buf bytes.Buffer
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return buf.String(), fmt.Errorf("%s %s: %w\noutput: %s", name, strings.Join(args, " "), err, buf.String())
+	}
+	return buf.String(), nil
+}
+
+// KubectlWithConfig runs kubectl with an explicit kubeconfig path (package-level helper).
+func KubectlWithConfig(ctx context.Context, kubeconfig string, args ...string) (string, error) {
+	var buf bytes.Buffer
+	allArgs := append([]string{"--kubeconfig", kubeconfig}, args...)
+	cmd := exec.CommandContext(ctx, "kubectl", allArgs...)
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return buf.String(), fmt.Errorf("kubectl %s failed: %w\noutput: %s", strings.Join(args, " "), err, buf.String())
+	}
+	return buf.String(), nil
+}
+
 func (k *KedgeClient) Kubectl(ctx context.Context, args ...string) (string, error) {
 	var buf bytes.Buffer
 	allArgs := append([]string{"--kubeconfig", k.kubeconfig}, args...)
@@ -157,6 +181,103 @@ func (k *KedgeClient) Kubectl(ctx context.Context, args ...string) (string, erro
 // ApplyFile applies a YAML file via kubectl against the hub kubeconfig.
 func (k *KedgeClient) ApplyFile(ctx context.Context, path string) error {
 	_, err := k.Kubectl(ctx, "apply", "-f", path)
+	return err
+}
+
+// WaitForSitePhase polls until the given site has the expected phase in
+// `kedge site list` or the timeout expires.
+func (k *KedgeClient) WaitForSitePhase(ctx context.Context, siteName, phase string, timeout time.Duration) error {
+	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		out, err := k.SiteList(ctx)
+		if err != nil {
+			return false, nil // not ready yet, retry
+		}
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[0] == siteName && fields[1] == phase {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+}
+
+// ApplyManifest writes yaml to a temp file and applies it via kubectl.
+func (k *KedgeClient) ApplyManifest(ctx context.Context, yaml string) error {
+	f, err := os.CreateTemp("", "kedge-e2e-manifest-*.yaml")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	defer os.Remove(f.Name()) //nolint:errcheck
+	if _, err := f.WriteString(yaml); err != nil {
+		return fmt.Errorf("writing manifest: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing manifest file: %w", err)
+	}
+	_, err = k.Kubectl(ctx, "apply", "--insecure-skip-tls-verify", "-f", f.Name())
+	return err
+}
+
+// WaitForPlacement polls until a Placement targeting siteName exists for the
+// given VirtualWorkload or the timeout expires.
+func (k *KedgeClient) WaitForPlacement(ctx context.Context, vwName, namespace, siteName string, timeout time.Duration) error {
+	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		out, err := k.Kubectl(ctx,
+			"get", "placements",
+			"-n", namespace,
+			"--insecure-skip-tls-verify",
+			"-l", "kedge.faros.sh/virtualworkload="+vwName,
+			"-o", "custom-columns=SITE:.spec.siteName",
+			"--no-headers",
+		)
+		if err != nil {
+			return false, nil
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if strings.TrimSpace(line) == siteName {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+}
+
+// WaitForNoPlacement polls until no Placement targeting siteName exists for the
+// given VirtualWorkload — i.e. the scheduler has not routed to that site.
+// Returns nil when the condition is confirmed within timeout; returns an error
+// if a matching placement still exists at deadline.
+func (k *KedgeClient) WaitForNoPlacement(ctx context.Context, vwName, namespace, siteName string, timeout time.Duration) error {
+	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		out, err := k.Kubectl(ctx,
+			"get", "placements",
+			"-n", namespace,
+			"--insecure-skip-tls-verify",
+			"-l", "kedge.faros.sh/virtualworkload="+vwName,
+			"-o", "custom-columns=SITE:.spec.siteName",
+			"--no-headers",
+		)
+		if err != nil {
+			// If placements don't exist yet, no match — confirmed.
+			return true, nil
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if strings.TrimSpace(line) == siteName {
+				return false, nil // still present, keep polling
+			}
+		}
+		return true, nil
+	})
+}
+
+// DeleteVirtualWorkload deletes a VirtualWorkload by name and namespace.
+func (k *KedgeClient) DeleteVirtualWorkload(ctx context.Context, name, namespace string) error {
+	_, err := k.Kubectl(ctx,
+		"delete", "virtualworkload", name,
+		"-n", namespace,
+		"--insecure-skip-tls-verify",
+		"--ignore-not-found",
+	)
 	return err
 }
 

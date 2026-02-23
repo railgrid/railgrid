@@ -79,6 +79,11 @@ type DevOptions struct {
 	// configures the hub to use it instead of embedded kcp.
 	WithExternalKCP bool
 	KCPHTTPSPort    int // host port for the kcp NodePort mapping (default 7443)
+
+	// AgentCount controls how many agent kind clusters to create.
+	// Default is 1 (single agent cluster named AgentClusterName).
+	// When > 1, clusters are named AgentClusterName-1, AgentClusterName-2, …
+	AgentCount int
 }
 
 // fallbackAssetVersion is used when unable to fetch the latest version
@@ -107,6 +112,7 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 		Streams:          streams,
 		HubClusterName:   "kedge-hub",
 		AgentClusterName: "kedge-agent",
+		AgentCount:       1,
 		ChartPath:        "deploy/charts/kedge-hub",
 		AgentChartPath:   "oci://ghcr.io/faroshq/charts/kedge-agent",
 		ChartVersion:     fallbackAssetVersion,
@@ -137,6 +143,7 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&o.DexHTTPPort, "dex-http-port", 5556, "Host port for the Dex NodePort mapping (default 5556)")
 	cmd.Flags().BoolVar(&o.WithExternalKCP, "with-external-kcp", false, "Deploy kcp via Helm into the hub kind cluster instead of using embedded kcp")
 	cmd.Flags().IntVar(&o.KCPHTTPSPort, "kcp-https-port", 7443, "Host port for the kcp front-proxy NodePort mapping (default 7443)")
+	cmd.Flags().IntVar(&o.AgentCount, "agent-count", 1, "Number of agent kind clusters to create (default 1). When > 1, clusters are named <agent-cluster-name>-1, -2, …")
 }
 
 // Complete completes the options
@@ -258,6 +265,21 @@ func redText(text string) string {
 	return "\033[31m" + text + "\033[0m"
 }
 
+// agentClusterNames returns the list of agent cluster names derived from
+// AgentClusterName and AgentCount.
+//   - count == 1 → ["<AgentClusterName>"]  (preserves backwards-compat naming)
+//   - count  > 1 → ["<AgentClusterName>-1", "<AgentClusterName>-2", …]
+func (o *DevOptions) agentClusterNames() []string {
+	if o.AgentCount <= 1 {
+		return []string{o.AgentClusterName}
+	}
+	names := make([]string, o.AgentCount)
+	for i := range names {
+		names[i] = fmt.Sprintf("%s-%d", o.AgentClusterName, i+1)
+	}
+	return names
+}
+
 func (o *DevOptions) runWithColors(ctx context.Context) error {
 	// Display experimental warning header with red "EXPERIMENTAL"
 	fmt.Fprintf(o.Streams.ErrOut, "kedge Development Environment Setup\n\n")                        // nolint:errcheck
@@ -275,9 +297,11 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 		return err
 	}
 
-	// Create agent cluster (no kedge installed, just a plain cluster)
-	if err := o.createCluster(ctx, o.AgentClusterName, agentClusterConfig, false); err != nil {
-		return err
+	// Create agent cluster(s) (no kedge installed, just plain clusters).
+	for _, agentName := range o.agentClusterNames() {
+		if err := o.createCluster(ctx, agentName, agentClusterConfig, false); err != nil {
+			return err
+		}
 	}
 
 	hubIP, err := o.getClusterIPAddress(ctx, o.HubClusterName, o.KindNetwork)
@@ -290,11 +314,13 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "kedge dev environment is ready!\n\n")
 
 	// Configuration
-	fmt.Fprint(o.Streams.ErrOut, "Configuration:\n")                                                 // nolint:errcheck
-	fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster kubeconfig: %s.kubeconfig\n", o.HubClusterName)     // nolint:errcheck
-	fmt.Fprintf(o.Streams.ErrOut, "  Agent cluster kubeconfig: %s.kubeconfig\n", o.AgentClusterName) // nolint:errcheck
-	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:8443\n")               // nolint:errcheck
-	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                                 // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "Configuration:\n")                                             // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster kubeconfig: %s.kubeconfig\n", o.HubClusterName) // nolint:errcheck
+	for _, agentName := range o.agentClusterNames() {
+		fmt.Fprintf(o.Streams.ErrOut, "  Agent cluster kubeconfig: %s.kubeconfig\n", agentName) // nolint:errcheck
+	}
+	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:8443\n") // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                   // nolint:errcheck
 	if hubIP != "" {
 		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP (for agent): %s\n", hubIP) // nolint:errcheck
 	}

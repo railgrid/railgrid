@@ -33,9 +33,11 @@ func (o *DevOptions) RunDelete() error {
 		return err
 	}
 
-	// Delete agent cluster
-	if err := o.deleteCluster(o.AgentClusterName); err != nil {
-		return err
+	// Delete all agent cluster(s).
+	for _, agentName := range o.agentClusterNames() {
+		if err := o.deleteCluster(agentName); err != nil {
+			return err
+		}
 	}
 
 	// Also clean up the site kubeconfig if it exists

@@ -171,6 +171,16 @@ func TestOIDCUserCanListSites(t *testing.T) {
 	testenv.Test(t, f)
 }
 
+// Multi-site tests — use OIDC auth (no static token in OIDC suite).
+func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }
+func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedScheduling()) }
+func TestWorkloadIsolation(t *testing.T)     { testenv.Test(t, cases.WorkloadIsolation()) }
+func TestSiteFailoverIsolation(t *testing.T) { testenv.Test(t, cases.SiteFailoverIsolation()) }
+func TestSiteReconnect(t *testing.T)         { testenv.Test(t, cases.SiteReconnect()) }
+func TestSiteListAccuracyUnderChurn(t *testing.T) {
+	testenv.Test(t, cases.SiteListAccuracyUnderChurn())
+}
+
 // TestOIDCTokenIssuerMatchesDiscovery verifies that the hub's OIDC issuer URL
 // matches what Dex advertises in its discovery document.
 func TestOIDCTokenIssuerMatchesDiscovery(t *testing.T) {

@@ -50,6 +50,16 @@ func TestAgentJoin(t *testing.T) {
 	testenv.Test(t, cases.AgentJoin())
 }
 
+// Multi-site tests — require 2 agent clusters (DefaultAgentCount=2).
+func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }
+func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedScheduling()) }
+func TestWorkloadIsolation(t *testing.T)     { testenv.Test(t, cases.WorkloadIsolation()) }
+func TestSiteFailoverIsolation(t *testing.T) { testenv.Test(t, cases.SiteFailoverIsolation()) }
+func TestSiteReconnect(t *testing.T)         { testenv.Test(t, cases.SiteReconnect()) }
+func TestSiteListAccuracyUnderChurn(t *testing.T) {
+	testenv.Test(t, cases.SiteListAccuracyUnderChurn())
+}
+
 // TestKCPHealth verifies that the external kcp instance is reachable and
 // responding from the test runner via the NodePort mapping.
 func TestKCPHealth(t *testing.T) {

@@ -30,3 +30,13 @@ func TestStaticTokenLogin(t *testing.T) { testenv.Test(t, cases.StaticTokenLogin
 func TestSiteLifecycle(t *testing.T)    { testenv.Test(t, cases.SiteLifecycle()) }
 func TestAgentJoin(t *testing.T)        { testenv.Test(t, cases.AgentJoin()) }
 func TestTunnelResilience(t *testing.T) { testenv.Test(t, cases.TunnelResilience()) }
+
+// Multi-site tests — require 2 agent clusters (DefaultAgentCount=2).
+func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }
+func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedScheduling()) }
+func TestWorkloadIsolation(t *testing.T)     { testenv.Test(t, cases.WorkloadIsolation()) }
+func TestSiteFailoverIsolation(t *testing.T) { testenv.Test(t, cases.SiteFailoverIsolation()) }
+func TestSiteReconnect(t *testing.T)         { testenv.Test(t, cases.SiteReconnect()) }
+func TestSiteListAccuracyUnderChurn(t *testing.T) {
+	testenv.Test(t, cases.SiteListAccuracyUnderChurn())
+}

@@ -38,6 +38,9 @@ jobs:
       - name: Build binaries
         run: make build
 
+      - name: Add bin/ to PATH
+        run: echo "$(pwd)/bin" >> $GITHUB_PATH
+
       - name: Build hub Docker image
         run: docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
 
@@ -92,6 +95,9 @@ jobs:
       - name: Build binaries
         run: make build
 
+      - name: Add bin/ to PATH
+        run: echo "$(pwd)/bin" >> $GITHUB_PATH
+
       - name: Build hub Docker image
         run: |
           docker build -f deploy/Dockerfile.hub \
@@ -144,6 +150,9 @@ jobs:
 
       - name: Build binaries
         run: make build
+
+      - name: Add bin/ to PATH
+        run: echo "$(pwd)/bin" >> $GITHUB_PATH
 
       - name: Build hub Docker image
         run: |
