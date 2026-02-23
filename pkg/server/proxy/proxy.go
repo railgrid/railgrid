@@ -178,6 +178,12 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		return
 	}
 
+	// TODO(#65): bare paths (/api/..., /apis/...) are not handled here — kcpPath stays
+	// empty and the request is forwarded to the kcp root URL instead of the user's
+	// workspace. Add the same else-branch as serveStaticToken:
+	//   kcpPath = "/clusters/" + user.Spec.DefaultCluster + r.URL.Path
+	// https://github.com/faroshq/kedge/issues/65
+
 	// Determine kcp path based on incoming request format.
 	var kcpPath string
 	if strings.HasPrefix(r.URL.Path, "/clusters/") {
@@ -215,6 +221,9 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		},
 		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// TODO(#69): err.Error() leaks internal details (hostnames, paths, TLS info).
+			// Log server-side and return a generic message to the client.
+			// https://github.com/faroshq/kedge/issues/69
 			logger.Error(err, "proxy upstream error", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
@@ -291,6 +300,8 @@ func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, toke
 		},
 		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// TODO(#69): err.Error() leaks internal details. Log and return generic message.
+			// https://github.com/faroshq/kedge/issues/69
 			logger.Error(err, "proxy upstream error (static token)", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
@@ -448,6 +459,10 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 // request to the workspace identified by the clusterName claim, keeping the
 // original SA token so kcp performs native authn/authz.
 func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, token, clusterName string) {
+	// TODO(#68): clusterName comes from an unverified JWT claim. Validate it matches
+	// the expected kcp cluster name format ([a-z0-9-]+:[a-z0-9-]+) before using it
+	// in URL path construction to prevent path traversal.
+	// https://github.com/faroshq/kedge/issues/68
 	target := *p.kcpTarget
 	logger := p.logger
 
@@ -463,6 +478,8 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 		},
 		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// TODO(#69): err.Error() leaks internal details. Log and return generic message.
+			// https://github.com/faroshq/kedge/issues/69
 			logger.Error(err, "proxy upstream error (SA)", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)

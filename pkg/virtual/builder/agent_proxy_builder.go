@@ -88,8 +88,10 @@ func (p *virtualWorkspaces) buildAgentProxyHandler() http.Handler {
 					return
 				}
 			}
-			// OIDC tokens pass through — delegated authorization for OIDC
-			// users accessing agent resources will be added in a future iteration.
+			// TODO(#63): OIDC tokens bypass authorization — any valid OIDC token can access
+			// any site's subresources. Add SubjectAccessReview using user.Spec.RBACIdentity
+			// before allowing OIDC-authenticated requests through.
+			// https://github.com/faroshq/kedge/issues/63
 		}
 
 		key := p.getKey(clusterName, siteName)
@@ -151,7 +153,9 @@ func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWrite
 		return
 	}
 
-	// Upgrade client connection to WebSocket
+	// TODO(#67): CheckOrigin returns true for all origins, allowing cross-site WebSocket
+	// hijacking. Replace with utilhttp.CheckSameOrAllowedOrigin (same as edge proxy).
+	// https://github.com/faroshq/kedge/issues/67
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
@@ -237,9 +241,16 @@ func (t *deviceConnTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 // newSSHClient creates an SSH client through a device connection.
 func newSSHClient(_ context.Context, deviceConn net.Conn, _ klog.Logger) (*gossh.Client, error) {
+	// TODO(#64): InsecureIgnoreHostKey accepts any SSH host key — MITM risk.
+	// Store a known-good public key in the Site/Server CRD at registration time
+	// and use gossh.FixedHostKey or a custom HostKeyCallback here.
+	// https://github.com/faroshq/kedge/issues/64
+	//
+	// TODO(#64): User is hardcoded to "root". See also issue #53 for OIDC identity → SSH
+	// username mapping. https://github.com/faroshq/kedge/issues/64
 	sshConfig := &gossh.ClientConfig{
 		User:            "root",
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // tracked in #64
 	}
 
 	sshConn, chans, reqs, err := gossh.NewClientConn(deviceConn, "agent:22", sshConfig)

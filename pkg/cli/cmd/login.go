@@ -142,7 +142,11 @@ func runLogin(ctx context.Context, hubURL string, insecure bool) error {
 		fmt.Printf("Could not open browser automatically.\nPlease open the following URL in your browser:\n\n  %s\n\n", authorizeURL)
 	}
 
-	// 5. Optionally verify hub is reachable (best-effort).
+	// TODO(#66): This globally replaces http.DefaultTransport when --insecure-skip-tls-verify
+	// is set, poisoning TLS verification for every subsequent HTTP call in the process.
+	// Use a scoped *http.Client per-request instead, or remove entirely (this block
+	// appears to serve no purpose since runLogin doesn't make direct hub HTTP calls).
+	// https://github.com/faroshq/kedge/issues/66
 	if insecure {
 		http.DefaultTransport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
