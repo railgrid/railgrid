@@ -51,7 +51,7 @@ func SetupWithManager(mgr mcmanager.Manager) error {
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named(controllerName).
 		For(&kedgev1alpha1.VirtualWorkload{}).
-		Watches(&kedgev1alpha1.Site{}, mchandler.EnqueueRequestsFromMapFunc(r.mapSiteToVirtualWorkloads)).
+		Watches(&kedgev1alpha1.Edge{}, mchandler.EnqueueRequestsFromMapFunc(r.mapEdgeToVirtualWorkloads)).
 		Complete(r)
 }
 
@@ -77,20 +77,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	// List all Sites in this workspace
-	var siteList kedgev1alpha1.SiteList
-	if err := c.List(ctx, &siteList); err != nil {
-		logger.Error(err, "Failed to list Sites")
-		return ctrl.Result{}, fmt.Errorf("listing sites: %w", err)
+	// List all Edges in this workspace
+	var edgeList kedgev1alpha1.EdgeList
+	if err := c.List(ctx, &edgeList); err != nil {
+		logger.Error(err, "Failed to list Edges")
+		return ctrl.Result{}, fmt.Errorf("listing edges: %w", err)
 	}
 
-	// Match and select sites
-	matched, err := MatchSites(siteList.Items, vw.Spec.Placement)
+	// Match and select edges
+	matched, err := MatchEdges(edgeList.Items, vw.Spec.Placement)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("matching sites: %w", err)
+		return ctrl.Result{}, fmt.Errorf("matching edges: %w", err)
 	}
-	selected := SelectSites(matched, vw.Spec.Placement.Strategy)
-	logger.V(4).Info("Scheduling", "sites", len(siteList.Items), "matched", len(matched), "selected", len(selected))
+	selected := SelectEdges(matched, vw.Spec.Placement.Strategy)
+	logger.V(4).Info("Scheduling", "edges", len(edgeList.Items), "matched", len(matched), "selected", len(selected))
 
 	// List existing placements for this VW
 	var placementList kedgev1alpha1.PlacementList
@@ -100,42 +100,42 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("listing placements: %w", err)
 	}
 
-	// Build desired site set
-	desiredSites := make(map[string]bool)
-	for _, site := range selected {
-		desiredSites[site.Name] = true
+	// Build desired edge set
+	desiredEdges := make(map[string]bool)
+	for _, edge := range selected {
+		desiredEdges[edge.Name] = true
 	}
 
-	// Delete placements for sites no longer selected
+	// Delete placements for edges no longer selected
 	for i := range placementList.Items {
 		p := &placementList.Items[i]
-		if !desiredSites[p.Spec.SiteName] {
-			logger.Info("Deleting stale placement", "placement", p.Name, "site", p.Spec.SiteName)
+		if !desiredEdges[p.Spec.SiteName] {
+			logger.Info("Deleting stale placement", "placement", p.Name, "edge", p.Spec.SiteName)
 			if err := c.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
 				logger.Error(err, "Failed to delete placement", "name", p.Name)
 			}
 		}
 	}
 
-	// Build existing site set
-	existingSites := make(map[string]bool)
+	// Build existing edge set
+	existingEdges := make(map[string]bool)
 	for _, p := range placementList.Items {
-		existingSites[p.Spec.SiteName] = true
+		existingEdges[p.Spec.SiteName] = true
 	}
 
-	// Create placements for newly selected sites
-	for _, site := range selected {
-		if existingSites[site.Name] {
+	// Create placements for newly selected edges
+	for _, edge := range selected {
+		if existingEdges[edge.Name] {
 			continue
 		}
 
 		placement := &kedgev1alpha1.Placement{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      fmt.Sprintf("%s-%s", vw.Name, site.Name),
+				Name:      fmt.Sprintf("%s-%s", vw.Name, edge.Name),
 				Namespace: vw.Namespace,
 				Labels: map[string]string{
 					"kedge.faros.sh/virtualworkload": vw.Name,
-					"kedge.faros.sh/site":            site.Name,
+					"kedge.faros.sh/site":            edge.Name,
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
@@ -154,12 +154,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 					Namespace:  vw.Namespace,
 					UID:        vw.UID,
 				},
-				SiteName: site.Name,
+				SiteName: edge.Name,
 				Replicas: vw.Spec.Replicas,
 			},
 		}
 
-		logger.Info("Creating placement", "placement", placement.Name, "site", site.Name)
+		logger.Info("Creating placement", "placement", placement.Name, "edge", edge.Name)
 		if err := c.Create(ctx, placement); err != nil && !apierrors.IsAlreadyExists(err) {
 			logger.Error(err, "Failed to create placement", "name", placement.Name)
 		}
@@ -170,19 +170,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
-// mapSiteToVirtualWorkloads re-enqueues all VirtualWorkloads in the same
-// workspace whenever a Site changes.
-func (r *Reconciler) mapSiteToVirtualWorkloads(ctx context.Context, obj client.Object) []reconcile.Request {
+// mapEdgeToVirtualWorkloads re-enqueues all VirtualWorkloads in the same
+// workspace whenever an Edge changes.
+func (r *Reconciler) mapEdgeToVirtualWorkloads(ctx context.Context, obj client.Object) []reconcile.Request {
 	// Prefer the cluster name from the multicluster-runtime context (canonical),
 	// fall back to the kcp annotation if the context value is absent.
 	clusterKey, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
 		clusterKey = obj.GetAnnotations()["kcp.io/cluster"]
 	}
-	klog.V(2).InfoS("mapSiteToVirtualWorkloads", "site", obj.GetName(), "cluster", clusterKey)
+	klog.V(2).InfoS("mapEdgeToVirtualWorkloads", "edge", obj.GetName(), "cluster", clusterKey)
 	cl, err := r.mgr.GetCluster(ctx, clusterKey)
 	if err != nil {
-		klog.V(2).InfoS("mapSiteToVirtualWorkloads: GetCluster failed", "cluster", clusterKey, "err", err)
+		klog.V(2).InfoS("mapEdgeToVirtualWorkloads: GetCluster failed", "cluster", clusterKey, "err", err)
 		return nil
 	}
 	var vwList kedgev1alpha1.VirtualWorkloadList

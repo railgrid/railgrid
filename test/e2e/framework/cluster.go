@@ -235,7 +235,7 @@ func SetupClusters(workDir string) env.Func {
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer apiCancel()
-		if err := WaitForSiteAPI(apiCtx, client, clusterEnv.Token); err != nil {
+		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
 			return ctx, fmt.Errorf("site API did not become available after setup: %w", err)
 		}
 
@@ -316,7 +316,7 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 		// in Dex mode, so we authenticate with the test Dex user instead.
 		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
-		if err := WaitForSiteAPIWithOIDC(apiCtx, workDir, DefaultHubURL); err != nil {
+		if err := WaitForEdgeAPIWithOIDC(apiCtx, workDir, DefaultHubURL); err != nil {
 			return ctx, fmt.Errorf("site API did not become available after OIDC setup: %w", err)
 		}
 
@@ -377,7 +377,7 @@ func UseExistingClusters(workDir string) env.Func {
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer apiCancel()
-		if err := WaitForSiteAPI(apiCtx, client, clusterEnv.Token); err != nil {
+		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
 			return ctx, fmt.Errorf("site API not ready for existing clusters: %w", err)
 		}
 
@@ -550,7 +550,7 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer apiCancel()
-		if err := WaitForSiteAPI(apiCtx, client, clusterEnv.Token); err != nil {
+		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
 			return ctx, fmt.Errorf("site API did not become available after external kcp setup: %w", err)
 		}
 
@@ -592,6 +592,98 @@ func UseExistingClustersWithExternalKCP(workDir string) env.Func {
 		}
 
 		ctx = WithClusterEnv(ctx, clusterEnv)
+		return ctx, nil
+	}
+}
+
+// AgentBinPath returns the path to the kedge binary under bin/.
+func AgentBinPath() string {
+	return filepath.Join(RepoRoot(), "bin", "kedge")
+}
+
+// SetupClustersWithAgentCount is like SetupClusters but creates agentCount agent
+// clusters instead of DefaultAgentCount. Use agentCount=1 for suites that do not
+// need multi-agent tests (e.g. SSH) to save cluster creation time.
+func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		kedge := filepath.Join(workDir, KedgeBin)
+
+		args := []string{
+			"dev", "create",
+			"--hub-cluster-name", DefaultHubClusterName,
+			"--agent-cluster-name", DefaultAgentClusterName,
+			"--agent-count", fmt.Sprintf("%d", agentCount),
+			"--kind-network", DefaultKindNetwork,
+			"--chart-path", filepath.Join(workDir, DefaultChartPath),
+			"--wait-for-ready-timeout", "10m",
+		}
+
+		if pullPolicy := os.Getenv(hubImagePullPolicyEnv); pullPolicy != "" {
+			args = append(args, "--image-pull-policy", pullPolicy)
+		}
+		if tag := os.Getenv(hubImageTagEnv); tag != "" {
+			args = append(args, "--tag", tag)
+		}
+
+		cmd := exec.CommandContext(ctx, kedge, args...)
+		cmd.Dir = workDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			return ctx, fmt.Errorf("kedge dev create failed: %w", err)
+		}
+
+		agents := agentClusterInfos(workDir, DefaultAgentClusterName, agentCount)
+		clusterEnv := &ClusterEnv{
+			HubClusterName:   DefaultHubClusterName,
+			HubKubeconfig:    filepath.Join(workDir, DefaultHubClusterName+".kubeconfig"),
+			HubURL:           DefaultHubURL,
+			Token:            DevToken,
+			WorkDir:          workDir,
+			AgentClusters:    agents,
+			AgentClusterName: agents[0].Name,
+			AgentKubeconfig:  agents[0].Kubeconfig,
+		}
+
+		healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer healthCancel()
+		if err := WaitForHubReady(healthCtx, DefaultHubURL); err != nil {
+			return ctx, fmt.Errorf("hub did not become healthy after setup: %w", err)
+		}
+
+		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
+		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer apiCancel()
+		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
+			return ctx, fmt.Errorf("site API did not become available after setup: %w", err)
+		}
+
+		return WithClusterEnv(ctx, clusterEnv), nil
+	}
+}
+
+// TeardownClustersWithAgentCount is TeardownClusters for a custom agent count.
+func TeardownClustersWithAgentCount(workDir string, agentCount int) env.Func {
+	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		if KeepClusters {
+			fmt.Println("--keep-clusters set: skipping cluster teardown")
+			return ctx, nil
+		}
+		kedge := filepath.Join(workDir, KedgeBin)
+		args := []string{
+			"dev", "delete",
+			"--hub-cluster-name", DefaultHubClusterName,
+			"--agent-cluster-name", DefaultAgentClusterName,
+			"--agent-count", fmt.Sprintf("%d", agentCount),
+		}
+		cmd := exec.CommandContext(ctx, kedge, args...)
+		cmd.Dir = workDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("WARNING: kedge dev delete failed (clusters may remain): %v\n", err)
+		}
 		return ctx, nil
 	}
 }

@@ -44,7 +44,7 @@ func vw(name, ns string, selector map[string]string, strategy kedgev1alpha1.Plac
 		Spec: kedgev1alpha1.VirtualWorkloadSpec{
 			Placement: kedgev1alpha1.PlacementSpec{
 				Strategy: strategy,
-				SiteSelector: &metav1.LabelSelector{
+				EdgeSelector: &metav1.LabelSelector{
 					MatchLabels: selector,
 				},
 			},
@@ -52,8 +52,8 @@ func vw(name, ns string, selector map[string]string, strategy kedgev1alpha1.Plac
 	}
 }
 
-func site(name string, labels map[string]string) *kedgev1alpha1.Site {
-	return &kedgev1alpha1.Site{
+func edge(name string, labels map[string]string) *kedgev1alpha1.Edge {
+	return &kedgev1alpha1.Edge{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
 	}
 }
@@ -75,7 +75,7 @@ func TestSchedulerReconciler_VWNotFound(t *testing.T) {
 func TestSchedulerReconciler_NoMatchingSites(t *testing.T) {
 	scheme := newSchedulerScheme(t)
 	workload := vw("vw-1", "default", map[string]string{"env": "prod"}, kedgev1alpha1.PlacementStrategySpread)
-	s1 := site("site-staging", map[string]string{"env": "staging"})
+	s1 := edge("site-staging", map[string]string{"env": "staging"})
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(workload, s1).Build()
 	r := &Reconciler{mgr: testfakes.NewManager(c)}
@@ -97,9 +97,9 @@ func TestSchedulerReconciler_NoMatchingSites(t *testing.T) {
 func TestSchedulerReconciler_MatchingSites_PlacementsCreated(t *testing.T) {
 	scheme := newSchedulerScheme(t)
 	workload := vw("vw-2", "default", map[string]string{"env": "prod"}, kedgev1alpha1.PlacementStrategySpread)
-	s1 := site("site-prod-1", map[string]string{"env": "prod"})
-	s2 := site("site-prod-2", map[string]string{"env": "prod"})
-	s3 := site("site-staging", map[string]string{"env": "staging"})
+	s1 := edge("site-prod-1", map[string]string{"env": "prod"})
+	s2 := edge("site-prod-2", map[string]string{"env": "prod"})
+	s3 := edge("site-staging", map[string]string{"env": "staging"})
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(workload, s1, s2, s3).Build()
 	r := &Reconciler{mgr: testfakes.NewManager(c)}
@@ -129,7 +129,7 @@ func TestSchedulerReconciler_MatchingSites_PlacementsCreated(t *testing.T) {
 func TestSchedulerReconciler_Idempotent(t *testing.T) {
 	scheme := newSchedulerScheme(t)
 	workload := vw("vw-3", "default", map[string]string{"env": "prod"}, kedgev1alpha1.PlacementStrategySpread)
-	s1 := site("site-prod-a", map[string]string{"env": "prod"})
+	s1 := edge("site-prod-a", map[string]string{"env": "prod"})
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(workload, s1).Build()
 	r := &Reconciler{mgr: testfakes.NewManager(c)}
@@ -154,7 +154,7 @@ func TestSchedulerReconciler_Idempotent(t *testing.T) {
 func TestSchedulerReconciler_StalePlacementDeleted(t *testing.T) {
 	scheme := newSchedulerScheme(t)
 	workload := vw("vw-4", "default", map[string]string{"env": "prod"}, kedgev1alpha1.PlacementStrategySpread)
-	s1 := site("site-prod-x", map[string]string{"env": "prod"})
+	s1 := edge("site-prod-x", map[string]string{"env": "prod"})
 	stalePlacement := &kedgev1alpha1.Placement{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "vw-4-site-gone",
@@ -189,9 +189,9 @@ func TestSchedulerReconciler_StalePlacementDeleted(t *testing.T) {
 func TestSchedulerReconciler_SingletonStrategy(t *testing.T) {
 	scheme := newSchedulerScheme(t)
 	workload := vw("vw-5", "default", map[string]string{"env": "prod"}, kedgev1alpha1.PlacementStrategySingleton)
-	s1 := site("site-1", map[string]string{"env": "prod"})
-	s2 := site("site-2", map[string]string{"env": "prod"})
-	s3 := site("site-3", map[string]string{"env": "prod"})
+	s1 := edge("site-1", map[string]string{"env": "prod"})
+	s2 := edge("site-2", map[string]string{"env": "prod"})
+	s3 := edge("site-3", map[string]string{"env": "prod"})
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(workload, s1, s2, s3).Build()
 	r := &Reconciler{mgr: testfakes.NewManager(c)}

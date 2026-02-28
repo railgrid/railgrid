@@ -14,19 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package builder
+package ssh
 
 import (
-	"net/http"
+	"testing"
+
+	"github.com/faroshq/faros-kedge/test/e2e/cases"
 )
 
-// buildClusterProxyHandler creates the HTTP handler for workspace routing.
-// It routes requests to appropriate workspaces based on the path.
-func (p *virtualWorkspaces) buildClusterProxyHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// TODO: Route requests to appropriate workspace
-		// Parse workspace from path, forward to kcp API server
-		p.logger.Info("Cluster proxy request", "path", r.URL.Path)
-		http.Error(w, "cluster proxy not yet implemented", http.StatusNotImplemented)
-	})
+func TestSSHServerModeConnect(t *testing.T) {
+	testenv.Test(t, cases.SSHServerModeConnect())
+}
+
+func TestSSHDockerServerModeConnect(t *testing.T) {
+	testenv.Test(t, cases.SSHDockerServerModeConnect())
 }

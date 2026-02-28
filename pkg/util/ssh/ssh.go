@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -31,6 +32,12 @@ import (
 	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
 )
+
+// errSessionDone is a sentinel returned by wait() when the SSH session exits
+// cleanly (nil error from session.Wait).  It causes errgroup to cancel gCtx
+// so that receiveWsMsg, sendComboOutput, sendKeepAlive, and wsCloser all
+// return promptly.  Run() filters this error out and returns nil to callers.
+var errSessionDone = errors.New("ssh session ended normally")
 
 type SocketSSHSession struct {
 	stdinPipe   io.WriteCloser
@@ -80,6 +87,11 @@ func NewSocketSSHSession(l klog.Logger, cols, rows int, sshClient *ssh.Client, w
 }
 
 func (s *SocketSSHSession) Close() {
+	// Close stdinPipe first to signal EOF to the remote shell and to unblock
+	// any goroutine waiting on the pipe (e.g. session.Wait's stdin copier).
+	if s.stdinPipe != nil {
+		s.stdinPipe.Close() //nolint:errcheck
+	}
 	if s.session != nil {
 		s.session.Close() //nolint:errcheck
 	}
@@ -89,25 +101,50 @@ func (s *SocketSSHSession) Close() {
 }
 
 func (s *SocketSSHSession) Run(ctx context.Context) error {
-	g, ctx := errgroup.WithContext(ctx)
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// flushDone is closed when sendComboOutput returns, signalling that the
+	// last flush has been written to the WebSocket.  The wsCloser goroutine
+	// waits for this before closing the WebSocket so the CLI always receives
+	// all output before it sees EOF.
+	flushDone := make(chan struct{})
 
 	g.Go(func() error {
-		return s.receiveWsMsg(ctx.Done())
+		return s.receiveWsMsg(gCtx.Done())
 	})
 
 	g.Go(func() error {
-		return s.sendComboOutput(ctx.Done())
+		defer close(flushDone)
+		return s.sendComboOutput(gCtx.Done())
 	})
 
 	g.Go(func() error {
-		return s.sendKeepAlive(ctx.Done())
+		return s.sendKeepAlive(gCtx.Done())
 	})
 
 	g.Go(func() error {
-		return s.wait(ctx.Done())
+		return s.wait(gCtx.Done())
 	})
 
-	return g.Wait()
+	// wsCloser: wait until sendComboOutput has finished its final flush, then
+	// close the WebSocket so that receiveWsMsg (blocked on ReadMessage) unblocks
+	// and the errgroup can finish.
+	//
+	// We ONLY wait on flushDone (not gCtx.Done()) to guarantee the flush
+	// happens before the close.  flushDone is always closed via defer in the
+	// sendComboOutput goroutine, so wsCloser will never hang: even if
+	// sendComboOutput hits a write error it still returns and defers the close.
+	g.Go(func() error {
+		<-flushDone
+		s.wsConn.Close() //nolint:errcheck
+		return nil
+	})
+
+	err := g.Wait()
+	if errors.Is(err, errSessionDone) {
+		return nil
+	}
+	return err
 }
 
 func (s *SocketSSHSession) receiveWsMsg(stop <-chan struct{}) error {
@@ -157,26 +194,38 @@ func (s *SocketSSHSession) writeToSSHPipe(cmdBytes []byte) {
 	}
 }
 
+func (s *SocketSSHSession) flushOutput() error {
+	if s.comboOutput == nil {
+		return nil
+	}
+	// ReadAndReset copies the current buffer content and resets it atomically
+	// under the safeBuffer mutex.  This prevents a race where a concurrent
+	// Write() (from the SSH library's copy goroutine) appends new data between
+	// the Bytes() read and the Reset() call, causing that data to be silently
+	// discarded and never forwarded to the WebSocket client.
+	bs := s.comboOutput.ReadAndReset()
+	if len(bs) == 0 {
+		return nil
+	}
+	if err := s.wsConn.WriteMessage(websocket.BinaryMessage, bs); err != nil {
+		s.logger.Error(err, "failed to write ssh output to the websocket conn")
+		return err
+	}
+	return nil
+}
+
 func (s *SocketSSHSession) sendComboOutput(stop <-chan struct{}) error {
 	tick := time.NewTicker(time.Millisecond * time.Duration(60))
 	defer tick.Stop()
 	for {
 		select {
 		case <-stop:
-			return nil
+			// Flush remaining output before exiting — otherwise output produced
+			// between the last tick and session-end (e.g. shell exit) is lost.
+			return s.flushOutput()
 		case <-tick.C:
-			if s.comboOutput == nil {
-				return nil
-			}
-			bs := s.comboOutput.Bytes()
-			if len(bs) > 0 {
-				err := s.wsConn.WriteMessage(websocket.BinaryMessage, bs)
-				if err != nil {
-					s.logger.Error(err, "failed to write ssh output to the websocket conn")
-					return err
-				}
-
-				s.comboOutput.buffer.Reset()
+			if err := s.flushOutput(); err != nil {
+				return err
 			}
 		}
 	}
@@ -194,7 +243,9 @@ func (s *SocketSSHSession) sendKeepAlive(stop <-chan struct{}) error {
 		case <-stop:
 			return nil
 		case <-tick.C:
-			_, err := s.session.SendRequest("keepalive@openssh.com", true, nil)
+			// Use wantReply=false so SendRequest never blocks if the channel
+			// is broken or the server has already closed the session.
+			_, err := s.session.SendRequest("keepalive@openssh.com", false, nil)
 			if err != nil {
 				consecutiveFailures++
 
@@ -227,9 +278,21 @@ func (s *SocketSSHSession) wait(stop <-chan struct{}) error {
 
 	select {
 	case <-stop:
+		// Close stdinPipe to unblock the SSH library's stdin copy goroutine,
+		// then close the session to unblock session.Wait().
+		if s.stdinPipe != nil {
+			s.stdinPipe.Close() //nolint:errcheck
+		}
 		s.session.Close() //nolint:errcheck
 		return nil
 	case err := <-done:
+		if err == nil {
+			// Return a non-nil sentinel so errgroup cancels gCtx, which
+			// causes receiveWsMsg, sendComboOutput, sendKeepAlive, and
+			// wsCloser to all return and unblock g.Wait().  Run() filters
+			// this sentinel out before returning to callers.
+			return errSessionDone
+		}
 		return err
 	}
 }
@@ -253,4 +316,21 @@ func (w *safeBuffer) Reset() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.buffer.Reset()
+}
+
+// ReadAndReset returns a copy of the current buffer content and resets the
+// buffer atomically under the mutex.  Using a single locked operation instead
+// of separate Bytes()+Reset() calls eliminates the race where a concurrent
+// Write() can append data between the read and the reset, causing that data
+// to be silently discarded.
+func (w *safeBuffer) ReadAndReset() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.buffer.Len() == 0 {
+		return nil
+	}
+	data := make([]byte, w.buffer.Len())
+	copy(data, w.buffer.Bytes())
+	w.buffer.Reset()
+	return data
 }

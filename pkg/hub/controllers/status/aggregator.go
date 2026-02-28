@@ -35,12 +35,12 @@ func AggregateStatus(placements []kedgev1alpha1.Placement) kedgev1alpha1.Virtual
 	for _, p := range placements {
 		totalReady += p.Status.ReadyReplicas
 
-		siteStatus := kedgev1alpha1.SiteWorkloadStatus{
-			SiteName:      p.Spec.SiteName,
+		siteStatus := kedgev1alpha1.EdgeWorkloadStatus{
+			EdgeName:      p.Spec.SiteName,
 			Phase:         p.Status.Phase,
 			ReadyReplicas: p.Status.ReadyReplicas,
 		}
-		status.Sites = append(status.Sites, siteStatus)
+		status.Edges = append(status.Edges, siteStatus)
 
 		if p.Status.Phase != "Running" {
 			allRunning = false

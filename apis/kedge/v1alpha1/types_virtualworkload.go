@@ -86,9 +86,9 @@ type SimpleWorkloadSpec struct {
 	Args      []string                     `json:"args,omitempty"`
 }
 
-// PlacementSpec defines how to place the workload on sites.
+// PlacementSpec defines how to place the workload on edges.
 type PlacementSpec struct {
-	SiteSelector *metav1.LabelSelector `json:"siteSelector,omitempty"`
+	EdgeSelector *metav1.LabelSelector `json:"edgeSelector,omitempty"`
 	Strategy     PlacementStrategy     `json:"strategy,omitempty"`
 }
 
@@ -102,15 +102,15 @@ type AccessSpec struct {
 // VirtualWorkloadStatus defines the observed state of VirtualWorkload.
 type VirtualWorkloadStatus struct {
 	Phase             VirtualWorkloadPhase `json:"phase,omitempty"`
-	Sites             []SiteWorkloadStatus `json:"sites,omitempty"`
+	Edges             []EdgeWorkloadStatus `json:"edges,omitempty"`
 	ReadyReplicas     int32                `json:"readyReplicas"`
 	AvailableReplicas int32                `json:"availableReplicas"`
 	Conditions        []metav1.Condition   `json:"conditions,omitempty"`
 }
 
-// SiteWorkloadStatus is the status of a workload on a specific site.
-type SiteWorkloadStatus struct {
-	SiteName      string `json:"siteName"`
+// EdgeWorkloadStatus is the status of a workload on a specific edge.
+type EdgeWorkloadStatus struct {
+	EdgeName      string `json:"edgeName"`
 	Phase         string `json:"phase,omitempty"`
 	ReadyReplicas int32  `json:"readyReplicas"`
 	Message       string `json:"message,omitempty"`

@@ -37,8 +37,8 @@ import (
 
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
+	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
-	"github.com/faroshq/faros-kedge/pkg/hub/controllers/site"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	"github.com/faroshq/faros-kedge/pkg/server/auth"
@@ -203,11 +203,12 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Tunnel handlers (kcpConfig is used for SA token verification; nil if kcp not configured)
-	siteRoutes := builder.NewSiteRouteMap()
-	vws := builder.NewVirtualWorkspaces(connManager, kcpConfig, siteRoutes, logger)
-	router.PathPrefix("/tunnel/").Handler(http.StripPrefix("/tunnel", vws.EdgeProxyHandler()))
-	router.PathPrefix("/proxy/").Handler(http.StripPrefix("/proxy", vws.AgentProxyHandler()))
-	router.PathPrefix("/services/site-proxy/").Handler(http.StripPrefix("/services/site-proxy", vws.SiteProxyHandler()))
+	vws, err := builder.NewVirtualWorkspaces(connManager, kcpConfig, s.opts.StaticAuthTokens, logger)
+	if err != nil {
+		return fmt.Errorf("creating virtual workspaces handlers: %w", err)
+	}
+	router.PathPrefix("/services/agent-proxy/").Handler(http.StripPrefix("/services/agent-proxy", vws.EdgeAgentProxyHandler()))
+	router.PathPrefix("/services/edges-proxy/").Handler(http.StripPrefix("/services/edges-proxy", vws.EdgesProxyHandler()))
 
 	// Health check
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -268,16 +269,16 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := status.SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up status aggregator: %w", err)
 		}
-		if err := site.SetupLifecycleWithManager(mgr); err != nil {
-			return fmt.Errorf("setting up site lifecycle controller: %w", err)
+		// Edge controllers.
+		if err := edge.SetupLifecycleWithManager(mgr); err != nil {
+			return fmt.Errorf("setting up edge lifecycle controller: %w", err)
 		}
-		if err := site.SetupRBACWithManager(mgr, s.opts.HubExternalURL); err != nil {
-			return fmt.Errorf("setting up site RBAC controller: %w", err)
+		if err := edge.SetupRBACWithManager(mgr, s.opts.HubExternalURL); err != nil {
+			return fmt.Errorf("setting up edge RBAC controller: %w", err)
 		}
-		if err := site.SetupMountWithManager(mgr, kcpConfig, s.opts.HubExternalURL, siteRoutes); err != nil {
-			return fmt.Errorf("setting up site mount controller: %w", err)
+		if err := edge.SetupMountWithManager(mgr, kcpConfig, s.opts.HubExternalURL); err != nil {
+			return fmt.Errorf("setting up edge mount controller: %w", err)
 		}
-
 		go func() {
 			logger.Info("Starting multicluster manager")
 			if err := mgr.Start(ctx); err != nil {

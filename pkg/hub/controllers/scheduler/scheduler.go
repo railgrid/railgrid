@@ -28,28 +28,28 @@ import (
 
 const controllerName = "scheduler"
 
-// MatchSites returns sites matching the given placement spec.
-func MatchSites(sites []kedgev1alpha1.Site, placement kedgev1alpha1.PlacementSpec) ([]kedgev1alpha1.Site, error) {
-	if placement.SiteSelector == nil {
-		return sites, nil
+// MatchEdges returns edges matching the given placement spec.
+func MatchEdges(edges []kedgev1alpha1.Edge, placement kedgev1alpha1.PlacementSpec) ([]kedgev1alpha1.Edge, error) {
+	if placement.EdgeSelector == nil {
+		return edges, nil
 	}
 
-	selector, err := metav1.LabelSelectorAsSelector(placement.SiteSelector)
+	selector, err := metav1.LabelSelectorAsSelector(placement.EdgeSelector)
 	if err != nil {
-		return nil, fmt.Errorf("invalid site selector: %w", err)
+		return nil, fmt.Errorf("invalid edge selector: %w", err)
 	}
 
-	var matched []kedgev1alpha1.Site
-	for _, site := range sites {
-		if selector.Matches(labels.Set(site.Labels)) {
-			matched = append(matched, site)
+	var matched []kedgev1alpha1.Edge
+	for _, edge := range edges {
+		if selector.Matches(labels.Set(edge.Labels)) {
+			matched = append(matched, edge)
 		}
 	}
 	return matched, nil
 }
 
-// SelectSites applies the placement strategy to matched sites.
-func SelectSites(matched []kedgev1alpha1.Site, strategy kedgev1alpha1.PlacementStrategy) []kedgev1alpha1.Site {
+// SelectEdges applies the placement strategy to matched edges.
+func SelectEdges(matched []kedgev1alpha1.Edge, strategy kedgev1alpha1.PlacementStrategy) []kedgev1alpha1.Edge {
 	switch strategy {
 	case kedgev1alpha1.PlacementStrategySingleton:
 		if len(matched) > 0 {

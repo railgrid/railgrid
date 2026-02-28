@@ -28,29 +28,29 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
-func newSiteCommand() *cobra.Command {
+func newEdgeCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "site",
-		Short: "Manage sites",
+		Use:   "edge",
+		Short: "Manage edges",
 	}
 
 	cmd.AddCommand(
-		newSiteCreateCommand(),
-		newSiteListCommand(),
-		newSiteGetCommand(),
-		newSiteDeleteCommand(),
+		newEdgeCreateCommand(),
+		newEdgeListCommand(),
+		newEdgeGetCommand(),
+		newEdgeDeleteCommand(),
 	)
 
 	return cmd
 }
 
-func newSiteCreateCommand() *cobra.Command {
+func newEdgeCreateCommand() *cobra.Command {
 	var labels map[string]string
-	var provider, region string
+	var edgeType string
 
 	cmd := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Create a site",
+		Short: "Create an edge",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -61,15 +61,19 @@ func newSiteCreateCommand() *cobra.Command {
 				return err
 			}
 
-			site := &unstructured.Unstructured{
+			if edgeType == "" {
+				edgeType = "kubernetes"
+			}
+
+			edge := &unstructured.Unstructured{
 				Object: map[string]interface{}{
-					"apiVersion": kedgeclient.SiteGVR.Group + "/" + kedgeclient.SiteGVR.Version,
-					"kind":       "Site",
+					"apiVersion": kedgeclient.EdgeGVR.Group + "/" + kedgeclient.EdgeGVR.Version,
+					"kind":       "Edge",
 					"metadata": map[string]interface{}{
 						"name": name,
 					},
 					"spec": map[string]interface{}{
-						"displayName": name,
+						"type": edgeType,
 					},
 				},
 			}
@@ -79,36 +83,29 @@ func newSiteCreateCommand() *cobra.Command {
 				for k, v := range labels {
 					lbls[k] = v
 				}
-				site.Object["metadata"].(map[string]interface{})["labels"] = lbls
-			}
-			if provider != "" {
-				site.Object["spec"].(map[string]interface{})["provider"] = provider
-			}
-			if region != "" {
-				site.Object["spec"].(map[string]interface{})["region"] = region
+				edge.Object["metadata"].(map[string]interface{})["labels"] = lbls
 			}
 
-			_, err = dynClient.Resource(kedgeclient.SiteGVR).Create(ctx, site, metav1.CreateOptions{})
+			_, err = dynClient.Resource(kedgeclient.EdgeGVR).Create(ctx, edge, metav1.CreateOptions{})
 			if err != nil {
-				return fmt.Errorf("creating site %q: %w", name, err)
+				return fmt.Errorf("creating edge %q: %w", name, err)
 			}
 
-			fmt.Printf("Site %q created.\n", name)
+			fmt.Printf("Edge %q created.\n", name)
 			return nil
 		},
 	}
 
-	cmd.Flags().StringToStringVar(&labels, "labels", nil, "Labels for this site (key=value pairs)")
-	cmd.Flags().StringVar(&provider, "provider", "", "Provider (e.g. aws, gcp, onprem, edge)")
-	cmd.Flags().StringVar(&region, "region", "", "Region")
+	cmd.Flags().StringToStringVar(&labels, "labels", nil, "Labels for this edge (key=value pairs)")
+	cmd.Flags().StringVar(&edgeType, "type", "kubernetes", "Edge type: kubernetes or server")
 
 	return cmd
 }
 
-func newSiteListCommand() *cobra.Command {
+func newEdgeListCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List all connected sites",
+		Short: "List all edges",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 
@@ -117,27 +114,26 @@ func newSiteListCommand() *cobra.Command {
 				return err
 			}
 
-			list, err := dynClient.Resource(kedgeclient.SiteGVR).List(ctx, metav1.ListOptions{})
+			list, err := dynClient.Resource(kedgeclient.EdgeGVR).List(ctx, metav1.ListOptions{})
 			if err != nil {
-				return fmt.Errorf("listing sites: %w", err)
+				return fmt.Errorf("listing edges: %w", err)
 			}
 
 			if len(list.Items) == 0 {
-				fmt.Println("No sites found.")
+				fmt.Println("No edges found.")
 				return nil
 			}
 
 			tw := newTabWriter(os.Stdout)
-			printRow(tw, "NAME", "STATUS", "K8S VERSION", "PROVIDER", "REGION", "AGE")
+			printRow(tw, "NAME", "TYPE", "PHASE", "CONNECTED", "AGE")
 
 			for _, item := range list.Items {
+				edgeType := getNestedString(item, "spec", "type")
 				phase := getNestedString(item, "status", "phase")
-				k8sVersion := getNestedString(item, "status", "kubernetesVersion")
-				provider := getNestedString(item, "spec", "provider")
-				region := getNestedString(item, "spec", "region")
+				connected, _, _ := unstructuredNestedBool(item.Object, "status", "connected")
 				age := formatAge(item.GetCreationTimestamp().Time)
-				printRow(tw, item.GetName(), formatStringOrDash(phase), formatStringOrDash(k8sVersion),
-					formatStringOrDash(provider), formatStringOrDash(region), age)
+				printRow(tw, item.GetName(), formatStringOrDash(edgeType), formatStringOrDash(phase),
+					fmt.Sprintf("%v", connected), age)
 			}
 
 			_ = tw.Flush()
@@ -146,10 +142,10 @@ func newSiteListCommand() *cobra.Command {
 	}
 }
 
-func newSiteGetCommand() *cobra.Command {
+func newEdgeGetCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get [name]",
-		Short: "Get site details",
+		Short: "Get edge details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -160,32 +156,29 @@ func newSiteGetCommand() *cobra.Command {
 				return err
 			}
 
-			site, err := dynClient.Resource(kedgeclient.SiteGVR).Get(ctx, name, metav1.GetOptions{})
+			edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
-				return fmt.Errorf("getting site %q: %w", name, err)
+				return fmt.Errorf("getting edge %q: %w", name, err)
 			}
 
-			phase := getNestedString(*site, "status", "phase")
-			k8sVersion := getNestedString(*site, "status", "kubernetesVersion")
-			provider := getNestedString(*site, "spec", "provider")
-			region := getNestedString(*site, "spec", "region")
-			tunnelConnected, _, _ := unstructuredNestedBool(site.Object, "status", "tunnelConnected")
-			lastHeartbeat := getNestedString(*site, "status", "lastHeartbeatTime")
+			edgeType := getNestedString(*edge, "spec", "type")
+			phase := getNestedString(*edge, "status", "phase")
+			hostname := getNestedString(*edge, "status", "hostname")
+			workspaceURL := getNestedString(*edge, "status", "workspaceURL")
+			connected, _, _ := unstructuredNestedBool(edge.Object, "status", "connected")
 
-			fmt.Printf("Name:              %s\n", site.GetName())
-			fmt.Printf("Status:            %s\n", formatStringOrDash(phase))
-			fmt.Printf("Provider:          %s\n", formatStringOrDash(provider))
-			fmt.Printf("Region:            %s\n", formatStringOrDash(region))
-			fmt.Printf("Kubernetes:        %s\n", formatStringOrDash(k8sVersion))
-			fmt.Printf("Tunnel Connected:  %v\n", tunnelConnected)
-			fmt.Printf("Last Heartbeat:    %s\n", formatStringOrDash(lastHeartbeat))
-			fmt.Printf("Created:           %s\n", site.GetCreationTimestamp().Format("2006-01-02 15:04:05"))
+			fmt.Printf("Name:          %s\n", edge.GetName())
+			fmt.Printf("Type:          %s\n", formatStringOrDash(edgeType))
+			fmt.Printf("Phase:         %s\n", formatStringOrDash(phase))
+			fmt.Printf("Connected:     %v\n", connected)
+			fmt.Printf("Hostname:      %s\n", formatStringOrDash(hostname))
+			fmt.Printf("WorkspaceURL:  %s\n", formatStringOrDash(workspaceURL))
+			fmt.Printf("Created:       %s\n", edge.GetCreationTimestamp().Format("2006-01-02 15:04:05"))
 
 			// Print labels if any
-			labels := site.GetLabels()
-			if len(labels) > 0 {
+			if lbls := edge.GetLabels(); len(lbls) > 0 {
 				fmt.Println("Labels:")
-				for k, v := range labels {
+				for k, v := range lbls {
 					fmt.Printf("  %s=%s\n", k, v)
 				}
 			}
@@ -195,10 +188,10 @@ func newSiteGetCommand() *cobra.Command {
 	}
 }
 
-func newSiteDeleteCommand() *cobra.Command {
+func newEdgeDeleteCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <name>",
-		Short: "Delete a site",
+		Short: "Delete an edge",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -209,11 +202,11 @@ func newSiteDeleteCommand() *cobra.Command {
 				return err
 			}
 
-			if err := dynClient.Resource(kedgeclient.SiteGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-				return fmt.Errorf("deleting site %q: %w", name, err)
+			if err := dynClient.Resource(kedgeclient.EdgeGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+				return fmt.Errorf("deleting edge %q: %w", name, err)
 			}
 
-			fmt.Printf("Site %q deleted.\n", name)
+			fmt.Printf("Edge %q deleted.\n", name)
 			return nil
 		},
 	}

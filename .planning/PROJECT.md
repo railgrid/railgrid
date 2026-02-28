@@ -1,57 +1,152 @@
-# SSH via Hub WebSocket Reverse Tunnel
+# PROJECT.md — Edge Refactor (Issue #72)
 
-## What This Is
+## Overview
 
-Add a second mode of operation to kedge alongside the existing k8s/Site model: **server mode**. A `kedge-agent` running as a systemd service on a bare-metal or VM maintains a persistent reverse WebSocket tunnel to the hub. Users can SSH to any registered server through the hub using standard openssh, with auth via OIDC — no VPN, no firewall rules, no open ports on the server.
+Refactor the two separate resource types (`Site` = Kubernetes cluster, `Server` = SSH host) into a single unified `Edge` resource for faroshq/kedge. This reduces API surface, eliminates duplicate controllers/builders/reporters, and gives both connection paths a consistent registration and access model.
 
-## Problem
+**Issue:** https://github.com/faroshq/kedge/issues/72
+**Branch:** `ssh` (current working branch)
+**Stack:** Go 1.22+, controller-runtime, kcp virtual workspaces, gorilla/websocket, multicluster-runtime
 
-Kedge currently only manages k8s cluster sites. Bare-metal servers, VMs, and systemd-managed nodes have no kedge equivalent. Engineers still need direct SSH access (VPN, bastion, open ports) to reach these machines.
+---
 
-## Solution
+## Problem Statement
 
+Currently kedge maintains two parallel resource types:
+
+| Resource | Purpose | Agent mode | VW path |
+|----------|---------|------------|---------|
+| `Site` | Kubernetes cluster | `--mode=site` | `/services/agent-proxy/.../sites/{name}/k8s` |
+| `Server` | SSH bare-metal host | `--mode=server` | `/services/agent-proxy/.../servers/{name}/ssh` |
+
+This duplication manifests as:
+- Two CRDs with nearly identical lifecycle (phase, tunnelConnected, heartbeat)
+- Two sets of controllers (`pkg/hub/controllers/site/`) — lifecycle, mount, RBAC reconcilers
+- Two virtual workspace builders (`edge_proxy_builder.go`, `agent_proxy_builder.go`) with `?site=` / `?server=` branch logic
+- Two status reporters (`status/reporter.go`, `status/server_reporter.go`)
+- Branching `if serverName != "" { ... } else { ... }` code throughout
+- CLI `kedge ssh` needing to probe which resource kind the name belongs to
+
+---
+
+## Target Architecture
+
+### New `Edge` CRD
+
+```yaml
+apiVersion: kedge.faros.sh/v1alpha1
+kind: Edge
+metadata:
+  name: my-cluster
+spec:
+  type: kubernetes | server
+  kubernetes: {}             # k8s-specific config (reserved for future fields)
+  server:
+    sshPort: 22
+    sshKeySecretRef:
+      name: my-ssh-key
+      namespace: default
+status:
+  phase: Connected | Disconnected | Ready | NotReady
+  tunnelConnected: true
+  lastHeartbeatTime: "..."
+  # kubernetes-only
+  kubernetesVersion: "1.31.0"
+  capacity: {...}
+  allocatable: {...}
+  url: "https://..."
+  # server-only
+  sshEnabled: true
 ```
-User
-  → SSH client (standard openssh)
-  → Hub SSH proxy (new — accepts TCP, authenticates via OIDC)
-  → WebSocket reverse tunnel (existing revdial infrastructure)
-  → Agent (systemd mode on server — new)
-  → localhost:22 (existing sshd on host)
+
+### Single virtual workspace: `edges-proxy`
+
+Replaces both `edge-proxy` (tunnel registration) and `agent-proxy` (resource access):
+
+**Tunnel registration** (agent → hub):
+```
+POST /services/edges-proxy/register?edge=<name>&cluster=<cluster>
 ```
 
-The reverse tunnel is already built. This feature adds the SSH protocol layer on top.
+**Resource access** (user → hub):
+```
+/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/k8s   # k8s only
+/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/ssh   # server only
+```
 
-## Core Value
+### Connection pool
 
-**Zero-config SSH to any server, through the hub, using existing credentials.**
+Single `connman.ConnectionManager` pool keyed by `{cluster}/{name}` (no type prefix).
+
+### Controller: `pkg/hub/controllers/edge/`
+
+Merges all site sub-reconcilers into a unified set:
+- `lifecycle_reconciler.go` — heartbeat timeout → Disconnected
+- `mount_reconciler.go` — create kcp workspace for `type=kubernetes` only
+- `rbac_reconciler.go` — workspace RBAC
+- `controller.go` — constants (HeartbeatTimeout, GCTimeout)
+
+### Agent
+
+Single registration path. Agent flag `--type=kubernetes|server` (replaces `--mode=site|server`).
+- `type=kubernetes`: starts downstream k8s client + workload reconciler + site reporter → hub creates workspace
+- `type=server`: SSH proxy only, no k8s client — minimal resource footprint
+- Both paths use `edge_reporter.go` (replaces `reporter.go` + `server_reporter.go`)
+
+### CLI
+
+`kedge ssh <name>` calls `/ssh` subresource on the `edges` resource — no probe needed.
+`kubectl` access via workspace URL as before (workspace created by mount reconciler for `type=kubernetes`).
+
+---
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Proxy to existing sshd (not embedded) | Simpler, no change to host auth (PAM, authorized_keys stays) | Use existing sshd |
-| Feature branch `ssh`, not main | Experimental — test the architecture before merging to main | Branch: `ssh` |
-| New `Server` CRD alongside `Site` | Servers ≠ k8s clusters — different lifecycle, status, capabilities | Separate resource type |
-| OIDC identity → SSH username via claim mapping | Users already have OIDC identity; no separate SSH key management | `preferred_username` claim default |
-| Per-server `spec.sshUser` override | Cloud VMs have fixed users (ubuntu, ec2-user) — needs override | Optional field on Server spec |
-| `kedge ssh <name>` via ProxyCommand | Wraps openssh — no SSH client fork needed | ProxyCommand pattern |
-
-## Constraints
-
-- Go codebase (`golang.org/x/crypto/ssh` for SSH handling)
-- Must not touch `main` branch — all work merged to `ssh` feature branch
-- Agent systemd mode must not import k8s libraries (keep binary lean)
-- Hub SSH proxy must not terminate SSH — transparent TCP proxy only
-- v1: proxy to existing sshd only (no embedded sshd, no SSH CA, no port forwarding)
-
-## Out of Scope (v1)
-
-- Embedded sshd (no dependency on host sshd)
-- SSH certificate CA (hub as CA, short-lived certs)
-- SSH port forwarding / SFTP / SCP
-- Web terminal
-- Multi-hop / jump hosts
-- Windows servers
+| Single `Edge` CRD with `spec.type` | Avoids split lifecycle; consistent RBAC | Adopted |
+| `/k8s` and `/ssh` as URL subresources | Maps cleanly to k8s subresource pattern | Adopted |
+| connman key `{cluster}/{name}` (no type prefix) | Names unique per cluster already | Adopted |
+| Agent flag `--type` replaces `--mode` | Consistent with CRD field naming | Adopted |
+| Mount workspace only for `type=kubernetes` | SSH hosts don't need kube API access | Adopted |
+| Delete `agent-proxy` + `edge-proxy`, add `edges-proxy` | Single VW reduces surface area | Adopted |
 
 ---
-*Last updated: 2026-02-22 after initialization*
+
+## Requirements
+
+### Validated
+
+*(None — brownfield refactor, existing capabilities are the baseline)*
+
+### Active
+
+- [ ] Edge CRD defined with `spec.type`, `spec.kubernetes`, `spec.server` fields
+- [ ] Deep copy, CRD manifest generated for `Edge`
+- [ ] `Site` and `Server` CRDs deleted (types + generated files)
+- [ ] `pkg/hub/controllers/edge/` implements lifecycle, mount, RBAC reconcilers
+- [ ] Mount workspace created only for `type=kubernetes` edges
+- [ ] `pkg/hub/controllers/site/` deleted
+- [ ] `edges-proxy` virtual workspace with unified tunnel registration (`?edge=<name>`)
+- [ ] `edges-proxy` serves `/k8s` and `/ssh` subresources
+- [ ] Old `edge-proxy` and `agent-proxy` virtual workspaces deleted
+- [ ] `agent_proxy_builder.go` deleted; `edge_proxy_builder.go` replaced by `edges_proxy_builder.go`
+- [ ] Agent `--type=kubernetes|server` flag (replaces `--mode`)
+- [ ] Agent `edge_reporter.go` replaces `reporter.go` + `server_reporter.go`
+- [ ] `kedge ssh <name>` uses `/edges/{name}/ssh` directly (no resource-kind probe)
+- [ ] `kedge agent join --type=kubernetes|server` help text updated
+- [ ] `pkg/client/` updated: `Sites()` / `Servers()` replaced by `Edges()`
+- [ ] e2e tests updated: `site.go`, `multisite.go`, `ssh.go` test cases
+- [ ] e2e framework updated: agent framework uses `--type` flag
+- [ ] `go build ./...` passes; `make lint` passes
+- [ ] All existing e2e scenarios pass under new resource model
+
+### Out of Scope
+
+- Migration tooling / conversion webhook (no production deployments yet)
+- `spec.kubernetes` sub-fields (reserved empty struct for now)
+- UI / dashboard changes (none exist)
+- Multi-type edge (an Edge is exclusively kubernetes OR server)
+
+---
+*Last updated: 2026-02-25 after initialization*

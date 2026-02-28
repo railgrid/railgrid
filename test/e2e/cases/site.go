@@ -29,58 +29,58 @@ import (
 	"github.com/faroshq/faros-kedge/test/e2e/framework"
 )
 
-// agentKey is a context key for a running Agent in AgentJoin / TunnelResilience.
+// agentKey is a context key for a running Agent in AgentEdgeJoin / EdgeTunnelResilience.
 type agentKey struct{}
 
-// SiteLifecycle returns a feature that creates, lists, and deletes a site.
-func SiteLifecycle() features.Feature {
-	const siteName = "e2e-test-site"
+// EdgeLifecycle returns a feature that creates, lists, and deletes an edge.
+func EdgeLifecycle() features.Feature {
+	const edgeName = "e2e-test-edge"
 
-	return features.New("site lifecycle").
-		Assess("create site", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+	return features.New("edge lifecycle").
+		Assess("create edge", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
 			}
-			if err := client.SiteCreate(ctx, siteName, "env=e2e"); err != nil {
-				t.Fatalf("site create failed: %v", err)
+			if err := client.EdgeCreate(ctx, edgeName, "kubernetes", "env=e2e"); err != nil {
+				t.Fatalf("edge create failed: %v", err)
 			}
 			return ctx
 		}).
-		Assess("site appears in list", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("edge appears in list", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			out, err := client.SiteList(ctx)
+			out, err := client.EdgeList(ctx)
 			if err != nil {
-				t.Fatalf("site list failed: %v", err)
+				t.Fatalf("edge list failed: %v", err)
 			}
-			if !strings.Contains(out, siteName) {
-				t.Fatalf("expected site %q in list output, got:\n%s", siteName, out)
+			if !strings.Contains(out, edgeName) {
+				t.Fatalf("expected edge %q in list output, got:\n%s", edgeName, out)
 			}
 			return ctx
 		}).
-		Assess("delete site", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("delete edge", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			if err := client.SiteDelete(ctx, siteName); err != nil {
-				t.Fatalf("site delete failed: %v", err)
+			if err := client.EdgeDelete(ctx, edgeName); err != nil {
+				t.Fatalf("edge delete failed: %v", err)
 			}
 			return ctx
 		}).
 		Feature()
 }
 
-// AgentJoin returns a feature that starts a kedge-agent, waits for the site
-// to become Ready, and asserts the site proxy is reachable.
+// AgentEdgeJoin returns a feature that starts a kedge-agent, waits for the
+// edge to become Ready, and asserts the edge proxy is reachable.
 // Only use this in suites that set up both a hub and an agent cluster.
-func AgentJoin() features.Feature {
-	const siteName = "e2e-agent-site"
+func AgentEdgeJoin() features.Feature {
+	const edgeName = "e2e-agent-edge"
 
-	return features.New("agent join").
+	return features.New("agent edge join").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
@@ -88,37 +88,37 @@ func AgentJoin() features.Feature {
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
 			}
-			if err := client.SiteCreate(ctx, siteName, "env=e2e"); err != nil {
-				t.Fatalf("site create failed: %v", err)
+			if err := client.EdgeCreate(ctx, edgeName, "kubernetes", "env=e2e"); err != nil {
+				t.Fatalf("edge create failed: %v", err)
 			}
 
-			siteKubeconfigPath := filepath.Join(clusterEnv.WorkDir, "site-"+siteName+".kubeconfig")
-			if err := client.ExtractSiteKubeconfig(ctx, siteName, siteKubeconfigPath); err != nil {
-				t.Fatalf("failed to extract site kubeconfig: %v", err)
+			edgeKubeconfigPath := filepath.Join(clusterEnv.WorkDir, "edge-"+edgeName+".kubeconfig")
+			if err := client.ExtractEdgeKubeconfig(ctx, edgeName, edgeKubeconfigPath); err != nil {
+				t.Fatalf("failed to extract edge kubeconfig: %v", err)
 			}
 
-			agent := framework.NewAgent(framework.RepoRoot(), siteKubeconfigPath, clusterEnv.AgentKubeconfig, siteName)
+			agent := framework.NewAgent(framework.RepoRoot(), edgeKubeconfigPath, clusterEnv.AgentKubeconfig, edgeName)
 			if err := agent.Start(ctx); err != nil {
 				t.Fatalf("failed to start agent: %v", err)
 			}
 			return context.WithValue(ctx, agentKey{}, agent)
 		}).
-		Assess("site becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			if err := client.WaitForSiteReady(ctx, siteName, 3*time.Minute); err != nil {
-				t.Fatalf("site %q did not become Ready: %v", siteName, err)
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
 			}
 			return ctx
 		}).
-		Assess("site proxy is reachable", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("edge proxy is reachable", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			out, err := client.Kubectl(ctx, "get", "namespaces", "--insecure-skip-tls-verify")
 			if err != nil {
-				t.Fatalf("site proxy kubectl failed: %v", err)
+				t.Fatalf("edge proxy kubectl failed: %v", err)
 			}
 			if !strings.Contains(out, "default") {
 				t.Fatalf("expected 'default' namespace in proxy output, got:\n%s", out)
@@ -131,18 +131,18 @@ func AgentJoin() features.Feature {
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
-			_ = client.SiteDelete(ctx, siteName)
+			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
 		Feature()
 }
 
-// TunnelResilience returns a feature that verifies the agent reconnects after
-// a brief disconnect.  Only use this in suites that set up an agent cluster.
-func TunnelResilience() features.Feature {
-	const siteName = "e2e-resilience-site"
+// EdgeTunnelResilience returns a feature that verifies the agent reconnects
+// after a brief disconnect.  Only use this in suites that set up an agent cluster.
+func EdgeTunnelResilience() features.Feature {
+	const edgeName = "e2e-resilience-edge"
 
-	return features.New("tunnel resilience").
+	return features.New("edge tunnel resilience").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
@@ -150,31 +150,31 @@ func TunnelResilience() features.Feature {
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
 			}
-			if err := client.SiteCreate(ctx, siteName, "env=e2e"); err != nil {
-				t.Fatalf("site create failed: %v", err)
+			if err := client.EdgeCreate(ctx, edgeName, "kubernetes", "env=e2e"); err != nil {
+				t.Fatalf("edge create failed: %v", err)
 			}
 
-			siteKubeconfigPath := filepath.Join(clusterEnv.WorkDir, "site-"+siteName+".kubeconfig")
-			if err := client.ExtractSiteKubeconfig(ctx, siteName, siteKubeconfigPath); err != nil {
-				t.Fatalf("failed to extract site kubeconfig: %v", err)
+			edgeKubeconfigPath := filepath.Join(clusterEnv.WorkDir, "edge-"+edgeName+".kubeconfig")
+			if err := client.ExtractEdgeKubeconfig(ctx, edgeName, edgeKubeconfigPath); err != nil {
+				t.Fatalf("failed to extract edge kubeconfig: %v", err)
 			}
 
-			agent := framework.NewAgent(framework.RepoRoot(), siteKubeconfigPath, clusterEnv.AgentKubeconfig, siteName)
+			agent := framework.NewAgent(framework.RepoRoot(), edgeKubeconfigPath, clusterEnv.AgentKubeconfig, edgeName)
 			if err := agent.Start(ctx); err != nil {
 				t.Fatalf("failed to start agent: %v", err)
 			}
 			return context.WithValue(ctx, agentKey{}, agent)
 		}).
-		Assess("site becomes Ready initially", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("edge becomes Ready initially", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			if err := client.WaitForSiteReady(ctx, siteName, 3*time.Minute); err != nil {
-				t.Fatalf("site did not become Ready: %v", err)
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("edge did not become Ready: %v", err)
 			}
 			return ctx
 		}).
-		Assess("site recovers after agent restart", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("edge recovers after agent restart", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			agent := ctx.Value(agentKey{}).(*framework.Agent)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
@@ -182,15 +182,15 @@ func TunnelResilience() features.Feature {
 			agent.Stop()
 			time.Sleep(5 * time.Second)
 
-			siteKubeconfigPath := filepath.Join(clusterEnv.WorkDir, "site-"+siteName+".kubeconfig")
-			newAgent := framework.NewAgent(framework.RepoRoot(), siteKubeconfigPath, clusterEnv.AgentKubeconfig, siteName)
+			edgeKubeconfigPath := filepath.Join(clusterEnv.WorkDir, "edge-"+edgeName+".kubeconfig")
+			newAgent := framework.NewAgent(framework.RepoRoot(), edgeKubeconfigPath, clusterEnv.AgentKubeconfig, edgeName)
 			if err := newAgent.Start(ctx); err != nil {
 				t.Fatalf("failed to restart agent: %v", err)
 			}
 			ctx = context.WithValue(ctx, agentKey{}, newAgent)
 
-			if err := client.WaitForSiteReady(ctx, siteName, 3*time.Minute); err != nil {
-				t.Fatalf("site did not recover after agent restart: %v", err)
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("edge did not recover after agent restart: %v", err)
 			}
 			return ctx
 		}).
@@ -200,7 +200,7 @@ func TunnelResilience() features.Feature {
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
-			_ = client.SiteDelete(ctx, siteName)
+			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
 		Feature()

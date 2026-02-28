@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package site
+package edge
 
 import (
 	"context"
@@ -39,18 +39,13 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
-const (
-	// siteAgentClusterRole is the ClusterRole name for site agents.
-	siteAgentClusterRole = "kedge-site-agent"
-)
-
-// RBACReconciler provisions per-site credentials via native ServiceAccount tokens.
+// RBACReconciler provisions per-edge credentials via native ServiceAccount tokens.
 type RBACReconciler struct {
 	mgr            mcmanager.Manager
 	hubExternalURL string
 }
 
-// SetupRBACWithManager registers the site RBAC controller with the multicluster manager.
+// SetupRBACWithManager registers the edge RBAC controller with the multicluster manager.
 func SetupRBACWithManager(mgr mcmanager.Manager, hubExternalURL string) error {
 	r := &RBACReconciler{
 		mgr:            mgr,
@@ -58,16 +53,16 @@ func SetupRBACWithManager(mgr mcmanager.Manager, hubExternalURL string) error {
 	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named(rbacControllerName).
-		For(&kedgev1alpha1.Site{}).
+		For(&kedgev1alpha1.Edge{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&rbacv1.ClusterRoleBinding{}).
 		Complete(r)
 }
 
-// Reconcile provisions a ServiceAccount, RBAC, and token Secret for a Site.
+// Reconcile provisions a ServiceAccount, RBAC, and token Secret for an Edge.
 func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	logger := klog.FromContext(ctx).WithValues("site", req.Name, "cluster", req.ClusterName)
+	logger := klog.FromContext(ctx).WithValues("edge", req.Name, "cluster", req.ClusterName)
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -75,29 +70,28 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 	}
 	c := cl.GetClient()
 
-	var site kedgev1alpha1.Site
-	if err := c.Get(ctx, req.NamespacedName, &site); err != nil {
+	var edge kedgev1alpha1.Edge
+	if err := c.Get(ctx, req.NamespacedName, &edge); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
-	saName := "site-" + site.Name
+	saName := "edge-" + edge.Name
 	tokenSecretName := saName + "-token"
 	kubeconfigSecretName := saName + "-kubeconfig"
-	secretRef := siteNamespace + "/" + kubeconfigSecretName
 
 	// Always run through ensure* steps (idempotent). Owns() watches trigger
 	// re-reconciliation when child objects are deleted.
 
-	logger.Info("Provisioning credentials for site")
+	logger.Info("Provisioning credentials for edge")
 
-	ownerRef := siteOwnerRef(&site)
+	ownerRef := edgeOwnerRef(&edge)
 
 	// 1. Ensure namespace.
 	if err := ensureNamespace(ctx, c); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring namespace %s: %w", siteNamespace, err)
+		return ctrl.Result{}, fmt.Errorf("ensuring namespace %s: %w", edgeNamespace, err)
 	}
 
 	// 2. Ensure ServiceAccount.
@@ -105,17 +99,14 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 		return ctrl.Result{}, fmt.Errorf("ensuring service account: %w", err)
 	}
 
-	// 3. Ensure ClusterRole for site agents.
+	// 3. Ensure ClusterRole for edge agents.
 	// NOTE: the ClusterRole is a shared cluster-wide resource, not owned by
-	// individual sites.  Attaching per-site ownerRefs caused garbage-collection
-	// races: when one site was deleted the ClusterRole entered Terminating state
-	// while a new site's reconciler tried to adopt it, causing an exponential
-	// backoff loop.
+	// individual edges.  Attaching per-edge ownerRefs would cause GC races.
 	if err := ensureClusterRole(ctx, c); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring cluster role: %w", err)
 	}
 
-	// 4. Ensure ClusterRoleBinding for this site's SA.
+	// 4. Ensure ClusterRoleBinding for this edge's SA.
 	if err := ensureClusterRoleBinding(ctx, c, saName, ownerRef); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring cluster role binding: %w", err)
 	}
@@ -127,7 +118,7 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 
 	// 6. Read the SA token. If not yet populated by kcp, requeue.
 	tokenSecret := &corev1.Secret{}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: siteNamespace, Name: tokenSecretName}, tokenSecret); err != nil {
+	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: tokenSecretName}, tokenSecret); err != nil {
 		return ctrl.Result{}, fmt.Errorf("getting token secret: %w", err)
 	}
 	token := string(tokenSecret.Data["token"])
@@ -137,33 +128,23 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 	}
 
 	// 7. Create kubeconfig Secret with the SA token for the agent.
-	if err := r.ensureKubeconfigSecret(ctx, c, kubeconfigSecretName, site.Name, token, ownerRef); err != nil {
+	if err := r.ensureKubeconfigSecret(ctx, c, kubeconfigSecretName, edge.Name, token, ownerRef); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring kubeconfig secret: %w", err)
 	}
 
-	// 8. Update Site status with the secret reference.
-	logger.Info("Updating site credentials reference", "secret", secretRef)
-	site.Status.CredentialsSecretRef = secretRef
-	if site.Status.Phase == "" {
-		site.Status.Phase = kedgev1alpha1.SitePhaseNotReady
-	}
-	if err := c.Status().Update(ctx, &site); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating site status: %w", err)
-	}
-
-	logger.Info("Site credentials provisioned", "secret", secretRef)
+	logger.Info("Edge credentials provisioned", "secret", edgeNamespace+"/"+kubeconfigSecretName)
 	return ctrl.Result{}, nil
 }
 
-// siteOwnerRef returns an OwnerReference for the given Site.
+// edgeOwnerRef returns an OwnerReference for the given Edge.
 // Controller is set to true so that Owns() watches (which default to
-// OnlyControllerOwner) can map child object changes back to the parent Site.
-func siteOwnerRef(site *kedgev1alpha1.Site) metav1.OwnerReference {
+// OnlyControllerOwner) can map child object changes back to the parent Edge.
+func edgeOwnerRef(edge *kedgev1alpha1.Edge) metav1.OwnerReference {
 	return metav1.OwnerReference{
 		APIVersion:         kedgev1alpha1.SchemeGroupVersion.String(),
-		Kind:               "Site",
-		Name:               site.Name,
-		UID:                site.UID,
+		Kind:               "Edge",
+		Name:               edge.Name,
+		UID:                edge.UID,
 		Controller:         ptr.To(true),
 		BlockOwnerDeletion: ptr.To(true),
 	}
@@ -171,7 +152,7 @@ func siteOwnerRef(site *kedgev1alpha1.Site) metav1.OwnerReference {
 
 // ensureOwnerRef checks if the object already has the expected OwnerReference
 // and patches it in if missing. This adopts pre-existing objects so that Owns()
-// watches can map child deletions back to the parent Site.
+// watches can map child deletions back to the parent Edge.
 func ensureOwnerRef(ctx context.Context, c client.Client, obj client.Object, ownerRef metav1.OwnerReference) error {
 	for _, ref := range obj.GetOwnerReferences() {
 		if ref.UID == ownerRef.UID {
@@ -184,13 +165,13 @@ func ensureOwnerRef(ctx context.Context, c client.Client, obj client.Object, own
 
 func ensureNamespace(ctx context.Context, c client.Client) error {
 	ns := &corev1.Namespace{}
-	if err := c.Get(ctx, client.ObjectKey{Name: siteNamespace}, ns); err == nil {
+	if err := c.Get(ctx, client.ObjectKey{Name: edgeNamespace}, ns); err == nil {
 		return nil
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
 	if err := c.Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: siteNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: edgeNamespace},
 	}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
@@ -199,7 +180,7 @@ func ensureNamespace(ctx context.Context, c client.Client) error {
 
 func ensureServiceAccount(ctx context.Context, c client.Client, name string, ownerRef metav1.OwnerReference) error {
 	sa := &corev1.ServiceAccount{}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: siteNamespace, Name: name}, sa); err == nil {
+	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: name}, sa); err == nil {
 		return ensureOwnerRef(ctx, c, sa, ownerRef)
 	} else if !apierrors.IsNotFound(err) {
 		return err
@@ -207,7 +188,7 @@ func ensureServiceAccount(ctx context.Context, c client.Client, name string, own
 	if err := c.Create(ctx, &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            name,
-			Namespace:       siteNamespace,
+			Namespace:       edgeNamespace,
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
 		},
 	}); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -216,18 +197,19 @@ func ensureServiceAccount(ctx context.Context, c client.Client, name string, own
 	return nil
 }
 
-// desiredAgentRules returns the PolicyRules that the site agent ClusterRole should have.
+// desiredAgentRules returns the PolicyRules that the edge agent ClusterRole should have.
 func desiredAgentRules() []rbacv1.PolicyRule {
 	return []rbacv1.PolicyRule{
 		{
 			APIGroups: []string{"kedge.faros.sh"},
-			Resources: []string{"sites", "sites/status"},
-			Verbs:     []string{"get", "list", "watch", "update", "patch"},
+			Resources: []string{"edges", "edges/status"},
+			// "proxy" verb is required for accessing edge clusters through edges-proxy handler
+			Verbs: []string{"get", "list", "watch", "update", "patch", "proxy"},
 		},
 		{
 			APIGroups: []string{"kedge.faros.sh"},
-			Resources: []string{"placements", "placements/status"},
-			Verbs:     []string{"get", "list", "watch", "update", "patch"},
+			Resources: []string{"placements"},
+			Verbs:     []string{"get", "list", "watch"},
 		},
 		{
 			APIGroups: []string{"kedge.faros.sh"},
@@ -237,13 +219,13 @@ func desiredAgentRules() []rbacv1.PolicyRule {
 	}
 }
 
-// ensureClusterRole creates or updates the shared kedge-site-agent ClusterRole.
+// ensureClusterRole creates or updates the shared kedge-edge-agent ClusterRole.
 // It intentionally carries no owner reference so that it is never garbage-collected
-// when an individual site is deleted; the role is a cluster-wide shared resource.
+// when an individual edge is deleted; the role is a cluster-wide shared resource.
 func ensureClusterRole(ctx context.Context, c client.Client) error {
 	desired := desiredAgentRules()
 	cr := &rbacv1.ClusterRole{}
-	if err := c.Get(ctx, client.ObjectKey{Name: siteAgentClusterRole}, cr); err == nil {
+	if err := c.Get(ctx, client.ObjectKey{Name: edgeAgentClusterRole}, cr); err == nil {
 		if !rulesEqual(cr.Rules, desired) {
 			cr.Rules = desired
 			return c.Update(ctx, cr)
@@ -254,7 +236,7 @@ func ensureClusterRole(ctx context.Context, c client.Client) error {
 	}
 	if err := c.Create(ctx, &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: siteAgentClusterRole,
+			Name: edgeAgentClusterRole,
 		},
 		Rules: desired,
 	}); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -297,7 +279,7 @@ func slicesEqual(a, b []string) bool {
 }
 
 func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName string, ownerRef metav1.OwnerReference) error {
-	crbName := "kedge-site-" + saName
+	crbName := "kedge-edge-" + saName
 	crb := &rbacv1.ClusterRoleBinding{}
 	if err := c.Get(ctx, client.ObjectKey{Name: crbName}, crb); err == nil {
 		return ensureOwnerRef(ctx, c, crb, ownerRef)
@@ -312,13 +294,13 @@ func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName strin
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
-			Name:     siteAgentClusterRole,
+			Name:     edgeAgentClusterRole,
 		},
 		Subjects: []rbacv1.Subject{
 			{
 				Kind:      "ServiceAccount",
 				Name:      saName,
-				Namespace: siteNamespace,
+				Namespace: edgeNamespace,
 			},
 		},
 	}); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -329,7 +311,7 @@ func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName strin
 
 func ensureTokenSecret(ctx context.Context, c client.Client, secretName, saName string, ownerRef metav1.OwnerReference) error {
 	existing := &corev1.Secret{}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: siteNamespace, Name: secretName}, existing); err == nil {
+	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: secretName}, existing); err == nil {
 		return ensureOwnerRef(ctx, c, existing, ownerRef)
 	} else if !apierrors.IsNotFound(err) {
 		return err
@@ -337,7 +319,7 @@ func ensureTokenSecret(ctx context.Context, c client.Client, secretName, saName 
 	if err := c.Create(ctx, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
-			Namespace: siteNamespace,
+			Namespace: edgeNamespace,
 			Annotations: map[string]string{
 				"kubernetes.io/service-account.name": saName,
 			},
@@ -350,9 +332,9 @@ func ensureTokenSecret(ctx context.Context, c client.Client, secretName, saName 
 	return nil
 }
 
-func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Client, name, siteName, token string, ownerRef metav1.OwnerReference) error {
+func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Client, name, edgeName, token string, ownerRef metav1.OwnerReference) error {
 	existing := &corev1.Secret{}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: siteNamespace, Name: name}, existing); err == nil {
+	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: name}, existing); err == nil {
 		return ensureOwnerRef(ctx, c, existing, ownerRef)
 	} else if !apierrors.IsNotFound(err) {
 		return err
@@ -366,14 +348,14 @@ func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Cl
 			},
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
-			"site-agent": {
+			"edge-agent": {
 				Token: token,
 			},
 		},
 		Contexts: map[string]*clientcmdapi.Context{
 			"kedge": {
 				Cluster:  "kedge",
-				AuthInfo: "site-agent",
+				AuthInfo: "edge-agent",
 			},
 		},
 		CurrentContext: "kedge",
@@ -387,9 +369,9 @@ func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Cl
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: siteNamespace,
+			Namespace: edgeNamespace,
 			Labels: map[string]string{
-				"kedge.faros.sh/site": siteName,
+				"kedge.faros.sh/edge": edgeName,
 			},
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
 		},

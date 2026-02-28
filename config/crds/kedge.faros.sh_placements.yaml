@@ -16,7 +16,7 @@ spec:
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.siteName
-      name: Site
+      name: Edge
       type: string
     - jsonPath: .status.phase
       name: Phase
@@ -30,7 +30,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Placement binds a VirtualWorkload to a specific Site.
+        description: Placement binds a VirtualWorkload to a specific Edge.
         properties:
           apiVersion:
             description: |-

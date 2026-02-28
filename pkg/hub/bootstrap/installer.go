@@ -80,8 +80,8 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 
 	// Wait for all CRDs to be established
 	crdNames := []string{
+		"edges.kedge.faros.sh",
 		"virtualworkloads.kedge.faros.sh",
-		"sites.kedge.faros.sh",
 		"placements.kedge.faros.sh",
 		"users.kedge.faros.sh",
 	}

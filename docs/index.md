@@ -102,8 +102,8 @@ make dev
 
 # In another terminal
 make dev-login           # Authenticate
-make dev-site-create     # Register a site
-make dev-run-agent       # Start the agent
+make dev-edge-create     # Register an edge
+make dev-run-edge       # Start the edge agent
 make dev-create-workload # Deploy a sample workload
 ```
 

@@ -23,13 +23,13 @@ import (
 
 // +genclient
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Site",type="string",JSONPath=".spec.siteName"
+// +kubebuilder:printcolumn:name="Edge",type="string",JSONPath=".spec.siteName"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// Placement binds a VirtualWorkload to a specific Site.
+// Placement binds a VirtualWorkload to a specific Edge.
 type Placement struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

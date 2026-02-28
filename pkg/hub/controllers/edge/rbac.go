@@ -14,14 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package site reconciles Site resources.
-package site
-
-import "time"
+package edge
 
 const (
-	// HeartbeatTimeout is the duration after which a site is considered disconnected.
-	HeartbeatTimeout = 5 * time.Minute
-	// GCTimeout is the duration after which a disconnected site is garbage collected.
-	GCTimeout = 24 * time.Hour
+	rbacControllerName = "edge-rbac"
+	// edgeNamespace is the namespace where edge credentials are stored.
+	edgeNamespace = "kedge-system"
+	// edgeAgentClusterRole is the ClusterRole name for edge agents.
+	edgeAgentClusterRole = "kedge-edge-agent"
 )

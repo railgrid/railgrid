@@ -1,4 +1,4 @@
-.PHONY: build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-site-create dev-create-workload dev-run-agent dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -148,27 +148,46 @@ dev-login: build-kedge
 dev-login-static: build-kedge ## Login using static token auth (for use with run-hub-static)
 	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
 
-DEV_SITE_NAME ?= dev-site-1
+DEV_EDGE_NAME ?= dev-edge-1
+# TYPE selects the Edge type for dev-edge-create and dev-run-edge.
+# Values: kubernetes (default) | server
+TYPE ?= kubernetes
 
-dev-site-create: build-kedge
-	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-site-setup.sh $(DEV_SITE_NAME) "env=dev,provider=local"
+dev-edge-create: build-kedge ## Create an Edge resource: TYPE=kubernetes (default) or TYPE=server
+	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-edge-setup.sh $(DEV_EDGE_NAME) $(TYPE) "env=dev,provider=local"
+
+dev-run-edge: build-agent ## Run the edge agent: TYPE=kubernetes (default) or TYPE=server
+	@test -f .env.edge || (echo "Run 'make dev-edge-create [TYPE=$(TYPE)]' first"; exit 1)
+ifeq ($(TYPE),server)
+	$(BINDIR)/kedge-agent \
+		--hub-url=https://localhost:8443 \
+		--insecure-skip-tls-verify \
+		--token=$(STATIC_AUTH_TOKEN) \
+		--tunnel-url=https://localhost:8443 \
+		--site-name=$(KEDGE_EDGE_NAME) \
+		--labels=$(KEDGE_EDGE_LABELS) \
+		--cluster=$(KEDGE_EDGE_CLUSTER) \
+		--type=server \
+		--ssh-proxy-port=2222 \
+		--ssh-user=kedge \
+		--ssh-password=password
+else
+	hack/scripts/ensure-kind-cluster.sh
+	$(BINDIR)/kedge-agent join \
+		--hub-kubeconfig=$(KEDGE_EDGE_KUBECONFIG) \
+		--kubeconfig=.kubeconfig-kedge-agent \
+		--tunnel-url=https://localhost:8443 \
+		--site-name=$(KEDGE_EDGE_NAME) \
+		--labels=$(KEDGE_EDGE_LABELS) \
+		--type=kubernetes
+endif
 
 dev-create-workload: ## Create a demo VirtualWorkload targeting dev sites
 	kubectl apply -f hack/dev/examples/virtualworkload-nginx.yaml
 
 -include .env
+-include .env.edge
 export
-
-dev-run-agent: build-agent
-	@test -f .env || (echo "Run 'make dev-site-create' first"; exit 1)
-	hack/scripts/ensure-kind-cluster.sh
-	$(BINDIR)/kedge-agent join \
-		--hub-kubeconfig=$(KEDGE_SITE_KUBECONFIG) \
-		--kubeconfig=.kubeconfig-kedge-agent \
-		--tunnel-url=https://localhost:8443 \
-		--site-name=$(KEDGE_SITE_NAME) \
-		--labels=$(KEDGE_LABELS)
-
 
 dev-infra: $(KCP) $(DEX) certs ## Run infra only (kcp + Dex)
 	hack/scripts/dev-infra.sh
@@ -204,6 +223,19 @@ run-dex: $(DEX) certs ## Run Dex OIDC server
 		DEX_PID=$$!; \
 		service_start dex $$DEX_PID; \
 		wait $$DEX_PID)
+
+dev-run-ssh-server:
+	docker run \
+  --name=openssh-server \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e TZ=Etc/UTC \
+  -e PASSWORD_ACCESS=true \
+  -e USER_PASSWORD=password \
+  -e USER_NAME=kedge \
+  -p 2222:2222 \
+  --restart unless-stopped \
+  lscr.io/linuxserver/openssh-server:latest
 
 # --- Hub configuration options ---
 # These can be combined to create different run configurations.
@@ -347,13 +379,16 @@ E2E_TIMEOUT ?= 10m
 e2e: e2e-standalone ## Run default e2e suite (standalone)
 
 e2e-standalone: build ## Run standalone e2e suite (embedded kcp + static token, no Dex)
-	go test ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(E2E_FLAGS)
+	go test ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+e2e-ssh: build ## Run SSH server-mode e2e suite (hub-only cluster)
+	go test ./test/e2e/suites/ssh/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-oidc: build ## Run OIDC e2e suite (Dex OIDC provider, requires --with-dex cluster)
-	go test ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(E2E_FLAGS)
+	go test ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-external-kcp: build ## Run external KCP e2e suite (kcp via Helm in kind, push-to-main only in CI)
-	go test ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(E2E_FLAGS)
+	go test ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-all: build ## Run all e2e suites
 	go test ./test/e2e/suites/... -v -timeout 30m $(E2E_FLAGS)

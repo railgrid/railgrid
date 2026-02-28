@@ -14,10 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package site
+// Package edge reconciles Edge resources.
+package edge
+
+import "time"
 
 const (
-	rbacControllerName = "site-rbac"
-	// siteNamespace is the namespace where site credentials are stored.
-	siteNamespace = "kedge-system"
+	// HeartbeatTimeout is the duration after which an edge is considered disconnected.
+	// 90s = 3 missed heartbeats at the agent 30s interval; reasonable for production
+	// and keeps CI fast (was 5 min, causing CI timeouts).
+	HeartbeatTimeout = 90 * time.Second
+	// GCTimeout is the duration after which a disconnected edge is garbage collected.
+	GCTimeout = 24 * time.Hour
 )

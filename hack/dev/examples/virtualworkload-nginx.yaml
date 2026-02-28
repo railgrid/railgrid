@@ -11,7 +11,7 @@ spec:
       protocol: TCP
   replicas: 1
   placement:
-    siteSelector:
+    edgeSelector:
       matchLabels:
         env: dev
     strategy: Singleton

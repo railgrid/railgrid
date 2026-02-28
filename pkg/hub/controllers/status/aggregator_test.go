@@ -46,8 +46,8 @@ func TestAggregateStatus_AllRunning(t *testing.T) {
 	if status.ReadyReplicas != 5 {
 		t.Errorf("readyReplicas = %d, want 5", status.ReadyReplicas)
 	}
-	if len(status.Sites) != 2 {
-		t.Errorf("sites count = %d, want 2", len(status.Sites))
+	if len(status.Edges) != 2 {
+		t.Errorf("edges count = %d, want 2", len(status.Edges))
 	}
 }
 

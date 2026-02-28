@@ -24,23 +24,23 @@ import (
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 )
 
-func TestMatchSites(t *testing.T) {
-	sites := []kedgev1alpha1.Site{
+func TestMatchEdges(t *testing.T) {
+	edges := []kedgev1alpha1.Edge{
 		{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:   "site-1",
+				Name:   "edge-1",
 				Labels: map[string]string{"env": "prod", "region": "us-east"},
 			},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:   "site-2",
+				Name:   "edge-2",
 				Labels: map[string]string{"env": "prod", "region": "eu-west"},
 			},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:   "site-3",
+				Name:   "edge-3",
 				Labels: map[string]string{"env": "staging", "region": "us-east"},
 			},
 		},
@@ -59,7 +59,7 @@ func TestMatchSites(t *testing.T) {
 		{
 			name: "match prod env",
 			placement: kedgev1alpha1.PlacementSpec{
-				SiteSelector: &metav1.LabelSelector{
+				EdgeSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"env": "prod"},
 				},
 			},
@@ -68,7 +68,7 @@ func TestMatchSites(t *testing.T) {
 		{
 			name: "match specific region",
 			placement: kedgev1alpha1.PlacementSpec{
-				SiteSelector: &metav1.LabelSelector{
+				EdgeSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"region": "us-east"},
 				},
 			},
@@ -77,7 +77,7 @@ func TestMatchSites(t *testing.T) {
 		{
 			name: "match prod + us-east",
 			placement: kedgev1alpha1.PlacementSpec{
-				SiteSelector: &metav1.LabelSelector{
+				EdgeSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"env": "prod", "region": "us-east"},
 				},
 			},
@@ -86,7 +86,7 @@ func TestMatchSites(t *testing.T) {
 		{
 			name: "no match",
 			placement: kedgev1alpha1.PlacementSpec{
-				SiteSelector: &metav1.LabelSelector{
+				EdgeSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"env": "dev"},
 				},
 			},
@@ -96,44 +96,44 @@ func TestMatchSites(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			matched, err := MatchSites(sites, tt.placement)
+			matched, err := MatchEdges(edges, tt.placement)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if len(matched) != tt.wantCount {
-				t.Errorf("got %d matched sites, want %d", len(matched), tt.wantCount)
+				t.Errorf("got %d matched edges, want %d", len(matched), tt.wantCount)
 			}
 		})
 	}
 }
 
-func TestSelectSites_Spread(t *testing.T) {
-	sites := []kedgev1alpha1.Site{
-		{ObjectMeta: metav1.ObjectMeta{Name: "site-1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "site-2"}},
+func TestSelectEdges_Spread(t *testing.T) {
+	edges := []kedgev1alpha1.Edge{
+		{ObjectMeta: metav1.ObjectMeta{Name: "edge-1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "edge-2"}},
 	}
 
-	selected := SelectSites(sites, kedgev1alpha1.PlacementStrategySpread)
+	selected := SelectEdges(edges, kedgev1alpha1.PlacementStrategySpread)
 	if len(selected) != 2 {
-		t.Errorf("Spread: got %d sites, want 2", len(selected))
+		t.Errorf("Spread: got %d edges, want 2", len(selected))
 	}
 }
 
-func TestSelectSites_Singleton(t *testing.T) {
-	sites := []kedgev1alpha1.Site{
-		{ObjectMeta: metav1.ObjectMeta{Name: "site-1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "site-2"}},
+func TestSelectEdges_Singleton(t *testing.T) {
+	edges := []kedgev1alpha1.Edge{
+		{ObjectMeta: metav1.ObjectMeta{Name: "edge-1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "edge-2"}},
 	}
 
-	selected := SelectSites(sites, kedgev1alpha1.PlacementStrategySingleton)
+	selected := SelectEdges(edges, kedgev1alpha1.PlacementStrategySingleton)
 	if len(selected) != 1 {
-		t.Errorf("Singleton: got %d sites, want 1", len(selected))
+		t.Errorf("Singleton: got %d edges, want 1", len(selected))
 	}
 }
 
-func TestSelectSites_Empty(t *testing.T) {
-	selected := SelectSites(nil, kedgev1alpha1.PlacementStrategySingleton)
+func TestSelectEdges_Empty(t *testing.T) {
+	selected := SelectEdges(nil, kedgev1alpha1.PlacementStrategySingleton)
 	if len(selected) != 0 {
-		t.Errorf("Empty: got %d sites, want 0", len(selected))
+		t.Errorf("Empty: got %d edges, want 0", len(selected))
 	}
 }

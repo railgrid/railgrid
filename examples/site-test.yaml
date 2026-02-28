@@ -1,11 +1,12 @@
 apiVersion: kedge.faros.sh/v1alpha1
-kind: Site
+kind: Edge
 metadata:
-  name: test-site
+  name: test-edge
   labels:
     env: prod
     region: us-east
 spec:
-  displayName: Test Site
+  type: kubernetes
+  displayName: Test Edge
   provider: onprem
   region: us-east

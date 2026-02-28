@@ -177,8 +177,8 @@ func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedS
 func TestWorkloadIsolation(t *testing.T)     { testenv.Test(t, cases.WorkloadIsolation()) }
 func TestSiteFailoverIsolation(t *testing.T) { testenv.Test(t, cases.SiteFailoverIsolation()) }
 func TestSiteReconnect(t *testing.T)         { testenv.Test(t, cases.SiteReconnect()) }
-func TestSiteListAccuracyUnderChurn(t *testing.T) {
-	testenv.Test(t, cases.SiteListAccuracyUnderChurn())
+func TestEdgeListAccuracyUnderChurn(t *testing.T) {
+	testenv.Test(t, cases.EdgeListAccuracyUnderChurn())
 }
 
 // TestOIDCTokenIssuerMatchesDiscovery verifies that the hub's OIDC issuer URL

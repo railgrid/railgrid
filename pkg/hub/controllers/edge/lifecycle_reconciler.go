@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package site
+package edge
 
 import (
 	"context"
@@ -32,23 +32,23 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
-// LifecycleReconciler monitors Site heartbeats and marks stale sites as Disconnected.
+// LifecycleReconciler monitors Edge connectivity and marks stale edges as Disconnected.
 type LifecycleReconciler struct {
 	mgr mcmanager.Manager
 }
 
-// SetupLifecycleWithManager registers the site lifecycle controller with the multicluster manager.
+// SetupLifecycleWithManager registers the edge lifecycle controller with the multicluster manager.
 func SetupLifecycleWithManager(mgr mcmanager.Manager) error {
 	r := &LifecycleReconciler{mgr: mgr}
 	return mcbuilder.ControllerManagedBy(mgr).
-		Named("site-lifecycle").
-		For(&kedgev1alpha1.Site{}).
+		Named("edge-lifecycle").
+		For(&kedgev1alpha1.Edge{}).
 		Complete(r)
 }
 
-// Reconcile checks a Site's heartbeat and marks it disconnected if stale.
+// Reconcile checks an Edge's connected state and transitions its phase accordingly.
 func (r *LifecycleReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	logger := klog.FromContext(ctx).WithValues("site", req.Name, "cluster", req.ClusterName)
+	logger := klog.FromContext(ctx).WithValues("edge", req.Name, "cluster", req.ClusterName)
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -56,25 +56,20 @@ func (r *LifecycleReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	}
 	c := cl.GetClient()
 
-	var site kedgev1alpha1.Site
-	if err := c.Get(ctx, req.NamespacedName, &site); err != nil {
+	var edge kedgev1alpha1.Edge
+	if err := c.Get(ctx, req.NamespacedName, &edge); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
-	if site.Status.LastHeartbeatTime == nil {
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	}
-
-	elapsed := time.Since(site.Status.LastHeartbeatTime.Time)
-	if elapsed > HeartbeatTimeout && site.Status.Phase != kedgev1alpha1.SitePhaseDisconnected {
-		logger.Info("Site heartbeat stale, marking disconnected", "elapsed", elapsed)
-		site.Status.Phase = kedgev1alpha1.SitePhaseDisconnected
-		site.Status.TunnelConnected = false
-		if err := c.Status().Update(ctx, &site); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating site status: %w", err)
+	// If edge is not connected but phase is still Ready, mark it Disconnected.
+	if !edge.Status.Connected && edge.Status.Phase == kedgev1alpha1.EdgePhaseReady {
+		logger.Info("Edge no longer connected, marking Disconnected")
+		edge.Status.Phase = kedgev1alpha1.EdgePhaseDisconnected
+		if err := c.Status().Update(ctx, &edge); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating edge status: %w", err)
 		}
 	}
 

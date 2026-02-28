@@ -55,11 +55,12 @@ enabling secure workload deployment across distributed sites.`,
 		newLoginCommand(),
 		newGetTokenCommand(),
 		newAgentCommand(),
-		newSiteCommand(),
+		newEdgeCommand(),
 		newApplyCommand(),
 		newGetCommand(),
 		newWorkspaceCommand(),
 		newVersionCommand(),
+		newSSHCommand(),
 		devCmd,
 	)
 

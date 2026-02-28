@@ -21,12 +21,12 @@ make dev
 
 This starts kcp, Dex, and the hub in one terminal. Ctrl-C stops everything.
 
-In a second terminal, log in and register a site:
+In a second terminal, log in and register an edge:
 
 ```bash
 make dev-login
-make dev-site-create
-make dev-run-agent
+make dev-edge-create
+make dev-run-edge
 ```
 
 ### Component by component
@@ -40,8 +40,8 @@ make dev-infra
 # Terminal 2: Hub (rebuild with make run-hub after code changes)
 make run-hub
 
-# Terminal 3: Agent (requires dev-site-create first)
-make dev-run-agent
+# Terminal 3: Edge agent (requires dev-edge-create first)
+make dev-run-edge
 ```
 
 ### Deploying a test workload

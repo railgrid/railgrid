@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260217-7570c9b.placements.kedge.faros.sh
+  name: v260227-f675e28.placements.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -13,7 +13,7 @@ spec:
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.siteName
-      name: Site
+      name: Edge
       type: string
     - jsonPath: .status.phase
       name: Phase
@@ -26,7 +26,7 @@ spec:
       type: date
     name: v1alpha1
     schema:
-      description: Placement binds a VirtualWorkload to a specific Site.
+      description: Placement binds a VirtualWorkload to a specific Edge.
       properties:
         apiVersion:
           description: |-

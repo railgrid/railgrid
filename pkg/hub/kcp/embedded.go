@@ -24,10 +24,12 @@ import (
 
 	"github.com/kcp-dev/embeddedetcd"
 	genericapiserver "k8s.io/apiserver/pkg/server"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 
+	kcpfeatures "github.com/kcp-dev/kcp/pkg/features"
 	"github.com/kcp-dev/kcp/pkg/server"
 	serveroptions "github.com/kcp-dev/kcp/pkg/server/options"
 )
@@ -72,6 +74,11 @@ func NewEmbeddedKCP(opts EmbeddedKCPOptions) *EmbeddedKCP {
 func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting embedded kcp server", "rootDir", e.opts.RootDir, "securePort", e.opts.SecurePort)
+
+	// Enable WorkspaceMounts feature gate (required for mount-based workspaces).
+	if err := utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=true", kcpfeatures.WorkspaceMounts)); err != nil {
+		return fmt.Errorf("enabling WorkspaceMounts feature gate: %w", err)
+	}
 
 	// Create kcp server options.
 	kcpOpts := serveroptions.NewOptions(e.opts.RootDir)

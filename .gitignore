@@ -1,5 +1,8 @@
 # Binaries
 bin/
+kedge
+kedge-hub
+kedge-agent
 *.exe
 *.exe~
 *.dll
@@ -58,3 +61,6 @@ site-kubeconfig
 .planning/autopilot.lock
 .planning/logs/
 .planning/checkpoints/
+.env.server
+.edge-kubeconfig
+.env.edge

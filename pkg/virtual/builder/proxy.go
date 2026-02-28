@@ -14,49 +14,30 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package builder constructs virtual workspace HTTP handlers for the kedge hub.
 package builder
 
 import (
 	"net/http"
-	"sync"
 
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
 )
 
-// SiteRouteMap maps URL route keys to connManager tunnel keys.
-// Route key format: "{clusterName}:{siteName}" (used in URL path).
-// Tunnel key format: "{clusterName}/{siteName}" (used by connManager).
-type SiteRouteMap struct {
-	routes sync.Map
-}
-
-// NewSiteRouteMap creates a new SiteRouteMap.
-func NewSiteRouteMap() *SiteRouteMap { return &SiteRouteMap{} }
-
-// Set registers a mapping from route key to tunnel key.
-func (m *SiteRouteMap) Set(routeKey, tunnelKey string) {
-	m.routes.Store(routeKey, tunnelKey)
-}
-
-// Get looks up the tunnel key for a route key.
-func (m *SiteRouteMap) Get(routeKey string) (string, bool) {
-	v, ok := m.routes.Load(routeKey)
-	if !ok {
-		return "", false
-	}
-	return v.(string), true
-}
-
 // virtualWorkspaces holds state and dependencies for all virtual workspaces.
 type virtualWorkspaces struct {
-	rootPathPrefix string
-	connManager    *connman.ConnectionManager
-	kcpConfig      *rest.Config // kcp rest config for token verification (nil if kcp not configured)
-	siteRoutes     *SiteRouteMap
-	logger         klog.Logger
+	connManager     *connman.ConnectionManager
+	edgeConnManager *ConnManager         // shared between agent-proxy-v2 and edges-proxy builders
+	kcpConfig       *rest.Config         // kcp rest config for token verification (nil if kcp not configured)
+	kcpK8sClient    kubernetes.Interface // kubernetes client for fetching secrets
+	kedgeClient     *kedgeclient.Client  // kedge client for fetching Edge resources
+	staticTokens    map[string]struct{}  // static tokens that bypass JWT SA requirement
+	logger          klog.Logger
 }
 
 // VirtualWorkspaceHandlers provides access to the HTTP handlers for tunneling.
@@ -65,30 +46,53 @@ type VirtualWorkspaceHandlers struct {
 }
 
 // NewVirtualWorkspaces creates a new VirtualWorkspaceHandlers.
-// kcpConfig is required for SA token authorization against kcp. A nil
-// kcpConfig causes the site-proxy handler to reject all requests with 503.
-func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, siteRoutes *SiteRouteMap, logger klog.Logger) *VirtualWorkspaceHandlers {
+// kcpConfig is required for SA token authorization against kcp and for fetching Edge resources/secrets.
+func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, staticTokens []string, logger klog.Logger) (*VirtualWorkspaceHandlers, error) {
+	staticTokenSet := make(map[string]struct{}, len(staticTokens))
+	for _, t := range staticTokens {
+		staticTokenSet[t] = struct{}{}
+	}
+
+	var kcpK8sClient kubernetes.Interface
+	var kedgeClient *kedgeclient.Client
+
+	if kcpConfig != nil {
+		var err error
+		kcpK8sClient, err = kubernetes.NewForConfig(kcpConfig)
+		if err != nil {
+			return nil, err
+		}
+
+		dynClient, err := dynamic.NewForConfig(kcpConfig)
+		if err != nil {
+			return nil, err
+		}
+		kedgeClient = kedgeclient.NewFromDynamic(dynClient)
+	}
+
 	return &VirtualWorkspaceHandlers{
 		vws: &virtualWorkspaces{
-			connManager: cm,
-			kcpConfig:   kcpConfig,
-			siteRoutes:  siteRoutes,
-			logger:      logger.WithName("virtual-workspaces"),
+			connManager:     cm,
+			edgeConnManager: NewConnManager(),
+			kcpConfig:       kcpConfig,
+			kcpK8sClient:    kcpK8sClient,
+			kedgeClient:     kedgeClient,
+			staticTokens:    staticTokenSet,
+			logger:          logger.WithName("virtual-workspaces"),
 		},
-	}
+	}, nil
 }
 
-// EdgeProxyHandler returns the HTTP handler for agent tunnel registration.
-func (h *VirtualWorkspaceHandlers) EdgeProxyHandler() http.Handler {
-	return h.vws.buildEdgeProxyHandler()
+// EdgeAgentProxyHandler returns the handler for Edge agent tunnel registration.
+// Agents connect to register their revdial tunnel for an Edge resource.
+// Mount at /services/agent-proxy/.
+func (h *VirtualWorkspaceHandlers) EdgeAgentProxyHandler() http.Handler {
+	return h.vws.buildEdgeAgentProxyHandler()
 }
 
-// AgentProxyHandler returns the HTTP handler for accessing agent resources.
-func (h *VirtualWorkspaceHandlers) AgentProxyHandler() http.Handler {
-	return h.vws.buildAgentProxyHandler()
-}
-
-// SiteProxyHandler returns the handler for proxying kube API to sites via reverse tunnels.
-func (h *VirtualWorkspaceHandlers) SiteProxyHandler() http.Handler {
-	return h.vws.buildSiteProxyHandler()
+// EdgesProxyHandler returns the handler for user-facing access to Edge resources.
+// Supports the k8s (kubernetes API proxy) and ssh (WebSocket terminal) subresources.
+// Mount at /services/edges-proxy/.
+func (h *VirtualWorkspaceHandlers) EdgesProxyHandler() http.Handler {
+	return h.vws.buildEdgesProxyHandler()
 }

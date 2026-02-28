@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260219-7bf8d83.virtualworkloads.kedge.faros.sh
+  name: v260227-f675e28.virtualworkloads.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -62,9 +62,9 @@ spec:
                   type: integer
               type: object
             placement:
-              description: PlacementSpec defines how to place the workload on sites.
+              description: PlacementSpec defines how to place the workload on edges.
               properties:
-                siteSelector:
+                edgeSelector:
                   description: |-
                     A label selector is a label query over a set of resources. The result of matchLabels and
                     matchExpressions are ANDed. An empty label selector matches all objects. A null
@@ -8844,17 +8844,13 @@ spec:
                 - type
                 type: object
               type: array
-            phase:
-              description: VirtualWorkloadPhase describes the phase of a VirtualWorkload.
-              type: string
-            readyReplicas:
-              format: int32
-              type: integer
-            sites:
+            edges:
               items:
-                description: SiteWorkloadStatus is the status of a workload on a specific
-                  site.
+                description: EdgeWorkloadStatus is the status of a workload on a specific
+                  edge.
                 properties:
+                  edgeName:
+                    type: string
                   message:
                     type: string
                   phase:
@@ -8862,13 +8858,17 @@ spec:
                   readyReplicas:
                     format: int32
                     type: integer
-                  siteName:
-                    type: string
                 required:
+                - edgeName
                 - readyReplicas
-                - siteName
                 type: object
               type: array
+            phase:
+              description: VirtualWorkloadPhase describes the phase of a VirtualWorkload.
+              type: string
+            readyReplicas:
+              format: int32
+              type: integer
           required:
           - availableReplicas
           - readyReplicas

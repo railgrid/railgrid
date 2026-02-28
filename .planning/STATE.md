@@ -1,32 +1,30 @@
-# GSD State
-
-## Project
-- **Name:** SSH via Hub WebSocket Reverse Tunnel
-- **Branch:** `ssh`
-- **Initialized:** 2026-02-22
-- **Milestone:** v1 — core SSH tunnel
+# STATE.md — Edge Refactor (Issue #72)
 
 ## Current Status
-- **Phase:** 0 (initialized, not started)
-- **Next action:** `plan-phase 1` — Server CRD & API
 
-## Phase Status
-| # | Phase | Status | PR |
-|---|-------|--------|----|
-| 1 | Server CRD & API | ⬜ Not started | — |
-| 2 | Agent Server Mode | ⬜ Not started | — |
-| 3 | SSH Tunnel Core | ⬜ Not started | — |
-| 4 | Auth Integration | ⬜ Not started | — |
-| 5 | CLI UX | ⬜ Not started | — |
-| 6 | E2e & Polish | ⬜ Not started | — |
+**Active Phase:** Phase 1 — API Foundation (not yet started)
+**Last Action:** Initial planning complete (2026-02-25)
+**Next Step:** `/gsd:plan-phase 1` — implement Edge CRD and client
 
-## GitHub Issues
-- #49 — Server CRD (Phase 1)
-- #50 — Agent server mode (Phase 2)
-- #51 — Hub SSH proxy (Phase 3)
-- #52 — Agent SSH forwarder (Phase 3)
-- #53 — OIDC username mapping (Phase 4)
-- #54 — kedge ssh CLI + e2e (Phases 5+6)
+## Phase Progress
 
-## Todos
-(none)
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 1 — API Foundation | 🔲 Not started | |
+| 2 — Hub Controllers | 🔲 Not started | Can start after Phase 1 |
+| 3 — Virtual Workspaces | 🔲 Not started | Can start after Phase 1 |
+| 4 — Agent + CLI | 🔲 Not started | Needs Phase 2 + 3 |
+| 5 — e2e + Cleanup | 🔲 Not started | Needs Phase 4 |
+
+## Key Context
+
+- Branch: `ssh` — current working branch in `faroshq/kedge`
+- Module: `github.com/faroshq/faros-kedge`
+- Existing CRDs: `Site` (types_site.go) and `Server` (types_server.go) — both to be deleted
+- Connection pool: `pkg/util/connman/connman.go` — `ConnectionManager` is already in place
+- Virtual workspace builders: 3 currently active — `edge-proxy`, `agent-proxy`, `cluster-proxy`
+- Agent modes today: `AgentModeSite` / `AgentModeServer` in `pkg/agent/agent.go`
+
+## Blockers
+
+None currently.

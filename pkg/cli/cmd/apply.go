@@ -124,8 +124,8 @@ func gvkToGVR(gvk schema.GroupVersionKind) schema.GroupVersionResource {
 	switch gvk.Kind {
 	case "VirtualWorkload":
 		resource = "virtualworkloads"
-	case "Site":
-		resource = "sites"
+	case "Edge":
+		resource = "edges"
 	case "Placement":
 		resource = "placements"
 	case "User":
@@ -143,7 +143,7 @@ func gvkToGVR(gvk schema.GroupVersionKind) schema.GroupVersionResource {
 
 func isNamespaced(gvk schema.GroupVersionKind) bool {
 	switch gvk.Kind {
-	case "Site", "User":
+	case "Edge", "User":
 		return false
 	default:
 		return true

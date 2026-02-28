@@ -61,11 +61,6 @@ func (f *InformerFactory) VirtualWorkloads() cache.SharedIndexInformer {
 	return f.factory.ForResource(VirtualWorkloadGVR).Informer()
 }
 
-// Sites returns the informer for Site resources.
-func (f *InformerFactory) Sites() cache.SharedIndexInformer {
-	return f.factory.ForResource(SiteGVR).Informer()
-}
-
 // Placements returns the informer for Placement resources.
 func (f *InformerFactory) Placements() cache.SharedIndexInformer {
 	return f.factory.ForResource(PlacementGVR).Informer()

@@ -48,8 +48,8 @@ func newGetCommand() *cobra.Command {
 				return listVirtualWorkloads(ctx, dynClient)
 			case "placements":
 				return listPlacements(ctx, dynClient)
-			case "sites":
-				return listSites(ctx, dynClient)
+			case "edges":
+				return listEdges(ctx, dynClient)
 			default:
 				return fmt.Errorf("unknown resource type: %s", resource)
 			}
@@ -104,23 +104,22 @@ func listPlacements(ctx context.Context, dynClient dynamic.Interface) error {
 	return nil
 }
 
-func listSites(ctx context.Context, dynClient dynamic.Interface) error {
-	list, err := dynClient.Resource(kedgeclient.SiteGVR).List(ctx, metav1.ListOptions{})
+func listEdges(ctx context.Context, dynClient dynamic.Interface) error {
+	list, err := dynClient.Resource(kedgeclient.EdgeGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return fmt.Errorf("listing sites: %w", err)
+		return fmt.Errorf("listing edges: %w", err)
 	}
 
 	tw := newTabWriter(os.Stdout)
-	printRow(tw, "NAME", "STATUS", "K8S VERSION", "PROVIDER", "REGION", "AGE")
+	printRow(tw, "NAME", "TYPE", "PHASE", "CONNECTED", "AGE")
 
 	for _, item := range list.Items {
+		edgeType := getNestedString(item, "spec", "type")
 		phase := getNestedString(item, "status", "phase")
-		k8sVersion := getNestedString(item, "status", "kubernetesVersion")
-		provider := getNestedString(item, "spec", "provider")
-		region := getNestedString(item, "spec", "region")
+		connected, _, _ := unstructuredNestedBool(item.Object, "status", "connected")
 		age := formatAge(item.GetCreationTimestamp().Time)
-		printRow(tw, item.GetName(), formatStringOrDash(phase), formatStringOrDash(k8sVersion),
-			formatStringOrDash(provider), formatStringOrDash(region), age)
+		printRow(tw, item.GetName(), formatStringOrDash(edgeType), formatStringOrDash(phase),
+			fmt.Sprintf("%v", connected), age)
 	}
 
 	_ = tw.Flush()

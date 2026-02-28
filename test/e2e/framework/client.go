@@ -99,47 +99,6 @@ func (k *KedgeClient) Login(ctx context.Context, token string) error {
 	return err
 }
 
-// SiteCreate creates a site with the given name and labels.
-func (k *KedgeClient) SiteCreate(ctx context.Context, name string, labels ...string) error {
-	args := []string{"site", "create", name}
-	if len(labels) > 0 {
-		args = append(args, "--labels", strings.Join(labels, ","))
-	}
-	_, err := k.run(ctx, args...)
-	return err
-}
-
-// SiteList returns the raw output of `kedge site list`.
-func (k *KedgeClient) SiteList(ctx context.Context) (string, error) {
-	return k.run(ctx, "site", "list")
-}
-
-// SiteDelete deletes a site by name.
-func (k *KedgeClient) SiteDelete(ctx context.Context, name string) error {
-	_, err := k.run(ctx, "site", "delete", name)
-	return err
-}
-
-// WaitForSiteReady polls until the given site appears with phase "Ready" in
-// `kedge site list` or the timeout expires. It avoids the substring-match
-// pitfall where "NotReady" would satisfy strings.Contains(…, "Ready").
-func (k *KedgeClient) WaitForSiteReady(ctx context.Context, siteName string, timeout time.Duration) error {
-	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
-		out, err := k.SiteList(ctx)
-		if err != nil {
-			return false, nil // not ready yet, retry
-		}
-		for _, line := range strings.Split(out, "\n") {
-			fields := strings.Fields(line)
-			// Expected columns: NAME STATUS K8S_VERSION PROVIDER REGION AGE
-			if len(fields) >= 2 && fields[0] == siteName && fields[1] == "Ready" {
-				return true, nil
-			}
-		}
-		return false, nil
-	})
-}
-
 // RunCmd runs an arbitrary command and returns its combined output (package-level helper).
 func RunCmd(ctx context.Context, name string, args ...string) (string, error) {
 	var buf bytes.Buffer
@@ -182,24 +141,6 @@ func (k *KedgeClient) Kubectl(ctx context.Context, args ...string) (string, erro
 func (k *KedgeClient) ApplyFile(ctx context.Context, path string) error {
 	_, err := k.Kubectl(ctx, "apply", "-f", path)
 	return err
-}
-
-// WaitForSitePhase polls until the given site has the expected phase in
-// `kedge site list` or the timeout expires.
-func (k *KedgeClient) WaitForSitePhase(ctx context.Context, siteName, phase string, timeout time.Duration) error {
-	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
-		out, err := k.SiteList(ctx)
-		if err != nil {
-			return false, nil // not ready yet, retry
-		}
-		for _, line := range strings.Split(out, "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 && fields[0] == siteName && fields[1] == phase {
-				return true, nil
-			}
-		}
-		return false, nil
-	})
 }
 
 // ApplyManifest writes yaml to a temp file and applies it via kubectl.
@@ -281,11 +222,90 @@ func (k *KedgeClient) DeleteVirtualWorkload(ctx context.Context, name, namespace
 	return err
 }
 
-// ExtractSiteKubeconfig waits for the site kubeconfig secret to appear in the
+// ─── Edge resource helpers (Phase 5 — replaces Site / Server helpers) ────────
+
+// EdgeCreate creates an Edge resource via kubectl with the given name, type,
+// and optional comma-separated labels.
+// type must be "kubernetes" or "server".
+func (k *KedgeClient) EdgeCreate(ctx context.Context, name, edgeType string, labels ...string) error {
+	labelStr := strings.Join(labels, ",")
+	labelsYAML := ""
+	if labelStr != "" {
+		labelsYAML = "\n  labels:"
+		for _, kv := range strings.Split(labelStr, ",") {
+			parts := strings.SplitN(strings.TrimSpace(kv), "=", 2)
+			if len(parts) == 2 {
+				labelsYAML += "\n    " + parts[0] + ": " + parts[1]
+			}
+		}
+	}
+
+	manifest := fmt.Sprintf(`apiVersion: kedge.faros.sh/v1alpha1
+kind: Edge
+metadata:
+  name: %s%s
+spec:
+  type: %s
+`, name, labelsYAML, edgeType)
+
+	return k.ApplyManifest(ctx, manifest)
+}
+
+// EdgeList returns raw kubectl output for listing all edges.
+func (k *KedgeClient) EdgeList(ctx context.Context) (string, error) {
+	return k.Kubectl(ctx,
+		"get", "edges",
+		"-o", "custom-columns=NAME:.metadata.name,PHASE:.status.phase,CONNECTED:.status.connected",
+		"--no-headers",
+		"--insecure-skip-tls-verify",
+	)
+}
+
+// EdgeDelete deletes an Edge resource by name.
+func (k *KedgeClient) EdgeDelete(ctx context.Context, name string) error {
+	_, err := k.Kubectl(ctx,
+		"delete", "edge", name,
+		"--ignore-not-found",
+		"--insecure-skip-tls-verify",
+	)
+	return err
+}
+
+// WaitForEdgeReady polls until the given Edge resource has phase "Ready".
+func (k *KedgeClient) WaitForEdgeReady(ctx context.Context, edgeName string, timeout time.Duration) error {
+	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		out, err := k.Kubectl(ctx,
+			"get", "edge", edgeName,
+			"-o", "jsonpath={.status.phase}",
+			"--insecure-skip-tls-verify",
+		)
+		if err != nil {
+			return false, nil
+		}
+		return strings.TrimSpace(out) == "Ready", nil
+	})
+}
+
+// WaitForEdgePhase polls until the given Edge resource has the expected phase.
+func (k *KedgeClient) WaitForEdgePhase(ctx context.Context, edgeName, phase string, timeout time.Duration) error {
+	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		out, err := k.Kubectl(ctx,
+			"get", "edge", edgeName,
+			"-o", "jsonpath={.status.phase}",
+			"--insecure-skip-tls-verify",
+		)
+		if err != nil {
+			return false, nil
+		}
+		return strings.TrimSpace(out) == phase, nil
+	})
+}
+
+// ExtractEdgeKubeconfig waits for the edge kubeconfig secret to appear in the
 // hub cluster and writes the base64-decoded content to destPath.
-// Secret name format: site-<siteName>-kubeconfig in namespace kedge-system.
-func (k *KedgeClient) ExtractSiteKubeconfig(ctx context.Context, siteName, destPath string) error {
-	secretName := "site-" + siteName + "-kubeconfig"
+// Secret name format: edge-<edgeName>-kubeconfig in namespace kedge-system.
+func (k *KedgeClient) ExtractEdgeKubeconfig(ctx context.Context, edgeName, destPath string) error {
+	secretName := "edge-" + edgeName + "-kubeconfig"
 
 	return Poll(ctx, 5*time.Second, 5*time.Minute, func(ctx context.Context) (bool, error) {
 		out, err := k.Kubectl(ctx,

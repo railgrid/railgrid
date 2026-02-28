@@ -71,17 +71,17 @@ var insecureHTTPClient = &http.Client{
 	},
 }
 
-// WaitForSiteAPI polls `kedge site list` (after a one-time login) until the
-// site API is available (i.e. KCP APIBindings have finished bootstrapping).
-// Without this wait, tests that create sites right after hub setup can get
+// WaitForEdgeAPI polls `kedge edge list` (after a one-time login) until the
+// edge API is available (i.e. KCP APIBindings have finished bootstrapping).
+// Without this wait, tests that create edges right after hub setup can get
 // "server could not find the requested resource".
-func WaitForSiteAPI(ctx context.Context, client *KedgeClient, token string) error {
+func WaitForEdgeAPI(ctx context.Context, client *KedgeClient, token string) error {
 	// Login once so the kedge context is written to the default kubeconfig.
 	if err := client.Login(ctx, token); err != nil {
-		return fmt.Errorf("login before site API wait: %w", err)
+		return fmt.Errorf("login before edge API wait: %w", err)
 	}
 	return Poll(ctx, 5*time.Second, 3*time.Minute, func(ctx context.Context) (bool, error) {
-		_, err := client.SiteList(ctx)
+		_, err := client.EdgeList(ctx)
 		if err == nil {
 			return true, nil
 		}
@@ -91,13 +91,13 @@ func WaitForSiteAPI(ctx context.Context, client *KedgeClient, token string) erro
 	})
 }
 
-// WaitForSiteAPIWithOIDC is like WaitForSiteAPI but authenticates via headless
+// WaitForEdgeAPIWithOIDC is like WaitForEdgeAPI but authenticates via headless
 // OIDC login instead of a static token. Used when the hub runs in OIDC-only
 // mode (no staticAuthTokens configured), e.g. when --with-dex is active.
-func WaitForSiteAPIWithOIDC(ctx context.Context, workDir, hubURL string) error {
+func WaitForEdgeAPIWithOIDC(ctx context.Context, workDir, hubURL string) error {
 	result, err := HeadlessOIDCLogin(ctx, hubURL, DexTestUserEmail, DexTestUserPassword)
 	if err != nil {
-		return fmt.Errorf("OIDC headless login for site API wait: %w", err)
+		return fmt.Errorf("OIDC headless login for edge API wait: %w", err)
 	}
 	if result.IDToken != "" {
 		tokenCache := &cliauth.TokenCache{
@@ -108,16 +108,16 @@ func WaitForSiteAPIWithOIDC(ctx context.Context, workDir, hubURL string) error {
 			ClientID:     result.ClientID,
 		}
 		if err := cliauth.SaveTokenCache(tokenCache); err != nil {
-			return fmt.Errorf("caching OIDC token for site API wait: %w", err)
+			return fmt.Errorf("caching OIDC token for edge API wait: %w", err)
 		}
 	}
 	oidcKubeconfig := filepath.Join(workDir, "oidc-wait.kubeconfig")
 	if err := os.WriteFile(oidcKubeconfig, result.Kubeconfig, 0o600); err != nil {
-		return fmt.Errorf("writing OIDC kubeconfig for site API wait: %w", err)
+		return fmt.Errorf("writing OIDC kubeconfig for edge API wait: %w", err)
 	}
 	client := NewKedgeClient(workDir, oidcKubeconfig, hubURL)
 	return Poll(ctx, 5*time.Second, 3*time.Minute, func(ctx context.Context) (bool, error) {
-		_, err := client.SiteList(ctx)
+		_, err := client.EdgeList(ctx)
 		return err == nil, nil
 	})
 }

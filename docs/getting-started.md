@@ -2,7 +2,7 @@
 layout: default
 title: Getting Started
 nav_order: 2
-description: "Set up your first Kedge hub and connect a site"
+description: "Set up your first Kedge hub and connect an edge"
 ---
 
 # Getting Started
@@ -24,7 +24,7 @@ Set up Kedge and connect your first cluster in minutes.
 This guide walks you through:
 
 1. Running the hub locally (development mode)
-2. Connecting a site (k3s, k0s, kind, or any Kubernetes cluster)
+2. Connecting an edge (k3s, k0s, kind, or any Kubernetes cluster)
 3. Deploying your first workload
 
 For production deployments, see [Helm Deployment]({% link helm.md %}) after completing this guide.
@@ -57,7 +57,7 @@ This builds three binaries in `bin/`:
 | Binary | Description |
 |:-------|:------------|
 | `kedge-hub` | The central control plane server |
-| `kedge-agent` | The agent that runs on each site |
+| `kedge-agent` | The agent that runs on each edge |
 | `kedge` | The CLI for users |
 
 ---
@@ -105,18 +105,18 @@ After login, your kubeconfig is configured with a `kedge` context.
 
 ---
 
-## Step 4: Register a Site
+## Step 4: Register an Edge
 
-Create a new site (cluster) registration:
+Create a new edge registration:
 
 ```bash
-make dev-site-create
+make dev-edge-create
 ```
 
-This creates a `Site` resource in the hub. You can view it:
+This creates an `Edge` resource in the hub. You can view it:
 
 ```bash
-kubectl --context=kedge get sites
+kubectl --context=kedge get edges
 ```
 
 ---
@@ -126,19 +126,19 @@ kubectl --context=kedge get sites
 Start the agent on the local kind cluster:
 
 ```bash
-make dev-run-agent
+make dev-run-edge
 ```
 
 The agent:
 
 1. Connects to the hub via a reverse tunnel
-2. Reports the site status
+2. Reports the edge status
 3. Watches for workloads to deploy
 
-Check that the site shows as connected:
+Check that the edge shows as connected:
 
 ```bash
-kubectl --context=kedge get sites
+kubectl --context=kedge get edges
 ```
 
 The `READY` column should show `True`.
@@ -159,7 +159,7 @@ This creates a `VirtualWorkload` resource. The hub schedules it to available sit
 # View the workload
 kubectl --context=kedge get virtualworkloads
 
-# View the placement (binding to a site)
+# View the placement (binding to an edge)
 kubectl --context=kedge get placements
 ```
 
@@ -181,10 +181,10 @@ kubectl --context=kind-kedge-dev get pods
 
 To connect a real cluster (k3s, k0s, etc.) instead of the dev kind cluster:
 
-### 1. Create a site registration
+### 1. Create an edge registration
 
 ```bash
-kedge site create --name my-home-server
+kedge edge create my-home-server
 ```
 
 This outputs a bootstrap token.
@@ -205,7 +205,7 @@ Or deploy via Helm (see agent chart documentation).
 ### 3. Verify connection
 
 ```bash
-kubectl --context=kedge get sites
+kubectl --context=kedge get edges
 ```
 
 ---
@@ -236,11 +236,11 @@ kubectl --context=kedge get sites
 ### Workload not deploying
 
 ```bash
-# Check site status
-kubectl --context=kedge describe site <site-name>
+# Check edge status
+kubectl --context=kedge describe edge <edge-name>
 
 # Check agent logs
-# (in dev mode, look at the terminal running make dev-run-agent)
+# (in dev mode, look at the terminal running make dev-run-edge)
 
 # Check placement status
 kubectl --context=kedge describe placement <placement-name>

@@ -41,10 +41,10 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
 		&VirtualWorkload{},
 		&VirtualWorkloadList{},
-		&Site{},
-		&SiteList{},
 		&Placement{},
 		&PlacementList{},
+		&Edge{},
+		&EdgeList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

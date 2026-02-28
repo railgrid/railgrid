@@ -1,0 +1,182 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260228-0f5e1a9.edges.kedge.faros.sh
+spec:
+  group: kedge.faros.sh
+  names:
+    kind: Edge
+    listKind: EdgeList
+    plural: edges
+    singular: edge
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.connected
+      name: Connected
+      type: boolean
+    - jsonPath: .status.hostname
+      name: Hostname
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      description: "Edge represents a managed connection endpoint — either a Kubernetes
+        cluster\nor a bare-metal/VM server accessible via SSH.\n\nAgents register
+        via:\n\n\t/services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/proxy\n\nUsers
+        access edges via:\n\n\t/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/k8s
+        \ (type=kubernetes)\n\t/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/ssh
+        \ (type=server)"
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: EdgeSpec defines the desired state of an Edge.
+          properties:
+            kubernetes:
+              description: |-
+                Kubernetes holds configuration specific to Kubernetes cluster edges.
+                Only valid when type=kubernetes.
+              properties:
+                labels:
+                  additionalProperties:
+                    type: string
+                  description: Labels for scheduling hints (region, provider, etc.)
+                  type: object
+              type: object
+            server:
+              description: |-
+                Server holds configuration specific to SSH server-mode edges.
+                Only valid when type=server.
+              properties:
+                sshKeySecretRef:
+                  description: |-
+                    SSHKeySecretRef references a Secret containing the SSH private key (key: id_rsa).
+                    When set, the hub serves this key to authenticated CLI clients via the /ssh subresource.
+                  properties:
+                    name:
+                      description: name is unique within a namespace to reference
+                        a secret resource.
+                      type: string
+                    namespace:
+                      description: namespace defines the space within which the secret
+                        name must be unique.
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                sshPort:
+                  default: 22
+                  description: 'SSHPort is the port sshd listens on inside the remote
+                    host (default: 22).'
+                  type: integer
+              type: object
+            type:
+              description: Type discriminates between Kubernetes cluster and SSH server
+                edges.
+              enum:
+              - kubernetes
+              - server
+              type: string
+          required:
+          - type
+          type: object
+          x-kubernetes-validations:
+          - message: kubernetes field is only valid when type=kubernetes
+            rule: self.type == 'kubernetes' || !has(self.kubernetes)
+          - message: server field is only valid when type=server
+            rule: self.type == 'server' || !has(self.server)
+        status:
+          description: EdgeStatus defines the observed state of an Edge.
+          properties:
+            URL:
+              description: |-
+                WorkspaceURL is the virtual workspace URL for this edge.
+                Only set for type=kubernetes edges.
+              type: string
+            connected:
+              description: Connected indicates whether the edge agent currently has
+                an active tunnel.
+              type: boolean
+            hostname:
+              description: Hostname is the hostname reported by the connected edge
+                agent.
+              type: string
+            labels:
+              additionalProperties:
+                type: string
+              description: Labels are propagated from the edge agent (e.g. region,
+                provider tags).
+              type: object
+            phase:
+              description: Phase describes the current lifecycle phase of the Edge.
+              type: string
+            sshCredentials:
+              description: |-
+                SSHCredentials holds the SSH authentication credentials for server-type edges.
+                This is set by the agent and used by the hub for SSH connections.
+              properties:
+                passwordSecretRef:
+                  description: |-
+                    PasswordSecretRef references a Secret containing the SSH password.
+                    The secret must have a key named "password".
+                  properties:
+                    name:
+                      description: name is unique within a namespace to reference
+                        a secret resource.
+                      type: string
+                    namespace:
+                      description: namespace defines the space within which the secret
+                        name must be unique.
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                privateKeySecretRef:
+                  description: |-
+                    PrivateKeySecretRef references a Secret containing the SSH private key.
+                    The secret must have a key named "privateKey".
+                  properties:
+                    name:
+                      description: name is unique within a namespace to reference
+                        a secret resource.
+                      type: string
+                    namespace:
+                      description: namespace defines the space within which the secret
+                        name must be unique.
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                username:
+                  description: Username is the SSH username to authenticate as.
+                  type: string
+              required:
+              - username
+              type: object
+          type: object
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

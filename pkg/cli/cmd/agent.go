@@ -47,7 +47,7 @@ func newAgentJoinCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "join",
-		Short: "Join a site to the hub",
+		Short: "Join a site or server to the hub",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
@@ -71,6 +71,15 @@ func newAgentJoinCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.Context, "context", "", "Kubeconfig context to use")
 	cmd.Flags().StringToStringVar(&opts.Labels, "labels", nil, "Labels for this site")
 	cmd.Flags().BoolVar(&opts.InsecureSkipTLSVerify, "hub-insecure-skip-tls-verify", false, "Skip TLS certificate verification for the hub connection (insecure, for development only)")
+	cmd.Flags().IntVar(&opts.SSHProxyPort, "ssh-proxy-port", 22, "Local port of the SSH daemon to proxy connections to (default 22; set to a different port in test environments)")
+	cmd.Flags().StringVar((*string)(&opts.Type), "type", string(agent.AgentTypeKubernetes),
+		`Edge type: "kubernetes" (Kubernetes cluster) or "server" (bare-metal/systemd host with SSH access)`)
+	// --mode is a deprecated alias for --type; kept for backward compatibility.
+	cmd.Flags().StringVar((*string)(&opts.Mode), "mode", "", //nolint:staticcheck
+		`Deprecated: use --type. Agent mode: "site" (→ kubernetes) or "server"`)
+	if err := cmd.Flags().MarkDeprecated("mode", "use --type instead (kubernetes|server)"); err != nil {
+		panic(err)
+	}
 
 	return cmd
 }

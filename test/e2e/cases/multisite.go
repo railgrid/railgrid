@@ -109,39 +109,39 @@ func startMultisiteAgents(ctx context.Context, t *testing.T, clusterEnv *framewo
 	t.Helper()
 	client := multisiteClient(ctx, t, clusterEnv)
 
-	type siteInfo struct {
+	type edgeInfo struct {
 		name       string
 		label      string
 		agentIndex int
-		siteKCPath string
+		edgeKCPath string
 	}
 
-	sites := []siteInfo{
-		{msSite1, msSite1Label, 0, filepath.Join(clusterEnv.WorkDir, "site-"+msSite1+".kubeconfig")},
-		{msSite2, msSite2Label, 1, filepath.Join(clusterEnv.WorkDir, "site-"+msSite2+".kubeconfig")},
+	edges := []edgeInfo{
+		{msSite1, msSite1Label, 0, filepath.Join(clusterEnv.WorkDir, "edge-"+msSite1+".kubeconfig")},
+		{msSite2, msSite2Label, 1, filepath.Join(clusterEnv.WorkDir, "edge-"+msSite2+".kubeconfig")},
 	}
 
-	// Phase 1: create all sites (no agents running yet).
-	for _, s := range sites {
-		if err := client.SiteCreate(ctx, s.name, s.label); err != nil {
-			t.Fatalf("create site %s: %v", s.name, err)
+	// Phase 1: create all edges (no agents running yet).
+	for _, e := range edges {
+		if err := client.EdgeCreate(ctx, e.name, "kubernetes", e.label); err != nil {
+			t.Fatalf("create edge %s: %v", e.name, err)
 		}
-		t.Logf("site %s created", s.name)
+		t.Logf("edge %s created", e.name)
 	}
 
-	// Phase 2: extract all site kubeconfigs.
-	for _, s := range sites {
+	// Phase 2: extract all edge kubeconfigs.
+	for _, e := range edges {
 		// Diagnostic: print secrets in kedge-system before polling.
 		if out, err := client.Kubectl(ctx, "get", "secrets,serviceaccounts", "-n", "kedge-system", "--no-headers"); err == nil {
-			t.Logf("[diag] kedge-system resources before extracting %s KC:\n%s", s.name, out)
+			t.Logf("[diag] kedge-system resources before extracting %s KC:\n%s", e.name, out)
 		}
-		if err := client.ExtractSiteKubeconfig(ctx, s.name, s.siteKCPath); err != nil {
+		if err := client.ExtractEdgeKubeconfig(ctx, e.name, e.edgeKCPath); err != nil {
 			// Dump state on failure to help diagnose RBAC reconciler issues.
 			if out, err2 := client.Kubectl(ctx, "get", "secrets,serviceaccounts", "-n", "kedge-system", "--no-headers"); err2 == nil {
 				t.Logf("[diag] kedge-system at timeout:\n%s", out)
 			}
-			if out, err2 := client.Kubectl(ctx, "get", "sites", "--no-headers"); err2 == nil {
-				t.Logf("[diag] sites:\n%s", out)
+			if out, err2 := client.Kubectl(ctx, "get", "edges", "--no-headers"); err2 == nil {
+				t.Logf("[diag] edges:\n%s", out)
 			}
 			// Dump hub pod logs (last 150 lines) via kind kubeconfig export.
 			tmpKC := filepath.Join(clusterEnv.WorkDir, "hub-admin-diag.kubeconfig")
@@ -156,23 +156,23 @@ func startMultisiteAgents(ctx context.Context, t *testing.T, clusterEnv *framewo
 					t.Logf("[diag] hub pod logs:\n%s", out)
 				}
 			}
-			t.Fatalf("extract site kubeconfig %s: %v", s.name, err)
+			t.Fatalf("extract edge kubeconfig %s: %v", e.name, err)
 		}
-		t.Logf("site %s kubeconfig extracted", s.name)
+		t.Logf("edge %s kubeconfig extracted", e.name)
 	}
 
-	// Phase 3: start all agents with the same labels that were set on the sites
-	// so that agent.registerSite correctly preserves/sets them.
-	for _, s := range sites {
-		agentKC := clusterEnv.AgentClusters[s.agentIndex].Kubeconfig
-		lblMap := parseLabelString(s.label)
-		agent := framework.NewAgent(framework.RepoRoot(), s.siteKCPath, agentKC, s.name).
+	// Phase 3: start all agents with the same labels that were set on the edges
+	// so that agent.registerEdge correctly preserves/sets them.
+	for _, e := range edges {
+		agentKC := clusterEnv.AgentClusters[e.agentIndex].Kubeconfig
+		lblMap := parseLabelString(e.label)
+		agent := framework.NewAgent(framework.RepoRoot(), e.edgeKCPath, agentKC, e.name).
 			WithLabels(lblMap)
 		if err := agent.Start(ctx); err != nil {
-			t.Fatalf("start agent for %s: %v", s.name, err)
+			t.Fatalf("start agent for %s: %v", e.name, err)
 		}
-		ctx = context.WithValue(ctx, msAgentKey{s.agentIndex}, agent)
-		t.Logf("agent for %s started", s.name)
+		ctx = context.WithValue(ctx, msAgentKey{e.agentIndex}, agent)
+		t.Logf("agent for %s started", e.name)
 	}
 
 	// Store the authenticated client so Teardown can reuse it without a second Login.
@@ -197,8 +197,8 @@ func stopMultisiteAgents(ctx context.Context, t *testing.T, clusterEnv *framewor
 		client = multisiteClient(ctx, t, clusterEnv)
 	}
 	for _, name := range []string{msSite1, msSite2} {
-		if err := client.SiteDelete(ctx, name); err != nil {
-			t.Logf("WARNING: failed to delete site %s: %v", name, err)
+		if err := client.EdgeDelete(ctx, name); err != nil {
+			t.Logf("WARNING: failed to delete edge %s: %v", name, err)
 		}
 	}
 }
@@ -242,7 +242,7 @@ func TwoAgentsJoin() features.Feature {
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 
 			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForSiteReady(ctx, site, 3*time.Minute); err != nil {
+				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
 					t.Fatalf("site %s did not become Ready: %v", site, err)
 				}
 			}
@@ -269,7 +269,7 @@ func LabelBasedScheduling() features.Feature {
 			// Retrieve the stored client (set by startMultisiteAgents).
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForSiteReady(ctx, site, 3*time.Minute); err != nil {
+				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
 					t.Fatalf("site %s did not become Ready: %v", site, err)
 				}
 			}
@@ -316,7 +316,7 @@ func WorkloadIsolation() features.Feature {
 
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForSiteReady(ctx, site, 3*time.Minute); err != nil {
+				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
 					t.Fatalf("site %s not Ready: %v", site, err)
 				}
 			}
@@ -361,7 +361,7 @@ func SiteFailoverIsolation() features.Feature {
 
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForSiteReady(ctx, site, 3*time.Minute); err != nil {
+				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
 					t.Fatalf("site %s not Ready: %v", site, err)
 				}
 			}
@@ -385,7 +385,7 @@ func SiteFailoverIsolation() features.Feature {
 			}
 
 			// Wait for site-1 to become Disconnected.
-			if err := client.WaitForSitePhase(ctx, msSite1, "Disconnected", 8*time.Minute); err != nil {
+			if err := client.WaitForEdgePhase(ctx, msSite1, "Disconnected", 3*time.Minute); err != nil {
 				t.Fatalf("site-1 did not become Disconnected: %v", err)
 			}
 
@@ -418,7 +418,7 @@ func SiteReconnect() features.Feature {
 
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForSiteReady(ctx, site, 3*time.Minute); err != nil {
+				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
 					t.Fatalf("site %s not Ready: %v", site, err)
 				}
 			}
@@ -441,20 +441,20 @@ func SiteReconnect() features.Feature {
 			if a, ok := ctx.Value(msAgentKey{0}).(*framework.Agent); ok {
 				a.Stop()
 			}
-			if err := client.WaitForSitePhase(ctx, msSite1, "Disconnected", 8*time.Minute); err != nil {
+			if err := client.WaitForEdgePhase(ctx, msSite1, "Disconnected", 3*time.Minute); err != nil {
 				t.Fatalf("site-1 did not go Disconnected: %v", err)
 			}
 
 			// Restart agent-1.
-			siteKCPath := filepath.Join(clusterEnv.WorkDir, "site-"+msSite1+".kubeconfig")
+			edgeKCPath := filepath.Join(clusterEnv.WorkDir, "edge-"+msSite1+".kubeconfig")
 			agentKC := clusterEnv.AgentClusters[0].Kubeconfig
-			newAgent := framework.NewAgent(framework.RepoRoot(), siteKCPath, agentKC, msSite1)
+			newAgent := framework.NewAgent(framework.RepoRoot(), edgeKCPath, agentKC, msSite1)
 			if err := newAgent.Start(ctx); err != nil {
 				t.Fatalf("restart agent for site-1: %v", err)
 			}
 			ctx = context.WithValue(ctx, msAgentKey{0}, newAgent)
 
-			if err := client.WaitForSiteReady(ctx, msSite1, 3*time.Minute); err != nil {
+			if err := client.WaitForEdgeReady(ctx, msSite1, 3*time.Minute); err != nil {
 				t.Fatalf("site-1 did not reconnect: %v", err)
 			}
 			// Placement must reappear.
@@ -473,10 +473,10 @@ func SiteReconnect() features.Feature {
 		Feature()
 }
 
-// SiteListAccuracyUnderChurn verifies that `kedge site list` accurately
+// EdgeListAccuracyUnderChurn verifies that `kedge edge list` accurately
 // reflects Ready / Disconnected state as agents stop and start.
-func SiteListAccuracyUnderChurn() features.Feature {
-	return features.New("site list accuracy under churn").
+func EdgeListAccuracyUnderChurn() features.Feature {
+	return features.New("edge list accuracy under churn").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			requireTwoAgentClusters(t, clusterEnv)
@@ -484,7 +484,7 @@ func SiteListAccuracyUnderChurn() features.Feature {
 
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForSiteReady(ctx, site, 3*time.Minute); err != nil {
+				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
 					t.Fatalf("site %s not Ready initially: %v", site, err)
 				}
 			}
@@ -498,24 +498,24 @@ func SiteListAccuracyUnderChurn() features.Feature {
 			if a, ok := ctx.Value(msAgentKey{0}).(*framework.Agent); ok {
 				a.Stop()
 			}
-			if err := client.WaitForSitePhase(ctx, msSite1, "Disconnected", 8*time.Minute); err != nil {
+			if err := client.WaitForEdgePhase(ctx, msSite1, "Disconnected", 3*time.Minute); err != nil {
 				t.Fatalf("site-1 did not show Disconnected: %v", err)
 			}
 			// site-2 must remain Ready during the churn.
-			if err := client.WaitForSiteReady(ctx, msSite2, 30*time.Second); err != nil {
+			if err := client.WaitForEdgeReady(ctx, msSite2, 30*time.Second); err != nil {
 				t.Fatalf("site-2 lost Ready state during site-1 churn: %v", err)
 			}
 
 			// Restart agent-1; verify recovery.
-			siteKCPath := filepath.Join(clusterEnv.WorkDir, "site-"+msSite1+".kubeconfig")
+			edgeKCPath := filepath.Join(clusterEnv.WorkDir, "edge-"+msSite1+".kubeconfig")
 			agentKC := clusterEnv.AgentClusters[0].Kubeconfig
-			newAgent := framework.NewAgent(framework.RepoRoot(), siteKCPath, agentKC, msSite1)
+			newAgent := framework.NewAgent(framework.RepoRoot(), edgeKCPath, agentKC, msSite1)
 			if err := newAgent.Start(ctx); err != nil {
 				t.Fatalf("restart agent-1: %v", err)
 			}
 			ctx = context.WithValue(ctx, msAgentKey{0}, newAgent)
 
-			if err := client.WaitForSiteReady(ctx, msSite1, 3*time.Minute); err != nil {
+			if err := client.WaitForEdgeReady(ctx, msSite1, 3*time.Minute); err != nil {
 				t.Fatalf("site-1 did not show Ready after reconnect: %v", err)
 			}
 			return ctx

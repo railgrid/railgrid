@@ -17,9 +17,16 @@ limitations under the License.
 // Package framework provides shared test infrastructure for kedge e2e tests.
 package framework
 
-import "flag"
+import (
+	"flag"
+	"time"
+)
 
 var (
+	// SSHKeepaliveDuration is how long the long-lived SSH connection test holds the
+	// session open before asserting liveness. Default 5m; bump to 10m+ locally.
+	SSHKeepaliveDuration time.Duration
+
 	// KeepClusters controls whether kind clusters are deleted after the test run.
 	// Default is false (clusters are deleted). Set --keep-clusters to retain them
 	// for debugging failures.
@@ -36,4 +43,5 @@ func init() {
 	flag.BoolVar(&KeepClusters, "keep-clusters", false, "Keep kind clusters after test run (useful for debugging failures)")
 	flag.StringVar(&KedgeBin, "kedge-bin", "bin/kedge", "Path to the kedge CLI binary")
 	flag.StringVar(&DevToken, "dev-token", "dev-token", "Static auth token for non-OIDC test suites")
+	flag.DurationVar(&SSHKeepaliveDuration, "ssh-keepalive-duration", 30*time.Second, "How long to hold the long-lived SSH session open in the keepalive test")
 }
