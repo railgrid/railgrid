@@ -72,10 +72,10 @@ func TestSchedulerReconciler_VWNotFound(t *testing.T) {
 	}
 }
 
-func TestSchedulerReconciler_NoMatchingSites(t *testing.T) {
+func TestSchedulerReconciler_NoMatchingEdges(t *testing.T) {
 	scheme := newSchedulerScheme(t)
 	workload := vw("vw-1", "default", map[string]string{"env": "prod"}, kedgev1alpha1.PlacementStrategySpread)
-	s1 := edge("site-staging", map[string]string{"env": "staging"})
+	s1 := edge("edge-staging", map[string]string{"env": "staging"})
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(workload, s1).Build()
 	r := &Reconciler{mgr: testfakes.NewManager(c)}
@@ -90,16 +90,16 @@ func TestSchedulerReconciler_NoMatchingSites(t *testing.T) {
 		t.Fatalf("list placements: %v", err)
 	}
 	if len(placements.Items) != 0 {
-		t.Errorf("expected 0 placements for no matching sites, got %d", len(placements.Items))
+		t.Errorf("expected 0 placements for no matching edges, got %d", len(placements.Items))
 	}
 }
 
-func TestSchedulerReconciler_MatchingSites_PlacementsCreated(t *testing.T) {
+func TestSchedulerReconciler_MatchingEdges_PlacementsCreated(t *testing.T) {
 	scheme := newSchedulerScheme(t)
 	workload := vw("vw-2", "default", map[string]string{"env": "prod"}, kedgev1alpha1.PlacementStrategySpread)
-	s1 := edge("site-prod-1", map[string]string{"env": "prod"})
-	s2 := edge("site-prod-2", map[string]string{"env": "prod"})
-	s3 := edge("site-staging", map[string]string{"env": "staging"})
+	s1 := edge("edge-prod-1", map[string]string{"env": "prod"})
+	s2 := edge("edge-prod-2", map[string]string{"env": "prod"})
+	s3 := edge("edge-staging", map[string]string{"env": "staging"})
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(workload, s1, s2, s3).Build()
 	r := &Reconciler{mgr: testfakes.NewManager(c)}
@@ -114,7 +114,7 @@ func TestSchedulerReconciler_MatchingSites_PlacementsCreated(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	if len(placements.Items) != 2 {
-		t.Errorf("expected 2 placements (one per prod site), got %d", len(placements.Items))
+		t.Errorf("expected 2 placements (one per prod edge), got %d", len(placements.Items))
 	}
 	for _, p := range placements.Items {
 		if p.Spec.WorkloadRef.Name != "vw-2" {
@@ -129,7 +129,7 @@ func TestSchedulerReconciler_MatchingSites_PlacementsCreated(t *testing.T) {
 func TestSchedulerReconciler_Idempotent(t *testing.T) {
 	scheme := newSchedulerScheme(t)
 	workload := vw("vw-3", "default", map[string]string{"env": "prod"}, kedgev1alpha1.PlacementStrategySpread)
-	s1 := edge("site-prod-a", map[string]string{"env": "prod"})
+	s1 := edge("edge-prod-a", map[string]string{"env": "prod"})
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(workload, s1).Build()
 	r := &Reconciler{mgr: testfakes.NewManager(c)}
@@ -154,17 +154,17 @@ func TestSchedulerReconciler_Idempotent(t *testing.T) {
 func TestSchedulerReconciler_StalePlacementDeleted(t *testing.T) {
 	scheme := newSchedulerScheme(t)
 	workload := vw("vw-4", "default", map[string]string{"env": "prod"}, kedgev1alpha1.PlacementStrategySpread)
-	s1 := edge("site-prod-x", map[string]string{"env": "prod"})
+	s1 := edge("edge-prod-x", map[string]string{"env": "prod"})
 	stalePlacement := &kedgev1alpha1.Placement{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "vw-4-site-gone",
+			Name:      "vw-4-edge-gone",
 			Namespace: "default",
 			Labels: map[string]string{
 				"kedge.faros.sh/virtualworkload": "vw-4",
-				"kedge.faros.sh/site":            "site-gone",
+				"kedge.faros.sh/edge":            "edge-gone",
 			},
 		},
-		Spec: kedgev1alpha1.PlacementObjSpec{SiteName: "site-gone"},
+		Spec: kedgev1alpha1.PlacementObjSpec{EdgeName: "edge-gone"},
 	}
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(workload, s1, stalePlacement).Build()
@@ -180,8 +180,8 @@ func TestSchedulerReconciler_StalePlacementDeleted(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	for _, p := range placements.Items {
-		if p.Spec.SiteName == "site-gone" {
-			t.Errorf("stale placement for site-gone was not deleted")
+		if p.Spec.EdgeName == "edge-gone" {
+			t.Errorf("stale placement for edge-gone was not deleted")
 		}
 	}
 }
@@ -189,9 +189,9 @@ func TestSchedulerReconciler_StalePlacementDeleted(t *testing.T) {
 func TestSchedulerReconciler_SingletonStrategy(t *testing.T) {
 	scheme := newSchedulerScheme(t)
 	workload := vw("vw-5", "default", map[string]string{"env": "prod"}, kedgev1alpha1.PlacementStrategySingleton)
-	s1 := edge("site-1", map[string]string{"env": "prod"})
-	s2 := edge("site-2", map[string]string{"env": "prod"})
-	s3 := edge("site-3", map[string]string{"env": "prod"})
+	s1 := edge("edge-1", map[string]string{"env": "prod"})
+	s2 := edge("edge-2", map[string]string{"env": "prod"})
+	s3 := edge("edge-3", map[string]string{"env": "prod"})
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(workload, s1, s2, s3).Build()
 	r := &Reconciler{mgr: testfakes.NewManager(c)}
@@ -206,6 +206,6 @@ func TestSchedulerReconciler_SingletonStrategy(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	if len(placements.Items) != 1 {
-		t.Errorf("singleton strategy: expected exactly 1 placement for 3 matched sites, got %d", len(placements.Items))
+		t.Errorf("singleton strategy: expected exactly 1 placement for 3 matched edges, got %d", len(placements.Items))
 	}
 }

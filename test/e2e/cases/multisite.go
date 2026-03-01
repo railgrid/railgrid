@@ -32,17 +32,17 @@ import (
 	"github.com/faroshq/faros-kedge/test/e2e/framework"
 )
 
-// msAgentKey is a context key for a running Agent in multi-site tests.
+// msAgentKey is a context key for a running Agent in multi-edge tests.
 type msAgentKey struct{ index int }
 
-// msClientKey is a context key for the shared KedgeClient in multi-site tests.
+// msClientKey is a context key for the shared KedgeClient in multi-edge tests.
 type msClientKey struct{}
 
 const (
-	msSite1      = "e2e-ms-site-1"
-	msSite2      = "e2e-ms-site-2"
-	msSite1Label = "region=eu"
-	msSite2Label = "region=us"
+	msEdge1      = "e2e-ms-edge-1"
+	msEdge2      = "e2e-ms-edge-2"
+	msEdge1Label = "region=eu"
+	msEdge2Label = "region=us"
 	msVWName     = "e2e-ms-vw"
 	msNamespace  = "default"
 )
@@ -52,15 +52,15 @@ const (
 func requireTwoAgentClusters(t *testing.T, env *framework.ClusterEnv) {
 	t.Helper()
 	if env == nil || len(env.AgentClusters) < 2 {
-		t.Skip("multi-site tests require at least 2 agent clusters (run with --agent-count 2)")
+		t.Skip("multi-edge tests require at least 2 agent clusters (run with --agent-count 2)")
 	}
 }
 
-// multisiteClient returns a KedgeClient authenticated for the current suite.
+// multiedgeClient returns a KedgeClient authenticated for the current suite.
 // When DexEnv is present in ctx (OIDC suite) it performs a headless OIDC login
 // and returns a client backed by the resulting kubeconfig; otherwise it does a
 // static-token login and returns a client backed by HubKubeconfig.
-func multisiteClient(ctx context.Context, t *testing.T, clusterEnv *framework.ClusterEnv) *framework.KedgeClient {
+func multiedgeClient(ctx context.Context, t *testing.T, clusterEnv *framework.ClusterEnv) *framework.KedgeClient {
 	t.Helper()
 
 	if dexEnv := framework.DexEnvFrom(ctx); dexEnv != nil {
@@ -69,7 +69,7 @@ func multisiteClient(ctx context.Context, t *testing.T, clusterEnv *framework.Cl
 
 		result, err := framework.HeadlessOIDCLogin(loginCtx, clusterEnv.HubURL, dexEnv.UserEmail, dexEnv.UserPassword)
 		if err != nil {
-			t.Fatalf("OIDC headless login for multi-site setup: %v", err)
+			t.Fatalf("OIDC headless login for multi-edge setup: %v", err)
 		}
 		if result.IDToken != "" {
 			tc := &cliauth.TokenCache{
@@ -98,16 +98,16 @@ func multisiteClient(ctx context.Context, t *testing.T, clusterEnv *framework.Cl
 	return client
 }
 
-// startMultisiteAgents logs in, creates two sites, extracts their kubeconfigs,
-// and starts one kedge-agent process per site/cluster. It stores the agents in
+// startMultiedgeAgents logs in, creates two edges, extracts their kubeconfigs,
+// and starts one kedge-agent process per edge/cluster. It stores the agents in
 // ctx under msAgentKey{0} and msAgentKey{1}.
 //
-// Phase order: CREATE all sites → EXTRACT all kubeconfigs → START all agents.
+// Phase order: CREATE all edges → EXTRACT all kubeconfigs → START all agents.
 // This ensures the hub reconciler can provision both service-account tokens
 // in a quiet window before any agent traffic begins.
-func startMultisiteAgents(ctx context.Context, t *testing.T, clusterEnv *framework.ClusterEnv) context.Context {
+func startMultiedgeAgents(ctx context.Context, t *testing.T, clusterEnv *framework.ClusterEnv) context.Context {
 	t.Helper()
-	client := multisiteClient(ctx, t, clusterEnv)
+	client := multiedgeClient(ctx, t, clusterEnv)
 
 	type edgeInfo struct {
 		name       string
@@ -117,8 +117,8 @@ func startMultisiteAgents(ctx context.Context, t *testing.T, clusterEnv *framewo
 	}
 
 	edges := []edgeInfo{
-		{msSite1, msSite1Label, 0, filepath.Join(clusterEnv.WorkDir, "edge-"+msSite1+".kubeconfig")},
-		{msSite2, msSite2Label, 1, filepath.Join(clusterEnv.WorkDir, "edge-"+msSite2+".kubeconfig")},
+		{msEdge1, msEdge1Label, 0, filepath.Join(clusterEnv.WorkDir, "edge-"+msEdge1+".kubeconfig")},
+		{msEdge2, msEdge2Label, 1, filepath.Join(clusterEnv.WorkDir, "edge-"+msEdge2+".kubeconfig")},
 	}
 
 	// Phase 1: create all edges (no agents running yet).
@@ -180,11 +180,11 @@ func startMultisiteAgents(ctx context.Context, t *testing.T, clusterEnv *framewo
 	return ctx
 }
 
-// stopMultisiteAgents stops both agent processes and deletes both sites.
+// stopMultiedgeAgents stops both agent processes and deletes both edges.
 // Best-effort — errors are logged but don't fail the test (it's teardown).
-// It reuses the authenticated client stored by startMultisiteAgents to avoid
+// It reuses the authenticated client stored by startMultiedgeAgents to avoid
 // a redundant Login call.
-func stopMultisiteAgents(ctx context.Context, t *testing.T, clusterEnv *framework.ClusterEnv) {
+func stopMultiedgeAgents(ctx context.Context, t *testing.T, clusterEnv *framework.ClusterEnv) {
 	t.Helper()
 	for i := 0; i < 2; i++ {
 		if a, ok := ctx.Value(msAgentKey{i}).(*framework.Agent); ok {
@@ -194,9 +194,9 @@ func stopMultisiteAgents(ctx context.Context, t *testing.T, clusterEnv *framewor
 	// Reuse the client stored in context; fall back to a fresh Login if absent.
 	client, ok := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 	if !ok || client == nil {
-		client = multisiteClient(ctx, t, clusterEnv)
+		client = multiedgeClient(ctx, t, clusterEnv)
 	}
-	for _, name := range []string{msSite1, msSite2} {
+	for _, name := range []string{msEdge1, msEdge2} {
 		if err := client.EdgeDelete(ctx, name); err != nil {
 			t.Logf("WARNING: failed to delete edge %s: %v", name, err)
 		}
@@ -204,7 +204,7 @@ func stopMultisiteAgents(ctx context.Context, t *testing.T, clusterEnv *framewor
 }
 
 // virtualWorkloadManifest returns a VirtualWorkload YAML manifest.
-// Pass an empty selector map to match all sites.
+// Pass an empty selector map to match all edges.
 func virtualWorkloadManifest(name, namespace string, selector map[string]string, strategy string) string {
 	selectorYAML := ""
 	if len(selector) > 0 {
@@ -213,9 +213,10 @@ func virtualWorkloadManifest(name, namespace string, selector map[string]string,
 			selectorYAML += fmt.Sprintf("        %s: %s\n", k, v)
 		}
 	}
-	siteSelectorBlock := ""
+	// PlacementSpec.EdgeSelector (json:"edgeSelector") is the correct field name.
+	edgeSelectorBlock := ""
 	if selectorYAML != "" {
-		siteSelectorBlock = "    siteSelector:\n" + selectorYAML
+		edgeSelectorBlock = "    edgeSelector:\n" + selectorYAML
 	}
 	return fmt.Sprintf(`apiVersion: kedge.faros.sh/v1alpha1
 kind: VirtualWorkload
@@ -226,37 +227,37 @@ spec:
   replicas: 1
   placement:
     strategy: %s
-%s`, name, namespace, strategy, siteSelectorBlock)
+%s`, name, namespace, strategy, edgeSelectorBlock)
 }
 
 // TwoAgentsJoin returns a feature that starts two kedge-agents connecting to
-// the same hub and verifies both sites appear as Ready.
+// the same hub and verifies both edges appear as Ready.
 func TwoAgentsJoin() features.Feature {
 	return features.New("two agents join").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			requireTwoAgentClusters(t, clusterEnv)
-			return startMultisiteAgents(ctx, t, clusterEnv)
+			return startMultiedgeAgents(ctx, t, clusterEnv)
 		}).
-		Assess("both sites become Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("both edges become Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 
-			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
-					t.Fatalf("site %s did not become Ready: %v", site, err)
+			for _, edge := range []string{msEdge1, msEdge2} {
+				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
+					t.Fatalf("edge %s did not become Ready: %v", edge, err)
 				}
 			}
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			stopMultisiteAgents(ctx, t, framework.ClusterEnvFrom(ctx))
+			stopMultiedgeAgents(ctx, t, framework.ClusterEnvFrom(ctx))
 			return ctx
 		}).
 		Feature()
 }
 
-// LabelBasedScheduling verifies that a VirtualWorkload with a site-label
-// selector is scheduled only to the matching site.
+// LabelBasedScheduling verifies that a VirtualWorkload with an edge-label
+// selector is scheduled only to the matching edge.
 func LabelBasedScheduling() features.Feature {
 	const vwName = msVWName + "-label"
 
@@ -264,18 +265,18 @@ func LabelBasedScheduling() features.Feature {
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			requireTwoAgentClusters(t, clusterEnv)
-			ctx = startMultisiteAgents(ctx, t, clusterEnv)
+			ctx = startMultiedgeAgents(ctx, t, clusterEnv)
 
-			// Retrieve the stored client (set by startMultisiteAgents).
+			// Retrieve the stored client (set by startMultiedgeAgents).
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
-			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
-					t.Fatalf("site %s did not become Ready: %v", site, err)
+			for _, edge := range []string{msEdge1, msEdge2} {
+				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
+					t.Fatalf("edge %s did not become Ready: %v", edge, err)
 				}
 			}
 			return ctx
 		}).
-		Assess("VW with region=eu selector schedules only to site-1", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("VW with region=eu selector schedules only to edge-1", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 
 			manifest := virtualWorkloadManifest(vwName, msNamespace, map[string]string{"region": "eu"}, "Spread")
@@ -283,13 +284,13 @@ func LabelBasedScheduling() features.Feature {
 				t.Fatalf("apply VirtualWorkload: %v", err)
 			}
 
-			// Placement must appear on site-1.
-			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msSite1, 2*time.Minute); err != nil {
-				t.Fatalf("placement not created for site-1: %v", err)
+			// Placement must appear on edge-1.
+			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msEdge1, 2*time.Minute); err != nil {
+				t.Fatalf("placement not created for edge-1: %v", err)
 			}
-			// Placement must NOT appear on site-2.
-			if err := client.WaitForNoPlacement(ctx, vwName, msNamespace, msSite2, 30*time.Second); err != nil {
-				t.Fatalf("unexpected placement on site-2: %v", err)
+			// Placement must NOT appear on edge-2.
+			if err := client.WaitForNoPlacement(ctx, vwName, msNamespace, msEdge2, 30*time.Second); err != nil {
+				t.Fatalf("unexpected placement on edge-2: %v", err)
 			}
 			return ctx
 		}).
@@ -297,14 +298,14 @@ func LabelBasedScheduling() features.Feature {
 			if client, ok := ctx.Value(msClientKey{}).(*framework.KedgeClient); ok {
 				_ = client.DeleteVirtualWorkload(ctx, vwName, msNamespace)
 			}
-			stopMultisiteAgents(ctx, t, framework.ClusterEnvFrom(ctx))
+			stopMultiedgeAgents(ctx, t, framework.ClusterEnvFrom(ctx))
 			return ctx
 		}).
 		Feature()
 }
 
-// WorkloadIsolation verifies that a workload placed on site-1 is not visible
-// (no Placement) on site-2.
+// WorkloadIsolation verifies that a workload placed on edge-1 is not visible
+// (no Placement) on edge-2.
 func WorkloadIsolation() features.Feature {
 	const vwName = msVWName + "-isolation"
 
@@ -312,17 +313,17 @@ func WorkloadIsolation() features.Feature {
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			requireTwoAgentClusters(t, clusterEnv)
-			ctx = startMultisiteAgents(ctx, t, clusterEnv)
+			ctx = startMultiedgeAgents(ctx, t, clusterEnv)
 
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
-			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
-					t.Fatalf("site %s not Ready: %v", site, err)
+			for _, edge := range []string{msEdge1, msEdge2} {
+				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
+					t.Fatalf("edge %s not Ready: %v", edge, err)
 				}
 			}
 			return ctx
 		}).
-		Assess("site-1-only workload has no placement on site-2", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("edge-1-only workload has no placement on edge-2", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 
 			manifest := virtualWorkloadManifest(vwName, msNamespace, map[string]string{"region": "eu"}, "Spread")
@@ -330,11 +331,11 @@ func WorkloadIsolation() features.Feature {
 				t.Fatalf("apply VirtualWorkload: %v", err)
 			}
 
-			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msSite1, 2*time.Minute); err != nil {
-				t.Fatalf("placement not on site-1: %v", err)
+			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msEdge1, 2*time.Minute); err != nil {
+				t.Fatalf("placement not on edge-1: %v", err)
 			}
-			if err := client.WaitForNoPlacement(ctx, vwName, msNamespace, msSite2, 30*time.Second); err != nil {
-				t.Fatalf("isolation violation: placement found on site-2: %v", err)
+			if err := client.WaitForNoPlacement(ctx, vwName, msNamespace, msEdge2, 30*time.Second); err != nil {
+				t.Fatalf("isolation violation: placement found on edge-2: %v", err)
 			}
 			return ctx
 		}).
@@ -342,56 +343,56 @@ func WorkloadIsolation() features.Feature {
 			if client, ok := ctx.Value(msClientKey{}).(*framework.KedgeClient); ok {
 				_ = client.DeleteVirtualWorkload(ctx, vwName, msNamespace)
 			}
-			stopMultisiteAgents(ctx, t, framework.ClusterEnvFrom(ctx))
+			stopMultiedgeAgents(ctx, t, framework.ClusterEnvFrom(ctx))
 			return ctx
 		}).
 		Feature()
 }
 
-// SiteFailoverIsolation verifies that when site-1 goes offline, a VirtualWorkload
-// targeting only site-2 is unaffected.
-func SiteFailoverIsolation() features.Feature {
+// EdgeFailoverIsolation verifies that when edge-1 goes offline, a VirtualWorkload
+// targeting only edge-2 is unaffected.
+func EdgeFailoverIsolation() features.Feature {
 	const vwName = msVWName + "-failover"
 
-	return features.New("site failover isolation").
+	return features.New("edge failover isolation").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			requireTwoAgentClusters(t, clusterEnv)
-			ctx = startMultisiteAgents(ctx, t, clusterEnv)
+			ctx = startMultiedgeAgents(ctx, t, clusterEnv)
 
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
-			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
-					t.Fatalf("site %s not Ready: %v", site, err)
+			for _, edge := range []string{msEdge1, msEdge2} {
+				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
+					t.Fatalf("edge %s not Ready: %v", edge, err)
 				}
 			}
 
-			// Create VW targeting site-2 only.
+			// Create VW targeting edge-2 only.
 			manifest := virtualWorkloadManifest(vwName, msNamespace, map[string]string{"region": "us"}, "Spread")
 			if err := client.ApplyManifest(ctx, manifest); err != nil {
 				t.Fatalf("apply VirtualWorkload: %v", err)
 			}
-			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msSite2, 2*time.Minute); err != nil {
-				t.Fatalf("initial placement not on site-2: %v", err)
+			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msEdge2, 2*time.Minute); err != nil {
+				t.Fatalf("initial placement not on edge-2: %v", err)
 			}
 			return ctx
 		}).
-		Assess("site-1 goes offline; site-2 placement is unaffected", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("edge-1 goes offline; edge-2 placement is unaffected", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 
-			// Stop agent-1 (site-1 goes offline).
+			// Stop agent-1 (edge-1 goes offline).
 			if a, ok := ctx.Value(msAgentKey{0}).(*framework.Agent); ok {
 				a.Stop()
 			}
 
-			// Wait for site-1 to become Disconnected.
-			if err := client.WaitForEdgePhase(ctx, msSite1, "Disconnected", 3*time.Minute); err != nil {
-				t.Fatalf("site-1 did not become Disconnected: %v", err)
+			// Wait for edge-1 to become Disconnected.
+			if err := client.WaitForEdgePhase(ctx, msEdge1, "Disconnected", 3*time.Minute); err != nil {
+				t.Fatalf("edge-1 did not become Disconnected: %v", err)
 			}
 
-			// site-2 placement must still exist.
-			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msSite2, 30*time.Second); err != nil {
-				t.Fatalf("site-2 placement lost after site-1 went offline: %v", err)
+			// edge-2 placement must still exist.
+			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msEdge2, 30*time.Second); err != nil {
+				t.Fatalf("edge-2 placement lost after edge-1 went offline: %v", err)
 			}
 			return ctx
 		}).
@@ -399,41 +400,41 @@ func SiteFailoverIsolation() features.Feature {
 			if client, ok := ctx.Value(msClientKey{}).(*framework.KedgeClient); ok {
 				_ = client.DeleteVirtualWorkload(ctx, vwName, msNamespace)
 			}
-			stopMultisiteAgents(ctx, t, framework.ClusterEnvFrom(ctx))
+			stopMultiedgeAgents(ctx, t, framework.ClusterEnvFrom(ctx))
 			return ctx
 		}).
 		Feature()
 }
 
-// SiteReconnect verifies that after site-1 goes offline and reconnects, a
+// EdgeReconnect verifies that after edge-1 goes offline and reconnects, a
 // VirtualWorkload targeting it is re-scheduled.
-func SiteReconnect() features.Feature {
+func EdgeReconnect() features.Feature {
 	const vwName = msVWName + "-reconnect"
 
-	return features.New("site reconnect").
+	return features.New("edge reconnect").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			requireTwoAgentClusters(t, clusterEnv)
-			ctx = startMultisiteAgents(ctx, t, clusterEnv)
+			ctx = startMultiedgeAgents(ctx, t, clusterEnv)
 
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
-			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
-					t.Fatalf("site %s not Ready: %v", site, err)
+			for _, edge := range []string{msEdge1, msEdge2} {
+				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
+					t.Fatalf("edge %s not Ready: %v", edge, err)
 				}
 			}
 
-			// Create VW targeting site-1.
+			// Create VW targeting edge-1.
 			manifest := virtualWorkloadManifest(vwName, msNamespace, map[string]string{"region": "eu"}, "Spread")
 			if err := client.ApplyManifest(ctx, manifest); err != nil {
 				t.Fatalf("apply VirtualWorkload: %v", err)
 			}
-			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msSite1, 2*time.Minute); err != nil {
-				t.Fatalf("initial placement not on site-1: %v", err)
+			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msEdge1, 2*time.Minute); err != nil {
+				t.Fatalf("initial placement not on edge-1: %v", err)
 			}
 			return ctx
 		}).
-		Assess("site-1 disconnects then reconnects; placement reappears", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("edge-1 disconnects then reconnects; placement reappears", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 
@@ -441,25 +442,25 @@ func SiteReconnect() features.Feature {
 			if a, ok := ctx.Value(msAgentKey{0}).(*framework.Agent); ok {
 				a.Stop()
 			}
-			if err := client.WaitForEdgePhase(ctx, msSite1, "Disconnected", 3*time.Minute); err != nil {
-				t.Fatalf("site-1 did not go Disconnected: %v", err)
+			if err := client.WaitForEdgePhase(ctx, msEdge1, "Disconnected", 3*time.Minute); err != nil {
+				t.Fatalf("edge-1 did not go Disconnected: %v", err)
 			}
 
 			// Restart agent-1.
-			edgeKCPath := filepath.Join(clusterEnv.WorkDir, "edge-"+msSite1+".kubeconfig")
+			edgeKCPath := filepath.Join(clusterEnv.WorkDir, "edge-"+msEdge1+".kubeconfig")
 			agentKC := clusterEnv.AgentClusters[0].Kubeconfig
-			newAgent := framework.NewAgent(framework.RepoRoot(), edgeKCPath, agentKC, msSite1)
+			newAgent := framework.NewAgent(framework.RepoRoot(), edgeKCPath, agentKC, msEdge1)
 			if err := newAgent.Start(ctx); err != nil {
-				t.Fatalf("restart agent for site-1: %v", err)
+				t.Fatalf("restart agent for edge-1: %v", err)
 			}
 			ctx = context.WithValue(ctx, msAgentKey{0}, newAgent)
 
-			if err := client.WaitForEdgeReady(ctx, msSite1, 3*time.Minute); err != nil {
-				t.Fatalf("site-1 did not reconnect: %v", err)
+			if err := client.WaitForEdgeReady(ctx, msEdge1, 3*time.Minute); err != nil {
+				t.Fatalf("edge-1 did not reconnect: %v", err)
 			}
 			// Placement must reappear.
-			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msSite1, 2*time.Minute); err != nil {
-				t.Fatalf("placement did not reappear after site-1 reconnect: %v", err)
+			if err := client.WaitForPlacement(ctx, vwName, msNamespace, msEdge1, 2*time.Minute); err != nil {
+				t.Fatalf("placement did not reappear after edge-1 reconnect: %v", err)
 			}
 			return ctx
 		}).
@@ -467,7 +468,7 @@ func SiteReconnect() features.Feature {
 			if client, ok := ctx.Value(msClientKey{}).(*framework.KedgeClient); ok {
 				_ = client.DeleteVirtualWorkload(ctx, vwName, msNamespace)
 			}
-			stopMultisiteAgents(ctx, t, framework.ClusterEnvFrom(ctx))
+			stopMultiedgeAgents(ctx, t, framework.ClusterEnvFrom(ctx))
 			return ctx
 		}).
 		Feature()
@@ -480,17 +481,17 @@ func EdgeListAccuracyUnderChurn() features.Feature {
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			requireTwoAgentClusters(t, clusterEnv)
-			ctx = startMultisiteAgents(ctx, t, clusterEnv)
+			ctx = startMultiedgeAgents(ctx, t, clusterEnv)
 
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
-			for _, site := range []string{msSite1, msSite2} {
-				if err := client.WaitForEdgeReady(ctx, site, 3*time.Minute); err != nil {
-					t.Fatalf("site %s not Ready initially: %v", site, err)
+			for _, edge := range []string{msEdge1, msEdge2} {
+				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
+					t.Fatalf("edge %s not Ready initially: %v", edge, err)
 				}
 			}
 			return ctx
 		}).
-		Assess("site list reflects disconnect then reconnect of site-1", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("edge list reflects disconnect then reconnect of edge-1", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 
@@ -498,30 +499,30 @@ func EdgeListAccuracyUnderChurn() features.Feature {
 			if a, ok := ctx.Value(msAgentKey{0}).(*framework.Agent); ok {
 				a.Stop()
 			}
-			if err := client.WaitForEdgePhase(ctx, msSite1, "Disconnected", 3*time.Minute); err != nil {
-				t.Fatalf("site-1 did not show Disconnected: %v", err)
+			if err := client.WaitForEdgePhase(ctx, msEdge1, "Disconnected", 3*time.Minute); err != nil {
+				t.Fatalf("edge-1 did not show Disconnected: %v", err)
 			}
-			// site-2 must remain Ready during the churn.
-			if err := client.WaitForEdgeReady(ctx, msSite2, 30*time.Second); err != nil {
-				t.Fatalf("site-2 lost Ready state during site-1 churn: %v", err)
+			// edge-2 must remain Ready during the churn.
+			if err := client.WaitForEdgeReady(ctx, msEdge2, 30*time.Second); err != nil {
+				t.Fatalf("edge-2 lost Ready state during edge-1 churn: %v", err)
 			}
 
 			// Restart agent-1; verify recovery.
-			edgeKCPath := filepath.Join(clusterEnv.WorkDir, "edge-"+msSite1+".kubeconfig")
+			edgeKCPath := filepath.Join(clusterEnv.WorkDir, "edge-"+msEdge1+".kubeconfig")
 			agentKC := clusterEnv.AgentClusters[0].Kubeconfig
-			newAgent := framework.NewAgent(framework.RepoRoot(), edgeKCPath, agentKC, msSite1)
+			newAgent := framework.NewAgent(framework.RepoRoot(), edgeKCPath, agentKC, msEdge1)
 			if err := newAgent.Start(ctx); err != nil {
 				t.Fatalf("restart agent-1: %v", err)
 			}
 			ctx = context.WithValue(ctx, msAgentKey{0}, newAgent)
 
-			if err := client.WaitForEdgeReady(ctx, msSite1, 3*time.Minute); err != nil {
-				t.Fatalf("site-1 did not show Ready after reconnect: %v", err)
+			if err := client.WaitForEdgeReady(ctx, msEdge1, 3*time.Minute); err != nil {
+				t.Fatalf("edge-1 did not show Ready after reconnect: %v", err)
 			}
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			stopMultisiteAgents(ctx, t, framework.ClusterEnvFrom(ctx))
+			stopMultiedgeAgents(ctx, t, framework.ClusterEnvFrom(ctx))
 			return ctx
 		}).
 		Feature()

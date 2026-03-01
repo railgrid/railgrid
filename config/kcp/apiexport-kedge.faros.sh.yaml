@@ -65,12 +65,12 @@ spec:
   resources:
   - group: kedge.faros.sh
     name: edges
-    schema: v260228-0f5e1a9.edges.kedge.faros.sh
+    schema: v260228-eea5d12.edges.kedge.faros.sh
     storage:
       crd: {}
   - group: kedge.faros.sh
     name: placements
-    schema: v260227-f675e28.placements.kedge.faros.sh
+    schema: v260301-c08d8fa.placements.kedge.faros.sh
     storage:
       crd: {}
   - group: kedge.faros.sh
@@ -80,7 +80,7 @@ spec:
       crd: {}
   - group: kedge.faros.sh
     name: virtualworkloads
-    schema: v260227-f675e28.virtualworkloads.kedge.faros.sh
+    schema: v260301-1a00c73.virtualworkloads.kedge.faros.sh
     storage:
       crd: {}
 status: {}

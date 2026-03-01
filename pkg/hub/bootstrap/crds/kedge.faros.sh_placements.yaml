@@ -15,7 +15,7 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.siteName
+    - jsonPath: .spec.edgeName
       name: Edge
       type: string
     - jsonPath: .status.phase
@@ -52,11 +52,11 @@ spec:
           spec:
             description: PlacementObjSpec defines the desired state of a Placement.
             properties:
+              edgeName:
+                type: string
               replicas:
                 format: int32
                 type: integer
-              siteName:
-                type: string
               workloadRef:
                 description: ObjectReference contains enough information to let you
                   inspect or modify the referred object.
@@ -102,7 +102,7 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
             required:
-            - siteName
+            - edgeName
             - workloadRef
             type: object
           status:

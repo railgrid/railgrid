@@ -28,12 +28,12 @@ func TestAggregateStatus_AllRunning(t *testing.T) {
 	placements := []kedgev1alpha1.Placement{
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "p1"},
-			Spec:       kedgev1alpha1.PlacementObjSpec{SiteName: "site-1"},
+			Spec:       kedgev1alpha1.PlacementObjSpec{EdgeName: "edge-1"},
 			Status:     kedgev1alpha1.PlacementObjStatus{Phase: "Running", ReadyReplicas: 2},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "p2"},
-			Spec:       kedgev1alpha1.PlacementObjSpec{SiteName: "site-2"},
+			Spec:       kedgev1alpha1.PlacementObjSpec{EdgeName: "edge-2"},
 			Status:     kedgev1alpha1.PlacementObjStatus{Phase: "Running", ReadyReplicas: 3},
 		},
 	}
@@ -55,12 +55,12 @@ func TestAggregateStatus_Mixed(t *testing.T) {
 	placements := []kedgev1alpha1.Placement{
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "p1"},
-			Spec:       kedgev1alpha1.PlacementObjSpec{SiteName: "site-1"},
+			Spec:       kedgev1alpha1.PlacementObjSpec{EdgeName: "edge-1"},
 			Status:     kedgev1alpha1.PlacementObjStatus{Phase: "Running", ReadyReplicas: 2},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "p2"},
-			Spec:       kedgev1alpha1.PlacementObjSpec{SiteName: "site-2"},
+			Spec:       kedgev1alpha1.PlacementObjSpec{EdgeName: "edge-2"},
 			Status:     kedgev1alpha1.PlacementObjStatus{Phase: "Pending", ReadyReplicas: 0},
 		},
 	}

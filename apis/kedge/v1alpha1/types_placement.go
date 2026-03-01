@@ -23,7 +23,7 @@ import (
 
 // +genclient
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Edge",type="string",JSONPath=".spec.siteName"
+// +kubebuilder:printcolumn:name="Edge",type="string",JSONPath=".spec.edgeName"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
@@ -49,7 +49,7 @@ type PlacementList struct {
 // PlacementObjSpec defines the desired state of a Placement.
 type PlacementObjSpec struct {
 	WorkloadRef corev1.ObjectReference `json:"workloadRef"`
-	SiteName    string                 `json:"siteName"`
+	EdgeName    string                 `json:"edgeName"`
 	Replicas    *int32                 `json:"replicas,omitempty"`
 }
 

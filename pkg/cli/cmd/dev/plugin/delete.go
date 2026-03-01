@@ -40,10 +40,10 @@ func (o *DevOptions) RunDelete() error {
 		}
 	}
 
-	// Also clean up the site kubeconfig if it exists
-	siteKubeconfigPath := "site-kubeconfig"
-	if err := os.Remove(siteKubeconfigPath); err != nil && !os.IsNotExist(err) {
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Failed to remove site kubeconfig file %s: %v\n", siteKubeconfigPath, err)
+	// Also clean up the edge kubeconfig if it exists
+	edgeKubeconfigPath := "edge-kubeconfig"
+	if err := os.Remove(edgeKubeconfigPath); err != nil && !os.IsNotExist(err) {
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Failed to remove edge kubeconfig file %s: %v\n", edgeKubeconfigPath, err)
 	}
 
 	return o.cleanupHostEntries()

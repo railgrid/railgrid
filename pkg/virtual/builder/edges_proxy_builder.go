@@ -312,6 +312,11 @@ func (p *virtualWorkspaces) edgesHandleK8sUpgrade(ctx context.Context, w http.Re
 	defer clientConn.Close() //nolint:errcheck
 	defer deviceConn.Close() //nolint:errcheck
 
+	// Rewrite the URL path to the /k8s/... form the agent's mux expects.
+	// Without this the agent router sees the full hub path and returns 404.
+	r.URL.Path = extractEdgeK8sPath(r.URL.Path)
+	r.RequestURI = r.URL.RequestURI()
+
 	if err := r.Write(deviceConn); err != nil {
 		logger.Error(err, "failed to forward upgrade request to edge agent")
 		return

@@ -104,11 +104,14 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 		if err := r.deleteMountWorkspace(ctx, logger, req.ClusterName, edge.Name); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting mount workspace for server edge: %w", err)
 		}
-		// Clear the URL since server edges don't use the k8s proxy URL.
-		if edge.Status.URL != "" {
-			edge.Status.URL = ""
+		// Set the SSH URL on the edge status so clients can reach the SSH endpoint.
+		expectedSSHURL := r.hubExternalURL + "/services/edges-proxy/clusters/" + req.ClusterName +
+			"/apis/kedge.faros.sh/v1alpha1/edges/" + edge.Name + "/ssh"
+		if edge.Status.URL != expectedSSHURL {
+			logger.Info("Setting edge SSH URL", "url", expectedSSHURL)
+			edge.Status.URL = expectedSSHURL
 			if err := c.Status().Update(ctx, &edge); err != nil {
-				return ctrl.Result{}, fmt.Errorf("clearing edge URL: %w", err)
+				return ctrl.Result{}, fmt.Errorf("updating edge SSH URL: %w", err)
 			}
 		}
 		return ctrl.Result{}, nil

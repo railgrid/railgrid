@@ -38,8 +38,15 @@ const (
 type ServerProcess struct {
 	// ServerName is the kedge Server resource name to register on the hub.
 	ServerName string
-	// HubURL is the URL of the kedge hub.
+	// HubURL is the URL of the kedge hub (base URL, no /clusters/ path).
+	// Used only when HubKubeconfig is empty.
 	HubURL string
+	// HubKubeconfig is the path to a kubeconfig whose server URL contains the
+	// kcp workspace cluster path (e.g. https://hub:8443/clusters/abc123).
+	// When set the agent uses --hub-kubeconfig instead of --hub-url so that the
+	// cluster name is correctly derived from the URL.  Always set this in e2e
+	// tests to avoid the cluster-name mismatch bug with static tokens.
+	HubKubeconfig string
 	// Token is the bearer token for the agent.
 	Token string
 	// AgentBin is the path to the kedge binary.
@@ -72,16 +79,29 @@ func (s *ServerProcess) Start(ctx context.Context) error {
 	s.cancel = cancel
 	s.logBuf = &safeLogBuffer{}
 
-	s.agentCmd = exec.CommandContext(agentCtx,
-		s.AgentBin,
+	// Build args: prefer --hub-kubeconfig (cluster-scoped URL) over
+	// --hub-url + --token so the agent can derive the correct kcp cluster
+	// name from the kubeconfig's server URL.
+	args := []string{
 		"agent", "join",
 		"--type=server",
-		"--hub-url="+s.HubURL,
-		"--token="+s.Token,
-		"--site-name="+s.ServerName,
+		"--edge-name=" + s.ServerName,
 		"--hub-insecure-skip-tls-verify",
 		fmt.Sprintf("--ssh-proxy-port=%d", port),
-	)
+	}
+	if s.HubKubeconfig != "" {
+		args = append(args,
+			"--hub-kubeconfig="+s.HubKubeconfig,
+			"--tunnel-url="+DefaultHubURL,
+		)
+	} else {
+		args = append(args,
+			"--hub-url="+s.HubURL,
+			"--token="+s.Token,
+		)
+	}
+
+	s.agentCmd = exec.CommandContext(agentCtx, s.AgentBin, args...)
 	s.agentCmd.Stdout = s.logBuf
 	s.agentCmd.Stderr = s.logBuf
 

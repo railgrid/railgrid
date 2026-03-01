@@ -45,16 +45,16 @@ import (
 // Pass nil to use a default (secure) TLS config; use InsecureSkipVerify only
 // in development environments.
 //
-// resourceType must be either "sites" (Kubernetes cluster agent) or "servers"
+// resourceType must be either "edges" (Kubernetes cluster agent) or "servers"
 // (bare-metal / systemd host agent). It controls the query parameter sent to
-// the hub's tunnel endpoint so that Sites and Servers are stored under
+// the hub's tunnel endpoint so that Edges and Servers are stored under
 // distinct connection-manager keys and never alias each other.
 //
 // cluster is the kcp logical cluster path (e.g., "root:kedge:user-default").
 // If empty, it's extracted from the token (for SA tokens) or defaults to "default".
-func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) {
+func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) {
 	logger := klog.FromContext(ctx)
-	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "siteName", siteName, "resourceType", resourceType)
+	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "edgeName", edgeName, "resourceType", resourceType)
 
 	backoff := wait.Backoff{
 		Duration: 1 * time.Second,
@@ -71,7 +71,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 		default:
 		}
 
-		err := startTunneler(ctx, hubURL, token, siteName, resourceType, downstream, tlsConfig, stateChannel, sshPort, cluster)
+		err := startTunneler(ctx, hubURL, token, edgeName, resourceType, downstream, tlsConfig, stateChannel, sshPort, cluster)
 		if err != nil {
 			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
@@ -88,14 +88,23 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 	}
 }
 
-func startTunneler(ctx context.Context, hubURL string, token string, siteName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) error {
+func startTunneler(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) error {
 	logger := klog.FromContext(ctx)
 
 	// Connect to hub's tunnel endpoint.
-	// Use explicit cluster if provided, otherwise extract from SA token.
+	// Determine the kcp cluster name and the base hub URL (without /clusters/ path).
+	// Priority: explicit cluster arg > URL-embedded cluster > SA-token claim.
+	baseHubURL, urlCluster := SplitBaseAndCluster(hubURL)
 	clusterName := cluster
 	if clusterName == "" {
-		clusterName = extractClusterNameFromToken(token)
+		clusterName = urlCluster
+	}
+	if clusterName == "default" {
+		// Last-resort fallback: extract from SA token JWT claim (works for
+		// kubeconfig-based auth where the bearer token is a kcp ServiceAccount).
+		if sa := extractClusterNameFromToken(token); sa != "default" {
+			clusterName = sa
+		}
 	}
 
 	// All edge types (kubernetes and server) use the unified agent-proxy virtual
@@ -103,7 +112,7 @@ func startTunneler(ctx context.Context, hubURL string, token string, siteName st
 	// resourceType is retained for legacy callers but no longer affects the URL.
 	_ = resourceType
 	edgeProxyURL := fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/proxy",
-		hubURL, clusterName, siteName)
+		baseHubURL, clusterName, edgeName)
 
 	conn, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig)
 	if err != nil {
@@ -173,9 +182,44 @@ func initiateConnection(ctx context.Context, wsURL string, token string, tlsConf
 	return wsconnadapter.New(wsConn), nil
 }
 
+// SplitBaseAndCluster splits a hub URL into the base URL (scheme+host only) and
+// the kcp cluster name embedded in the path.
+//
+// For "https://kedge.localhost:8443/clusters/abc123" it returns:
+//
+//	base    = "https://kedge.localhost:8443"
+//	cluster = "abc123"
+//
+// For "https://kedge.localhost:8443" (no /clusters/ path segment) it returns:
+//
+//	base    = "https://kedge.localhost:8443"
+//	cluster = "default"
+//
+// The base URL is always used when dialling the hub so that /services/agent-proxy/
+// is routed by the hub's own mux before reaching the kcp reverse-proxy.
+func SplitBaseAndCluster(hubURL string) (base, cluster string) {
+	u, err := url.Parse(strings.TrimRight(hubURL, "/"))
+	if err != nil {
+		return strings.TrimRight(hubURL, "/"), "default"
+	}
+	// Path can be empty, "/clusters/abc123", or "/clusters/abc123/extra".
+	parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 3)
+	if len(parts) >= 2 && parts[0] == "clusters" && parts[1] != "" {
+		u.Path = ""
+		u.RawPath = ""
+		return strings.TrimRight(u.String(), "/"), parts[1]
+	}
+	u.Path = ""
+	u.RawPath = ""
+	return strings.TrimRight(u.String(), "/"), "default"
+}
+
 // extractClusterNameFromToken decodes a kcp ServiceAccount JWT (without
 // signature verification) and returns the clusterName claim. Returns "default"
 // if the token cannot be parsed or lacks the claim.
+//
+// This is a last-resort fallback; prefer extracting the cluster from the hub
+// URL via splitBaseAndCluster when a kubeconfig-provided server URL is available.
 func extractClusterNameFromToken(token string) string {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {

@@ -109,8 +109,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// Delete placements for edges no longer selected
 	for i := range placementList.Items {
 		p := &placementList.Items[i]
-		if !desiredEdges[p.Spec.SiteName] {
-			logger.Info("Deleting stale placement", "placement", p.Name, "edge", p.Spec.SiteName)
+		if !desiredEdges[p.Spec.EdgeName] {
+			logger.Info("Deleting stale placement", "placement", p.Name, "edge", p.Spec.EdgeName)
 			if err := c.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
 				logger.Error(err, "Failed to delete placement", "name", p.Name)
 			}
@@ -120,7 +120,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// Build existing edge set
 	existingEdges := make(map[string]bool)
 	for _, p := range placementList.Items {
-		existingEdges[p.Spec.SiteName] = true
+		existingEdges[p.Spec.EdgeName] = true
 	}
 
 	// Create placements for newly selected edges
@@ -135,7 +135,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 				Namespace: vw.Namespace,
 				Labels: map[string]string{
 					"kedge.faros.sh/virtualworkload": vw.Name,
-					"kedge.faros.sh/site":            edge.Name,
+					"kedge.faros.sh/edge":            edge.Name,
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
@@ -154,7 +154,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 					Namespace:  vw.Namespace,
 					UID:        vw.UID,
 				},
-				SiteName: edge.Name,
+				EdgeName: edge.Name,
 				Replicas: vw.Spec.Replicas,
 			},
 		}
@@ -165,7 +165,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		}
 	}
 
-	// Requeue periodically so site reconnects are picked up even if the watch
+	// Requeue periodically so edge reconnects are picked up even if the watch
 	// event is missed (e.g. status-only changes may not always fire the mapper).
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }

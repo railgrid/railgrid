@@ -31,7 +31,7 @@ const (
 	VirtualWorkloadPhaseUnknown VirtualWorkloadPhase = "Unknown"
 )
 
-// PlacementStrategy defines how workloads are placed across sites.
+// PlacementStrategy defines how workloads are placed across edges.
 type PlacementStrategy string
 
 const (
@@ -48,7 +48,7 @@ const (
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// VirtualWorkload describes a workload to be deployed across sites.
+// VirtualWorkload describes a workload to be deployed across edges.
 type VirtualWorkload struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

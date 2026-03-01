@@ -26,8 +26,11 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
+
+	agentTunnel "github.com/faroshq/faros-kedge/pkg/agent/tunnel"
 )
 
 // RepoRoot returns the absolute path to the kedge repository root, derived
@@ -54,6 +57,12 @@ const (
 
 	// agentClusterNameEnv overrides the agent kind cluster name.
 	agentClusterNameEnv = "KEDGE_AGENT_CLUSTER_NAME"
+
+	// hubAPIServerPortEnv overrides the Kubernetes API server port for the hub
+	// kind cluster (default 6443). Set this when port 6443 is already in use
+	// on the host (e.g. when kcp or another cluster is running).
+	// Example: KEDGE_HUB_API_SERVER_PORT=6444
+	hubAPIServerPortEnv = "KEDGE_HUB_API_SERVER_PORT"
 )
 
 const (
@@ -89,6 +98,16 @@ func effectiveAgentClusterName() string {
 		return v
 	}
 	return DefaultAgentClusterName
+}
+
+// apiServerPortArgs returns the --api-server-port flag and value when the
+// KEDGE_HUB_API_SERVER_PORT env var is set, so callers can forward it to
+// `kedge dev create`. Returns nil when the env var is not set (use the default).
+func apiServerPortArgs() []string {
+	if v := os.Getenv(hubAPIServerPortEnv); v != "" {
+		return []string{"--api-server-port", v}
+	}
+	return nil
 }
 
 // ClusterEnv holds runtime paths and names for a test cluster environment.
@@ -199,6 +218,7 @@ func SetupClusters(workDir string) env.Func {
 		if tag := os.Getenv(hubImageTagEnv); tag != "" {
 			args = append(args, "--tag", tag)
 		}
+		args = append(args, apiServerPortArgs()...)
 
 		cmd := exec.CommandContext(ctx, kedge, args...)
 		cmd.Dir = workDir
@@ -270,6 +290,7 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 		if tag := os.Getenv(hubImageTagEnv); tag != "" {
 			args = append(args, "--tag", tag)
 		}
+		args = append(args, apiServerPortArgs()...)
 
 		cmd := exec.CommandContext(ctx, kedge, args...)
 		cmd.Dir = workDir
@@ -506,6 +527,7 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 		if tag := os.Getenv(hubImageTagEnv); tag != "" {
 			args = append(args, "--tag", tag)
 		}
+		args = append(args, apiServerPortArgs()...)
 
 		cmd := exec.CommandContext(ctx, kedge, args...)
 		cmd.Dir = workDir
@@ -601,6 +623,22 @@ func AgentBinPath() string {
 	return filepath.Join(RepoRoot(), "bin", "kedge")
 }
 
+// ClusterNameFromKubeconfig reads the kubeconfig at path and extracts the kcp
+// cluster name from the server URL (e.g. "https://hub:8443/clusters/abc123" →
+// "abc123").  Returns "" when the kubeconfig cannot be read or has no cluster
+// path, so callers should skip passing --cluster in that case.
+func ClusterNameFromKubeconfig(kubeconfigPath string) string {
+	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return ""
+	}
+	_, cluster := agentTunnel.SplitBaseAndCluster(cfg.Host)
+	if cluster == "default" {
+		return ""
+	}
+	return cluster
+}
+
 // SetupClustersWithAgentCount is like SetupClusters but creates agentCount agent
 // clusters instead of DefaultAgentCount. Use agentCount=1 for suites that do not
 // need multi-agent tests (e.g. SSH) to save cluster creation time.
@@ -624,6 +662,7 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 		if tag := os.Getenv(hubImageTagEnv); tag != "" {
 			args = append(args, "--tag", tag)
 		}
+		args = append(args, apiServerPortArgs()...)
 
 		cmd := exec.CommandContext(ctx, kedge, args...)
 		cmd.Dir = workDir

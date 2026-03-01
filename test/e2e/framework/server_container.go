@@ -47,6 +47,10 @@ type ServerContainer struct {
 	ServerName string
 	// HubURL is the URL of the kedge hub, reachable from the runner's network.
 	HubURL string
+	// HubCluster is the kcp logical cluster name (e.g. "1tww43gelbj45g0k").
+	// When set it is passed to the agent via --cluster so that the tunnel is
+	// registered under the correct key.  Obtain it with ClusterNameFromKubeconfig.
+	HubCluster string
 	// Token is the bearer token for the agent.
 	Token string
 	// AgentBin is the host path to the kedge binary.
@@ -94,11 +98,17 @@ func (s *ServerContainer) Start(ctx context.Context) error {
 	// 4. Start the agent in server mode (background).
 	// Use POSIX-compatible redirection (Ubuntu uses dash as /bin/sh, which does
 	// not support bash-only &> syntax; use > file 2>&1 & instead).
+	// Pass --cluster when we know the kcp workspace ID so the reverse-tunnel is
+	// registered under the correct key and the hub can route SSH connections.
+	clusterFlag := ""
+	if s.HubCluster != "" {
+		clusterFlag = " --cluster=" + s.HubCluster
+	}
 	agentCmd := fmt.Sprintf(
-		"/kedge agent join --mode=server --hub-url=%s --token=%s --site-name=%s"+
-			" --hub-insecure-skip-tls-verify --ssh-proxy-port=%d"+
+		"/kedge agent join --type=server --hub-url=%s --token=%s --edge-name=%s"+
+			" --hub-insecure-skip-tls-verify --ssh-proxy-port=%d%s"+
 			" > /var/log/kedge-agent.log 2>&1 &",
-		s.HubURL, s.Token, s.ServerName, ContainerSSHPort,
+		s.HubURL, s.Token, s.ServerName, ContainerSSHPort, clusterFlag,
 	)
 	if _, err := s.exec(ctx, "sh", "-c", agentCmd); err != nil {
 		return fmt.Errorf("starting agent: %w", err)

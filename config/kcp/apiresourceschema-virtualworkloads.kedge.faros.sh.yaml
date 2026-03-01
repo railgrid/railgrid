@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260227-f675e28.virtualworkloads.kedge.faros.sh
+  name: v260301-1a00c73.virtualworkloads.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -28,7 +28,7 @@ spec:
       type: date
     name: v1alpha1
     schema:
-      description: VirtualWorkload describes a workload to be deployed across sites.
+      description: VirtualWorkload describes a workload to be deployed across edges.
       properties:
         apiVersion:
           description: |-
@@ -115,7 +115,7 @@ spec:
                   x-kubernetes-map-type: atomic
                 strategy:
                   description: PlacementStrategy defines how workloads are placed
-                    across sites.
+                    across edges.
                   type: string
               type: object
             replicas:

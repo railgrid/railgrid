@@ -46,11 +46,12 @@ func SSHServerModeConnect() features.Feature {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 
 			proc := &framework.ServerProcess{
-				ServerName: sshServerName,
-				HubURL:     clusterEnv.HubURL,
-				Token:      framework.DevToken,
-				AgentBin:   framework.AgentBinPath(),
-				SSHPort:    framework.DefaultTestSSHPort,
+				ServerName:    sshServerName,
+				HubURL:        clusterEnv.HubURL,
+				HubKubeconfig: clusterEnv.HubKubeconfig,
+				Token:         framework.DevToken,
+				AgentBin:      framework.AgentBinPath(),
+				SSHPort:       framework.DefaultTestSSHPort,
 			}
 
 			if err := proc.Start(ctx); err != nil {
@@ -197,6 +198,85 @@ func SSHServerModeConnect() features.Feature {
 		Feature()
 }
 
+// SSHEdgeURLSet verifies that status.URL is populated for server-type edges
+// and that the URL ends in "/ssh".  It follows the same setup as
+// SSHServerModeConnect but only asserts on the URL field.
+func SSHEdgeURLSet() features.Feature {
+	const sshURLEdgeName = "e2e-ssh-url-server"
+
+	return features.New("SSH/EdgeURLSet").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+
+			proc := &framework.ServerProcess{
+				ServerName:    sshURLEdgeName,
+				HubURL:        clusterEnv.HubURL,
+				HubKubeconfig: clusterEnv.HubKubeconfig,
+				Token:         framework.DevToken,
+				AgentBin:      framework.AgentBinPath(),
+				SSHPort:       framework.DefaultTestSSHPort + 1, // avoid port conflict with SSHServerModeConnect
+			}
+
+			if err := proc.Start(ctx); err != nil {
+				t.Fatalf("starting server process: %v", err)
+			}
+
+			if err := proc.WaitForAgentReady(ctx, 60*time.Second); err != nil {
+				t.Fatalf("agent not ready: %v\nlogs:\n%s", err, proc.Logs())
+			}
+
+			return framework.WithServerProcess(ctx, proc)
+		}).
+		Assess("edge_resource_becomes_Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+
+			if err := framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+				out, err := framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+					"get", "edges", sshURLEdgeName,
+					"-o", "jsonpath={.status.phase},{.status.connected}",
+				)
+				if err != nil {
+					return false, nil
+				}
+				return strings.TrimSpace(out) == "Ready,true", nil
+			}); err != nil {
+				proc, _ := framework.ServerProcessFromContext(ctx)
+				if proc != nil {
+					t.Logf("agent logs:\n%s", proc.Logs())
+				}
+				t.Fatalf("Edge %s did not become Ready within 2 minutes", sshURLEdgeName)
+			}
+
+			return ctx
+		}).
+		Assess("status_url_is_populated_and_ends_with_ssh", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			edgeURL, err := client.GetEdgeURL(ctx, sshURLEdgeName)
+			if err != nil {
+				t.Fatalf("getting edge URL for server-type edge %q: %v", sshURLEdgeName, err)
+			}
+			if !strings.HasSuffix(edgeURL, "/ssh") {
+				t.Fatalf("expected server-type edge URL to end with '/ssh', got: %s", edgeURL)
+			}
+			t.Logf("server-type edge URL: %s", edgeURL)
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if proc, ok := framework.ServerProcessFromContext(ctx); ok {
+				proc.Stop()
+			}
+
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			_, _ = framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"delete", "edges", sshURLEdgeName, "--ignore-not-found",
+			)
+			return ctx
+		}).
+		Feature()
+}
+
 // SSHDockerServerModeConnect is the Docker-based variant of SSHServerModeConnect.
 // It runs lscr.io/linuxserver/openssh-server in a container (--network host)
 // alongside a kedge server-mode agent, and verifies the full SSH path through
@@ -212,6 +292,7 @@ func SSHDockerServerModeConnect() features.Feature {
 				Name:       "kedge-e2e-ssh-docker",
 				ServerName: dockerServerName,
 				HubURL:     clusterEnv.HubURL,
+				HubCluster: framework.ClusterNameFromKubeconfig(clusterEnv.HubKubeconfig),
 				Token:      framework.DevToken,
 				AgentBin:   framework.AgentBinPath(),
 			}

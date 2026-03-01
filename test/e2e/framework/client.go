@@ -160,23 +160,23 @@ func (k *KedgeClient) ApplyManifest(ctx context.Context, yaml string) error {
 	return err
 }
 
-// WaitForPlacement polls until a Placement targeting siteName exists for the
+// WaitForPlacement polls until a Placement targeting edgeName exists for the
 // given VirtualWorkload or the timeout expires.
-func (k *KedgeClient) WaitForPlacement(ctx context.Context, vwName, namespace, siteName string, timeout time.Duration) error {
+func (k *KedgeClient) WaitForPlacement(ctx context.Context, vwName, namespace, edgeName string, timeout time.Duration) error {
 	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		out, err := k.Kubectl(ctx,
 			"get", "placements",
 			"-n", namespace,
 			"--insecure-skip-tls-verify",
 			"-l", "kedge.faros.sh/virtualworkload="+vwName,
-			"-o", "custom-columns=SITE:.spec.siteName",
+			"-o", "custom-columns=EDGE:.spec.edgeName",
 			"--no-headers",
 		)
 		if err != nil {
 			return false, nil
 		}
 		for _, line := range strings.Split(out, "\n") {
-			if strings.TrimSpace(line) == siteName {
+			if strings.TrimSpace(line) == edgeName {
 				return true, nil
 			}
 		}
@@ -184,18 +184,18 @@ func (k *KedgeClient) WaitForPlacement(ctx context.Context, vwName, namespace, s
 	})
 }
 
-// WaitForNoPlacement polls until no Placement targeting siteName exists for the
-// given VirtualWorkload — i.e. the scheduler has not routed to that site.
+// WaitForNoPlacement polls until no Placement targeting edgeName exists for the
+// given VirtualWorkload — i.e. the scheduler has not routed to that edge.
 // Returns nil when the condition is confirmed within timeout; returns an error
 // if a matching placement still exists at deadline.
-func (k *KedgeClient) WaitForNoPlacement(ctx context.Context, vwName, namespace, siteName string, timeout time.Duration) error {
+func (k *KedgeClient) WaitForNoPlacement(ctx context.Context, vwName, namespace, edgeName string, timeout time.Duration) error {
 	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		out, err := k.Kubectl(ctx,
 			"get", "placements",
 			"-n", namespace,
 			"--insecure-skip-tls-verify",
 			"-l", "kedge.faros.sh/virtualworkload="+vwName,
-			"-o", "custom-columns=SITE:.spec.siteName",
+			"-o", "custom-columns=EDGE:.spec.edgeName",
 			"--no-headers",
 		)
 		if err != nil {
@@ -203,7 +203,7 @@ func (k *KedgeClient) WaitForNoPlacement(ctx context.Context, vwName, namespace,
 			return true, nil
 		}
 		for _, line := range strings.Split(out, "\n") {
-			if strings.TrimSpace(line) == siteName {
+			if strings.TrimSpace(line) == edgeName {
 				return false, nil // still present, keep polling
 			}
 		}
@@ -299,6 +299,53 @@ func (k *KedgeClient) WaitForEdgePhase(ctx context.Context, edgeName, phase stri
 		}
 		return strings.TrimSpace(out) == phase, nil
 	})
+}
+
+// GetEdgeURL polls until edge.status.URL is populated and returns it.
+// It returns an error if the URL is not set within 2 minutes.
+func (k *KedgeClient) GetEdgeURL(ctx context.Context, name string) (string, error) {
+	var edgeURL string
+	err := Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+		out, err := k.Kubectl(ctx,
+			"get", "edge", name,
+			"-o", "jsonpath={.status.URL}",
+			"--insecure-skip-tls-verify",
+		)
+		if err != nil {
+			return false, nil
+		}
+		u := strings.TrimSpace(out)
+		if u == "" {
+			return false, nil
+		}
+		edgeURL = u
+		return true, nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("edge %q status.URL not populated within timeout: %w", name, err)
+	}
+	return edgeURL, nil
+}
+
+// KubectlWithURL runs kubectl against a specific server URL using credentials
+// from the hub kubeconfig. The hub bearer token is passed transparently to the
+// edge proxy endpoint on the hub.
+func (k *KedgeClient) KubectlWithURL(ctx context.Context, serverURL string, args ...string) (string, error) {
+	var buf bytes.Buffer
+	allArgs := append([]string{
+		"--kubeconfig", k.kubeconfig,
+		"--server", serverURL,
+		"--insecure-skip-tls-verify",
+	}, args...)
+	cmd := exec.CommandContext(ctx, "kubectl", allArgs...)
+	cmd.Dir = k.workDir
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return buf.String(), fmt.Errorf("kubectl --server %s %s failed: %w\noutput: %s",
+			serverURL, strings.Join(args, " "), err, buf.String())
+	}
+	return buf.String(), nil
 }
 
 // ExtractEdgeKubeconfig waits for the edge kubeconfig secret to appear in the

@@ -117,8 +117,10 @@ spec:
             properties:
               URL:
                 description: |-
-                  WorkspaceURL is the virtual workspace URL for this edge.
-                  Only set for type=kubernetes edges.
+                  URL is the proxy URL path for accessing this edge via the hub.
+                  Format: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
+                  For kubernetes edges, append /k8s/ for K8s API proxy.
+                  For server edges, append /ssh for SSH WebSocket terminal.
                 type: string
               connected:
                 description: Connected indicates whether the edge agent currently

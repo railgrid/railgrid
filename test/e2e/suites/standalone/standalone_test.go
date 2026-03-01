@@ -30,13 +30,18 @@ func TestStaticTokenLogin(t *testing.T)     { testenv.Test(t, cases.StaticTokenL
 func TestEdgeLifecycle(t *testing.T)        { testenv.Test(t, cases.EdgeLifecycle()) }
 func TestAgentEdgeJoin(t *testing.T)        { testenv.Test(t, cases.AgentEdgeJoin()) }
 func TestEdgeTunnelResilience(t *testing.T) { testenv.Test(t, cases.EdgeTunnelResilience()) }
+func TestEdgeURLSet(t *testing.T)           { testenv.Test(t, cases.EdgeURLSet()) }
+func TestK8sProxyAccess(t *testing.T)       { testenv.Test(t, cases.K8sProxyAccess()) }
+func TestK8sProxyWrite(t *testing.T)        { testenv.Test(t, cases.K8sProxyWrite()) }
+func TestK8sProxyExec(t *testing.T)         { testenv.Test(t, cases.K8sProxyExec()) }
+func TestWorkloadDeployment(t *testing.T)   { testenv.Test(t, cases.WorkloadDeployment()) }
 
-// Multi-site tests — require 2 agent clusters (DefaultAgentCount=2).
+// Multi-edge tests — require 2 agent clusters (DefaultAgentCount=2).
 func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }
 func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedScheduling()) }
 func TestWorkloadIsolation(t *testing.T)     { testenv.Test(t, cases.WorkloadIsolation()) }
-func TestSiteFailoverIsolation(t *testing.T) { testenv.Test(t, cases.SiteFailoverIsolation()) }
-func TestSiteReconnect(t *testing.T)         { testenv.Test(t, cases.SiteReconnect()) }
+func TestEdgeFailoverIsolation(t *testing.T) { testenv.Test(t, cases.EdgeFailoverIsolation()) }
+func TestEdgeReconnect(t *testing.T)         { testenv.Test(t, cases.EdgeReconnect()) }
 func TestEdgeListAccuracyUnderChurn(t *testing.T) {
 	testenv.Test(t, cases.EdgeListAccuracyUnderChurn())
 }

@@ -35,7 +35,7 @@ func main() {
 
 	cmd := &cobra.Command{
 		Use:   "kedge-agent",
-		Short: "Kedge agent - connects a site to the hub via reverse tunnel",
+		Short: "Kedge agent - connects an edge to the hub via reverse tunnel",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
@@ -54,18 +54,12 @@ func main() {
 	cmd.Flags().StringVar(&opts.HubContext, "hub-context", "", "Kubeconfig context for hub cluster")
 	cmd.Flags().StringVar(&opts.TunnelURL, "tunnel-url", "", "Hub tunnel URL (defaults to hub URL)")
 	cmd.Flags().StringVar(&opts.Token, "token", "", "Bootstrap token")
-	cmd.Flags().StringVar(&opts.SiteName, "site-name", "", "Name of this site")
+	cmd.Flags().StringVar(&opts.EdgeName, "edge-name", "", "Name of this edge")
 	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Path to target cluster kubeconfig")
 	cmd.Flags().StringVar(&opts.Context, "context", "", "Kubeconfig context to use")
-	cmd.Flags().StringToStringVar(&opts.Labels, "labels", nil, "Labels for this site (key=value pairs)")
+	cmd.Flags().StringToStringVar(&opts.Labels, "labels", nil, "Labels for this edge (key=value pairs)")
 	cmd.Flags().StringVar((*string)(&opts.Type), "type", string(agent.AgentTypeKubernetes),
 		"Edge type: 'kubernetes' (k8s cluster) or 'server' (bare-metal/systemd host)")
-	// --mode is a deprecated alias for --type; kept for backward compatibility.
-	cmd.Flags().StringVar((*string)(&opts.Mode), "mode", "", //nolint:staticcheck
-		"Deprecated: use --type. Agent mode: 'site' (→ kubernetes) or 'server'")
-	if err := cmd.Flags().MarkDeprecated("mode", "use --type instead (kubernetes|server)"); err != nil {
-		klog.Warning("failed to mark --mode as deprecated: ", err)
-	}
 	cmd.Flags().BoolVar(&opts.InsecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification for hub connection (dev/test only)")
 	cmd.Flags().IntVar(&opts.SSHProxyPort, "ssh-proxy-port", 22, "Local SSH daemon port to proxy connections to")
 	cmd.Flags().StringVar(&opts.SSHUser, "ssh-user", "", "SSH username for server-type edges (default: current user)")

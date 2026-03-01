@@ -28,7 +28,10 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/clientcmd"
+
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
 // sshWsMsg mirrors the wsMsg type in pkg/util/ssh.
@@ -57,20 +60,33 @@ type SSHWebSocketClient struct {
 }
 
 // DialSSH connects to the hub SSH WebSocket endpoint for the given edge name.
-// kubeconfig is used to extract the hub URL and bearer token.
+// kubeconfig is used to extract the hub credentials and to look up the edge's
+// status.URL (which contains the correct cluster name — not the static
+// "default" path that was previously hardcoded here).
 func DialSSH(ctx context.Context, kubeconfig, name string) (*SSHWebSocketClient, error) {
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("loading kubeconfig: %w", err)
 	}
 
-	// Build WebSocket URL.  The kubeconfig Host may contain a path suffix (e.g.
-	// /clusters/<name> when kcp workspaces are in use).  We must use url.Parse
-	// to replace the path rather than appending to it, exactly as
-	// buildSSHWebSocketURL does in pkg/cli/cmd/ssh.go.
-	u, err := url.Parse(strings.TrimRight(cfg.Host, "/"))
+	// Look up the edge to get the correct status.URL (includes the real cluster
+	// name, e.g. /clusters/1fsiilmnkk22io6n/...).
+	kedgeClient, err := kedgeclient.NewForConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("parsing hub URL %q: %w", cfg.Host, err)
+		return nil, fmt.Errorf("creating kedge client: %w", err)
+	}
+	edge, err := kedgeClient.Edges().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("fetching edge %q: %w", name, err)
+	}
+	if edge.Status.URL == "" {
+		return nil, fmt.Errorf("edge %q has no status.URL; is the agent running and the hub reconciler active?", name)
+	}
+
+	// Convert the HTTPS URL from status.URL to a WebSocket URL.
+	u, err := url.Parse(edge.Status.URL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing edge status URL %q: %w", edge.Status.URL, err)
 	}
 	switch u.Scheme {
 	case "https":
@@ -80,7 +96,6 @@ func DialSSH(ctx context.Context, kubeconfig, name string) (*SSHWebSocketClient,
 	default:
 		u.Scheme = "wss"
 	}
-	u.Path = fmt.Sprintf("/services/edges-proxy/clusters/default/apis/kedge.faros.sh/v1alpha1/edges/%s/ssh", name)
 	wsURL := u.String()
 
 	headers := http.Header{}

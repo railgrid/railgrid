@@ -116,7 +116,16 @@ func AgentEdgeJoin() features.Feature {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			out, err := client.Kubectl(ctx, "get", "namespaces", "--insecure-skip-tls-verify")
+			// Get the edge proxy URL from status and run kubectl through it.
+			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
+			if err != nil {
+				t.Fatalf("getting edge proxy URL: %v", err)
+			}
+			if !strings.HasSuffix(edgeURL, "/k8s") {
+				t.Fatalf("expected edge URL to end with '/k8s', got: %s", edgeURL)
+			}
+
+			out, err := client.KubectlWithURL(ctx, edgeURL, "get", "namespaces")
 			if err != nil {
 				t.Fatalf("edge proxy kubectl failed: %v", err)
 			}

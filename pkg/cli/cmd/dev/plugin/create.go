@@ -346,19 +346,19 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge login --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify --token=dev-token"))
 	stepNum++
 
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Create a site in the hub:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge site create my-site --labels env=dev"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Create an edge in the hub:\n", stepNum)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge edge create my-edge --labels env=dev"))
 	stepNum++
 
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Wait for the site kubeconfig secret and extract it:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kubectl get secret -n kedge-system site-my-site-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > site-kubeconfig"))
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "   (The secret is created automatically after the site is registered)\n\n")
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Wait for the edge kubeconfig secret and extract it:\n", stepNum)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kubectl get secret -n kedge-system edge-my-edge-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-kubeconfig"))
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "   (The secret is created automatically after the edge is registered)\n\n")
 	stepNum++
 
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Deploy the agent into the agent cluster using Helm:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "   First, create a secret with the site kubeconfig in the agent cluster:\n")
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "   First, create a secret with the edge kubeconfig in the agent cluster:\n")
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-		"kubectl --kubeconfig %s.kubeconfig create namespace kedge-system && \\\n   kubectl --kubeconfig %s.kubeconfig create secret generic site-kubeconfig -n kedge-system --from-file=kubeconfig=site-kubeconfig",
+		"kubectl --kubeconfig %s.kubeconfig create namespace kedge-system && \\\n   kubectl --kubeconfig %s.kubeconfig create secret generic edge-kubeconfig -n kedge-system --from-file=kubeconfig=edge-kubeconfig",
 		o.AgentClusterName, o.AgentClusterName)))
 
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then install the agent Helm chart:\n")
@@ -367,11 +367,11 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 		// The kubeconfig has kedge.localhost:8443 which works from host, but from within
 		// the Docker network we need to use the hub's IP and NodePort 31443
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-			"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-system \\\n     --set agent.siteName=my-site \\\n     --set agent.hub.existingSecret=site-kubeconfig \\\n     --set agent.hub.url=https://%s:31443",
+			"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-system \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set agent.hub.url=https://%s:31443",
 			o.AgentChartPath, o.ChartVersion, o.AgentClusterName, hubIP)))
 	} else {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-			"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-system \\\n     --set agent.siteName=my-site \\\n     --set agent.hub.existingSecret=site-kubeconfig",
+			"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-system \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig",
 			o.AgentChartPath, o.ChartVersion, o.AgentClusterName)))
 		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Note: You may need to set agent.hub.url to the hub's Docker network IP and NodePort.\n")
 		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Get hub IP: docker inspect kedge-hub-control-plane | jq -r '.[0].NetworkSettings.Networks[\"kedge-dev\"].IPAddress'\n")
@@ -379,8 +379,8 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	}
 
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "Useful commands:\n")
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  List sites:       %s\n", blueCommand("kedge site list"))
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get site info:    %s\n", blueCommand("kedge site get my-site"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  List edges:       %s\n", blueCommand("kedge edge list"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get edge info:    %s\n", blueCommand("kedge edge get my-edge"))
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Check agent logs: %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig logs -n kedge-system -l app.kubernetes.io/name=kedge-agent -f", o.AgentClusterName)))
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Delete env:       %s\n", blueCommand("kedge dev delete"))
 

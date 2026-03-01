@@ -130,24 +130,18 @@ func runSSH(cmd *cobra.Command, args []string) error {
 }
 
 // buildSSHWebSocketURL constructs the WebSocket URL for the hub SSH subresource
-// using the edge's proxy URL from status.
+// using the edge's full proxy URL from status.URL.
 //
-// URL format:
+// Edge.Status.URL for server-type edges is already the complete HTTPS URL:
 //
-//	wss://<hub>/services/edges-proxy<edgeURL>/ssh
+//	https://<hub>/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/ssh
 //
-// edgeURL comes from Edge.Status.URL and has format:
-//
-//	/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
-//
-// If remoteCmd is non-empty it is embedded as the "cmd" query parameter so
-// the hub runs it via SSH exec (no PTY, no shell startup overhead).
-func buildSSHWebSocketURL(config *rest.Config, edgeURL, remoteCmd string) (string, error) {
-	base := strings.TrimRight(config.Host, "/")
-
-	u, err := url.Parse(base)
+// This function simply converts the scheme to WebSocket (https→wss, http→ws)
+// and optionally appends the "cmd" query parameter for non-interactive SSH exec.
+func buildSSHWebSocketURL(_ *rest.Config, edgeURL, remoteCmd string) (string, error) {
+	u, err := url.Parse(edgeURL)
 	if err != nil {
-		return "", fmt.Errorf("parsing hub URL %q: %w", base, err)
+		return "", fmt.Errorf("parsing edge URL %q: %w", edgeURL, err)
 	}
 
 	switch u.Scheme {
@@ -158,10 +152,6 @@ func buildSSHWebSocketURL(config *rest.Config, edgeURL, remoteCmd string) (strin
 	default:
 		u.Scheme = "wss"
 	}
-
-	// edgeURL is like /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
-	// We need /services/edges-proxy{edgeURL}/ssh
-	u.Path = "/services/edges-proxy" + edgeURL + "/ssh"
 
 	if remoteCmd != "" {
 		q := url.Values{}

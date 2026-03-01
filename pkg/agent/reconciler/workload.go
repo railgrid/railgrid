@@ -43,7 +43,7 @@ const controllerName = "workload-reconciler"
 
 // WorkloadReconciler watches Placements on the hub and creates local Deployments.
 type WorkloadReconciler struct {
-	siteName         string
+	edgeName         string
 	hubClient        *kedgeclient.Client
 	hubDynamic       dynamic.Interface
 	downstreamClient kubernetes.Interface
@@ -51,9 +51,9 @@ type WorkloadReconciler struct {
 }
 
 // NewWorkloadReconciler creates a new workload reconciler.
-func NewWorkloadReconciler(siteName string, hubClient *kedgeclient.Client, hubDynamic dynamic.Interface, downstreamClient kubernetes.Interface) *WorkloadReconciler {
+func NewWorkloadReconciler(edgeName string, hubClient *kedgeclient.Client, hubDynamic dynamic.Interface, downstreamClient kubernetes.Interface) *WorkloadReconciler {
 	return &WorkloadReconciler{
-		siteName:         siteName,
+		edgeName:         edgeName,
 		hubClient:        hubClient,
 		hubDynamic:       hubDynamic,
 		downstreamClient: downstreamClient,
@@ -70,7 +70,7 @@ func (r *WorkloadReconciler) Run(ctx context.Context) error {
 	defer r.queue.ShutDown()
 
 	logger := klog.FromContext(ctx).WithName(controllerName)
-	logger.Info("Starting workload reconciler", "siteName", r.siteName)
+	logger.Info("Starting workload reconciler", "edgeName", r.edgeName)
 
 	// Create a filtered informer for Placements on the hub
 	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(
@@ -78,7 +78,7 @@ func (r *WorkloadReconciler) Run(ctx context.Context) error {
 		kedgeclient.DefaultResyncPeriod,
 		metav1.NamespaceAll,
 		func(opts *metav1.ListOptions) {
-			opts.LabelSelector = "kedge.faros.sh/site=" + r.siteName
+			opts.LabelSelector = "kedge.faros.sh/edge=" + r.edgeName
 		},
 	)
 
@@ -153,8 +153,8 @@ func (r *WorkloadReconciler) reconcile(ctx context.Context, key string) error {
 		return err
 	}
 
-	// Only handle placements for our site
-	if placement.Spec.SiteName != r.siteName {
+	// Only handle placements for our edge
+	if placement.Spec.EdgeName != r.edgeName {
 		return nil
 	}
 

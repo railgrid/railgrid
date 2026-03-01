@@ -29,3 +29,7 @@ func TestSSHServerModeConnect(t *testing.T) {
 func TestSSHDockerServerModeConnect(t *testing.T) {
 	testenv.Test(t, cases.SSHDockerServerModeConnect())
 }
+
+func TestSSHEdgeURLSet(t *testing.T) {
+	testenv.Test(t, cases.SSHEdgeURLSet())
+}

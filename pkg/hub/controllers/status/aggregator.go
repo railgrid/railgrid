@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package status aggregates and reconciles site status.
+// Package status aggregates and reconciles edge status.
 package status
 
 import (
@@ -35,12 +35,12 @@ func AggregateStatus(placements []kedgev1alpha1.Placement) kedgev1alpha1.Virtual
 	for _, p := range placements {
 		totalReady += p.Status.ReadyReplicas
 
-		siteStatus := kedgev1alpha1.EdgeWorkloadStatus{
-			EdgeName:      p.Spec.SiteName,
+		edgeStatus := kedgev1alpha1.EdgeWorkloadStatus{
+			EdgeName:      p.Spec.EdgeName,
 			Phase:         p.Status.Phase,
 			ReadyReplicas: p.Status.ReadyReplicas,
 		}
-		status.Edges = append(status.Edges, siteStatus)
+		status.Edges = append(status.Edges, edgeStatus)
 
 		if p.Status.Phase != "Running" {
 			allRunning = false

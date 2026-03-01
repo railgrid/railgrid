@@ -38,14 +38,14 @@ func newStatusScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-func placement(name, ns, vwName, siteName, phase string, readyReplicas int32) *kedgev1alpha1.Placement {
+func placement(name, ns, vwName, edgeName, phase string, readyReplicas int32) *kedgev1alpha1.Placement {
 	return &kedgev1alpha1.Placement{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
 			Labels:    map[string]string{"kedge.faros.sh/virtualworkload": vwName},
 		},
-		Spec:   kedgev1alpha1.PlacementObjSpec{SiteName: siteName},
+		Spec:   kedgev1alpha1.PlacementObjSpec{EdgeName: edgeName},
 		Status: kedgev1alpha1.PlacementObjStatus{Phase: phase, ReadyReplicas: readyReplicas},
 	}
 }
@@ -98,8 +98,8 @@ func TestStatusReconciler_AllPlacementsRunning_PhaseRunning(t *testing.T) {
 	workload := &kedgev1alpha1.VirtualWorkload{
 		ObjectMeta: metav1.ObjectMeta{Name: "vw-b", Namespace: "default"},
 	}
-	p1 := placement("p1", "default", "vw-b", "site-1", "Running", 1)
-	p2 := placement("p2", "default", "vw-b", "site-2", "Running", 2)
+	p1 := placement("p1", "default", "vw-b", "edge-1", "Running", 1)
+	p2 := placement("p2", "default", "vw-b", "edge-2", "Running", 2)
 
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -130,8 +130,8 @@ func TestStatusReconciler_MixedPlacements_PhasePending(t *testing.T) {
 	workload := &kedgev1alpha1.VirtualWorkload{
 		ObjectMeta: metav1.ObjectMeta{Name: "vw-c", Namespace: "default"},
 	}
-	p1 := placement("p1", "default", "vw-c", "site-1", "Running", 1)
-	p2 := placement("p2", "default", "vw-c", "site-2", "Pending", 0)
+	p1 := placement("p1", "default", "vw-c", "edge-1", "Running", 1)
+	p2 := placement("p2", "default", "vw-c", "edge-2", "Pending", 0)
 
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).

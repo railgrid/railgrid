@@ -31,20 +31,20 @@ type Agent struct {
 	workDir         string
 	hubKubeconfig   string
 	agentKubeconfig string
-	siteName        string
+	edgeName        string
 	labels          map[string]string
 	cmd             *exec.Cmd
 	cancel          context.CancelFunc
 }
 
 // NewAgent creates a new Agent.
-func NewAgent(workDir, hubKubeconfig, agentKubeconfig, siteName string) *Agent {
+func NewAgent(workDir, hubKubeconfig, agentKubeconfig, edgeName string) *Agent {
 	return &Agent{
 		bin:             filepath.Join(workDir, "bin/kedge-agent"),
 		workDir:         workDir,
 		hubKubeconfig:   hubKubeconfig,
 		agentKubeconfig: agentKubeconfig,
-		siteName:        siteName,
+		edgeName:        edgeName,
 	}
 }
 
@@ -64,7 +64,7 @@ func (a *Agent) Start(ctx context.Context) error {
 		"--hub-kubeconfig", a.hubKubeconfig,
 		"--kubeconfig", a.agentKubeconfig,
 		"--tunnel-url", DefaultHubURL,
-		"--site-name", a.siteName,
+		"--edge-name", a.edgeName,
 	}
 	if len(a.labels) > 0 {
 		var pairs []string

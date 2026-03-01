@@ -42,6 +42,21 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
+// clusterFromConfig returns the kcp cluster name embedded in the hub config's
+// Host URL (e.g. "https://hub:8443/clusters/abc123" → "abc123").
+// Returns "" when no /clusters/ segment is present so that the caller can
+// fall back to other sources (explicit --cluster flag, SA token claim, etc.).
+func clusterFromConfig(cfg *rest.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	_, cluster := tunnel.SplitBaseAndCluster(cfg.Host)
+	if cluster == "default" {
+		return ""
+	}
+	return cluster
+}
+
 // AgentType discriminates whether the agent connects a Kubernetes cluster or a
 // bare-metal / systemd server to the hub.
 type AgentType string
@@ -54,38 +69,18 @@ const (
 	AgentTypeServer AgentType = "server"
 )
 
-// Deprecated mode aliases kept for backward-compatibility with existing callers.
-const (
-	// AgentModeSite is deprecated; use AgentTypeKubernetes.
-	AgentModeSite AgentType = "site"
-	// AgentModeServer is deprecated; use AgentTypeServer.
-	// Note: "server" maps to both AgentTypeServer and AgentModeServer; they are
-	// the same string and the alias exists purely for semantic documentation.
-	AgentModeServer = AgentTypeServer
-)
-
-// AgentMode is a deprecated type alias kept so that old code compiling against
-// this package (e.g. "opts.Mode = agent.AgentModeSite") still works.
-//
-// Deprecated: use AgentType.
-type AgentMode = AgentType
-
-// resolveType normalises a raw --type / --mode flag value to a canonical AgentType.
-// Deprecated mode aliases are mapped to their canonical equivalents:
-//   - "site"   → AgentTypeKubernetes
-//   - "server" → AgentTypeServer   (also the canonical value, not just an alias)
+// resolveType normalises a raw --type flag value to a canonical AgentType.
 func resolveType(raw string) (AgentType, error) {
 	switch raw {
-	case string(AgentTypeKubernetes), "site":
+	case string(AgentTypeKubernetes):
 		return AgentTypeKubernetes, nil
 	case string(AgentTypeServer):
 		return AgentTypeServer, nil
 	default:
 		return "", fmt.Errorf(
-			"invalid type %q: must be %q or %q (deprecated aliases: %q, %q)",
+			"invalid type %q: must be %q or %q",
 			raw,
 			string(AgentTypeKubernetes), string(AgentTypeServer),
-			string(AgentModeSite), string(AgentModeServer),
 		)
 	}
 }
@@ -97,21 +92,13 @@ type Options struct {
 	HubContext    string
 	TunnelURL     string // Separate URL for reverse tunnel (defaults to hubConfig.Host)
 	Token         string
-	SiteName      string
+	EdgeName      string
 	Kubeconfig    string
 	Context       string
 	Labels        map[string]string
 	// Type controls whether the agent registers as a Kubernetes edge or a
 	// Server edge. Defaults to AgentTypeKubernetes.
 	Type AgentType
-	// Mode is a deprecated alias for Type. When both are set and non-zero,
-	// Mode is used only if Type is still the default (AgentTypeKubernetes)
-	// or empty, otherwise Type takes precedence.
-	//
-	// Supported values: "site" (→ kubernetes), "server" (→ server).
-	//
-	// Deprecated: use Type.
-	Mode AgentMode
 	// InsecureSkipTLSVerify disables TLS certificate verification for the hub
 	// connection. Should only be used in development/testing; never in production.
 	InsecureSkipTLSVerify bool
@@ -152,17 +139,11 @@ type Agent struct {
 
 // New creates a new agent.
 func New(opts *Options) (*Agent, error) {
-	if opts.SiteName == "" {
-		return nil, fmt.Errorf("site name is required")
+	if opts.EdgeName == "" {
+		return nil, fmt.Errorf("edge name is required")
 	}
 
-	// Resolve effective type: explicit Type takes precedence over deprecated Mode.
-	// If Type is still the default and Mode is explicitly set, honour Mode.
 	rawType := string(opts.Type)
-	if (rawType == "" || rawType == string(AgentTypeKubernetes)) &&
-		opts.Mode != "" && opts.Mode != AgentTypeKubernetes {
-		rawType = string(opts.Mode)
-	}
 	if rawType == "" {
 		rawType = string(AgentTypeKubernetes)
 	}
@@ -234,7 +215,7 @@ func New(opts *Options) (*Agent, error) {
 func (a *Agent) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting kedge agent",
-		"siteName", a.opts.SiteName,
+		"edgeName", a.opts.EdgeName,
 		"type", a.agentType,
 		"labels", a.opts.Labels,
 	)
@@ -263,21 +244,30 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	}
 	logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeKubernetes))
 
+	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.
+	clusterName := a.opts.Cluster
+	if clusterName == "" {
+		clusterName = clusterFromConfig(a.hubConfig)
+	}
+
+	// Always connect the tunnel to the base hub URL (strip any /clusters/...
+	// path so the request hits /services/agent-proxy/ on the hub's own mux).
 	tunnelURL := a.opts.TunnelURL
 	if tunnelURL == "" {
-		tunnelURL = a.hubConfig.Host
+		baseURL, _ := tunnel.SplitBaseAndCluster(a.hubConfig.Host)
+		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.opts.Cluster)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName)
 
-	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubClient.Dynamic(), downstreamClient)
+	wkr := reconciler.NewWorkloadReconciler(a.opts.EdgeName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
 		if err := wkr.Run(ctx); err != nil {
 			logger.Error(err, "Workload reconciler failed")
 		}
 	}()
 
-	reporter := agentStatus.NewEdgeReporter(a.opts.SiteName, hubClient, tunnelState)
+	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState)
 	go func() {
 		if err := reporter.Run(ctx); err != nil {
 			logger.Error(err, "Edge status reporter failed")
@@ -302,15 +292,23 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		return fmt.Errorf("setting up SSH credentials: %w", err)
 	}
 
+	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.
+	serverClusterName := a.opts.Cluster
+	if serverClusterName == "" {
+		serverClusterName = clusterFromConfig(a.hubConfig)
+	}
+
+	// Always connect the tunnel to the base hub URL.
 	tunnelURL := a.opts.TunnelURL
 	if tunnelURL == "" {
-		tunnelURL = a.hubConfig.Host
+		baseURL, _ := tunnel.SplitBaseAndCluster(a.hubConfig.Host)
+		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.opts.Cluster)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName)
 
-	reporter := agentStatus.NewEdgeReporter(a.opts.SiteName, hubClient, tunnelState)
+	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState)
 	go func() {
 		if err := reporter.Run(ctx); err != nil {
 			logger.Error(err, "Edge status reporter failed")
@@ -351,7 +349,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 		return nil
 	}
 
-	secretName := a.opts.SiteName + "-ssh-credentials"
+	secretName := a.opts.EdgeName + "-ssh-credentials"
 	secretData := make(map[string][]byte)
 
 	if hasPassword {
@@ -394,7 +392,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 			Name:      secretName,
 			Namespace: sshCredentialsNamespace,
 			Labels: map[string]string{
-				"kedge.faros.sh/edge": a.opts.SiteName,
+				"kedge.faros.sh/edge": a.opts.EdgeName,
 			},
 		},
 		Type: corev1.SecretTypeOpaque,
@@ -438,7 +436,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 	// Build the proxy URL path for this edge.
 	// Format: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
 	edgeURL := fmt.Sprintf("/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s",
-		a.opts.Cluster, a.opts.SiteName)
+		a.opts.Cluster, a.opts.EdgeName)
 
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
@@ -451,7 +449,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 		return fmt.Errorf("marshaling edge status patch: %w", err)
 	}
 
-	_, err = hubClient.Edges().Patch(ctx, a.opts.SiteName,
+	_, err = hubClient.Edges().Patch(ctx, a.opts.EdgeName,
 		types.MergePatchType, patchBytes,
 		metav1.PatchOptions{}, "status")
 	if err != nil {
@@ -477,7 +475,7 @@ func (a *Agent) registerEdge(ctx context.Context, client *kedgeclient.Client) er
 			Kind:       "Edge",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   a.opts.SiteName,
+			Name:   a.opts.EdgeName,
 			Labels: a.opts.Labels,
 		},
 		Spec: kedgev1alpha1.EdgeSpec{
@@ -485,15 +483,15 @@ func (a *Agent) registerEdge(ctx context.Context, client *kedgeclient.Client) er
 		},
 	}
 
-	existing, err := client.Edges().Get(ctx, a.opts.SiteName, metav1.GetOptions{})
+	existing, err := client.Edges().Get(ctx, a.opts.EdgeName, metav1.GetOptions{})
 	if err != nil {
-		logger.Info("Creating Edge", "name", a.opts.SiteName, "type", edgeType)
+		logger.Info("Creating Edge", "name", a.opts.EdgeName, "type", edgeType)
 		_, err := client.Edges().Create(ctx, edge, metav1.CreateOptions{})
 		if err != nil {
 			return fmt.Errorf("creating edge: %w", err)
 		}
 	} else {
-		logger.Info("Updating Edge", "name", a.opts.SiteName, "type", edgeType)
+		logger.Info("Updating Edge", "name", a.opts.EdgeName, "type", edgeType)
 		if existing.Labels == nil {
 			existing.Labels = make(map[string]string)
 		}

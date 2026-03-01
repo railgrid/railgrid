@@ -90,14 +90,14 @@ func listPlacements(ctx context.Context, dynClient dynamic.Interface) error {
 	}
 
 	tw := newTabWriter(os.Stdout)
-	printRow(tw, "NAME", "SITE", "PHASE", "READY", "AGE")
+	printRow(tw, "NAME", "EDGE", "PHASE", "READY", "AGE")
 
 	for _, item := range list.Items {
-		siteName := getNestedString(item, "spec", "siteName")
+		edgeName := getNestedString(item, "spec", "edgeName")
 		phase := getNestedString(item, "status", "phase")
 		readyReplicas := getNestedInt(item, "status", "readyReplicas")
 		age := formatAge(item.GetCreationTimestamp().Time)
-		printRow(tw, item.GetName(), siteName, phase, fmt.Sprintf("%d", readyReplicas), age)
+		printRow(tw, item.GetName(), edgeName, phase, fmt.Sprintf("%d", readyReplicas), age)
 	}
 
 	_ = tw.Flush()
