@@ -115,7 +115,7 @@ Then install the agent Helm chart:
 helm install kedge-agent deploy/charts/kedge-agent \
   --kubeconfig kedge-agent.kubeconfig \
   -n kedge-system \
-  --set agent.siteName=my-site \
+  --set agent.edgeName=my-edge \
   --set agent.hub.existingSecret=site-kubeconfig
 ```
 

@@ -106,7 +106,7 @@ spec:
 kedge agent join \
   --hub-url https://hub.example.com \
   --token <bootstrap-token> \
-  --site-name my-server \
+  --edge-name my-server \
   --type=server
 ```
 
@@ -118,13 +118,16 @@ Use the convenience `make` targets to try SSH server mode against a local dev hu
 
 ```bash
 # Terminal 1 — register a dev Edge (server type) resource and write .env.edge
-make dev-edge-create TYPE=server
+make dev-edge-create TYPE=server DEV_EDGE_NAME=my-server
+
+# run dev ssh server locally with a reverse tunnel to the hub (proxies to localhost:2222)
+make dev-run-ssh-server
 
 # Terminal 2 — start the agent in server mode (SSH reverse tunnel to localhost:22)
-make dev-run-edge TYPE=server
+make dev-run-edge TYPE=server DEV_EDGE_NAME=my-server
 ```
 
-The edge name defaults to `dev-edge-1`; override with `DEV_EDGE_NAME=my-host make dev-edge-create TYPE=server`.
+The edge name defaults to `dev-edge-1`; override with `DEV_EDGE_NAME=my-server make dev-edge-create TYPE=server`.
 
 ### Usage
 

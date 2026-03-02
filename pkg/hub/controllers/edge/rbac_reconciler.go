@@ -208,8 +208,8 @@ func desiredAgentRules() []rbacv1.PolicyRule {
 		},
 		{
 			APIGroups: []string{"kedge.faros.sh"},
-			Resources: []string{"placements"},
-			Verbs:     []string{"get", "list", "watch"},
+			Resources: []string{"placements", "placements/status"},
+			Verbs:     []string{"get", "list", "watch", "patch"},
 		},
 		{
 			APIGroups: []string{"kedge.faros.sh"},

@@ -197,7 +197,7 @@ On the target cluster, run the agent with the bootstrap token:
 kedge-agent \
   --hub-url https://your-hub-url:8443 \
   --bootstrap-token <token> \
-  --site-name my-home-server
+  --edge-name my-home-server
 ```
 
 Or deploy via Helm (see agent chart documentation).

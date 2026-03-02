@@ -164,7 +164,7 @@ ifeq ($(TYPE),server)
 		--insecure-skip-tls-verify \
 		--token=$(STATIC_AUTH_TOKEN) \
 		--tunnel-url=https://localhost:8443 \
-		--site-name=$(KEDGE_EDGE_NAME) \
+		--edge-name=$(DEV_EDGE_NAME) \
 		--labels=$(KEDGE_EDGE_LABELS) \
 		--cluster=$(KEDGE_EDGE_CLUSTER) \
 		--type=server \
@@ -177,7 +177,7 @@ else
 		--hub-kubeconfig=$(KEDGE_EDGE_KUBECONFIG) \
 		--kubeconfig=.kubeconfig-kedge-agent \
 		--tunnel-url=https://localhost:8443 \
-		--site-name=$(KEDGE_EDGE_NAME) \
+		--edge-name=$(DEV_EDGE_NAME) \
 		--labels=$(KEDGE_EDGE_LABELS) \
 		--type=kubernetes
 endif

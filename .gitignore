@@ -47,20 +47,19 @@ dex.db
 .env
 .kind-kubeconfig
 .gitignore
-.site-kubeconfig
+.edge-kubeconfig
 .hooks/
 
 .kubeconfig-kedge-agent
 kk
 docs/Gemfile.lock
-site-kubeconfig
+edge-kubeconfig
 *.kubeconfig
 .env
-.site-kubeconfig
 .planning/autopilot.sh
 .planning/autopilot.lock
 .planning/logs/
 .planning/checkpoints/
 .env.server
-.edge-kubeconfig
 .env.edge
+.site-kubeconfig

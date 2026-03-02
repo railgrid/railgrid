@@ -132,7 +132,7 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.ChartPath, "chart-path", o.ChartPath, "Helm chart path or OCI registry URL for hub")
 	cmd.Flags().StringVar(&o.AgentChartPath, "agent-chart-path", o.AgentChartPath, "Helm chart path or OCI registry URL for agent")
 	cmd.Flags().StringVar(&o.ChartVersion, "chart-version", o.ChartVersion, "Helm chart version")
-	cmd.Flags().StringVar(&o.Image, "image", "ghcr.io/faroshq/kedge-hub", "kedge hub image to use in dev mode")
+	cmd.Flags().StringVar(&o.Image, "image", "ghcr.io/faroshq/kedge", "kedge hub image to use in dev mode")
 	cmd.Flags().StringVar(&o.Tag, "tag", "", "kedge hub image tag to use in dev mode")
 	cmd.Flags().StringVar(&o.KindNetwork, "kind-network", "kedge-dev", "kind network to use in dev mode")
 	cmd.Flags().IntVar(&o.APIServerPort, "api-server-port", 6443, "Kubernetes API server port for hub kind cluster (change if 6443 is already in use)")

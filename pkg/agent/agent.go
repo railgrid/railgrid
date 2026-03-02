@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -264,6 +265,16 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	go func() {
 		if err := wkr.Run(ctx); err != nil {
 			logger.Error(err, "Workload reconciler failed")
+		}
+	}()
+
+	// Start informer factory for watching local deployments
+	informerFactory := informers.NewSharedInformerFactory(downstreamClient, kedgeclient.DefaultResyncPeriod)
+	placementReporter := agentStatus.NewPlacementReporter(hubClient, downstreamClient, informerFactory)
+	informerFactory.Start(ctx.Done())
+	go func() {
+		if err := placementReporter.Run(ctx, 2); err != nil {
+			logger.Error(err, "Placement status reporter failed")
 		}
 	}()
 

@@ -11,7 +11,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  HUB_IMAGE_NAME: ${{ github.repository }}
+  HUB_IMAGE_NAME: ${{ github.repository }}-hub
   AGENT_IMAGE_NAME: ${{ github.repository }}-agent
 
 jobs:
