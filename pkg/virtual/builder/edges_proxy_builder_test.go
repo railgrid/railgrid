@@ -143,11 +143,15 @@ func TestEdgesProxy_StaticToken_BypassesAuthorization(t *testing.T) {
 	}
 }
 
-// TestEdgesProxy_SAToken_UsesClaimCluster verifies that for a kcp ServiceAccount
-// token the cluster embedded in the JWT claims is used for authorization (not
-// the cluster from the URL path).
-func TestEdgesProxy_SAToken_UsesClaimCluster(t *testing.T) {
-	const claimCluster = "root:sa-cluster"
+// TestEdgesProxy_SAToken_UsesURLCluster verifies that for a kcp ServiceAccount
+// token the cluster from the URL path is used for authorization — NOT the
+// unverified clusterName embedded in the JWT claims.
+// This is the core security fix for https://github.com/faroshq/kedge/issues/68.
+func TestEdgesProxy_SAToken_UsesURLCluster(t *testing.T) {
+	const (
+		claimCluster = "root:sa-cluster"  // cluster embedded in the SA token JWT
+		urlCluster   = "root:url-cluster" // cluster in the URL path (authoritative)
+	)
 
 	var authorizedCluster string
 	authFn := func(_ context.Context, _ *rest.Config, _, cluster, _, _, _ string) error {
@@ -160,14 +164,16 @@ func TestEdgesProxy_SAToken_UsesClaimCluster(t *testing.T) {
 
 	saToken := buildFakeSAToken(t, claimCluster)
 	// URL path uses a *different* cluster than the SA claim.
-	req := httptest.NewRequest(http.MethodGet, edgesProxyRequestPath("root:url-cluster", "my-edge", "k8s"), nil)
+	req := httptest.NewRequest(http.MethodGet, edgesProxyRequestPath(urlCluster, "my-edge", "k8s"), nil)
 	req.Header.Set("Authorization", "Bearer "+saToken)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	if authorizedCluster != claimCluster {
-		t.Fatalf("expected SA token to use claim cluster %q, got %q", claimCluster, authorizedCluster)
+	// Security fix: must use URL cluster, never the unverified JWT clusterName.
+	if authorizedCluster != urlCluster {
+		t.Fatalf("expected SA token to use URL cluster %q, got %q (JWT claim cluster was %q — should NOT be used)",
+			urlCluster, authorizedCluster, claimCluster)
 	}
 	// No tunnel → 502 is expected after auth passes.
 	if w.Code != http.StatusBadGateway {

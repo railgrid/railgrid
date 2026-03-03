@@ -81,15 +81,18 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		//    SA tokens go through kcp delegated authorization.
 		_, isStaticToken := p.staticTokens[token]
 		if !isStaticToken {
-			claims, ok := parseServiceAccountToken(token)
-			if !ok {
+			if _, ok := parseServiceAccountToken(token); !ok {
 				p.logger.Info("Rejected edge agent tunnel: invalid or missing SA token",
 					"cluster", cluster, "name", name)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
 			if p.kcpConfig != nil {
-				if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "get", "edges", name); err != nil {
+				// Always use cluster from URL path — do NOT use JWT's clusterName claim
+				// (it's unverified and not yet validated by kcp). The TokenReview performed
+				// inside authorizeFn will reject tokens not issued for this cluster.
+				// Fixes https://github.com/faroshq/kedge/issues/68
+				if err := p.authorizeFn(r.Context(), p.kcpConfig, token, cluster, "get", "edges", name); err != nil {
 					p.logger.Error(err, "edge agent proxy authorization failed",
 						"cluster", cluster, "name", name)
 					http.Error(w, "Forbidden", http.StatusForbidden)

@@ -42,8 +42,10 @@ type virtualWorkspaces struct {
 	kcpK8sClient    kubernetes.Interface // kubernetes client for fetching secrets
 	kedgeClient     *kedgeclient.Client  // kedge client for fetching Edge resources
 	staticTokens    map[string]struct{}  // static tokens that bypass JWT SA requirement
-	authorizeFn     authorizeFnType      // delegated authorization function; defaults to authorize
-	logger          klog.Logger
+	// authorizeFn performs delegated authentication and authorization against kcp.
+	// Defaults to the package-level authorize function; injectable for testing.
+	authorizeFn authorizeFnType
+	logger      klog.Logger
 }
 
 // VirtualWorkspaceHandlers provides access to the HTTP handlers for tunneling.

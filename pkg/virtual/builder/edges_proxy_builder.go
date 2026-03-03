@@ -66,13 +66,11 @@ func (p *virtualWorkspaces) buildEdgesProxyHandler() http.Handler {
 		if p.kcpConfig != nil {
 			_, isStaticToken := p.staticTokens[token]
 			if !isStaticToken {
-				// For SA tokens: cluster is embedded in the JWT claims.
-				// For OIDC tokens: cluster comes from the URL path (already parsed above).
-				authCluster := cluster
-				if claims, ok := parseServiceAccountToken(token); ok {
-					authCluster = claims.ClusterName
-				}
-				if err := p.authorizeFn(r.Context(), p.kcpConfig, token, authCluster, "proxy", "edges", name); err != nil {
+				// Always use cluster from URL path — do NOT use JWT's clusterName claim
+				// (it's unverified and not yet validated by kcp). The TokenReview performed
+				// inside authorizeFn will reject tokens not issued for this cluster.
+				// Fixes https://github.com/faroshq/kedge/issues/68
+				if err := p.authorizeFn(r.Context(), p.kcpConfig, token, cluster, "proxy", "edges", name); err != nil {
 					p.logger.Error(err, "edges proxy authorization failed",
 						"cluster", cluster, "name", name, "subresource", subresource)
 					http.Error(w, "Forbidden", http.StatusForbidden)
