@@ -18,6 +18,7 @@ limitations under the License.
 package builder
 
 import (
+	"context"
 	"net/http"
 
 	"k8s.io/client-go/dynamic"
@@ -29,6 +30,10 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
 )
 
+// authorizeFnType is the signature for the delegated authorization function.
+// Factored out as a type to allow injection in tests.
+type authorizeFnType func(ctx context.Context, kcpConfig *rest.Config, token, clusterName, verb, resource, name string) error
+
 // virtualWorkspaces holds state and dependencies for all virtual workspaces.
 type virtualWorkspaces struct {
 	connManager     *connman.ConnectionManager
@@ -37,6 +42,7 @@ type virtualWorkspaces struct {
 	kcpK8sClient    kubernetes.Interface // kubernetes client for fetching secrets
 	kedgeClient     *kedgeclient.Client  // kedge client for fetching Edge resources
 	staticTokens    map[string]struct{}  // static tokens that bypass JWT SA requirement
+	authorizeFn     authorizeFnType      // delegated authorization function; defaults to authorize
 	logger          klog.Logger
 }
 
@@ -78,6 +84,7 @@ func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config,
 			kcpK8sClient:    kcpK8sClient,
 			kedgeClient:     kedgeClient,
 			staticTokens:    staticTokenSet,
+			authorizeFn:     authorize,
 			logger:          logger.WithName("virtual-workspaces"),
 		},
 	}, nil

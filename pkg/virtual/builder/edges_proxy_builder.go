@@ -64,16 +64,21 @@ func (p *virtualWorkspaces) buildEdgesProxyHandler() http.Handler {
 
 		// 3. Delegated authorization via kcp (if configured).
 		if p.kcpConfig != nil {
-			if claims, ok := parseServiceAccountToken(token); ok {
-				if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "proxy", "edges", name); err != nil {
+			_, isStaticToken := p.staticTokens[token]
+			if !isStaticToken {
+				// For SA tokens: cluster is embedded in the JWT claims.
+				// For OIDC tokens: cluster comes from the URL path (already parsed above).
+				authCluster := cluster
+				if claims, ok := parseServiceAccountToken(token); ok {
+					authCluster = claims.ClusterName
+				}
+				if err := p.authorizeFn(r.Context(), p.kcpConfig, token, authCluster, "proxy", "edges", name); err != nil {
 					p.logger.Error(err, "edges proxy authorization failed",
 						"cluster", cluster, "name", name, "subresource", subresource)
 					http.Error(w, "Forbidden", http.StatusForbidden)
 					return
 				}
 			}
-			// TODO(#63): OIDC tokens bypass authorization here — same issue as
-			// agent_proxy_builder.go. Track in https://github.com/faroshq/kedge/issues/63
 		}
 
 		// 4. Look up the dialer registered by the agent-proxy-v2 handler.
