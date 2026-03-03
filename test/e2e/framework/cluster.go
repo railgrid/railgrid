@@ -47,6 +47,11 @@ const (
 	// `kedge dev create`. Set to "Never" in CI when the image is pre-loaded.
 	hubImagePullPolicyEnv = "KEDGE_HUB_IMAGE_PULL_POLICY"
 
+	// hubImageEnv overrides the hub image repository passed to `kedge dev create`.
+	// Use this in CI when the image is built with a non-default name
+	// (e.g. "ghcr.io/faroshq/kedge-hub" instead of "ghcr.io/faroshq/kedge").
+	hubImageEnv = "KEDGE_HUB_IMAGE"
+
 	// hubImageTagEnv overrides the hub image tag passed to `kedge dev create`.
 	// Use this in CI to ensure the built image tag matches what the chart uses.
 	hubImageTagEnv = "KEDGE_HUB_IMAGE_TAG"
@@ -218,6 +223,9 @@ func SetupClusters(workDir string) env.Func {
 		if tag := os.Getenv(hubImageTagEnv); tag != "" {
 			args = append(args, "--tag", tag)
 		}
+		if image := os.Getenv(hubImageEnv); image != "" {
+			args = append(args, "--image", image)
+		}
 		args = append(args, apiServerPortArgs()...)
 
 		cmd := exec.CommandContext(ctx, kedge, args...)
@@ -289,6 +297,9 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 		}
 		if tag := os.Getenv(hubImageTagEnv); tag != "" {
 			args = append(args, "--tag", tag)
+		}
+		if image := os.Getenv(hubImageEnv); image != "" {
+			args = append(args, "--image", image)
 		}
 		args = append(args, apiServerPortArgs()...)
 
@@ -527,6 +538,9 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 		if tag := os.Getenv(hubImageTagEnv); tag != "" {
 			args = append(args, "--tag", tag)
 		}
+		if image := os.Getenv(hubImageEnv); image != "" {
+			args = append(args, "--image", image)
+		}
 		args = append(args, apiServerPortArgs()...)
 
 		cmd := exec.CommandContext(ctx, kedge, args...)
@@ -661,6 +675,9 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 		}
 		if tag := os.Getenv(hubImageTagEnv); tag != "" {
 			args = append(args, "--tag", tag)
+		}
+		if image := os.Getenv(hubImageEnv); image != "" {
+			args = append(args, "--image", image)
 		}
 		args = append(args, apiServerPortArgs()...)
 

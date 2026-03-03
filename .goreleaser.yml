@@ -25,7 +25,7 @@ builds:
 
 archives:
   - id: kubectl-kedge-plugin
-    builds:
+    ids:
     - kubectl-kedge
     name_template: "kubectl-kedge_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
@@ -55,9 +55,9 @@ krews:
   homepage: "https://faros.sh/"
   url_template: "https://downloads.faros.sh/cli/kedge/{{ .Tag }}/{{ .ArtifactName }}"
   description: |
-    Manage kedge edge sites and workloads from the command line.
+    Manage kedge edges and workloads from the command line.
     kubectl kedge login - Log in to a kedge hub
     kubectl kedge ws - Navigate kcp workspaces
-    kubectl kedge site - Manage edge sites
-  short_description: "Manage kedge edge sites and workloads from the command line."
+    kubectl kedge edge - Manage edges
+  short_description: "Manage kedge edges and workloads from the command line."
   skip_upload: auto

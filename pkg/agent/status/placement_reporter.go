@@ -72,11 +72,13 @@ func NewPlacementReporter(
 		),
 	}
 
-	deploymentInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	if _, err := deploymentInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    r.enqueueDeployment,
 		UpdateFunc: func(_, newObj interface{}) { r.enqueueDeployment(newObj) },
 		DeleteFunc: r.enqueueDeployment,
-	})
+	}); err != nil {
+		panic(fmt.Sprintf("failed to add deployment event handler: %v", err))
+	}
 
 	return r
 }

@@ -201,16 +201,8 @@ func runSSHInteractive(ctx context.Context, conn *websocket.Conn) error {
 		sendSSHResize(conn, cols, rows)
 	}
 
-	// Forward SIGWINCH as resize messages.
-	sigwinch := make(chan os.Signal, 1)
-	signal.Notify(sigwinch, syscall.SIGWINCH)
-	go func() {
-		for range sigwinch {
-			if cols, rows, err := term.GetSize(fd); err == nil {
-				sendSSHResize(conn, cols, rows)
-			}
-		}
-	}()
+	// Forward terminal resize signals as SSH resize messages (Unix only).
+	watchResizeSignals(fd, conn)
 
 	// Stdin → WebSocket
 	stdinDone := make(chan struct{})
