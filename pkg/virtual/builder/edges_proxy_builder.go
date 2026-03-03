@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strings"
 
 	"github.com/gorilla/websocket"
@@ -33,6 +34,7 @@ import (
 	"k8s.io/klog/v2"
 
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	utilhttp "github.com/faroshq/faros-kedge/pkg/util/http"
 	utilssh "github.com/faroshq/faros-kedge/pkg/util/ssh"
 )
 
@@ -172,10 +174,10 @@ func (p *virtualWorkspaces) edgesSSHHandler(ctx context.Context, w http.Response
 		return
 	}
 
-	// TODO(#67): CheckOrigin returns true for all origins — MITM risk.
-	// https://github.com/faroshq/kedge/issues/67
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin: func(r *http.Request) bool {
+			return utilhttp.CheckSameOrAllowedOrigin(r, []url.URL{})
+		},
 	}
 	wsConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
