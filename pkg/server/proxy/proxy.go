@@ -178,31 +178,17 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		return
 	}
 
-	// TODO(#65): bare paths (/api/..., /apis/...) are not handled here — kcpPath stays
-	// empty and the request is forwarded to the kcp root URL instead of the user's
-	// workspace. Add the same else-branch as serveStaticToken:
-	//   kcpPath = "/clusters/" + user.Spec.DefaultCluster + r.URL.Path
-	// https://github.com/faroshq/kedge/issues/65
-
-	// Determine kcp path based on incoming request format.
-	var kcpPath string
-	if strings.HasPrefix(r.URL.Path, "/clusters/") {
-		// kcp-syntax: /clusters/{logicalClusterName}/api/...
-		rest := strings.TrimPrefix(r.URL.Path, "/clusters/")
-		slashIdx := strings.Index(rest, "/")
-		clusterID := rest
-		if slashIdx >= 0 {
-			clusterID = rest[:slashIdx]
+	kcpPath, errStatus, errBody := resolveKCPPath(r.URL.Path, user.Spec.DefaultCluster)
+	if errStatus != 0 {
+		if strings.HasPrefix(r.URL.Path, "/clusters/") {
+			p.logger.Info("cluster access denied", "user", user.Name, "path", r.URL.Path, "allowed", user.Spec.DefaultCluster)
+		} else {
+			p.logger.Error(nil, "user has no default cluster", "user", user.Name)
 		}
-		// Allow exact match or mount access ({clusterName}:{mountName}).
-		if clusterID != user.Spec.DefaultCluster && !strings.HasPrefix(clusterID, user.Spec.DefaultCluster+":") {
-			p.logger.Info("cluster access denied", "user", user.Name, "requested", clusterID, "allowed", user.Spec.DefaultCluster)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"cluster access denied","reason":"Forbidden","code":403}`)
-			return
-		}
-		kcpPath = r.URL.Path // already in /clusters/{id}/... format
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(errStatus)
+		_, _ = fmt.Fprint(w, errBody)
+		return
 	}
 
 	target := *p.kcpTarget
@@ -253,36 +239,17 @@ func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, toke
 		return
 	}
 
-	// Determine kcp path based on incoming request format.
-	var kcpPath string
-	if strings.HasPrefix(r.URL.Path, "/clusters/") {
-		// kcp-syntax: /clusters/{logicalClusterName}/api/...
-		rest := strings.TrimPrefix(r.URL.Path, "/clusters/")
-		slashIdx := strings.Index(rest, "/")
-		clusterID := rest
-		if slashIdx >= 0 {
-			clusterID = rest[:slashIdx]
-		}
-		// Allow exact match or mount access ({clusterName}:{mountName}).
-		if clusterID != user.Spec.DefaultCluster && !strings.HasPrefix(clusterID, user.Spec.DefaultCluster+":") {
-			p.logger.Info("cluster access denied", "user", user.Name, "requested", clusterID, "allowed", user.Spec.DefaultCluster)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"cluster access denied","reason":"Forbidden","code":403}`)
-			return
-		}
-		kcpPath = r.URL.Path // already in /clusters/{id}/... format
-	} else {
-		// Bare path: construct workspace path from user's default cluster.
-		if user.Spec.DefaultCluster != "" {
-			kcpPath = "/clusters/" + user.Spec.DefaultCluster + r.URL.Path
+	kcpPath, errStatus, errBody := resolveKCPPath(r.URL.Path, user.Spec.DefaultCluster)
+	if errStatus != 0 {
+		if strings.HasPrefix(r.URL.Path, "/clusters/") {
+			p.logger.Info("cluster access denied", "user", user.Name, "path", r.URL.Path, "allowed", user.Spec.DefaultCluster)
 		} else {
 			p.logger.Error(nil, "user has no default cluster", "user", user.Name)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"user workspace not configured","reason":"Forbidden","code":403}`)
-			return
 		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(errStatus)
+		_, _ = fmt.Fprint(w, errBody)
+		return
 	}
 
 	target := *p.kcpTarget
@@ -522,6 +489,39 @@ func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Unauthorized","reason":"Unauthorized","code":401}`)
+}
+
+// resolveKCPPath computes the target kcp path for the given request URL path.
+//
+// Two formats are accepted:
+//   - /clusters/{logicalClusterName}/... — validated against defaultCluster;
+//     returns the original path unchanged on success.
+//   - /api/... or /apis/... (bare paths) — prepended with
+//     /clusters/{defaultCluster}; returns 403 if defaultCluster is empty.
+//
+// Returns (kcpPath, 0, "") on success, or ("", httpStatus, jsonBody) on error.
+// The caller is responsible for logging context and writing the HTTP response.
+func resolveKCPPath(urlPath, defaultCluster string) (string, int, string) {
+	if strings.HasPrefix(urlPath, "/clusters/") {
+		// kcp-syntax: validate that the requested cluster matches the user's workspace.
+		rest := strings.TrimPrefix(urlPath, "/clusters/")
+		slashIdx := strings.Index(rest, "/")
+		clusterID := rest
+		if slashIdx >= 0 {
+			clusterID = rest[:slashIdx]
+		}
+		// Allow exact match or mount access ({clusterName}:{mountName}).
+		if clusterID != defaultCluster && !strings.HasPrefix(clusterID, defaultCluster+":") {
+			return "", http.StatusForbidden, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"cluster access denied","reason":"Forbidden","code":403}`
+		}
+		return urlPath, 0, ""
+	}
+
+	// Bare path: scope to the user's default cluster.
+	if defaultCluster != "" {
+		return "/clusters/" + defaultCluster + urlPath, 0, ""
+	}
+	return "", http.StatusForbidden, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"user has no default cluster","reason":"Forbidden","code":403}`
 }
 
 // resolveUser looks up the User CRD by OIDC issuer+sub hash and returns the full User object.
