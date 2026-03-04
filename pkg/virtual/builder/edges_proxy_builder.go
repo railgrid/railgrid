@@ -85,7 +85,8 @@ func (p *virtualWorkspaces) buildEdgesProxyHandler() http.Handler {
 		key := edgeConnKey(cluster, name)
 		dialer, found := p.edgeConnManager.Load(key)
 		if !found {
-			http.Error(w, fmt.Sprintf("no active tunnel for edge %s/%s", cluster, name), http.StatusBadGateway)
+			p.logger.Info("no active tunnel found for edge", "cluster", cluster, "name", name)
+			http.Error(w, "upstream unavailable", http.StatusBadGateway)
 			return
 		}
 
@@ -96,7 +97,8 @@ func (p *virtualWorkspaces) buildEdgesProxyHandler() http.Handler {
 		case "ssh":
 			p.edgesSSHHandler(r.Context(), w, r, key, dialer)
 		default:
-			http.Error(w, fmt.Sprintf("unknown subresource: %s", subresource), http.StatusNotFound)
+			p.logger.Info("unknown subresource requested", "subresource", subresource, "cluster", cluster, "name", name)
+			http.Error(w, "unknown subresource", http.StatusNotFound)
 		}
 	})
 }

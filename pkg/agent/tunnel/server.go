@@ -221,7 +221,7 @@ func handleK8sUpgrade(w http.ResponseWriter, r *http.Request, config *rest.Confi
 	}
 	if err != nil {
 		logger.Error(err, "failed to connect to K8s API")
-		http.Error(w, fmt.Sprintf("failed to connect to K8s API: %v", err), http.StatusBadGateway)
+		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
 	defer backendConn.Close() //nolint:errcheck
