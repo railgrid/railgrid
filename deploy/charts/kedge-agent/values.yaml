@@ -10,8 +10,8 @@ fullnameOverride: ""
 
 # -- Agent settings
 agent:
-  # -- Site name (required)
-  siteName: ""
+  # -- Edge name (required)
+  edgeName: ""
 
   # -- Labels for this site (key=value pairs)
   labels: {}

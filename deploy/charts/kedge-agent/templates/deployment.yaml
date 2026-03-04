@@ -37,7 +37,7 @@ spec:
           image: {{ include "kedge-agent.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - --site-name={{ required "agent.siteName is required" .Values.agent.siteName }}
+            - --edge-name={{ required "agent.edgeName is required" .Values.agent.edgeName }}
             - --hub-kubeconfig=/etc/kedge/hub-kubeconfig/kubeconfig
             {{- if .Values.agent.hub.context }}
             - --hub-context={{ .Values.agent.hub.context }}
