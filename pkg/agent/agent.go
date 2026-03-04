@@ -278,7 +278,7 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		}
 	}()
 
-	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState)
+	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
 	go func() {
 		if err := reporter.Run(ctx); err != nil {
 			logger.Error(err, "Edge status reporter failed")
@@ -319,7 +319,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
 	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName)
 
-	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState)
+	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
 	go func() {
 		if err := reporter.Run(ctx); err != nil {
 			logger.Error(err, "Edge status reporter failed")

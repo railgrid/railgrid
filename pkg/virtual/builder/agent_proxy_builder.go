@@ -133,11 +133,18 @@ type SSHClientCredentials struct {
 	Username   string
 	Password   string // non-empty if password auth is available
 	PrivateKey []byte // non-empty if key auth is available
+	// SSHHostKey is the agent's sshd host public key in authorized_keys format
+	// (e.g. "ssh-ed25519 AAAA..."). Used for strict host key verification.
+	SSHHostKey string
 }
 
 // newSSHClient creates an SSH client through a device connection.
 // If creds is nil or empty, falls back to empty password authentication.
-func newSSHClient(_ context.Context, deviceConn net.Conn, creds *SSHClientCredentials, logger klog.Logger) (*gossh.Client, error) {
+// hostKey is the SSH host public key in authorized_keys format (as stored in
+// Edge.Status.SSHHostKey). When non-empty it is used for strict host key
+// verification via gossh.FixedHostKey; when empty the client falls back to
+// InsecureIgnoreHostKey and logs a warning.
+func newSSHClient(_ context.Context, deviceConn net.Conn, creds *SSHClientCredentials, hostKey string, logger klog.Logger) (*gossh.Client, error) {
 	// Default to root user with empty password if no credentials provided.
 	sshUser := "root"
 	var authMethods []gossh.AuthMethod
@@ -170,14 +177,29 @@ func newSSHClient(_ context.Context, deviceConn net.Conn, creds *SSHClientCreden
 		logger.V(4).Info("Using empty password authentication (fallback)", "user", sshUser)
 	}
 
-	// TODO(#64): InsecureIgnoreHostKey accepts any SSH host key — MITM risk.
-	// Store a known-good public key in the Edge CRD at registration time
-	// and use gossh.FixedHostKey or a custom HostKeyCallback here.
-	// https://github.com/faroshq/kedge/issues/64
+	// Determine host key verification strategy.
+	// Prefer FixedHostKey when the agent has reported its sshd public key in
+	// Edge.Status.SSHHostKey; fall back to InsecureIgnoreHostKey with a warning
+	// for backward compatibility with agents that predate this feature.
+	var hostKeyCallback gossh.HostKeyCallback
+	if hostKey != "" {
+		pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(hostKey))
+		if err != nil {
+			logger.Error(err, "failed to parse SSH host key from Edge status; falling back to InsecureIgnoreHostKey")
+			hostKeyCallback = gossh.InsecureIgnoreHostKey() //nolint:gosec // parse error fallback
+		} else {
+			hostKeyCallback = gossh.FixedHostKey(pk)
+			logger.V(4).Info("Using strict SSH host key verification", "keyType", pk.Type())
+		}
+	} else {
+		logger.Info("WARNING: no SSH host key in Edge status — falling back to InsecureIgnoreHostKey (MITM risk)")
+		hostKeyCallback = gossh.InsecureIgnoreHostKey() //nolint:gosec // no host key yet; backward compat
+	}
+
 	sshConfig := &gossh.ClientConfig{
 		User:            sshUser,
 		Auth:            authMethods,
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // tracked in #64
+		HostKeyCallback: hostKeyCallback,
 	}
 
 	sshConn, chans, reqs, err := gossh.NewClientConn(deviceConn, "agent:22", sshConfig)

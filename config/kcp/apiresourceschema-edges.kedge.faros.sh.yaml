@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260228-eea5d12.edges.kedge.faros.sh
+  name: v260303-6b34333.edges.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -176,6 +176,12 @@ spec:
               required:
               - username
               type: object
+            sshHostKey:
+              description: |-
+                SSHHostKey is the SSH host public key reported by the agent at registration
+                time (authorized_keys format, e.g. "ssh-ed25519 AAAA...").
+                Used by the hub to verify the agent's sshd identity and prevent MITM attacks.
+              type: string
           type: object
       type: object
     served: true

@@ -146,6 +146,12 @@ type EdgeStatus struct {
 	// This is set by the agent and used by the hub for SSH connections.
 	// +optional
 	SSHCredentials *SSHCredentials `json:"sshCredentials,omitempty"`
+
+	// SSHHostKey is the SSH host public key reported by the agent at registration
+	// time (authorized_keys format, e.g. "ssh-ed25519 AAAA...").
+	// Used by the hub to verify the agent's sshd identity and prevent MITM attacks.
+	// +optional
+	SSHHostKey string `json:"sshHostKey,omitempty"`
 }
 
 // SSHCredentials holds SSH authentication credentials for connecting to server-type edges.

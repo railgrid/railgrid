@@ -186,8 +186,14 @@ func (p *virtualWorkspaces) edgesSSHHandler(ctx context.Context, w http.Response
 	}
 	defer wsConn.Close() //nolint:errcheck
 
+	// Extract the host key from the credentials (may be empty for older agents).
+	var sshHostKey string
+	if creds != nil {
+		sshHostKey = creds.SSHHostKey
+	}
+
 	// Build the SSH client over the tunnelled raw connection.
-	sshClient, err := newSSHClient(ctx, sshConn, creds, logger)
+	sshClient, err := newSSHClient(ctx, sshConn, creds, sshHostKey, logger)
 	if err != nil {
 		logger.Error(err, "failed to create SSH client for edge")
 		return
@@ -251,14 +257,20 @@ func (p *virtualWorkspaces) fetchSSHCredentials(ctx context.Context, cluster, ed
 		return nil, fmt.Errorf("fetching edge %s: %w", edgeName, err)
 	}
 
-	if edge.Status.SSHCredentials == nil {
-		logger.V(4).Info("No SSH credentials configured for edge", "edge", edgeName)
-		return nil, nil
+	// Start building the credentials from the edge status.
+	// SSHHostKey is always populated (even when SSHCredentials is absent) so
+	// the caller can enable strict host key verification.
+	creds := &SSHClientCredentials{
+		SSHHostKey: edge.Status.SSHHostKey,
 	}
 
-	creds := &SSHClientCredentials{
-		Username: edge.Status.SSHCredentials.Username,
+	if edge.Status.SSHCredentials == nil {
+		logger.V(4).Info("No SSH credentials configured for edge", "edge", edgeName)
+		// Return a creds object that at least carries the host key.
+		return creds, nil
 	}
+
+	creds.Username = edge.Status.SSHCredentials.Username
 
 	// Fetch password from secret if referenced.
 	if ref := edge.Status.SSHCredentials.PasswordSecretRef; ref != nil {
@@ -283,7 +295,8 @@ func (p *virtualWorkspaces) fetchSSHCredentials(ctx context.Context, cluster, ed
 	}
 
 	logger.V(4).Info("Fetched SSH credentials", "edge", edgeName, "user", creds.Username,
-		"hasPassword", creds.Password != "", "hasPrivateKey", len(creds.PrivateKey) > 0)
+		"hasPassword", creds.Password != "", "hasPrivateKey", len(creds.PrivateKey) > 0,
+		"hasHostKey", creds.SSHHostKey != "")
 
 	return creds, nil
 }
