@@ -74,7 +74,7 @@ func SetupMountWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExt
 }
 
 // Reconcile creates a mount workspace for a ready kubernetes edge and maintains
-// the workspaceURL status field.
+// the URL status field.
 func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := klog.FromContext(ctx).WithValues("edge", req.Name, "cluster", req.ClusterName)
 
