@@ -33,3 +33,15 @@ func TestSSHDockerServerModeConnect(t *testing.T) {
 func TestSSHEdgeURLSet(t *testing.T) {
 	testenv.Test(t, cases.SSHEdgeURLSet())
 }
+
+func TestSSHUserMappingInherited(t *testing.T) {
+	testenv.Test(t, cases.SSHUserMappingInherited())
+}
+
+func TestSSHUserMappingProvided(t *testing.T) {
+	testenv.Test(t, cases.SSHUserMappingProvided())
+}
+
+func TestSSHUserMappingIdentity(t *testing.T) {
+	testenv.Test(t, cases.SSHUserMappingIdentity())
+}

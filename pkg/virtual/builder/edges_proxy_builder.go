@@ -28,11 +28,14 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
+	authv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	kedgeapi "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	utilhttp "github.com/faroshq/faros-kedge/pkg/util/http"
 	utilssh "github.com/faroshq/faros-kedge/pkg/util/ssh"
@@ -95,7 +98,10 @@ func (p *virtualWorkspaces) buildEdgesProxyHandler() http.Handler {
 		case "k8s":
 			p.edgesK8sHandler(r.Context(), w, r, key, dialer)
 		case "ssh":
-			p.edgesSSHHandler(r.Context(), w, r, key, dialer)
+			// Resolve caller identity for identity-mode SSH mapping.
+			// Best-effort: empty string is fine for inherited/provided modes.
+			callerIdentity := resolveCallerIdentity(r.Context(), p.kcpConfig, token, p.logger)
+			p.edgesSSHHandler(r.Context(), w, r, key, dialer, callerIdentity)
 		default:
 			p.logger.Info("unknown subresource requested", "subresource", subresource, "cluster", cluster, "name", name)
 			http.Error(w, "unknown subresource", http.StatusNotFound)
@@ -142,7 +148,7 @@ func (p *virtualWorkspaces) edgesK8sHandler(ctx context.Context, w http.Response
 // and then bridges the caller's WebSocket to the SSH session.
 func (p *virtualWorkspaces) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *http.Request, key string, dialer interface {
 	Dial(context.Context) (net.Conn, error)
-}) {
+}, callerIdentity string) {
 	logger := klog.FromContext(ctx)
 
 	// Parse cluster and edge name from the key (format: "edges/{cluster}/{name}")
@@ -151,8 +157,8 @@ func (p *virtualWorkspaces) edgesSSHHandler(ctx context.Context, w http.Response
 	// Optional non-interactive exec mode (e.g. `kedge ssh <name> -- <cmd>`).
 	remoteCmd := r.URL.Query().Get("cmd")
 
-	// Fetch SSH credentials from Edge status.
-	creds, err := p.fetchSSHCredentials(ctx, cluster, edgeName, logger)
+	// Fetch SSH credentials from Edge status, applying the configured user mapping.
+	creds, err := p.fetchSSHCredentials(ctx, cluster, edgeName, callerIdentity, logger)
 	if err != nil {
 		logger.Error(err, "failed to fetch SSH credentials", "key", key)
 		// Continue with nil credentials - will fall back to empty password auth
@@ -231,9 +237,10 @@ func parseEdgeConnKey(key string) (cluster, name string) {
 	return "", ""
 }
 
-// fetchSSHCredentials retrieves SSH credentials from the Edge status and referenced secrets.
-// The cluster parameter is used to scope the kcp API calls to the correct logical cluster.
-func (p *virtualWorkspaces) fetchSSHCredentials(ctx context.Context, cluster, edgeName string, logger klog.Logger) (*SSHClientCredentials, error) {
+// fetchSSHCredentials retrieves SSH credentials for the edge, applying the
+// configured SSHUserMapping mode.  callerIdentity is the kcp/OIDC username of
+// the caller and is required when SSHUserMapping=identity.
+func (p *virtualWorkspaces) fetchSSHCredentials(ctx context.Context, cluster, edgeName, callerIdentity string, logger klog.Logger) (*SSHClientCredentials, error) {
 	if p.kcpConfig == nil {
 		logger.V(4).Info("No kcp config, skipping credential fetch")
 		return nil, nil
@@ -259,22 +266,89 @@ func (p *virtualWorkspaces) fetchSSHCredentials(ctx context.Context, cluster, ed
 		return nil, fmt.Errorf("fetching edge %s: %w", edgeName, err)
 	}
 
-	// Start building the credentials from the edge status.
-	// SSHHostKey is always populated (even when SSHCredentials is absent) so
-	// the caller can enable strict host key verification.
-	creds := &SSHClientCredentials{
-		SSHHostKey: edge.Status.SSHHostKey,
-	}
+	// SSHHostKey is carried through regardless of mapping mode.
+	hostKey := edge.Status.SSHHostKey
 
-	if edge.Status.SSHCredentials == nil {
-		logger.V(4).Info("No SSH credentials configured for edge", "edge", edgeName)
-		// Return a creds object that at least carries the host key.
+	if edge.Spec.Server == nil {
+		// Non-server edge or unconfigured spec: fall back to status credentials.
+		creds, err := p.readStatusSSHCreds(ctx, k8sClient, edge, logger)
+		if err != nil {
+			return nil, err
+		}
+		if creds != nil {
+			creds.SSHHostKey = hostKey
+		}
 		return creds, nil
 	}
 
-	creds.Username = edge.Status.SSHCredentials.Username
+	switch edge.Spec.Server.SSHUserMapping {
+	case kedgeapi.SSHUserMappingProvided:
+		// Use credentials entirely from spec.server.sshCredentialsRef.
+		ref := edge.Spec.Server.SSHCredentialsRef
+		if ref == nil {
+			return nil, fmt.Errorf("sshUserMapping=provided but spec.server.sshCredentialsRef is not set for edge %s", edgeName)
+		}
+		creds, err := p.readSSHCredsFromSecret(ctx, k8sClient, ref, "", logger)
+		if err != nil {
+			return nil, err
+		}
+		if creds != nil {
+			creds.SSHHostKey = hostKey
+		}
+		return creds, nil
 
-	// Fetch password from secret if referenced.
+	case kedgeapi.SSHUserMappingIdentity:
+		// Username = caller identity; key from sshCredentialsRef or status creds.
+		if callerIdentity == "" {
+			return nil, fmt.Errorf("sshUserMapping=identity but caller identity is empty for edge %s", edgeName)
+		}
+		if ref := edge.Spec.Server.SSHCredentialsRef; ref != nil {
+			creds, err := p.readSSHCredsFromSecret(ctx, k8sClient, ref, callerIdentity, logger)
+			if err != nil {
+				return nil, err
+			}
+			if creds != nil {
+				creds.SSHHostKey = hostKey
+			}
+			return creds, nil
+		}
+		// Fall back to status credentials but override the username.
+		creds, err := p.readStatusSSHCreds(ctx, k8sClient, edge, logger)
+		if err != nil {
+			return nil, err
+		}
+		if creds == nil {
+			return nil, fmt.Errorf("sshUserMapping=identity: no credentials available for edge %s (set sshCredentialsRef or ensure agent reports SSHCredentials)", edgeName)
+		}
+		creds.Username = callerIdentity
+		creds.SSHHostKey = hostKey
+		return creds, nil
+
+	default:
+		// "inherited" (or empty default) → existing behavior: use agent-reported creds.
+		creds, err := p.readStatusSSHCreds(ctx, k8sClient, edge, logger)
+		if err != nil {
+			return nil, err
+		}
+		if creds != nil {
+			creds.SSHHostKey = hostKey
+		}
+		return creds, nil
+	}
+}
+
+// readStatusSSHCreds reads SSH credentials from edge.Status.SSHCredentials
+// and dereferences the referenced secrets.
+func (p *virtualWorkspaces) readStatusSSHCreds(ctx context.Context, k8sClient kubernetes.Interface, edge *kedgeapi.Edge, logger klog.Logger) (*SSHClientCredentials, error) {
+	if edge.Status.SSHCredentials == nil {
+		logger.V(4).Info("No SSH credentials in edge status", "edge", edge.Name)
+		return nil, nil
+	}
+
+	creds := &SSHClientCredentials{
+		Username: edge.Status.SSHCredentials.Username,
+	}
+
 	if ref := edge.Status.SSHCredentials.PasswordSecretRef; ref != nil {
 		secret, err := k8sClient.CoreV1().Secrets(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 		if err != nil {
@@ -285,7 +359,6 @@ func (p *virtualWorkspaces) fetchSSHCredentials(ctx context.Context, cluster, ed
 		}
 	}
 
-	// Fetch private key from secret if referenced.
 	if ref := edge.Status.SSHCredentials.PrivateKeySecretRef; ref != nil {
 		secret, err := k8sClient.CoreV1().Secrets(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 		if err != nil {
@@ -296,11 +369,60 @@ func (p *virtualWorkspaces) fetchSSHCredentials(ctx context.Context, cluster, ed
 		}
 	}
 
-	logger.V(4).Info("Fetched SSH credentials", "edge", edgeName, "user", creds.Username,
-		"hasPassword", creds.Password != "", "hasPrivateKey", len(creds.PrivateKey) > 0,
-		"hasHostKey", creds.SSHHostKey != "")
-
+	logger.V(4).Info("Fetched SSH credentials from status", "edge", edge.Name, "user", creds.Username,
+		"hasPassword", creds.Password != "", "hasPrivateKey", len(creds.PrivateKey) > 0)
 	return creds, nil
+}
+
+// readSSHCredsFromSecret reads SSH credentials from a Secret reference.
+// If usernameOverride is non-empty it is used as the username instead of the
+// value in the Secret's "username" field.
+func (p *virtualWorkspaces) readSSHCredsFromSecret(ctx context.Context, k8sClient kubernetes.Interface, ref *corev1.SecretReference, usernameOverride string, logger klog.Logger) (*SSHClientCredentials, error) {
+	secret, err := k8sClient.CoreV1().Secrets(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("fetching SSH credentials secret %s/%s: %w", ref.Namespace, ref.Name, err)
+	}
+
+	creds := &SSHClientCredentials{}
+
+	if usernameOverride != "" {
+		creds.Username = usernameOverride
+	} else if u, ok := secret.Data["username"]; ok {
+		creds.Username = string(u)
+	}
+
+	if pk, ok := secret.Data["privateKey"]; ok {
+		creds.PrivateKey = pk
+	}
+	if pw, ok := secret.Data["password"]; ok {
+		creds.Password = string(pw)
+	}
+
+	logger.V(4).Info("Fetched SSH credentials from secret", "secret", ref.Name, "namespace", ref.Namespace,
+		"user", creds.Username, "hasPassword", creds.Password != "", "hasPrivateKey", len(creds.PrivateKey) > 0)
+	return creds, nil
+}
+
+// resolveCallerIdentity performs a kcp TokenReview to extract the caller's username.
+// Returns empty string on any error (non-fatal: inherited/provided modes don't need it).
+func resolveCallerIdentity(ctx context.Context, kcpConfig *rest.Config, token string, logger klog.Logger) string {
+	if kcpConfig == nil || token == "" {
+		return ""
+	}
+	client, err := kubernetes.NewForConfig(kcpConfig)
+	if err != nil {
+		logger.V(4).Info("resolveCallerIdentity: failed to create client", "err", err)
+		return ""
+	}
+	tr := &authv1.TokenReview{
+		Spec: authv1.TokenReviewSpec{Token: token},
+	}
+	result, err := client.AuthenticationV1().TokenReviews().Create(ctx, tr, metav1.CreateOptions{})
+	if err != nil || !result.Status.Authenticated {
+		logger.V(4).Info("resolveCallerIdentity: token review failed or unauthenticated", "err", err)
+		return ""
+	}
+	return result.Status.User.Username
 }
 
 // appendClusterPath sets the /clusters/<path> segment on a kcp URL.

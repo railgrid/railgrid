@@ -31,6 +31,18 @@ const (
 	EdgeTypeServer EdgeType = "server"
 )
 
+// SSHUserMappingMode controls SSH username selection for server-type edges.
+type SSHUserMappingMode string
+
+const (
+	// SSHUserMappingInherited uses the credentials reported by the agent at registration.
+	SSHUserMappingInherited SSHUserMappingMode = "inherited"
+	// SSHUserMappingProvided uses admin-configured credentials from spec.server.sshCredentialsRef.
+	SSHUserMappingProvided SSHUserMappingMode = "provided"
+	// SSHUserMappingIdentity uses the caller's kcp/OIDC username as the SSH username.
+	SSHUserMappingIdentity SSHUserMappingMode = "identity"
+)
+
 // EdgePhase describes the lifecycle phase of an Edge.
 type EdgePhase string
 
@@ -118,6 +130,21 @@ type ServerEdgeSpec struct {
 	// When set, the hub serves this key to authenticated CLI clients via the /ssh subresource.
 	// +optional
 	SSHKeySecretRef *corev1.SecretReference `json:"sshKeySecretRef,omitempty"`
+
+	// SSHUserMapping controls how the SSH username is determined for callers.
+	// inherited: use credentials reported by the agent at registration (default).
+	// provided:  use credentials from spec.server.sshCredentialsRef Secret.
+	// identity:  use the caller's kcp/OIDC username; key from sshCredentialsRef.
+	// +kubebuilder:validation:Enum=inherited;provided;identity
+	// +kubebuilder:default=inherited
+	// +optional
+	SSHUserMapping SSHUserMappingMode `json:"sshUserMapping,omitempty"`
+
+	// SSHCredentialsRef references a Secret with admin-configured SSH credentials.
+	// Used when sshUserMapping=provided, or as the key source for identity mode.
+	// The Secret must contain: "username" (string) and one of "privateKey" or "password".
+	// +optional
+	SSHCredentialsRef *corev1.SecretReference `json:"sshCredentialsRef,omitempty"`
 }
 
 // EdgeStatus defines the observed state of an Edge.

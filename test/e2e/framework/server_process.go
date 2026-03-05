@@ -54,11 +54,28 @@ type ServerProcess struct {
 	// SSHPort is the port for the embedded test SSH server. Defaults to
 	// DefaultTestSSHPort if zero.
 	SSHPort int
+	// SSHUser is the SSH username reported to the hub in Edge.Status.SSHCredentials.
+	// When set alongside SSHPassword, the agent will register credentials so that
+	// SSHUserMappingInherited tests can verify the username.
+	// +optional
+	SSHUser string
+	// SSHPassword is the SSH password reported to the hub.
+	// Required alongside SSHUser to trigger credential registration.
+	// +optional
+	SSHPassword string
 
-	sshServer *TestSSHServer
-	agentCmd  *exec.Cmd
-	logBuf    *safeLogBuffer
-	cancel    context.CancelFunc
+	// SSHServer may be pre-populated with an already-configured TestSSHServer
+	// (e.g. one set up with AddUser / AddAnyUserKey).  If non-nil it will be
+	// used directly and its Start() method will be called; the SSHPort field
+	// must match the server's Port.
+	// If nil, a new TestSSHServer bound to SSHPort is created automatically.
+	// After Start() returns, SSHServer is always set (whether pre-configured or
+	// freshly created) and can be used to inspect ConnectedUsers.
+	SSHServer *TestSSHServer
+
+	agentCmd *exec.Cmd
+	logBuf   *safeLogBuffer
+	cancel   context.CancelFunc
 }
 
 // Start launches the embedded SSH server and the agent subprocess.
@@ -68,9 +85,11 @@ func (s *ServerProcess) Start(ctx context.Context) error {
 		port = DefaultTestSSHPort
 	}
 
-	// 1. Start the embedded test SSH server.
-	s.sshServer = NewTestSSHServer(port)
-	if err := s.sshServer.Start(ctx); err != nil {
+	// 1. Start the embedded test SSH server (use pre-configured one if provided).
+	if s.SSHServer == nil {
+		s.SSHServer = NewTestSSHServer(port)
+	}
+	if err := s.SSHServer.Start(ctx); err != nil {
 		return fmt.Errorf("starting test SSH server on port %d: %w", port, err)
 	}
 
@@ -100,6 +119,12 @@ func (s *ServerProcess) Start(ctx context.Context) error {
 			"--token="+s.Token,
 		)
 	}
+	if s.SSHUser != "" {
+		args = append(args, "--ssh-user="+s.SSHUser)
+	}
+	if s.SSHPassword != "" {
+		args = append(args, "--ssh-password="+s.SSHPassword)
+	}
 
 	s.agentCmd = exec.CommandContext(agentCtx, s.AgentBin, args...)
 	s.agentCmd.Stdout = s.logBuf
@@ -118,8 +143,8 @@ func (s *ServerProcess) Stop() {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	if s.sshServer != nil {
-		s.sshServer.Stop()
+	if s.SSHServer != nil {
+		s.SSHServer.Stop()
 	}
 }
 

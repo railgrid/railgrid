@@ -359,3 +359,377 @@ func SSHDockerServerModeConnect() features.Feature {
 		}).
 		Feature()
 }
+
+// ---------- SSH User Mapping tests ----------------------------------------
+
+// sshMappingSSHPort base offset for user-mapping tests (avoids conflicts with
+// SSHServerModeConnect which uses DefaultTestSSHPort and DefaultTestSSHPort+1).
+const (
+	sshMappingInheritedPort = framework.DefaultTestSSHPort + 10
+	sshMappingProvidedPort  = framework.DefaultTestSSHPort + 11
+	sshMappingIdentityPort  = framework.DefaultTestSSHPort + 12
+)
+
+// SSHUserMappingInherited verifies that when sshUserMapping=inherited (or unset /
+// default), the hub uses credentials reported by the agent at registration time
+// (Edge.Status.SSHCredentials).  The agent is started with --ssh-user=testuser
+// --ssh-password=testpassword; the test runs `echo $USER` over SSH and checks
+// the output is "testuser".
+func SSHUserMappingInherited() features.Feature {
+	const edgeName = "e2e-ssh-mapping-inherited"
+
+	return features.New("SSH/UserMappingInherited").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+
+			proc := &framework.ServerProcess{
+				ServerName:    edgeName,
+				HubURL:        clusterEnv.HubURL,
+				HubKubeconfig: clusterEnv.HubKubeconfig,
+				Token:         framework.DevToken,
+				AgentBin:      framework.AgentBinPath(),
+				SSHPort:       sshMappingInheritedPort,
+				SSHUser:       "testuser",
+				SSHPassword:   "testpassword",
+			}
+			if err := proc.Start(ctx); err != nil {
+				t.Fatalf("starting server process: %v", err)
+			}
+			if err := proc.WaitForAgentReady(ctx, 60*time.Second); err != nil {
+				t.Fatalf("agent not ready: %v\nlogs:\n%s", err, proc.Logs())
+			}
+			return framework.WithServerProcess(ctx, proc)
+		}).
+		Assess("edge_resource_becomes_Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if err := framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+				out, err := framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+					"get", "edges", edgeName, "-o", "jsonpath={.status.phase},{.status.connected}")
+				if err != nil {
+					return false, nil
+				}
+				return strings.TrimSpace(out) == "Ready,true", nil
+			}); err != nil {
+				proc, _ := framework.ServerProcessFromContext(ctx)
+				if proc != nil {
+					t.Logf("agent logs:\n%s", proc.Logs())
+				}
+				t.Fatalf("Edge %s did not become Ready within 2 minutes", edgeName)
+			}
+			return ctx
+		}).
+		Assess("ssh_user_is_inherited_from_agent_credentials", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			// The TestSSHServer sets USER=<authenticated-username> in commands,
+			// so `echo $USER` should return the inherited username "testuser".
+			out, err := client.Run(ctx, "ssh", edgeName, "--", "echo $USER")
+			if err != nil {
+				t.Fatalf("kedge ssh failed: %v\noutput: %s", err, out)
+			}
+			if !strings.Contains(out, "testuser") {
+				t.Fatalf("expected output to contain 'testuser' (inherited username), got:\n%s", out)
+			}
+			t.Logf("inherited SSH username verified: output=%q", strings.TrimSpace(out))
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if proc, ok := framework.ServerProcessFromContext(ctx); ok {
+				proc.Stop()
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			_, _ = framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"delete", "edges", edgeName, "--ignore-not-found")
+			return ctx
+		}).
+		Feature()
+}
+
+// SSHUserMappingProvided verifies that when sshUserMapping=provided, the hub
+// reads the SSH username and key entirely from spec.server.sshCredentialsRef.
+// The agent does NOT report any SSH credentials.
+func SSHUserMappingProvided() features.Feature {
+	const (
+		edgeName    = "e2e-ssh-mapping-provided"
+		secretName  = "e2e-ssh-mapping-provided-creds"
+		secretNS    = "kedge-system"
+		sshUsername = "provided-user"
+	)
+
+	return features.New("SSH/UserMappingProvided").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+
+			// 1. Generate RSA keypair for SSH authentication.
+			privKey, pubKey, privKeyPEM, err := framework.GenerateTestSSHKeypair()
+			if err != nil {
+				t.Fatalf("generating SSH keypair: %v", err)
+			}
+			_ = privKey // used via privKeyPEM in the Secret
+
+			// 2. Configure the TestSSHServer to accept only sshUsername with pubKey.
+			sshSrv := framework.NewTestSSHServer(sshMappingProvidedPort)
+			sshSrv.AddUser(sshUsername, pubKey)
+
+			// 3. Start the agent without SSH credentials.
+			proc := &framework.ServerProcess{
+				ServerName:    edgeName,
+				HubURL:        clusterEnv.HubURL,
+				HubKubeconfig: clusterEnv.HubKubeconfig,
+				Token:         framework.DevToken,
+				AgentBin:      framework.AgentBinPath(),
+				SSHPort:       sshMappingProvidedPort,
+				SSHServer:     sshSrv,
+			}
+			if err := proc.Start(ctx); err != nil {
+				t.Fatalf("starting server process: %v", err)
+			}
+			if err := proc.WaitForAgentReady(ctx, 60*time.Second); err != nil {
+				t.Fatalf("agent not ready: %v\nlogs:\n%s", err, proc.Logs())
+			}
+
+			// Stash the private key PEM for later Assess steps.
+			ctx = framework.WithSSHPrivateKeyPEM(ctx, privKeyPEM)
+			return framework.WithServerProcess(ctx, proc)
+		}).
+		Assess("edge_resource_becomes_Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if err := framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+				out, err := framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+					"get", "edges", edgeName, "-o", "jsonpath={.status.phase},{.status.connected}")
+				if err != nil {
+					return false, nil
+				}
+				return strings.TrimSpace(out) == "Ready,true", nil
+			}); err != nil {
+				proc, _ := framework.ServerProcessFromContext(ctx)
+				if proc != nil {
+					t.Logf("agent logs:\n%s", proc.Logs())
+				}
+				t.Fatalf("Edge %s did not become Ready within 2 minutes", edgeName)
+			}
+			return ctx
+		}).
+		Assess("create_secret_and_patch_edge_spec", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			privKeyPEM := framework.SSHPrivateKeyPEMFromContext(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			// Create the Secret in the hub cluster.
+			secretYAML := fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: %s
+type: Opaque
+stringData:
+  username: %s
+  privateKey: |
+%s`, secretName, secretNS, sshUsername, framework.IndentLines(string(privKeyPEM), "    "))
+			if err := client.ApplyManifest(ctx, secretYAML); err != nil {
+				t.Fatalf("creating SSH credentials secret: %v", err)
+			}
+
+			// Patch the Edge spec to use provided mode.
+			patchJSON := fmt.Sprintf(`{"spec":{"server":{"sshUserMapping":"provided","sshCredentialsRef":{"name":%q,"namespace":%q}}}}`,
+				secretName, secretNS)
+			_, err := framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"patch", "edges", edgeName, "--type=merge", "-p", patchJSON)
+			if err != nil {
+				t.Fatalf("patching edge spec: %v", err)
+			}
+			t.Logf("Edge %s patched with sshUserMapping=provided", edgeName)
+			return ctx
+		}).
+		Assess("ssh_connects_as_provided_user", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			proc, _ := framework.ServerProcessFromContext(ctx)
+
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			// Run a command over SSH; the TestSSHServer sets USER=<ssh-username>.
+			out, err := client.Run(ctx, "ssh", edgeName, "--", "echo $USER")
+			if err != nil {
+				t.Fatalf("kedge ssh (provided) failed: %v\noutput: %s", err, out)
+			}
+			if !strings.Contains(out, sshUsername) {
+				t.Fatalf("expected output to contain %q (provided username), got:\n%s", sshUsername, out)
+			}
+
+			// Double-check via server-side tracking.
+			if proc != nil && proc.SSHServer != nil {
+				found := false
+				for _, u := range proc.SSHServer.ConnectedUsers() {
+					if u == sshUsername {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("TestSSHServer did not record connection as %q; connected users: %v",
+						sshUsername, proc.SSHServer.ConnectedUsers())
+				}
+			}
+			t.Logf("provided SSH username verified: %q", sshUsername)
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if proc, ok := framework.ServerProcessFromContext(ctx); ok {
+				proc.Stop()
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			_, _ = framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"delete", "secret", secretName, "-n", secretNS, "--ignore-not-found")
+			_, _ = framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"delete", "edges", edgeName, "--ignore-not-found")
+			return ctx
+		}).
+		Feature()
+}
+
+// SSHUserMappingIdentity verifies that when sshUserMapping=identity, the hub
+// uses the caller's kcp/OIDC username as the SSH username.  The SSH key comes
+// from spec.server.sshCredentialsRef.
+func SSHUserMappingIdentity() features.Feature {
+	const (
+		edgeName   = "e2e-ssh-mapping-identity"
+		secretName = "e2e-ssh-mapping-identity-creds"
+		secretNS   = "kedge-system"
+	)
+
+	return features.New("SSH/UserMappingIdentity").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+
+			// Resolve caller identity via TokenReview so we know what to expect.
+			callerIdentity, err := framework.ResolveCallerIdentity(ctx, clusterEnv.HubKubeconfig)
+			if err != nil || callerIdentity == "" {
+				t.Skip("kcp TokenReview unavailable or returns empty username; skipping identity-mode test")
+			}
+
+			// 1. Generate RSA keypair.
+			_, pubKey, privKeyPEM, err := framework.GenerateTestSSHKeypair()
+			if err != nil {
+				t.Fatalf("generating SSH keypair: %v", err)
+			}
+
+			// 2. Configure the TestSSHServer to accept any username with pubKey.
+			sshSrv := framework.NewTestSSHServer(sshMappingIdentityPort)
+			sshSrv.AddAnyUserKey(pubKey)
+
+			// 3. Start the agent (no SSH credentials).
+			proc := &framework.ServerProcess{
+				ServerName:    edgeName,
+				HubURL:        clusterEnv.HubURL,
+				HubKubeconfig: clusterEnv.HubKubeconfig,
+				Token:         framework.DevToken,
+				AgentBin:      framework.AgentBinPath(),
+				SSHPort:       sshMappingIdentityPort,
+				SSHServer:     sshSrv,
+			}
+			if err := proc.Start(ctx); err != nil {
+				t.Fatalf("starting server process: %v", err)
+			}
+			if err := proc.WaitForAgentReady(ctx, 60*time.Second); err != nil {
+				t.Fatalf("agent not ready: %v\nlogs:\n%s", err, proc.Logs())
+			}
+
+			ctx = framework.WithSSHPrivateKeyPEM(ctx, privKeyPEM)
+			ctx = framework.WithCallerIdentity(ctx, callerIdentity)
+			return framework.WithServerProcess(ctx, proc)
+		}).
+		Assess("edge_resource_becomes_Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if err := framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+				out, err := framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+					"get", "edges", edgeName, "-o", "jsonpath={.status.phase},{.status.connected}")
+				if err != nil {
+					return false, nil
+				}
+				return strings.TrimSpace(out) == "Ready,true", nil
+			}); err != nil {
+				proc, _ := framework.ServerProcessFromContext(ctx)
+				if proc != nil {
+					t.Logf("agent logs:\n%s", proc.Logs())
+				}
+				t.Fatalf("Edge %s did not become Ready within 2 minutes", edgeName)
+			}
+			return ctx
+		}).
+		Assess("create_secret_and_patch_edge_spec", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			privKeyPEM := framework.SSHPrivateKeyPEMFromContext(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			// Create the Secret with just the private key (no username — username
+			// comes from the caller's identity at runtime).
+			secretYAML := fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: %s
+type: Opaque
+stringData:
+  privateKey: |
+%s`, secretName, secretNS, framework.IndentLines(string(privKeyPEM), "    "))
+			if err := client.ApplyManifest(ctx, secretYAML); err != nil {
+				t.Fatalf("creating SSH key secret: %v", err)
+			}
+
+			patchJSON := fmt.Sprintf(`{"spec":{"server":{"sshUserMapping":"identity","sshCredentialsRef":{"name":%q,"namespace":%q}}}}`,
+				secretName, secretNS)
+			_, err := framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"patch", "edges", edgeName, "--type=merge", "-p", patchJSON)
+			if err != nil {
+				t.Fatalf("patching edge spec: %v", err)
+			}
+			t.Logf("Edge %s patched with sshUserMapping=identity", edgeName)
+			return ctx
+		}).
+		Assess("ssh_connects_as_caller_identity", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			expectedUser := framework.CallerIdentityFromContext(ctx)
+			proc, _ := framework.ServerProcessFromContext(ctx)
+
+			// Verify via server-side tracking — the TestSSHServer should see the
+			// caller's identity as the connecting SSH username.
+			// First do a connection to trigger the username capture.
+			wsClient, err := framework.DialSSH(ctx, clusterEnv.HubKubeconfig, edgeName)
+			if err != nil {
+				t.Fatalf("dialling SSH WebSocket (identity mode): %v", err)
+			}
+			defer wsClient.Close() //nolint:errcheck
+
+			// Allow the connection to be established.
+			_ = wsClient.CollectOutput(ctx, 2*time.Second)
+
+			if proc != nil && proc.SSHServer != nil {
+				found := false
+				for _, u := range proc.SSHServer.ConnectedUsers() {
+					if u == expectedUser {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("TestSSHServer did not record connection as %q (callerIdentity); connected users: %v",
+						expectedUser, proc.SSHServer.ConnectedUsers())
+				}
+				t.Logf("identity SSH username verified: %q", expectedUser)
+			}
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if proc, ok := framework.ServerProcessFromContext(ctx); ok {
+				proc.Stop()
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			_, _ = framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"delete", "secret", secretName, "-n", secretNS, "--ignore-not-found")
+			_, _ = framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"delete", "edges", edgeName, "--ignore-not-found")
+			return ctx
+		}).
+		Feature()
+}

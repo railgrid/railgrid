@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260303-6b34333.edges.kedge.faros.sh
+  name: v260304-d4ea891.edges.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -72,6 +72,22 @@ spec:
                 Server holds configuration specific to SSH server-mode edges.
                 Only valid when type=server.
               properties:
+                sshCredentialsRef:
+                  description: |-
+                    SSHCredentialsRef references a Secret with admin-configured SSH credentials.
+                    Used when sshUserMapping=provided, or as the key source for identity mode.
+                    The Secret must contain: "username" (string) and one of "privateKey" or "password".
+                  properties:
+                    name:
+                      description: name is unique within a namespace to reference
+                        a secret resource.
+                      type: string
+                    namespace:
+                      description: namespace defines the space within which the secret
+                        name must be unique.
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
                 sshKeySecretRef:
                   description: |-
                     SSHKeySecretRef references a Secret containing the SSH private key (key: id_rsa).
@@ -92,6 +108,18 @@ spec:
                   description: 'SSHPort is the port sshd listens on inside the remote
                     host (default: 22).'
                   type: integer
+                sshUserMapping:
+                  default: inherited
+                  description: |-
+                    SSHUserMapping controls how the SSH username is determined for callers.
+                    inherited: use credentials reported by the agent at registration (default).
+                    provided:  use credentials from spec.server.sshCredentialsRef Secret.
+                    identity:  use the caller's kcp/OIDC username; key from sshCredentialsRef.
+                  enum:
+                  - inherited
+                  - provided
+                  - identity
+                  type: string
               type: object
             type:
               description: Type discriminates between Kubernetes cluster and SSH server
