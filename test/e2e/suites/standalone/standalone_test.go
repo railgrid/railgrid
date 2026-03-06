@@ -48,3 +48,9 @@ func TestEdgeListAccuracyUnderChurn(t *testing.T) {
 }
 
 func TestProxyInvalidToken(t *testing.T) { testenv.Test(t, cases.ProxyInvalidToken()) }
+
+// TestK8sProxyWriteIsolation verifies that ConfigMaps written via the k8s proxy
+// land on the edge cluster and NOT on the hub cluster (regression for issue #80).
+func TestK8sProxyWriteIsolation(t *testing.T) {
+	testenv.Test(t, cases.K8sProxyWriteIsolation())
+}

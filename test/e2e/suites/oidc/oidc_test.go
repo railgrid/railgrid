@@ -187,6 +187,13 @@ func TestOIDCCrossUserEdgeIsolation(t *testing.T) {
 	testenv.Test(t, cases.OIDCCrossUserEdgeIsolation())
 }
 
+// TestCrossWorkspaceEdgeIsolation verifies bidirectional multi-tenant isolation:
+// User A cannot access User B's edges and User B cannot access User A's edges
+// via the hub proxy. Regression for issue #81.
+func TestCrossWorkspaceEdgeIsolation(t *testing.T) {
+	testenv.Test(t, cases.CrossWorkspaceEdgeIsolation())
+}
+
 // TestOIDCTokenIssuerMatchesDiscovery verifies that the hub's OIDC issuer URL
 // matches what Dex advertises in its discovery document.
 func TestOIDCTokenIssuerMatchesDiscovery(t *testing.T) {
