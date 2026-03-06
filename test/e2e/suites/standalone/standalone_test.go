@@ -35,6 +35,7 @@ func TestK8sProxyAccess(t *testing.T)       { testenv.Test(t, cases.K8sProxyAcce
 func TestK8sProxyWrite(t *testing.T)        { testenv.Test(t, cases.K8sProxyWrite()) }
 func TestK8sProxyExec(t *testing.T)         { testenv.Test(t, cases.K8sProxyExec()) }
 func TestWorkloadDeployment(t *testing.T)   { testenv.Test(t, cases.WorkloadDeployment()) }
+func TestProxyUnauthenticated(t *testing.T) { testenv.Test(t, cases.ProxyUnauthenticated()) }
 
 // Multi-edge tests — require 2 agent clusters (DefaultAgentCount=2).
 func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }

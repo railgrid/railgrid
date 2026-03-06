@@ -82,6 +82,39 @@ func fakeBearerJWT() string {
 	return "Bearer " + header + "." + payload + "." + sig
 }
 
+// ProxyUnauthenticated verifies that a request to the edges proxy without a
+// Bearer token is rejected with HTTP 401 Unauthorized.
+//
+// The edges proxy handler (pkg/virtual/builder/edges_proxy_builder.go) checks
+// for a valid bearer token as its very first step — before any path parsing or
+// cluster lookup — so this test does not require a running agent or edge
+// resource: it only needs a reachable hub.
+func ProxyUnauthenticated() features.Feature {
+	return features.New("Auth/ProxyUnauthenticated").
+		Assess("no_token_returns_401", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if clusterEnv == nil {
+				t.Fatal("cluster environment not found in context")
+			}
+
+			// Hit the edges proxy with no Authorization header.
+			// The handler rejects requests with an empty bearer token with 401
+			// before any path parsing or cluster lookup occurs, so the cluster
+			// and edge name here are arbitrary placeholders.
+			proxyURL := clusterEnv.HubURL + "/services/edges-proxy/clusters/test/apis/kedge.faros.sh/v1alpha1/edges/nonexistent/k8s"
+			code, err := framework.HTTPGet(ctx, proxyURL)
+			if err != nil {
+				t.Fatalf("HTTP GET to edges proxy failed: %v", err)
+			}
+			if code != http.StatusUnauthorized && code != http.StatusForbidden {
+				t.Fatalf("expected 401 or 403 for unauthenticated edges proxy request, got %d", code)
+			}
+			t.Logf("edges proxy correctly rejected unauthenticated request with HTTP %d", code)
+			return ctx
+		}).
+		Feature()
+}
+
 // ProxyInvalidToken verifies that the edges-proxy handler rejects requests
 // carrying invalid Bearer tokens with HTTP 401 or 403.
 //
