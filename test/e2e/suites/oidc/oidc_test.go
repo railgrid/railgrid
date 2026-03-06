@@ -194,6 +194,13 @@ func TestCrossWorkspaceEdgeIsolation(t *testing.T) {
 	testenv.Test(t, cases.CrossWorkspaceEdgeIsolation())
 }
 
+// TestSSHOIDCUsernameMapping verifies that when sshUserMapping=identity, the
+// SSH session is established as the caller's OIDC identity (kcp username via
+// TokenReview). Regression test for issue #82.
+func TestSSHOIDCUsernameMapping(t *testing.T) {
+	testenv.Test(t, cases.SSHOIDCUsernameMapping())
+}
+
 // TestOIDCTokenIssuerMatchesDiscovery verifies that the hub's OIDC issuer URL
 // matches what Dex advertises in its discovery document.
 func TestOIDCTokenIssuerMatchesDiscovery(t *testing.T) {
