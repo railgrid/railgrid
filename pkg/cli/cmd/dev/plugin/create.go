@@ -97,7 +97,7 @@ const (
 	devDexChartVersion = "0.24.0"
 	devDexReleaseName  = "dex"
 	devDexNodePort     = 31556
-	// bcrypt of "Password1!" for the dev Dex static user
+	// bcrypt of "Password1!" for the dev Dex static users (same password, different identities)
 	devDexUserHash = "$2a$10$ntVcHD0gEYObjVin2ti7XuMILVz0rTQl//HVPc3cR8z7AAVbQGrkO"
 )
 
@@ -573,12 +573,21 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 				"redirectURIs": []string{redirectURI},
 			}},
 			"enablePasswordDB": true,
-			"staticPasswords": []map[string]any{{
-				"email":    "admin@test.kedge.local",
-				"hash":     devDexUserHash,
-				"username": "admin",
-				"userID":   "test-user-id-01",
-			}},
+			"staticPasswords": []map[string]any{
+				{
+					"email":    "admin@test.kedge.local",
+					"hash":     devDexUserHash,
+					"username": "admin",
+					"userID":   "test-user-id-01",
+				},
+				{
+					// Second user for cross-user isolation e2e tests (issue #79).
+					"email":    "user2@test.kedge.local",
+					"hash":     devDexUserHash, // same password "Password1!" — different identity
+					"username": "user2",
+					"userID":   "test-user-id-02",
+				},
+			},
 		},
 	}
 

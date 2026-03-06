@@ -42,9 +42,14 @@ const (
 	DexClientSecret = "kedge-test-secret"
 
 	// DexTestUserEmail / DexTestUserPassword are the static-password credentials
-	// seeded in Dex for e2e OIDC tests.
+	// seeded in Dex for e2e OIDC tests (primary user / User A).
 	DexTestUserEmail    = "admin@test.kedge.local"
 	DexTestUserPassword = "Password1!"
+
+	// DexTestUser2Email / DexTestUser2Password are the credentials for the second
+	// Dex static-password user, used in cross-user isolation tests (issue #79).
+	DexTestUser2Email    = "user2@test.kedge.local"
+	DexTestUser2Password = "Password1!"
 )
 
 // DexEnv holds runtime OIDC provider info stored in the test context.
@@ -52,8 +57,14 @@ type DexEnv struct {
 	IssuerURL    string
 	ClientID     string
 	ClientSecret string
+	// UserEmail / UserPassword are credentials for the primary test user (User A).
 	UserEmail    string
 	UserPassword string
+	// User2Email / User2Password are credentials for the secondary test user (User B).
+	// Used in cross-user isolation tests to verify that User B cannot access
+	// resources owned by User A.
+	User2Email    string
+	User2Password string
 }
 
 // dexEnvKey is the context key for DexEnv.
@@ -73,11 +84,13 @@ func DexEnvFrom(ctx context.Context) *DexEnv {
 // DefaultDexEnv returns the DexEnv used in the e2e OIDC suite.
 func DefaultDexEnv() *DexEnv {
 	return &DexEnv{
-		IssuerURL:    DexIssuerURL,
-		ClientID:     DexClientID,
-		ClientSecret: DexClientSecret,
-		UserEmail:    DexTestUserEmail,
-		UserPassword: DexTestUserPassword,
+		IssuerURL:     DexIssuerURL,
+		ClientID:      DexClientID,
+		ClientSecret:  DexClientSecret,
+		UserEmail:     DexTestUserEmail,
+		UserPassword:  DexTestUserPassword,
+		User2Email:    DexTestUser2Email,
+		User2Password: DexTestUser2Password,
 	}
 }
 

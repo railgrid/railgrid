@@ -181,6 +181,12 @@ func TestEdgeListAccuracyUnderChurn(t *testing.T) {
 	testenv.Test(t, cases.EdgeListAccuracyUnderChurn())
 }
 
+// TestOIDCCrossUserEdgeIsolation verifies that OIDC User B cannot access an
+// edge registered by OIDC User A via the hub proxy. Regression for #63/#75.
+func TestOIDCCrossUserEdgeIsolation(t *testing.T) {
+	testenv.Test(t, cases.OIDCCrossUserEdgeIsolation())
+}
+
 // TestOIDCTokenIssuerMatchesDiscovery verifies that the hub's OIDC issuer URL
 // matches what Dex advertises in its discovery document.
 func TestOIDCTokenIssuerMatchesDiscovery(t *testing.T) {
