@@ -45,3 +45,5 @@ func TestEdgeReconnect(t *testing.T)         { testenv.Test(t, cases.EdgeReconne
 func TestEdgeListAccuracyUnderChurn(t *testing.T) {
 	testenv.Test(t, cases.EdgeListAccuracyUnderChurn())
 }
+
+func TestProxyInvalidToken(t *testing.T) { testenv.Test(t, cases.ProxyInvalidToken()) }
