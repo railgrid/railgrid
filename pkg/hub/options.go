@@ -34,6 +34,7 @@ type Options struct {
 	EmbeddedKCP         bool   // Enable embedded kcp server
 	KCPRootDir          string // Root directory for kcp data (default: <DataDir>/kcp)
 	KCPSecurePort       int    // Secure port for kcp API server (default: 6443)
+	KCPBindAddress      string // Bind address for kcp API server (default: "127.0.0.1")
 	KCPBatteriesInclude string // Comma-separated list of batteries to include (default: "admin,user")
 }
 
@@ -45,6 +46,7 @@ func NewOptions() *Options {
 		HubExternalURL:      "https://localhost:8443",
 		EmbeddedKCP:         false,
 		KCPSecurePort:       6443,
+		KCPBindAddress:      "127.0.0.1",
 		KCPBatteriesInclude: "admin,user",
 	}
 }

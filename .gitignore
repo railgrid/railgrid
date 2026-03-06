@@ -51,15 +51,11 @@ dex.db
 .hooks/
 
 .kubeconfig-kedge-agent
-kk
 docs/Gemfile.lock
 edge-kubeconfig
 *.kubeconfig
 .env
-.planning/autopilot.sh
-.planning/autopilot.lock
-.planning/logs/
-.planning/checkpoints/
+.planning/
 .env.server
 .env.edge
 .site-kubeconfig

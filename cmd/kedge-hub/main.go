@@ -65,6 +65,7 @@ func main() {
 	cmd.Flags().BoolVar(&opts.EmbeddedKCP, "embedded-kcp", opts.EmbeddedKCP, "Enable embedded kcp server (runs kcp in-process)")
 	cmd.Flags().StringVar(&opts.KCPRootDir, "kcp-root-dir", "", "Root directory for embedded kcp data (default: <data-dir>/kcp)")
 	cmd.Flags().IntVar(&opts.KCPSecurePort, "kcp-secure-port", opts.KCPSecurePort, "Secure port for embedded kcp API server")
+	cmd.Flags().StringVar(&opts.KCPBindAddress, "kcp-bind-address", opts.KCPBindAddress, "Bind address for embedded kcp API server (default: 127.0.0.1, use 0.0.0.0 for all interfaces)")
 	cmd.Flags().StringVar(&opts.KCPBatteriesInclude, "kcp-batteries-include", opts.KCPBatteriesInclude, "Comma-separated list of kcp batteries to include")
 
 	if err := cmd.Execute(); err != nil {

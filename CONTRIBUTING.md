@@ -11,25 +11,48 @@ Tools like kcp, Dex, controller-gen, and apigen are installed automatically by M
 
 ## Development environment
 
-### Full stack (single terminal)
+### Quick start with `kedge dev`
 
-The fastest way to get everything running:
+The fastest way to get a full local environment:
 
 ```bash
-make dev
+kedge dev create
 ```
 
-This starts kcp, Dex, and the hub in one terminal. Ctrl-C stops everything.
-
-In a second terminal, log in and register an edge:
+This sets up Kind clusters, a hub, and an agent automatically. Follow the printed next steps to log in, create an edge, and connect the agent.
 
 ```bash
+# Clean up
+kedge dev delete
+```
+
+### Running from source
+
+#### Standalone (embedded kcp + static token)
+
+```bash
+# Terminal 1: Run the hub (no external dependencies)
+make run-hub-embedded-static
+
+# Terminal 2: Login and register an edge
+make dev-login-static    # Authenticate with static token
+make dev-edge-create     # Register an edge (default: kubernetes type)
+make dev-run-edge        # Start the agent on a local kind cluster
+```
+
+#### Full stack (kcp + Dex + OIDC)
+
+```bash
+# Terminal 1: Start kcp, Dex, and the hub
+make dev
+
+# Terminal 2: Log in and register an edge
 make dev-login
 make dev-edge-create
 make dev-run-edge
 ```
 
-### Component by component
+#### Component by component
 
 If you prefer running services separately:
 
@@ -43,6 +66,8 @@ make run-hub
 # Terminal 3: Edge agent (requires dev-edge-create first)
 make dev-run-edge
 ```
+
+Run `make help-dev` to see all available development modes.
 
 ### Deploying a test workload
 

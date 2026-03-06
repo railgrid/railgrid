@@ -16,6 +16,8 @@ kcp:
     enabled: true
     # Secure port for embedded kcp API server
     securePort: 6443
+    # Bind address for embedded kcp API server (0.0.0.0 for all interfaces)
+    bindAddress: "0.0.0.0"
     # Comma-separated list of batteries to include
     batteriesInclude: "admin,user"
 

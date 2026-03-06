@@ -38,38 +38,27 @@ Built on [kcp](https://github.com/kcp-dev/kcp) for multi-tenant workspace isolat
 
 ## Quick Start
 
-```bash
-# Clone and build
-git clone https://github.com/faroshq/kedge.git
-cd kedge
-make build
-
-# Terminal 1: Run the hub (embedded kcp + static token auth)
-make run-hub-embedded-static
-
-# Terminal 2: Login and register an edge
-make dev-login-static    # Authenticate with static token
-make dev-edge-create     # Register an edge (default: kubernetes type)
-make dev-run-edge        # Start the agent on a local kind cluster
-```
-
-That's it! The hub runs with embedded kcp and static token authentication — no external dependencies required.
-
-### Deploy a test workload
+### Install the CLI
 
 ```bash
-make dev-create-workload  # Deploy a sample nginx workload
+kubectl krew index add faros https://github.com/faroshq/krew-index.git
+kubectl krew install faros/kedge
 ```
 
-### Other development modes
+### Set up a local dev environment
 
-Run `make help-dev` to see all available modes:
+```bash
+kedge dev create
+```
 
-| Mode | Command | Description |
-|------|---------|-------------|
-| **Standalone** | `make run-hub-embedded-static` | Embedded kcp + static token (no deps) |
-| **With OIDC** | `make run-dex` + `make run-hub-embedded` | Embedded kcp + Dex OIDC |
-| **External kcp** | `make dev-run-kcp` + `make run-hub-static` | External kcp + static token |
+This creates a full local environment with Kind clusters, a hub, and an agent. Follow the printed next steps to log in, create an edge, and connect the agent.
+
+```bash
+# Clean up when done
+kedge dev delete
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for building from source and other development modes.
 
 ## SSH Server Mode
 

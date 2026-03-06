@@ -40,6 +40,7 @@ spec:
             - --embedded-kcp
             - --kcp-root-dir=/data/kcp
             - --kcp-secure-port={{ .Values.kcp.embedded.securePort }}
+            - --kcp-bind-address={{ .Values.kcp.embedded.bindAddress }}
             - --kcp-batteries-include={{ .Values.kcp.embedded.batteriesInclude }}
             {{- end }}
             {{- if include "kedge-hub.tlsEnabled" . }}

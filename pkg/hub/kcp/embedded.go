@@ -19,6 +19,7 @@ package kcp
 import (
 	"context"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 
@@ -38,6 +39,7 @@ import (
 type EmbeddedKCPOptions struct {
 	RootDir          string
 	SecurePort       int
+	BindAddress      string
 	BatteriesInclude []string
 }
 
@@ -83,8 +85,11 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	// Create kcp server options.
 	kcpOpts := serveroptions.NewOptions(e.opts.RootDir)
 
-	// Configure secure serving port.
+	// Configure secure serving.
 	kcpOpts.GenericControlPlane.SecureServing.BindPort = e.opts.SecurePort
+	if e.opts.BindAddress != "" {
+		kcpOpts.GenericControlPlane.SecureServing.BindAddress = net.ParseIP(e.opts.BindAddress)
+	}
 
 	// Configure batteries.
 	kcpOpts.Extra.BatteriesIncluded = e.opts.BatteriesInclude
