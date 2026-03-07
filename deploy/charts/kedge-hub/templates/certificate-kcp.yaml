@@ -1,0 +1,28 @@
+{{- if and (not .Values.kcp.external.enabled) .Values.kcp.embedded.tls.certManager.enabled (not .Values.kcp.embedded.tls.existingSecret) }}
+{{- $fullname := include "kedge-hub.fullname" . }}
+{{- $kcpServiceName := printf "%s-kcp" $fullname }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $kcpServiceName }}
+  labels:
+    {{- include "kedge-hub.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "kedge-hub.kcpTlsSecretName" . }}
+  issuerRef:
+    name: {{ required "kcp.embedded.tls.certManager.issuerRef.name is required" .Values.kcp.embedded.tls.certManager.issuerRef.name }}
+    kind: {{ .Values.kcp.embedded.tls.certManager.issuerRef.kind }}
+    group: {{ .Values.kcp.embedded.tls.certManager.issuerRef.group }}
+  dnsNames:
+    - "localhost"
+    - {{ $kcpServiceName | quote }}
+    - {{ printf "%s.%s.svc" $kcpServiceName .Release.Namespace | quote }}
+    - {{ printf "%s.%s.svc.cluster.local" $kcpServiceName .Release.Namespace | quote }}
+    - {{ printf "%s-0.%s.%s.svc" $fullname $kcpServiceName .Release.Namespace | quote }}
+    - {{ printf "%s-0.%s.%s.svc.cluster.local" $fullname $kcpServiceName .Release.Namespace | quote }}
+    {{- range .Values.kcp.embedded.tls.certManager.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+  ipAddresses:
+    - "127.0.0.1"
+{{- end }}

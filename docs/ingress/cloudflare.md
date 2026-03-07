@@ -181,13 +181,15 @@ Check the tunnel in [Cloudflare Zero Trust](https://one.dash.cloudflare.com):
 
 Create a values file for your hub (`values-cloudflare.yaml`):
 
+One can generate random token with `openssl rand -hex 16`
+
 ```yaml
 hub:
-  hubExternalURL: "https://hub.yourdomain.com"
+  hubExternalURL: "https://hub.faros.sh"
   devMode: false
 
   # Authentication - choose one:
-  staticAuthToken: "YOUR_GENERATED_TOKEN"  # Simple option
+  staticAuthToken: "f782d49d86e73e5b9cfceb79ac2720ce"  # Simple option
   # OR use OIDC (see Security docs)
 
   tls:
@@ -199,13 +201,13 @@ hub:
         name: letsencrypt-prod
         kind: ClusterIssuer
       dnsNames:
-        - "hub.yourdomain.com"
+        - "hub.faros.sh"
 
 ingress:
   enabled: true
   className: "cloudflare-tunnel"
   hosts:
-    - host: hub.yourdomain.com
+    - host: hub.faros.sh
       paths:
         - path: /
           pathType: ImplementationSpecific
@@ -214,11 +216,13 @@ ingress:
 Deploy:
 
 ```bash
-helm upgrade --install kedge deploy/charts/kedge-hub/ \
-  -f values-cloudflare.yaml \
+helm upgrade --install kedge oci://ghcr.io/faroshq/charts/kedge-hub \
+  -f values.yaml \
   --namespace kedge-system \
   --create-namespace
 ```
+
+Set `--set image.hub.tag=v0.0.1` to override image
 
 ---
 
@@ -249,7 +253,7 @@ kubectl get ingress -n kedge-system
 ### Test connectivity
 
 ```bash
-curl -s https://hub.yourdomain.com/healthz
+curl -s https://hub.faros.sh/healthz
 # ok
 ```
 

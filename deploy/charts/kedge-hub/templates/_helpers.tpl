@@ -73,6 +73,26 @@ TLS Secret name.
 {{- end }}
 
 {{/*
+Whether KCP TLS is enabled (embedded mode only).
+*/}}
+{{- define "kedge-hub.kcpTlsEnabled" -}}
+{{- if and (not .Values.kcp.external.enabled) (or .Values.kcp.embedded.tls.selfSigned.enabled .Values.kcp.embedded.tls.certManager.enabled .Values.kcp.embedded.tls.existingSecret) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+KCP TLS Secret name.
+*/}}
+{{- define "kedge-hub.kcpTlsSecretName" -}}
+{{- if .Values.kcp.embedded.tls.existingSecret }}
+{{- .Values.kcp.embedded.tls.existingSecret }}
+{{- else }}
+{{- printf "%s-kcp-tls" (include "kedge-hub.fullname" .) }}
+{{- end }}
+{{- end }}
+
+{{/*
 KCP kubeconfig Secret name (for external kcp mode).
 */}}
 {{- define "kedge-hub.kcpKubeconfigSecretName" -}}

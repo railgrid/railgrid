@@ -494,6 +494,18 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 			return nil
 		}
 
+		// Install cert-manager for KCP TLS certificates.
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "Installing cert-manager (required for kcp TLS)...\n")
+		if err := ensureCertManager(ctx, kubeconfigPath); err != nil {
+			return fmt.Errorf("installing cert-manager: %w", err)
+		}
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "cert-manager ready\n")
+
+		// Create a self-signed ClusterIssuer for KCP TLS.
+		if err := ensureSelfSignedClusterIssuer(ctx, kubeconfigPath); err != nil {
+			return fmt.Errorf("creating self-signed ClusterIssuer: %w", err)
+		}
+
 		// Deploy Dex FIRST so the hub can be installed once, with IDP settings
 		// already wired in. Dex creates the namespace (CreateNamespace=true).
 		if o.WithDex {
@@ -710,6 +722,23 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 			},
 		},
 		"hub": hubValues,
+		"kcp": map[string]any{
+			"embedded": map[string]any{
+				"tls": map[string]any{
+					"selfSigned": map[string]any{
+						"enabled": false,
+					},
+					"certManager": map[string]any{
+						"enabled": true,
+						"issuerRef": map[string]any{
+							"name":  selfSignedClusterIssuerName,
+							"kind":  "ClusterIssuer",
+							"group": "cert-manager.io",
+						},
+					},
+				},
+			},
+		},
 		"service": map[string]any{
 			"type": "NodePort",
 			"hub": map[string]any{
