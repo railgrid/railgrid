@@ -41,6 +41,12 @@ type EmbeddedKCPOptions struct {
 	SecurePort       int
 	BindAddress      string
 	BatteriesInclude []string
+
+	// TLS certificate/key files for the KCP API server.
+	// When set, KCP uses these instead of auto-generating self-signed certs.
+	// This is important in Kubernetes where pod IPs change on restart.
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 // EmbeddedKCP wraps a kcp server that runs in-process.
@@ -89,6 +95,12 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	kcpOpts.GenericControlPlane.SecureServing.BindPort = e.opts.SecurePort
 	if e.opts.BindAddress != "" {
 		kcpOpts.GenericControlPlane.SecureServing.BindAddress = net.ParseIP(e.opts.BindAddress)
+	}
+
+	// Use provided TLS cert/key instead of auto-generated ones.
+	if e.opts.TLSCertFile != "" && e.opts.TLSKeyFile != "" {
+		kcpOpts.GenericControlPlane.SecureServing.ServerCert.CertKey.CertFile = e.opts.TLSCertFile
+		kcpOpts.GenericControlPlane.SecureServing.ServerCert.CertKey.KeyFile = e.opts.TLSKeyFile
 	}
 
 	// Configure batteries.
@@ -141,14 +153,27 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 		// Wait for kcp phase 1 bootstrap to complete.
 		e.server.WaitForPhase1Finished()
 
-		// Build admin config from the generated admin kubeconfig.
+		// Load the admin kubeconfig which authenticates as kcp-admin.
+		// KCP regenerates this file on each startup with fresh client certs.
 		adminKubeconfigPath := filepath.Join(e.opts.RootDir, "admin.kubeconfig")
 		adminConfig, err := clientcmd.BuildConfigFromFlags("", adminKubeconfigPath)
 		if err != nil {
 			logger.Error(err, "Failed to load admin kubeconfig, using loopback")
 			e.adminConfig = rest.CopyConfig(hookContext.LoopbackClientConfig)
+			e.adminConfig.Host = AppendClusterPath(e.adminConfig.Host, "root")
 		} else {
 			e.adminConfig = adminConfig
+		}
+
+		// When external TLS certs are provided, the admin kubeconfig's CA
+		// won't match (it references KCP's auto-generated CA, not the
+		// cert-manager CA). Since KCP is in-process, connect via localhost
+		// and skip server cert verification.
+		if e.opts.TLSCertFile != "" {
+			e.adminConfig.Host = AppendClusterPath(fmt.Sprintf("https://localhost:%d", e.opts.SecurePort), "root")
+			e.adminConfig.TLSClientConfig.CAData = nil
+			e.adminConfig.TLSClientConfig.CAFile = ""
+			e.adminConfig.TLSClientConfig.Insecure = true
 		}
 
 		logger.Info("kcp server is ready")

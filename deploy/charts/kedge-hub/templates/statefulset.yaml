@@ -5,7 +5,11 @@ metadata:
   labels:
     {{- include "kedge-hub.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.kcp.external.enabled }}
+  serviceName: {{ include "kedge-hub.fullname" . }}-kcp
+  {{- else }}
   serviceName: {{ include "kedge-hub.fullname" . }}
+  {{- end }}
   replicas: 1
   selector:
     matchLabels:
@@ -42,6 +46,10 @@ spec:
             - --kcp-secure-port={{ .Values.kcp.embedded.securePort }}
             - --kcp-bind-address={{ .Values.kcp.embedded.bindAddress }}
             - --kcp-batteries-include={{ .Values.kcp.embedded.batteriesInclude }}
+            {{- if include "kedge-hub.kcpTlsEnabled" . }}
+            - --kcp-tls-cert-file=/kcp-tls/tls.crt
+            - --kcp-tls-key-file=/kcp-tls/tls.key
+            {{- end }}
             {{- end }}
             {{- if include "kedge-hub.tlsEnabled" . }}
             - --serving-cert-file=/tls/tls.crt
@@ -89,6 +97,11 @@ spec:
               mountPath: /tls
               readOnly: true
             {{- end }}
+            {{- if include "kedge-hub.kcpTlsEnabled" . }}
+            - name: kcp-tls
+              mountPath: /kcp-tls
+              readOnly: true
+            {{- end }}
             {{- if .Values.kcp.external.enabled }}
             - name: kcp-kubeconfig
               mountPath: /kcp-kubeconfig
@@ -100,6 +113,11 @@ spec:
         - name: tls
           secret:
             secretName: {{ include "kedge-hub.tlsSecretName" . }}
+        {{- end }}
+        {{- if include "kedge-hub.kcpTlsEnabled" . }}
+        - name: kcp-tls
+          secret:
+            secretName: {{ include "kedge-hub.kcpTlsSecretName" . }}
         {{- end }}
         {{- if .Values.kcp.external.enabled }}
         - name: kcp-kubeconfig

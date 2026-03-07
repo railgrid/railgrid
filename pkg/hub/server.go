@@ -94,6 +94,8 @@ func (s *Server) Run(ctx context.Context) error {
 			SecurePort:       s.opts.KCPSecurePort,
 			BindAddress:      s.opts.KCPBindAddress,
 			BatteriesInclude: batteries,
+			TLSCertFile:      s.opts.KCPTLSCertFile,
+			TLSKeyFile:       s.opts.KCPTLSKeyFile,
 		})
 
 		// Start kcp in a goroutine. It will block until context is cancelled
@@ -116,7 +118,8 @@ func (s *Server) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 
-		// Use the admin config from embedded kcp.
+		// Use the loopback admin config from embedded kcp. This uses
+		// in-process transport and is immune to TLS cert/CA mismatches.
 		kcpConfig = embeddedKCP.AdminConfig()
 		if kcpConfig == nil {
 			// Fall back to loading from file.

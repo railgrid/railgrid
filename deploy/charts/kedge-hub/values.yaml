@@ -20,6 +20,25 @@ kcp:
     bindAddress: "0.0.0.0"
     # Comma-separated list of batteries to include
     batteriesInclude: "admin,user"
+    # -- TLS configuration for embedded kcp API server.
+    # Required to avoid certificate errors when pod IP changes on restart.
+    # A headless service provides stable DNS names for the StatefulSet pod.
+    tls:
+      # Provide an existing Secret with tls.crt and tls.key
+      existingSecret: ""
+      # Auto-generate self-signed cert (default, includes stable DNS names)
+      selfSigned:
+        enabled: true
+        dnsNames: []
+        ipAddresses: []
+      # Use cert-manager to issue a certificate
+      certManager:
+        enabled: false
+        issuerRef:
+          name: ""
+          kind: ClusterIssuer
+          group: cert-manager.io
+        dnsNames: []
 
   # -- External kcp (running outside the cluster)
   # Enable this to connect to an external kcp instance

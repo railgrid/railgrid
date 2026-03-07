@@ -87,6 +87,29 @@ func ensureKCPHelmRepo() error {
 	return nil
 }
 
+const selfSignedClusterIssuerName = "kedge-selfsigned"
+
+// ensureSelfSignedClusterIssuer creates a self-signed ClusterIssuer for KCP TLS.
+// Idempotent — safe to call on an existing issuer.
+func ensureSelfSignedClusterIssuer(ctx context.Context, kubeconfigPath string) error {
+	issuerYAML := fmt.Sprintf(`apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: %s
+spec:
+  selfSigned: {}
+`, selfSignedClusterIssuerName)
+
+	applyCmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "-")
+	applyCmd.Stdin = strings.NewReader(issuerYAML)
+	applyCmd.Stdout = os.Stdout
+	applyCmd.Stderr = os.Stderr
+	if err := applyCmd.Run(); err != nil {
+		return fmt.Errorf("applying self-signed ClusterIssuer: %w", err)
+	}
+	return nil
+}
+
 // ensureCertManager installs cert-manager into the cluster and waits for it
 // to be ready. Idempotent — safe to call on an existing cert-manager install.
 func ensureCertManager(ctx context.Context, kubeconfigPath string) error {
