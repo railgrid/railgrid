@@ -36,8 +36,8 @@ type Options struct {
 	KCPSecurePort       int    // Secure port for kcp API server (default: 6443)
 	KCPBindAddress      string // Bind address for kcp API server (default: "127.0.0.1")
 	KCPBatteriesInclude string // Comma-separated list of batteries to include (default: "admin,user")
-	KCPTLSCertFile string // TLS certificate file for kcp API server
-	KCPTLSKeyFile  string // TLS key file for kcp API server
+	KCPTLSCertFile      string // TLS certificate file for kcp API server
+	KCPTLSKeyFile       string // TLS key file for kcp API server
 }
 
 // NewOptions returns default Options.

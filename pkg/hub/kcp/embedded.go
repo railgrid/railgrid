@@ -171,9 +171,9 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 		// and skip server cert verification.
 		if e.opts.TLSCertFile != "" {
 			e.adminConfig.Host = AppendClusterPath(fmt.Sprintf("https://localhost:%d", e.opts.SecurePort), "root")
-			e.adminConfig.TLSClientConfig.CAData = nil
-			e.adminConfig.TLSClientConfig.CAFile = ""
-			e.adminConfig.TLSClientConfig.Insecure = true
+			e.adminConfig.CAData = nil
+			e.adminConfig.CAFile = ""
+			e.adminConfig.Insecure = true
 		}
 
 		logger.Info("kcp server is ready")
