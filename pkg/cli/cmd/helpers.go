@@ -19,6 +19,7 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 var kubeconfig string
@@ -79,4 +81,59 @@ func formatStringOrDash(s string) string {
 
 func printRow(tw *tabwriter.Writer, cols ...string) {
 	_, _ = fmt.Fprintln(tw, strings.Join(cols, "\t"))
+}
+
+// externalizeEdgeURLFromConfig replaces the host in an edge URL with the hub's
+// external address from a rest.Config. edge.Status.URL may use an internal host
+// (e.g. localhost) for kcp mount resolution; this function swaps in the hub's
+// public address so the URL is accessible from the user's machine.
+func externalizeEdgeURLFromConfig(edgeURL string, config *rest.Config) (string, error) {
+	parsed, err := url.Parse(edgeURL)
+	if err != nil {
+		return "", fmt.Errorf("parsing edge URL %q: %w", edgeURL, err)
+	}
+
+	hubParsed, err := url.Parse(config.Host)
+	if err != nil {
+		return edgeURL, nil //nolint:nilerr // can't parse hub host, return as-is
+	}
+
+	// Only externalize if the path looks like an edges-proxy path.
+	if !strings.HasPrefix(parsed.Path, "/services/") {
+		return edgeURL, nil
+	}
+
+	hubBase := hubParsed.Scheme + "://" + hubParsed.Host
+	return hubBase + parsed.Path, nil
+}
+
+// externalizeEdgeURL replaces the host in an edge URL with the hub's external
+// address from a raw kubeconfig. See externalizeEdgeURLFromConfig.
+func externalizeEdgeURL(edgeURL string, rawConfig *clientcmdapi.Config) (string, error) {
+	hubServerURL := ""
+	if currentCtx, ok := rawConfig.Contexts[rawConfig.CurrentContext]; ok {
+		if cl, ok := rawConfig.Clusters[currentCtx.Cluster]; ok {
+			hubServerURL = cl.Server
+		}
+	}
+	if hubServerURL == "" {
+		return edgeURL, nil
+	}
+
+	parsed, err := url.Parse(edgeURL)
+	if err != nil {
+		return "", fmt.Errorf("parsing edge URL %q: %w", edgeURL, err)
+	}
+
+	hubParsed, err := url.Parse(hubServerURL)
+	if err != nil {
+		return edgeURL, nil //nolint:nilerr
+	}
+
+	if !strings.HasPrefix(parsed.Path, "/services/") {
+		return edgeURL, nil
+	}
+
+	hubBase := hubParsed.Scheme + "://" + hubParsed.Host
+	return hubBase + parsed.Path, nil
 }

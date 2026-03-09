@@ -49,9 +49,13 @@ var workspaceGVR = schema.GroupVersionResource{
 //
 // Edges with spec.type=server are skipped — they have no kcp workspace.
 type MountReconciler struct {
-	mgr            mcmanager.Manager
-	kcpConfig      *rest.Config
-	hubExternalURL string
+	mgr       mcmanager.Manager
+	kcpConfig *rest.Config
+	// hubMountURL is the internal URL used for edge.Status.URL which kcp reads
+	// during mount resolution. This must be a localhost/internal address to
+	// avoid CDN/proxy loops (e.g. Cloudflare loop detection) when kcp's
+	// local proxy calls the edges-proxy handler.
+	hubMountURL string
 
 	// workspaceEnsureFn creates or adopts the kcp mount workspace for an edge.
 	// Defaults to r.ensureMountWorkspace; injectable for unit testing.
@@ -59,11 +63,11 @@ type MountReconciler struct {
 }
 
 // SetupMountWithManager registers the edge mount controller with the multicluster manager.
-func SetupMountWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExternalURL string) error {
+func SetupMountWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubMountURL string) error {
 	r := &MountReconciler{
-		mgr:            mgr,
-		kcpConfig:      kcpConfig,
-		hubExternalURL: hubExternalURL,
+		mgr:         mgr,
+		kcpConfig:   kcpConfig,
+		hubMountURL: hubMountURL,
 	}
 	r.workspaceEnsureFn = r.ensureMountWorkspace
 	return mcbuilder.ControllerManagedBy(mgr).
@@ -105,7 +109,9 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 			return ctrl.Result{}, fmt.Errorf("deleting mount workspace for server edge: %w", err)
 		}
 		// Set the SSH URL on the edge status so clients can reach the SSH endpoint.
-		expectedSSHURL := r.hubExternalURL + "/services/edges-proxy/clusters/" + req.ClusterName +
+		// Note: this uses the internal mount URL. The CLI constructs the
+		// user-facing URL from the hub server address in the kubeconfig.
+		expectedSSHURL := r.hubMountURL + "/services/edges-proxy/clusters/" + req.ClusterName +
 			"/apis/kedge.faros.sh/v1alpha1/edges/" + edge.Name + "/ssh"
 		if edge.Status.URL != expectedSSHURL {
 			logger.Info("Setting edge SSH URL", "url", expectedSSHURL)
@@ -121,7 +127,7 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 
 	// Set the workspace URL on the edge status if not already set.
 	// The URL is served by the hub's edge-proxy virtual workspace handler.
-	expectedURL := r.hubExternalURL + "/services/edges-proxy/clusters/" + req.ClusterName +
+	expectedURL := r.hubMountURL + "/services/edges-proxy/clusters/" + req.ClusterName +
 		"/apis/kedge.faros.sh/v1alpha1/edges/" + edge.Name + "/k8s"
 	if edge.Status.URL != expectedURL {
 		logger.Info("Setting edge workspace URL", "url", expectedURL)

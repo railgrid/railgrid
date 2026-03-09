@@ -2,10 +2,10 @@ apiVersion: v2
 name: kedge-agent
 description: Kedge Agent - connects a site to the hub via reverse tunnel
 type: application
-version: 0.0.1
-appVersion: "v0.0.1"
-home: https://github.com/faroshq/faros-kedge
+version: v0.0.5
+appVersion: "v0.0.5"
+home: https://github.com/faroshq/kedge
 sources:
-  - https://github.com/faroshq/faros-kedge
+  - https://github.com/faroshq/kedge
 maintainers:
   - name: Faros Authors

@@ -49,8 +49,8 @@ func newKubeconfigEdgeCommand() *cobra.Command {
 		Long: `Generate a kubeconfig file that points directly to an edge's
 Kubernetes API (for type=kubernetes edges) or SSH endpoint (for type=server edges).
 
-The edge URL is read from Edge.Status.URL, which is set by the hub once the edge
-is Ready and a kcp mount workspace has been assigned.
+The edge URL path is read from Edge.Status.URL and combined with the hub's
+external address from your current kubeconfig to produce a user-accessible URL.
 
 The current credentials from your kubeconfig are reused so you can connect to the
 edge proxy with the same authentication token used for the hub.
@@ -81,6 +81,8 @@ Examples:
 			}
 
 			// 2. Read edge.Status.URL (JSON field name "URL" — note capital U per the API type).
+			// The status URL may be an internal address (for kcp mount resolution).
+			// We extract the path and combine it with the hub's external address.
 			edgeURL, _, _ := unstructuredNestedField(edge.Object, "status", "URL")
 			edgeURLStr, _ := edgeURL.(string)
 			if edgeURLStr == "" {
@@ -105,13 +107,19 @@ Examples:
 				}
 			}
 
-			// 5. Build a kubeconfig pointing to the edge URL with the current credentials.
+			// 5. Build the external edge URL by combining the hub server address
+			// with the path from edge.Status.URL (which may use an internal host).
+			externalEdgeURL, err := externalizeEdgeURL(edgeURLStr, rawConfig)
+			if err != nil {
+				return fmt.Errorf("constructing external edge URL: %w", err)
+			}
+
 			contextName := name + "-edge"
 			newConfig := clientcmdapi.NewConfig()
 
 			// Use InsecureSkipTLSVerify by default; inherit CA from existing cluster if available.
 			clusterEntry := &clientcmdapi.Cluster{
-				Server:                edgeURLStr,
+				Server:                externalEdgeURL,
 				InsecureSkipTLSVerify: true,
 			}
 			if currentCtx, ok := rawConfig.Contexts[rawConfig.CurrentContext]; ok {

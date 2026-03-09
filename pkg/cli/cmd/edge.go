@@ -92,6 +92,24 @@ func newEdgeCreateCommand() *cobra.Command {
 			}
 
 			fmt.Printf("Edge %q created.\n", name)
+
+			fmt.Println()
+			fmt.Println("Next steps — connect an agent to this edge:")
+			fmt.Println()
+			fmt.Println("  1. Retrieve the generated agent kubeconfig from the hub:")
+			fmt.Printf("     kubectl get secret edge-%s-kubeconfig -n kedge-system -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-%s.kubeconfig\n", name, name)
+			fmt.Println()
+
+			if edgeType == "server" {
+				printServerEdgeInstructions(name)
+			} else {
+				printKubernetesEdgeInstructions(name, edgeType)
+			}
+
+			fmt.Println()
+			fmt.Println("  3. Verify the edge is connected:")
+			fmt.Printf("     kedge edge get %s\n", name)
+
 			return nil
 		},
 	}
@@ -210,6 +228,63 @@ func newEdgeDeleteCommand() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func printKubernetesEdgeInstructions(name, edgeType string) {
+	fmt.Println("  2a. Run the agent via CLI (on the target cluster):")
+	fmt.Println()
+	fmt.Printf("      kedge agent join \\\n")
+	fmt.Printf("        --hub-kubeconfig edge-%s.kubeconfig \\\n", name)
+	fmt.Printf("        --edge-name %s \\\n", name)
+	fmt.Printf("        --type %s\n", edgeType)
+	fmt.Println()
+	fmt.Println("      The agent will use the kubeconfig to authenticate with the hub")
+	fmt.Println("      and establish a tunnel for proxying requests to the edge cluster.")
+	fmt.Println()
+	fmt.Println("  2b. Or deploy the agent via Helm (on the target cluster):")
+	fmt.Println()
+	fmt.Println("      # First, create the hub kubeconfig secret in the target cluster:")
+	fmt.Printf("      kubectl create secret generic edge-%s-kubeconfig \\\n", name)
+	fmt.Printf("        --from-file=kubeconfig=edge-%s.kubeconfig\n", name)
+	fmt.Println()
+	fmt.Printf("      # Then install the agent Helm chart:\n")
+	fmt.Printf("      helm install kedge-agent-%s oci://ghcr.io/faroshq/charts/kedge-agent \\\n", name)
+	fmt.Printf("        --set agent.edgeName=%s \\\n", name)
+	fmt.Printf("        --set agent.hub.existingSecret=edge-%s-kubeconfig\n", name)
+}
+
+func printServerEdgeInstructions(name string) {
+	fmt.Println("  2. Install and run the agent on the target server:")
+	fmt.Println()
+	fmt.Println("     a) Download the kedge CLI binary:")
+	fmt.Println()
+	fmt.Println("        # Linux amd64:")
+	fmt.Println("        curl -Lo /usr/local/bin/kedge \\")
+	fmt.Println("          https://github.com/faroshq/kedge/releases/latest/download/kedge-linux-amd64")
+	fmt.Println("        chmod +x /usr/local/bin/kedge")
+	fmt.Println()
+	fmt.Println("     b) Copy the kubeconfig to the server:")
+	fmt.Println()
+	fmt.Printf("        scp edge-%s.kubeconfig <user>@<server>:/etc/kedge/hub.kubeconfig\n", name)
+	fmt.Println()
+	fmt.Println("     c) Install as a systemd service:")
+	fmt.Println()
+	fmt.Printf("        sudo kedge agent install \\\n")
+	fmt.Printf("          --hub-kubeconfig /etc/kedge/hub.kubeconfig \\\n")
+	fmt.Printf("          --edge-name %s \\\n", name)
+	fmt.Println("          --type server")
+	fmt.Println()
+	fmt.Println("        This creates and starts a kedge-agent systemd unit that runs")
+	fmt.Println("        'kedge agent join'. The agent establishes a reverse tunnel to")
+	fmt.Println("        the hub and proxies SSH connections to the local sshd.")
+	fmt.Println("        The kedge CLI is also available on the server for management.")
+	fmt.Println()
+	fmt.Println("     Or run it directly (e.g. for testing):")
+	fmt.Println()
+	fmt.Printf("        kedge agent join \\\n")
+	fmt.Printf("          --hub-kubeconfig /etc/kedge/hub.kubeconfig \\\n")
+	fmt.Printf("          --edge-name %s \\\n", name)
+	fmt.Println("          --type server")
 }
 
 func unstructuredNestedBool(obj map[string]interface{}, fields ...string) (bool, bool, error) {

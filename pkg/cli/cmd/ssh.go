@@ -103,7 +103,15 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("edge %q has no proxy URL in status; is the agent running?", name)
 	}
 
-	wsURL, err := buildSSHWebSocketURL(config, edge.Status.URL, remoteCmd)
+	// Externalize the edge URL: edge.Status.URL may use an internal host
+	// (for kcp mount resolution). Replace the host with the hub's external
+	// address from the kubeconfig.
+	externalURL, err := externalizeEdgeURLFromConfig(edge.Status.URL, config)
+	if err != nil {
+		return fmt.Errorf("constructing external edge URL: %w", err)
+	}
+
+	wsURL, err := buildSSHWebSocketURL(config, externalURL, remoteCmd)
 	if err != nil {
 		return fmt.Errorf("building SSH endpoint URL: %w", err)
 	}

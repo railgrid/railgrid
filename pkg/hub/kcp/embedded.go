@@ -18,8 +18,11 @@ package kcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -47,6 +50,11 @@ type EmbeddedKCPOptions struct {
 	// This is important in Kubernetes where pod IPs change on restart.
 	TLSCertFile string
 	TLSKeyFile  string
+
+	// StaticAuthTokens are bearer tokens that kcp should accept directly
+	// via its token-auth-file mechanism. This allows static token users
+	// to be authenticated natively by kcp (needed for workspace mounts).
+	StaticAuthTokens []string
 }
 
 // EmbeddedKCP wraps a kcp server that runs in-process.
@@ -101,6 +109,37 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	if e.opts.TLSCertFile != "" && e.opts.TLSKeyFile != "" {
 		kcpOpts.GenericControlPlane.SecureServing.ServerCert.CertKey.CertFile = e.opts.TLSCertFile
 		kcpOpts.GenericControlPlane.SecureServing.ServerCert.CertKey.KeyFile = e.opts.TLSKeyFile
+	}
+
+	// Write static token auth file for kcp if static tokens are configured.
+	// This allows kcp to authenticate static token users natively, which is
+	// required for workspace mount access (e.g. `ws use <edge>`).
+	if len(e.opts.StaticAuthTokens) > 0 {
+		if err := os.MkdirAll(e.opts.RootDir, 0700); err != nil {
+			return fmt.Errorf("creating kcp root directory: %w", err)
+		}
+		tokenFilePath := filepath.Join(e.opts.RootDir, "token-auth-file.csv")
+		var lines []string
+		for _, token := range e.opts.StaticAuthTokens {
+			if token == "" {
+				continue
+			}
+			// Use the same hash scheme as the proxy (pkg/server/proxy) so
+			// the kcp-side identity is consistent.
+			h := sha256.Sum256([]byte("static-token/" + token))
+			subHash := hex.EncodeToString(h[:])[:63]
+			user := fmt.Sprintf("kedge:static:%s", subHash[:16])
+			uid := subHash[:16]
+			// Format: token,user,uid,"group1,group2"
+			lines = append(lines, fmt.Sprintf("%s,%s,%s,\"system:authenticated\"", token, user, uid))
+		}
+		if len(lines) > 0 {
+			if err := os.WriteFile(tokenFilePath, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+				return fmt.Errorf("writing token auth file: %w", err)
+			}
+			kcpOpts.GenericControlPlane.Authentication.TokenFile.TokenFile = tokenFilePath
+			logger.Info("Static token auth file configured for kcp", "path", tokenFilePath, "tokens", len(lines))
+		}
 	}
 
 	// Configure batteries.

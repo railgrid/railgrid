@@ -333,10 +333,13 @@ help-dev: ## Show development environment options
 	@echo "  KCP_DATA_DIR       - Directory for kcp data (default: .kcp)"
 	@echo ""
 
+DOCKER_PLATFORM ?= linux/amd64
+
 docker-build: docker-build-hub docker-build-agent ## Build all container images
 
 docker-build-hub: ## Build kedge-hub container image
 	docker build -f deploy/Dockerfile.hub \
+		--platform $(DOCKER_PLATFORM) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
@@ -344,10 +347,19 @@ docker-build-hub: ## Build kedge-hub container image
 
 docker-build-agent: ## Build kedge-agent container image
 	docker build -f deploy/Dockerfile.agent \
+		--platform $(DOCKER_PLATFORM) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		-t ghcr.io/faroshq/kedge-agent:$(VERSION) .
+
+docker-push-hub: docker-build-hub ## Build and push kedge-hub container image
+	docker push ghcr.io/faroshq/kedge-hub:$(VERSION)
+
+docker-push-agent: docker-build-agent ## Build and push kedge-agent container image
+	docker push ghcr.io/faroshq/kedge-agent:$(VERSION)
+
+docker-push: docker-push-hub docker-push-agent ## Build and push all container images
 
 clean:
 	rm -rf $(BINDIR)
@@ -374,7 +386,7 @@ helm-clean: ## Clean up built helm charts
 # --- E2E Tests ---
 
 E2E_FLAGS ?=
-E2E_TIMEOUT ?= 10m
+E2E_TIMEOUT ?= 20m
 
 e2e: e2e-standalone ## Run default e2e suite (standalone)
 

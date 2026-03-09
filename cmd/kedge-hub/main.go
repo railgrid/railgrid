@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -58,6 +59,7 @@ func main() {
 	cmd.Flags().StringVar(&opts.ServingCertFile, "serving-cert-file", "", "TLS certificate file for HTTPS serving")
 	cmd.Flags().StringVar(&opts.ServingKeyFile, "serving-key-file", "", "TLS key file for HTTPS serving")
 	cmd.Flags().StringVar(&opts.HubExternalURL, "hub-external-url", opts.HubExternalURL, "External URL of this hub (for kubeconfig generation)")
+	cmd.Flags().StringVar(&opts.HubInternalURL, "hub-internal-url", "", "Internal URL for kcp mount resolution (default: derived from listen-addr; avoids CDN loops)")
 	cmd.Flags().BoolVar(&opts.DevMode, "dev-mode", false, "Enable dev mode (skip TLS verification for OIDC)")
 	cmd.Flags().StringSliceVar(&opts.StaticAuthTokens, "static-auth-token", nil, "Static bearer tokens for access (can be specified multiple times)")
 
@@ -69,6 +71,11 @@ func main() {
 	cmd.Flags().StringVar(&opts.KCPBatteriesInclude, "kcp-batteries-include", opts.KCPBatteriesInclude, "Comma-separated list of kcp batteries to include")
 	cmd.Flags().StringVar(&opts.KCPTLSCertFile, "kcp-tls-cert-file", "", "TLS certificate file for embedded kcp API server")
 	cmd.Flags().StringVar(&opts.KCPTLSKeyFile, "kcp-tls-key-file", "", "TLS key file for embedded kcp API server")
+
+	// Add klog flags (provides -v for log verbosity, shared with embedded kcp)
+	goFlags := flag.NewFlagSet("", flag.ContinueOnError)
+	klog.InitFlags(goFlags)
+	cmd.Flags().AddGoFlagSet(goFlags)
 
 	if err := cmd.Execute(); err != nil {
 		klog.Fatal(err)

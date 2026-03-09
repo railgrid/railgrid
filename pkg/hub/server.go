@@ -96,6 +96,7 @@ func (s *Server) Run(ctx context.Context) error {
 			BatteriesInclude: batteries,
 			TLSCertFile:      s.opts.KCPTLSCertFile,
 			TLSKeyFile:       s.opts.KCPTLSKeyFile,
+			StaticAuthTokens: s.opts.StaticAuthTokens,
 		})
 
 		// Start kcp in a goroutine. It will block until context is cancelled
@@ -280,7 +281,24 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := edge.SetupRBACWithManager(mgr, s.opts.HubExternalURL); err != nil {
 			return fmt.Errorf("setting up edge RBAC controller: %w", err)
 		}
-		if err := edge.SetupMountWithManager(mgr, kcpConfig, s.opts.HubExternalURL); err != nil {
+		// Use internal URL for mount resolution to avoid CDN/proxy loops.
+		// When kcp resolves a mount, it calls edge.Status.URL. If that URL
+		// goes through an external CDN (e.g. Cloudflare), the request loops
+		// back to the hub creating a loop that the CDN blocks.
+		mountURL := s.opts.HubInternalURL
+		if mountURL == "" {
+			// Default: construct from listen address.
+			scheme := "https"
+			if s.opts.ServingCertFile == "" {
+				scheme = "http"
+			}
+			addr := s.opts.ListenAddr
+			if strings.HasPrefix(addr, ":") {
+				addr = "localhost" + addr
+			}
+			mountURL = scheme + "://" + addr
+		}
+		if err := edge.SetupMountWithManager(mgr, kcpConfig, mountURL); err != nil {
 			return fmt.Errorf("setting up edge mount controller: %w", err)
 		}
 		go func() {

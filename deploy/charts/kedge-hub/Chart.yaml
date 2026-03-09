@@ -2,10 +2,10 @@ apiVersion: v2
 name: kedge-hub
 description: Kedge Hub - multi-tenant edge control plane (kcp + kedge-hub)
 type: application
-version: v0.0.4
-appVersion: "v0.0.4"
-home: https://github.com/faroshq/faros-kedge
+version: v0.0.5
+appVersion: "v0.0.5"
+home: https://github.com/faroshq/kedge
 sources:
-  - https://github.com/faroshq/faros-kedge
+  - https://github.com/faroshq/kedge
 maintainers:
   - name: Faros Authors

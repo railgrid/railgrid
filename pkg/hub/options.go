@@ -27,6 +27,7 @@ type Options struct {
 	ServingCertFile       string
 	ServingKeyFile        string
 	HubExternalURL        string
+	HubInternalURL        string // Internal URL for kcp mount resolution (avoids CDN/proxy loops)
 	DevMode               bool
 	StaticAuthTokens      []string
 
