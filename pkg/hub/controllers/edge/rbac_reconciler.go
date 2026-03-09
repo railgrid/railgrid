@@ -216,6 +216,17 @@ func desiredAgentRules() []rbacv1.PolicyRule {
 			Resources: []string{"virtualworkloads", "virtualworkloads/status"},
 			Verbs:     []string{"get", "list", "watch"},
 		},
+		// Namespaces and secrets are needed for SSH credential setup (server-type edges).
+		{
+			APIGroups: []string{""},
+			Resources: []string{"namespaces"},
+			Verbs:     []string{"get", "create"},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"secrets"},
+			Verbs:     []string{"get", "create", "update"},
+		},
 	}
 }
 

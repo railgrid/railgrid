@@ -162,10 +162,9 @@ ifeq ($(TYPE),server)
 	$(BINDIR)/kedge-agent \
 		--hub-url=https://localhost:8443 \
 		--insecure-skip-tls-verify \
-		--token=$(STATIC_AUTH_TOKEN) \
+		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
 		--tunnel-url=https://localhost:8443 \
 		--edge-name=$(DEV_EDGE_NAME) \
-		--labels=$(KEDGE_EDGE_LABELS) \
 		--cluster=$(KEDGE_EDGE_CLUSTER) \
 		--type=server \
 		--ssh-proxy-port=2222 \
@@ -173,12 +172,14 @@ ifeq ($(TYPE),server)
 		--ssh-password=password
 else
 	hack/scripts/ensure-kind-cluster.sh
-	$(BINDIR)/kedge-agent join \
-		--hub-kubeconfig=$(KEDGE_EDGE_KUBECONFIG) \
-		--kubeconfig=.kubeconfig-kedge-agent \
+	$(BINDIR)/kedge-agent \
+		--hub-url=https://localhost:8443 \
+		--insecure-skip-tls-verify \
+		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
 		--tunnel-url=https://localhost:8443 \
 		--edge-name=$(DEV_EDGE_NAME) \
-		--labels=$(KEDGE_EDGE_LABELS) \
+		--kubeconfig=.kubeconfig-kedge-agent \
+		--cluster=$(KEDGE_EDGE_CLUSTER) \
 		--type=kubernetes
 endif
 
@@ -247,7 +248,7 @@ HUB_FLAGS_BASE := \
 	--serving-cert-file=certs/apiserver.crt \
 	--serving-key-file=certs/apiserver.key \
 	--hub-external-url=https://localhost:8443 \
-	--dev-mode
+	--dev-mode -v 4
 
 # Auth: OIDC via Dex
 HUB_FLAGS_OIDC := \

@@ -27,6 +27,7 @@ import (
 	"text/template"
 
 	"github.com/spf13/cobra"
+	"k8s.io/klog/v2"
 
 	"github.com/faroshq/faros-kedge/pkg/agent"
 )
@@ -56,6 +57,36 @@ func newAgentJoinCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
+
+			logger := klog.FromContext(ctx)
+
+			// Token-exchange: if no bootstrap token was provided on the command line,
+			// try to load a previously saved kubeconfig or durable token from disk.
+			// This allows the agent to reconnect after the first successful join
+			// without requiring the operator to re-supply the bootstrap join token.
+			if opts.Token == "" && opts.HubKubeconfig == "" && opts.EdgeName != "" {
+				// Prefer a saved kubeconfig (new flow) over the legacy token config.
+				kubeconfigPath, err := agent.LoadAgentKubeconfig(opts.EdgeName)
+				if err != nil {
+					logger.Info("Could not check for saved agent kubeconfig", "err", err)
+				} else if kubeconfigPath != "" {
+					logger.Info("Loaded saved agent kubeconfig; no --token needed", "edgeName", opts.EdgeName, "path", kubeconfigPath)
+					opts.HubKubeconfig = kubeconfigPath
+					opts.UsingSavedKubeconfig = true
+				} else {
+					// Fallback: legacy token config.
+					saved, err := agent.LoadAgentConfig(opts.EdgeName)
+					if err != nil {
+						logger.Info("Could not load saved agent config (will require --token)", "err", err)
+					} else if saved != nil && saved.Token != "" {
+						logger.Info("Loaded durable agent token from saved config; no --token needed", "edgeName", opts.EdgeName)
+						opts.Token = saved.Token
+						if opts.HubURL == "" && saved.HubURL != "" {
+							opts.HubURL = saved.HubURL
+						}
+					}
+				}
+			}
 
 			a, err := agent.New(opts)
 			if err != nil {

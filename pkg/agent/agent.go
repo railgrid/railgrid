@@ -20,10 +20,13 @@ package agent
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/user"
+	"path/filepath"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -42,6 +45,112 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/agent/tunnel"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
+
+// AgentConfig holds the locally persisted agent configuration. It is written
+// to disk after the first successful join-token authentication so that the
+// agent can reconnect on restart without needing the bootstrap join token again.
+type AgentConfig struct {
+	HubURL string `json:"hubURL"`
+	Token  string `json:"token"`
+}
+
+// AgentConfigPath returns the path for the per-edge agent config file.
+// Default location: ~/.kedge/agent-<edgeName>.json
+func AgentConfigPath(edgeName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("getting home directory: %w", err)
+	}
+	return filepath.Join(home, ".kedge", "agent-"+edgeName+".json"), nil
+}
+
+// AgentKubeconfigPath returns the path for the per-edge agent kubeconfig file.
+// Default location: ~/.kedge/agent-<edgeName>.kubeconfig
+func AgentKubeconfigPath(edgeName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("getting home directory: %w", err)
+	}
+	return filepath.Join(home, ".kedge", "agent-"+edgeName+".kubeconfig"), nil
+}
+
+// SaveAgentKubeconfig decodes the base64-encoded kubeconfig returned by the hub
+// (via X-Kedge-Agent-Kubeconfig header) and persists it to disk so the agent
+// can reconnect without the bootstrap join token after the first successful auth.
+func SaveAgentKubeconfig(edgeName, kubeconfigB64 string) error {
+	kubeconfigBytes, err := base64.StdEncoding.DecodeString(kubeconfigB64)
+	if err != nil {
+		return fmt.Errorf("decoding kubeconfig from hub: %w", err)
+	}
+	path, err := AgentKubeconfigPath(edgeName)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+	//nolint:gosec // kubeconfig with credentials; world-read would be a security issue
+	if err := os.WriteFile(path, kubeconfigBytes, 0600); err != nil {
+		return fmt.Errorf("writing agent kubeconfig to %s: %w", path, err)
+	}
+	return nil
+}
+
+// LoadAgentKubeconfig reads a previously saved agent kubeconfig from disk.
+// Returns an empty string without error if the file does not exist yet.
+func LoadAgentKubeconfig(edgeName string) (string, error) {
+	path, err := AgentKubeconfigPath(edgeName)
+	if err != nil {
+		return "", err
+	}
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		return "", nil
+	}
+	return path, nil
+}
+
+// SaveAgentConfig persists the durable agent token to disk so the agent can
+// reconnect without the bootstrap join token after the first successful auth.
+func SaveAgentConfig(edgeName, hubURL, token string) error {
+	path, err := AgentConfigPath(edgeName)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+	cfg := AgentConfig{HubURL: hubURL, Token: token}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling agent config: %w", err)
+	}
+	//nolint:gosec // config file with token, world-read would be a security issue
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("writing agent config to %s: %w", path, err)
+	}
+	return nil
+}
+
+// LoadAgentConfig reads a previously saved agent config from disk.
+// Returns nil without error if the config file does not exist yet.
+func LoadAgentConfig(edgeName string) (*AgentConfig, error) {
+	path, err := AgentConfigPath(edgeName)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path) //nolint:gosec
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading agent config from %s: %w", path, err)
+	}
+	var cfg AgentConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing agent config from %s: %w", path, err)
+	}
+	return &cfg, nil
+}
 
 // clusterFromConfig returns the kcp cluster name embedded in the hub config's
 // Host URL (e.g. "https://hub:8443/clusters/abc123" → "abc123").
@@ -118,6 +227,10 @@ type Options struct {
 	// If not set, it's extracted from the SA token (for kubeconfig-based auth)
 	// or defaults to "default" (for static token auth).
 	Cluster string
+	// UsingSavedKubeconfig is set to true when the agent loaded a saved
+	// kubeconfig from a previous join-token registration. When true, edge
+	// registration is skipped (the edge was already registered).
+	UsingSavedKubeconfig bool
 }
 
 // NewOptions returns default agent options.
@@ -168,6 +281,9 @@ func New(opts *Options) (*Agent, error) {
 		}
 		if opts.HubURL != "" {
 			hubConfig.Host = opts.HubURL
+		}
+		if opts.InsecureSkipTLSVerify {
+			hubConfig.Insecure = true
 		}
 	} else if opts.HubURL != "" {
 		hubConfig = &rest.Config{
@@ -240,10 +356,21 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		return fmt.Errorf("creating downstream client: %w", err)
 	}
 
-	if err := a.registerEdge(ctx, hubClient); err != nil {
-		return fmt.Errorf("registering edge: %w", err)
+	// Skip edge registration when:
+	// - join-token mode: edge is pre-provisioned by admin, join token is not a kcp credential
+	// - saved kubeconfig mode: edge was already registered in a previous run
+	if a.opts.Token != "" {
+		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
+			"edgeName", a.opts.EdgeName)
+	} else if a.opts.UsingSavedKubeconfig {
+		logger.Info("Using saved kubeconfig: skipping edge registration (already registered)",
+			"edgeName", a.opts.EdgeName)
+	} else {
+		if err := a.registerEdge(ctx, hubClient); err != nil {
+			return fmt.Errorf("registering edge: %w", err)
+		}
+		logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeKubernetes))
 	}
-	logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeKubernetes))
 
 	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.
 	clusterName := a.opts.Cluster
@@ -259,7 +386,14 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName)
+	onAgentToken := func(kubeconfigB64 string) {
+		path, _ := AgentKubeconfigPath(a.opts.EdgeName)
+		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName, "path", path)
+		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
+			logger.Error(err, "failed to save agent kubeconfig from hub")
+		}
+	}
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken, nil)
 
 	wkr := reconciler.NewWorkloadReconciler(a.opts.EdgeName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
@@ -278,12 +412,21 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		}
 	}()
 
-	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
-	go func() {
-		if err := reporter.Run(ctx); err != nil {
-			logger.Error(err, "Edge status reporter failed")
-		}
-	}()
+	// In join-token mode the hub manages edge status server-side.
+	if a.opts.Token == "" {
+		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
+		go func() {
+			if err := reporter.Run(ctx); err != nil {
+				logger.Error(err, "Edge status reporter failed")
+			}
+		}()
+	} else {
+		logger.Info("Join-token mode: hub manages edge status; skipping agent-side edge_reporter")
+		go func() {
+			for range tunnelState {
+			}
+		}()
+	}
 
 	logger.Info("Agent started successfully (kubernetes mode)")
 	<-ctx.Done()
@@ -293,14 +436,31 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 
 // runServerMode is the bare-metal / systemd mode: no k8s, just SSH over revdial.
 func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
-	if err := a.registerEdge(ctx, hubClient); err != nil {
-		return fmt.Errorf("registering edge: %w", err)
+	// Skip edge registration when:
+	// - join-token mode: edge is pre-provisioned by admin, join token is not a kcp credential
+	// - saved kubeconfig mode: edge was already registered in a previous run
+	if a.opts.Token != "" {
+		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
+			"edgeName", a.opts.EdgeName)
+	} else if a.opts.UsingSavedKubeconfig {
+		logger.Info("Using saved kubeconfig: skipping edge registration (already registered)",
+			"edgeName", a.opts.EdgeName)
+	} else {
+		if err := a.registerEdge(ctx, hubClient); err != nil {
+			return fmt.Errorf("registering edge: %w", err)
+		}
+		logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeServer))
 	}
-	logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeServer))
 
 	// Set up SSH credentials if provided.
-	if err := a.setupSSHCredentials(ctx, logger, hubClient); err != nil {
-		return fmt.Errorf("setting up SSH credentials: %w", err)
+	// In join-token mode the token is not a valid kcp credential, so skip
+	// credential setup — the hub manages SSH credentials server-side.
+	if a.opts.Token == "" {
+		if err := a.setupSSHCredentials(ctx, logger, hubClient); err != nil {
+			return fmt.Errorf("setting up SSH credentials: %w", err)
+		}
+	} else {
+		logger.Info("Join-token mode: skipping SSH credential setup (hub manages credentials)")
 	}
 
 	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.
@@ -316,15 +476,44 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
-	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName)
-
-	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
-	go func() {
-		if err := reporter.Run(ctx); err != nil {
-			logger.Error(err, "Edge status reporter failed")
+	serverOnAgentToken := func(kubeconfigB64 string) {
+		path, _ := AgentKubeconfigPath(a.opts.EdgeName)
+		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName, "path", path)
+		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
+			logger.Error(err, "failed to save agent kubeconfig from hub")
 		}
-	}()
+	}
+
+	// In join-token mode, pass SSH credentials as WebSocket headers so the hub
+	// can store them server-side (the agent's join token is not a valid kcp
+	// credential for creating secrets).
+	var sshHeaders http.Header
+	if a.opts.Token != "" {
+		sshHeaders = a.buildSSHHeaders()
+	}
+
+	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName, serverOnAgentToken, sshHeaders)
+
+	// In join-token mode the hub marks the edge Ready/Disconnected server-side
+	// (via markEdgeConnected/markEdgeDisconnected) because the join token is not
+	// a valid kcp credential and the edge_reporter would get Unauthorized on every
+	// status-update call.
+	if a.opts.Token == "" {
+		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
+		go func() {
+			if err := reporter.Run(ctx); err != nil {
+				logger.Error(err, "Edge status reporter failed")
+			}
+		}()
+	} else {
+		logger.Info("Join-token mode: hub manages edge status; skipping agent-side edge_reporter")
+		// Drain the tunnel state channel to prevent goroutine leak.
+		go func() {
+			for range tunnelState {
+			}
+		}()
+	}
 
 	logger.Info("Agent started successfully (server mode)")
 	<-ctx.Done()
@@ -336,6 +525,31 @@ const (
 	// sshCredentialsNamespace is the namespace where SSH credential secrets are stored.
 	sshCredentialsNamespace = "kedge-system"
 )
+
+// buildSSHHeaders returns HTTP headers carrying SSH credentials for the hub
+// to store server-side during join-token registration.
+func (a *Agent) buildSSHHeaders() http.Header {
+	h := http.Header{}
+	sshUser := a.opts.SSHUser
+	if sshUser == "" {
+		if u, err := user.Current(); err == nil {
+			sshUser = u.Username
+		} else {
+			sshUser = "root"
+		}
+	}
+	h.Set("X-Kedge-SSH-User", sshUser)
+	if a.opts.SSHPassword != "" {
+		h.Set("X-Kedge-SSH-Password", base64.StdEncoding.EncodeToString([]byte(a.opts.SSHPassword)))
+	}
+	if a.opts.SSHPrivateKeyPath != "" {
+		keyData, err := os.ReadFile(a.opts.SSHPrivateKeyPath)
+		if err == nil {
+			h.Set("X-Kedge-SSH-PrivateKey", base64.StdEncoding.EncodeToString(keyData))
+		}
+	}
+	return h
+}
 
 // setupSSHCredentials creates a Secret with SSH credentials and updates the Edge status.
 func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {

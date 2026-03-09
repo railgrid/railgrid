@@ -40,6 +40,22 @@ func main() {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
+			logger := klog.FromContext(ctx)
+
+			// Token-exchange: if a saved kubeconfig exists from a previous
+			// join-token registration, use it instead of the bootstrap token.
+			if opts.HubKubeconfig == "" && opts.EdgeName != "" {
+				kubeconfigPath, err := agent.LoadAgentKubeconfig(opts.EdgeName)
+				if err != nil {
+					logger.Info("Could not check for saved agent kubeconfig", "err", err)
+				} else if kubeconfigPath != "" {
+					logger.Info("Using saved agent kubeconfig from previous registration", "edgeName", opts.EdgeName, "path", kubeconfigPath)
+					opts.HubKubeconfig = kubeconfigPath
+					opts.Token = "" // Clear join token; SA kubeconfig takes precedence.
+					opts.UsingSavedKubeconfig = true
+				}
+			}
+
 			a, err := agent.New(opts)
 			if err != nil {
 				return fmt.Errorf("failed to create agent: %w", err)

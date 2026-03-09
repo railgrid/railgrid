@@ -348,6 +348,41 @@ func (k *KedgeClient) KubectlWithURL(ctx context.Context, serverURL string, args
 	return buf.String(), nil
 }
 
+// GetEdgeJoinToken returns the current value of edge.status.joinToken.
+// Returns an empty string (no error) when the field is not yet populated.
+func (k *KedgeClient) GetEdgeJoinToken(ctx context.Context, edgeName string) (string, error) {
+	out, err := k.Kubectl(ctx,
+		"get", "edge", edgeName,
+		"-o", "jsonpath={.status.joinToken}",
+		"--insecure-skip-tls-verify",
+	)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// WaitForEdgeJoinToken polls until edge.status.joinToken is set and returns it.
+// Returns an error if the token is not populated within timeout.
+func (k *KedgeClient) WaitForEdgeJoinToken(ctx context.Context, edgeName string, timeout time.Duration) (string, error) {
+	var joinToken string
+	err := Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		t, err := k.GetEdgeJoinToken(ctx, edgeName)
+		if err != nil {
+			return false, nil // retry on transient errors
+		}
+		if t == "" {
+			return false, nil
+		}
+		joinToken = t
+		return true, nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("edge %q join token not populated within %s: %w", edgeName, timeout, err)
+	}
+	return joinToken, nil
+}
+
 // ExtractEdgeKubeconfig waits for the edge kubeconfig secret to appear in the
 // hub cluster and writes the base64-decoded content to destPath.
 // Secret name format: edge-<edgeName>-kubeconfig in namespace kedge-system.

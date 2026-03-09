@@ -281,19 +281,39 @@ func SSHEdgeURLSet() features.Feature {
 // It runs lscr.io/linuxserver/openssh-server in a container (--network host)
 // alongside a kedge server-mode agent, and verifies the full SSH path through
 // the hub tunnel.
+//
+// The agent authenticates using a real hub-generated join token (not a static
+// dev token) to exercise the full join-token bootstrap flow end-to-end.
 func SSHDockerServerModeConnect() features.Feature {
 	const dockerServerName = "e2e-ssh-docker-server"
 
 	return features.New("SSH/DockerServerModeConnect").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			// Create the edge resource as an admin first so that the hub's
+			// TokenReconciler can generate a join token for it.
+			if err := client.Login(ctx, framework.DevToken); err != nil {
+				t.Fatalf("login failed: %v", err)
+			}
+			if err := client.EdgeCreate(ctx, dockerServerName, "server"); err != nil {
+				t.Fatalf("creating edge %q: %v", dockerServerName, err)
+			}
+
+			// Wait for the hub controller to populate status.joinToken.
+			joinToken, err := client.WaitForEdgeJoinToken(ctx, dockerServerName, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("join token not generated for edge %q: %v", dockerServerName, err)
+			}
+			t.Logf("join token obtained for edge %q (len=%d)", dockerServerName, len(joinToken))
 
 			container := &framework.ServerContainer{
 				Name:       "kedge-e2e-ssh-docker",
 				ServerName: dockerServerName,
 				HubURL:     clusterEnv.HubURL,
 				HubCluster: framework.ClusterNameFromKubeconfig(clusterEnv.HubKubeconfig),
-				Token:      framework.DevToken,
+				Token:      joinToken,
 				AgentBin:   framework.AgentBinPath(),
 			}
 

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,6 +40,7 @@ func newEdgeCommand() *cobra.Command {
 		newEdgeListCommand(),
 		newEdgeGetCommand(),
 		newEdgeDeleteCommand(),
+		newEdgeJoinCommandCommand(),
 	)
 
 	return cmd
@@ -91,25 +93,20 @@ func newEdgeCreateCommand() *cobra.Command {
 				return fmt.Errorf("creating edge %q: %w", name, err)
 			}
 
-			fmt.Printf("Edge %q created.\n", name)
+			fmt.Printf("✓ Edge %q created\n", name)
 
-			fmt.Println()
-			fmt.Println("Next steps — connect an agent to this edge:")
-			fmt.Println()
-			fmt.Println("  1. Retrieve the generated agent kubeconfig from the hub:")
-			fmt.Printf("     kubectl get secret edge-%s-kubeconfig -n kedge-system -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-%s.kubeconfig\n", name, name)
-			fmt.Println()
-
-			if edgeType == "server" {
-				printServerEdgeInstructions(name)
-			} else {
-				printKubernetesEdgeInstructions(name, edgeType)
+			// Poll for the join token (set by the hub controller on creation).
+			joinToken, err := pollJoinTokenDynamic(ctx, name, 30*time.Second)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not retrieve join token: %v\n", err)
+				fmt.Printf("\nRun 'kedge edge join-command %s' to print the join command once the token is available.\n", name)
+				return nil
 			}
 
-			fmt.Println()
-			fmt.Println("  3. Verify the edge is connected:")
-			fmt.Printf("     kedge edge get %s\n", name)
+			// Get hub URL from the current kubeconfig.
+			hubURL := loadHubURL()
 
+			printJoinCommand(name, edgeType, hubURL, joinToken)
 			return nil
 		},
 	}
@@ -118,6 +115,119 @@ func newEdgeCreateCommand() *cobra.Command {
 	cmd.Flags().StringVar(&edgeType, "type", "kubernetes", "Edge type: kubernetes or server")
 
 	return cmd
+}
+
+// pollJoinTokenDynamic polls the Edge resource until Status.JoinToken is set or timeout expires.
+func pollJoinTokenDynamic(ctx context.Context, name string, timeout time.Duration) (string, error) {
+	dynClient, err := loadDynamicClient()
+	if err != nil {
+		return "", err
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return "", fmt.Errorf("getting edge: %w", err)
+		}
+		token := getNestedString(*edge, "status", "joinToken")
+		if token != "" {
+			return token, nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("timed out waiting for join token after %s", timeout)
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// loadHubURL returns the hub server URL from the current kubeconfig.
+// Falls back to "<hub-url>" placeholder on error.
+func loadHubURL() string {
+	cfg, err := loadRestConfig()
+	if err != nil {
+		return "<hub-url>"
+	}
+	if cfg.Host != "" {
+		return cfg.Host
+	}
+	return "<hub-url>"
+}
+
+// printJoinCommand prints the formatted join instructions for an edge.
+func printJoinCommand(name, edgeType, hubURL, joinToken string) {
+	fmt.Println()
+	if edgeType == "kubernetes" {
+		fmt.Printf("To install the kedge agent on your Kubernetes cluster:\n\n")
+		fmt.Printf("  kedge install --type kubernetes \\\n")
+		fmt.Printf("    --hub-url %s \\\n", hubURL)
+		fmt.Printf("    --edge-name %s \\\n", name)
+		fmt.Printf("    --token %s\n", joinToken)
+		fmt.Println()
+		fmt.Printf("Or run the agent directly on a node in your cluster:\n\n")
+		fmt.Printf("  kedge agent join \\\n")
+		fmt.Printf("    --hub-url %s \\\n", hubURL)
+		fmt.Printf("    --edge-name %s \\\n", name)
+		fmt.Printf("    --type kubernetes \\\n")
+		fmt.Printf("    --token %s\n", joinToken)
+	} else {
+		fmt.Printf("To install the kedge agent on your server:\n\n")
+		fmt.Printf("  # As a systemd service (recommended):\n")
+		fmt.Printf("  kedge install --type server \\\n")
+		fmt.Printf("    --hub-url %s \\\n", hubURL)
+		fmt.Printf("    --edge-name %s \\\n", name)
+		fmt.Printf("    --token %s\n", joinToken)
+		fmt.Println()
+		fmt.Printf("  # Or run in foreground (dev/test):\n")
+		fmt.Printf("  kedge agent join \\\n")
+		fmt.Printf("    --hub-url %s \\\n", hubURL)
+		fmt.Printf("    --edge-name %s \\\n", name)
+		fmt.Printf("    --type server \\\n")
+		fmt.Printf("    --token %s\n", joinToken)
+	}
+	fmt.Println()
+	fmt.Printf("Run 'kedge edge join-command %s' to print this again.\n", name)
+}
+
+// newEdgeJoinCommandCommand returns the 'kedge edge join-command <name>' subcommand.
+func newEdgeJoinCommandCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "join-command <name>",
+		Short: "Print the agent join command for an edge",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			ctx := context.Background()
+
+			dynClient, err := loadDynamicClient()
+			if err != nil {
+				return err
+			}
+
+			edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("getting edge %q: %w", name, err)
+			}
+
+			joinToken := getNestedString(*edge, "status", "joinToken")
+			if joinToken == "" {
+				// Token not yet generated — poll briefly.
+				joinToken, err = pollJoinTokenDynamic(ctx, name, 10*time.Second)
+				if err != nil {
+					return fmt.Errorf("join token not available for edge %q: %w", name, err)
+				}
+			}
+
+			edgeType := getNestedString(*edge, "spec", "type")
+			if edgeType == "" {
+				edgeType = "kubernetes"
+			}
+
+			hubURL := loadHubURL()
+			printJoinCommand(name, edgeType, hubURL, joinToken)
+			return nil
+		},
+	}
 }
 
 func newEdgeListCommand() *cobra.Command {
@@ -228,63 +338,6 @@ func newEdgeDeleteCommand() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-func printKubernetesEdgeInstructions(name, edgeType string) {
-	fmt.Println("  2a. Run the agent via CLI (on the target cluster):")
-	fmt.Println()
-	fmt.Printf("      kedge agent join \\\n")
-	fmt.Printf("        --hub-kubeconfig edge-%s.kubeconfig \\\n", name)
-	fmt.Printf("        --edge-name %s \\\n", name)
-	fmt.Printf("        --type %s\n", edgeType)
-	fmt.Println()
-	fmt.Println("      The agent will use the kubeconfig to authenticate with the hub")
-	fmt.Println("      and establish a tunnel for proxying requests to the edge cluster.")
-	fmt.Println()
-	fmt.Println("  2b. Or deploy the agent via Helm (on the target cluster):")
-	fmt.Println()
-	fmt.Println("      # First, create the hub kubeconfig secret in the target cluster:")
-	fmt.Printf("      kubectl create secret generic edge-%s-kubeconfig \\\n", name)
-	fmt.Printf("        --from-file=kubeconfig=edge-%s.kubeconfig\n", name)
-	fmt.Println()
-	fmt.Printf("      # Then install the agent Helm chart:\n")
-	fmt.Printf("      helm install kedge-agent-%s oci://ghcr.io/faroshq/charts/kedge-agent \\\n", name)
-	fmt.Printf("        --set agent.edgeName=%s \\\n", name)
-	fmt.Printf("        --set agent.hub.existingSecret=edge-%s-kubeconfig\n", name)
-}
-
-func printServerEdgeInstructions(name string) {
-	fmt.Println("  2. Install and run the agent on the target server:")
-	fmt.Println()
-	fmt.Println("     a) Download the kedge CLI binary:")
-	fmt.Println()
-	fmt.Println("        # Linux amd64:")
-	fmt.Println("        curl -Lo /usr/local/bin/kedge \\")
-	fmt.Println("          https://github.com/faroshq/kedge/releases/latest/download/kedge-linux-amd64")
-	fmt.Println("        chmod +x /usr/local/bin/kedge")
-	fmt.Println()
-	fmt.Println("     b) Copy the kubeconfig to the server:")
-	fmt.Println()
-	fmt.Printf("        scp edge-%s.kubeconfig <user>@<server>:/etc/kedge/hub.kubeconfig\n", name)
-	fmt.Println()
-	fmt.Println("     c) Install as a systemd service:")
-	fmt.Println()
-	fmt.Printf("        sudo kedge agent install \\\n")
-	fmt.Printf("          --hub-kubeconfig /etc/kedge/hub.kubeconfig \\\n")
-	fmt.Printf("          --edge-name %s \\\n", name)
-	fmt.Println("          --type server")
-	fmt.Println()
-	fmt.Println("        This creates and starts a kedge-agent systemd unit that runs")
-	fmt.Println("        'kedge agent join'. The agent establishes a reverse tunnel to")
-	fmt.Println("        the hub and proxies SSH connections to the local sshd.")
-	fmt.Println("        The kedge CLI is also available on the server for management.")
-	fmt.Println()
-	fmt.Println("     Or run it directly (e.g. for testing):")
-	fmt.Println()
-	fmt.Printf("        kedge agent join \\\n")
-	fmt.Printf("          --hub-kubeconfig /etc/kedge/hub.kubeconfig \\\n")
-	fmt.Printf("          --edge-name %s \\\n", name)
-	fmt.Println("          --type server")
 }
 
 func unstructuredNestedBool(obj map[string]interface{}, fields ...string) (bool, bool, error) {

@@ -18,16 +18,31 @@ package builder
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/function61/holepunch-server/pkg/wsconnadapter"
 	"github.com/gorilla/websocket"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
+	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	utilhttp "github.com/faroshq/faros-kedge/pkg/util/http"
 	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
+
+var secretGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 
 // buildEdgeAgentProxyHandler creates the HTTP handler for Edge agent tunnel
 // registration (the agent-facing side of the new Edge workflow).
@@ -79,15 +94,30 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 
 		// 3. Authentication: static tokens bypass JWT SA requirement.
 		//    SA tokens go through kcp delegated authorization.
+		//    Bootstrap join tokens are accepted if they match edge.Status.JoinToken.
 		_, isStaticToken := p.staticTokens[token]
+		// authenticatedByJoinToken tracks whether the agent was authenticated via a
+		// bootstrap join token. When true, the hub echoes the token back in the
+		// X-Kedge-Agent-Token upgrade response header so the agent can persist it
+		// as its durable credential (token-exchange flow).
+		authenticatedByJoinToken := false
 		if !isStaticToken {
 			if _, ok := parseServiceAccountToken(token); !ok {
-				p.logger.Info("Rejected edge agent tunnel: invalid or missing SA token",
-					"cluster", cluster, "name", name)
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-			if p.kcpConfig != nil {
+				// Not a SA token — check if it's a valid bootstrap join token for this edge.
+				if p.kcpConfig == nil {
+					p.logger.Info("Rejected edge agent tunnel: invalid or missing SA token (no kcp configured)",
+						"cluster", cluster, "name", name)
+					http.Error(w, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+				if err := p.authorizeByJoinToken(r.Context(), token, cluster, name); err != nil {
+					p.logger.Info("Rejected edge agent tunnel: invalid join token",
+						"cluster", cluster, "name", name, "err", err)
+					http.Error(w, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+				authenticatedByJoinToken = true
+			} else if p.kcpConfig != nil {
 				// Always use cluster from URL path — do NOT use JWT's clusterName claim
 				// (it's unverified and not yet validated by kcp). The TokenReview performed
 				// inside authorizeFn will reject tokens not issued for this cluster.
@@ -102,7 +132,18 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		}
 
 		// 4. Upgrade to WebSocket.
-		wsConn, err := upgrader.Upgrade(w, r, nil)
+		// When the agent authenticated via a bootstrap join token, build a minimal
+		// kubeconfig and include it in the upgrade response so the agent can save it
+		// as its durable credential and reconnect without the join token on restart.
+		var upgradeHeaders http.Header
+		if authenticatedByJoinToken {
+			kubeconfigHeader := p.buildAgentKubeconfigHeader(cluster, name, token)
+			upgradeHeaders = http.Header{}
+			if kubeconfigHeader != "" {
+				upgradeHeaders.Set("X-Kedge-Agent-Kubeconfig", kubeconfigHeader)
+			}
+		}
+		wsConn, err := upgrader.Upgrade(w, r, upgradeHeaders)
 		if err != nil {
 			p.logger.Error(err, "failed to upgrade WebSocket connection",
 				"cluster", cluster, "name", name)
@@ -119,6 +160,15 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		dialer := revdial.NewDialer(conn, "/services/agent-proxy/proxy")
 		p.edgeConnManager.Store(key, dialer)
 		p.logger.Info("Edge agent tunnel established", "key", key)
+
+		// In the join-token flow the agent's edge_reporter cannot call the kcp
+		// API directly (the join token is not a valid kcp credential), so the
+		// hub marks the edge Ready here as soon as the tunnel is up.
+		// SSH credentials are passed via headers for server-type edges.
+		if authenticatedByJoinToken {
+			sshCreds := extractSSHCredsFromHeaders(r)
+			go p.markEdgeConnected(context.Background(), cluster, name, sshCreds)
+		}
 
 		// Block until the tunnel closes, then clean up the entry so stale
 		// look-ups don't succeed.
@@ -168,4 +218,154 @@ func parseEdgeAgentPath(path string) (cluster, name string, ok bool) {
 // Format: "edges/{cluster}/{name}"
 func edgeConnKey(cluster, name string) string {
 	return "edges/" + cluster + "/" + name
+}
+
+// buildAgentKubeconfigHeader reads the ServiceAccount token from the kubeconfig
+// secret created by the RBAC controller, builds a minimal kubeconfig with it,
+// and returns the result base64-encoded for the X-Kedge-Agent-Kubeconfig header.
+// Returns an empty string if the SA token is not yet available.
+func (p *virtualWorkspaces) buildAgentKubeconfigHeader(cluster, edgeName, _ string) string {
+	if p.kcpConfig == nil {
+		p.logger.Info("Cannot build agent kubeconfig: no kcp config")
+		return ""
+	}
+
+	// Read the SA token from the kubeconfig secret created by the RBAC controller.
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
+	dynClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		p.logger.Error(err, "failed to create dynamic client for SA token lookup")
+		return ""
+	}
+
+	secretName := "edge-" + edgeName + "-kubeconfig"
+	secret, err := dynClient.Resource(secretGVR).Namespace("kedge-system").Get(
+		context.Background(), secretName, metav1.GetOptions{})
+	if err != nil {
+		p.logger.Error(err, "failed to get kubeconfig secret for token-exchange",
+			"secret", "kedge-system/"+secretName)
+		return ""
+	}
+
+	tokenB64, found, _ := unstructured.NestedString(secret.Object, "data", "token")
+	if !found || tokenB64 == "" {
+		p.logger.Info("SA token not yet populated in kubeconfig secret", "secret", secretName)
+		return ""
+	}
+	tokenBytes, err := base64.StdEncoding.DecodeString(tokenB64)
+	if err != nil {
+		p.logger.Error(err, "failed to decode SA token from secret", "secret", secretName)
+		return ""
+	}
+	saToken := string(tokenBytes)
+
+	hubURL := p.hubExternalURL
+	if hubURL == "" {
+		hubURL = "https://localhost:8443"
+	}
+	kubecfg := buildAgentKubeconfig(hubURL, cluster, edgeName, saToken)
+	data, err := clientcmd.Write(*kubecfg)
+	if err != nil {
+		p.logger.Error(err, "failed to serialise agent kubeconfig")
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+// buildAgentKubeconfig constructs a minimal kubeconfig that the agent can use
+// to authenticate against the hub with a ServiceAccount token.
+func buildAgentKubeconfig(hubURL, cluster, edgeName, token string) *clientcmdapi.Config {
+	// Include the cluster path in the server URL so the agent reconnects to the
+	// correct kcp logical cluster on restart (mirrors how existing agents work).
+	serverURL := hubURL
+	if cluster != "" && cluster != "default" {
+		serverURL = strings.TrimRight(hubURL, "/") + "/clusters/" + cluster
+	}
+	contextName := "kedge-" + edgeName
+	return &clientcmdapi.Config{
+		APIVersion: "v1",
+		Kind:       "Config",
+		Clusters: map[string]*clientcmdapi.Cluster{
+			"kedge-hub": {Server: serverURL, InsecureSkipTLSVerify: true},
+		},
+		AuthInfos: map[string]*clientcmdapi.AuthInfo{
+			contextName: {Token: token},
+		},
+		Contexts: map[string]*clientcmdapi.Context{
+			"default": {Cluster: "kedge-hub", AuthInfo: contextName},
+		},
+		CurrentContext: "default",
+	}
+}
+
+// authorizeByJoinToken looks up the Edge by cluster+name and performs a
+// constant-time comparison of the provided token against edge.Status.JoinToken.
+// Returns nil if the token is valid, or an error otherwise.
+func (p *virtualWorkspaces) authorizeByJoinToken(ctx context.Context, token, cluster, name string) error {
+	if p.kcpConfig == nil {
+		return fmt.Errorf("kcp config not available")
+	}
+	if token == "" {
+		return fmt.Errorf("empty token")
+	}
+
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
+
+	dynClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("creating dynamic client: %w", err)
+	}
+
+	u, err := dynClient.Resource(edgeGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting edge %s/%s: %w", cluster, name, err)
+	}
+
+	var edge kedgev1alpha1.Edge
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &edge); err != nil {
+		return fmt.Errorf("converting edge from unstructured: %w", err)
+	}
+
+	if edge.Status.JoinToken == "" {
+		return fmt.Errorf("edge %s/%s has no join token set", cluster, name)
+	}
+
+	// Constant-time comparison to prevent timing attacks.
+	if subtle.ConstantTimeCompare([]byte(token), []byte(edge.Status.JoinToken)) != 1 {
+		return fmt.Errorf("join token mismatch for edge %s/%s", cluster, name)
+	}
+
+	return nil
+}
+
+// sshCredsFromAgent holds SSH credentials passed by the agent via WebSocket
+// upgrade headers during join-token registration.
+type sshCredsFromAgent struct {
+	User       string
+	Password   string
+	PrivateKey []byte
+}
+
+// extractSSHCredsFromHeaders reads SSH credential headers set by the agent.
+func extractSSHCredsFromHeaders(r *http.Request) *sshCredsFromAgent {
+	user := r.Header.Get("X-Kedge-SSH-User")
+	if user == "" {
+		return nil
+	}
+	creds := &sshCredsFromAgent{User: user}
+	if pw := r.Header.Get("X-Kedge-SSH-Password"); pw != "" {
+		decoded, err := base64.StdEncoding.DecodeString(pw)
+		if err == nil {
+			creds.Password = string(decoded)
+		}
+	}
+	if pk := r.Header.Get("X-Kedge-SSH-PrivateKey"); pk != "" {
+		decoded, err := base64.StdEncoding.DecodeString(pk)
+		if err == nil {
+			creds.PrivateKey = decoded
+		}
+	}
+	return creds
 }

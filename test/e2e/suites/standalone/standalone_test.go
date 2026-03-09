@@ -54,3 +54,15 @@ func TestProxyInvalidToken(t *testing.T) { testenv.Test(t, cases.ProxyInvalidTok
 func TestK8sProxyWriteIsolation(t *testing.T) {
 	testenv.Test(t, cases.K8sProxyWriteIsolation())
 }
+
+// Join-token tests (issue #105): verify the hub controller generates a bootstrap
+// token and that agents can authenticate exclusively with that token.
+func TestJoinTokenIsSetAfterEdgeCreation(t *testing.T) {
+	testenv.Test(t, cases.JoinTokenIsSetAfterEdgeCreation())
+}
+func TestAgentConnectsWithJoinToken(t *testing.T) {
+	testenv.Test(t, cases.AgentConnectsWithJoinToken())
+}
+func TestInvalidJoinTokenReturns401(t *testing.T) {
+	testenv.Test(t, cases.InvalidJoinTokenReturns401())
+}
