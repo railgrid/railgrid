@@ -27,7 +27,7 @@ archives:
   - id: kubectl-kedge-plugin
     ids:
     - kubectl-kedge
-    name_template: "kubectl-kedge_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "kubectl-kedge_{{ .Os }}_{{ .Arch }}"
 
 release:
   prerelease: auto
