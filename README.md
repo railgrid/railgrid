@@ -54,7 +54,16 @@ For TLS via cert-manager, OIDC configuration, and ingress details see the [Helm 
 
 ### Install the CLI
 
-Download a pre-built binary from the [releases page](https://github.com/faroshq/kedge/releases), or install from source:
+**Binary (recommended)** — download from the [releases page](https://github.com/faroshq/kedge/releases) and put the binary in your `$PATH`.
+
+**krew:**
+
+```bash
+kubectl krew index add faros https://github.com/faroshq/krew-index.git
+kubectl krew install faros/kedge
+```
+
+**From source:**
 
 ```bash
 go install github.com/faroshq/kedge/cmd/kedge@latest
