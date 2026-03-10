@@ -45,8 +45,8 @@ The hub needs to be reachable by agents from anywhere — it's the only componen
 4. **Install the hub via Helm:**
 
 ```bash
-helm install kedge-hub oci://ghcr.io/faroshq/charts/kedge-hub \
-  --namespace kedge --create-namespace \
+helm install kedge oci://ghcr.io/faroshq/charts/kedge-hub \
+  --namespace kedge-system --create-namespace \
   --set hub.hubExternalURL=https://kedge.example.com
 ```
 

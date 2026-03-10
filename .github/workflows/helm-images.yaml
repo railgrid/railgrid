@@ -52,22 +52,25 @@ jobs:
           
           # Set chart version - use tag name if available, otherwise use semver format
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            CHART_VERSION="${{ github.ref_name }}"
-            # Remove 'v' prefix if present
-            CHART_VERSION="${CHART_VERSION#v}"
+            TAG_NAME="${{ github.ref_name }}"
+            # Chart version must not have 'v' prefix (OCI/semver convention)
+            CHART_VERSION="${TAG_NAME#v}"
+            # App version keeps 'v' prefix to match container image tags
+            APP_VERSION="${TAG_NAME}"
           else
             CHART_VERSION="0.0.0-${{ github.sha }}"
+            APP_VERSION="${CHART_VERSION}"
           fi
-          
+
           # Package and push each chart in deploy/charts/
           for chart_dir in deploy/charts/*/; do
             if [ -f "${chart_dir}Chart.yaml" ]; then
               chart_name=$(basename "$chart_dir")
               echo "Processing chart: $chart_name"
-              
+
               # Update chart version and appVersion in Chart.yaml
               sed -i "s/^version:.*/version: ${CHART_VERSION}/" "${chart_dir}Chart.yaml"
-              sed -i "s/^appVersion:.*/appVersion: ${CHART_VERSION}/" "${chart_dir}Chart.yaml"
+              sed -i "s/^appVersion:.*/appVersion: \"${APP_VERSION}\"/" "${chart_dir}Chart.yaml"
               
               # Package the chart
               helm package "$chart_dir" --version "${CHART_VERSION}"
