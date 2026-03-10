@@ -105,7 +105,7 @@ func (s *ServerContainer) Start(ctx context.Context) error {
 		clusterFlag = " --cluster=" + s.HubCluster
 	}
 	agentCmd := fmt.Sprintf(
-		"/kedge agent join --type=server --hub-url=%s --token=%s --edge-name=%s"+
+		"/kedge agent run --type=server --hub-url=%s --token=%s --edge-name=%s"+
 			" --hub-insecure-skip-tls-verify --ssh-proxy-port=%d%s"+
 			" > /var/log/kedge-agent.log 2>&1 &",
 		s.HubURL, s.Token, s.ServerName, ContainerSSHPort, clusterFlag,

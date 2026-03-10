@@ -102,7 +102,7 @@ func (s *ServerProcess) Start(ctx context.Context) error {
 	// --hub-url + --token so the agent can derive the correct kcp cluster
 	// name from the kubeconfig's server URL.
 	args := []string{
-		"agent", "join",
+		"agent", "run",
 		"--type=server",
 		"--edge-name=" + s.ServerName,
 		"--hub-insecure-skip-tls-verify",

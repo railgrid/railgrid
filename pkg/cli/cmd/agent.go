@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"text/template"
 
@@ -40,6 +41,7 @@ func newAgentCommand() *cobra.Command {
 
 	cmd.AddCommand(
 		newAgentJoinCommand(),
+		newAgentRunCommand(),
 		newAgentTokenCommand(),
 		newAgentInstallCommand(),
 		newAgentUninstallCommand(),
@@ -48,55 +50,10 @@ func newAgentCommand() *cobra.Command {
 	return cmd
 }
 
-func newAgentJoinCommand() *cobra.Command {
-	opts := agent.NewOptions()
-
-	cmd := &cobra.Command{
-		Use:   "join",
-		Short: "Join an edge to the hub",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer cancel()
-
-			logger := klog.FromContext(ctx)
-
-			// Token-exchange: if no bootstrap token was provided on the command line,
-			// try to load a previously saved kubeconfig or durable token from disk.
-			// This allows the agent to reconnect after the first successful join
-			// without requiring the operator to re-supply the bootstrap join token.
-			if opts.Token == "" && opts.HubKubeconfig == "" && opts.EdgeName != "" {
-				// Prefer a saved kubeconfig (new flow) over the legacy token config.
-				kubeconfigPath, err := agent.LoadAgentKubeconfig(opts.EdgeName)
-				if err != nil {
-					logger.Info("Could not check for saved agent kubeconfig", "err", err)
-				} else if kubeconfigPath != "" {
-					logger.Info("Loaded saved agent kubeconfig; no --token needed", "edgeName", opts.EdgeName, "path", kubeconfigPath)
-					opts.HubKubeconfig = kubeconfigPath
-					opts.UsingSavedKubeconfig = true
-				} else {
-					// Fallback: legacy token config.
-					saved, err := agent.LoadAgentConfig(opts.EdgeName)
-					if err != nil {
-						logger.Info("Could not load saved agent config (will require --token)", "err", err)
-					} else if saved != nil && saved.Token != "" {
-						logger.Info("Loaded durable agent token from saved config; no --token needed", "edgeName", opts.EdgeName)
-						opts.Token = saved.Token
-						if opts.HubURL == "" && saved.HubURL != "" {
-							opts.HubURL = saved.HubURL
-						}
-					}
-				}
-			}
-
-			a, err := agent.New(opts)
-			if err != nil {
-				return fmt.Errorf("failed to create agent: %w", err)
-			}
-
-			return a.Run(ctx)
-		},
-	}
-
+// agentRunFlags attaches all agent runtime flags to cmd, populating opts.
+// Shared between newAgentJoinCommand (install path) and newAgentRunCommand
+// (foreground path).
+func agentRunFlags(cmd *cobra.Command, opts *agent.Options) {
 	cmd.Flags().StringVar(&opts.HubURL, "hub-url", "", "Hub server URL")
 	cmd.Flags().StringVar(&opts.HubKubeconfig, "hub-kubeconfig", "", "Kubeconfig for hub cluster")
 	cmd.Flags().StringVar(&opts.HubContext, "hub-context", "", "Kubeconfig context for hub cluster")
@@ -115,8 +72,351 @@ func newAgentJoinCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.SSHUser, "ssh-user", "", "SSH username for server-type edges (default: current user)")
 	cmd.Flags().StringVar(&opts.SSHPassword, "ssh-password", "", "SSH password for password-based authentication (prefer --ssh-private-key for security)")
 	cmd.Flags().StringVar(&opts.SSHPrivateKeyPath, "ssh-private-key", "", "Path to SSH private key file for key-based authentication")
+}
 
+// runAgentForeground contains the shared foreground-process logic used by both
+// newAgentRunCommand and (transitionally) other paths that need a blocking agent.
+func runAgentForeground(ctx context.Context, opts *agent.Options) error {
+	logger := klog.FromContext(ctx)
+
+	// Token-exchange: if no bootstrap token was provided on the command line,
+	// try to load a previously saved kubeconfig or durable token from disk.
+	// This allows the agent to reconnect after the first successful join
+	// without requiring the operator to re-supply the bootstrap join token.
+	if opts.Token == "" && opts.HubKubeconfig == "" && opts.EdgeName != "" {
+		// Prefer a saved kubeconfig (new flow) over the legacy token config.
+		kubeconfigPath, err := agent.LoadAgentKubeconfig(opts.EdgeName)
+		if err != nil {
+			logger.Info("Could not check for saved agent kubeconfig", "err", err)
+		} else if kubeconfigPath != "" {
+			logger.Info("Loaded saved agent kubeconfig; no --token needed", "edgeName", opts.EdgeName, "path", kubeconfigPath)
+			opts.HubKubeconfig = kubeconfigPath
+			opts.UsingSavedKubeconfig = true
+		} else {
+			// Fallback: legacy token config.
+			saved, err := agent.LoadAgentConfig(opts.EdgeName)
+			if err != nil {
+				logger.Info("Could not load saved agent config (will require --token)", "err", err)
+			} else if saved != nil && saved.Token != "" {
+				logger.Info("Loaded durable agent token from saved config; no --token needed", "edgeName", opts.EdgeName)
+				opts.Token = saved.Token
+				if opts.HubURL == "" && saved.HubURL != "" {
+					opts.HubURL = saved.HubURL
+				}
+			}
+		}
+	}
+
+	a, err := agent.New(opts)
+	if err != nil {
+		return fmt.Errorf("failed to create agent: %w", err)
+	}
+	return a.Run(ctx)
+}
+
+// newAgentRunCommand returns the "kedge agent run" command — a foreground
+// process that connects this edge to the hub and blocks until interrupted.
+// This is the command used by containers, e2e tests, and dev workflows.
+// For persistent installation (systemd service), use "kedge agent join".
+func newAgentRunCommand() *cobra.Command {
+	opts := agent.NewOptions()
+
+	cmd := &cobra.Command{
+		Use:   "run",
+		Short: "Run the agent as a foreground process (for containers/dev; use 'join' for persistent install)",
+		Long: `Run the kedge agent as a blocking foreground process.
+
+The agent connects to the hub, registers this edge, and maintains the reverse
+tunnel until interrupted (SIGINT/SIGTERM). Suitable for containers, e2e tests,
+and interactive development.
+
+For production use on bare-metal or VM hosts, use "kedge agent join" instead,
+which installs the agent as a persistent systemd service.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
+			return runAgentForeground(ctx, opts)
+		},
+	}
+
+	agentRunFlags(cmd, opts)
 	return cmd
+}
+
+// newAgentJoinCommand returns the "kedge agent join" command — a persistent
+// install that registers this edge with the hub and ensures the agent keeps
+// running across reboots.
+//
+//   - server type:     installs a systemd service (requires root)
+//   - kubernetes type: applies a Deployment + RBAC into the target cluster
+func newAgentJoinCommand() *cobra.Command {
+	opts := agent.NewOptions()
+
+	cmd := &cobra.Command{
+		Use:   "join",
+		Short: "Persistently join an edge to the hub (installs systemd service or Kubernetes Deployment)",
+		Long: `Join this edge to the hub as a persistent installation.
+
+For server-type edges (bare-metal / VM):
+  Installs a systemd service that runs "kedge agent run" and survives reboots.
+  Requires root. The service is named kedge-agent-<edge-name>.service.
+
+For kubernetes-type edges:
+  Applies a Deployment and RBAC into the kedge-system namespace of the target
+  cluster so the agent runs as an in-cluster workload.
+
+To run the agent as a foreground process (containers / dev / e2e) use:
+  kedge agent run`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.EdgeName == "" {
+				return fmt.Errorf("--edge-name is required")
+			}
+			if opts.HubKubeconfig == "" && opts.Token == "" {
+				return fmt.Errorf("--hub-kubeconfig or --token is required")
+			}
+
+			switch opts.Type {
+			case agent.AgentTypeServer, "":
+				return agentJoinServer(opts)
+			case agent.AgentTypeKubernetes:
+				return agentJoinKubernetes(opts)
+			default:
+				return fmt.Errorf("unknown agent type %q; must be 'server' or 'kubernetes'", opts.Type)
+			}
+		},
+	}
+
+	agentRunFlags(cmd, opts)
+	return cmd
+}
+
+// agentJoinServer installs the agent as a systemd service on the current host.
+func agentJoinServer(opts *agent.Options) error {
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolving binary path: %w", err)
+	}
+	binaryPath, err = filepath.EvalSymlinks(binaryPath)
+	if err != nil {
+		return fmt.Errorf("resolving symlinks: %w", err)
+	}
+
+	absKubeconfig := opts.HubKubeconfig
+	if absKubeconfig != "" {
+		absKubeconfig, err = filepath.Abs(absKubeconfig)
+		if err != nil {
+			return fmt.Errorf("resolving kubeconfig path: %w", err)
+		}
+	}
+
+	unitName := "kedge-agent-" + opts.EdgeName
+	data := systemdUnitData{
+		BinaryPath:      binaryPath,
+		HubKubeconfig:   absKubeconfig,
+		EdgeName:        opts.EdgeName,
+		Type:            string(opts.Type),
+		SSHProxyPort:    opts.SSHProxyPort,
+		SSHUser:         opts.SSHUser,
+		SSHPrivateKey:   opts.SSHPrivateKeyPath,
+		Cluster:         opts.Cluster,
+		InsecureSkipTLS: opts.InsecureSkipTLSVerify,
+	}
+
+	tmpl, err := template.New("unit").Parse(systemdUnitTemplate)
+	if err != nil {
+		return fmt.Errorf("parsing unit template: %w", err)
+	}
+
+	unitPath := "/etc/systemd/system/" + unitName + ".service"
+	f, err := os.Create(unitPath)
+	if err != nil {
+		return fmt.Errorf("creating unit file %s: %w (are you running as root?)", unitPath, err)
+	}
+	if err := tmpl.Execute(f, data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("writing unit file: %w", err)
+	}
+	_ = f.Close()
+
+	fmt.Printf("Systemd unit written to %s\n", unitPath)
+
+	for _, c := range [][]string{
+		{"systemctl", "daemon-reload"},
+		{"systemctl", "enable", unitName + ".service"},
+		{"systemctl", "start", unitName + ".service"},
+	} {
+		out, err := exec.Command(c[0], c[1:]...).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("running %v: %w\n%s", c, err, out)
+		}
+	}
+
+	fmt.Printf("Agent installed and running as systemd service.\n")
+	fmt.Printf("  Check status:  systemctl status %s\n", unitName)
+	fmt.Printf("  View logs:     journalctl -u %s -f\n", unitName)
+	fmt.Printf("  Uninstall:     kedge agent uninstall --edge-name %s\n", opts.EdgeName)
+	return nil
+}
+
+// agentJoinKubernetes applies a Deployment + RBAC to the target cluster so the
+// agent runs as a persistent in-cluster workload.
+func agentJoinKubernetes(opts *agent.Options) error {
+	if opts.HubKubeconfig == "" {
+		return fmt.Errorf("--hub-kubeconfig is required for kubernetes-type join")
+	}
+
+	// Resolve the hub kubeconfig to absolute path so the mounted Secret is portable.
+	absKubeconfig, err := filepath.Abs(opts.HubKubeconfig)
+	if err != nil {
+		return fmt.Errorf("resolving hub kubeconfig path: %w", err)
+	}
+
+	// Read kubeconfig content to embed as a Secret.
+	kubeconfigData, err := os.ReadFile(absKubeconfig)
+	if err != nil {
+		return fmt.Errorf("reading hub kubeconfig: %w", err)
+	}
+
+	// Determine the target cluster kubeconfig for kubectl.
+	kubectlArgs := []string{}
+	if opts.Kubeconfig != "" {
+		kubectlArgs = append(kubectlArgs, "--kubeconfig", opts.Kubeconfig)
+	}
+	if opts.Context != "" {
+		kubectlArgs = append(kubectlArgs, "--context", opts.Context)
+	}
+
+	// Ensure kedge-system namespace exists.
+	nsManifest := `apiVersion: v1
+kind: Namespace
+metadata:
+  name: kedge-system
+`
+	if err := kubectlApplyManifest(kubectlArgs, nsManifest); err != nil {
+		return fmt.Errorf("creating kedge-system namespace: %w", err)
+	}
+
+	// Create Secret with hub kubeconfig.
+	secretName := "kedge-agent-" + opts.EdgeName + "-hub-kubeconfig"
+	secretManifest := fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: kedge-system
+type: Opaque
+stringData:
+  hub.kubeconfig: |
+%s`, secretName, indentLines(string(kubeconfigData), "    "))
+	if err := kubectlApplyManifest(kubectlArgs, secretManifest); err != nil {
+		return fmt.Errorf("creating hub kubeconfig secret: %w", err)
+	}
+
+	// ServiceAccount.
+	saManifest := fmt.Sprintf(`apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kedge-agent-%s
+  namespace: kedge-system
+`, opts.EdgeName)
+	if err := kubectlApplyManifest(kubectlArgs, saManifest); err != nil {
+		return fmt.Errorf("creating ServiceAccount: %w", err)
+	}
+
+	// Deployment.
+	image := "ghcr.io/faroshq/kedge-agent:latest"
+	deployArgs := fmt.Sprintf("agent run --hub-kubeconfig=/etc/kedge/hub.kubeconfig --edge-name=%s --type=kubernetes --hub-insecure-skip-tls-verify", opts.EdgeName)
+	if opts.Cluster != "" {
+		deployArgs += " --cluster=" + opts.Cluster
+	}
+	deployManifest := fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kedge-agent-%s
+  namespace: kedge-system
+  labels:
+    app: kedge-agent
+    kedge.faros.sh/edge-name: %s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kedge-agent
+      kedge.faros.sh/edge-name: %s
+  template:
+    metadata:
+      labels:
+        app: kedge-agent
+        kedge.faros.sh/edge-name: %s
+    spec:
+      serviceAccountName: kedge-agent-%s
+      containers:
+      - name: agent
+        image: %s
+        command: ["/kedge"]
+        args: [%s]
+        volumeMounts:
+        - name: hub-kubeconfig
+          mountPath: /etc/kedge
+          readOnly: true
+      volumes:
+      - name: hub-kubeconfig
+        secret:
+          secretName: %s
+`,
+		opts.EdgeName, opts.EdgeName, opts.EdgeName, opts.EdgeName,
+		opts.EdgeName, image,
+		formatDeployArgs(deployArgs),
+		secretName)
+	if err := kubectlApplyManifest(kubectlArgs, deployManifest); err != nil {
+		return fmt.Errorf("creating Deployment: %w", err)
+	}
+
+	fmt.Printf("Agent installed as Kubernetes Deployment in kedge-system.\n")
+	fmt.Printf("  Check status:  kubectl -n kedge-system get deployment kedge-agent-%s\n", opts.EdgeName)
+	fmt.Printf("  View logs:     kubectl -n kedge-system logs -l kedge.faros.sh/edge-name=%s -f\n", opts.EdgeName)
+	return nil
+}
+
+// kubectlApplyManifest writes manifest to a temp file and runs kubectl apply.
+func kubectlApplyManifest(extraArgs []string, manifest string) error {
+	f, err := os.CreateTemp("", "kedge-join-*.yaml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) //nolint:errcheck
+	if _, err := f.WriteString(manifest); err != nil {
+		_ = f.Close()
+		return err
+	}
+	_ = f.Close()
+
+	args := append(extraArgs, "apply", "-f", f.Name())
+	out, err := exec.Command("kubectl", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("kubectl apply failed: %w\n%s", err, out)
+	}
+	return nil
+}
+
+// indentLines prepends prefix to every line in s.
+func indentLines(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if l != "" {
+			lines[i] = prefix + l
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// formatDeployArgs converts a flat flag string into quoted kubectl args list.
+func formatDeployArgs(s string) string {
+	parts := strings.Fields(s)
+	quoted := make([]string, len(parts))
+	for i, p := range parts {
+		quoted[i] = fmt.Sprintf("%q", p)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func newAgentTokenCommand() *cobra.Command {
@@ -153,7 +453,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={{.BinaryPath}} agent join \
+ExecStart={{.BinaryPath}} agent run \
   --hub-kubeconfig {{.HubKubeconfig}} \
   --edge-name {{.EdgeName}} \
   --type {{.Type}}{{if .SSHProxyPort}} \

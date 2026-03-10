@@ -101,7 +101,7 @@ func (a *Agent) Stop() {
 	}
 }
 
-// TokenAgent manages a kedge agent join process authenticated via a bootstrap
+// TokenAgent manages a kedge agent run process authenticated via a bootstrap
 // join token instead of a SA-backed hub kubeconfig.
 type TokenAgent struct {
 	bin             string
@@ -119,7 +119,7 @@ type TokenAgent struct {
 }
 
 // NewAgentWithToken creates a TokenAgent that connects to the hub using a bootstrap
-// join token (kedge agent join --token). Use agentKubeconfig="" for server-type edges
+// join token (kedge agent run --token). Use agentKubeconfig="" for server-type edges
 // that have no downstream Kubernetes cluster.
 func NewAgentWithToken(workDir, hubURL, edgeName, token string) *TokenAgent {
 	return &TokenAgent{
@@ -167,7 +167,7 @@ func (a *TokenAgent) WithSSHPassword(pass string) *TokenAgent {
 	return a
 }
 
-// Start launches the kedge agent join process with the configured join token.
+// Start launches the kedge agent run process with the configured join token.
 // It runs until Stop is called or the parent context is cancelled.
 // When token is empty (e.g. NewReconnectAgent), no --token flag is passed and
 // the binary auto-discovers the saved kubeconfig from ~/.kedge/.
@@ -176,7 +176,7 @@ func (a *TokenAgent) Start(ctx context.Context) error {
 	a.cancel = cancel
 
 	args := []string{
-		"agent", "join",
+		"agent", "run",
 		"--hub-url", a.hubURL,
 		"--edge-name", a.edgeName,
 		"--hub-insecure-skip-tls-verify",
@@ -208,7 +208,7 @@ func (a *TokenAgent) Start(ctx context.Context) error {
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return fmt.Errorf("failed to start kedge agent join: %w", err)
+		return fmt.Errorf("failed to start kedge agent run: %w", err)
 	}
 
 	// Reap the process in the background when context is cancelled.
