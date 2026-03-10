@@ -38,7 +38,11 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --edge-name={{ required "agent.edgeName is required" .Values.agent.edgeName }}
+            {{- if .Values.agent.hub.token }}
+            - --token={{ .Values.agent.hub.token }}
+            {{- else }}
             - --hub-kubeconfig=/etc/kedge/hub-kubeconfig/kubeconfig
+            {{- end }}
             {{- if .Values.agent.hub.context }}
             - --hub-context={{ .Values.agent.hub.context }}
             {{- end }}
@@ -56,14 +60,18 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
+          {{- if not .Values.agent.hub.token }}
           volumeMounts:
             - name: hub-kubeconfig
               mountPath: /etc/kedge/hub-kubeconfig
               readOnly: true
+          {{- end }}
+      {{- if not .Values.agent.hub.token }}
       volumes:
         - name: hub-kubeconfig
           secret:
             secretName: {{ include "kedge-agent.hubKubeconfigSecretName" . }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

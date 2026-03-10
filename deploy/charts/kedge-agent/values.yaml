@@ -18,7 +18,7 @@ agent:
 
   # -- Hub connection settings
   hub:
-    # -- Hub kubeconfig (required)
+    # -- Hub kubeconfig (for agents that have already registered).
     # Provide via:
     # 1. existingSecret - name of a secret containing kubeconfig key
     # 2. kubeconfig - inline kubeconfig content (not recommended for production)
@@ -26,9 +26,13 @@ agent:
     kubeconfig: ""
     # -- Optional: kubeconfig context to use
     context: ""
-    # -- Optional: override hub URL (useful for dev environments where the
-    # kubeconfig server URL differs from the actual reachable URL)
+    # -- Hub URL (required when using token-based bootstrap, or to override the URL in the kubeconfig)
     url: ""
+    # -- One-time join token for initial agent registration.
+    # Obtain with: kedge edge join-command <name>
+    # The agent exchanges the token for a kubeconfig on first connect; the token is then cleared.
+    # After registration, redeploy without this value (the agent saves its kubeconfig automatically).
+    token: ""
     # -- Skip TLS certificate verification for the hub connection.
     # Only set to true in development/testing environments.
     insecureSkipTLSVerify: false
