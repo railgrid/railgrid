@@ -260,22 +260,16 @@ func agentJoinServer(opts *agent.Options) error {
 
 // agentJoinKubernetes applies a Deployment + RBAC to the target cluster so the
 // agent runs as a persistent in-cluster workload.
+//
+// Two auth modes are supported:
+//   - Join-token mode (--token):     Deployment runs with --token flag; no kubeconfig Secret needed.
+//   - Kubeconfig mode (--hub-kubeconfig): Deployment mounts a Secret containing the hub kubeconfig.
 func agentJoinKubernetes(opts *agent.Options) error {
-	if opts.HubKubeconfig == "" {
-		return fmt.Errorf("--hub-kubeconfig is required for kubernetes-type join")
+	if opts.HubKubeconfig == "" && opts.Token == "" {
+		return fmt.Errorf("--hub-kubeconfig or --token is required for kubernetes-type join")
 	}
 
-	// Resolve the hub kubeconfig to absolute path so the mounted Secret is portable.
-	absKubeconfig, err := filepath.Abs(opts.HubKubeconfig)
-	if err != nil {
-		return fmt.Errorf("resolving hub kubeconfig path: %w", err)
-	}
-
-	// Read kubeconfig content to embed as a Secret.
-	kubeconfigData, err := os.ReadFile(absKubeconfig)
-	if err != nil {
-		return fmt.Errorf("reading hub kubeconfig: %w", err)
-	}
+	usingToken := opts.Token != ""
 
 	// Determine the target cluster kubeconfig for kubectl.
 	kubectlArgs := []string{}
@@ -296,21 +290,6 @@ metadata:
 		return fmt.Errorf("creating kedge-system namespace: %w", err)
 	}
 
-	// Create Secret with hub kubeconfig.
-	secretName := "kedge-agent-" + opts.EdgeName + "-hub-kubeconfig"
-	secretManifest := fmt.Sprintf(`apiVersion: v1
-kind: Secret
-metadata:
-  name: %s
-  namespace: kedge-system
-type: Opaque
-stringData:
-  hub.kubeconfig: |
-%s`, secretName, indentLines(string(kubeconfigData), "    "))
-	if err := kubectlApplyManifest(kubectlArgs, secretManifest); err != nil {
-		return fmt.Errorf("creating hub kubeconfig secret: %w", err)
-	}
-
 	// ServiceAccount.
 	saManifest := fmt.Sprintf(`apiVersion: v1
 kind: ServiceAccount
@@ -322,13 +301,88 @@ metadata:
 		return fmt.Errorf("creating ServiceAccount: %w", err)
 	}
 
-	// Deployment.
 	image := "ghcr.io/faroshq/kedge-agent:latest"
-	deployArgs := fmt.Sprintf("agent run --hub-kubeconfig=/etc/kedge/hub.kubeconfig --edge-name=%s --type=kubernetes --hub-insecure-skip-tls-verify", opts.EdgeName)
-	if opts.Cluster != "" {
-		deployArgs += " --cluster=" + opts.Cluster
-	}
-	deployManifest := fmt.Sprintf(`apiVersion: apps/v1
+
+	var deployManifest string
+
+	if usingToken {
+		// Token-based bootstrap: pass --token directly in Deployment args.
+		// The agent exchanges the join token for a kubeconfig on first connect;
+		// no hub kubeconfig Secret is required.
+		hubURL := opts.HubURL
+		if hubURL == "" {
+			return fmt.Errorf("--hub-url is required when using --token for kubernetes-type join")
+		}
+		deployArgs := fmt.Sprintf("agent run --hub-url=%s --edge-name=%s --type=kubernetes --token=%s",
+			hubURL, opts.EdgeName, opts.Token)
+		if opts.InsecureSkipTLSVerify {
+			deployArgs += " --hub-insecure-skip-tls-verify"
+		}
+		if opts.Cluster != "" {
+			deployArgs += " --cluster=" + opts.Cluster
+		}
+		deployManifest = fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kedge-agent-%s
+  namespace: kedge-system
+  labels:
+    app: kedge-agent
+    kedge.faros.sh/edge-name: %s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kedge-agent
+      kedge.faros.sh/edge-name: %s
+  template:
+    metadata:
+      labels:
+        app: kedge-agent
+        kedge.faros.sh/edge-name: %s
+    spec:
+      serviceAccountName: kedge-agent-%s
+      containers:
+      - name: agent
+        image: %s
+        command: ["/kedge"]
+        args: [%s]
+`,
+			opts.EdgeName, opts.EdgeName, opts.EdgeName, opts.EdgeName,
+			opts.EdgeName, image,
+			formatDeployArgs(deployArgs))
+	} else {
+		// Kubeconfig-based: mount a Secret containing the hub kubeconfig.
+		absKubeconfig, err := filepath.Abs(opts.HubKubeconfig)
+		if err != nil {
+			return fmt.Errorf("resolving hub kubeconfig path: %w", err)
+		}
+		kubeconfigData, err := os.ReadFile(absKubeconfig)
+		if err != nil {
+			return fmt.Errorf("reading hub kubeconfig: %w", err)
+		}
+		secretName := "kedge-agent-" + opts.EdgeName + "-hub-kubeconfig"
+		secretManifest := fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: kedge-system
+type: Opaque
+stringData:
+  hub.kubeconfig: |
+%s`, secretName, indentLines(string(kubeconfigData), "    "))
+		if err := kubectlApplyManifest(kubectlArgs, secretManifest); err != nil {
+			return fmt.Errorf("creating hub kubeconfig secret: %w", err)
+		}
+
+		deployArgs := fmt.Sprintf("agent run --hub-kubeconfig=/etc/kedge/hub.kubeconfig --edge-name=%s --type=kubernetes", opts.EdgeName)
+		if opts.InsecureSkipTLSVerify {
+			deployArgs += " --hub-insecure-skip-tls-verify"
+		}
+		if opts.Cluster != "" {
+			deployArgs += " --cluster=" + opts.Cluster
+		}
+		deployManifest = fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kedge-agent-%s
@@ -363,17 +417,20 @@ spec:
         secret:
           secretName: %s
 `,
-		opts.EdgeName, opts.EdgeName, opts.EdgeName, opts.EdgeName,
-		opts.EdgeName, image,
-		formatDeployArgs(deployArgs),
-		secretName)
+			opts.EdgeName, opts.EdgeName, opts.EdgeName, opts.EdgeName,
+			opts.EdgeName, image,
+			formatDeployArgs(deployArgs),
+			secretName)
+	}
+
 	if err := kubectlApplyManifest(kubectlArgs, deployManifest); err != nil {
 		return fmt.Errorf("creating Deployment: %w", err)
 	}
 
-	fmt.Printf("Agent installed as Kubernetes Deployment in kedge-system.\n")
-	fmt.Printf("  Check status:  kubectl -n kedge-system get deployment kedge-agent-%s\n", opts.EdgeName)
-	fmt.Printf("  View logs:     kubectl -n kedge-system logs -l kedge.faros.sh/edge-name=%s -f\n", opts.EdgeName)
+	fmt.Printf("✓ kedge-agent deployed to Kubernetes\n")
+	fmt.Printf("  Namespace: kedge-system\n")
+	fmt.Printf("  Check status: kubectl get pods -n kedge-system\n")
+	fmt.Printf("  Logs:         kubectl logs -n kedge-system deploy/kedge-agent-%s -f\n", opts.EdgeName)
 	return nil
 }
 

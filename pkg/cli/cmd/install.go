@@ -166,10 +166,10 @@ WantedBy=multi-user.target
 
 // printAgentRunCmd prints the foreground agent run command.
 func printAgentRunCmd(opts *installOptions) {
-	fmt.Printf("  kedge agent join \\\n")
+	fmt.Printf("  kedge agent run \\\n")
 	fmt.Printf("    --hub-url %s \\\n", opts.hubURL)
 	fmt.Printf("    --edge-name %s \\\n", opts.edgeName)
-	fmt.Printf("    --type server \\\n")
+	fmt.Printf("    --type %s \\\n", opts.installType)
 	fmt.Printf("    --token %s\n", opts.token)
 }
 
@@ -195,15 +195,6 @@ metadata:
   name: kedge-agent
   namespace: kedge-system
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: kedge-agent-join-token
-  namespace: kedge-system
-type: Opaque
-stringData:
-  token: "{{ .Token }}"
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -227,16 +218,11 @@ spec:
           image: ghcr.io/faroshq/kedge-agent:latest
           args:
             - agent
-            - join
+            - run
             - --hub-url={{ .HubURL }}
             - --edge-name={{ .EdgeName }}
             - --type=kubernetes
-          env:
-            - name: KEDGE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: kedge-agent-join-token
-                  key: token
+            - --token={{ .Token }}
           envFrom: []
           resources:
             requests:
