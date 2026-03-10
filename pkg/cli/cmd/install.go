@@ -217,8 +217,6 @@ spec:
         - name: kedge-agent
           image: ghcr.io/faroshq/kedge-agent:latest
           args:
-            - agent
-            - run
             - --hub-url={{ .HubURL }}
             - --edge-name={{ .EdgeName }}
             - --type=kubernetes
