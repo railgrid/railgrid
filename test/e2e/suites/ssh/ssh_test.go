@@ -45,3 +45,7 @@ func TestSSHUserMappingProvided(t *testing.T) {
 func TestSSHUserMappingIdentity(t *testing.T) {
 	testenv.Test(t, cases.SSHUserMappingIdentity())
 }
+
+func TestJoinTokenSSHCredentialsStoredAfterConnect(t *testing.T) {
+	testenv.Test(t, cases.JoinTokenSSHCredentialsStoredAfterConnect())
+}

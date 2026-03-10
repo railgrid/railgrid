@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Agent manages a kedge-agent process for e2e tests.
@@ -111,6 +112,8 @@ type TokenAgent struct {
 	clusterName     string
 	agentKubeconfig string
 	agentType       string
+	sshUser         string
+	sshPassword     string
 	cmd             *exec.Cmd
 	cancel          context.CancelFunc
 }
@@ -150,8 +153,24 @@ func (a *TokenAgent) WithCluster(clusterName string) *TokenAgent {
 	return a
 }
 
+// WithSSHUser sets the SSH username the agent reports to the hub via
+// X-Kedge-SSH-User WebSocket header (join-token mode) or the --ssh-user flag.
+func (a *TokenAgent) WithSSHUser(user string) *TokenAgent {
+	a.sshUser = user
+	return a
+}
+
+// WithSSHPassword sets the SSH password the agent reports to the hub via
+// X-Kedge-SSH-Password WebSocket header (join-token mode) or the --ssh-password flag.
+func (a *TokenAgent) WithSSHPassword(pass string) *TokenAgent {
+	a.sshPassword = pass
+	return a
+}
+
 // Start launches the kedge agent join process with the configured join token.
 // It runs until Stop is called or the parent context is cancelled.
+// When token is empty (e.g. NewReconnectAgent), no --token flag is passed and
+// the binary auto-discovers the saved kubeconfig from ~/.kedge/.
 func (a *TokenAgent) Start(ctx context.Context) error {
 	agentCtx, cancel := context.WithCancel(ctx)
 	a.cancel = cancel
@@ -160,15 +179,25 @@ func (a *TokenAgent) Start(ctx context.Context) error {
 		"agent", "join",
 		"--hub-url", a.hubURL,
 		"--edge-name", a.edgeName,
-		"--token", a.token,
 		"--hub-insecure-skip-tls-verify",
 		"--type", a.agentType,
+	}
+	// Only pass --token when one is configured; omitting it lets the binary
+	// auto-detect a previously saved kubeconfig (reconnect-after-restart flow).
+	if a.token != "" {
+		args = append(args, "--token", a.token)
 	}
 	if a.agentKubeconfig != "" {
 		args = append(args, "--kubeconfig", a.agentKubeconfig)
 	}
 	if a.clusterName != "" {
 		args = append(args, "--cluster", a.clusterName)
+	}
+	if a.sshUser != "" {
+		args = append(args, "--ssh-user", a.sshUser)
+	}
+	if a.sshPassword != "" {
+		args = append(args, "--ssh-password", a.sshPassword)
 	}
 
 	cmd := exec.CommandContext(agentCtx, a.bin, args...)
@@ -195,4 +224,53 @@ func (a *TokenAgent) Stop() {
 	if a.cancel != nil {
 		a.cancel()
 	}
+}
+
+// NewReconnectAgent creates a TokenAgent that reconnects to the hub using the
+// previously saved kubeconfig (written during the first successful join-token
+// exchange). No --token is passed — the binary's built-in auto-detection reads
+// the saved kubeconfig from ~/.kedge/agent-<edgeName>.kubeconfig.
+//
+// Use this to verify the reconnect-after-restart flow end-to-end.
+func NewReconnectAgent(workDir, hubURL, edgeName string) *TokenAgent {
+	return &TokenAgent{
+		bin:       filepath.Join(workDir, KedgeBin),
+		workDir:   workDir,
+		hubURL:    hubURL,
+		edgeName:  edgeName,
+		agentType: "server",
+		// token intentionally empty — agent auto-detects saved kubeconfig
+	}
+}
+
+// AgentSavedKubeconfigPath returns the filesystem path where the agent binary
+// persists the kubeconfig received via token-exchange.  It mirrors the logic in
+// pkg/agent.AgentKubeconfigPath so tests can verify the file was written.
+func AgentSavedKubeconfigPath(edgeName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("getting home dir: %w", err)
+	}
+	return filepath.Join(home, ".kedge", "agent-"+edgeName+".kubeconfig"), nil
+}
+
+// WaitForAgentSavedKubeconfig polls until the saved kubeconfig file appears at
+// the expected path, or until timeout expires.
+func WaitForAgentSavedKubeconfig(ctx context.Context, edgeName string, timeout time.Duration) (string, error) {
+	path, err := AgentSavedKubeconfigPath(edgeName)
+	if err != nil {
+		return "", err
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return "", fmt.Errorf("saved kubeconfig for edge %q not found at %s within %s", edgeName, path, timeout)
 }
