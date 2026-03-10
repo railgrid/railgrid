@@ -392,6 +392,19 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
 			logger.Error(err, "failed to save agent kubeconfig from hub")
 		}
+		// In-cluster mode: also persist to Secret so it survives pod restarts,
+		// then force a restart so the agent re-launches with the saved kubeconfig.
+		if IsInCluster() {
+			kubeconfigData, decErr := decodeKubeconfigB64(kubeconfigB64)
+			if decErr != nil {
+				logger.Error(decErr, "failed to decode kubeconfig for in-cluster Secret save")
+			} else if saveErr := SaveKubeconfigToSecret(a.opts.EdgeName, kubeconfigData); saveErr != nil {
+				logger.Error(saveErr, "failed to save kubeconfig to in-cluster Secret")
+			} else {
+				logger.Info("Saved kubeconfig to in-cluster Secret; restarting pod to activate", "edgeName", a.opts.EdgeName)
+				os.Exit(1)
+			}
+		}
 	}
 	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken, nil)
 
@@ -481,6 +494,18 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName, "path", path)
 		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
 			logger.Error(err, "failed to save agent kubeconfig from hub")
+		}
+		// In-cluster mode: also persist to Secret and restart.
+		if IsInCluster() {
+			kubeconfigData, decErr := decodeKubeconfigB64(kubeconfigB64)
+			if decErr != nil {
+				logger.Error(decErr, "failed to decode kubeconfig for in-cluster Secret save")
+			} else if saveErr := SaveKubeconfigToSecret(a.opts.EdgeName, kubeconfigData); saveErr != nil {
+				logger.Error(saveErr, "failed to save kubeconfig to in-cluster Secret")
+			} else {
+				logger.Info("Saved kubeconfig to in-cluster Secret; restarting pod to activate", "edgeName", a.opts.EdgeName)
+				os.Exit(1)
+			}
 		}
 	}
 

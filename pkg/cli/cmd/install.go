@@ -192,27 +192,63 @@ metadata:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: kedge-agent
+  name: kedge-agent-{{ .EdgeName }}
   namespace: kedge-system
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kedge-agent-{{ .EdgeName }}-kubeconfig
+  namespace: kedge-system
+type: Opaque
+data: {}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kedge-agent-{{ .EdgeName }}
+  namespace: kedge-system
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["kedge-agent-{{ .EdgeName }}-kubeconfig"]
+  verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kedge-agent-{{ .EdgeName }}
+  namespace: kedge-system
+subjects:
+- kind: ServiceAccount
+  name: kedge-agent-{{ .EdgeName }}
+  namespace: kedge-system
+roleRef:
+  kind: Role
+  name: kedge-agent-{{ .EdgeName }}
+  apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kedge-agent
+  name: kedge-agent-{{ .EdgeName }}
   namespace: kedge-system
   labels:
     app: kedge-agent
+    kedge.faros.sh/edge: {{ .EdgeName }}
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: kedge-agent
+      kedge.faros.sh/edge: {{ .EdgeName }}
   template:
     metadata:
       labels:
         app: kedge-agent
+        kedge.faros.sh/edge: {{ .EdgeName }}
     spec:
-      serviceAccountName: kedge-agent
+      serviceAccountName: kedge-agent-{{ .EdgeName }}
       containers:
         - name: kedge-agent
           image: ghcr.io/faroshq/kedge-agent:latest

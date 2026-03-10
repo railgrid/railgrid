@@ -42,6 +42,27 @@ func main() {
 
 			logger := klog.FromContext(ctx)
 
+			// In-cluster kubeconfig recovery: when running inside a Kubernetes Pod
+			// with a bootstrap token, check whether a prior run already saved the
+			// hub kubeconfig to the well-known Secret. If so, use it directly
+			// instead of performing a new token exchange.
+			if opts.Token != "" && opts.EdgeName != "" && isInCluster() {
+				kc, err := loadKubeconfigFromSecret(opts.EdgeName)
+				if err != nil {
+					logger.Info("Could not check in-cluster kubeconfig Secret", "err", err)
+				} else if kc != "" {
+					tmpPath, err := writeKubeconfigToTempFile(kc)
+					if err != nil {
+						logger.Error(err, "failed to write in-cluster kubeconfig to temp file")
+					} else {
+						logger.Info("Using kubeconfig from in-cluster Secret (previous registration)", "edgeName", opts.EdgeName, "path", tmpPath)
+						opts.HubKubeconfig = tmpPath
+						opts.Token = ""
+						opts.UsingSavedKubeconfig = true
+					}
+				}
+			}
+
 			// Token-exchange: if a saved kubeconfig exists from a previous
 			// join-token registration, use it instead of the bootstrap token.
 			if opts.HubKubeconfig == "" && opts.EdgeName != "" {
