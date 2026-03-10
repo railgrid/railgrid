@@ -24,7 +24,12 @@ import (
 
 var (
 	// SSHKeepaliveDuration is how long the long-lived SSH connection test holds the
-	// session open before asserting liveness. Default 5m; bump to 10m+ locally.
+	// session open before asserting liveness.
+	//
+	// Minimum useful value: 60s. The long_lived_connection_stays_alive test uses a
+	// 30-second keepalive ticker; setting the duration below 60s means the ticker
+	// never fires during the hold period and the keepalive logic is never exercised.
+	// Default 60s; bump to 10m+ locally to stress-test keepalive behaviour.
 	SSHKeepaliveDuration time.Duration
 
 	// KeepClusters controls whether kind clusters are deleted after the test run.
@@ -43,5 +48,5 @@ func init() {
 	flag.BoolVar(&KeepClusters, "keep-clusters", false, "Keep kind clusters after test run (useful for debugging failures)")
 	flag.StringVar(&KedgeBin, "kedge-bin", "bin/kedge", "Path to the kedge CLI binary")
 	flag.StringVar(&DevToken, "dev-token", "dev-token", "Static auth token for non-OIDC test suites")
-	flag.DurationVar(&SSHKeepaliveDuration, "ssh-keepalive-duration", 30*time.Second, "How long to hold the long-lived SSH session open in the keepalive test")
+	flag.DurationVar(&SSHKeepaliveDuration, "ssh-keepalive-duration", 60*time.Second, "How long to hold the long-lived SSH session open in the keepalive test (minimum 60s so the 30s ticker fires at least once)")
 }

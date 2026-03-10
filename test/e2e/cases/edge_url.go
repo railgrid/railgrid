@@ -156,8 +156,13 @@ func K8sProxyAccess() features.Feature {
 			if err != nil {
 				t.Fatalf("kubectl get nodes via edge proxy failed: %v", err)
 			}
-			if out == "" {
-				t.Fatalf("expected non-empty node list via edge proxy, got empty output")
+			// Assert the specific known kind node name rather than just non-empty
+			// output — an empty-body 200 or a malformed response would otherwise
+			// pass this check. kind control-plane nodes are named
+			// <cluster-name>-control-plane.
+			expectedNodeName := clusterEnv.AgentClusterName + "-control-plane"
+			if !strings.Contains(out, expectedNodeName) {
+				t.Fatalf("expected node %q in proxy output, got:\n%s", expectedNodeName, out)
 			}
 			t.Logf("kubectl get nodes via edge proxy:\n%s", out)
 			return ctx
