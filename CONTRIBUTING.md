@@ -1,156 +1,234 @@
-# Contributing to Kedge
+# Contributing to kedge
+
+Thanks for your interest in contributing! This document covers building from source, running tests, understanding the architecture, and the PR workflow.
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Building from Source](#building-from-source)
+- [Local Development Stack](#local-development-stack)
+- [Running Tests](#running-tests)
+- [Architecture Overview](#architecture-overview)
+- [PR Workflow](#pr-workflow)
+
+---
 
 ## Prerequisites
 
-- Go 1.25+
-- [kind](https://kind.sigs.k8s.io/) (for running a local agent cluster)
-- `openssl` (for generating dev TLS certs)
-- `golangci-lint` (for linting)
+| Tool | Version | Notes |
+|------|---------|-------|
+| Go | 1.25+ | `go env GOVERSION` |
+| Docker | any recent | must be running |
+| kind | latest | for local clusters |
+| kubectl | 1.28+ | |
+| Helm | 3.x | for chart testing |
 
-Tools like kcp, Dex, controller-gen, and apigen are installed automatically by Make on first use into `hack/tools/`.
+---
 
-## Development environment
-
-### Quick start with `kedge dev`
-
-The fastest way to get a full local environment:
-
-```bash
-kedge dev create
-```
-
-This sets up Kind clusters, a hub, and an agent automatically. Follow the printed next steps to log in, create an edge, and connect the agent.
+## Building from Source
 
 ```bash
-# Clean up
-kedge dev delete
+git clone https://github.com/faroshq/kedge.git
+cd kedge
+
+# Build all binaries into bin/
+make build
+
+# Build just the CLI
+make build-kedge
+
+# Cross-compile for all platforms
+make build-all
 ```
 
-### Running from source
+Binaries produced:
 
-#### Standalone (embedded kcp + static token)
+| Binary | Description |
+|--------|-------------|
+| `bin/kedge` | User CLI |
+| `bin/kedge-hub` | Hub server |
+| `bin/kedge-agent` | Edge agent (standalone binary) |
+
+---
+
+## Local Development Stack
+
+`kedge dev create` spins up a complete local environment with two kind clusters (hub + one agent), deploys the hub via Helm, and wires everything together.
 
 ```bash
-# Terminal 1: Run the hub (no external dependencies)
-make run-hub-embedded-static
+# Build first
+make build
 
-# Terminal 2: Login and register an edge
-make dev-login-static    # Authenticate with static token
-make dev-edge-create     # Register an edge (default: kubernetes type)
-make dev-run-edge        # Start the agent on a local kind cluster
+# Create hub + agent kind clusters and deploy the hub
+./bin/kedge dev create --chart-path deploy/charts/kedge-hub
+
+# Log in with the static dev token
+./bin/kedge login --hub-url https://kedge.localhost:8443 \
+  --insecure-skip-tls-verify --token dev-token
+
+# Register a dev edge
+./bin/kedge edge create dev-edge-1
+
+# Print the agent command
+./bin/kedge edge join-command dev-edge-1
+
+# Run the agent in the background (foreground process)
+./bin/kedge agent run \
+  --hub-url https://kedge.localhost:8443 \
+  --token <join-token> \
+  --edge-name dev-edge-1 \
+  --type kubernetes \
+  --kubeconfig $(kind get kubeconfig --name kedge-e2e-agent-1 2>/dev/null)
+
+# Tear down
+./bin/kedge dev delete
 ```
 
-#### Full stack (kcp + Dex + OIDC)
+### Make shortcuts
 
 ```bash
-# Terminal 1: Start kcp, Dex, and the hub
-make dev
-
-# Terminal 2: Log in and register an edge
-make dev-login
-make dev-edge-create
-make dev-run-edge
+make dev-login-static       # log in with static token
+make dev-edge-create        # create dev-edge-1 (kubernetes type)
+make dev-run-edge           # run agent for dev-edge-1
+make dev-edge-create TYPE=server DEV_EDGE_NAME=my-server
+make dev-run-edge TYPE=server DEV_EDGE_NAME=my-server
 ```
 
-#### Component by component
-
-If you prefer running services separately:
+### Lint
 
 ```bash
-# Terminal 1: kcp + Dex
-make dev-infra
-
-# Terminal 2: Hub (rebuild with make run-hub after code changes)
-make run-hub
-
-# Terminal 3: Edge agent (requires dev-edge-create first)
-make dev-run-edge
+make lint        # golangci-lint (must be 0 issues before pushing)
+go build ./...   # must compile clean
 ```
 
-Run `make help-dev` to see all available development modes.
+---
 
-### Deploying a test workload
+## Running Tests
+
+### Unit tests
 
 ```bash
-make dev-create-workload
+go test ./pkg/...
 ```
 
-This applies an example `VirtualWorkload` that targets dev sites.
+### e2e tests
 
-## Building
+e2e tests spin up real kind clusters and require Docker.
 
 ```bash
-make build          # All binaries (kedge, kedge-hub, kedge-agent)
-make build-kedge    # CLI only
-make build-hub      # Hub only
-make build-agent    # Agent only
+# Standalone suite (embedded kcp, static token)
+make test-e2e
+
+# SSH suite
+make test-e2e-ssh
+
+# OIDC suite (Dex)
+make test-e2e-oidc
+
+# External KCP suite
+make test-e2e-external-kcp
 ```
 
-Binaries are output to `bin/`.
-
-## Code generation
-
-After changing API types in `apis/`:
+**Reuse existing clusters** (faster iteration):
 
 ```bash
-make codegen
+KEDGE_USE_EXISTING_CLUSTERS=true make test-e2e
 ```
 
-This runs:
-1. `controller-gen` to generate CRDs from Go types
-2. `apigen` to generate kcp APIResourceSchemas and APIExports
-3. `ensure-boilerplate.sh` to add license headers to any new files
-
-## Testing and verification
+**Keep clusters after failure** (for debugging):
 
 ```bash
-make test               # Run all tests
-make test-util          # Run utility package tests only
-make lint               # Run golangci-lint
-make vet                # Run go vet
-make verify             # Run all checks (vet + lint + test + boilerplate)
-make verify-boilerplate # Check license headers only (no modifications)
+make test-e2e E2E_FLAGS=--keep-clusters
 ```
 
-## License headers
+---
 
-All Go files must have the Apache 2.0 license boilerplate. To add it to new files:
+## Architecture Overview
 
-```bash
-make boilerplate
-```
-
-This is also run as part of `make codegen`. The `make verify` target checks headers without modifying files.
-
-## Project layout
+### Components
 
 ```
-apis/                  Custom resource types (Site, VirtualWorkload, Placement)
-cmd/
-  kedge/               CLI entrypoint
-  kedge-hub/           Hub server entrypoint
-  kedge-agent/         Agent entrypoint
-config/
-  crds/                Generated CRD YAML
-  kcp/                 Generated kcp APIResourceSchemas and APIExports
-pkg/
-  agent/               Agent logic (tunnel, workload reconciler, status reporter)
-  cli/                 CLI commands and auth
-  hub/                 Hub server, controllers (scheduler, status, site lifecycle)
-  server/              HTTP handlers (auth, kcp proxy)
-  virtual/builder/     Tunnel endpoint handlers (edge proxy, agent proxy, site proxy)
-  client/              Dynamic kedge API client
-  util/                Shared utilities (connman, revdial, ssh, http)
-hack/
-  boilerplate/         License header template
-  scripts/             Dev environment scripts
-  dev/                 Dev config (Dex config, example manifests)
+                ┌──────────────────────────────────┐
+                │           kedge hub               │
+                │                                   │
+                │  ┌─────────┐  ┌────────────────┐ │
+                │  │  kcp    │  │  agent-proxy   │ │
+                │  │  (API)  │  │  virtual WS    │ │
+                │  └────┬────┘  └───────┬────────┘ │
+                │       │               │           │
+                │  ┌────▼───────────────▼────────┐  │
+                │  │      hub controllers         │  │
+                │  │  token / edge / rbac / ssh  │  │
+                │  └─────────────────────────────┘  │
+                └──────────────┬───────────────────┘
+                               │  revdial reverse tunnel
+                    ┌──────────┴──────────┐
+                    │                     │
+             ┌──────▼──────┐     ┌────────▼──────┐
+             │ kedge-agent │     │  kedge-agent  │
+             │ (kubernetes)│     │   (server)    │
+             └─────────────┘     └───────────────┘
 ```
 
-## Submitting changes
+### Key packages
 
-1. Fork the repository and create a feature branch.
-2. Make your changes.
-3. Run `make codegen` if you changed API types.
-4. Run `make verify` to ensure all checks pass.
-5. Submit a pull request.
+| Package | Description |
+|---------|-------------|
+| `pkg/hub/controllers/edge/` | Edge lifecycle: token reconciler, RBAC, SSH credentials |
+| `pkg/virtual/builder/` | Agent-proxy virtual workspace — handles tunnel + status |
+| `pkg/agent/` | Agent core: registration, tunnel, edge_reporter |
+| `pkg/agent/tunnel/` | revdial tunnel client (`StartProxyTunnel`) |
+| `pkg/cli/cmd/` | CLI command implementations |
+| `apis/kedge/v1alpha1/` | Edge CRD types |
+
+### Join token bootstrap flow
+
+1. `kedge edge create <name>` creates an `Edge` resource.
+2. `TokenReconciler` generates a 44-char base64url token → `edge.status.joinToken`.
+3. Agent starts with `--token <join-token>` (via `kedge agent run`).
+4. Hub validates the token in `authorizeByJoinToken`, calls `markEdgeConnected`.
+5. Hub sends the agent's kubeconfig back via `X-Kedge-Agent-Kubeconfig` response header.
+6. Agent saves the kubeconfig to `~/.kedge/agent-<name>.kubeconfig`; clears `--token`.
+7. On restart, agent loads the saved kubeconfig automatically — no token needed.
+8. Hub sets `Registered=True` on the Edge and clears `status.joinToken`.
+
+### revdial tunnel
+
+Agents establish a long-lived WebSocket connection to the hub's `/proxy` endpoint. The hub uses [revdial](https://github.com/bradfitz/revdial) to dial *back* to agents over this connection — the agent never needs an open port.
+
+### Edge proxy URL format
+
+Once an Edge is `Ready`, the hub exposes a virtual workspace endpoint:
+
+```
+https://<hub>/clusters/<workspace-id>/apis/kedge.faros.sh/v1alpha1/edges/<name>/proxy/k8s
+```
+
+`kedge kubeconfig edge <name>` generates a kubeconfig that points to this URL.
+
+---
+
+## PR Workflow
+
+1. Fork the repo and create a feature branch from `main`.
+2. Make your changes. All commits must pass:
+   ```bash
+   go build ./...    # must compile
+   make lint         # 0 issues
+   go test ./pkg/... # unit tests pass
+   ```
+3. Open a PR against `main`. CI runs build, lint, unit tests, and all four e2e suites.
+4. Address review comments. The bot (`@mjudeikis-bot`) monitors CI and posts status.
+5. A maintainer merges once CI is green and the PR is approved.
+
+### Commit style
+
+```
+<type>: <short description> (#issue)
+
+Longer explanation if needed.
+
+Co-authored-by: Your Name <you@example.com>
+```
+
+Types: `feat`, `fix`, `test`, `docs`, `refactor`, `chore`.
