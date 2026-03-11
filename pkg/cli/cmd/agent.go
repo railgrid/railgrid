@@ -213,6 +213,8 @@ func agentJoinServer(opts *agent.Options) error {
 	data := systemdUnitData{
 		BinaryPath:      binaryPath,
 		HubKubeconfig:   absKubeconfig,
+		HubURL:          opts.HubURL,
+		Token:           opts.Token,
 		EdgeName:        opts.EdgeName,
 		Type:            string(opts.Type),
 		SSHProxyPort:    opts.SSHProxyPort,
@@ -503,6 +505,14 @@ func newAgentTokenCommand() *cobra.Command {
 	return cmd
 }
 
+// systemdUnitTemplate renders the systemd service unit for the kedge agent.
+//
+// Token lifecycle note: when a join token is embedded (--token / --hub-url), the
+// agent will exchange it for a hub kubeconfig on first connect and save it to
+// $HOME/.kedge/agent-<edge-name>.kubeconfig.  On every subsequent start the agent
+// binary detects the saved kubeconfig (cmd/kedge-agent/main.go checks
+// LoadAgentKubeconfig before using the token) and clears --token automatically,
+// so the unit file does not need to be rewritten after first registration.
 const systemdUnitTemplate = `[Unit]
 Description=Kedge Agent - {{.EdgeName}}
 After=network-online.target
@@ -511,7 +521,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart={{.BinaryPath}} agent run \
+{{- if .Token}}
+  --hub-url {{.HubURL}} \
+  --token {{.Token}} \
+{{- else}}
   --hub-kubeconfig {{.HubKubeconfig}} \
+{{- end}}
   --edge-name {{.EdgeName}} \
   --type {{.Type}}{{if .SSHProxyPort}} \
   --ssh-proxy-port {{.SSHProxyPort}}{{end}}{{if .SSHUser}} \
@@ -530,6 +545,8 @@ WantedBy=multi-user.target
 type systemdUnitData struct {
 	BinaryPath      string
 	HubKubeconfig   string
+	HubURL          string
+	Token           string
 	EdgeName        string
 	Type            string
 	SSHProxyPort    int
