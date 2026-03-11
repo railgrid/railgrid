@@ -251,7 +251,8 @@ spec:
       serviceAccountName: kedge-agent-{{ .EdgeName }}
       containers:
         - name: kedge-agent
-          image: ghcr.io/faroshq/kedge-agent:latest
+          image: {{.Image}}:{{.ImageTag}}
+          imagePullPolicy: {{.ImagePullPolicy}}
           args:
             - --hub-url={{ .HubURL }}
             - --edge-name={{ .EdgeName }}
@@ -279,11 +280,27 @@ func installKubernetes(opts *installOptions) error {
 		return fmt.Errorf("parsing manifest template: %w", err)
 	}
 
+	agentImage := os.Getenv("KEDGE_AGENT_IMAGE")
+	if agentImage == "" {
+		agentImage = "ghcr.io/faroshq/kedge-agent"
+	}
+	agentImageTag := os.Getenv("KEDGE_AGENT_IMAGE_TAG")
+	if agentImageTag == "" {
+		agentImageTag = "latest"
+	}
+	agentImagePullPolicy := os.Getenv("KEDGE_AGENT_IMAGE_PULL_POLICY")
+	if agentImagePullPolicy == "" {
+		agentImagePullPolicy = "IfNotPresent"
+	}
+
 	var sb strings.Builder
 	if err := tmpl.Execute(&sb, map[string]string{
-		"HubURL":   opts.hubURL,
-		"EdgeName": opts.edgeName,
-		"Token":    opts.token,
+		"HubURL":          opts.hubURL,
+		"EdgeName":        opts.edgeName,
+		"Token":           opts.token,
+		"Image":           agentImage,
+		"ImageTag":        agentImageTag,
+		"ImagePullPolicy": agentImagePullPolicy,
 	}); err != nil {
 		return fmt.Errorf("rendering manifest: %w", err)
 	}

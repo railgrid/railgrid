@@ -19,6 +19,7 @@ package framework
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,6 +69,18 @@ const (
 	// on the host (e.g. when kcp or another cluster is running).
 	// Example: KEDGE_HUB_API_SERVER_PORT=6444
 	hubAPIServerPortEnv = "KEDGE_HUB_API_SERVER_PORT"
+
+	// agentImageEnv overrides the agent image repository. Use this in CI when
+	// the agent image is built locally (e.g. "ghcr.io/faroshq/kedge-agent").
+	agentImageEnv = "KEDGE_AGENT_IMAGE"
+
+	// agentImageTagEnv overrides the agent image tag.
+	// Use this in CI to match the locally built image tag.
+	agentImageTagEnv = "KEDGE_AGENT_IMAGE_TAG"
+
+	// agentImagePullPolicyEnv overrides the agent image pull policy.
+	// Set to "Never" in CI when the image is pre-loaded into kind.
+	agentImagePullPolicyEnv = "KEDGE_AGENT_IMAGE_PULL_POLICY"
 )
 
 const (
@@ -632,6 +645,56 @@ func UseExistingClustersWithExternalKCP(workDir string) env.Func {
 	}
 }
 
+// HubNodePortURL returns the hub URL reachable from inside a pod in another
+// kind cluster — i.e. via the hub node's Docker IP on the shared kind network
+// and NodePort 31443.
+// This is needed because kedge.localhost resolves only on the CI runner host,
+// not inside pods.
+// Returns "" if the Docker IP cannot be determined (caller should skip or fall back).
+func HubNodePortURL() string {
+	out, err := exec.Command("docker", "inspect",
+		DefaultHubClusterName+"-control-plane",
+		"--format", fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, DefaultKindNetwork),
+	).Output()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		return ""
+	}
+	ip := strings.TrimSpace(string(out))
+	return fmt.Sprintf("https://%s:31443", ip)
+}
+
+// PodHubURLFromKubeconfig returns the hub URL reachable from inside a pod in
+// the agent kind cluster. It reads the server URL from the hub kubeconfig
+// (which contains the full /clusters/<name> path), then replaces the host with
+// the hub node's Docker network NodePort address so that in-cluster agents can
+// connect.
+//
+// clusterEnv.HubURL is always "https://kedge.localhost:8443" (no cluster path),
+// so this function reads the cluster path directly from the hub kubeconfig
+// instead of relying on the HubURL field.
+//
+// Returns "" if the hub kubeconfig cannot be read or the NodePort address is
+// unavailable.
+func PodHubURLFromKubeconfig(kubeconfigPath string) string {
+	base := HubNodePortURL() // "https://172.18.0.2:31443"
+	if base == "" {
+		return ""
+	}
+	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return ""
+	}
+	// cfg.Host is like "https://kedge.localhost:8443/clusters/root:kedge:user-default"
+	parsedCluster, err := url.Parse(cfg.Host)
+	if err != nil {
+		return base
+	}
+	parsedBase, _ := url.Parse(base)
+	parsedCluster.Scheme = parsedBase.Scheme
+	parsedCluster.Host = parsedBase.Host
+	return parsedCluster.String()
+}
+
 // AgentBinPath returns the path to the kedge binary under bin/.
 func AgentBinPath() string {
 	return filepath.Join(RepoRoot(), "bin", "kedge")
@@ -717,6 +780,31 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 
 		return WithClusterEnv(ctx, clusterEnv), nil
 	}
+}
+
+// LoadAgentImageIntoCluster loads the agent container image into a kind cluster
+// so that Deployments with imagePullPolicy=Never can use it without a registry
+// pull. This is a no-op unless KEDGE_AGENT_IMAGE_PULL_POLICY=Never (i.e. CI
+// with a locally built image).
+func LoadAgentImageIntoCluster(clusterName string) error {
+	pullPolicy := os.Getenv(agentImagePullPolicyEnv)
+	if pullPolicy != "Never" {
+		return nil // nothing to do — let Kubernetes pull the image normally
+	}
+	image := os.Getenv(agentImageEnv)
+	if image == "" {
+		image = "ghcr.io/faroshq/kedge-agent"
+	}
+	tag := os.Getenv(agentImageTagEnv)
+	if tag == "" {
+		tag = "latest"
+	}
+	imageRef := image + ":" + tag
+	out, err := exec.Command("kind", "load", "docker-image", imageRef, "--name", clusterName).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("kind load docker-image %s into %s: %w\n%s", imageRef, clusterName, err, out)
+	}
+	return nil
 }
 
 // TeardownClustersWithAgentCount is TeardownClusters for a custom agent count.

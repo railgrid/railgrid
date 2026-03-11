@@ -44,11 +44,17 @@ jobs:
       - name: Build hub Docker image
         run: docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
 
+      - name: Build agent Docker image
+        run: docker build -f deploy/Dockerfile.agent -t ghcr.io/faroshq/kedge-agent:test .
+
       - name: Run standalone e2e
         env:
           KEDGE_HUB_IMAGE: ghcr.io/faroshq/kedge-hub
           KEDGE_HUB_IMAGE_PULL_POLICY: Never
           KEDGE_HUB_IMAGE_TAG: test
+          KEDGE_AGENT_IMAGE: ghcr.io/faroshq/kedge-agent
+          KEDGE_AGENT_IMAGE_TAG: test
+          KEDGE_AGENT_IMAGE_PULL_POLICY: Never
         run: make e2e-standalone E2E_TIMEOUT=50m E2E_FLAGS="-ssh-keepalive-duration=30s -keep-clusters"
 
       - name: Collect kind cluster logs

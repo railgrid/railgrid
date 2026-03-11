@@ -78,3 +78,9 @@ func TestTokenReconcilerNoReissueAfterRegistration(t *testing.T) {
 func TestJoinTokenKubernetesMode(t *testing.T) {
 	testenv.Test(t, cases.JoinTokenKubernetesMode())
 }
+func TestAgentJoinKubernetes(t *testing.T) {
+	testenv.Test(t, cases.AgentJoinKubernetes())
+}
+func TestAgentHelmInstall(t *testing.T) {
+	testenv.Test(t, cases.AgentHelmInstall())
+}

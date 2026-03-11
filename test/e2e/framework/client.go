@@ -546,3 +546,25 @@ func (k *KedgeClient) WaitForEdgeSSHCredentials(ctx context.Context, edgeName st
 	}
 	return result, nil
 }
+
+// WaitForDeploymentAvailable polls kubectl until the named Deployment in the
+// given namespace has availableReplicas >= 1, or the timeout expires.
+// kubeconfig is the path to the kubeconfig for the cluster hosting the Deployment.
+func WaitForDeploymentAvailable(ctx context.Context, kubeconfig, namespace, name string, timeout time.Duration) error {
+	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		out, err := KubectlWithConfig(ctx, kubeconfig,
+			"get", "deployment", name,
+			"-n", namespace,
+			"-o", "jsonpath={.status.availableReplicas}",
+		)
+		if err != nil {
+			return false, nil // transient — deployment may not exist yet
+		}
+		s := strings.TrimSpace(out)
+		if s == "" || s == "0" {
+			return false, nil
+		}
+		// Any non-zero integer means at least one replica is available.
+		return true, nil
+	})
+}
