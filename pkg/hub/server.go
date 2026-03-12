@@ -38,6 +38,7 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
@@ -280,7 +281,10 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("creating multicluster provider: %w", err)
 		}
 
-		mgr, err := mcmanager.New(providersConfig, provider, manager.Options{Scheme: scheme})
+		mgr, err := mcmanager.New(providersConfig, provider, manager.Options{
+			Scheme:  scheme,
+			Metrics: metricsserver.Options{BindAddress: "0"}, // hub serves its own metrics; disable controller-runtime's
+		})
 		if err != nil {
 			return fmt.Errorf("creating multicluster manager: %w", err)
 		}
@@ -342,7 +346,10 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("creating MCP multicluster provider: %w", err)
 		}
-		mcpMgr, err := mcmanager.New(mcpProvidersConfig, mcpProvider, manager.Options{Scheme: mcpScheme})
+		mcpMgr, err := mcmanager.New(mcpProvidersConfig, mcpProvider, manager.Options{
+			Scheme:  mcpScheme,
+			Metrics: metricsserver.Options{BindAddress: "0"}, // disable; hub has its own metrics endpoint
+		})
 		if err != nil {
 			return fmt.Errorf("creating MCP multicluster manager: %w", err)
 		}
