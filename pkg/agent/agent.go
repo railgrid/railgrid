@@ -318,6 +318,21 @@ func New(opts *Options) (*Agent, error) {
 		return nil, err
 	}
 
+	// Auto-discover SSH private key for server-type edges when none is provided.
+	if agentType == AgentTypeServer && opts.SSHPrivateKeyPath == "" && opts.SSHPassword == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			// Try common key types in preference order.
+			for _, name := range []string{"id_ed25519", "id_rsa", "id_ecdsa"} {
+				p := filepath.Join(home, ".ssh", name)
+				if _, serr := os.Stat(p); serr == nil {
+					opts.SSHPrivateKeyPath = p
+					break
+				}
+			}
+		}
+	}
+
 	// Build hub config.
 	var hubConfig *rest.Config
 	if opts.HubKubeconfig != "" {
