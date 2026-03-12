@@ -26,17 +26,40 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
+	mcpv1alpha1 "github.com/faroshq/faros-kedge/apis/mcp/v1alpha1"
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 )
 
 // NewScheme builds a runtime.Scheme containing all types needed by the
-// multicluster manager: core k8s types, kedge CRDs, tenancy CRDs,
-// and the kcp SDK types required by multicluster-provider internals.
+// main multicluster manager (kedge.faros.sh APIExport): core k8s types,
+// kedge CRDs, tenancy CRDs, and kcp SDK types.
+//
+// Note: mcpv1alpha1 types (KubernetesMCP) are intentionally excluded here.
+// They live under the mcp.kedge.faros.sh APIExport and are only registered
+// with the separate MCP multicluster manager (see NewMCPScheme).
+// Including them here would cause the kedge.faros.sh cluster provider to fail
+// to add tenant workspaces when the mcp.kedge.faros.sh APIBinding hasn't
+// bound yet, breaking all edge controllers.
 func NewScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
 	utilruntime.Must(kedgev1alpha1.AddToScheme(s))
 	utilruntime.Must(tenancyv1alpha1.AddToScheme(s))
+	utilruntime.Must(corev1alpha1.AddToScheme(s))
+	utilruntime.Must(kcptenancyv1alpha1.AddToScheme(s))
+	utilruntime.Must(apiskcpv1alpha1.AddToScheme(s))
+	utilruntime.Must(apiskcpv1alpha2.AddToScheme(s))
+	return s
+}
+
+// NewMCPScheme builds a runtime.Scheme for the MCP multicluster manager
+// (mcp.kedge.faros.sh APIExport): only the types needed to watch KubernetesMCP
+// resources across tenant workspaces, plus the kcp SDK internals.
+func NewMCPScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(s))
+	utilruntime.Must(mcpv1alpha1.AddToScheme(s))
+	utilruntime.Must(kedgev1alpha1.AddToScheme(s))
 	utilruntime.Must(corev1alpha1.AddToScheme(s))
 	utilruntime.Must(kcptenancyv1alpha1.AddToScheme(s))
 	utilruntime.Must(apiskcpv1alpha1.AddToScheme(s))

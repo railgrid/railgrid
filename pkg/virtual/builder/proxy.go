@@ -38,7 +38,7 @@ type authorizeFnType func(ctx context.Context, kcpConfig *rest.Config, token, cl
 type virtualWorkspaces struct {
 	connManager     *connman.ConnectionManager
 	edgeConnManager *ConnManager         // shared between agent-proxy-v2 and edges-proxy builders
-	kcpConfig       *rest.Config         // kcp rest config for token verification (nil if kcp not configured)
+	kcpConfig       *rest.Config         // kcp rest config for token verification and edge status updates
 	kcpK8sClient    kubernetes.Interface // kubernetes client for fetching secrets
 	kedgeClient     *kedgeclient.Client  // kedge client for fetching Edge resources
 	staticTokens    map[string]struct{}  // static tokens that bypass JWT SA requirement
@@ -107,4 +107,10 @@ func (h *VirtualWorkspaceHandlers) EdgeAgentProxyHandler() http.Handler {
 // Mount at /services/edges-proxy/.
 func (h *VirtualWorkspaceHandlers) EdgesProxyHandler() http.Handler {
 	return h.vws.buildEdgesProxyHandler()
+}
+
+// EdgeConnManager returns the shared edge connection manager.
+// Exposed so that hub controllers can check whether a given edge tunnel is active.
+func (h *VirtualWorkspaceHandlers) EdgeConnManager() *ConnManager {
+	return h.vws.edgeConnManager
 }

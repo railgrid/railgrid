@@ -49,10 +49,6 @@ var edgeGVR = schema.GroupVersionResource{
 // call the kcp API directly (the join token is not a valid kcp credential).
 // Best-effort: errors are logged but not propagated.
 func (p *virtualWorkspaces) markEdgeConnected(ctx context.Context, cluster, name string, sshCreds *sshCredsFromAgent) {
-	if p.kcpConfig == nil {
-		return
-	}
-
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
 
@@ -203,8 +199,9 @@ func (p *virtualWorkspaces) storeSSHCredentials(ctx context.Context, cfg *rest.C
 	}
 	status["sshCredentials"] = sshStatus
 
-	// Set the proxy URL path.
-	status["URL"] = fmt.Sprintf("/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s", cluster, edgeName)
+	// Note: status.URL is managed by the hub's mount_reconciler (full edges-proxy
+	// SSH URL).  Do NOT set it here — a relative /clusters/... path would break
+	// the CLI's SSH WebSocket dialler.
 
 	p.logger.Info("SSH credentials stored for edge", "cluster", cluster, "edge", edgeName, "user", creds.User)
 	return nil
@@ -218,10 +215,6 @@ func (p *virtualWorkspaces) storeSSHCredentials(ctx context.Context, cfg *rest.C
 //
 // It is best-effort: errors are logged but not propagated.
 func (p *virtualWorkspaces) markEdgeDisconnected(ctx context.Context, cluster, name string) {
-	if p.kcpConfig == nil {
-		return
-	}
-
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
 

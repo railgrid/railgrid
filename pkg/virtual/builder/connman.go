@@ -59,3 +59,9 @@ func (c *ConnManager) Delete(key string) {
 	defer c.mu.Unlock()
 	delete(c.dials, key)
 }
+
+// HasConnection returns true if there is an active dialer registered for key.
+func (c *ConnManager) HasConnection(key string) bool {
+	_, ok := c.Load(key)
+	return ok
+}

@@ -78,6 +78,17 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 	// Path (after mount-prefix stripping):
 	//   /{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/proxy
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Dispatch MCP requests before agent auth — MCP handler has its own auth.
+		if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/mcp") {
+			cluster, name, ok := parseEdgeMCPPath(r.URL.Path)
+			if !ok {
+				http.Error(w, "invalid path: expected /{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp", http.StatusBadRequest)
+				return
+			}
+			p.buildMCPHandler(cluster, name).ServeHTTP(w, r)
+			return
+		}
+
 		// 1. Authenticate: require a valid bearer token.
 		token := extractBearerToken(r)
 		if token == "" {
@@ -212,6 +223,35 @@ func parseEdgeAgentPath(path string) (cluster, name string, ok bool) {
 	}
 	if parts[1] != "apis" || parts[2] != "kedge.faros.sh" ||
 		parts[3] != "v1alpha1" || parts[4] != "edges" || parts[6] != "proxy" {
+		return "", "", false
+	}
+	return parts[0], parts[5], true
+}
+
+// parseEdgeMCPPath extracts {cluster} and {name} from the path seen by the
+// agent-proxy handler for MCP requests.
+//
+// Expected format:
+//
+//	/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
+func parseEdgeMCPPath(path string) (cluster, name string, ok bool) {
+	// Strip any leading slash.
+	path = strings.TrimPrefix(path, "/")
+
+	// Expected segments:
+	//   [0] cluster
+	//   [1] "apis"
+	//   [2] "kedge.faros.sh"
+	//   [3] "v1alpha1"
+	//   [4] "edges"
+	//   [5] name
+	//   [6] "mcp"
+	parts := strings.SplitN(path, "/", 8) // cap at 8 to handle extra segments gracefully
+	if len(parts) < 7 {
+		return "", "", false
+	}
+	if parts[1] != "apis" || parts[2] != "kedge.faros.sh" ||
+		parts[3] != "v1alpha1" || parts[4] != "edges" || parts[6] != "mcp" {
 		return "", "", false
 	}
 	return parts[0], parts[5], true

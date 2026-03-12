@@ -63,6 +63,7 @@ enabling secure workload deployment across distributed edges.`,
 		newKubeconfigCommand(),
 		newVersionCommand(),
 		newSSHCommand(),
+		newMCPCommand(),
 		devCmd,
 	)
 

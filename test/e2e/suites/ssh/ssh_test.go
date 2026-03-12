@@ -46,6 +46,6 @@ func TestSSHUserMappingIdentity(t *testing.T) {
 	testenv.Test(t, cases.SSHUserMappingIdentity())
 }
 
-func TestJoinTokenSSHCredentialsStoredAfterConnect(t *testing.T) {
-	testenv.Test(t, cases.JoinTokenSSHCredentialsStoredAfterConnect())
-}
+// TestJoinTokenSSHCredentialsStoredAfterConnect is intentionally not included
+// in this hub-only suite because it requires the join-token controller which
+// only runs when kcp is configured.  The test lives in the standalone suite.
