@@ -54,6 +54,10 @@ func main() {
 					tmpPath, err := writeKubeconfigToTempFile(kc)
 					if err != nil {
 						logger.Error(err, "failed to write in-cluster kubeconfig to temp file")
+					} else if err := agent.ValidateAgentKubeconfig(tmpPath, opts.InsecureSkipTLSVerify); err != nil {
+						logger.Info("In-cluster kubeconfig is invalid, falling back to join token",
+							"edgeName", opts.EdgeName, "err", err)
+						_ = os.Remove(tmpPath)
 					} else {
 						logger.Info("Using kubeconfig from in-cluster Secret (previous registration)", "edgeName", opts.EdgeName, "path", tmpPath)
 						opts.HubKubeconfig = tmpPath
@@ -70,10 +74,21 @@ func main() {
 				if err != nil {
 					logger.Info("Could not check for saved agent kubeconfig", "err", err)
 				} else if kubeconfigPath != "" {
-					logger.Info("Using saved agent kubeconfig from previous registration", "edgeName", opts.EdgeName, "path", kubeconfigPath)
-					opts.HubKubeconfig = kubeconfigPath
-					opts.Token = "" // Clear join token; SA kubeconfig takes precedence.
-					opts.UsingSavedKubeconfig = true
+					// Validate the saved kubeconfig before using it. If the Edge was
+					// recreated, the SA token will have been revoked and we must fall
+					// back to the join token for a fresh token exchange.
+					if err := agent.ValidateAgentKubeconfig(kubeconfigPath, opts.InsecureSkipTLSVerify); err != nil {
+						logger.Info("Saved agent kubeconfig is invalid, deleting and falling back to join token",
+							"edgeName", opts.EdgeName, "path", kubeconfigPath, "err", err)
+						if delErr := agent.DeleteAgentKubeconfig(opts.EdgeName); delErr != nil {
+							logger.Error(delErr, "Failed to delete stale agent kubeconfig")
+						}
+					} else {
+						logger.Info("Using saved agent kubeconfig from previous registration", "edgeName", opts.EdgeName, "path", kubeconfigPath)
+						opts.HubKubeconfig = kubeconfigPath
+						opts.Token = "" // Clear join token; SA kubeconfig takes precedence.
+						opts.UsingSavedKubeconfig = true
+					}
 				}
 			}
 

@@ -87,9 +87,10 @@ make build
 ### Make shortcuts
 
 ```bash
-make dev-login-static       # log in with static token
-make dev-edge-create        # create dev-edge-1 (kubernetes type)
-make dev-run-edge           # run agent for dev-edge-1
+make run-hub-embedded-static # run hub with embedded kcp and static token (no helm)
+make dev-login-static        # log in with static token
+make dev-edge-create         # create dev-edge-1 (kubernetes type)
+make dev-run-edge            # run agent for dev-edge-1
 make dev-edge-create TYPE=server DEV_EDGE_NAME=my-server
 make dev-run-edge TYPE=server DEV_EDGE_NAME=my-server
 ```

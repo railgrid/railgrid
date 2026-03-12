@@ -147,11 +147,13 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		// kubeconfig and include it in the upgrade response so the agent can save it
 		// as its durable credential and reconnect without the join token on restart.
 		var upgradeHeaders http.Header
+		kubeconfigDelivered := false
 		if authenticatedByJoinToken {
 			kubeconfigHeader := p.buildAgentKubeconfigHeader(cluster, name, token)
 			upgradeHeaders = http.Header{}
 			if kubeconfigHeader != "" {
 				upgradeHeaders.Set("X-Kedge-Agent-Kubeconfig", kubeconfigHeader)
+				kubeconfigDelivered = true
 			}
 		}
 		wsConn, err := upgrader.Upgrade(w, r, upgradeHeaders)
@@ -181,8 +183,14 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		// Marking the edge Ready here on every tunnel open is safe and ensures
 		// the hub view is always up-to-date.
 		// SSH credentials are passed via headers for server-type edges.
+		//
+		// clearJoinToken: only clear the bootstrap join token if we successfully
+		// delivered a kubeconfig to the agent. If the RBAC controller hasn't
+		// provisioned the SA secret yet, the agent won't have a durable credential
+		// and needs the join token to remain valid for the next reconnect attempt.
+		clearJoinToken := !authenticatedByJoinToken || kubeconfigDelivered
 		sshCreds := extractSSHCredsFromHeaders(r)
-		go p.markEdgeConnected(context.Background(), cluster, name, sshCreds)
+		go p.markEdgeConnected(context.Background(), cluster, name, sshCreds, clearJoinToken)
 
 		// Block until the tunnel closes, then clean up the entry so stale
 		// look-ups don't succeed.

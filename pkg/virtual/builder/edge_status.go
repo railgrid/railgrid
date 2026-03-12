@@ -43,12 +43,13 @@ var edgeGVR = schema.GroupVersionResource{
 }
 
 // markEdgeConnected updates an Edge's status to Connected=true, Phase=Ready,
-// clears the bootstrap JoinToken, and sets the Registered condition to True.
-// It is called by the agent-proxy handler when a join-token-authenticated
-// tunnel is established, because in that flow the agent's edge_reporter cannot
-// call the kcp API directly (the join token is not a valid kcp credential).
+// and sets the Registered condition to True.
+// When clearJoinToken is true, the bootstrap JoinToken is also cleared from status.
+// clearJoinToken should only be true when the agent has received a durable credential
+// (kubeconfig) — otherwise the agent would be unable to reconnect after a restart.
+// It is called by the agent-proxy handler when a tunnel is established.
 // Best-effort: errors are logged but not propagated.
-func (p *virtualWorkspaces) markEdgeConnected(ctx context.Context, cluster, name string, sshCreds *sshCredsFromAgent) {
+func (p *virtualWorkspaces) markEdgeConnected(ctx context.Context, cluster, name string, sshCreds *sshCredsFromAgent, clearJoinToken bool) {
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
 
@@ -74,7 +75,9 @@ func (p *virtualWorkspaces) markEdgeConnected(ctx context.Context, cluster, name
 	}
 	status["connected"] = true
 	status["phase"] = string(kedgev1alpha1.EdgePhaseReady)
-	delete(status, "joinToken")
+	if clearJoinToken {
+		delete(status, "joinToken")
+	}
 
 	// Set the Registered condition to True.
 	now := metav1.NewTime(time.Now())

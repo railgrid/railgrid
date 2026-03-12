@@ -27,10 +27,12 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
@@ -107,6 +109,55 @@ func LoadAgentKubeconfig(edgeName string) (string, error) {
 		return "", nil
 	}
 	return path, nil
+}
+
+// ValidateAgentKubeconfig checks whether the saved kubeconfig still has valid
+// credentials by attempting a lightweight API call. Returns an error only if
+// authentication definitively fails (401 Unauthorized — token revoked, e.g.
+// after Edge recreation). All other errors (403 Forbidden, timeouts, network
+// errors) return nil because they don't prove the token is invalid — the hub
+// may be temporarily unreachable or the RBAC may not permit the probe call.
+// When insecureSkipTLS is true, TLS certificate verification is disabled.
+func ValidateAgentKubeconfig(kubeconfigPath string, insecureSkipTLS bool) error {
+	rules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
+	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{}).ClientConfig()
+	if err != nil {
+		return fmt.Errorf("loading kubeconfig: %w", err)
+	}
+	if insecureSkipTLS {
+		cfg.Insecure = true
+	}
+	// Use a short timeout so we don't block startup for too long.
+	cfg.Timeout = 10 * time.Second
+	dynClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("creating client: %w", err)
+	}
+	// A lightweight discovery-style call: list edges with limit=1.
+	gvr := schema.GroupVersionResource{Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "edges"}
+	_, err = dynClient.Resource(gvr).List(context.Background(), metav1.ListOptions{Limit: 1})
+	if err == nil {
+		return nil
+	}
+	// Only treat 401 Unauthorized as a definitive signal that the token is
+	// revoked/invalid. Everything else (403 Forbidden, timeouts, network
+	// errors) could be transient — keep the kubeconfig.
+	if apierrors.IsUnauthorized(err) {
+		return err
+	}
+	return nil
+}
+
+// DeleteAgentKubeconfig removes a previously saved agent kubeconfig from disk.
+func DeleteAgentKubeconfig(edgeName string) error {
+	path, err := AgentKubeconfigPath(edgeName)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // SaveAgentConfig persists the durable agent token to disk so the agent can

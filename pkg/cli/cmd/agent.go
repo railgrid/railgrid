@@ -89,9 +89,17 @@ func runAgentForeground(ctx context.Context, opts *agent.Options) error {
 		if err != nil {
 			logger.Info("Could not check for saved agent kubeconfig", "err", err)
 		} else if kubeconfigPath != "" {
-			logger.Info("Loaded saved agent kubeconfig; no --token needed", "edgeName", opts.EdgeName, "path", kubeconfigPath)
-			opts.HubKubeconfig = kubeconfigPath
-			opts.UsingSavedKubeconfig = true
+			if err := agent.ValidateAgentKubeconfig(kubeconfigPath, opts.InsecureSkipTLSVerify); err != nil {
+				logger.Info("Saved agent kubeconfig is invalid, deleting stale file",
+					"edgeName", opts.EdgeName, "path", kubeconfigPath, "err", err)
+				if delErr := agent.DeleteAgentKubeconfig(opts.EdgeName); delErr != nil {
+					logger.Error(delErr, "Failed to delete stale agent kubeconfig")
+				}
+			} else {
+				logger.Info("Loaded saved agent kubeconfig; no --token needed", "edgeName", opts.EdgeName, "path", kubeconfigPath)
+				opts.HubKubeconfig = kubeconfigPath
+				opts.UsingSavedKubeconfig = true
+			}
 		} else {
 			// Fallback: legacy token config.
 			saved, err := agent.LoadAgentConfig(opts.EdgeName)
