@@ -280,7 +280,7 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 			Reference: apisv1alpha2.BindingReference{
 				Export: &apisv1alpha2.ExportBindingReference{
 					Path: "root:kedge:providers",
-					Name: "kedge.faros.sh",
+					Name: "core.faros.sh",
 				},
 			},
 			PermissionClaims: []apisv1alpha2.AcceptablePermissionClaim{
@@ -315,47 +315,10 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 		return "", fmt.Errorf("creating APIBinding in tenant workspace %s: %w", userID, err)
 	}
 
-	// Also create an APIBinding for mcp.kedge.faros.sh so that the multicluster
-	// manager can watch KubernetesMCP resources in this workspace.  Without this
-	// binding the manager's "failed to add cluster" error prevents ALL controllers
-	// (mount, token, RBAC) from reconciling in the user workspace.
-	mcpBinding := &apisv1alpha2.APIBinding{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
-			Kind:       "APIBinding",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "kedge-mcp",
-		},
-		Spec: apisv1alpha2.APIBindingSpec{
-			Reference: apisv1alpha2.BindingReference{
-				Export: &apisv1alpha2.ExportBindingReference{
-					Path: "root:kedge:providers",
-					Name: "mcp.kedge.faros.sh",
-				},
-			},
-		},
-	}
-
-	mcpU, err := toUnstructured(mcpBinding)
-	if err != nil {
-		return "", fmt.Errorf("converting MCP APIBinding to unstructured: %w", err)
-	}
-
-	_, err = tenantClient.Resource(apiBindingGVR).Create(ctx, mcpU, metav1.CreateOptions{})
-	if errors.IsAlreadyExists(err) {
-		// Already bound — nothing to update (no permission claims to sync).
-	} else if err != nil {
-		// Non-fatal: the MCP binding is optional for edge operation.
-		// Log the error but continue — the workspace will work for edges.
-		logger.Error(err, "Failed to create mcp.kedge.faros.sh APIBinding in tenant workspace (non-fatal)", "userID", userID)
-	} else {
-		// Wait for the mcp.kedge.faros.sh APIBinding to be Bound so that
-		// the KubernetesMCP CRD is available before we try to create the
-		// "default" KubernetesMCP below.
-		if waitErr := waitForAPIBindingBound(ctx, tenantClient, "kedge-mcp"); waitErr != nil {
-			logger.Error(waitErr, "mcp.kedge.faros.sh APIBinding did not become Bound (non-fatal)", "userID", userID)
-		}
+	// Wait for the core.faros.sh APIBinding to be Bound — this single binding
+	// gives access to all kedge API groups (kedge.faros.sh, mcp.kedge.faros.sh, etc.).
+	if waitErr := waitForAPIBindingBound(ctx, tenantClient, "kedge"); waitErr != nil {
+		logger.Error(waitErr, "kedge APIBinding did not become Bound (non-fatal)", "userID", userID)
 	}
 
 	// Ensure a "default" KubernetesMCP exists in the tenant workspace.

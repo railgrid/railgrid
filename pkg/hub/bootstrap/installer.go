@@ -84,6 +84,7 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 		"virtualworkloads.kedge.faros.sh",
 		"placements.kedge.faros.sh",
 		"users.kedge.faros.sh",
+		"kubernetesmcps.mcp.kedge.faros.sh",
 	}
 
 	for _, name := range crdNames {

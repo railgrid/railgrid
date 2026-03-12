@@ -43,4 +43,10 @@ echo "Generating kcp APIResourceSchemas with apigen..."
         --output-dir "${REPO_ROOT}/config/kcp"
 )
 
+# Step 3: Generate core.faros.sh merged APIExport from all individual APIExports.
+echo "Generating merged core.faros.sh APIExport..."
+go run "${REPO_ROOT}/hack/gen-core-apiexport" \
+    --config-dir "${REPO_ROOT}/config/kcp" \
+    --output "${REPO_ROOT}/config/kcp/apiexport-core.faros.sh.yaml"
+
 echo "Codegen complete."
