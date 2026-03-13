@@ -83,8 +83,10 @@ func runAgentForeground(ctx context.Context, opts *agent.Options) error {
 	// try to load a previously saved kubeconfig or durable token from disk.
 	// This allows the agent to reconnect after the first successful join
 	// without requiring the operator to re-supply the bootstrap join token.
-	if opts.Token == "" && opts.HubKubeconfig == "" && opts.EdgeName != "" {
-		// Prefer a saved kubeconfig (new flow) over the legacy token config.
+	if opts.HubKubeconfig == "" && opts.EdgeName != "" {
+		// Prefer a saved kubeconfig (from a previous join-token exchange) over
+		// the bootstrap token. This allows the agent to reconnect after restart
+		// even when --token is still present in the systemd unit.
 		kubeconfigPath, err := agent.LoadAgentKubeconfig(opts.EdgeName)
 		if err != nil {
 			logger.Info("Could not check for saved agent kubeconfig", "err", err)
@@ -96,8 +98,9 @@ func runAgentForeground(ctx context.Context, opts *agent.Options) error {
 					logger.Error(delErr, "Failed to delete stale agent kubeconfig")
 				}
 			} else {
-				logger.Info("Loaded saved agent kubeconfig; no --token needed", "edgeName", opts.EdgeName, "path", kubeconfigPath)
+				logger.Info("Using saved agent kubeconfig from previous registration", "edgeName", opts.EdgeName, "path", kubeconfigPath)
 				opts.HubKubeconfig = kubeconfigPath
+				opts.Token = "" // Clear join token; SA kubeconfig takes precedence.
 				opts.UsingSavedKubeconfig = true
 			}
 		} else {

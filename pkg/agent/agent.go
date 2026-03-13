@@ -18,6 +18,8 @@ limitations under the License.
 package agent
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -27,6 +29,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -327,9 +330,21 @@ func New(opts *Options) (*Agent, error) {
 				p := filepath.Join(home, ".ssh", name)
 				if _, serr := os.Stat(p); serr == nil {
 					opts.SSHPrivateKeyPath = p
+					klog.Infof("Auto-discovered SSH private key: %s", p)
 					break
 				}
 			}
+		}
+		if opts.SSHPrivateKeyPath == "" {
+			klog.Warning("No SSH private key found in ~/.ssh (tried id_ed25519, id_rsa, id_ecdsa) and no --ssh-password provided; SSH authentication will fail")
+		}
+	}
+
+	// Ensure the public key for the selected private key is in authorized_keys
+	// so the hub can authenticate when it SSHes back into this agent.
+	if agentType == AgentTypeServer && opts.SSHPrivateKeyPath != "" {
+		if err := ensureAuthorizedKey(opts.SSHPrivateKeyPath); err != nil {
+			klog.Warningf("Failed to ensure public key in authorized_keys: %v", err)
 		}
 	}
 
@@ -612,6 +627,62 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	return nil
 }
 
+// ensureAuthorizedKey reads the public key corresponding to the given private
+// key path (by appending ".pub") and ensures it is present in
+// ~/.ssh/authorized_keys. This allows the hub to SSH back into the agent
+// machine using the private key the agent sends during registration.
+func ensureAuthorizedKey(privateKeyPath string) error {
+	pubKeyPath := privateKeyPath + ".pub"
+	pubKeyData, err := os.ReadFile(pubKeyPath)
+	if err != nil {
+		return fmt.Errorf("reading public key %s: %w", pubKeyPath, err)
+	}
+	pubKeyLine := strings.TrimSpace(string(pubKeyData))
+	if pubKeyLine == "" {
+		return fmt.Errorf("public key file %s is empty", pubKeyPath)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("getting home directory: %w", err)
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		return fmt.Errorf("creating %s: %w", sshDir, err)
+	}
+	authKeysPath := filepath.Join(sshDir, "authorized_keys")
+
+	// Check if the key is already present.
+	existing, err := os.ReadFile(authKeysPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reading %s: %w", authKeysPath, err)
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(existing))
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) == pubKeyLine {
+			return nil // already present
+		}
+	}
+
+	// Append the public key.
+	f, err := os.OpenFile(authKeysPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", authKeysPath, err)
+	}
+	defer f.Close() //nolint:errcheck
+	// Ensure we start on a new line if the file doesn't end with one.
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		if _, err := f.WriteString("\n"); err != nil {
+			return fmt.Errorf("writing newline to %s: %w", authKeysPath, err)
+		}
+	}
+	if _, err := fmt.Fprintln(f, pubKeyLine); err != nil {
+		return fmt.Errorf("appending public key to %s: %w", authKeysPath, err)
+	}
+	klog.Infof("Added public key from %s to %s", pubKeyPath, authKeysPath)
+	return nil
+}
+
 const (
 	// sshCredentialsNamespace is the namespace where SSH credential secrets are stored.
 	sshCredentialsNamespace = "kedge-system"
@@ -637,6 +708,9 @@ func (a *Agent) buildSSHHeaders() http.Header {
 		keyData, err := os.ReadFile(a.opts.SSHPrivateKeyPath)
 		if err == nil {
 			h.Set("X-Kedge-SSH-PrivateKey", base64.StdEncoding.EncodeToString(keyData))
+			klog.Infof("Sending SSH private key to hub via headers (key path: %s)", a.opts.SSHPrivateKeyPath)
+		} else {
+			klog.Warningf("Failed to read SSH private key from %s: %v", a.opts.SSHPrivateKeyPath, err)
 		}
 	}
 	return h
