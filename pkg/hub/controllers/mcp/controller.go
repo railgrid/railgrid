@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package mcp reconciles KubernetesMCP resources.
+// Package mcp reconciles Kubernetes MCP resources.
 package mcp
 
 import (
@@ -49,14 +49,14 @@ func connKeyFn(cluster, edge string) string {
 	return cluster + "/" + edge
 }
 
-// Reconciler reconciles KubernetesMCP objects.
+// Reconciler reconciles Kubernetes MCP objects.
 type Reconciler struct {
 	mgr            mcmanager.Manager
 	connManager    ConnManager
 	hubExternalURL string
 }
 
-// SetupWithManager registers the KubernetesMCP controller with the multicluster manager.
+// SetupWithManager registers the Kubernetes MCP controller with the multicluster manager.
 func SetupWithManager(mgr mcmanager.Manager, connManager ConnManager, hubExternalURL string) error {
 	r := &Reconciler{
 		mgr:            mgr,
@@ -64,14 +64,14 @@ func SetupWithManager(mgr mcmanager.Manager, connManager ConnManager, hubExterna
 		hubExternalURL: hubExternalURL,
 	}
 	return mcbuilder.ControllerManagedBy(mgr).
-		Named("kubernetesmcp").
-		For(&mcpv1alpha1.KubernetesMCP{}).
+		Named("kubernetes-mcp").
+		For(&mcpv1alpha1.Kubernetes{}).
 		Complete(r)
 }
 
-// Reconcile reconciles a single KubernetesMCP object.
+// Reconcile reconciles a single Kubernetes MCP object.
 func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	logger := klog.FromContext(ctx).WithValues("kubernetesmcp", req.Name, "cluster", req.ClusterName)
+	logger := klog.FromContext(ctx).WithValues("kubernetes", req.Name, "cluster", req.ClusterName)
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -79,7 +79,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	c := cl.GetClient()
 
-	var kmcp mcpv1alpha1.KubernetesMCP
+	var kmcp mcpv1alpha1.Kubernetes
 	if err := c.Get(ctx, req.NamespacedName, &kmcp); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -88,8 +88,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	// Compute the endpoint URL.
-	// Format: {hubExternalURL}/services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
-	endpoint := fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/%s/mcp",
+	// Format: {hubExternalURL}/services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
+	endpoint := fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/%s/mcp",
 		r.hubExternalURL, req.ClusterName, kmcp.Name)
 
 	// List all edges in the cluster.
@@ -152,10 +152,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("patching KubernetesMCP status: %w", err)
+		return ctrl.Result{}, fmt.Errorf("patching Kubernetes MCP status: %w", err)
 	}
 
-	logger.Info("Reconciled KubernetesMCP", "URL", endpoint, "connectedEdges", connectedCount)
+	logger.Info("Reconciled Kubernetes MCP", "URL", endpoint, "connectedEdges", connectedCount)
 
 	// Requeue periodically so ConnectedEdges stays fresh.
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil

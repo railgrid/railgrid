@@ -170,11 +170,11 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("creating dynamic client: %w", err)
 	}
 
-	// Create the default KubernetesMCP object (all-edges MCP server).
-	if err := ensureDefaultKubernetesMCP(ctx, dynamicClient); err != nil {
+	// Create the default Kubernetes MCP object (all-edges MCP server).
+	if err := ensureDefaultKubernetes(ctx, dynamicClient); err != nil {
 		// Non-fatal: the controller will keep retrying, and in kcp-mode the CRD
 		// may not be globally accessible from the base config.
-		logger.Error(err, "Failed to create default KubernetesMCP (non-fatal)")
+		logger.Error(err, "Failed to create default Kubernetes MCP (non-fatal)")
 	}
 
 	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
@@ -229,6 +229,8 @@ func (s *Server) Run(ctx context.Context) error {
 	router.PathPrefix("/services/edges-proxy/").Handler(http.StripPrefix("/services/edges-proxy", vws.EdgesProxyHandler()))
 	// KubernetesMCP multi-edge handler:
 	//   /services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
+	// Kubernetes multi-edge MCP handler:
+	//   /services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
 	router.PathPrefix("/services/mcp/").Handler(http.StripPrefix("/services/mcp", vws.KubernetesMCPHandler()))
 	// Per-edge MCP is served under the agent-proxy route:
 	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
@@ -328,7 +330,7 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up edge token controller: %w", err)
 		}
 		if err := mcpcontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
-			return fmt.Errorf("setting up kubernetesmcp controller: %w", err)
+			return fmt.Errorf("setting up kubernetes-mcp controller: %w", err)
 		}
 		go func() {
 			logger.Info("Starting multicluster manager")
@@ -428,20 +430,20 @@ func (s *Server) buildRestConfig() (*rest.Config, error) {
 	return config, nil
 }
 
-// kubernetesmcpGVR is the GroupVersionResource for KubernetesMCP.
-var kubernetesmcpGVR = schema.GroupVersionResource{
+// kubernetesGVR is the GroupVersionResource for Kubernetes MCP.
+var kubernetesGVR = schema.GroupVersionResource{
 	Group:    "mcp.kedge.faros.sh",
 	Version:  "v1alpha1",
-	Resource: "kubernetesmcps",
+	Resource: "kubernetes",
 }
 
-// ensureDefaultKubernetesMCP creates a default KubernetesMCP named "default"
+// ensureDefaultKubernetes creates a default Kubernetes MCP object named "default"
 // (with an empty edge selector — matches all edges) if it doesn't exist.
-func ensureDefaultKubernetesMCP(ctx context.Context, dynClient dynamic.Interface) error {
+func ensureDefaultKubernetes(ctx context.Context, dynClient dynamic.Interface) error {
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "mcp.kedge.faros.sh/v1alpha1",
-			"kind":       "KubernetesMCP",
+			"kind":       "Kubernetes",
 			"metadata": map[string]interface{}{
 				"name": "default",
 			},
@@ -449,17 +451,17 @@ func ensureDefaultKubernetesMCP(ctx context.Context, dynClient dynamic.Interface
 		},
 	}
 
-	_, err := dynClient.Resource(kubernetesmcpGVR).Get(ctx, "default", metav1.GetOptions{})
+	_, err := dynClient.Resource(kubernetesGVR).Get(ctx, "default", metav1.GetOptions{})
 	if err == nil {
 		return nil // already exists
 	}
 	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("checking for default KubernetesMCP: %w", err)
+		return fmt.Errorf("checking for default Kubernetes MCP: %w", err)
 	}
 
-	_, err = dynClient.Resource(kubernetesmcpGVR).Create(ctx, obj, metav1.CreateOptions{})
+	_, err = dynClient.Resource(kubernetesGVR).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating default KubernetesMCP: %w", err)
+		return fmt.Errorf("creating default Kubernetes MCP: %w", err)
 	}
 	return nil
 }

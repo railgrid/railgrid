@@ -52,16 +52,16 @@ type mcpClient struct {
 // newMCPClient creates an mcpClient using the NodePort URL of the hub and the
 // kcp cluster name derived from the hub kubeconfig.
 func newMCPClient(hubKubeconfig, edgeName string) (*mcpClient, error) {
-	return newMCPClientWithKMCP(hubKubeconfig, edgeName, "")
+	return newMCPClientWithKubernetes(hubKubeconfig, edgeName, "")
 }
 
-// newMCPClientKubernetesMCP creates an mcpClient that targets the KubernetesMCP
-// multi-edge endpoint.
-func newMCPClientKubernetesMCP(hubKubeconfig, kmcpName string) (*mcpClient, error) {
-	return newMCPClientWithKMCP(hubKubeconfig, "", kmcpName)
+// newMCPClientKubernetes creates an mcpClient that targets the Kubernetes
+// multi-edge MCP endpoint.
+func newMCPClientKubernetes(hubKubeconfig, kubernetesName string) (*mcpClient, error) {
+	return newMCPClientWithKubernetes(hubKubeconfig, "", kubernetesName)
 }
 
-func newMCPClientWithKMCP(hubKubeconfig, edgeName, kmcpName string) (*mcpClient, error) {
+func newMCPClientWithKubernetes(hubKubeconfig, edgeName, kubernetesName string) (*mcpClient, error) {
 	nodePortBase := framework.HubNodePortURL()
 	if nodePortBase == "" {
 		return nil, fmt.Errorf("could not determine hub NodePort URL (docker inspect failed)")
@@ -79,9 +79,9 @@ func newMCPClientWithKMCP(hubKubeconfig, edgeName, kmcpName string) (*mcpClient,
 	token := restCfg.BearerToken
 
 	var mcpURL string
-	if kmcpName != "" {
-		mcpURL = fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/%s/mcp",
-			nodePortBase, clusterName, kmcpName)
+	if kubernetesName != "" {
+		mcpURL = fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/%s/mcp",
+			nodePortBase, clusterName, kubernetesName)
 	} else {
 		mcpURL = fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp",
 			nodePortBase, clusterName, edgeName)
@@ -351,17 +351,17 @@ func MCPURL() features.Feature {
 			if !strings.Contains(out, "/services/mcp/") {
 				t.Errorf("expected URL to contain /services/mcp/, got: %s", out)
 			}
-			if !strings.Contains(out, "/kubernetesmcps/default/mcp") {
-				t.Errorf("expected URL to contain /kubernetesmcps/default/mcp, got: %s", out)
+			if !strings.Contains(out, "/kubernetes/default/mcp") {
+				t.Errorf("expected URL to contain /kubernetes/default/mcp, got: %s", out)
 			}
 			return ctx
 		}).
 		Feature()
 }
 
-// MCPKubernetesMCP verifies the KubernetesMCP multi-edge MCP endpoint.
-// It uses the auto-created "default" KubernetesMCP (all edges).
-func MCPKubernetesMCP() features.Feature {
+// MCPKubernetes verifies the Kubernetes multi-edge MCP endpoint.
+// It uses the auto-created "default" Kubernetes MCP object (all edges).
+func MCPKubernetes() features.Feature {
 	const edgeName = "e2e-kmcp-edge"
 
 	return features.New("MCP/KubernetesMCP").
@@ -399,22 +399,22 @@ func MCPKubernetesMCP() features.Feature {
 			}
 			return ctx
 		}).
-		Assess("KubernetesMCP default MCP initialize succeeds", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("Kubernetes default MCP initialize succeeds", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 
-			mcp, err := newMCPClientKubernetesMCP(clusterEnv.HubKubeconfig, "default")
+			mcp, err := newMCPClientKubernetes(clusterEnv.HubKubeconfig, "default")
 			if err != nil {
-				t.Fatalf("creating KubernetesMCP MCP client: %v", err)
+				t.Fatalf("creating Kubernetes MCP client: %v", err)
 			}
-			t.Logf("KubernetesMCP MCP URL: %s", mcp.baseURL)
+			t.Logf("Kubernetes MCP URL: %s", mcp.baseURL)
 
 			if err := mcp.initialize(ctx); err != nil {
-				t.Fatalf("KubernetesMCP MCP initialize failed: %v", err)
+				t.Fatalf("Kubernetes MCP initialize failed: %v", err)
 			}
 
 			return context.WithValue(ctx, mcpClientKey{}, mcp)
 		}).
-		Assess("KubernetesMCP tools/list returns namespaces_list", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("Kubernetes tools/list returns namespaces_list", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			mcp, ok := ctx.Value(mcpClientKey{}).(*mcpClient)
 			if !ok || mcp == nil {
 				t.Fatal("mcpClient not found in context — initialize step may have failed")
@@ -422,9 +422,9 @@ func MCPKubernetesMCP() features.Feature {
 
 			names, err := mcp.toolsList(ctx)
 			if err != nil {
-				t.Fatalf("KubernetesMCP tools/list failed: %v", err)
+				t.Fatalf("Kubernetes tools/list failed: %v", err)
 			}
-			t.Logf("KubernetesMCP tools: %v", names)
+			t.Logf("Kubernetes tools: %v", names)
 
 			nameSet := make(map[string]bool, len(names))
 			for _, n := range names {

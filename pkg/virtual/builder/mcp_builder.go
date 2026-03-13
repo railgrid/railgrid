@@ -96,11 +96,11 @@ func (p *virtualWorkspaces) buildMCPHandler(cluster, edgeName string) http.Handl
 	})
 }
 
-// kubernetesmcpGVR is the GVR for KubernetesMCP objects in the mcp.kedge.faros.sh group.
-var kubernetesmcpGVR = schema.GroupVersionResource{
+// kubernetesGVR is the GVR for Kubernetes MCP objects in the mcp.kedge.faros.sh group.
+var kubernetesGVR = schema.GroupVersionResource{
 	Group:    "mcp.kedge.faros.sh",
 	Version:  "v1alpha1",
-	Resource: "kubernetesmcps",
+	Resource: "kubernetes",
 }
 
 // edgeGVRForMCPSelector is the GVR used to list Edge objects when resolving a
@@ -111,26 +111,26 @@ var edgeGVRForMCPSelector = schema.GroupVersionResource{
 	Resource: "edges",
 }
 
-// buildKubernetesMCPHandler creates an HTTP handler for the KubernetesMCP endpoint.
+// buildKubernetesMCPHandler creates an HTTP handler for the Kubernetes MCP endpoint.
 //
 // URL pattern (after stripping /services/mcp prefix):
 //
-//	/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
+//	/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
 //
 // On each request the handler:
-//  1. Parses cluster and KubernetesMCP name from the path.
+//  1. Parses cluster and Kubernetes MCP name from the path.
 //  2. Authenticates the caller via bearer token.
-//  3. Fetches the KubernetesMCP object to get the edge selector.
+//  3. Fetches the Kubernetes MCP object to get the edge selector.
 //  4. Lists all edges in the cluster and filters by selector + connected state.
 //  5. Builds a MultiEdgeKedgeEdgeProvider and serves via MCP streamable HTTP.
 func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger := klog.FromContext(r.Context()).WithName("kubernetesmcp-handler")
+		logger := klog.FromContext(r.Context()).WithName("kubernetes-mcp-handler")
 
 		// 1. Parse path.
-		cluster, kmcpName, ok := parseKubernetesMCPPath(r.URL.Path)
+		cluster, kubernetesName, ok := parseKubernetesMCPPath(r.URL.Path)
 		if !ok {
-			http.Error(w, "invalid path: expected /{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp", http.StatusBadRequest)
+			http.Error(w, "invalid path: expected /{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp", http.StatusBadRequest)
 			return
 		}
 
@@ -153,12 +153,12 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 			return
 		}
 
-		// 4. Fetch the KubernetesMCP object.
+		// 4. Fetch the Kubernetes MCP object.
 		ctx := r.Context()
-		kmcpObj, err := dynClient.Resource(kubernetesmcpGVR).Get(ctx, kmcpName, metav1.GetOptions{})
+		kmcpObj, err := dynClient.Resource(kubernetesGVR).Get(ctx, kubernetesName, metav1.GetOptions{})
 		if err != nil {
-			logger.Error(err, "failed to get KubernetesMCP", "name", kmcpName)
-			http.Error(w, fmt.Sprintf("KubernetesMCP %q not found: %v", kmcpName, err), http.StatusNotFound)
+			logger.Error(err, "failed to get Kubernetes MCP", "name", kubernetesName)
+			http.Error(w, fmt.Sprintf("Kubernetes MCP %q not found: %v", kubernetesName, err), http.StatusNotFound)
 			return
 		}
 
@@ -236,7 +236,7 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 		}
 		srv, err := mcpserver.NewServer(mcpserver.Configuration{StaticConfig: staticCfg}, provider)
 		if err != nil {
-			logger.Error(err, "failed to create MCP server", "cluster", cluster, "kubernetesmcp", kmcpName)
+			logger.Error(err, "failed to create MCP server", "cluster", cluster, "kubernetes", kubernetesName)
 			http.Error(w, fmt.Sprintf("failed to initialize MCP server: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -246,20 +246,20 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 	})
 }
 
-// parseKubernetesMCPPath extracts cluster and KubernetesMCP name from the path
+// parseKubernetesMCPPath extracts cluster and Kubernetes MCP name from the path
 // seen by the /services/mcp handler.
 //
 // Expected format after prefix strip:
 //
-//	/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
+//	/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
 func parseKubernetesMCPPath(path string) (cluster, name string, ok bool) {
 	path = strings.TrimPrefix(path, "/")
-	// Expected segments: [cluster, "apis", "mcp.kedge.faros.sh", "v1alpha1", "kubernetesmcps", name, "mcp"]
+	// Expected segments: [cluster, "apis", "mcp.kedge.faros.sh", "v1alpha1", "kubernetes", name, "mcp"]
 	parts := strings.SplitN(path, "/", 8)
 	if len(parts) < 7 {
 		return "", "", false
 	}
-	if parts[1] != "apis" || parts[2] != "mcp.kedge.faros.sh" || parts[3] != "v1alpha1" || parts[4] != "kubernetesmcps" || parts[6] != "mcp" {
+	if parts[1] != "apis" || parts[2] != "mcp.kedge.faros.sh" || parts[3] != "v1alpha1" || parts[4] != "kubernetes" || parts[6] != "mcp" {
 		return "", "", false
 	}
 	return parts[0], parts[5], true

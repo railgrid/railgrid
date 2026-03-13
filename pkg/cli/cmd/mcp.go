@@ -38,15 +38,15 @@ func newMCPCommand() *cobra.Command {
 
 func newMCPURLCommand() *cobra.Command {
 	var edgeName string
-	var kmcpName string
+	var kubernetesName string
 
 	cmd := &cobra.Command{
 		Use:   "url",
 		Short: "Print the MCP endpoint URL",
 		Long: `Prints the MCP endpoint URL derived from the current kubeconfig context.
 
-Use --name to print the KubernetesMCP multi-edge endpoint URL:
-  https://kedge.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp
+Use --name to print the Kubernetes multi-edge MCP endpoint URL:
+  https://kedge.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp
 
 Use --edge to print the per-edge MCP endpoint URL:
   https://kedge.example.com/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp
@@ -62,20 +62,20 @@ Usage with Claude Desktop (claude_desktop_config.json):
 `,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if kmcpName == "" && edgeName == "" {
-				return fmt.Errorf("specify --name <kubernetesmcp-name> for the multi-edge MCP endpoint, or --edge <edge-name> for the per-edge MCP endpoint")
+			if kubernetesName == "" && edgeName == "" {
+				return fmt.Errorf("specify --name <kubernetes-mcp-name> for the multi-edge MCP endpoint, or --edge <edge-name> for the per-edge MCP endpoint")
 			}
-			return runMCPURL(cmd, edgeName, kmcpName)
+			return runMCPURL(cmd, edgeName, kubernetesName)
 		},
 	}
 
 	cmd.Flags().StringVar(&edgeName, "edge", "", "Name of the edge (for per-edge MCP endpoint)")
-	cmd.Flags().StringVar(&kmcpName, "name", "", "Name of the KubernetesMCP object (for multi-edge MCP endpoint)")
+	cmd.Flags().StringVar(&kubernetesName, "name", "", "Name of the Kubernetes MCP object (for multi-edge MCP endpoint)")
 
 	return cmd
 }
 
-func runMCPURL(_ *cobra.Command, edgeName, kmcpName string) error {
+func runMCPURL(_ *cobra.Command, edgeName, kubernetesName string) error {
 	// Load the current kubeconfig.
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
@@ -114,8 +114,8 @@ func runMCPURL(_ *cobra.Command, edgeName, kmcpName string) error {
 
 	var mcpURL string
 	var mcpErr error
-	if kmcpName != "" {
-		mcpURL, mcpErr = mcpKubernetesMCPURLFromServerURL(serverURL, kmcpName)
+	if kubernetesName != "" {
+		mcpURL, mcpErr = mcpKubernetesURLFromServerURL(serverURL, kubernetesName)
 	} else {
 		mcpURL, mcpErr = mcpURLFromServerURL(serverURL, edgeName)
 	}
@@ -156,12 +156,12 @@ func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
 	return fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp", base, clusterName, edgeName), nil
 }
 
-// mcpKubernetesMCPURLFromServerURL derives the KubernetesMCP endpoint URL from a
-// kcp server URL and a KubernetesMCP object name.
+// mcpKubernetesURLFromServerURL derives the Kubernetes MCP endpoint URL from a
+// kcp server URL and a Kubernetes MCP object name.
 //
 // Input:  https://kedge.example.com/clusters/root:kedge:user-default, "default"
-// Output: https://kedge.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp
-func mcpKubernetesMCPURLFromServerURL(serverURL, kmcpName string) (string, error) {
+// Output: https://kedge.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp
+func mcpKubernetesURLFromServerURL(serverURL, kubernetesName string) (string, error) {
 	parsed, err := url.Parse(serverURL)
 	if err != nil {
 		return "", fmt.Errorf("parsing server URL %q: %w", serverURL, err)
@@ -179,5 +179,5 @@ func mcpKubernetesMCPURLFromServerURL(serverURL, kmcpName string) (string, error
 		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
 	}
 
-	return fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/%s/mcp", base, clusterName, kmcpName), nil
+	return fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/%s/mcp", base, clusterName, kubernetesName), nil
 }

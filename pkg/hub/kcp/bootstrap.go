@@ -57,8 +57,8 @@ var (
 	apiBindingGVR = schema.GroupVersionResource{
 		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings",
 	}
-	kubernetesmcpGVR = schema.GroupVersionResource{
-		Group: "mcp.kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesmcps",
+	kubernetesGVR = schema.GroupVersionResource{
+		Group: "mcp.kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetes",
 	}
 )
 
@@ -321,23 +321,23 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 		logger.Error(waitErr, "kedge APIBinding did not become Bound (non-fatal)", "userID", userID)
 	}
 
-	// Ensure a "default" KubernetesMCP exists in the tenant workspace.
+	// Ensure a "default" Kubernetes MCP object exists in the tenant workspace.
 	// This object enables the multi-edge MCP endpoint without requiring the
 	// user to create it manually.  An empty EdgeSelector selects all edges.
-	defaultKMCP := &unstructured.Unstructured{
+	defaultKubernetes := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "mcp.kedge.faros.sh/v1alpha1",
-			"kind":       "KubernetesMCP",
+			"kind":       "Kubernetes",
 			"metadata": map[string]interface{}{
 				"name": "default",
 			},
 			"spec": map[string]interface{}{},
 		},
 	}
-	if _, createKMCPErr := tenantClient.Resource(kubernetesmcpGVR).Create(ctx, defaultKMCP, metav1.CreateOptions{}); createKMCPErr != nil {
-		if !errors.IsAlreadyExists(createKMCPErr) {
+	if _, createErr := tenantClient.Resource(kubernetesGVR).Create(ctx, defaultKubernetes, metav1.CreateOptions{}); createErr != nil {
+		if !errors.IsAlreadyExists(createErr) {
 			// Non-fatal: log and continue.
-			logger.Error(createKMCPErr, "Failed to create default KubernetesMCP in tenant workspace (non-fatal)", "userID", userID)
+			logger.Error(createErr, "Failed to create default Kubernetes MCP in tenant workspace (non-fatal)", "userID", userID)
 		}
 	}
 

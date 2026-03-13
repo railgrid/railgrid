@@ -4,16 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: kubernetesmcps.mcp.kedge.faros.sh
+  name: kubernetes.mcp.kedge.faros.sh
 spec:
   group: mcp.kedge.faros.sh
   names:
-    kind: KubernetesMCP
-    listKind: KubernetesMCPList
-    plural: kubernetesmcps
+    kind: Kubernetes
+    listKind: KubernetesList
+    plural: kubernetes
     shortNames:
     - kmcp
-    singular: kubernetesmcp
+    singular: kubernetes
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -30,7 +30,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          KubernetesMCP represents a multi-edge MCP (Model Context Protocol) server for
+          Kubernetes represents a multi-edge MCP (Model Context Protocol) server for
           a set of Kubernetes edges matched by a label selector.  Users point MCP-compatible
           AI clients at the URL to interact with all matching connected edges.
         properties:
@@ -52,7 +52,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: KubernetesMCPSpec defines the desired state of KubernetesMCP.
+            description: KubernetesSpec defines the desired state of Kubernetes.
             properties:
               edgeSelector:
                 description: |-
@@ -114,13 +114,14 @@ spec:
                 type: array
             type: object
           status:
-            description: KubernetesMCPStatus defines the observed state of KubernetesMCP.
+            description: KubernetesStatus defines the observed state of Kubernetes.
             properties:
               URL:
                 description: URL is the MCP endpoint URL at which this server is reachable.
                 type: string
               conditions:
-                description: Conditions describe the current state of the KubernetesMCP.
+                description: Conditions describe the current state of the Kubernetes
+                  MCP resource.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
