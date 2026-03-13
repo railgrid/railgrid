@@ -156,10 +156,10 @@ func TestGetDefaultTarget(t *testing.T) {
 	}
 }
 
-// TestGetTargetParameterName asserts that GetTargetParameterName returns "edge".
+// TestGetTargetParameterName asserts that GetTargetParameterName returns "cluster".
 func TestGetTargetParameterName(t *testing.T) {
 	provider := &KedgeEdgeProvider{}
-	if got := provider.GetTargetParameterName(); got != "edge" {
-		t.Errorf("GetTargetParameterName() = %q; want %q", got, "edge")
+	if got := provider.GetTargetParameterName(); got != "cluster" {
+		t.Errorf("GetTargetParameterName() = %q; want %q", got, "cluster")
 	}
 }

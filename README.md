@@ -7,6 +7,7 @@ kedge connects your distributed Kubernetes clusters and servers through a single
 - **Reverse tunnel connectivity** — agents dial out; no inbound firewall rules needed
 - **Kubernetes edge support** — proxy `kubectl` to any registered cluster via the hub
 - **SSH server mode** — manage non-Kubernetes hosts (VMs, bare metal) through the same hub
+- **MCP integration** — expose all connected clusters as a single [Model Context Protocol](https://modelcontextprotocol.io) server for AI agents (Claude, Cursor, etc.)
 - **OIDC authentication** — plug in any OIDC provider (Dex, Auth0, Okta, …)
 - **Static token auth** — quick setup for home labs and dev environments
 - **Multi-tenant workspaces** — per-user/team kcp workspace isolation
@@ -95,7 +96,36 @@ kedge kubeconfig edge my-cluster > kc.yaml    # get a kubeconfig for the edge
 kubectl --kubeconfig kc.yaml get nodes
 ```
 
-### 3. Connect a server (SSH mode)
+### 3. Use MCP with AI agents (Claude, Cursor, …)
+
+kedge exposes all your connected Kubernetes clusters as a single MCP server, letting AI coding assistants interact with your clusters directly.
+
+```bash
+# Print the MCP endpoint URL + ready-to-use setup commands
+kedge mcp url --name default
+```
+
+Example output:
+```
+https://hub.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp
+
+To add this MCP server to Claude Code:
+  claude mcp add --transport http kedge "https://hub.example.com/..." -H "Authorization: Bearer <token>"
+
+To add to Claude Desktop (claude_desktop_config.json):
+  {
+    "mcpServers": {
+      "kedge": {
+        "url": "https://hub.example.com/...",
+        "headers": { "Authorization": "Bearer <token>" }
+      }
+    }
+  }
+```
+
+The MCP server aggregates **all connected kubernetes-type clusters** into one endpoint. AI agents can list pods, describe deployments, apply manifests, and more — across all your clusters at once.
+
+### 4. Connect a server (SSH mode)
 
 ```bash
 kedge edge create my-server --type server
@@ -124,6 +154,8 @@ kedge ssh my-server -- df -h     # single command
 | `kedge ssh <name> -- <cmd>` | Run a single command on a server-mode edge |
 | `kedge agent run` | Start the agent as a foreground process |
 | `kedge agent join` | Install the agent as a persistent service (systemd / Deployment) |
+| `kedge mcp url --name <name>` | Print the KubernetesMCP multi-cluster MCP endpoint URL |
+| `kedge mcp url --edge <name>` | Print the per-edge MCP endpoint URL |
 
 ## Documentation
 

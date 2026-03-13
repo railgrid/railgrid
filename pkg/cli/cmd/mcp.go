@@ -124,6 +124,36 @@ func runMCPURL(_ *cobra.Command, edgeName, kubernetesName string) error {
 	}
 
 	fmt.Println(mcpURL)
+
+	// Resolve the bearer token from the kubeconfig for the usage hint.
+	token := ""
+	if currentCtx, ok := rawCfg.Contexts[rawCfg.CurrentContext]; ok {
+		if u, ok := rawCfg.AuthInfos[currentCtx.AuthInfo]; ok {
+			token = u.Token
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("To add this MCP server to Claude Code:")
+	if token != "" {
+		fmt.Printf("  claude mcp add --transport http kedge \"%s\" -H \"Authorization: Bearer %s\"\n", mcpURL, token)
+	} else {
+		fmt.Printf("  claude mcp add --transport http kedge \"%s\" -H \"Authorization: Bearer <your-token>\"\n", mcpURL)
+	}
+	fmt.Println()
+	fmt.Println("To add to Claude Desktop (claude_desktop_config.json):")
+	fmt.Println("  {")
+	fmt.Println("    \"mcpServers\": {")
+	fmt.Println("      \"kedge\": {")
+	fmt.Printf("        \"url\": \"%s\",\n", mcpURL)
+	if token != "" {
+		fmt.Printf("        \"headers\": { \"Authorization\": \"Bearer %s\" }\n", token)
+	} else {
+		fmt.Println("        \"headers\": { \"Authorization\": \"Bearer <your-token>\" }")
+	}
+	fmt.Println("      }")
+	fmt.Println("    }")
+	fmt.Println("  }")
 	return nil
 }
 

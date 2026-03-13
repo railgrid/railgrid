@@ -103,8 +103,10 @@ func (p *KedgeEdgeProvider) GetDerivedKubernetes(_ context.Context, edgeName str
 // GetDefaultTarget returns an empty string — there is no single default edge.
 func (p *KedgeEdgeProvider) GetDefaultTarget() string { return "" }
 
-// GetTargetParameterName returns "edge" as the MCP target query parameter.
-func (p *KedgeEdgeProvider) GetTargetParameterName() string { return "edge" }
+// GetTargetParameterName returns "cluster" as the MCP target query parameter.
+// "cluster" is used rather than "edge" because users think in terms of clusters,
+// not kedge-internal "edge" terminology.
+func (p *KedgeEdgeProvider) GetTargetParameterName() string { return "cluster" }
 
 // WatchTargets is a no-op for v1; dynamic target reloading is not implemented.
 func (p *KedgeEdgeProvider) WatchTargets(_ mcpkubernetes.McpReload) {}
@@ -160,8 +162,8 @@ func (p *MultiEdgeKedgeEdgeProvider) GetDerivedKubernetes(ctx context.Context, e
 // GetDefaultTarget returns an empty string (no single default edge).
 func (p *MultiEdgeKedgeEdgeProvider) GetDefaultTarget() string { return "" }
 
-// GetTargetParameterName returns "edge".
-func (p *MultiEdgeKedgeEdgeProvider) GetTargetParameterName() string { return "edge" }
+// GetTargetParameterName returns "cluster".
+func (p *MultiEdgeKedgeEdgeProvider) GetTargetParameterName() string { return "cluster" }
 
 // WatchTargets is a no-op.
 func (p *MultiEdgeKedgeEdgeProvider) WatchTargets(_ mcpkubernetes.McpReload) {}

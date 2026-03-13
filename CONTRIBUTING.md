@@ -176,11 +176,13 @@ make test-e2e E2E_FLAGS=--keep-clusters
 | Package | Description |
 |---------|-------------|
 | `pkg/hub/controllers/edge/` | Edge lifecycle: token reconciler, RBAC, SSH credentials |
-| `pkg/virtual/builder/` | Agent-proxy virtual workspace — handles tunnel + status |
+| `pkg/hub/controllers/mcp/` | KubernetesMCP controller — sets status URL, tracks connected edges |
+| `pkg/virtual/builder/` | Agent-proxy + MCP virtual workspaces — handles tunnel, status, MCP handler |
 | `pkg/agent/` | Agent core: registration, tunnel, edge_reporter |
 | `pkg/agent/tunnel/` | revdial tunnel client (`StartProxyTunnel`) |
-| `pkg/cli/cmd/` | CLI command implementations |
+| `pkg/cli/cmd/` | CLI command implementations (including `kedge mcp url`) |
 | `apis/kedge/v1alpha1/` | Edge CRD types |
+| `apis/mcp/v1alpha1/` | KubernetesMCP CRD type (`mcp.kedge.faros.sh`) |
 
 ### Join token bootstrap flow
 

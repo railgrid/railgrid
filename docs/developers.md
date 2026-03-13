@@ -305,3 +305,36 @@ kedge dev create --chart-path deploy/charts/kedge-hub
 ```
 
 The agent establishes a reverse WebSocket tunnel to the hub, allowing the hub to proxy API requests to the agent's cluster.
+
+---
+
+## MCP Integration
+
+kedge exposes all connected Kubernetes clusters as a single [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server.
+
+### URL format
+
+```
+https://<hub>/services/mcp/<workspace-cluster-id>/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/<name>/mcp
+```
+
+### Getting the URL
+
+```bash
+kedge mcp url --name default
+```
+
+This prints the URL and a ready-to-use `claude mcp add` command with your bearer token.
+
+### KubernetesMCP resource
+
+A `default` `KubernetesMCP` object is auto-created in every tenant workspace. It selects which kubernetes-type edges are included via `spec.edgeSelector` (empty = all connected kubernetes edges).
+
+### How it works
+
+1. The hub's MCP virtual workspace handler validates the bearer token.
+2. Lists all `Edge` objects in the workspace, filters to `spec.type: kubernetes` + connected + label selector.
+3. Builds a `MultiEdgeKedgeEdgeProvider` that dials each edge over its revdial tunnel.
+4. Passes control to `kubernetes-mcp-server` which implements the MCP protocol.
+
+See [DEVELOPERS.md](https://github.com/faroshq/kedge/blob/main/DEVELOPERS.md#mcp-integration) for the full internals reference.

@@ -254,7 +254,7 @@ func MCPEndpoint() features.Feature {
 			}
 
 			result, err := mcp.toolsCall(ctx, "namespaces_list", map[string]any{
-				"edge": edgeName,
+				"cluster": edgeName,
 			})
 			if err != nil {
 				t.Fatalf("tools/call namespaces_list failed: %v", err)
@@ -274,7 +274,7 @@ func MCPEndpoint() features.Feature {
 
 			result, err := mcp.toolsCall(ctx, "pods_list_in_namespace", map[string]any{
 				"namespace": "kube-system",
-				"edge":      edgeName,
+				"cluster":   edgeName,
 			})
 			if err != nil {
 				t.Fatalf("tools/call pods_list_in_namespace failed: %v", err)

@@ -32,6 +32,7 @@ import (
 	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kiali"
 	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kubevirt"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -199,6 +200,14 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 		for _, edgeObj := range edgeList.Items {
 			edgeName := edgeObj.GetName()
 			edgeLabels := edgeObj.GetLabels()
+
+			// Only include kubernetes-type edges — server-type edges provide
+			// SSH access only and have no Kubernetes API to proxy via MCP.
+			edgeType, _, _ := unstructured.NestedString(edgeObj.Object, "spec", "type")
+			if edgeType != "kubernetes" {
+				continue
+			}
+
 			if !edgeSelector.Matches(labels.Set(edgeLabels)) {
 				continue
 			}
