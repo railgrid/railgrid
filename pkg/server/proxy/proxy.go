@@ -432,7 +432,20 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
-			req.URL.Path = "/clusters/" + clusterName + req.URL.Path
+
+			// The agent kubeconfig may already include /clusters/{name} in its
+			// server URL, so the incoming path can be
+			//   /clusters/{name}/api/...
+			// Strip the prefix to avoid doubling it when we prepend below.
+			clusterPrefix := "/clusters/" + clusterName
+			reqPath := req.URL.Path
+			if strings.HasPrefix(reqPath, clusterPrefix+"/") || reqPath == clusterPrefix {
+				reqPath = strings.TrimPrefix(reqPath, clusterPrefix)
+				if reqPath == "" {
+					reqPath = "/"
+				}
+			}
+			req.URL.Path = clusterPrefix + reqPath
 			req.Host = target.Host
 
 			// Keep the SA token — kcp authenticates it natively.
