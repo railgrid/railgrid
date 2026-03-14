@@ -19,7 +19,11 @@ To access the hub locally:
 {{- if .Values.hub.staticAuthTokens }}
 
 Login (static token):
+{{- if eq (len .Values.hub.staticAuthTokens) 1 }}
+  kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} --token {{ .Values.hub.staticAuthTokens | first }} {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
+{{- else }}
   kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} --token <your-static-token> {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
+{{- end }}
 
   {{ len .Values.hub.staticAuthTokens }} static token(s) configured.
 
