@@ -160,12 +160,11 @@ func (p *MultiEdgeKedgeEdgeProvider) GetDerivedKubernetes(ctx context.Context, e
 	return single.GetDerivedKubernetes(ctx, edgeName)
 }
 
-// GetDefaultTarget returns the first edge name if there is exactly one,
-// so that tool calls without an explicit "cluster" parameter route to it
-// automatically. Returns empty string when there are zero or multiple edges
-// (the library will prompt the caller to specify a target).
+// GetDefaultTarget returns the first edge name as the default target.
+// This ensures tool calls without an explicit "cluster" parameter still
+// route to a valid edge rather than producing an empty edge name in the URL.
 func (p *MultiEdgeKedgeEdgeProvider) GetDefaultTarget() string {
-	if len(p.edgeNames) == 1 {
+	if len(p.edgeNames) > 0 {
 		return p.edgeNames[0]
 	}
 	return ""
