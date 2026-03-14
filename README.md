@@ -107,7 +107,7 @@ kedge mcp url --name default
 
 Example output:
 ```
-https://hub.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp
+https://hub.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp
 
 To add this MCP server to Claude Code:
   claude mcp add --transport http kedge "https://hub.example.com/..." -H "Authorization: Bearer <token>"
@@ -154,7 +154,7 @@ kedge ssh my-server -- df -h     # single command
 | `kedge ssh <name> -- <cmd>` | Run a single command on a server-mode edge |
 | `kedge agent run` | Start the agent as a foreground process |
 | `kedge agent join` | Install the agent as a persistent service (systemd / Deployment) |
-| `kedge mcp url --name <name>` | Print the KubernetesMCP multi-cluster MCP endpoint URL |
+| `kedge mcp url --name <name>` | Print the Kubernetes multi-cluster MCP endpoint URL |
 | `kedge mcp url --edge <name>` | Print the per-edge MCP endpoint URL |
 
 ## Documentation

@@ -229,23 +229,23 @@ https://kedge.localhost:8443/clusters/<workspace-id>/...
 
 kedge exposes all connected Kubernetes clusters as a single [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server. AI agents (Claude, Cursor, Copilot, etc.) connect to this endpoint and can interact with all registered clusters using natural language.
 
-### KubernetesMCP CRD
+### Kubernetes CRD (mcp.kedge.faros.sh/v1alpha1)
 
 **API group:** `mcp.kedge.faros.sh/v1alpha1`  
-**Kind:** `KubernetesMCP`
+**Kind:** `Kubernetes`
 
-The `KubernetesMCP` object is automatically created as `default` in every tenant workspace by the hub bootstrapper. It acts as the configuration object for the multi-cluster MCP endpoint.
+The `Kubernetes` object is automatically created as `default` in every tenant workspace by the hub bootstrapper. It acts as the configuration object for the multi-cluster MCP endpoint.
 
 ```yaml
 apiVersion: mcp.kedge.faros.sh/v1alpha1
-kind: KubernetesMCP
+kind: Kubernetes
 metadata:
   name: default
 spec:
   edgeSelector: {}   # empty = all kubernetes-type edges; use label selectors to restrict
   readOnly: false    # set true to disable write operations (create/delete/apply)
 status:
-  URL: "https://hub.example.com/services/mcp/root:kedge:user-<id>/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp"
+  URL: "https://hub.example.com/services/mcp/root:kedge:user-<id>/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp"
   connectedEdges:
   - my-cluster
   - home-lab
@@ -254,11 +254,11 @@ status:
 ### MCP URL structure
 
 ```
-https://<hub>/services/mcp/<workspace-cluster-id>/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/<name>/mcp
+https://<hub>/services/mcp/<workspace-cluster-id>/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/<name>/mcp
 ```
 
 - `<workspace-cluster-id>` — kcp logical cluster name for the tenant workspace (from the server URL in the user's kubeconfig)
-- `<name>` — name of the `KubernetesMCP` object (usually `default`)
+- `<name>` — name of the `Kubernetes` object (usually `default`)
 
 ### Request flow
 
@@ -271,7 +271,7 @@ hub MCP virtual workspace handler (pkg/virtual/builder/mcp_builder.go)
     │
     │  1. Extract bearer token, validate against kcp
     │  2. Resolve workspace cluster from URL path
-    │  3. Fetch KubernetesMCP object for edgeSelector
+    │  3. Fetch Kubernetes object for edgeSelector
     │  4. List all edges in the workspace
     │  5. Filter: kubernetes-type only + connected (tunnel active) + label selector
     │  6. Build MultiEdgeKedgeEdgeProvider (one per request)
@@ -319,13 +319,13 @@ Or manually:
 
 ```bash
 claude mcp add --transport http kedge \
-  "https://hub.example.com/services/mcp/<cluster-id>/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp" \
+  "https://hub.example.com/services/mcp/<cluster-id>/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp" \
   -H "Authorization: Bearer <token-from-kubeconfig>"
 ```
 
 ### Per-edge MCP (single cluster)
 
-Each edge also exposes a direct MCP endpoint (independent of `KubernetesMCP`):
+Each edge also exposes a direct MCP endpoint (independent of the multi-edge `Kubernetes` resource):
 
 ```
 https://<hub>/services/agent-proxy/<workspace-cluster-id>/apis/kedge.faros.sh/v1alpha1/edges/<name>/mcp
@@ -335,7 +335,7 @@ https://<hub>/services/agent-proxy/<workspace-cluster-id>/apis/kedge.faros.sh/v1
 kedge mcp url --edge my-cluster
 ```
 
-This bypasses `KubernetesMCP` and connects directly to a single edge's Kubernetes API.
+This bypasses the `Kubernetes` MCP resource and connects directly to a single edge's Kubernetes API.
 
 ---
 
