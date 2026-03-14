@@ -38,6 +38,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 )
 
 // buildMCPHandler creates the HTTP handler for the per-edge MCP endpoint.
@@ -293,7 +295,7 @@ func clusterScopedDynamicClient(kcpConfig *rest.Config, cluster string) (dynamic
 		return nil, fmt.Errorf("kcpConfig is nil")
 	}
 	clusterConfig := *kcpConfig
-	clusterConfig.Host = appendClusterPath(kcpConfig.Host, cluster)
+	clusterConfig.Host = apiurl.HubServerURL(kcpConfig.Host, cluster)
 	return dynamic.NewForConfig(&clusterConfig)
 }
 

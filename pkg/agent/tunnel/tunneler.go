@@ -36,6 +36,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
 
@@ -116,8 +117,7 @@ func startTunneler(ctx context.Context, hubURL string, token string, edgeName st
 	// workspace path introduced in Phase 3.
 	// resourceType is retained for legacy callers but no longer affects the URL.
 	_ = resourceType
-	edgeProxyURL := fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/proxy",
-		baseHubURL, clusterName, edgeName)
+	edgeProxyURL := apiurl.EdgeAgentProxyURL(baseHubURL, clusterName, edgeName, "proxy")
 
 	conn, resp, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig, extraHeaders)
 	if err != nil {
@@ -219,21 +219,10 @@ func initiateConnection(ctx context.Context, wsURL string, token string, tlsConf
 //
 // The base URL is always used when dialling the hub so that /services/agent-proxy/
 // is routed by the hub's own mux before reaching the kcp reverse-proxy.
+//
+// Deprecated: use apiurl.SplitBaseAndCluster directly.
 func SplitBaseAndCluster(hubURL string) (base, cluster string) {
-	u, err := url.Parse(strings.TrimRight(hubURL, "/"))
-	if err != nil {
-		return strings.TrimRight(hubURL, "/"), "default"
-	}
-	// Path can be empty, "/clusters/abc123", or "/clusters/abc123/extra".
-	parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 3)
-	if len(parts) >= 2 && parts[0] == "clusters" && parts[1] != "" {
-		u.Path = ""
-		u.RawPath = ""
-		return strings.TrimRight(u.String(), "/"), parts[1]
-	}
-	u.Path = ""
-	u.RawPath = ""
-	return strings.TrimRight(u.String(), "/"), "default"
+	return apiurl.SplitBaseAndCluster(hubURL)
 }
 
 // extractClusterNameFromToken decodes a kcp ServiceAccount JWT (without

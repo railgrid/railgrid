@@ -33,7 +33,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 )
 
 var edgeGVR = schema.GroupVersionResource{
@@ -51,7 +51,7 @@ var edgeGVR = schema.GroupVersionResource{
 // Best-effort: errors are logged but not propagated.
 func (p *virtualWorkspaces) markEdgeConnected(ctx context.Context, cluster, name string, sshCreds *sshCredsFromAgent, clearJoinToken bool) {
 	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
+	cfg.Host = apiurl.HubServerURL(cfg.Host, cluster)
 
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
@@ -219,7 +219,7 @@ func (p *virtualWorkspaces) storeSSHCredentials(ctx context.Context, cfg *rest.C
 // It is best-effort: errors are logged but not propagated.
 func (p *virtualWorkspaces) markEdgeDisconnected(ctx context.Context, cluster, name string) {
 	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
+	cfg.Host = apiurl.HubServerURL(cfg.Host, cluster)
 
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {

@@ -36,6 +36,7 @@ import (
 	"k8s.io/klog/v2"
 
 	kedgeapi "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	utilhttp "github.com/faroshq/faros-kedge/pkg/util/http"
 	utilssh "github.com/faroshq/faros-kedge/pkg/util/ssh"
@@ -248,7 +249,7 @@ func (p *virtualWorkspaces) fetchSSHCredentials(ctx context.Context, cluster, ed
 
 	// Create cluster-scoped clients by modifying the host URL to include the cluster path.
 	clusterConfig := rest.CopyConfig(p.kcpConfig)
-	clusterConfig.Host = appendClusterPath(clusterConfig.Host, cluster)
+	clusterConfig.Host = apiurl.HubServerURL(clusterConfig.Host, cluster)
 
 	kedgeClient, err := kedgeclient.NewForConfig(clusterConfig)
 	if err != nil {
@@ -374,9 +375,6 @@ func (p *virtualWorkspaces) readStatusSSHCreds(ctx context.Context, k8sClient ku
 	return creds, nil
 }
 
-// readSSHCredsFromSecret reads SSH credentials from a Secret reference.
-// If usernameOverride is non-empty it is used as the username instead of the
-// value in the Secret's "username" field.
 func (p *virtualWorkspaces) readSSHCredsFromSecret(ctx context.Context, k8sClient kubernetes.Interface, ref *corev1.SecretReference, usernameOverride string, logger klog.Logger) (*SSHClientCredentials, error) {
 	secret, err := k8sClient.CoreV1().Secrets(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
@@ -423,16 +421,6 @@ func resolveCallerIdentity(ctx context.Context, kcpConfig *rest.Config, token st
 		return ""
 	}
 	return result.Status.User.Username
-}
-
-// appendClusterPath sets the /clusters/<path> segment on a kcp URL.
-// If the host already contains a /clusters/ path, it is replaced.
-func appendClusterPath(host, clusterPath string) string {
-	host = strings.TrimSuffix(host, "/")
-	if idx := strings.Index(host, "/clusters/"); idx != -1 {
-		host = host[:idx]
-	}
-	return host + "/clusters/" + clusterPath
 }
 
 // edgesHandleK8sUpgrade handles upgrade requests (exec, port-forward) to an

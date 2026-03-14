@@ -48,6 +48,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/agent/reconciler"
 	agentStatus "github.com/faroshq/faros-kedge/pkg/agent/status"
 	"github.com/faroshq/faros-kedge/pkg/agent/tunnel"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
@@ -214,7 +215,7 @@ func clusterFromConfig(cfg *rest.Config) string {
 	if cfg == nil {
 		return ""
 	}
-	_, cluster := tunnel.SplitBaseAndCluster(cfg.Host)
+	_, cluster := apiurl.SplitBaseAndCluster(cfg.Host)
 	if cluster == "default" {
 		return ""
 	}
@@ -463,7 +464,7 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	// path so the request hits /services/agent-proxy/ on the hub's own mux).
 	tunnelURL := a.opts.TunnelURL
 	if tunnelURL == "" {
-		baseURL, _ := tunnel.SplitBaseAndCluster(a.hubConfig.Host)
+		baseURL, _ := apiurl.SplitBaseAndCluster(a.hubConfig.Host)
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
@@ -566,7 +567,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	// Always connect the tunnel to the base hub URL.
 	tunnelURL := a.opts.TunnelURL
 	if tunnelURL == "" {
-		baseURL, _ := tunnel.SplitBaseAndCluster(a.hubConfig.Host)
+		baseURL, _ := apiurl.SplitBaseAndCluster(a.hubConfig.Host)
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
@@ -825,8 +826,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 
 	// Build the proxy URL path for this edge.
 	// Format: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
-	edgeURL := fmt.Sprintf("/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s",
-		a.opts.Cluster, a.opts.EdgeName)
+	edgeURL := apiurl.EdgeAPIPath(a.opts.Cluster, a.opts.EdgeName)
 
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{

@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
-	agentTunnel "github.com/faroshq/faros-kedge/pkg/agent/tunnel"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 )
 
 // RepoRoot returns the absolute path to the kedge repository root, derived
@@ -709,7 +709,7 @@ func ClusterNameFromKubeconfig(kubeconfigPath string) string {
 	if err != nil {
 		return ""
 	}
-	_, cluster := agentTunnel.SplitBaseAndCluster(cfg.Host)
+	_, cluster := apiurl.SplitBaseAndCluster(cfg.Host)
 	if cluster == "default" {
 		return ""
 	}

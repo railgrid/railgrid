@@ -37,7 +37,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	utilhttp "github.com/faroshq/faros-kedge/pkg/util/http"
 	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
@@ -283,7 +283,7 @@ func (p *virtualWorkspaces) buildAgentKubeconfigHeader(cluster, edgeName, _ stri
 
 	// Read the SA token from the kubeconfig secret created by the RBAC controller.
 	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
+	cfg.Host = apiurl.HubServerURL(cfg.Host, cluster)
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		p.logger.Error(err, "failed to create dynamic client for SA token lookup")
@@ -362,7 +362,7 @@ func (p *virtualWorkspaces) authorizeByJoinToken(ctx context.Context, token, clu
 	}
 
 	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
+	cfg.Host = apiurl.HubServerURL(cfg.Host, cluster)
 
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {

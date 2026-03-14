@@ -36,6 +36,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
 )
 
@@ -79,7 +80,7 @@ func runStaticTokenLogin(hubURL, token string, insecure bool) error {
 		}
 	}
 
-	req, err := http.NewRequest(http.MethodPost, hubURL+"/auth/token-login", nil)
+	req, err := http.NewRequest(http.MethodPost, hubURL+apiurl.PathAuthTokenLogin, nil)
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}

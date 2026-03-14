@@ -30,7 +30,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 )
 
 // saTokenClaims holds the claims extracted from a kcp ServiceAccount JWT.
@@ -87,7 +87,7 @@ func extractBearerToken(r *http.Request) string {
 // Both calls use admin credentials scoped to the target workspace.
 func authorize(ctx context.Context, kcpConfig *rest.Config, token, clusterName, verb, resource, name string) error {
 	cfg := rest.CopyConfig(kcpConfig)
-	cfg.Host = kcp.AppendClusterPath(cfg.Host, clusterName)
+	cfg.Host = apiurl.HubServerURL(cfg.Host, clusterName)
 
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {

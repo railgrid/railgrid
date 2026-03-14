@@ -32,7 +32,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -109,10 +109,7 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 			return ctrl.Result{}, fmt.Errorf("deleting mount workspace for server edge: %w", err)
 		}
 		// Set the SSH URL on the edge status so clients can reach the SSH endpoint.
-		// Note: this uses the internal mount URL. The CLI constructs the
-		// user-facing URL from the hub server address in the kubeconfig.
-		expectedSSHURL := r.hubMountURL + "/services/edges-proxy/clusters/" + req.ClusterName +
-			"/apis/kedge.faros.sh/v1alpha1/edges/" + edge.Name + "/ssh"
+		expectedSSHURL := apiurl.EdgeProxyURL(r.hubMountURL, req.ClusterName, edge.Name, "ssh")
 		if edge.Status.URL != expectedSSHURL {
 			logger.Info("Setting edge SSH URL", "url", expectedSSHURL)
 			edge.Status.URL = expectedSSHURL
@@ -127,8 +124,7 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 
 	// Set the workspace URL on the edge status if not already set.
 	// The URL is served by the hub's edge-proxy virtual workspace handler.
-	expectedURL := r.hubMountURL + "/services/edges-proxy/clusters/" + req.ClusterName +
-		"/apis/kedge.faros.sh/v1alpha1/edges/" + edge.Name + "/k8s"
+	expectedURL := apiurl.EdgeProxyURL(r.hubMountURL, req.ClusterName, edge.Name, "k8s")
 	if edge.Status.URL != expectedURL {
 		logger.Info("Setting edge workspace URL", "url", expectedURL)
 		edge.Status.URL = expectedURL
@@ -149,7 +145,7 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 // owned by the Edge so that the workspace is garbage-collected when the Edge is deleted.
 func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.Logger, clusterName string, edge *kedgev1alpha1.Edge) error {
 	cfg := rest.CopyConfig(r.kcpConfig)
-	cfg.Host = kcp.AppendClusterPath(cfg.Host, clusterName)
+	cfg.Host = apiurl.HubServerURL(cfg.Host, clusterName)
 
 	client, err := dynamic.NewForConfig(cfg)
 	if err != nil {
@@ -198,7 +194,7 @@ func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.
 // This is called when an edge type changes from kubernetes to server.
 func (r *MountReconciler) deleteMountWorkspace(ctx context.Context, logger klog.Logger, clusterName, edgeName string) error {
 	cfg := rest.CopyConfig(r.kcpConfig)
-	cfg.Host = kcp.AppendClusterPath(cfg.Host, clusterName)
+	cfg.Host = apiurl.HubServerURL(cfg.Host, clusterName)
 
 	client, err := dynamic.NewForConfig(cfg)
 	if err != nil {

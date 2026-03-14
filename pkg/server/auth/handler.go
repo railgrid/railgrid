@@ -37,6 +37,7 @@ import (
 	"k8s.io/klog/v2"
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 )
@@ -369,7 +370,7 @@ func (h *Handler) generateKubeconfig(userID, clusterName, email string) ([]byte,
 
 	serverURL := h.hubExternalURL
 	if clusterName != "" {
-		serverURL += "/clusters/" + clusterName
+		serverURL = apiurl.HubServerURL(h.hubExternalURL, clusterName)
 	}
 
 	config.Clusters["kedge"] = &clientcmdapi.Cluster{

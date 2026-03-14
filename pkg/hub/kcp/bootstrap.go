@@ -21,7 +21,6 @@ import (
 	"context"
 	"embed"
 	"fmt"
-	"strings"
 	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
@@ -40,6 +39,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/faroshq/faros-kedge/config/kcp"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	"github.com/faroshq/faros-kedge/pkg/util/confighelpers"
 )
 
@@ -407,12 +407,10 @@ func toUnstructured(obj runtime.Object) (*unstructured.Unstructured, error) {
 // AppendClusterPath sets the /clusters/<path> segment on a kcp URL.
 // If the host already contains a /clusters/ path (e.g. from the admin
 // kubeconfig), it is replaced rather than appended.
+//
+// Deprecated: use apiurl.HubServerURL directly.
 func AppendClusterPath(host, clusterPath string) string {
-	host = strings.TrimSuffix(host, "/")
-	if idx := strings.Index(host, "/clusters/"); idx != -1 {
-		host = host[:idx]
-	}
-	return host + "/clusters/" + clusterPath
+	return apiurl.HubServerURL(host, clusterPath)
 }
 
 // waitForAPIBindingBound polls until an APIBinding has phase "Bound".
