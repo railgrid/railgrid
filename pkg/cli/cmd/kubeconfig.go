@@ -162,6 +162,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file path (default: stdout, use '-' for stdout explicitly)")
+	cmd.Flags().BoolVar(&globalInsecureTLS, "insecure-skip-tls-verify", false, "Skip TLS certificate verification when connecting to the hub")
 
 	return cmd
 }

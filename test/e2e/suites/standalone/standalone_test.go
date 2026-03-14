@@ -94,3 +94,7 @@ func TestMCPKubernetes(t *testing.T) { testenv.Test(t, cases.MCPKubernetes()) }
 func TestJoinTokenSSHCredentialsStoredAfterConnect(t *testing.T) {
 	testenv.Test(t, cases.JoinTokenSSHCredentialsStoredAfterConnect())
 }
+
+// TestAgentCLIFlow exercises the full user-facing CLI journey:
+// login → edge create → join-command → agent run → edge Ready → kubeconfig → kubectl.
+func TestAgentCLIFlow(t *testing.T) { testenv.Test(t, cases.AgentCLIFlow()) }

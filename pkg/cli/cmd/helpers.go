@@ -30,18 +30,32 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-var kubeconfig string
+var (
+	kubeconfig        string
+	globalInsecureTLS bool
+)
 
 func loadRestConfig() (*rest.Config, error) {
+	var config *rest.Config
+	var err error
 	if kubeconfig != "" {
-		return clientcmd.BuildConfigFromFlags("", kubeconfig)
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+	} else {
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+			configOverrides := &clientcmd.ConfigOverrides{}
+			kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+			config, err = kubeConfig.ClientConfig()
+		}
 	}
-	config, err := rest.InClusterConfig()
 	if err != nil {
-		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-		configOverrides := &clientcmd.ConfigOverrides{}
-		kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
-		return kubeConfig.ClientConfig()
+		return nil, err
+	}
+	if globalInsecureTLS {
+		config.Insecure = true
+		config.CAData = nil
+		config.CAFile = ""
 	}
 	return config, nil
 }

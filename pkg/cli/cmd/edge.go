@@ -211,7 +211,7 @@ func printJoinCommand(name, edgeType, hubURL, joinToken string) {
 
 // newEdgeJoinCommandCommand returns the 'kedge edge join-command <name>' subcommand.
 func newEdgeJoinCommandCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "join-command <name>",
 		Short: "Print the agent join command for an edge",
 		Args:  cobra.ExactArgs(1),
@@ -248,6 +248,8 @@ func newEdgeJoinCommandCommand() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&globalInsecureTLS, "insecure-skip-tls-verify", false, "Skip TLS certificate verification when connecting to the hub")
+	return cmd
 }
 
 func newEdgeListCommand() *cobra.Command {

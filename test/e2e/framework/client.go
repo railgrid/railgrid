@@ -568,3 +568,28 @@ func WaitForDeploymentAvailable(ctx context.Context, kubeconfig, namespace, name
 		return true, nil
 	})
 }
+
+// EdgeJoinCommand runs `kedge edge join-command <name>` and returns the printed output.
+func (k *KedgeClient) EdgeJoinCommand(ctx context.Context, edgeName string) (string, error) {
+	return k.run(ctx, "edge", "join-command", edgeName, "--insecure-skip-tls-verify")
+}
+
+// EdgeKubeconfig runs `kedge kubeconfig edge <name> --output <path>`.
+func (k *KedgeClient) EdgeKubeconfig(ctx context.Context, edgeName, outputPath string) error {
+	_, err := k.run(ctx,
+		"kubeconfig", "edge", edgeName,
+		"--output", outputPath,
+		"--insecure-skip-tls-verify",
+	)
+	return err
+}
+
+// WaitForEdgeKubeconfig polls until EdgeKubeconfig successfully writes to outputPath.
+func (k *KedgeClient) WaitForEdgeKubeconfig(ctx context.Context, edgeName, outputPath string, timeout time.Duration) error {
+	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		if err := k.EdgeKubeconfig(ctx, edgeName, outputPath); err != nil {
+			return false, nil
+		}
+		return true, nil
+	})
+}
