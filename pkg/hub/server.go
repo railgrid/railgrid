@@ -221,8 +221,23 @@ func (s *Server) Run(ctx context.Context) error {
 		logger.Info("OIDC auth routes registered", "issuer", s.opts.IDPIssuerURL)
 	}
 
+	// Compute internal URL for local loopback calls (MCP→edges-proxy, kcp mount resolution).
+	// This avoids CDN/proxy loops (e.g. Cloudflare loop detection).
+	hubInternalURL := s.opts.HubInternalURL
+	if hubInternalURL == "" {
+		scheme := "https"
+		if s.opts.ServingCertFile == "" {
+			scheme = "http"
+		}
+		addr := s.opts.ListenAddr
+		if strings.HasPrefix(addr, ":") {
+			addr = "localhost" + addr
+		}
+		hubInternalURL = scheme + "://" + addr
+	}
+
 	// Tunnel handlers (kcpConfig is used for SA token verification; nil if kcp not configured)
-	vws, err := builder.NewVirtualWorkspaces(connManager, kcpConfig, s.opts.StaticAuthTokens, s.opts.HubExternalURL, s.opts.HubInternalURL, logger)
+	vws, err := builder.NewVirtualWorkspaces(connManager, kcpConfig, s.opts.StaticAuthTokens, s.opts.HubExternalURL, hubInternalURL, logger)
 	if err != nil {
 		return fmt.Errorf("creating virtual workspaces handlers: %w", err)
 	}
@@ -306,23 +321,7 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up edge RBAC controller: %w", err)
 		}
 		// Use internal URL for mount resolution to avoid CDN/proxy loops.
-		// When kcp resolves a mount, it calls edge.Status.URL. If that URL
-		// goes through an external CDN (e.g. Cloudflare), the request loops
-		// back to the hub creating a loop that the CDN blocks.
-		mountURL := s.opts.HubInternalURL
-		if mountURL == "" {
-			// Default: construct from listen address.
-			scheme := "https"
-			if s.opts.ServingCertFile == "" {
-				scheme = "http"
-			}
-			addr := s.opts.ListenAddr
-			if strings.HasPrefix(addr, ":") {
-				addr = "localhost" + addr
-			}
-			mountURL = scheme + "://" + addr
-		}
-		if err := edge.SetupMountWithManager(mgr, kcpConfig, mountURL); err != nil {
+		if err := edge.SetupMountWithManager(mgr, kcpConfig, hubInternalURL); err != nil {
 			return fmt.Errorf("setting up edge mount controller: %w", err)
 		}
 		if err := edge.SetupTokenWithManager(mgr); err != nil {
