@@ -41,7 +41,7 @@ type Agent struct {
 // NewAgent creates a new Agent.
 func NewAgent(workDir, hubKubeconfig, agentKubeconfig, edgeName string) *Agent {
 	return &Agent{
-		bin:             filepath.Join(workDir, "bin/kedge-agent"),
+		bin:             filepath.Join(workDir, KedgeBin),
 		workDir:         workDir,
 		hubKubeconfig:   hubKubeconfig,
 		agentKubeconfig: agentKubeconfig,
@@ -55,17 +55,19 @@ func (a *Agent) WithLabels(labels map[string]string) *Agent {
 	return a
 }
 
-// Start launches the kedge-agent process. It runs until Stop is called or the
-// parent context is cancelled.
+// Start launches the kedge agent run process. It runs until Stop is called or
+// the parent context is cancelled.
 func (a *Agent) Start(ctx context.Context) error {
 	agentCtx, cancel := context.WithCancel(ctx)
 	a.cancel = cancel
 
 	args := []string{
+		"agent", "run",
 		"--hub-kubeconfig", a.hubKubeconfig,
 		"--kubeconfig", a.agentKubeconfig,
 		"--tunnel-url", DefaultHubURL,
 		"--edge-name", a.edgeName,
+		"--hub-insecure-skip-tls-verify",
 	}
 	if len(a.labels) > 0 {
 		var pairs []string
@@ -83,7 +85,7 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return fmt.Errorf("failed to start kedge-agent: %w", err)
+		return fmt.Errorf("failed to start kedge agent run: %w", err)
 	}
 
 	// Reap the process in the background when context is cancelled.

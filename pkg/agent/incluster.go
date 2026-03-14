@@ -71,6 +71,32 @@ func decodeKubeconfigB64(kubeconfigB64 string) (string, error) {
 	return string(b), nil
 }
 
+// LoadKubeconfigFromSecret reads the hub kubeconfig from the in-cluster Secret.
+// Returns ("", nil) when the Secret does not exist yet (first boot before token exchange).
+func LoadKubeconfigFromSecret(edgeName string) (string, error) {
+	cs, err := newInClusterKubernetesClient()
+	if err != nil {
+		return "", err
+	}
+	secretName := AgentKubeconfigSecretName(edgeName)
+	secret, err := cs.CoreV1().Secrets(inClusterNamespace).Get(
+		context.Background(),
+		secretName,
+		metav1.GetOptions{},
+	)
+	if apierrors.IsNotFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting kubeconfig secret: %w", err)
+	}
+	data, ok := secret.Data[kubeconfigSecretKey]
+	if !ok || len(data) == 0 {
+		return "", nil
+	}
+	return string(data), nil
+}
+
 // SaveKubeconfigToSecret writes the hub kubeconfig to the in-cluster Secret so
 // that it survives a pod restart.
 func SaveKubeconfigToSecret(edgeName, kubeconfigData string) error {

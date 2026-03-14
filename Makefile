@@ -49,7 +49,7 @@ ldflags: ## Print ldflags for goreleaser
 
 all: build
 
-build: build-kedge build-hub build-agent
+build: build-kedge build-hub
 
 build-kedge:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge ./cmd/kedge/
@@ -57,8 +57,9 @@ build-kedge:
 build-hub:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
-build-agent:
-	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-agent ./cmd/kedge-agent/
+# build-agent is an alias for build-kedge: the agent container image now ships
+# the kedge CLI binary (cmd/kedge/) with ENTRYPOINT [/kedge, agent, run].
+build-agent: build-kedge
 
 test:
 	go test $(shell go list ./... | grep -v '/test/e2e')
@@ -156,12 +157,12 @@ TYPE ?= kubernetes
 dev-edge-create: build-kedge ## Create an Edge resource: TYPE=kubernetes (default) or TYPE=server
 	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-edge-setup.sh $(DEV_EDGE_NAME) $(TYPE) "env=dev,provider=local"
 
-dev-run-edge: build-agent ## Run the edge agent: TYPE=kubernetes (default) or TYPE=server
+dev-run-edge: build-kedge ## Run the edge agent: TYPE=kubernetes (default) or TYPE=server
 	@test -f .env.edge || (echo "Run 'make dev-edge-create [TYPE=$(TYPE)]' first"; exit 1)
 ifeq ($(TYPE),server)
-	$(BINDIR)/kedge-agent \
+	$(BINDIR)/kedge agent run \
 		--hub-url=https://localhost:8443 \
-		--insecure-skip-tls-verify \
+		--hub-insecure-skip-tls-verify \
 		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
 		--tunnel-url=https://localhost:8443 \
 		--edge-name=$(DEV_EDGE_NAME) \
@@ -172,9 +173,9 @@ ifeq ($(TYPE),server)
 		--ssh-password=password
 else
 	hack/scripts/ensure-kind-cluster.sh
-	$(BINDIR)/kedge-agent \
+	$(BINDIR)/kedge agent run \
 		--hub-url=https://localhost:8443 \
-		--insecure-skip-tls-verify \
+		--hub-insecure-skip-tls-verify \
 		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
 		--tunnel-url=https://localhost:8443 \
 		--edge-name=$(DEV_EDGE_NAME) \
