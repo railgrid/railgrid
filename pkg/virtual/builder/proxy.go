@@ -43,6 +43,7 @@ type virtualWorkspaces struct {
 	kedgeClient     *kedgeclient.Client  // kedge client for fetching Edge resources
 	staticTokens    map[string]struct{}  // static tokens that bypass JWT SA requirement
 	hubExternalURL  string               // external URL of the hub (used for kubeconfig generation)
+	hubInternalURL  string               // internal URL of the hub (used for MCP→edges-proxy calls to avoid CDN loops)
 	// authorizeFn performs delegated authentication and authorization against kcp.
 	// Defaults to the package-level authorize function; injectable for testing.
 	authorizeFn authorizeFnType
@@ -57,7 +58,9 @@ type VirtualWorkspaceHandlers struct {
 // NewVirtualWorkspaces creates a new VirtualWorkspaceHandlers.
 // kcpConfig is required for SA token authorization against kcp and for fetching Edge resources/secrets.
 // hubExternalURL is the externally reachable URL of the hub, used when building kubeconfigs for agents.
-func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, staticTokens []string, hubExternalURL string, logger klog.Logger) (*VirtualWorkspaceHandlers, error) {
+// hubInternalURL is the internal URL for MCP→edges-proxy calls to avoid CDN/proxy loops.
+// If empty, hubExternalURL is used as fallback.
+func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, staticTokens []string, hubExternalURL, hubInternalURL string, logger klog.Logger) (*VirtualWorkspaceHandlers, error) {
 	staticTokenSet := make(map[string]struct{}, len(staticTokens))
 	for _, t := range staticTokens {
 		staticTokenSet[t] = struct{}{}
@@ -89,6 +92,7 @@ func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config,
 			kedgeClient:     kedgeClient,
 			staticTokens:    staticTokenSet,
 			hubExternalURL:  hubExternalURL,
+			hubInternalURL:  hubInternalURL,
 			authorizeFn:     authorize,
 			logger:          logger.WithName("virtual-workspaces"),
 		},

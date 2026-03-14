@@ -148,11 +148,11 @@ func TestGetDerivedKubernetes_correctURL(t *testing.T) {
 	}
 }
 
-// TestGetDefaultTarget asserts that GetDefaultTarget returns an empty string.
+// TestGetDefaultTarget asserts that GetDefaultTarget returns the fixed edge name.
 func TestGetDefaultTarget(t *testing.T) {
-	provider := &KedgeEdgeProvider{}
-	if got := provider.GetDefaultTarget(); got != "" {
-		t.Errorf("GetDefaultTarget() = %q; want empty string", got)
+	provider := &KedgeEdgeProvider{edgeName: "my-edge"}
+	if got := provider.GetDefaultTarget(); got != "my-edge" {
+		t.Errorf("GetDefaultTarget() = %q; want %q", got, "my-edge")
 	}
 }
 

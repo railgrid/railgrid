@@ -100,8 +100,9 @@ func (p *KedgeEdgeProvider) GetDerivedKubernetes(_ context.Context, edgeName str
 	return k8s, nil
 }
 
-// GetDefaultTarget returns an empty string — there is no single default edge.
-func (p *KedgeEdgeProvider) GetDefaultTarget() string { return "" }
+// GetDefaultTarget returns the fixed edge name so that MCP tool calls that
+// omit the "cluster" parameter automatically route to the only available edge.
+func (p *KedgeEdgeProvider) GetDefaultTarget() string { return p.edgeName }
 
 // GetTargetParameterName returns "cluster" as the MCP target query parameter.
 // "cluster" is used rather than "edge" because users think in terms of clusters,

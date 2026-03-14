@@ -222,7 +222,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Tunnel handlers (kcpConfig is used for SA token verification; nil if kcp not configured)
-	vws, err := builder.NewVirtualWorkspaces(connManager, kcpConfig, s.opts.StaticAuthTokens, s.opts.HubExternalURL, logger)
+	vws, err := builder.NewVirtualWorkspaces(connManager, kcpConfig, s.opts.StaticAuthTokens, s.opts.HubExternalURL, s.opts.HubInternalURL, logger)
 	if err != nil {
 		return fmt.Errorf("creating virtual workspaces handlers: %w", err)
 	}

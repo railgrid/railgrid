@@ -69,8 +69,14 @@ func (p *virtualWorkspaces) buildMCPHandler(cluster, edgeName string) http.Handl
 		}
 
 		// 2. Build per-request single-edge MCP provider.
-		//    edgeProxyBase is derived from the hub's external URL.
-		edgeProxyBase := strings.TrimRight(p.hubExternalURL, "/") + "/services/edges-proxy"
+		//    edgeProxyBase uses the internal URL to avoid CDN/proxy loops
+		//    (e.g. Cloudflare loop detection when the MCP handler calls back
+		//    to the edges-proxy on the same hub).
+		baseURL := p.hubInternalURL
+		if baseURL == "" {
+			baseURL = p.hubExternalURL
+		}
+		edgeProxyBase := strings.TrimRight(baseURL, "/") + "/services/edges-proxy"
 
 		provider := &KedgeEdgeProvider{
 			cluster:         cluster,
@@ -220,7 +226,12 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 		}
 
 		// 7. Build multi-edge provider.
-		edgeProxyBase := strings.TrimRight(p.hubExternalURL, "/") + "/services/edges-proxy"
+		//    Use internal URL to avoid CDN/proxy loops (same as single-edge handler).
+		baseURL := p.hubInternalURL
+		if baseURL == "" {
+			baseURL = p.hubExternalURL
+		}
+		edgeProxyBase := strings.TrimRight(baseURL, "/") + "/services/edges-proxy"
 		provider := &MultiEdgeKedgeEdgeProvider{
 			cluster:         cluster,
 			edgeNames:       resolvedEdges,
