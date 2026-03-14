@@ -65,3 +65,14 @@ func (c *ConnManager) HasConnection(key string) bool {
 	_, ok := c.Load(key)
 	return ok
 }
+
+// Keys returns all registered connection keys.
+func (c *ConnManager) Keys() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	keys := make([]string, 0, len(c.dials))
+	for k := range c.dials {
+		keys = append(keys, k)
+	}
+	return keys
+}

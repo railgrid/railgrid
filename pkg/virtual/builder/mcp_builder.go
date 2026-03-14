@@ -204,6 +204,11 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 			return
 		}
 
+		logger.Info("KubernetesMCP edge resolution",
+			"cluster", cluster,
+			"edgeCount", len(edgeList.Items),
+			"connManagerKeys", p.edgeConnManager.Keys())
+
 		var resolvedEdges []string
 		for _, edgeObj := range edgeList.Items {
 			edgeName := edgeObj.GetName()
@@ -213,17 +218,22 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 			// SSH access only and have no Kubernetes API to proxy via MCP.
 			edgeType, _, _ := unstructured.NestedString(edgeObj.Object, "spec", "type")
 			if edgeType != "kubernetes" {
+				logger.V(4).Info("Skipping non-kubernetes edge", "edge", edgeName, "type", edgeType)
 				continue
 			}
 
 			if !edgeSelector.Matches(labels.Set(edgeLabels)) {
+				logger.V(4).Info("Skipping edge not matching selector", "edge", edgeName)
 				continue
 			}
 			key := edgeConnKey(cluster, edgeName)
 			if _, ok := p.edgeConnManager.Load(key); ok {
 				resolvedEdges = append(resolvedEdges, edgeName)
+			} else {
+				logger.Info("Edge not in connManager", "edge", edgeName, "key", key)
 			}
 		}
+		logger.Info("KubernetesMCP resolved edges", "resolvedEdges", resolvedEdges)
 
 		// 7. Build multi-edge provider.
 		//    Use internal URL to avoid CDN/proxy loops (same as single-edge handler).
