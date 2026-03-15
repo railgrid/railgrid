@@ -64,6 +64,14 @@ func (p *KedgeEdgeProvider) GetTargets(_ context.Context) ([]string, error) {
 // GetDerivedKubernetes returns a *mcpkubernetes.Kubernetes pointing at the edge
 // agent's Kubernetes API, reachable via the hub's edges-proxy endpoint.
 func (p *KedgeEdgeProvider) GetDerivedKubernetes(_ context.Context, edgeName string) (*mcpkubernetes.Kubernetes, error) {
+	// Guard: if the caller passes an empty edge name (e.g. MCP client sends
+	// cluster=""), fall back to the provider's fixed edge name.
+	if edgeName == "" {
+		edgeName = p.edgeName
+	}
+	if edgeName == "" {
+		return nil, fmt.Errorf("no edge name specified and no default available")
+	}
 	serverURL := apiurl.EdgeProxyURL(p.hubBase, p.cluster, edgeName, "k8s")
 
 	restCfg := &rest.Config{
@@ -77,18 +85,19 @@ func (p *KedgeEdgeProvider) GetDerivedKubernetes(_ context.Context, edgeName str
 	// Build a minimal in-memory kubeconfig so that NewKubernetes can
 	// construct its clientcmd.ClientConfig.
 	rawCfg := clientcmdapi.NewConfig()
-	rawCfg.Clusters["edge"] = &clientcmdapi.Cluster{
+	rawCfg.Clusters[edgeName] = &clientcmdapi.Cluster{
 		Server:                serverURL,
 		InsecureSkipTLSVerify: true,
 	}
-	rawCfg.AuthInfos["user"] = &clientcmdapi.AuthInfo{
+	rawCfg.AuthInfos[edgeName] = &clientcmdapi.AuthInfo{
 		Token: p.bearerToken,
 	}
-	rawCfg.Contexts["edge-ctx"] = &clientcmdapi.Context{
-		Cluster:  "edge",
-		AuthInfo: "user",
+	ctxName := edgeName + "-ctx"
+	rawCfg.Contexts[ctxName] = &clientcmdapi.Context{
+		Cluster:  edgeName,
+		AuthInfo: edgeName,
 	}
-	rawCfg.CurrentContext = "edge-ctx"
+	rawCfg.CurrentContext = ctxName
 
 	clientCmdConfig := clientcmd.NewDefaultClientConfig(*rawCfg, nil)
 
@@ -150,6 +159,13 @@ func (p *MultiEdgeKedgeEdgeProvider) GetTargets(_ context.Context) ([]string, er
 
 // GetDerivedKubernetes returns a Kubernetes client for the given edge via the edges-proxy.
 func (p *MultiEdgeKedgeEdgeProvider) GetDerivedKubernetes(ctx context.Context, edgeName string) (*mcpkubernetes.Kubernetes, error) {
+	// Guard: if the caller passes an empty edge name, fall back to the default.
+	if edgeName == "" {
+		edgeName = p.GetDefaultTarget()
+	}
+	if edgeName == "" {
+		return nil, fmt.Errorf("no edge name specified and no connected edges available")
+	}
 	// Delegate to a throwaway single-edge provider.
 	single := &KedgeEdgeProvider{
 		cluster:         p.cluster,
