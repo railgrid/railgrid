@@ -76,13 +76,11 @@ func (p *virtualWorkspaces) buildMCPHandler(cluster, edgeName string) http.Handl
 		if baseURL == "" {
 			baseURL = p.hubExternalURL
 		}
-		edgeProxyBase := strings.TrimRight(baseURL, "/") + "/services/edges-proxy"
-
 		provider := &KedgeEdgeProvider{
 			cluster:         cluster,
 			edgeName:        edgeName,
 			edgeConnManager: p.edgeConnManager,
-			edgeProxyBase:   edgeProxyBase,
+			hubBase:         strings.TrimRight(baseURL, "/"),
 			bearerToken:     token,
 		}
 
@@ -241,12 +239,11 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 		if baseURL == "" {
 			baseURL = p.hubExternalURL
 		}
-		edgeProxyBase := strings.TrimRight(baseURL, "/") + "/services/edges-proxy"
 		provider := &MultiEdgeKedgeEdgeProvider{
 			cluster:         cluster,
 			edgeNames:       resolvedEdges,
 			edgeConnManager: p.edgeConnManager,
-			edgeProxyBase:   edgeProxyBase,
+			hubBase:         strings.TrimRight(baseURL, "/"),
 			bearerToken:     token,
 		}
 

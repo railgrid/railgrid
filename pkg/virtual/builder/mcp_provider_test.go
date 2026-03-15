@@ -19,6 +19,8 @@ package builder
 import (
 	"context"
 	"testing"
+
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 )
 
 // newSingleEdgeProvider creates a KedgeEdgeProvider for a single edge with the
@@ -28,7 +30,7 @@ func newSingleEdgeProvider(cluster, edgeName string, cm *ConnManager) *KedgeEdge
 		cluster:         cluster,
 		edgeName:        edgeName,
 		edgeConnManager: cm,
-		edgeProxyBase:   "https://kedge.example.com/services/edges-proxy",
+		hubBase:         "https://kedge.example.com",
 		bearerToken:     "test-token",
 	}
 }
@@ -110,10 +112,10 @@ func TestGetTargets_ignoresOtherEdges(t *testing.T) {
 // Kubernetes client whose Host matches the expected edges-proxy URL format.
 func TestGetDerivedKubernetes_correctURL(t *testing.T) {
 	const (
-		cluster       = "root:kedge:user-default"
-		edgeName      = "myedge"
-		edgeProxyBase = "https://kedge.example.com/services/edges-proxy"
-		bearerToken   = "user-bearer-token"
+		cluster     = "root:kedge:user-default"
+		edgeName    = "myedge"
+		hubBase     = "https://kedge.example.com"
+		bearerToken = "user-bearer-token"
 	)
 
 	cm := NewConnManager()
@@ -122,7 +124,7 @@ func TestGetDerivedKubernetes_correctURL(t *testing.T) {
 		cluster:         cluster,
 		edgeName:        edgeName,
 		edgeConnManager: cm,
-		edgeProxyBase:   edgeProxyBase,
+		hubBase:         hubBase,
 		bearerToken:     bearerToken,
 	}
 
@@ -134,8 +136,8 @@ func TestGetDerivedKubernetes_correctURL(t *testing.T) {
 		t.Fatal("GetDerivedKubernetes returned nil Kubernetes")
 	}
 
-	// The expected URL matches the format described in KedgeEdgeProvider.GetDerivedKubernetes.
-	expectedURL := edgeProxyBase + "/clusters/" + cluster + "/apis/kedge.faros.sh/v1alpha1/edges/" + edgeName + "/k8s"
+	// The expected URL is now built via apiurl.EdgeProxyURL.
+	expectedURL := apiurl.EdgeProxyURL(hubBase, cluster, edgeName, "k8s")
 
 	// Retrieve the REST config from the Kubernetes client to inspect Host.
 	restCfg := k8s.RESTConfig()

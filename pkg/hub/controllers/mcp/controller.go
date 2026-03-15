@@ -31,6 +31,7 @@ import (
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	mcpv1alpha1 "github.com/faroshq/faros-kedge/apis/mcp/v1alpha1"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -89,8 +90,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	// Compute the endpoint URL.
 	// Format: {hubExternalURL}/services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
-	endpoint := fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/%s/mcp",
-		r.hubExternalURL, req.ClusterName, kmcp.Name)
+	endpoint := apiurl.KubernetesMCPURL(r.hubExternalURL, req.ClusterName, kmcp.Name)
 
 	// List all edges in the cluster.
 	var edgeList kedgev1alpha1.EdgeList

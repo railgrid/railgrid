@@ -18,11 +18,11 @@ package cmd
 
 import (
 	"fmt"
-	"net/url"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 )
 
 func newMCPCommand() *cobra.Command {
@@ -164,26 +164,11 @@ func runMCPURL(_ *cobra.Command, edgeName, kubernetesName string) error {
 //
 // Returns an error if the server URL does not contain a /clusters/ path segment.
 func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
-	parsed, err := url.Parse(serverURL)
-	if err != nil {
-		return "", fmt.Errorf("parsing server URL %q: %w", serverURL, err)
-	}
-
-	// Extract base URL (scheme + host).
-	base := parsed.Scheme + "://" + parsed.Host
-
-	// Extract cluster name from the path.
-	clusterName := ""
-	if idx := strings.Index(parsed.Path, "/clusters/"); idx >= 0 {
-		clusterName = strings.TrimPrefix(parsed.Path[idx:], "/clusters/")
-		clusterName = strings.TrimSuffix(clusterName, "/")
-	}
-
-	if clusterName == "" {
+	base, cluster := apiurl.SplitBaseAndCluster(serverURL)
+	if cluster == "default" {
 		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
 	}
-
-	return fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp", base, clusterName, edgeName), nil
+	return apiurl.EdgeAgentProxyURL(base, cluster, edgeName, "mcp"), nil
 }
 
 // mcpKubernetesURLFromServerURL derives the Kubernetes MCP endpoint URL from a
@@ -192,22 +177,9 @@ func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
 // Input:  https://kedge.example.com/clusters/root:kedge:user-default, "default"
 // Output: https://kedge.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp
 func mcpKubernetesURLFromServerURL(serverURL, kubernetesName string) (string, error) {
-	parsed, err := url.Parse(serverURL)
-	if err != nil {
-		return "", fmt.Errorf("parsing server URL %q: %w", serverURL, err)
-	}
-
-	base := parsed.Scheme + "://" + parsed.Host
-
-	clusterName := ""
-	if idx := strings.Index(parsed.Path, "/clusters/"); idx >= 0 {
-		clusterName = strings.TrimPrefix(parsed.Path[idx:], "/clusters/")
-		clusterName = strings.TrimSuffix(clusterName, "/")
-	}
-
-	if clusterName == "" {
+	base, cluster := apiurl.SplitBaseAndCluster(serverURL)
+	if cluster == "default" {
 		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
 	}
-
-	return fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/%s/mcp", base, clusterName, kubernetesName), nil
+	return apiurl.KubernetesMCPURL(base, cluster, kubernetesName), nil
 }

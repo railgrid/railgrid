@@ -25,6 +25,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 )
 
 // KedgeEdgeProvider implements the kubernetes-mcp-server Provider interface so
@@ -37,7 +39,7 @@ type KedgeEdgeProvider struct {
 	cluster         string       // kcp cluster path, e.g. "root:kedge:user-default"
 	edgeName        string       // fixed edge name, e.g. "my-edge"
 	edgeConnManager *ConnManager // shared dialer registry
-	edgeProxyBase   string       // e.g. "https://kedge.example.com/services/edges-proxy"
+	hubBase         string       // e.g. "https://kedge.example.com" (no trailing slash, no services path)
 	bearerToken     string       // caller's bearer token to forward to edge proxies
 }
 
@@ -62,10 +64,7 @@ func (p *KedgeEdgeProvider) GetTargets(_ context.Context) ([]string, error) {
 // GetDerivedKubernetes returns a *mcpkubernetes.Kubernetes pointing at the edge
 // agent's Kubernetes API, reachable via the hub's edges-proxy endpoint.
 func (p *KedgeEdgeProvider) GetDerivedKubernetes(_ context.Context, edgeName string) (*mcpkubernetes.Kubernetes, error) {
-	serverURL := fmt.Sprintf(
-		"%s/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/k8s",
-		p.edgeProxyBase, p.cluster, edgeName,
-	)
+	serverURL := apiurl.EdgeProxyURL(p.hubBase, p.cluster, edgeName, "k8s")
 
 	restCfg := &rest.Config{
 		Host:        serverURL,
@@ -121,11 +120,13 @@ func (p *KedgeEdgeProvider) Close() {}
 // interface for a set of explicitly listed edge names.  It is used by the
 // KubernetesMCP handler which resolves edges via a label selector before
 // constructing the provider.
+// MultiEdgeKedgeEdgeProvider implements the kubernetes-mcp-server Provider
+// interface for routing across multiple edges (used by KubernetesMCP resources).
 type MultiEdgeKedgeEdgeProvider struct {
 	cluster         string       // kcp cluster path, e.g. "root:kedge:user-default"
 	edgeNames       []string     // explicit list of candidate edge names
 	edgeConnManager *ConnManager // shared dialer registry
-	edgeProxyBase   string       // e.g. "https://kedge.example.com/services/edges-proxy"
+	hubBase         string       // e.g. "https://kedge.example.com" (no trailing slash, no services path)
 	bearerToken     string       // caller's bearer token to forward to edge proxies
 }
 
@@ -154,7 +155,7 @@ func (p *MultiEdgeKedgeEdgeProvider) GetDerivedKubernetes(ctx context.Context, e
 		cluster:         p.cluster,
 		edgeName:        edgeName,
 		edgeConnManager: p.edgeConnManager,
-		edgeProxyBase:   p.edgeProxyBase,
+		hubBase:         p.hubBase,
 		bearerToken:     p.bearerToken,
 	}
 	return single.GetDerivedKubernetes(ctx, edgeName)
