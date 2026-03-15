@@ -702,7 +702,7 @@ func TokenReconcilerNoReissueAfterRegistration() features.Feature {
 
 // AgentJoinKubernetes verifies that a kubernetes-type edge agent can be
 // deployed into an agent cluster via `kedge agent join --type kubernetes`.
-// The command installs the agent as a Kubernetes Deployment in kedge-system and
+// The command installs the agent as a Kubernetes Deployment in kedge-agent and
 // exits; the test then waits for the Deployment to become available and the
 // hub edge to reach Ready.
 func AgentJoinKubernetes() features.Feature {
@@ -780,10 +780,10 @@ func AgentJoinKubernetes() features.Feature {
 			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
 			deploymentName := "kedge-agent-" + edgeName
 
-			if err := framework.WaitForDeploymentAvailable(ctx, agentKubeconfig, "kedge-system", deploymentName, 2*time.Minute); err != nil {
-				t.Fatalf("deployment %q in namespace kedge-system did not become available: %v", deploymentName, err)
+			if err := framework.WaitForDeploymentAvailable(ctx, agentKubeconfig, "kedge-agent", deploymentName, 2*time.Minute); err != nil {
+				t.Fatalf("deployment %q in namespace kedge-agent did not become available: %v", deploymentName, err)
 			}
-			t.Logf("deployment %q in kedge-system is available", deploymentName)
+			t.Logf("deployment %q in kedge-agent is available", deploymentName)
 			return ctx
 		}).
 		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -793,14 +793,14 @@ func AgentJoinKubernetes() features.Feature {
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				// Collect pod logs to diagnose connectivity issues.
 				if logOut, logErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
-					"logs", "-n", "kedge-system", "deploy/kedge-agent-"+edgeName, "--tail=50"); logErr == nil {
+					"logs", "-n", "kedge-agent", "deploy/kedge-agent-"+edgeName, "--tail=50"); logErr == nil {
 					t.Logf("agent pod logs:\n%s", logOut)
 				} else {
 					t.Logf("could not get pod logs: %v", logErr)
 				}
 				// Also describe the pods to see Events and container state.
 				if descOut, descErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
-					"describe", "pods", "-n", "kedge-system", "-l", "kedge.faros.sh/edge-name="+edgeName); descErr == nil {
+					"describe", "pods", "-n", "kedge-agent", "-l", "kedge.faros.sh/edge-name="+edgeName); descErr == nil {
 					t.Logf("pod describe:\n%s", descOut)
 				}
 				t.Fatalf("kubernetes edge %q did not become Ready after agent join: %v", edgeName, err)
@@ -816,11 +816,11 @@ func AgentJoinKubernetes() features.Feature {
 				// Best-effort cleanup of installed resources.
 				_, _ = framework.KubectlWithConfig(ctx, agentKubeconfig,
 					"delete", "deployment", deploymentName,
-					"-n", "kedge-system", "--ignore-not-found",
+					"-n", "kedge-agent", "--ignore-not-found",
 				)
 				_, _ = framework.KubectlWithConfig(ctx, agentKubeconfig,
 					"delete", "serviceaccount", deploymentName,
-					"-n", "kedge-system", "--ignore-not-found",
+					"-n", "kedge-agent", "--ignore-not-found",
 				)
 			}
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
@@ -905,7 +905,7 @@ func AgentHelmInstall() features.Feature {
 
 			helmArgs := append([]string{
 				"install", releaseName, chartPath,
-				"--namespace", "kedge-system",
+				"--namespace", "kedge-agent",
 				"--create-namespace",
 				"--kubeconfig", agentKubeconfig,
 				"--wait",
@@ -929,14 +929,14 @@ func AgentHelmInstall() features.Feature {
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				// Collect pod logs to diagnose connectivity issues.
 				if logOut, logErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
-					"logs", "-n", "kedge-system", "deploy/kedge-agent-"+edgeName, "--tail=50"); logErr == nil {
+					"logs", "-n", "kedge-agent", "deploy/kedge-agent-"+edgeName, "--tail=50"); logErr == nil {
 					t.Logf("agent pod logs:\n%s", logOut)
 				} else {
 					t.Logf("could not get pod logs: %v", logErr)
 				}
 				// Also describe the pods to see Events and container state.
 				if descOut, descErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
-					"describe", "pods", "-n", "kedge-system",
+					"describe", "pods", "-n", "kedge-agent",
 					"-l", "app.kubernetes.io/instance=kedge-agent-"+edgeName); descErr == nil {
 					t.Logf("pod describe:\n%s", descOut)
 				}
@@ -957,7 +957,7 @@ func AgentHelmInstall() features.Feature {
 				// Best-effort helm uninstall.
 				cmd := exec.CommandContext(uninstallCtx, "helm",
 					"uninstall", releaseName,
-					"-n", "kedge-system",
+					"-n", "kedge-agent",
 					"--kubeconfig", agentKubeconfig,
 				)
 				cmd.Stdout = os.Stdout

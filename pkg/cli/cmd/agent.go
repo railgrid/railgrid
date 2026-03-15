@@ -204,7 +204,7 @@ For server-type edges (bare-metal / VM):
   Requires root. The service is named kedge-agent-<edge-name>.service.
 
 For kubernetes-type edges:
-  Applies a Deployment and RBAC into the kedge-system namespace of the target
+  Applies a Deployment and RBAC into the kedge-agent namespace of the target
   cluster so the agent runs as an in-cluster workload.
 
 To run the agent as a foreground process (containers / dev / e2e) use:
@@ -324,14 +324,14 @@ func agentJoinKubernetes(opts *agent.Options) error {
 		kubectlArgs = append(kubectlArgs, "--context", opts.Context)
 	}
 
-	// Ensure kedge-system namespace exists.
+	// Ensure kedge-agent namespace exists.
 	nsManifest := `apiVersion: v1
 kind: Namespace
 metadata:
-  name: kedge-system
+  name: kedge-agent
 `
 	if err := kubectlApplyManifest(kubectlArgs, nsManifest); err != nil {
-		return fmt.Errorf("creating kedge-system namespace: %w", err)
+		return fmt.Errorf("creating kedge-agent namespace: %w", err)
 	}
 
 	// ServiceAccount.
@@ -339,10 +339,98 @@ metadata:
 kind: ServiceAccount
 metadata:
   name: kedge-agent-%s
-  namespace: kedge-system
+  namespace: kedge-agent
 `, opts.EdgeName)
 	if err := kubectlApplyManifest(kubectlArgs, saManifest); err != nil {
 		return fmt.Errorf("creating ServiceAccount: %w", err)
+	}
+
+	// ClusterRole — shared across all edges; grants the agent cluster-wide workload permissions.
+	clusterRoleManifest := `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kedge-edge-agent
+rules:
+- apiGroups: [""]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["apps"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["batch"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["*"]
+  verbs: ["*"]
+`
+	if err := kubectlApplyManifest(kubectlArgs, clusterRoleManifest); err != nil {
+		return fmt.Errorf("creating ClusterRole: %w", err)
+	}
+
+	// ClusterRoleBinding — binds the edge-specific SA to the shared ClusterRole.
+	crbManifest := fmt.Sprintf(`apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kedge-edge-agent-%s
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kedge-edge-agent
+subjects:
+- kind: ServiceAccount
+  name: kedge-agent-%s
+  namespace: kedge-agent
+`, opts.EdgeName, opts.EdgeName)
+	if err := kubectlApplyManifest(kubectlArgs, crbManifest); err != nil {
+		return fmt.Errorf("creating ClusterRoleBinding: %w", err)
+	}
+
+	// Role — allows the agent to manage its own kubeconfig Secret.
+	roleManifest := fmt.Sprintf(`apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kedge-agent-%s
+  namespace: kedge-agent
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["kedge-agent-%s-kubeconfig"]
+  verbs: ["get", "create", "update", "patch"]
+`, opts.EdgeName, opts.EdgeName)
+	if err := kubectlApplyManifest(kubectlArgs, roleManifest); err != nil {
+		return fmt.Errorf("creating Role: %w", err)
+	}
+
+	// RoleBinding.
+	rbManifest := fmt.Sprintf(`apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kedge-agent-%s
+  namespace: kedge-agent
+subjects:
+- kind: ServiceAccount
+  name: kedge-agent-%s
+  namespace: kedge-agent
+roleRef:
+  kind: Role
+  name: kedge-agent-%s
+  apiGroup: rbac.authorization.k8s.io
+`, opts.EdgeName, opts.EdgeName, opts.EdgeName)
+	if err := kubectlApplyManifest(kubectlArgs, rbManifest); err != nil {
+		return fmt.Errorf("creating RoleBinding: %w", err)
 	}
 
 	agentImage := os.Getenv("KEDGE_AGENT_IMAGE")
@@ -382,7 +470,7 @@ metadata:
 kind: Deployment
 metadata:
   name: kedge-agent-%s
-  namespace: kedge-system
+  namespace: kedge-agent
   labels:
     app: kedge-agent
     kedge.faros.sh/edge-name: %s
@@ -403,6 +491,9 @@ spec:
       - name: agent
         image: %s
         imagePullPolicy: %s
+        env:
+        - name: HOME
+          value: /tmp
         args: [%s]
 `,
 			opts.EdgeName, opts.EdgeName, opts.EdgeName, opts.EdgeName,
@@ -423,7 +514,7 @@ spec:
 kind: Secret
 metadata:
   name: %s
-  namespace: kedge-system
+  namespace: kedge-agent
 type: Opaque
 stringData:
   hub.kubeconfig: |
@@ -444,7 +535,7 @@ stringData:
 kind: Deployment
 metadata:
   name: kedge-agent-%s
-  namespace: kedge-system
+  namespace: kedge-agent
   labels:
     app: kedge-agent
     kedge.faros.sh/edge-name: %s
@@ -465,6 +556,9 @@ spec:
       - name: agent
         image: %s
         imagePullPolicy: %s
+        env:
+        - name: HOME
+          value: /tmp
         args: [%s]
         volumeMounts:
         - name: hub-kubeconfig
@@ -486,9 +580,9 @@ spec:
 	}
 
 	fmt.Printf("✓ kedge-agent deployed to Kubernetes\n")
-	fmt.Printf("  Namespace: kedge-system\n")
-	fmt.Printf("  Check status: kubectl get pods -n kedge-system\n")
-	fmt.Printf("  Logs:         kubectl logs -n kedge-system deploy/kedge-agent-%s -f\n", opts.EdgeName)
+	fmt.Printf("  Namespace: kedge-agent\n")
+	fmt.Printf("  Check status: kubectl get pods -n kedge-agent\n")
+	fmt.Printf("  Logs:         kubectl logs -n kedge-agent deploy/kedge-agent-%s -f\n", opts.EdgeName)
 	return nil
 }
 

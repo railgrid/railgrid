@@ -31,7 +31,7 @@ import (
 
 const (
 	// inClusterNamespace is the namespace where the agent kubeconfig Secret is stored.
-	inClusterNamespace = "kedge-system"
+	inClusterNamespace = "kedge-agent"
 	// kubeconfigSecretKey is the data key within the Secret.
 	kubeconfigSecretKey = "kubeconfig"
 )
