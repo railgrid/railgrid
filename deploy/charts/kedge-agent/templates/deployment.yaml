@@ -36,18 +36,24 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: {{ include "kedge-agent.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            # Set HOME so the agent can write ~/.kedge/ for kubeconfig caching.
+            - name: HOME
+              value: /tmp
           args:
             - --edge-name={{ required "agent.edgeName is required" .Values.agent.edgeName }}
+            - --type=kubernetes
             {{- if .Values.agent.hub.token }}
+            - --hub-url={{ required "agent.hub.url is required when using token auth" .Values.agent.hub.url }}
             - --token={{ .Values.agent.hub.token }}
             {{- else }}
             - --hub-kubeconfig=/etc/kedge/hub-kubeconfig/kubeconfig
-            {{- end }}
             {{- if .Values.agent.hub.context }}
             - --hub-context={{ .Values.agent.hub.context }}
             {{- end }}
             {{- if .Values.agent.hub.url }}
             - --hub-url={{ .Values.agent.hub.url }}
+            {{- end }}
             {{- end }}
             {{- if .Values.agent.hub.insecureSkipTLSVerify }}
             - --hub-insecure-skip-tls-verify
