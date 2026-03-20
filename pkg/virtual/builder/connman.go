@@ -18,9 +18,18 @@ package builder
 
 import (
 	"sync"
+	"time"
+
+	"k8s.io/klog/v2"
 
 	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
+
+// connManagerSweepInterval is how often the ConnManager checks for and evicts
+// stale (closed) tunnel entries. This catches race conditions where the
+// <-dialer.Done() goroutine hasn't fired yet but the underlying connection is
+// already dead.
+const connManagerSweepInterval = 30 * time.Second
 
 // ConnManager manages revdial.Dialer connections keyed by "cluster/name".
 // It is shared between the agent-proxy-v2 (writes) and edges-proxy (reads)
@@ -38,6 +47,38 @@ func NewConnManager() *ConnManager {
 	}
 }
 
+// StartSweeper starts a background goroutine that periodically evicts closed
+// dialers from the connection map. Call this once after creating the ConnManager.
+// The goroutine exits when stop is closed.
+func (c *ConnManager) StartSweeper(stop <-chan struct{}) {
+	logger := klog.Background().WithName("connman-sweeper")
+	go func() {
+		ticker := time.NewTicker(connManagerSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				c.sweepClosed(logger)
+			}
+		}
+	}()
+}
+
+// sweepClosed removes entries whose Dialer has been closed but whose cleanup
+// goroutine (waiting on <-dialer.Done()) may not have run yet.
+func (c *ConnManager) sweepClosed(logger klog.Logger) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, d := range c.dials {
+		if d != nil && d.IsClosed() {
+			logger.Info("Evicting stale tunnel entry", "key", key)
+			delete(c.dials, key)
+		}
+	}
+}
+
 // Store saves d under key, replacing any existing entry.
 func (c *ConnManager) Store(key string, d *revdial.Dialer) {
 	c.mu.Lock()
@@ -46,11 +87,28 @@ func (c *ConnManager) Store(key string, d *revdial.Dialer) {
 }
 
 // Load returns the Dialer registered under key, or (nil, false) if absent.
+// It also returns (nil, false) if the stored Dialer has been closed, cleaning
+// up the stale entry on the fly.
 func (c *ConnManager) Load(key string) (*revdial.Dialer, bool) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	d, ok := c.dials[key]
-	return d, ok
+	c.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	// Fast-path stale entry eviction: if the dialer is already closed,
+	// remove it and report not-found so callers get a clean 502 immediately
+	// rather than a confusing dial error.
+	if d != nil && d.IsClosed() {
+		c.mu.Lock()
+		// Re-check under write lock in case another goroutine already replaced it.
+		if current, exists := c.dials[key]; exists && current == d {
+			delete(c.dials, key)
+		}
+		c.mu.Unlock()
+		return nil, false
+	}
+	return d, true
 }
 
 // Delete removes the entry for key (no-op if key is not present).

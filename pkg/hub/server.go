@@ -241,6 +241,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating virtual workspaces handlers: %w", err)
 	}
+	vws.Start(ctx.Done()) // start background stale-tunnel sweeper
 	router.PathPrefix(apiurl.PathPrefixAgentProxy + "/").Handler(http.StripPrefix(apiurl.PathPrefixAgentProxy, vws.EdgeAgentProxyHandler()))
 	router.PathPrefix(apiurl.PathPrefixEdgesProxy + "/").Handler(http.StripPrefix(apiurl.PathPrefixEdgesProxy, vws.EdgesProxyHandler()))
 	// Kubernetes multi-edge MCP handler:

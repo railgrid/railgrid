@@ -99,6 +99,13 @@ func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config,
 	}, nil
 }
 
+// Start begins background maintenance goroutines (e.g. stale tunnel sweeper).
+// Call once after creating VirtualWorkspaceHandlers. The goroutines exit when
+// stop is closed.
+func (h *VirtualWorkspaceHandlers) Start(stop <-chan struct{}) {
+	h.vws.edgeConnManager.StartSweeper(stop)
+}
+
 // EdgeAgentProxyHandler returns the handler for Edge agent tunnel registration.
 // Agents connect to register their revdial tunnel for an Edge resource.
 // Mount at /services/agent-proxy/.

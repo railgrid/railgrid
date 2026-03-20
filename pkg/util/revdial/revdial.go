@@ -58,6 +58,12 @@ const dialerUniqParam = "revdial.dialer"
 // dialerPingInterval is used to ensure we are sending constant pings
 const dialerPingInterval = 18 * time.Second
 
+// listenerReadTimeout is how long the hub-side Listener waits for a control
+// message (keep-alive or conn-ready) before considering the tunnel dead.
+// It must be comfortably larger than dialerPingInterval to tolerate network
+// jitter and Cloudflare proxy buffering.
+const listenerReadTimeout = 60 * time.Second
+
 // The Dialer can create new connections.
 type Dialer struct {
 	conn       net.Conn // hijacked client conn
@@ -127,6 +133,16 @@ func (d *Dialer) unregister() {
 // the peer).
 func (d *Dialer) Done() <-chan struct{} { return d.donec }
 
+// IsClosed reports whether the Dialer has been closed.
+func (d *Dialer) IsClosed() bool {
+	select {
+	case <-d.donec:
+		return true
+	default:
+		return false
+	}
+}
+
 // Close closes the Dialer.
 func (d *Dialer) Close() error {
 	d.closeOnce.Do(d.close)
@@ -178,8 +194,13 @@ func (d *Dialer) serve() error {
 		defer d.Close() //nolint:errcheck
 		br := bufio.NewReader(d.conn)
 		for {
+			// Apply a read deadline so the agent detects a dead hub-side
+			// connection (e.g. Cloudflare silently dropped it). We expect
+			// at least a "pong" response within this window.
+			_ = d.conn.SetReadDeadline(time.Now().Add(listenerReadTimeout))
 			line, err := br.ReadSlice('\n')
 			if err != nil {
+				log.Printf("revdial.Dialer: read error (tunnel dead?): %v", err)
 				return
 			}
 			var msg controlMsg
@@ -188,6 +209,8 @@ func (d *Dialer) serve() error {
 				return
 			}
 			switch msg.Command {
+			case "pong":
+				// Hub confirmed it is alive — nothing to do.
 			case "pickup-failed":
 				err := fmt.Errorf("revdial listener failed to pick up connection: %v", msg.Err)
 				select {
@@ -268,7 +291,7 @@ type Listener struct {
 }
 
 type controlMsg struct {
-	Command  string `json:"command,omitempty"`  // "keep-alive", "conn-ready", "pickup-failed"
+	Command  string `json:"command,omitempty"`  // "keep-alive", "pong", "conn-ready", "pickup-failed"
 	ConnPath string `json:"connPath,omitempty"` // conn pick-up URL path for "conn-url", "pickup-failed"
 	Err      string `json:"err,omitempty"`
 }
@@ -296,11 +319,14 @@ func (ln *Listener) run() {
 		}
 	}()
 
-	// Read loop
+	// Read loop — apply a read deadline so the hub detects dead tunnels even
+	// when the TCP connection is silently dropped (e.g. by Cloudflare).
 	br := bufio.NewReader(ln.sc)
 	for {
+		_ = ln.sc.SetReadDeadline(time.Now().Add(listenerReadTimeout))
 		line, err := br.ReadSlice('\n')
 		if err != nil {
+			log.Printf("revdial.Listener: read error (tunnel dead?): %v", err)
 			return
 		}
 		var msg controlMsg
@@ -310,8 +336,9 @@ func (ln *Listener) run() {
 		}
 		switch msg.Command {
 		case "keep-alive":
-			// Occasional no-op message from server to keep
-			// us alive through NAT timeouts.
+			// Agent is alive — send pong so the agent can also verify the
+			// connection is bidirectionally healthy.
+			ln.sendMessage(controlMsg{Command: "pong"})
 		case "conn-ready":
 			go ln.grabConn(msg.ConnPath)
 		default:
