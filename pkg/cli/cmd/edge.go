@@ -42,6 +42,7 @@ func newEdgeCommand() *cobra.Command {
 		newEdgeGetCommand(),
 		newEdgeDeleteCommand(),
 		newEdgeJoinCommandCommand(),
+		newEdgeUpgradeCommand(),
 	)
 
 	return cmd
@@ -276,15 +277,16 @@ func newEdgeListCommand() *cobra.Command {
 			}
 
 			tw := newTabWriter(os.Stdout)
-			printRow(tw, "NAME", "TYPE", "PHASE", "CONNECTED", "AGE")
+			printRow(tw, "NAME", "TYPE", "PHASE", "CONNECTED", "AGENT VERSION", "AGE")
 
 			for _, item := range list.Items {
 				edgeType := getNestedString(item, "spec", "type")
 				phase := getNestedString(item, "status", "phase")
 				connected, _, _ := unstructuredNestedBool(item.Object, "status", "connected")
+				agentVersion := getNestedString(item, "status", "agentVersion")
 				age := formatAge(item.GetCreationTimestamp().Time)
 				printRow(tw, item.GetName(), formatStringOrDash(edgeType), formatStringOrDash(phase),
-					fmt.Sprintf("%v", connected), age)
+					fmt.Sprintf("%v", connected), formatStringOrDash(agentVersion), age)
 			}
 
 			_ = tw.Flush()

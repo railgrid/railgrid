@@ -41,8 +41,8 @@ endif
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
-LDFLAGS_PKG := github.com/faroshq/faros-kedge/pkg/cli/cmd
-LDFLAGS := -s -w -X $(LDFLAGS_PKG).version=$(VERSION) -X $(LDFLAGS_PKG).gitCommit=$(GIT_COMMIT) -X $(LDFLAGS_PKG).buildDate=$(BUILD_DATE)
+LDFLAGS_PKG := github.com/faroshq/faros-kedge/pkg/version
+LDFLAGS := -s -w -X $(LDFLAGS_PKG).Version=$(VERSION) -X $(LDFLAGS_PKG).GitCommit=$(GIT_COMMIT) -X $(LDFLAGS_PKG).BuildDate=$(BUILD_DATE)
 
 ldflags: ## Print ldflags for goreleaser
 	@echo "$(LDFLAGS)"

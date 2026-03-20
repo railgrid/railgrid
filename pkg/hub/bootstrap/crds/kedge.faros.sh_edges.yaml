@@ -30,6 +30,10 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    - jsonPath: .status.agentVersion
+      name: Agent Version
+      priority: 1
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -149,6 +153,12 @@ spec:
                   Format: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
                   For kubernetes edges, append /k8s/ for K8s API proxy.
                   For server edges, append /ssh for SSH WebSocket terminal.
+                type: string
+              agentVersion:
+                description: |-
+                  AgentVersion is the version string of the kedge binary running on the edge agent.
+                  Set by the agent at startup and periodically refreshed. Empty for agents that
+                  have not yet reported (backwards compatible).
                 type: string
               conditions:
                 description: Conditions represent the latest available observations

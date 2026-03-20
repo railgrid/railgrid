@@ -32,6 +32,7 @@ import (
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
 )
 
 // dialAndFetchSSHHostKey connects to the SSH server on the given local port and
@@ -139,8 +140,9 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 	}
 	// The hub may set Hostname/WorkspaceURL; we only patch the fields we own.
 	statusPatch := map[string]interface{}{
-		"phase":     string(status.Phase),
-		"connected": status.Connected,
+		"phase":        string(status.Phase),
+		"connected":    status.Connected,
+		"agentVersion": pkgversion.Get(),
 	}
 
 	// Report the sshd host public key so the hub can verify the agent's identity.

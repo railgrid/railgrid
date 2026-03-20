@@ -64,6 +64,7 @@ const (
 // +kubebuilder:printcolumn:name="Connected",type="boolean",JSONPath=".status.connected"
 // +kubebuilder:printcolumn:name="Hostname",type="string",JSONPath=".status.hostname"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:printcolumn:name="Agent Version",type="string",JSONPath=".status.agentVersion",priority=1
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Edge represents a managed connection endpoint — either a Kubernetes cluster
@@ -195,6 +196,12 @@ type EdgeStatus struct {
 	// Used by the hub to verify the agent's sshd identity and prevent MITM attacks.
 	// +optional
 	SSHHostKey string `json:"sshHostKey,omitempty"`
+
+	// AgentVersion is the version string of the kedge binary running on the edge agent.
+	// Set by the agent at startup and periodically refreshed. Empty for agents that
+	// have not yet reported (backwards compatible).
+	// +optional
+	AgentVersion string `json:"agentVersion,omitempty"`
 
 	// Conditions represent the latest available observations of the edge's state.
 	// +optional
