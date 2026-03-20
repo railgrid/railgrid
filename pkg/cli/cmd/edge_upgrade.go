@@ -19,7 +19,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"runtime"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -104,24 +103,13 @@ func printKubernetesUpgradeInstructions(name string) {
 	fmt.Printf("  watch kedge edge list\n")
 }
 
-func printServerUpgradeInstructions(name, hubURL string) {
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-
+func printServerUpgradeInstructions(name, _ string) {
 	fmt.Printf("To upgrade the binary on the remote server:\n\n")
-	fmt.Printf("  curl -fsSL https://github.com/faroshq/kedge/releases/latest/download/kedge-agent-%s-%s \\\n", goos, goarch)
-	fmt.Printf("    -o /usr/local/bin/kedge-agent && chmod +x /usr/local/bin/kedge-agent\n")
+	fmt.Printf("  curl -fsSL https://github.com/faroshq/kedge/releases/latest/download/kubectl-kedge_linux_amd64.tar.gz | tar xz\n")
+	fmt.Printf("  sudo mv kubectl-kedge /usr/local/bin/kedge\n")
 	fmt.Println()
 	fmt.Printf("Then restart the agent:\n\n")
-	fmt.Printf("  # If running via systemd:\n")
-	fmt.Printf("  sudo systemctl restart kedge-agent\n")
-	fmt.Println()
-	fmt.Printf("  # If running manually:\n")
-	fmt.Printf("  kedge agent run \\\n")
-	fmt.Printf("    --hub-url %s \\\n", hubURL)
-	fmt.Printf("    --edge-name %s \\\n", name)
-	fmt.Printf("    --type server \\\n")
-	fmt.Printf("    --token <your-token>\n")
+	fmt.Printf("  sudo systemctl restart kedge-agent-%s\n", name)
 	fmt.Println()
 	fmt.Printf("After upgrading, verify with:\n")
 	fmt.Printf("  kedge edge list\n")
