@@ -16,13 +16,20 @@ To access the hub locally:
 
 {{- end }}
 
+Install the kedge CLI via kubectl krew:
+  kubectl krew index add faros https://github.com/faroshq/krew-index.git
+  kubectl krew install faros/kedge
+
+Or update if already installed:
+  kubectl krew upgrade faros/kedge
+
 {{- if .Values.hub.staticAuthTokens }}
 
 Login (static token):
 {{- if eq (len .Values.hub.staticAuthTokens) 1 }}
-  kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} --token {{ .Values.hub.staticAuthTokens | first }} {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
+  kubectl kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} --token {{ .Values.hub.staticAuthTokens | first }} {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
 {{- else }}
-  kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} --token <your-static-token> {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
+  kubectl kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} --token <your-static-token> {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
 {{- end }}
 
   {{ len .Values.hub.staticAuthTokens }} static token(s) configured.
@@ -32,7 +39,7 @@ Login (static token):
 IDP (external): {{ .Values.idp.issuerURL }}
 
 Login:
-  kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
+  kubectl kedge login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
 
 For identity provider deployment, see docs/idp.md.
 {{- end }}
