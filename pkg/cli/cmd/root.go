@@ -56,6 +56,7 @@ enabling secure workload deployment across distributed edges.`,
 		newGetTokenCommand(),
 		newAgentCommand(),
 		newEdgeCommand(),
+		newListCommand(),
 		newInstallCommand(),
 		newApplyCommand(),
 		newGetCommand(),
@@ -68,4 +69,16 @@ enabling secure workload deployment across distributed edges.`,
 	)
 
 	return cmd
+}
+
+// newListCommand provides a shorthand 'kedge list' → 'kedge edge list'.
+func newListCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:     "list",
+		Short:   "List edges (shorthand for 'kedge edge list')",
+		Aliases: []string{"ls"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return newEdgeListCommand().RunE(cmd, args)
+		},
+	}
 }

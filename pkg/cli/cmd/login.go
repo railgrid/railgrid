@@ -54,8 +54,17 @@ func newLoginCommand() *cobra.Command {
 			if hubURL == "" {
 				return fmt.Errorf("--hub-url is required")
 			}
+			hubURL = normalizeHubURL(hubURL)
 			if token != "" {
 				return runStaticTokenLogin(hubURL, token, insecureSkipTLSVerify)
+			}
+			// Check if hub has OIDC configured before opening browser.
+			oidcEnabled, err := checkHubAuthMode(hubURL, insecureSkipTLSVerify)
+			if err != nil {
+				return err
+			}
+			if !oidcEnabled {
+				return fmt.Errorf("hub at %s does not have OIDC configured — use: kedge login --hub-url %s --token <token>", hubURL, hubURL)
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 			defer cancel()
@@ -68,6 +77,33 @@ func newLoginCommand() *cobra.Command {
 	cmd.Flags().StringVar(&token, "token", "", "Static bearer token (skips OIDC browser flow)")
 
 	return cmd
+}
+
+// checkHubAuthMode queries the hub's /healthz endpoint to determine if OIDC
+// is configured. Returns true if OIDC is enabled, false otherwise.
+// On error (e.g. old server returning plain text), it assumes OIDC is enabled
+// for backwards compatibility.
+func checkHubAuthMode(hubURL string, insecure bool) (bool, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	if insecure {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		}
+	}
+	resp, err := client.Get(hubURL + apiurl.PathHealthz)
+	if err != nil {
+		return false, fmt.Errorf("checking hub auth mode: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	body, _ := io.ReadAll(resp.Body)
+	var result struct {
+		OIDC bool `json:"oidc"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		// Old server without JSON healthz — assume OIDC (backwards compat).
+		return true, nil
+	}
+	return result.OIDC, nil
 }
 
 func runStaticTokenLogin(hubURL, token string, insecure bool) error {

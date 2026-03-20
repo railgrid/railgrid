@@ -35,6 +35,19 @@ var (
 	globalInsecureTLS bool
 )
 
+// normalizeHubURL ensures the URL has a scheme. If no scheme is present,
+// https:// is prepended. This allows users to type just "hub.faros.sh" instead
+// of "https://hub.faros.sh".
+func normalizeHubURL(u string) string {
+	if u == "" {
+		return u
+	}
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return "https://" + u
+	}
+	return u
+}
+
 func loadRestConfig() (*rest.Config, error) {
 	var config *rest.Config
 	var err error

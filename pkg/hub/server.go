@@ -251,8 +251,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Health check
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, "ok")
+		oidcEnabled := authHandler != nil
+		_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":%t}`, oidcEnabled)
 	})
 	router.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

@@ -32,6 +32,7 @@ const (
 	PathPrefixMCP        = "/services/mcp"
 	PathAuthCallback     = "/auth/callback"
 	PathAuthTokenLogin   = "/auth/token-login"
+	PathHealthz          = "/healthz"
 )
 
 // SplitBaseAndCluster splits a hub URL that may contain a /clusters/<name>

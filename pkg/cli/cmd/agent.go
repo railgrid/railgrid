@@ -79,6 +79,9 @@ func agentRunFlags(cmd *cobra.Command, opts *agent.Options) {
 func runAgentForeground(ctx context.Context, opts *agent.Options) error {
 	logger := klog.FromContext(ctx)
 
+	// Normalize hub URL: add https:// if no scheme provided.
+	opts.HubURL = normalizeHubURL(opts.HubURL)
+
 	// Token-exchange: if no bootstrap token was provided on the command line,
 	// try to load a previously saved kubeconfig or durable token from disk.
 	// This allows the agent to reconnect after the first successful join
@@ -216,6 +219,9 @@ To run the agent as a foreground process (containers / dev / e2e) use:
 			if opts.HubKubeconfig == "" && opts.Token == "" {
 				return fmt.Errorf("--hub-kubeconfig or --token is required")
 			}
+
+			// Normalize hub URL: add https:// if no scheme provided.
+			opts.HubURL = normalizeHubURL(opts.HubURL)
 
 			switch opts.Type {
 			case agent.AgentTypeServer, "":

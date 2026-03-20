@@ -31,8 +31,9 @@ import (
 
 func newEdgeCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "edge",
-		Short: "Manage edges",
+		Use:     "edge",
+		Aliases: []string{"edges", "devices"},
+		Short:   "Manage edges",
 	}
 
 	cmd.AddCommand(
@@ -261,7 +262,7 @@ func newEdgeListCommand() *cobra.Command {
 
 			dynClient, err := loadDynamicClient()
 			if err != nil {
-				return err
+				return fmt.Errorf("not logged in — run: kedge login --hub-url <hub-url>\n(original error: %w)", err)
 			}
 
 			list, err := dynClient.Resource(kedgeclient.EdgeGVR).List(ctx, metav1.ListOptions{})
