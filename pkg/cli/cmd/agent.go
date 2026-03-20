@@ -45,6 +45,7 @@ func newAgentCommand() *cobra.Command {
 		newAgentTokenCommand(),
 		newAgentInstallCommand(),
 		newAgentUninstallCommand(),
+		newAgentUpgradeCommand(),
 	)
 
 	return cmd

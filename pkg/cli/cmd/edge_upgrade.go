@@ -85,12 +85,15 @@ up to date.`,
 }
 
 func printKubernetesUpgradeInstructions(name string) {
-	fmt.Printf("To upgrade via Helm:\n\n")
+	fmt.Printf("If the agent was installed via 'kedge agent join':\n\n")
+	fmt.Printf("  kedge agent upgrade %s\n", name)
+	fmt.Println()
+	fmt.Printf("If the agent was installed via Helm:\n\n")
 	fmt.Printf("  helm upgrade kedge-agent oci://ghcr.io/faroshq/charts/kedge-agent \\\n")
 	fmt.Printf("    --reuse-values \\\n")
 	fmt.Printf("    --set agent.image.tag=latest\n")
 	fmt.Println()
-	fmt.Printf("Or to pin a specific version:\n")
+	fmt.Printf("  Or to pin a specific version:\n")
 	fmt.Printf("  helm upgrade kedge-agent oci://ghcr.io/faroshq/charts/kedge-agent \\\n")
 	fmt.Printf("    --reuse-values \\\n")
 	fmt.Printf("    --version <chart-version>\n")
@@ -99,7 +102,6 @@ func printKubernetesUpgradeInstructions(name string) {
 	fmt.Printf("  kedge edge list\n")
 	fmt.Printf("  # or watch the agent version column:\n")
 	fmt.Printf("  watch kedge edge list\n")
-	_ = name // name used in caller context for display only
 }
 
 func printServerUpgradeInstructions(name, hubURL string) {
