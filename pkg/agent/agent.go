@@ -366,6 +366,10 @@ func New(opts *Options) (*Agent, error) {
 		}
 		if opts.InsecureSkipTLSVerify {
 			hubConfig.Insecure = true
+			// Clear any CA data from the kubeconfig — combining CA data with
+			// Insecure=true is rejected by rest.TLSConfigFor.
+			hubConfig.CAData = nil
+			hubConfig.CAFile = ""
 		}
 	} else if opts.HubURL != "" {
 		hubConfig = &rest.Config{

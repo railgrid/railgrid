@@ -69,19 +69,15 @@ func (p *virtualWorkspaces) buildEdgesProxyHandler() http.Handler {
 		}
 
 		// 3. Delegated authorization via kcp (if configured).
-		if p.kcpConfig != nil {
-			_, isStaticToken := p.staticTokens[token]
-			if !isStaticToken {
-				// Always use cluster from URL path — do NOT use JWT's clusterName claim
-				// (it's unverified and not yet validated by kcp). The TokenReview performed
-				// inside authorizeFn will reject tokens not issued for this cluster.
-				// Fixes https://github.com/faroshq/kedge/issues/68
-				if err := p.authorizeFn(r.Context(), p.kcpConfig, token, cluster, "proxy", "edges", name); err != nil {
-					p.logger.Error(err, "edges proxy authorization failed",
-						"cluster", cluster, "name", name, "subresource", subresource)
-					http.Error(w, "Forbidden", http.StatusForbidden)
-					return
-				}
+		// Static tokens bypass authorizeFn entirely — they are pre-authenticated
+		// server-side credentials that do not go through kcp SubjectAccessReview.
+		_, isStaticToken := p.staticTokens[token]
+		if !isStaticToken && p.kcpConfig != nil {
+			if err := p.authorizeFn(r.Context(), p.kcpConfig, token, cluster, "proxy", "edges", name); err != nil {
+				p.logger.Error(err, "edges proxy authorization failed",
+					"cluster", cluster, "name", name, "subresource", subresource)
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
 			}
 		}
 
@@ -446,6 +442,10 @@ func (p *virtualWorkspaces) edgesHandleK8sUpgrade(ctx context.Context, w http.Re
 	// Without this the agent router sees the full hub path and returns 404.
 	r.URL.Path = extractEdgeK8sPath(r.URL.Path)
 	r.RequestURI = r.URL.RequestURI()
+
+	// Strip user credentials before forwarding to the edge agent to prevent
+	// the user's OIDC token from unnecessarily transiting the reverse tunnel.
+	r.Header.Del("Authorization")
 
 	if err := r.Write(deviceConn); err != nil {
 		logger.Error(err, "failed to forward upgrade request to edge agent")

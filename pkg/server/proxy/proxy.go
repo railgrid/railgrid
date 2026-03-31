@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strings"
 
 	oidc "github.com/coreos/go-oidc"
@@ -221,6 +222,11 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 			// Remove user auth — the transport adds kcp admin credentials
 			// automatically (client certs, bearer token, etc.).
 			req.Header.Del("Authorization")
+
+			// Add kcp impersonation headers so kcp enforces per-user RBAC
+			// instead of all requests running with admin credentials.
+			req.Header.Set("Impersonate-User", user.Spec.RBACIdentity)
+			req.Header.Set("Impersonate-Group", "system:authenticated")
 		},
 		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -279,6 +285,11 @@ func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, toke
 			// Remove user auth — the transport (kcp admin cert) handles authentication.
 			// kcp does not have static token auth configured; we proxy as hub admin.
 			req.Header.Del("Authorization")
+
+			// Add kcp impersonation headers so kcp enforces per-user RBAC
+			// instead of all requests running with admin credentials.
+			req.Header.Set("Impersonate-User", user.Spec.RBACIdentity)
+			req.Header.Set("Impersonate-Group", "system:authenticated")
 		},
 		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -446,10 +457,13 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 // request to the workspace identified by the clusterName claim, keeping the
 // original SA token so kcp performs native authn/authz.
 func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, token, clusterName string) {
-	// TODO(#68): clusterName comes from an unverified JWT claim. Validate it matches
-	// the expected kcp cluster name format ([a-z0-9-]+:[a-z0-9-]+) before using it
-	// in URL path construction to prevent path traversal.
-	// https://github.com/faroshq/kedge/issues/68
+	// Validate clusterName against a strict regex to prevent path traversal.
+	matched, _ := regexp.MatchString(`^[a-z0-9]+(?:[:-][a-z0-9]+)*$`, clusterName)
+	if !matched {
+		writeUnauthorized(w)
+		return
+	}
+
 	target := *p.kcpTarget
 	logger := p.logger
 

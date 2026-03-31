@@ -43,13 +43,17 @@ import (
 type RBACReconciler struct {
 	mgr            mcmanager.Manager
 	hubExternalURL string
+	hubCAData      []byte
+	devMode        bool
 }
 
 // SetupRBACWithManager registers the edge RBAC controller with the multicluster manager.
-func SetupRBACWithManager(mgr mcmanager.Manager, hubExternalURL string) error {
+func SetupRBACWithManager(mgr mcmanager.Manager, hubExternalURL string, hubCAData []byte, devMode bool) error {
 	r := &RBACReconciler{
 		mgr:            mgr,
 		hubExternalURL: hubExternalURL,
+		hubCAData:      hubCAData,
+		devMode:        devMode,
 	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named(rbacControllerName).
@@ -351,12 +355,18 @@ func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Cl
 		return err
 	}
 
+	clusterDef := &clientcmdapi.Cluster{
+		Server: r.hubExternalURL,
+	}
+	if len(r.hubCAData) > 0 {
+		clusterDef.CertificateAuthorityData = r.hubCAData
+	} else if r.devMode {
+		clusterDef.InsecureSkipTLSVerify = true
+	}
+
 	kubeconfig := clientcmdapi.Config{
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"kedge": {
-				Server:                r.hubExternalURL,
-				InsecureSkipTLSVerify: true,
-			},
+			"kedge": clusterDef,
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
 			"edge-agent": {

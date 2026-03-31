@@ -182,7 +182,11 @@ func k8sHandler(config *rest.Config) http.HandlerFunc {
 				pr.Out.URL.Path = k8sPath
 				pr.Out.Host = target.Host
 
-				// Add bearer token if configured
+				// Inject the agent ServiceAccount bearer token for all tunneled requests.
+				// NOTE: All requests tunneled to the downstream cluster run at
+				// agent-SA privilege level. Per-user RBAC differentiation in the
+				// downstream cluster is not yet supported. Future improvement:
+				// support impersonation headers if the downstream cluster supports it.
 				if config.BearerToken != "" {
 					pr.Out.Header.Set("Authorization", "Bearer "+config.BearerToken)
 				}
@@ -241,6 +245,11 @@ func handleK8sUpgrade(w http.ResponseWriter, r *http.Request, config *rest.Confi
 	r.URL.Path = k8sPath
 	r.URL.Host = target.Host
 	r.URL.Scheme = target.Scheme
+	// Inject the agent ServiceAccount bearer token for all tunneled requests.
+	// NOTE: All requests tunneled to the downstream cluster run at agent-SA
+	// privilege level. Per-user RBAC differentiation in the downstream cluster
+	// is not yet supported. Future improvement: support impersonation headers
+	// if the downstream cluster supports it.
 	if config.BearerToken != "" {
 		r.Header.Set("Authorization", "Bearer "+config.BearerToken)
 	}

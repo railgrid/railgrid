@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -422,7 +423,11 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := edge.SetupLifecycleWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up edge lifecycle controller: %w", err)
 		}
-		if err := edge.SetupRBACWithManager(mgr, s.opts.HubExternalURL); err != nil {
+		var hubCAData []byte
+		if s.opts.ServingCertFile != "" {
+			hubCAData, _ = os.ReadFile(s.opts.ServingCertFile)
+		}
+		if err := edge.SetupRBACWithManager(mgr, s.opts.HubExternalURL, hubCAData, s.opts.DevMode); err != nil {
 			return fmt.Errorf("setting up edge RBAC controller: %w", err)
 		}
 		// Use internal URL for mount resolution to avoid CDN/proxy loops.
