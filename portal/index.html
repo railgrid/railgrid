@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kedge Portal</title>
+    <script>
+      // Apply theme before first paint to prevent flash
+      (function() {
+        var t = localStorage.getItem('kedge-theme') || 'system';
+        var d = t === 'system'
+          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : t;
+        document.documentElement.className = d;
+      })();
+    </script>
+  </head>
+  <body class="bg-surface text-text-primary antialiased noise">
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

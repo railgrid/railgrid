@@ -119,14 +119,25 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	}
 
 	// 4. Fetch tenancy.kcp.io identity hash from root workspace.
+	// The identity hash is set asynchronously by kcp after startup, so we
+	// poll until it is available rather than failing immediately.
 	logger.Info("Fetching tenancy.kcp.io identity hash from root workspace")
-	tenancyExport, err := rootDynamic.Resource(apiExportGVR).Get(ctx, "tenancy.kcp.io", metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("getting tenancy.kcp.io APIExport from root: %w", err)
-	}
-	identityHash, _, _ := unstructured.NestedString(tenancyExport.Object, "status", "identityHash")
-	if identityHash == "" {
-		return fmt.Errorf("tenancy.kcp.io APIExport has no identity hash yet")
+	var identityHash string
+	if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
+		tenancyExport, getErr := rootDynamic.Resource(apiExportGVR).Get(ctx, "tenancy.kcp.io", metav1.GetOptions{})
+		if getErr != nil {
+			logger.V(4).Info("tenancy.kcp.io APIExport not yet available, retrying", "err", getErr)
+			return false, nil
+		}
+		h, _, _ := unstructured.NestedString(tenancyExport.Object, "status", "identityHash")
+		if h == "" {
+			logger.V(4).Info("tenancy.kcp.io APIExport has no identity hash yet, retrying")
+			return false, nil
+		}
+		identityHash = h
+		return true, nil
+	}); err != nil {
+		return fmt.Errorf("waiting for tenancy.kcp.io identity hash: %w", err)
 	}
 	b.workspaceIdentityHash = identityHash
 	logger.Info("Got tenancy.kcp.io identity hash", "hash", identityHash)
@@ -213,7 +224,9 @@ func (b *Bootstrapper) installUserCRD(ctx context.Context) error {
 
 // CreateTenantWorkspace creates a workspace for a user, binds the kedge API,
 // and returns the workspace's logical cluster name assigned by kcp.
-func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string) (string, error) {
+// rbacIdentity is the kcp user identity (e.g. "kedge:static:abc123") that will
+// be granted cluster-admin in the new workspace.
+func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacIdentity string) (string, error) {
 	logger := klog.FromContext(ctx)
 
 	// Client targeting root:kedge:tenants.
@@ -321,6 +334,15 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 		logger.Error(waitErr, "kedge APIBinding did not become Bound (non-fatal)", "userID", userID)
 	}
 
+	// Grant the user cluster-admin in their own workspace so they can manage
+	// their resources directly (e.g. via GraphQL or kubectl with their token).
+	if rbacIdentity != "" {
+		if err := ensureWorkspaceAdmin(ctx, tenantClient, rbacIdentity); err != nil {
+			// Non-fatal: log and continue.
+			logger.Error(err, "Failed to create workspace-admin ClusterRoleBinding (non-fatal)", "userID", userID)
+		}
+	}
+
 	// Ensure a "default" Kubernetes MCP object exists in the tenant workspace.
 	// This object enables the multi-edge MCP endpoint without requiring the
 	// user to create it manually.  An empty EdgeSelector selects all edges.
@@ -345,6 +367,59 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 	return clusterName, nil
 }
 
+// EnsureWorkspaceAdmin ensures cluster-admin is granted to rbacIdentity in the
+// workspace identified by clusterName. Idempotent — safe to call on every login.
+func (b *Bootstrapper) EnsureWorkspaceAdmin(ctx context.Context, clusterName, rbacIdentity string) error {
+	if clusterName == "" || rbacIdentity == "" {
+		return nil
+	}
+	tenantConfig := configForPath(b.config, clusterName)
+	tenantClient, err := dynamic.NewForConfig(tenantConfig)
+	if err != nil {
+		return fmt.Errorf("creating tenant client for %s: %w", clusterName, err)
+	}
+	return ensureWorkspaceAdmin(ctx, tenantClient, rbacIdentity)
+}
+
+var clusterRoleBindingGVR = schema.GroupVersionResource{
+	Group:    "rbac.authorization.k8s.io",
+	Version:  "v1",
+	Resource: "clusterrolebindings",
+}
+
+// ensureWorkspaceAdmin creates a cluster-admin ClusterRoleBinding for the given
+// rbacIdentity in the workspace targeted by tenantClient. Idempotent.
+// Uses the name "kedge-user-admin" to avoid conflicting with the kcp-provisioned
+// "workspace-admin" binding.
+func ensureWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, rbacIdentity string) error {
+	crb := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "rbac.authorization.k8s.io/v1",
+			"kind":       "ClusterRoleBinding",
+			"metadata": map[string]interface{}{
+				"name": "kedge-cluster-admin",
+			},
+			"roleRef": map[string]interface{}{
+				"apiGroup": "rbac.authorization.k8s.io",
+				"kind":     "ClusterRole",
+				"name":     "cluster-admin",
+			},
+			"subjects": []interface{}{
+				map[string]interface{}{
+					"apiGroup": "rbac.authorization.k8s.io",
+					"kind":     "User",
+					"name":     rbacIdentity,
+				},
+			},
+		},
+	}
+	_, err := tenantClient.Resource(clusterRoleBindingGVR).Create(ctx, crb, metav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating workspace-admin ClusterRoleBinding: %w", err)
+	}
+	return nil
+}
+
 // newClients creates dynamic and discovery clients from a rest.Config.
 func newClients(cfg *rest.Config) (dynamic.Interface, discovery.DiscoveryInterface, error) {
 	dynClient, err := dynamic.NewForConfig(cfg)
@@ -366,8 +441,10 @@ func configForPath(base *rest.Config, clusterPath string) *rest.Config {
 }
 
 // waitForWorkspaceReady polls until a workspace has phase "Ready".
+// Uses a 3-minute timeout to accommodate slower CI environments where kcp
+// workspaces may take longer to become ready after initial deployment.
 func waitForWorkspaceReady(ctx context.Context, client dynamic.Interface, name string) error {
-	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 60*time.Second, true, func(ctx context.Context) (bool, error) {
+	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
 		ws, err := client.Resource(workspaceGVR).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, nil

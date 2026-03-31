@@ -88,7 +88,7 @@ const (
 	DefaultAgentClusterName = "kedge-e2e-agent"
 	DefaultKindNetwork      = "kedge-e2e"
 	DefaultChartPath        = "deploy/charts/kedge-hub"
-	DefaultHubURL           = "https://kedge.localhost:8443"
+	DefaultHubURL           = "https://kedge.localhost:9443"
 
 	// DefaultAgentCount is the number of agent clusters created by the e2e
 	// test suites. All suites create 2 agent clusters so multi-site tests run
@@ -541,7 +541,7 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 			"--agent-count", fmt.Sprintf("%d", DefaultAgentCount),
 			"--kind-network", DefaultKindNetwork,
 			"--chart-path", filepath.Join(workDir, DefaultChartPath),
-			"--wait-for-ready-timeout", "20m",
+			"--wait-for-ready-timeout", "45m",
 			"--with-external-kcp",
 		}
 
@@ -669,7 +669,7 @@ func HubNodePortURL() string {
 // the hub node's Docker network NodePort address so that in-cluster agents can
 // connect.
 //
-// clusterEnv.HubURL is always "https://kedge.localhost:8443" (no cluster path),
+// clusterEnv.HubURL is always "https://kedge.localhost:9443" (no cluster path),
 // so this function reads the cluster path directly from the hub kubeconfig
 // instead of relying on the HubURL field.
 //
@@ -684,7 +684,7 @@ func PodHubURLFromKubeconfig(kubeconfigPath string) string {
 	if err != nil {
 		return ""
 	}
-	// cfg.Host is like "https://kedge.localhost:8443/clusters/root:kedge:user-default"
+	// cfg.Host is like "https://kedge.localhost:9443/clusters/root:kedge:user-default"
 	parsedCluster, err := url.Parse(cfg.Host)
 	if err != nil {
 		return base
@@ -701,7 +701,7 @@ func AgentBinPath() string {
 }
 
 // ClusterNameFromKubeconfig reads the kubeconfig at path and extracts the kcp
-// cluster name from the server URL (e.g. "https://hub:8443/clusters/abc123" →
+// cluster name from the server URL (e.g. "https://hub:9443/clusters/abc123" →
 // "abc123").  Returns "" when the kubeconfig cannot be read or has no cluster
 // path, so callers should skip passing --cluster in that case.
 func ClusterNameFromKubeconfig(kubeconfigPath string) string {

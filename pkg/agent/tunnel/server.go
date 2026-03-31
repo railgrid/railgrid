@@ -160,9 +160,6 @@ func k8sHandler(config *rest.Config) http.HandlerFunc {
 			return
 		}
 
-		// Create reverse proxy
-		proxy := httputil.NewSingleHostReverseProxy(target)
-
 		// Configure TLS
 		tlsConfig, err := rest.TLSConfigFor(config)
 		if err != nil {
@@ -174,20 +171,22 @@ func k8sHandler(config *rest.Config) http.HandlerFunc {
 			tlsConfig = &tls.Config{} //nolint:gosec
 		}
 
-		proxy.Transport = &http.Transport{
-			TLSClientConfig: tlsConfig,
-		}
+		// Create reverse proxy using Rewrite only (Director and Rewrite are mutually exclusive).
+		proxy := &httputil.ReverseProxy{
+			Transport: &http.Transport{
+				TLSClientConfig: tlsConfig,
+			},
+			Rewrite: func(pr *httputil.ProxyRequest) {
+				pr.Out.URL.Scheme = target.Scheme
+				pr.Out.URL.Host = target.Host
+				pr.Out.URL.Path = k8sPath
+				pr.Out.Host = target.Host
 
-		proxy.Director = func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.URL.Path = k8sPath
-			req.Host = target.Host
-
-			// Add bearer token if configured
-			if config.BearerToken != "" {
-				req.Header.Set("Authorization", "Bearer "+config.BearerToken)
-			}
+				// Add bearer token if configured
+				if config.BearerToken != "" {
+					pr.Out.Header.Set("Authorization", "Bearer "+config.BearerToken)
+				}
+			},
 		}
 
 		proxy.ServeHTTP(w, r)

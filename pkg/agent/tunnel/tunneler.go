@@ -207,14 +207,14 @@ func initiateConnection(ctx context.Context, wsURL string, token string, tlsConf
 // SplitBaseAndCluster splits a hub URL into the base URL (scheme+host only) and
 // the kcp cluster name embedded in the path.
 //
-// For "https://kedge.localhost:8443/clusters/abc123" it returns:
+// For "https://kedge.localhost:9443/clusters/abc123" it returns:
 //
-//	base    = "https://kedge.localhost:8443"
+//	base    = "https://kedge.localhost:9443"
 //	cluster = "abc123"
 //
-// For "https://kedge.localhost:8443" (no /clusters/ path segment) it returns:
+// For "https://kedge.localhost:9443" (no /clusters/ path segment) it returns:
 //
-//	base    = "https://kedge.localhost:8443"
+//	base    = "https://kedge.localhost:9443"
 //	cluster = "default"
 //
 // The base URL is always used when dialling the hub so that /services/agent-proxy/

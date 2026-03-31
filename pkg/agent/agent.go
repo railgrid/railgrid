@@ -208,7 +208,7 @@ func LoadAgentConfig(edgeName string) (*AgentConfig, error) {
 }
 
 // clusterFromConfig returns the kcp cluster name embedded in the hub config's
-// Host URL (e.g. "https://hub:8443/clusters/abc123" → "abc123").
+// Host URL (e.g. "https://hub:9443/clusters/abc123" → "abc123").
 // Returns "" when no /clusters/ segment is present so that the caller can
 // fall back to other sources (explicit --cluster flag, SA token claim, etc.).
 func clusterFromConfig(cfg *rest.Config) string {

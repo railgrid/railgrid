@@ -41,10 +41,10 @@ const (
 //
 // Examples:
 //
-//	"https://hub:8443/clusters/abc123"        → ("https://hub:8443", "abc123")
-//	"https://hub:8443/clusters/abc123/extra"  → ("https://hub:8443", "abc123")
-//	"https://hub:8443"                         → ("https://hub:8443", "default")
-//	"https://hub:8443/"                        → ("https://hub:8443", "default")
+//	"https://hub:9443/clusters/abc123"        → ("https://hub:9443", "abc123")
+//	"https://hub:9443/clusters/abc123/extra"  → ("https://hub:9443", "abc123")
+//	"https://hub:9443"                         → ("https://hub:9443", "default")
+//	"https://hub:9443/"                        → ("https://hub:9443", "default")
 //
 // Returns (trimmed url, "default") on parse error.
 func SplitBaseAndCluster(rawURL string) (base, cluster string) {
@@ -69,7 +69,7 @@ func SplitBaseAndCluster(rawURL string) (base, cluster string) {
 //
 // If hubBase already contains a /clusters/ path it is replaced.
 //
-// Example: HubServerURL("https://hub:8443", "abc123") → "https://hub:8443/clusters/abc123"
+// Example: HubServerURL("https://hub:9443", "abc123") → "https://hub:9443/clusters/abc123"
 func HubServerURL(hubBase, cluster string) string {
 	base := strings.TrimSuffix(hubBase, "/")
 	if idx := strings.Index(base, "/clusters/"); idx != -1 {

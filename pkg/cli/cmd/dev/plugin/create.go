@@ -117,7 +117,7 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 		AgentChartPath:   "oci://ghcr.io/faroshq/charts/kedge-agent",
 		ChartVersion:     fallbackAssetVersion,
 		APIServerPort:    6443,
-		HubHTTPSPort:     8443,
+		HubHTTPSPort:     9443,
 		HubHTTPPort:      8080,
 		DexHTTPPort:      5556,
 		KCPHTTPSPort:     7443,
@@ -136,7 +136,7 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&o.Tag, "tag", "", "kedge hub image tag to use in dev mode")
 	cmd.Flags().StringVar(&o.KindNetwork, "kind-network", "kedge-dev", "kind network to use in dev mode")
 	cmd.Flags().IntVar(&o.APIServerPort, "api-server-port", 6443, "Kubernetes API server port for hub kind cluster (change if 6443 is already in use)")
-	cmd.Flags().IntVar(&o.HubHTTPSPort, "hub-https-port", 8443, "HTTPS port for kedge hub (change if 8443 is already in use)")
+	cmd.Flags().IntVar(&o.HubHTTPSPort, "hub-https-port", 9443, "HTTPS port for kedge hub (change if 9443 is already in use)")
 	cmd.Flags().IntVar(&o.HubHTTPPort, "hub-http-port", 8080, "HTTP port for kedge hub (change if 8080 is already in use)")
 	cmd.Flags().StringVar(&o.ImagePullPolicy, "image-pull-policy", "IfNotPresent", "Image pull policy for the hub (use Never when the image is pre-loaded into kind)")
 	cmd.Flags().BoolVar(&o.WithDex, "with-dex", false, "Deploy Dex as OIDC identity provider into the hub kind cluster")
@@ -319,7 +319,7 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	for _, agentName := range o.agentClusterNames() {
 		fmt.Fprintf(o.Streams.ErrOut, "  Agent cluster kubeconfig: %s.kubeconfig\n", agentName) // nolint:errcheck
 	}
-	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:8443\n") // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:9443\n") // nolint:errcheck
 	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                   // nolint:errcheck
 	if hubIP != "" {
 		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP (for agent): %s\n", hubIP) // nolint:errcheck
@@ -343,7 +343,7 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	stepNum++
 
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Login to authenticate to the hub:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge login --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify --token=dev-token"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge login --hub-url https://kedge.localhost:9443 --insecure-skip-tls-verify --token=dev-token"))
 	stepNum++
 
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Create an edge in the hub:\n", stepNum)
@@ -364,7 +364,7 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then install the agent Helm chart:\n")
 	if hubIP != "" {
 		// Use hub.url to override the kubeconfig server URL with the correct NodePort address
-		// The kubeconfig has kedge.localhost:8443 which works from host, but from within
+		// The kubeconfig has kedge.localhost:9443 which works from host, but from within
 		// the Docker network we need to use the hub's IP and NodePort 31443
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
 			"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set agent.hub.url=https://%s:31443 \\\n     --set image.tag=%s",

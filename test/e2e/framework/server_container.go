@@ -39,7 +39,7 @@ const (
 
 // ServerContainer manages a Docker container running lscr.io/linuxserver/openssh-server
 // alongside a kedge server-mode agent.  The container runs with --network host so
-// the agent can reach the hub at kedge.localhost:8443.
+// the agent can reach the hub at kedge.localhost:9443.
 type ServerContainer struct {
 	// Name is the Docker container name.
 	Name string

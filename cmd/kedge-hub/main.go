@@ -63,6 +63,13 @@ func main() {
 	cmd.Flags().BoolVar(&opts.DevMode, "dev-mode", false, "Enable dev mode (skip TLS verification for OIDC)")
 	cmd.Flags().StringSliceVar(&opts.StaticAuthTokens, "static-auth-token", nil, "Static bearer tokens for access (can be specified multiple times)")
 
+	cmd.Flags().StringVar(&opts.GraphQLAddr, "graphql-addr", opts.GraphQLAddr, "Address of an external GraphQL gateway to proxy /graphql/* requests to (empty to disable)")
+	cmd.Flags().BoolVar(&opts.EmbeddedGraphQL, "embedded-graphql", opts.EmbeddedGraphQL, "Run GraphQL listener+gateway in-process (requires embedded or external kcp; overrides --graphql-addr)")
+	cmd.Flags().StringVar(&opts.GraphQLAPIExportSliceName, "graphql-apiexport-slice-name", opts.GraphQLAPIExportSliceName, "APIExportEndpointSlice name to watch for GraphQL schema generation")
+	cmd.Flags().StringVar(&opts.GraphQLAPIExportLogicalCluster, "graphql-apiexport-logical-cluster", opts.GraphQLAPIExportLogicalCluster, "Logical cluster path where the APIExportEndpointSlice lives")
+	cmd.Flags().StringVar(&opts.GraphQLGRPCAddr, "graphql-grpc-addr", opts.GraphQLGRPCAddr, "In-process gRPC address for embedded GraphQL listener/gateway communication")
+	cmd.Flags().BoolVar(&opts.GraphQLPlayground, "graphql-playground", opts.GraphQLPlayground, "Enable the GraphQL playground UI")
+
 	// Embedded kcp flags
 	cmd.Flags().BoolVar(&opts.EmbeddedKCP, "embedded-kcp", opts.EmbeddedKCP, "Enable embedded kcp server (runs kcp in-process)")
 	cmd.Flags().StringVar(&opts.KCPRootDir, "kcp-root-dir", "", "Root directory for embedded kcp data (default: <data-dir>/kcp)")

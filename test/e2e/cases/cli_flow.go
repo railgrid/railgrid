@@ -154,7 +154,7 @@ func AgentCLIFlow() features.Feature {
 //
 //	# Option C — foreground process (dev/containers):
 //	kedge agent run \
-//	  --hub-url https://kedge.localhost:8443 \
+//	  --hub-url https://kedge.localhost:9443 \
 //	  --edge-name my-edge \
 //	  --type kubernetes \
 //	  --token abc123

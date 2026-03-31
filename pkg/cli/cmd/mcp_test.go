@@ -32,15 +32,15 @@ func TestMCPURLFromServerURL(t *testing.T) {
 	}{
 		{
 			name:      "standard kcp URL",
-			serverURL: "https://kedge.localhost:8443/clusters/root:kedge:user-default",
+			serverURL: "https://kedge.localhost:9443/clusters/root:kedge:user-default",
 			edgeName:  edgeName,
-			wantURL:   "https://kedge.localhost:8443/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp",
+			wantURL:   "https://kedge.localhost:9443/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp",
 		},
 		{
 			name:      "trailing slash is stripped",
-			serverURL: "https://kedge.localhost:8443/clusters/root:kedge:user-default/",
+			serverURL: "https://kedge.localhost:9443/clusters/root:kedge:user-default/",
 			edgeName:  edgeName,
-			wantURL:   "https://kedge.localhost:8443/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp",
+			wantURL:   "https://kedge.localhost:9443/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp",
 		},
 		{
 			name:      "root cluster",
@@ -50,13 +50,13 @@ func TestMCPURLFromServerURL(t *testing.T) {
 		},
 		{
 			name:       "no /clusters/ path returns error",
-			serverURL:  "https://kedge.localhost:8443",
+			serverURL:  "https://kedge.localhost:9443",
 			edgeName:   edgeName,
 			wantErrMsg: "cannot determine cluster name",
 		},
 		{
 			name:       "plain path without clusters segment",
-			serverURL:  "https://kedge.localhost:8443/api/v1",
+			serverURL:  "https://kedge.localhost:9443/api/v1",
 			edgeName:   edgeName,
 			wantErrMsg: "cannot determine cluster name",
 		},
@@ -96,15 +96,15 @@ func TestMCPKubernetesURLFromServerURL(t *testing.T) {
 	}{
 		{
 			name:           "standard kcp URL with default",
-			serverURL:      "https://kedge.localhost:8443/clusters/root:kedge:user-default",
+			serverURL:      "https://kedge.localhost:9443/clusters/root:kedge:user-default",
 			kubernetesName: "default",
-			wantURL:        "https://kedge.localhost:8443/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp",
+			wantURL:        "https://kedge.localhost:9443/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp",
 		},
 		{
 			name:           "trailing slash is stripped",
-			serverURL:      "https://kedge.localhost:8443/clusters/root:kedge:user-default/",
+			serverURL:      "https://kedge.localhost:9443/clusters/root:kedge:user-default/",
 			kubernetesName: "default",
-			wantURL:        "https://kedge.localhost:8443/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp",
+			wantURL:        "https://kedge.localhost:9443/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp",
 		},
 		{
 			name:           "custom Kubernetes MCP name",
@@ -114,7 +114,7 @@ func TestMCPKubernetesURLFromServerURL(t *testing.T) {
 		},
 		{
 			name:           "no /clusters/ path returns error",
-			serverURL:      "https://kedge.localhost:8443",
+			serverURL:      "https://kedge.localhost:9443",
 			kubernetesName: "default",
 			wantErrMsg:     "cannot determine cluster name",
 		},

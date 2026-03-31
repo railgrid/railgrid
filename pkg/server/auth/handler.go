@@ -26,7 +26,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
@@ -97,19 +99,26 @@ func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclien
 }
 
 // HandleAuthorize redirects to the OIDC provider for authentication.
-// GET /auth/authorize?p=<port>&s=<sessionID>&v=<codeVerifier>
+//
+// CLI mode:    GET /auth/authorize?p=<port>&s=<sessionID>&v=<codeVerifier>
+// Portal mode: GET /auth/authorize?redirect_uri=<url>&s=<sessionID>&v=<codeVerifier>
 //
 // The CLI generates a PKCE code_verifier and passes it as "v". The hub stores
 // it in the OAuth2 state and sends the corresponding S256 code_challenge to
 // the OIDC provider. The verifier is recovered from state in HandleCallback
 // and used to exchange the auth code — no client secret needed.
+//
+// When redirect_uri is provided (portal flow), it is used as the callback URL
+// instead of the CLI localhost callback. The redirect_uri must share the same
+// origin as the hub external URL.
 func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
-	port := r.URL.Query().Get("p")
 	sessionID := r.URL.Query().Get("s")
 	codeVerifier := r.URL.Query().Get("v")
+	redirectURI := r.URL.Query().Get("redirect_uri")
+	port := r.URL.Query().Get("p")
 
-	if port == "" || sessionID == "" {
-		http.Error(w, "missing p (port) or s (session) parameter", http.StatusBadRequest)
+	if sessionID == "" {
+		http.Error(w, "missing s (session) parameter", http.StatusBadRequest)
 		return
 	}
 	if codeVerifier == "" {
@@ -117,16 +126,29 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate port is a number in [1, 65535] to prevent path injection
-	// into the redirect URL (fix for #26).
-	portNum, err := strconv.Atoi(port)
-	if err != nil || portNum < 1 || portNum > 65535 {
-		http.Error(w, "invalid port parameter: must be a number between 1 and 65535", http.StatusBadRequest)
+	var callbackURL string
+	if redirectURI != "" {
+		// Portal flow: validate redirect_uri against the hub's external URL.
+		if err := h.validateRedirectURI(redirectURI); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		callbackURL = redirectURI
+	} else if port != "" {
+		// CLI flow: build localhost callback URL from port.
+		portNum, err := strconv.Atoi(port)
+		if err != nil || portNum < 1 || portNum > 65535 {
+			http.Error(w, "invalid port parameter: must be a number between 1 and 65535", http.StatusBadRequest)
+			return
+		}
+		callbackURL = fmt.Sprintf("http://127.0.0.1:%d/callback", portNum)
+	} else {
+		http.Error(w, "missing p (port) or redirect_uri parameter", http.StatusBadRequest)
 		return
 	}
 
 	authCode := tenancyv1alpha1.AuthCode{
-		RedirectURL:  fmt.Sprintf("http://127.0.0.1:%d/callback", portNum),
+		RedirectURL:  callbackURL,
 		SessionID:    sessionID,
 		CodeVerifier: codeVerifier,
 	}
@@ -141,6 +163,37 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Include S256 code_challenge derived from the verifier in the auth URL.
 	authURL := h.oauth2Config.AuthCodeURL(state, oauth2.S256ChallengeOption(codeVerifier))
 	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+// validateRedirectURI checks that the redirect URI shares the same origin as
+// the hub external URL or is a localhost address (for development).
+func (h *Handler) validateRedirectURI(redirectURI string) error {
+	parsed, err := url.Parse(redirectURI)
+	if err != nil {
+		return fmt.Errorf("invalid redirect_uri: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("redirect_uri must be an absolute URL")
+	}
+
+	// Allow localhost for development.
+	host := strings.Split(parsed.Host, ":")[0]
+	if host == "localhost" || host == "127.0.0.1" {
+		return nil
+	}
+
+	// Validate against hub external URL origin.
+	hubParsed, err := url.Parse(h.hubExternalURL)
+	if err != nil {
+		return fmt.Errorf("invalid hub external URL configuration")
+	}
+
+	hubHost := strings.Split(hubParsed.Host, ":")[0]
+	if host != hubHost {
+		return fmt.Errorf("redirect_uri origin must match hub external URL")
+	}
+
+	return nil
 }
 
 // HandleCallback handles the OIDC callback after authentication.
@@ -221,7 +274,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	var clusterName string
 	if h.bootstrapper != nil {
 		var err error
-		clusterName, err = h.bootstrapper.CreateTenantWorkspace(ctx, userID)
+		clusterName, err = h.bootstrapper.CreateTenantWorkspace(ctx, userID, fmt.Sprintf("kedge:%s", claims.Sub))
 		if err != nil {
 			h.logger.Error(err, "failed to create tenant workspace", "userID", userID)
 			http.Error(w, "failed to create tenant workspace", http.StatusInternalServerError)

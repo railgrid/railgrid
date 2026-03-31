@@ -82,7 +82,7 @@ This command will:
 - Create a kind cluster configured for kedge development
 - Add kedge.localhost to /etc/hosts (with sudo prompts if needed)
 - Install kedge hub helm chart (default: OCI chart from ghcr.io)
-- Configure necessary port mappings (8443, 8080)
+- Configure necessary port mappings (9443, 8080)
 
 The hub chart can be sourced from:
 

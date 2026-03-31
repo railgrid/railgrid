@@ -19,7 +19,7 @@ staticClients:
     secret: ZXhhbXBsZS1hcHAtc2VjcmV0
     name: Kedge
     redirectURIs:
-      - https://localhost:8443/auth/callback
+      - https://localhost:9443/auth/callback
       - http://127.0.0.1:8080/auth/callback
 
 connectors:

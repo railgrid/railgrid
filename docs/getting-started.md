@@ -83,7 +83,7 @@ The dev stack uses hot-reload, so code changes are automatically picked up.
 Wait until you see the hub is ready:
 
 ```
-kedge-hub: listening on :8443
+kedge-hub: listening on :9443
 ```
 
 ---
@@ -195,7 +195,7 @@ On the target cluster, run the agent with the bootstrap token:
 
 ```bash
 kedge-agent \
-  --hub-url https://your-hub-url:8443 \
+  --hub-url https://your-hub-url:9443 \
   --bootstrap-token <token> \
   --edge-name my-home-server
 ```

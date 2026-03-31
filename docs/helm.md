@@ -68,7 +68,7 @@ Create `values-kind.yaml`:
 
 ```yaml
 hub:
-  hubExternalURL: "https://localhost:8443"
+  hubExternalURL: "https://localhost:9443"
   devMode: true
   staticAuthToken: "<generate-with-openssl-rand-hex-32>"
 ```
@@ -102,14 +102,14 @@ The hub container waits for kcp to generate `admin.kubeconfig` before starting (
 ### 6. Port-forward and log in
 
 ```bash
-kubectl -n kedge-system port-forward svc/kedge-kedge-hub 8443:8443
+kubectl -n kedge-system port-forward svc/kedge-kedge-hub 9443:9443
 ```
 
 In another terminal:
 
 ```bash
 kedge login \
-  --hub-url https://localhost:8443 \
+  --hub-url https://localhost:9443 \
   --token <your-static-token> \
   --insecure-skip-tls-verify
 ```
@@ -216,7 +216,7 @@ kind delete cluster --name kedge
 | Key | Description | Default |
 |:----|:------------|:--------|
 | `hub.hubExternalURL` | **(required)** External URL for kubeconfigs and callbacks | `""` |
-| `hub.listenAddr` | Hub listen address | `":8443"` |
+| `hub.listenAddr` | Hub listen address | `":9443"` |
 | `hub.devMode` | Skip TLS verification for OIDC issuer | `false` |
 | `hub.staticAuthToken` | Static bearer token (bypasses OIDC) | `""` |
 

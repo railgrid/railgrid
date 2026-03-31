@@ -218,7 +218,7 @@ The hub deploys kcp's `APIBinding` resources to make the kedge CRDs available in
 Static dev tokens (e.g. `dev-token`) are scoped to a specific kcp workspace path. The workspace path appears in the kubeconfig server URL:
 
 ```
-https://kedge.localhost:8443/clusters/<workspace-id>/...
+https://kedge.localhost:9443/clusters/<workspace-id>/...
 ```
 
 `ClusterNameFromKubeconfig` (in `test/e2e/framework/cluster.go`) extracts the workspace ID from the server URL.

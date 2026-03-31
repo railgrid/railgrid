@@ -71,7 +71,7 @@ Or pass it directly when running the binary:
 ```bash
 kedge-hub \
   --static-auth-token=<your-generated-token> \
-  --hub-external-url=https://localhost:8443 \
+  --hub-external-url=https://localhost:9443 \
   --dev-mode
 ```
 

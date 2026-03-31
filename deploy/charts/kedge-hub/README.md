@@ -17,7 +17,7 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 - Kubernetes 1.27+ (k3s / k0s / GKE / EKS / etc.)
 - Helm 3.x
 - A `StorageClass` that supports `ReadWriteOnce` (for the kcp data PVC)
-- **A publicly reachable endpoint** — agents connect to the hub from anywhere; the hub must be accessible on the internet. Set up a TLS-passthrough ingress or LoadBalancer service exposing port 8443. See [Ingress Setup](https://faroshq.github.io/kedge/ingress/) for nginx/gateway-api examples.
+- **A publicly reachable endpoint** — agents connect to the hub from anywhere; the hub must be accessible on the internet. Set up a TLS-passthrough ingress or LoadBalancer service exposing port 9443. See [Ingress Setup](https://faroshq.github.io/kedge/ingress/) for nginx/gateway-api examples.
 - An OIDC provider **or** static bearer tokens for auth
 
 ## Values Reference
@@ -35,7 +35,7 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 | Key | Default | Description |
 |-----|---------|-------------|
 | `hub.hubExternalURL` | `""` | **Required.** External URL used for kubeconfig generation and OIDC callbacks (e.g. `https://kedge.example.com`) |
-| `hub.listenAddr` | `:8443` | Hub TLS listen address |
+| `hub.listenAddr` | `:9443` | Hub TLS listen address |
 | `hub.devMode` | `false` | Enable development mode (verbose logging, relaxed security) |
 | `hub.staticAuthTokens` | `[]` | Static bearer tokens for access. Each token creates its own user/workspace. Generate with `openssl rand -base64 32` |
 | `hub.resources` | see values | CPU/memory requests and limits (includes embedded kcp overhead) |
@@ -88,7 +88,7 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 | Key | Default | Description |
 |-----|---------|-------------|
 | `service.type` | `ClusterIP` | Kubernetes service type |
-| `service.hub.port` | `8443` | Service port |
+| `service.hub.port` | `9443` | Service port |
 
 ### Ingress
 
@@ -160,7 +160,7 @@ kcp:
 
 | Port | Protocol | Description |
 |------|----------|-------------|
-| 8443 | HTTPS/TLS | Hub API server + agent tunnel endpoint |
+| 9443 | HTTPS/TLS | Hub API server + agent tunnel endpoint |
 | 6443 | HTTPS/TLS | Embedded kcp API server (cluster-internal only) |
 
 ## Upgrading

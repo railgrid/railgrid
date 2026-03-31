@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -24,7 +24,7 @@ KCP_APIGEN_BIN := apigen
 KCP_APIGEN_GEN := $(TOOLSDIR)/$(KCP_APIGEN_BIN)-$(KCP_APIGEN_VER)
 export KCP_APIGEN_GEN
 
-GOLANGCI_LINT_VER := v2.9.0
+GOLANGCI_LINT_VER := v2.11.4
 GOLANGCI_LINT_BIN := golangci-lint
 GOLANGCI_LINT := $(TOOLSDIR)/$(GOLANGCI_LINT_BIN)-$(GOLANGCI_LINT_VER)
 
@@ -49,13 +49,26 @@ ldflags: ## Print ldflags for goreleaser
 
 all: build
 
-build: build-kedge build-hub
+build: build-kedge build-hub build-graphql
 
 build-kedge:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge ./cmd/kedge/
 
 build-hub:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
+
+build-hub-portal: build-portal ## Build hub with embedded portal
+	cp -r portal/dist pkg/hub/portal/
+	go build $(GOFLAGS) -tags portal_embed -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
+
+build-portal: ## Build the portal Vue.js SPA
+	cd portal && npm ci && npm run build
+
+dev-portal: ## Run the portal dev server
+	cd portal && npm run dev
+
+build-graphql: ## Build the GraphQL gateway binary (listener + gateway subcommands)
+	go build $(GOFLAGS) -o $(BINDIR)/kedge-graphql ./cmd/graphql/
 
 # build-agent is an alias for build-kedge: the agent container image now ships
 # the kedge CLI binary (cmd/kedge/) with ENTRYPOINT [/kedge, agent, run].
@@ -144,10 +157,10 @@ $(KCP):
 	@echo "kcp binary: $(KCP)"
 
 dev-login: build-kedge
-	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:9443 --insecure-skip-tls-verify
 
 dev-login-static: build-kedge ## Login using static token auth (for use with run-hub-static)
-	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:9443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
 
 DEV_EDGE_NAME ?= dev-edge-1
 # TYPE selects the Edge type for dev-edge-create and dev-run-edge.
@@ -161,10 +174,10 @@ dev-run-edge: build-kedge ## Run the edge agent: TYPE=kubernetes (default) or TY
 	@test -f .env.edge || (echo "Run 'make dev-edge-create [TYPE=$(TYPE)]' first"; exit 1)
 ifeq ($(TYPE),server)
 	$(BINDIR)/kedge agent run \
-		--hub-url=https://localhost:8443 \
+		--hub-url=https://localhost:9443 \
 		--hub-insecure-skip-tls-verify \
 		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
-		--tunnel-url=https://localhost:8443 \
+		--tunnel-url=https://localhost:9443 \
 		--edge-name=$(DEV_EDGE_NAME) \
 		--cluster=$(KEDGE_EDGE_CLUSTER) \
 		--type=server \
@@ -174,10 +187,10 @@ ifeq ($(TYPE),server)
 else
 	hack/scripts/ensure-kind-cluster.sh
 	$(BINDIR)/kedge agent run \
-		--hub-url=https://localhost:8443 \
+		--hub-url=https://localhost:9443 \
 		--hub-insecure-skip-tls-verify \
 		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
-		--tunnel-url=https://localhost:8443 \
+		--tunnel-url=https://localhost:9443 \
 		--edge-name=$(DEV_EDGE_NAME) \
 		--kubeconfig=.kubeconfig-kedge-agent \
 		--cluster=$(KEDGE_EDGE_CLUSTER) \
@@ -239,6 +252,20 @@ dev-run-ssh-server:
   --restart unless-stopped \
   lscr.io/linuxserver/openssh-server:latest
 
+GRAPHQL_GRPC_ADDR ?= localhost:50051
+GRAPHQL_APIEXPORT_SLICE ?= core.faros.sh
+GRAPHQL_APIEXPORT_LOGICAL_CLUSTER ?= root:kedge:providers
+
+dev-run-graphql: build-graphql ## Run GraphQL (listener + gateway, kcp mode, gRPC transport, playground at :8080)
+	$(BINDIR)/kedge-graphql run \
+		--kubeconfig=$(KCP_DATA_DIR)/admin.kubeconfig \
+		--grpc-addr=$(GRAPHQL_GRPC_ADDR) \
+		--apiexport-endpoint-slice-name=$(GRAPHQL_APIEXPORT_SLICE) \
+		--apiexport-endpoint-slice-logicalcluster=$(GRAPHQL_APIEXPORT_LOGICAL_CLUSTER) \
+		--workspace-schema-kubeconfig-override=$(KCP_DATA_DIR)/admin.kubeconfig \
+		--enable-playground \
+		--gateway-port=9090
+
 # --- Hub configuration options ---
 # These can be combined to create different run configurations.
 
@@ -248,7 +275,7 @@ STATIC_AUTH_TOKEN ?= dev-token
 HUB_FLAGS_BASE := \
 	--serving-cert-file=certs/apiserver.crt \
 	--serving-key-file=certs/apiserver.key \
-	--hub-external-url=https://localhost:8443 \
+	--hub-external-url=https://localhost:9443 \
 	--dev-mode -v 4
 
 # Auth: OIDC via Dex
@@ -270,6 +297,18 @@ HUB_FLAGS_KCP_EMBEDDED := \
 	--embedded-kcp \
 	--kcp-root-dir=.kcp \
 	--kcp-secure-port=6443
+
+# GraphQL: Embedded (runs listener+gateway in-process alongside hub)
+GRAPHQL_APIEXPORT_SLICE ?= core.faros.sh
+GRAPHQL_APIEXPORT_LOGICAL_CLUSTER ?= root:kedge:providers
+GRAPHQL_GRPC_ADDR ?= localhost:50051
+
+HUB_FLAGS_GRAPHQL_EMBEDDED := \
+	--embedded-graphql \
+	--graphql-apiexport-slice-name=$(GRAPHQL_APIEXPORT_SLICE) \
+	--graphql-apiexport-logical-cluster=$(GRAPHQL_APIEXPORT_LOGICAL_CLUSTER) \
+	--graphql-grpc-addr=$(GRAPHQL_GRPC_ADDR) \
+	--graphql-playground
 
 # --- Run targets ---
 # Naming convention: run-hub-[auth]-[kcp]
@@ -293,13 +332,21 @@ run-hub-embedded: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
 	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED)
 
-## Embedded KCP + static token auth (standalone - no external deps)
+## Embedded KCP + static token auth + embedded GraphQL (standalone - no external deps)
 run-hub-embedded-static: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED)
+	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
 
-## Alias for the simplest standalone mode
-run-hub-standalone: run-hub-embedded-static
+## Embedded KCP + static token + embedded GraphQL (fully standalone)
+run-hub-standalone: build-hub certs
+	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
+	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
+
+## Embedded KCP + OIDC + embedded GraphQL
+run-hub-embedded-graphql: build-hub certs
+	@source $(SERVICE_HOOKS) && require_service dex "make run-dex"
+	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
+	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
 
 dev-status: ## Show status of dev services (dex, kcp)
 	@source $(SERVICE_HOOKS) && list_services
@@ -316,13 +363,15 @@ help-dev: ## Show development environment options
 	@echo "=== Kedge Hub Development Modes ==="
 	@echo ""
 	@echo "STANDALONE (no external dependencies):"
-	@echo "  make run-hub-standalone     - Embedded kcp + static token"
-	@echo "                                Just run this and use: make dev-login-static"
+	@echo "  make run-hub-standalone         - Embedded kcp + static token + embedded GraphQL"
+	@echo "                                    Just run this and use: make dev-login-static"
+	@echo "  make run-hub-embedded-static    - Embedded kcp + static token (no GraphQL)"
 	@echo ""
 	@echo "WITH DEX (OIDC authentication):"
 	@echo "  Terminal 1: make run-dex"
-	@echo "  Terminal 2: make run-hub-embedded    - Embedded kcp + OIDC"
-	@echo "              make dev-login           - Login via browser"
+	@echo "  Terminal 2: make run-hub-embedded-graphql - Embedded kcp + OIDC + embedded GraphQL"
+	@echo "              make run-hub-embedded          - Embedded kcp + OIDC (no GraphQL)"
+	@echo "              make dev-login                 - Login via browser"
 	@echo ""
 	@echo "WITH EXTERNAL KCP:"
 	@echo "  Terminal 1: make dev-run-kcp"

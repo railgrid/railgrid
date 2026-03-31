@@ -63,7 +63,7 @@ make build
 ./bin/kedge dev create --chart-path deploy/charts/kedge-hub
 
 # Log in with the static dev token
-./bin/kedge login --hub-url https://kedge.localhost:8443 \
+./bin/kedge login --hub-url https://kedge.localhost:9443 \
   --insecure-skip-tls-verify --token dev-token
 
 # Register a dev edge
@@ -74,7 +74,7 @@ make build
 
 # Run the agent in the background (foreground process)
 ./bin/kedge agent run \
-  --hub-url https://kedge.localhost:8443 \
+  --hub-url https://kedge.localhost:9443 \
   --token <join-token> \
   --edge-name dev-edge-1 \
   --type kubernetes \

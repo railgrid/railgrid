@@ -48,7 +48,7 @@ const (
 	kcpChartVersion = "0.14.0" // matches kcp app version v0.30.0
 
 	// kcp networking: front-proxy service port and NodePort
-	// externalPort=8443 → ClusterIP service port
+	// externalPort=8443 → the port kcp-front-proxy listens on (ClusterIP 8443)
 	// nodePort=30643   → NodePort on kind node
 	// kind extraPortMapping: containerPort=30643, hostPort=KCPHTTPSPort(7443)
 	kcpExternalPort = 8443
@@ -310,7 +310,7 @@ func (o *DevOptions) buildKCPKubeconfigs(ctx context.Context, restConfig *rest.C
 	//     via NodePort 127.0.0.1:KCPHTTPSPort.
 	//
 	// Why two certs? The kcp backend (kcp:6443) trusts kcp-client-ca, while the
-	// front-proxy (kcp-front-proxy:8443) trusts kcp-front-proxy-client-ca. They
+	// front-proxy (kcp-front-proxy:9443) trusts kcp-front-proxy-client-ca. They
 	// are separate CAs, so a single cert cannot satisfy both.
 
 	internalCertName := kcpAdminCertName + "-internal"

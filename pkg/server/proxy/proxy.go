@@ -48,16 +48,17 @@ import (
 // KCPProxy is a reverse proxy that authenticates requests via OIDC
 // and forwards them to the user's dedicated kcp tenant workspace.
 type KCPProxy struct {
-	kcpTarget        *url.URL
-	transport        http.RoundTripper // built from kcp admin config; handles TLS + auth
-	verifier         *oidc.IDTokenVerifier
-	verifyCtx        context.Context // context with HTTP client for OIDC key fetches
-	kedgeClient      *kedgeclient.Client
-	bootstrapper     *kcp.Bootstrapper
-	staticAuthTokens []string
-	hubExternalURL   string
-	devMode          bool
-	logger           klog.Logger
+	kcpTarget            *url.URL
+	transport            http.RoundTripper // built from kcp admin config; handles TLS + auth
+	passthroughTransport http.RoundTripper // TLS-only transport; no credentials injected
+	verifier             *oidc.IDTokenVerifier
+	verifyCtx            context.Context // context with HTTP client for OIDC key fetches
+	kedgeClient          *kedgeclient.Client
+	bootstrapper         *kcp.Bootstrapper
+	staticAuthTokens     []string
+	hubExternalURL       string
+	devMode              bool
+	logger               klog.Logger
 }
 
 // NewKCPProxy creates a reverse proxy to kcp.
@@ -83,6 +84,21 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 		return nil, fmt.Errorf("building kcp transport: %w", err)
 	}
 
+	// Build a passthrough transport with the same TLS config but no credentials.
+	// Used when forwarding requests with the caller's own token (e.g. static tokens).
+	passthroughConfig := &rest.Config{
+		Host: kcpConfig.Host,
+		TLSClientConfig: rest.TLSClientConfig{
+			Insecure: transportConfig.Insecure,
+			CAData:   transportConfig.CAData,
+			CAFile:   transportConfig.CAFile,
+		},
+	}
+	passthroughTransport, err := rest.TransportFor(passthroughConfig)
+	if err != nil {
+		return nil, fmt.Errorf("building passthrough transport: %w", err)
+	}
+
 	// Build a context with an insecure HTTP client for OIDC key fetches.
 	verifyCtx := context.Background()
 	if devMode {
@@ -95,16 +111,17 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 	}
 
 	return &KCPProxy{
-		kcpTarget:        target,
-		transport:        transport,
-		verifier:         verifier,
-		verifyCtx:        verifyCtx,
-		kedgeClient:      kedgeClient,
-		bootstrapper:     bootstrapper,
-		staticAuthTokens: staticAuthTokens,
-		hubExternalURL:   hubExternalURL,
-		devMode:          devMode,
-		logger:           klog.Background().WithName("kcp-proxy"),
+		kcpTarget:            target,
+		transport:            transport,
+		passthroughTransport: passthroughTransport,
+		verifier:             verifier,
+		verifyCtx:            verifyCtx,
+		kedgeClient:          kedgeClient,
+		bootstrapper:         bootstrapper,
+		staticAuthTokens:     staticAuthTokens,
+		hubExternalURL:       hubExternalURL,
+		devMode:              devMode,
+		logger:               klog.Background().WithName("kcp-proxy"),
 	}, nil
 }
 
@@ -259,7 +276,8 @@ func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, toke
 			req.URL.Path = kcpPath
 			req.Host = target.Host
 
-			// Remove user auth — the transport adds kcp admin credentials.
+			// Remove user auth — the transport (kcp admin cert) handles authentication.
+			// kcp does not have static token auth configured; we proxy as hub admin.
 			req.Header.Del("Authorization")
 		},
 		Transport: p.transport,
@@ -327,7 +345,7 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 
 		// Ensure workspace exists if bootstrapper is available.
 		if p.bootstrapper != nil && user.Spec.DefaultCluster == "" {
-			clusterName, err := p.bootstrapper.CreateTenantWorkspace(ctx, user.Name)
+			clusterName, err := p.bootstrapper.CreateTenantWorkspace(ctx, user.Name, user.Spec.RBACIdentity)
 			if err != nil {
 				return nil, fmt.Errorf("creating tenant workspace: %w", err)
 			}
@@ -344,6 +362,13 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 			user, err = p.kedgeClient.Users().Update(ctx, user, metav1.UpdateOptions{})
 			if err != nil {
 				return nil, fmt.Errorf("updating user default cluster: %w", err)
+			}
+		}
+
+		// Re-ensure workspace-admin binding on every login so it self-heals if deleted.
+		if p.bootstrapper != nil && user.Spec.DefaultCluster != "" {
+			if err := p.bootstrapper.EnsureWorkspaceAdmin(ctx, user.Spec.DefaultCluster, user.Spec.RBACIdentity); err != nil {
+				p.logger.Error(err, "failed to ensure workspace-admin binding (non-fatal)", "user", user.Name)
 			}
 		}
 		return user, nil
@@ -394,7 +419,7 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 
 	// Create tenant workspace if bootstrapper is available.
 	if p.bootstrapper != nil {
-		clusterName, err := p.bootstrapper.CreateTenantWorkspace(ctx, created.Name)
+		clusterName, err := p.bootstrapper.CreateTenantWorkspace(ctx, created.Name, created.Spec.RBACIdentity)
 		if err != nil {
 			return nil, fmt.Errorf("creating tenant workspace: %w", err)
 		}

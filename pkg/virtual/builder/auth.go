@@ -69,13 +69,19 @@ func parseServiceAccountToken(token string) (saTokenClaims, bool) {
 	return claims, true
 }
 
-// extractBearerToken extracts the bearer token from the Authorization header.
+// extractBearerToken extracts the bearer token from the Authorization header
+// or, as a fallback, the "token" query parameter.  The query-parameter path
+// exists because browsers cannot set headers on WebSocket connections.
 func extractBearerToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return ""
+	if strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
 	}
-	return strings.TrimPrefix(auth, "Bearer ")
+	// Fallback for WebSocket upgrades from the browser terminal.
+	if t := r.URL.Query().Get("token"); t != "" {
+		return t
+	}
+	return ""
 }
 
 // authorize performs delegated authentication and authorization against kcp.

@@ -313,7 +313,7 @@ func (p *virtualWorkspaces) buildAgentKubeconfigHeader(cluster, edgeName, _ stri
 
 	hubURL := p.hubExternalURL
 	if hubURL == "" {
-		hubURL = "https://localhost:8443"
+		hubURL = "https://localhost:9443"
 	}
 	kubecfg := buildAgentKubeconfig(hubURL, cluster, edgeName, saToken)
 	data, err := clientcmd.Write(*kubecfg)

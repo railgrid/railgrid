@@ -42,7 +42,7 @@ type ServerProcess struct {
 	// Used only when HubKubeconfig is empty.
 	HubURL string
 	// HubKubeconfig is the path to a kubeconfig whose server URL contains the
-	// kcp workspace cluster path (e.g. https://hub:8443/clusters/abc123).
+	// kcp workspace cluster path (e.g. https://hub:9443/clusters/abc123).
 	// When set the agent uses --hub-kubeconfig instead of --hub-url so that the
 	// cluster name is correctly derived from the URL.  Always set this in e2e
 	// tests to avoid the cluster-name mismatch bug with static tokens.

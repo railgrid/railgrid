@@ -35,6 +35,11 @@ Thumbs.db
 _output/
 _artifacts/
 
+# Portal build artifacts (copied from portal/dist for embed)
+pkg/hub/portal/
+portal/dist/
+portal/node_modules/
+
 # Data dirs
 data/
 *.kubeconfig

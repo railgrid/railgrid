@@ -36,7 +36,7 @@ EOF
 
 # 2. Extract kcp cluster path from current kubectl config.
 CLUSTER_URL=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
-# Extract the cluster path from URL like https://localhost:8443/clusters/abc123
+# Extract the cluster path from URL like https://localhost:9443/clusters/abc123
 CLUSTER_PATH=""
 if [[ "${CLUSTER_URL}" =~ /clusters/([^/]+) ]]; then
   CLUSTER_PATH="${BASH_REMATCH[1]}"

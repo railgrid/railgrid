@@ -79,7 +79,7 @@ export KUBECONFIG=kedge-hub.kubeconfig
 ### Login to authenticate to the hub
 
 ```bash
-kedge login --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify --token=dev-token
+kedge login --hub-url https://kedge.localhost:9443 --insecure-skip-tls-verify --token=dev-token
 ```
 
 ### Create a site in the hub
@@ -183,7 +183,7 @@ This removes both kind clusters and cleans up kubeconfig files.
 ### Hub cluster
 
 The hub cluster is configured with:
-- Port mappings: `localhost:8443` -> hub service
+- Port mappings: `localhost:9443` -> hub service
 - NodePort service on port 31443
 - Self-signed TLS certificate
 - Static auth token: `dev-token`
@@ -300,7 +300,7 @@ kedge dev create --chart-path deploy/charts/kedge-hub
 └──────────────┼──────────────────────────────────────────────────┘
                │
                ▼
-        localhost:8443
+        localhost:9443
         (for CLI access)
 ```
 

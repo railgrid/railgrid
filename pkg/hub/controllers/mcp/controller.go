@@ -47,7 +47,7 @@ type ConnManager interface {
 // connKeyFn converts cluster+edge to the ConnManager key used by the agent-proxy.
 // Must match edgeConnKey in pkg/virtual/builder/agent_proxy_builder_v2.go.
 func connKeyFn(cluster, edge string) string {
-	return cluster + "/" + edge
+	return "edges/" + cluster + "/" + edge
 }
 
 // Reconciler reconciles Kubernetes MCP objects.

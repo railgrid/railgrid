@@ -735,7 +735,7 @@ func AgentJoinKubernetes() features.Feature {
 			// Determine the hub URL reachable from inside a pod in the agent cluster.
 			// kedge.localhost does not resolve inside pods; we need the Docker network IP + NodePort.
 			// PodHubURLFromKubeconfig reads the cluster path from the hub kubeconfig because
-			// clusterEnv.HubURL is always "https://kedge.localhost:8443" (no cluster path).
+			// clusterEnv.HubURL is always "https://kedge.localhost:9443" (no cluster path).
 			podHubURL := framework.PodHubURLFromKubeconfig(clusterEnv.HubKubeconfig)
 			if podHubURL == "" {
 				t.Skip("cannot determine hub Docker network IP; skipping in-cluster agent test")
@@ -864,7 +864,7 @@ func AgentHelmInstall() features.Feature {
 			// Determine the hub URL reachable from inside a pod in the agent cluster.
 			// kedge.localhost does not resolve inside pods; we need the Docker network IP + NodePort.
 			// PodHubURLFromKubeconfig reads the cluster path from the hub kubeconfig because
-			// clusterEnv.HubURL is always "https://kedge.localhost:8443" (no cluster path).
+			// clusterEnv.HubURL is always "https://kedge.localhost:9443" (no cluster path).
 			podHubURL := framework.PodHubURLFromKubeconfig(clusterEnv.HubKubeconfig)
 			if podHubURL == "" {
 				t.Skip("cannot determine hub Docker network IP; skipping in-cluster helm test")

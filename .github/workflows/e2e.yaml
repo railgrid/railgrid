@@ -20,7 +20,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.25.0
+          go-version: v1.26.1
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -86,7 +86,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.25.0
+          go-version: v1.26.1
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -144,7 +144,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.25.0
+          go-version: v1.26.1
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -207,13 +207,13 @@ jobs:
   e2e-external-kcp:
     name: External KCP (kcp via Helm + static token)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.25.0
+          go-version: v1.26.1
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -249,7 +249,7 @@ jobs:
           KEDGE_HUB_IMAGE: ghcr.io/faroshq/kedge-hub
           KEDGE_HUB_IMAGE_PULL_POLICY: Never
           KEDGE_HUB_IMAGE_TAG: test
-        run: make e2e-external-kcp E2E_TIMEOUT=40m E2E_FLAGS="-keep-clusters"
+        run: make e2e-external-kcp E2E_TIMEOUT=70m E2E_FLAGS="-keep-clusters"
 
       - name: Collect kind cluster logs
         if: failure()

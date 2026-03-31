@@ -29,32 +29,32 @@ func TestSplitBaseAndCluster(t *testing.T) {
 	}{
 		{
 			name:        "full URL with cluster",
-			input:       "https://hub:8443/clusters/abc123",
-			wantBase:    "https://hub:8443",
+			input:       "https://hub:9443/clusters/abc123",
+			wantBase:    "https://hub:9443",
 			wantCluster: "abc123",
 		},
 		{
 			name:        "URL with cluster and extra path",
-			input:       "https://hub:8443/clusters/abc123/extra/path",
-			wantBase:    "https://hub:8443",
+			input:       "https://hub:9443/clusters/abc123/extra/path",
+			wantBase:    "https://hub:9443",
 			wantCluster: "abc123",
 		},
 		{
 			name:        "URL without cluster",
-			input:       "https://hub:8443",
-			wantBase:    "https://hub:8443",
+			input:       "https://hub:9443",
+			wantBase:    "https://hub:9443",
 			wantCluster: "default",
 		},
 		{
 			name:        "URL with trailing slash, no cluster",
-			input:       "https://hub:8443/",
-			wantBase:    "https://hub:8443",
+			input:       "https://hub:9443/",
+			wantBase:    "https://hub:9443",
 			wantCluster: "default",
 		},
 		{
 			name:        "URL with trailing slash and cluster",
-			input:       "https://hub:8443/clusters/abc123/",
-			wantBase:    "https://hub:8443",
+			input:       "https://hub:9443/clusters/abc123/",
+			wantBase:    "https://hub:9443",
 			wantCluster: "abc123",
 		},
 		{
@@ -71,8 +71,8 @@ func TestSplitBaseAndCluster(t *testing.T) {
 		},
 		{
 			name:        "empty cluster segment (trailing slash after /clusters/)",
-			input:       "https://hub:8443/clusters/",
-			wantBase:    "https://hub:8443",
+			input:       "https://hub:9443/clusters/",
+			wantBase:    "https://hub:9443",
 			wantCluster: "default",
 		},
 	}
@@ -99,27 +99,27 @@ func TestHubServerURL(t *testing.T) {
 	}{
 		{
 			name:    "plain base",
-			hubBase: "https://hub:8443",
+			hubBase: "https://hub:9443",
 			cluster: "abc123",
-			want:    "https://hub:8443/clusters/abc123",
+			want:    "https://hub:9443/clusters/abc123",
 		},
 		{
 			name:    "base with trailing slash",
-			hubBase: "https://hub:8443/",
+			hubBase: "https://hub:9443/",
 			cluster: "abc123",
-			want:    "https://hub:8443/clusters/abc123",
+			want:    "https://hub:9443/clusters/abc123",
 		},
 		{
 			name:    "base already has /clusters/ — replaced",
-			hubBase: "https://hub:8443/clusters/old",
+			hubBase: "https://hub:9443/clusters/old",
 			cluster: "new",
-			want:    "https://hub:8443/clusters/new",
+			want:    "https://hub:9443/clusters/new",
 		},
 		{
 			name:    "kcp colon-path cluster",
-			hubBase: "https://hub:8443",
+			hubBase: "https://hub:9443",
 			cluster: "root:kedge:user-default",
-			want:    "https://hub:8443/clusters/root:kedge:user-default",
+			want:    "https://hub:9443/clusters/root:kedge:user-default",
 		},
 	}
 
@@ -179,19 +179,19 @@ func TestEdgeAgentProxyURL(t *testing.T) {
 	}{
 		{
 			name:        "standard proxy URL",
-			hubBase:     "https://hub:8443",
+			hubBase:     "https://hub:9443",
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "proxy",
-			want:        "https://hub:8443/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
+			want:        "https://hub:9443/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
 		},
 		{
 			name:        "hub base with trailing slash",
-			hubBase:     "https://hub:8443/",
+			hubBase:     "https://hub:9443/",
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "proxy",
-			want:        "https://hub:8443/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
+			want:        "https://hub:9443/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
 		},
 	}
 
@@ -252,27 +252,27 @@ func TestEdgeProxyURL(t *testing.T) {
 	}{
 		{
 			name:        "k8s URL",
-			hubBase:     "https://hub:8443",
+			hubBase:     "https://hub:9443",
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "k8s",
-			want:        "https://hub:8443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
+			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
 		},
 		{
 			name:        "ssh URL",
-			hubBase:     "https://hub:8443",
+			hubBase:     "https://hub:9443",
 			cluster:     "abc123",
 			edgeName:    "server-1",
 			subresource: "ssh",
-			want:        "https://hub:8443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/server-1/ssh",
+			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/server-1/ssh",
 		},
 		{
 			name:        "hub base with trailing slash",
-			hubBase:     "https://hub:8443/",
+			hubBase:     "https://hub:9443/",
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "k8s",
-			want:        "https://hub:8443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
+			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
 		},
 	}
 
@@ -320,8 +320,8 @@ func TestKubernetesMCPPath(t *testing.T) {
 }
 
 func TestKubernetesMCPURL(t *testing.T) {
-	got := KubernetesMCPURL("https://hub:8443", "abc123", "default")
-	want := "https://hub:8443/services/mcp/abc123/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp"
+	got := KubernetesMCPURL("https://hub:9443", "abc123", "default")
+	want := "https://hub:9443/services/mcp/abc123/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp"
 	if got != want {
 		t.Errorf("KubernetesMCPURL = %q, want %q", got, want)
 	}
@@ -369,26 +369,26 @@ func TestExternalizeURL(t *testing.T) {
 		{
 			name:    "services path gets externalized",
 			edgeURL: "/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
-			hubBase: "https://hub:8443",
-			want:    "https://hub:8443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
+			hubBase: "https://hub:9443",
+			want:    "https://hub:9443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
 		},
 		{
 			name:    "absolute URL returned unchanged",
 			edgeURL: "https://other-host/some/path",
-			hubBase: "https://hub:8443",
+			hubBase: "https://hub:9443",
 			want:    "https://other-host/some/path",
 		},
 		{
 			name:    "non-services path returned unchanged",
 			edgeURL: "/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge",
-			hubBase: "https://hub:8443",
+			hubBase: "https://hub:9443",
 			want:    "/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge",
 		},
 		{
 			name:    "hub base with trailing slash",
 			edgeURL: "/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
-			hubBase: "https://hub:8443/",
-			want:    "https://hub:8443/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
+			hubBase: "https://hub:9443/",
+			want:    "https://hub:9443/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
 		},
 	}
 
