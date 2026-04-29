@@ -20,12 +20,13 @@ package hub
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/gorilla/mux"
 )
 
 // registerPortalRoutes is a no-op when the portal is not embedded.
 // Build with -tags portal_embed to include the portal UI.
-func registerPortalRoutes(_ *mux.Router) error {
-	return fmt.Errorf("portal not embedded (build with -tags portal_embed)")
+func registerPortalRoutes(_ *mux.Router) (http.Handler, error) {
+	return nil, fmt.Errorf("portal not embedded (build with -tags portal_embed)")
 }

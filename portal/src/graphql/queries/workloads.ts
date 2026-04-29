@@ -63,10 +63,10 @@ export const LIST_VIRTUAL_WORKLOADS = `
 `
 
 export const GET_VIRTUAL_WORKLOAD = `
-  query GetVirtualWorkload($name: String!) {
+  query GetVirtualWorkload($name: String!, $namespace: String!) {
     kedge_faros_sh {
       v1alpha1 {
-        VirtualWorkload(name: $name) {
+        VirtualWorkload(name: $name, namespace: $namespace) {
           metadata {
             name
             namespace

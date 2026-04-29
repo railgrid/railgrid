@@ -22,6 +22,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/mux"
 )
@@ -29,39 +30,66 @@ import (
 //go:embed portal/dist/*
 var portalFS embed.FS
 
+// PortalPathPrefix is the URL prefix the embedded portal SPA is served under.
+// Kept distinct from /, /api, /apis, and /clusters so there is no ambiguity
+// between UI and API traffic.
+const PortalPathPrefix = "/console"
+
 // registerPortalRoutes serves the Vue.js SPA from the embedded portal/dist
-// directory. All unmatched paths under /portal/ fall back to index.html so
-// that Vue Router handles client-side routing.
-func registerPortalRoutes(router *mux.Router) error {
+// directory under PortalPathPrefix. Static assets and favicon are registered
+// on the provided router; the SPA catch-all is returned as a separate handler
+// so the caller can invoke it only for paths under the portal prefix (after
+// other API fallbacks have been checked).
+func registerPortalRoutes(router *mux.Router) (http.Handler, error) {
 	distFS, err := fs.Sub(portalFS, "portal/dist")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	fileServer := http.FileServer(http.FS(distFS))
+	// File server strips the portal prefix before looking up the file in distFS,
+	// so a request for /console/assets/foo.js resolves to assets/foo.js in the
+	// embedded FS (Vite builds asset URLs relative to the base — see vite.config.ts).
+	fileServer := http.StripPrefix(PortalPathPrefix, http.FileServer(http.FS(distFS)))
 
-	// Serve static assets (JS, CSS, etc.) directly.
-	router.PathPrefix("/portal/assets/").Handler(
-		http.StripPrefix("/portal/", fileServer),
-	)
+	// Serve static assets under /console/assets/.
+	router.PathPrefix(PortalPathPrefix + "/assets/").Handler(fileServer)
 
-	// For all other /portal/ paths, serve index.html (SPA fallback).
-	router.PathPrefix("/portal").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Try to serve the file if it exists, otherwise serve index.html.
-		path := r.URL.Path[len("/portal/"):]
-		if path == "" {
-			path = "index.html"
-		}
-		f, err := distFS.Open(path)
-		if err == nil {
-			f.Close()
-			http.StripPrefix("/portal/", fileServer).ServeHTTP(w, r)
-			return
-		}
-		// SPA fallback: serve index.html for client-side routing.
-		r.URL.Path = "/portal/"
-		http.StripPrefix("/portal/", fileServer).ServeHTTP(w, r)
+	// Serve root-level static files (favicon, etc.) under /console/.
+	for _, name := range []string{"favicon.ico", "favicon.svg"} {
+		name := name
+		router.HandleFunc(PortalPathPrefix+"/"+name, func(w http.ResponseWriter, r *http.Request) {
+			r.URL.Path = PortalPathPrefix + "/" + name
+			fileServer.ServeHTTP(w, r)
+		})
+	}
+
+	// Redirect /console → /console/ (trailing slash) so relative asset URLs in
+	// index.html resolve correctly.
+	router.HandleFunc(PortalPathPrefix, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, PortalPathPrefix+"/", http.StatusMovedPermanently)
 	})
 
-	return nil
+	// SPA catch-all for /console/*: tries to serve the requested file; falls
+	// back to index.html so Vue Router handles client-side routing.
+	// NOT registered on the mux — the caller invokes this only for paths that
+	// already start with PortalPathPrefix.
+	spaHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Translate /console/xyz → xyz for the embedded FS lookup.
+		sub := strings.TrimPrefix(r.URL.Path, PortalPathPrefix+"/")
+		if sub == "" {
+			r.URL.Path = PortalPathPrefix + "/"
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		if f, err := distFS.Open(sub); err == nil {
+			f.Close()
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		// SPA fallback: serve index.html.
+		r.URL.Path = PortalPathPrefix + "/"
+		fileServer.ServeHTTP(w, r)
+	})
+
+	return spaHandler, nil
 }

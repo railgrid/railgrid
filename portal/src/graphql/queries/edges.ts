@@ -44,6 +44,7 @@ export const GET_EDGE = `
             connected
             hostname
             agentVersion
+            joinToken
             conditions {
               type
               status
@@ -82,6 +83,7 @@ export interface EdgeItem {
     connected: boolean
     hostname: string
     agentVersion: string
+    joinToken?: string
     conditions?: Array<{
       type: string
       status: string

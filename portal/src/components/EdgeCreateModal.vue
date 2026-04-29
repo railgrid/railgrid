@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { createEdge, pollEdgeJoinToken } from '@/composables/useKubeAPI'
+import { graphqlMutate } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
+import { CREATE_EDGE } from '@/graphql/mutations'
+import { GET_EDGE } from '@/graphql/queries/edges'
+import { createGraphQLClient } from '@/graphql/client'
 import { X, Copy, Check } from 'lucide-vue-next'
 
 const emit = defineEmits<{
@@ -86,16 +89,35 @@ async function handleCreate() {
       }
     }
 
-    await createEdge(name.value.trim(), edgeType.value, parsedLabels)
-
-    // Poll for join token
-    try {
-      joinToken.value = await pollEdgeJoinToken(name.value.trim())
-    } catch {
-      tokenError.value = 'Could not retrieve join token. Run: kedge edge join-command ' + name.value.trim()
+    const object: Record<string, unknown> = {
+      metadata: {
+        name: name.value.trim(),
+        ...(Object.keys(parsedLabels).length > 0 ? { labels: parsedLabels } : {}),
+      },
+      spec: { type: edgeType.value },
     }
 
+    await graphqlMutate(CREATE_EDGE, { object })
     emit('created')
+
+    // Poll for join token via GraphQL
+    const edgeName = name.value.trim()
+    const deadline = Date.now() + 30000
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1000))
+      try {
+        const client = createGraphQLClient(auth.clusterName!, () => auth.getValidToken())
+        const result = await client.query(GET_EDGE, { name: edgeName }).toPromise()
+        const token = result.data?.kedge_faros_sh?.v1alpha1?.Edge?.status?.joinToken
+        if (token) {
+          joinToken.value = token
+          return
+        }
+      } catch {
+        // keep polling
+      }
+    }
+    tokenError.value = 'Could not retrieve join token. Run: kedge edge join-command ' + edgeName
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Create failed'
   } finally {
@@ -256,6 +278,11 @@ kubectl krew install faros/kedge</pre>
               </div>
             </div>
           </template>
+
+          <div v-else-if="!tokenError" class="flex items-center gap-2 text-[12px] text-text-muted">
+            <div class="shimmer h-4 w-4 rounded" />
+            Waiting for join token...
+          </div>
 
           <div class="mt-6 flex items-center justify-end">
             <button

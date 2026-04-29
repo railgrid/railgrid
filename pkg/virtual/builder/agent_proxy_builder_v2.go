@@ -283,7 +283,7 @@ func (p *virtualWorkspaces) buildAgentKubeconfigHeader(cluster, edgeName, _ stri
 
 	// Read the SA token from the kubeconfig secret created by the RBAC controller.
 	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = apiurl.HubServerURL(cfg.Host, cluster)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, cluster)
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		p.logger.Error(err, "failed to create dynamic client for SA token lookup")
@@ -362,7 +362,7 @@ func (p *virtualWorkspaces) authorizeByJoinToken(ctx context.Context, token, clu
 	}
 
 	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = apiurl.HubServerURL(cfg.Host, cluster)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, cluster)
 
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {

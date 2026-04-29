@@ -3,15 +3,12 @@ import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import { useGraphQLQuery } from '@/composables/useGraphQL'
+import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import {
   GET_VIRTUAL_WORKLOAD,
   type GetVirtualWorkloadResult,
 } from '@/graphql/queries/workloads'
-import {
-  scaleVirtualWorkload,
-  deleteVirtualWorkload,
-} from '@/composables/useWorkloadAPI'
+import { UPDATE_VIRTUAL_WORKLOAD, DELETE_VIRTUAL_WORKLOAD } from '@/graphql/mutations'
 import {
   ArrowLeft,
   Layers,
@@ -27,12 +24,12 @@ import {
   AlertTriangle,
 } from 'lucide-vue-next'
 
-const props = defineProps<{ name: string }>()
+const props = defineProps<{ name: string; namespace: string }>()
 const router = useRouter()
 
 const { data, loading, error, refetch } = useGraphQLQuery<GetVirtualWorkloadResult>(
   GET_VIRTUAL_WORKLOAD,
-  { name: props.name },
+  { name: props.name, namespace: props.namespace },
   10000,
 )
 
@@ -49,14 +46,15 @@ function initScale() {
   scaleInput.value = currentReplicas.value
 }
 
-async function handleScale(delta: number) {
-  const target = (scaleInput.value ?? currentReplicas.value) + delta
-  if (target < 0) return
-  scaleInput.value = target
+async function doScale(replicas: number) {
   scaling.value = true
   scaleError.value = null
   try {
-    await scaleVirtualWorkload(props.name, workload.value?.metadata?.namespace ?? 'default', target)
+    await graphqlMutate(UPDATE_VIRTUAL_WORKLOAD, {
+      name: props.name,
+      namespace: props.namespace,
+      object: { spec: { replicas } },
+    })
     refetch()
   } catch (e) {
     scaleError.value = e instanceof Error ? e.message : 'Scale failed'
@@ -65,18 +63,16 @@ async function handleScale(delta: number) {
   }
 }
 
+async function handleScale(delta: number) {
+  const target = (scaleInput.value ?? currentReplicas.value) + delta
+  if (target < 0) return
+  scaleInput.value = target
+  await doScale(target)
+}
+
 async function handleScaleSubmit() {
   if (scaleInput.value === null || scaleInput.value === currentReplicas.value) return
-  scaling.value = true
-  scaleError.value = null
-  try {
-    await scaleVirtualWorkload(props.name, workload.value?.metadata?.namespace ?? 'default', scaleInput.value)
-    refetch()
-  } catch (e) {
-    scaleError.value = e instanceof Error ? e.message : 'Scale failed'
-  } finally {
-    scaling.value = false
-  }
+  await doScale(scaleInput.value)
 }
 
 // --- Delete ---
@@ -88,7 +84,10 @@ async function handleDelete() {
   deleteDeleting.value = true
   deleteErr.value = null
   try {
-    await deleteVirtualWorkload(props.name, workload.value?.metadata?.namespace ?? 'default')
+    await graphqlMutate(DELETE_VIRTUAL_WORKLOAD, {
+      name: props.name,
+      namespace: props.namespace,
+    })
     router.push('/workloads')
   } catch (e) {
     deleteErr.value = e instanceof Error ? e.message : 'Delete failed'

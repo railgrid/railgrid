@@ -166,8 +166,8 @@ kcp:
 ## Upgrading
 
 ```bash
-helm upgrade kedge-hub oci://ghcr.io/faroshq/charts/kedge-hub \
-  --namespace kedge \
+helm upgrade kedge oci://ghcr.io/faroshq/charts/kedge-hub \
+  --namespace kedge-system \
   --reuse-values \
-  --set image.hub.tag=v0.0.5
+  --set image.hub.tag=v0.0.33
 ```

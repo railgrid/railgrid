@@ -42,6 +42,7 @@ import (
 	"k8s.io/klog/v2"
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 )
@@ -50,7 +51,6 @@ import (
 // and forwards them to the user's dedicated kcp tenant workspace.
 type KCPProxy struct {
 	kcpTarget            *url.URL
-	transport            http.RoundTripper // built from kcp admin config; handles TLS + auth
 	passthroughTransport http.RoundTripper // TLS-only transport; no credentials injected
 	verifier             *oidc.IDTokenVerifier
 	verifyCtx            context.Context // context with HTTP client for OIDC key fetches
@@ -80,13 +80,10 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 			transportConfig.Insecure = true
 		}
 	}
-	transport, err := rest.TransportFor(transportConfig)
-	if err != nil {
-		return nil, fmt.Errorf("building kcp transport: %w", err)
-	}
 
 	// Build a passthrough transport with the same TLS config but no credentials.
-	// Used when forwarding requests with the caller's own token (e.g. static tokens).
+	// Used when forwarding requests with the caller's own token (OIDC tokens,
+	// SA tokens, static tokens — all authenticated by kcp natively).
 	passthroughConfig := &rest.Config{
 		Host: kcpConfig.Host,
 		TLSClientConfig: rest.TLSClientConfig{
@@ -113,7 +110,6 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 
 	return &KCPProxy{
 		kcpTarget:            target,
-		transport:            transport,
 		passthroughTransport: passthroughTransport,
 		verifier:             verifier,
 		verifyCtx:            verifyCtx,
@@ -145,27 +141,43 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Use constant-time comparison to prevent timing side-channel attacks.
 	for _, staticToken := range p.staticAuthTokens {
 		if staticToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(staticToken)) == 1 {
+			p.logger.Info("proxy auth: static token matched", "path", r.URL.Path)
 			p.serveStaticToken(w, r, token)
 			return
 		}
+	}
+
+	// Check for kcp ServiceAccount tokens BEFORE OIDC verification.
+	// SA tokens have iss="kubernetes/serviceaccount"; the OIDC verifier would
+	// correctly reject them, but running the check first saves a JWKS fetch and
+	// makes the auth branch unambiguous in logs.
+	if saClaims, ok := parseServiceAccountToken(token); ok {
+		p.logger.Info("proxy auth: SA token", "path", r.URL.Path, "clusterName", saClaims.ClusterName)
+		p.serveServiceAccount(w, r, token, saClaims.ClusterName)
+		return
 	}
 
 	// Try OIDC verification (user tokens from Dex).
 	if p.verifier != nil {
 		idToken, err := p.verifier.Verify(p.verifyCtx, token)
 		if err == nil {
+			p.logger.Info("proxy auth: OIDC verified", "path", r.URL.Path)
 			p.serveOIDC(w, r, token, idToken)
 			return
 		}
+		p.logger.Info("proxy auth: OIDC verify failed", "path", r.URL.Path, "err", err.Error())
 	}
 
-	// If OIDC fails or is not configured, check if this is a kcp ServiceAccount token.
-	if saClaims, ok := parseServiceAccountToken(token); ok {
-		p.serveServiceAccount(w, r, token, saClaims.ClusterName)
-		return
-	}
-
+	p.logger.Info("proxy auth: no match — returning 401", "path", r.URL.Path, "tokenPrefix", firstN(token, 12))
 	writeUnauthorized(w)
+}
+
+// firstN returns the first n runes of s (or all of s if shorter).
+func firstN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // serveOIDC handles OIDC-authenticated requests by resolving the user's tenant
@@ -219,16 +231,13 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 			req.URL.Path = kcpPath
 			req.Host = target.Host
 
-			// Remove user auth — the transport adds kcp admin credentials
-			// automatically (client certs, bearer token, etc.).
-			req.Header.Del("Authorization")
-
-			// Add kcp impersonation headers so kcp enforces per-user RBAC
-			// instead of all requests running with admin credentials.
-			req.Header.Set("Impersonate-User", user.Spec.RBACIdentity)
-			req.Header.Set("Impersonate-Group", "system:authenticated")
+			// Forward the user's bearer token unchanged — kcp authenticates it
+			// directly (OIDC), so the request runs with the user's identity and
+			// their RBAC is enforced by kcp natively. Do not strip Authorization
+			// or add Impersonate-* headers.
+			_ = user
 		},
-		Transport: p.transport,
+		Transport: p.passthroughTransport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error(err, "proxy upstream error", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
@@ -282,16 +291,13 @@ func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, toke
 			req.URL.Path = kcpPath
 			req.Host = target.Host
 
-			// Remove user auth — the transport (kcp admin cert) handles authentication.
-			// kcp does not have static token auth configured; we proxy as hub admin.
-			req.Header.Del("Authorization")
-
-			// Add kcp impersonation headers so kcp enforces per-user RBAC
-			// instead of all requests running with admin credentials.
-			req.Header.Set("Impersonate-User", user.Spec.RBACIdentity)
-			req.Header.Set("Impersonate-Group", "system:authenticated")
+			// Forward the user's bearer token unchanged — kcp must have a
+			// matching static-token auth entry so it authenticates the request
+			// as this user and enforces their RBAC natively. Do not strip
+			// Authorization or add Impersonate-* headers.
+			_ = user
 		},
-		Transport: p.transport,
+		Transport: p.passthroughTransport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error(err, "proxy upstream error (static token)", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
@@ -460,6 +466,7 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 	// Validate clusterName against a strict regex to prevent path traversal.
 	matched, _ := regexp.MatchString(`^[a-z0-9]+(?:[:-][a-z0-9]+)*$`, clusterName)
 	if !matched {
+		p.logger.Info("SA: clusterName regex rejected — 401", "clusterName", clusterName)
 		writeUnauthorized(w)
 		return
 	}
@@ -489,8 +496,9 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 
 			// Keep the SA token — kcp authenticates it natively.
 			req.Header.Set("Authorization", "Bearer "+token)
+			logger.Info("SA: forwarding to kcp", "targetPath", req.URL.Path, "host", req.URL.Host)
 		},
-		Transport: p.transport,
+		Transport: p.passthroughTransport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error(err, "proxy upstream error (SA)", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
@@ -663,7 +671,7 @@ func (p *KCPProxy) generateStaticTokenKubeconfig(user *tenancyv1alpha1.User, tok
 
 	serverURL := p.hubExternalURL
 	if user.Spec.DefaultCluster != "" {
-		serverURL += "/clusters/" + user.Spec.DefaultCluster
+		serverURL = apiurl.HubServerURL(p.hubExternalURL, user.Spec.DefaultCluster)
 	}
 
 	config.Clusters["kedge"] = &clientcmdapi.Cluster{

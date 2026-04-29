@@ -56,6 +56,7 @@ func main() {
 	cmd.Flags().StringVar(&opts.ExternalKCPKubeconfig, "external-kcp-kubeconfig", "", "Kubeconfig for external kcp (empty for embedded)")
 	cmd.Flags().StringVar(&opts.IDPIssuerURL, "idp-issuer-url", "", "OIDC identity provider issuer URL")
 	cmd.Flags().StringVar(&opts.IDPClientID, "idp-client-id", "kedge", "OIDC identity provider client ID")
+	cmd.Flags().StringVar(&opts.IDPCAFile, "idp-ca-file", "", "PEM-encoded CA bundle for verifying the IdP's TLS cert (required for self-signed/private CAs)")
 	cmd.Flags().StringVar(&opts.ServingCertFile, "serving-cert-file", "", "TLS certificate file for HTTPS serving")
 	cmd.Flags().StringVar(&opts.ServingKeyFile, "serving-key-file", "", "TLS key file for HTTPS serving")
 	cmd.Flags().StringVar(&opts.HubExternalURL, "hub-external-url", opts.HubExternalURL, "External URL of this hub (for kubeconfig generation)")
@@ -69,6 +70,8 @@ func main() {
 	cmd.Flags().StringVar(&opts.GraphQLAPIExportLogicalCluster, "graphql-apiexport-logical-cluster", opts.GraphQLAPIExportLogicalCluster, "Logical cluster path where the APIExportEndpointSlice lives")
 	cmd.Flags().StringVar(&opts.GraphQLGRPCAddr, "graphql-grpc-addr", opts.GraphQLGRPCAddr, "In-process gRPC address for embedded GraphQL listener/gateway communication")
 	cmd.Flags().BoolVar(&opts.GraphQLPlayground, "graphql-playground", opts.GraphQLPlayground, "Enable the GraphQL playground UI")
+
+	cmd.Flags().StringVar(&opts.PortalDevURL, "portal-dev-url", "", "Reverse-proxy /console/* to this URL (e.g. http://localhost:3000 for Vite dev server); takes precedence over embedded portal dist")
 
 	// Embedded kcp flags
 	cmd.Flags().BoolVar(&opts.EmbeddedKCP, "embedded-kcp", opts.EmbeddedKCP, "Enable embedded kcp server (runs kcp in-process)")

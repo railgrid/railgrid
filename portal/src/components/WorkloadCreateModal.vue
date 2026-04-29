@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { createVirtualWorkload, type VirtualWorkloadCreateSpec } from '@/composables/useWorkloadAPI'
+import { graphqlMutate } from '@/composables/useGraphQL'
+import { CREATE_VIRTUAL_WORKLOAD } from '@/graphql/mutations'
 import { X, Plus, Trash2 } from 'lucide-vue-next'
 
 const emit = defineEmits<{
@@ -54,23 +55,48 @@ async function handleCreate() {
       }
     }
 
-    const spec: VirtualWorkloadCreateSpec = {
-      name: name.value.trim(),
-      namespace: namespace.value,
+    const simple: Record<string, unknown> = {
       image: image.value.trim(),
-      replicas: replicas.value,
-      strategy: strategy.value,
-      ...(containerPort.value ? { containerPort: parseInt(containerPort.value) } : {}),
-      ...(Object.keys(edgeSelector).length > 0 ? { edgeSelector } : {}),
-      ...(envVars.value.length > 0
-        ? { env: envVars.value.filter((e) => e.name.trim()) }
-        : {}),
-      ...(expose.value ? { expose: true } : {}),
-      ...(dnsName.value ? { dnsName: dnsName.value } : {}),
-      ...(accessPort.value ? { accessPort: parseInt(accessPort.value) } : {}),
+    }
+    if (containerPort.value) {
+      simple.ports = [{ containerPort: parseInt(containerPort.value), protocol: 'TCP' }]
+    }
+    const filteredEnv = envVars.value.filter((e) => e.name.trim())
+    if (filteredEnv.length > 0) {
+      simple.env = filteredEnv
     }
 
-    await createVirtualWorkload(spec)
+    const placement: Record<string, unknown> = {
+      strategy: strategy.value,
+    }
+    if (Object.keys(edgeSelector).length > 0) {
+      placement.edgeSelector = { matchLabels: edgeSelector }
+    }
+
+    const specObj: Record<string, unknown> = {
+      simple,
+      replicas: replicas.value,
+      placement,
+    }
+
+    if (expose.value || dnsName.value || accessPort.value) {
+      specObj.access = {
+        ...(expose.value ? { expose: true } : {}),
+        ...(dnsName.value ? { dnsName: dnsName.value } : {}),
+        ...(accessPort.value ? { port: parseInt(accessPort.value) } : {}),
+      }
+    }
+
+    await graphqlMutate(CREATE_VIRTUAL_WORKLOAD, {
+      namespace: namespace.value,
+      object: {
+        metadata: {
+          name: name.value.trim(),
+          namespace: namespace.value,
+        },
+        spec: specObj,
+      },
+    })
     emit('created')
     emit('close')
   } catch (e) {

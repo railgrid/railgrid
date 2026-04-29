@@ -40,7 +40,7 @@ import (
 
 // startEmbeddedGraphQL starts the GraphQL listener and gateway in-process,
 // registers the GraphQL handler on the provided router under
-// /graphql/api/clusters/{clusterName}, and launches both goroutines into g.
+// /graphql/clusters/{clusterName}, and launches both goroutines into g.
 //
 // The listener watches the kcp APIExportEndpointSlice and pushes OpenAPI schemas
 // over an in-process gRPC connection. The gateway subscribes to those schemas
@@ -117,20 +117,12 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	// ── Mount on hub router ───────────────────────────────────────────────────
 	// Gorilla mux prefix match; we extract clusterName from the URL ourselves
 	// and inject it into context for gateway.Service.ServeHTTP.
-	router.PathPrefix("/graphql/api/clusters/").Handler(
+	// External URL: /graphql/{clusterName}
+	router.PathPrefix("/graphql/").Handler(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Strip /graphql prefix — gateway sees /api/clusters/<clusterName>[/...]
-			path := strings.TrimPrefix(r.URL.Path, "/graphql")
-
-			clusterName := ""
-			const clusterPrefix = "/api/clusters/"
-			if after, ok := strings.CutPrefix(path, clusterPrefix); ok {
-				if idx := strings.Index(after, "/"); idx >= 0 {
-					clusterName = after[:idx]
-				} else {
-					clusterName = after
-				}
-			}
+			// Extract cluster name from /graphql/{clusterName}[/...]
+			rest := strings.TrimPrefix(r.URL.Path, "/graphql/")
+			clusterName, _, _ := strings.Cut(rest, "/")
 
 			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 
@@ -138,14 +130,15 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 			rctx = utilscontext.SetCluster(rctx, clusterName)
 
 			r = r.WithContext(rctx)
-			r.URL.Path = path
+			// Gateway receives the path it needs internally.
+			r.URL.Path = "/clusters/" + rest
 
 			gatewayService.ServeHTTP(w, r)
 		}),
 	)
 
 	logger.Info("Embedded GraphQL gateway mounted",
-		"path", "/graphql/api/clusters/*",
+		"path", "/graphql/{clusterName}",
 		"grpcAddr", grpcAddr,
 		"playground", opts.GraphQLPlayground,
 	)
@@ -165,16 +158,12 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 // writeKubeconfigTemp serialises kcpConfig as a kubeconfig to a temporary file
 // and returns the path plus a cleanup function that removes it.
 //
-// Only the server endpoint and CA are written — no credentials. Authentication
-// is performed per-request using the user's own bearer token (from login/OIDC),
-// which is injected into each request context via utilscontext.SetToken.
-// Writing admin credentials here would silently grant every GraphQL request
-// elevated privileges regardless of the caller's identity.
+// Admin credentials from the rest.Config are preserved so the listener can
+// perform startup discovery (APIExportEndpointSlice restmapping, server groups)
+// against kcp. Per-request auth for GraphQL queries is handled separately via
+// utilscontext.SetToken — the gateway uses the user's bearer token, not these
+// credentials.
 func writeKubeconfigTemp(cfg *rest.Config) (path string, cleanup func(), err error) {
-	// Build a minimal clientcmdapi.Config from the rest.Config.
-	// Intentionally omit all credentials (token, cert, key) so the listener
-	// carries no static identity. Per-request auth is handled by the token
-	// the user obtained from login/OIDC, injected via utilscontext.SetToken.
 	kubeConfig := clientcmdapi.NewConfig()
 	kubeConfig.Clusters["default"] = &clientcmdapi.Cluster{
 		Server:                   cfg.Host,
@@ -182,7 +171,16 @@ func writeKubeconfigTemp(cfg *rest.Config) (path string, cleanup func(), err err
 		CertificateAuthority:     cfg.CAFile,
 		InsecureSkipTLSVerify:    cfg.Insecure,
 	}
-	kubeConfig.AuthInfos["default"] = &clientcmdapi.AuthInfo{}
+	kubeConfig.AuthInfos["default"] = &clientcmdapi.AuthInfo{
+		Token:                 cfg.BearerToken,
+		TokenFile:             cfg.BearerTokenFile,
+		ClientCertificate:     cfg.CertFile,
+		ClientCertificateData: cfg.CertData,
+		ClientKey:             cfg.KeyFile,
+		ClientKeyData:         cfg.KeyData,
+		Username:              cfg.Username,
+		Password:              cfg.Password,
+	}
 	kubeConfig.Contexts["default"] = &clientcmdapi.Context{
 		Cluster:  "default",
 		AuthInfo: "default",

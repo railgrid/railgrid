@@ -73,7 +73,7 @@ type DevOptions struct {
 	// When true, Dex is deployed into the hub kind cluster and the hub is
 	// configured with the Dex issuer URL automatically.
 	WithDex     bool
-	DexHTTPPort int // host port for the Dex NodePort mapping (default 5556)
+	DexHTTPPort int // host port for the Dex NodePort mapping (default 5554; Dex serves HTTPS on this port)
 
 	// WithExternalKCP deploys kcp via Helm into the hub kind cluster and
 	// configures the hub to use it instead of embedded kcp.
@@ -91,12 +91,22 @@ const fallbackAssetVersion = "0.0.1"
 
 // Dex constants used when --with-dex is set.
 const (
-	devDexIssuerURL    = "http://dex.kedge-system.svc.cluster.local:5556/dex"
+	// HTTPS so embedded kcp's authentication validator (which mandates
+	// scheme=https) accepts the issuer URL. Dex serves TLS using a cert
+	// issued by the kedge-selfsigned ClusterIssuer.
+	//
+	// Port 5554 matches the dexidp chart's hard-coded --web-https-addr
+	// (https.enabled=true adds `--web-https-addr 0.0.0.0:5554`). The
+	// chart always listens HTTP on 5556 as well, but we leave that
+	// ClusterIP-only (no NodePort) and forget about it.
+	devDexIssuerURL    = "https://dex.kedge-system.svc.cluster.local:5554/dex"
+	devDexTLSSecret    = "dex-tls"
+	devDexNamespace    = "kedge-system"
 	devDexClientID     = "kedge"
 	devDexChartRef     = "dexidp/dex" // from https://charts.dexidp.io, added as a repo
 	devDexChartVersion = "0.24.0"
 	devDexReleaseName  = "dex"
-	devDexNodePort     = 31556
+	devDexNodePort     = 31554
 	// bcrypt of "Password1!" for the dev Dex static users (same password, different identities)
 	devDexUserHash = "$2a$10$ntVcHD0gEYObjVin2ti7XuMILVz0rTQl//HVPc3cR8z7AAVbQGrkO"
 )
@@ -119,7 +129,7 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 		APIServerPort:    6443,
 		HubHTTPSPort:     9443,
 		HubHTTPPort:      8080,
-		DexHTTPPort:      5556,
+		DexHTTPPort:      5554,
 		KCPHTTPSPort:     7443,
 	}
 }
@@ -140,7 +150,7 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&o.HubHTTPPort, "hub-http-port", 8080, "HTTP port for kedge hub (change if 8080 is already in use)")
 	cmd.Flags().StringVar(&o.ImagePullPolicy, "image-pull-policy", "IfNotPresent", "Image pull policy for the hub (use Never when the image is pre-loaded into kind)")
 	cmd.Flags().BoolVar(&o.WithDex, "with-dex", false, "Deploy Dex as OIDC identity provider into the hub kind cluster")
-	cmd.Flags().IntVar(&o.DexHTTPPort, "dex-http-port", 5556, "Host port for the Dex NodePort mapping (default 5556)")
+	cmd.Flags().IntVar(&o.DexHTTPPort, "dex-http-port", 5554, "Host port for the Dex NodePort mapping (Dex serves HTTPS on this port; default 5554)")
 	cmd.Flags().BoolVar(&o.WithExternalKCP, "with-external-kcp", false, "Deploy kcp via Helm into the hub kind cluster instead of using embedded kcp")
 	cmd.Flags().IntVar(&o.KCPHTTPSPort, "kcp-https-port", 7443, "Host port for the kcp front-proxy NodePort mapping (default 7443)")
 	cmd.Flags().IntVar(&o.AgentCount, "agent-count", 1, "Number of agent kind clusters to create (default 1). When > 1, clusters are named <agent-cluster-name>-1, -2, …")
@@ -218,11 +228,11 @@ func (o *DevOptions) Validate() error {
 func (o *DevOptions) hubClusterConfig() string {
 	extraMappings := ""
 	if o.WithDex {
-		extraMappings += fmt.Sprintf(`  - containerPort: 31556
+		extraMappings += fmt.Sprintf(`  - containerPort: %d
     hostPort: %d
     protocol: TCP
     listenAddress: "127.0.0.1"
-`, o.DexHTTPPort)
+`, devDexNodePort, o.DexHTTPPort)
 	}
 	if o.WithExternalKCP {
 		extraMappings += fmt.Sprintf(`  - containerPort: %d
@@ -550,9 +560,20 @@ func ensureDexHelmRepo() error {
 
 // deployDex installs or upgrades the Dex Helm chart into the hub kind cluster
 // and blocks until the Dex pod is Running/Ready.
+//
+// Dex is served over TLS so the issuer URL is https — required by embedded
+// kcp's authentication validator. The cert is issued by the kedge-selfsigned
+// ClusterIssuer and mounted into the Dex pod; the same cert is later mounted
+// into the hub pod so embedded kcp can verify it (see installHelmChart).
 func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kubeconfigPath string) error {
+	// Issue Dex's TLS cert before installing the chart so the secret exists
+	// when the Dex pod starts.
+	if err := ensureDexCertificate(ctx, kubeconfigPath); err != nil {
+		return fmt.Errorf("issuing dex TLS certificate: %w", err)
+	}
+
 	actionConfig := new(action.Configuration)
-	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "kedge-system"}, "kedge-system", "secret",
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: devDexNamespace}, devDexNamespace, "secret",
 		func(format string, v ...any) {}); err != nil {
 		return fmt.Errorf("initialising helm action config for dex: %w", err)
 	}
@@ -567,17 +588,39 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 
 	dexValues := map[string]any{
 		"image": map[string]any{"tag": "v2.44.0"},
+		// Turn on the chart's HTTPS listener (adds --web-https-addr
+		// 0.0.0.0:5554 to the Dex args and a "https" service port).
+		"https": map[string]any{"enabled": true},
 		"service": map[string]any{
 			"type": "NodePort",
 			"ports": map[string]any{
-				"http": map[string]any{"nodePort": devDexNodePort},
+				// Leave HTTP as ClusterIP-only — the hub and test runner
+				// talk to HTTPS.
+				"https": map[string]any{"nodePort": devDexNodePort},
 			},
 		},
+		// Mount the cert-manager-issued TLS secret into the Dex pod.
+		"volumes": []map[string]any{{
+			"name": "dex-tls",
+			"secret": map[string]any{
+				"secretName": devDexTLSSecret,
+			},
+		}},
+		"volumeMounts": []map[string]any{{
+			"name":      "dex-tls",
+			"mountPath": "/etc/dex/tls",
+			"readOnly":  true,
+		}},
 		"config": map[string]any{
 			"issuer":  devDexIssuerURL,
 			"storage": map[string]any{"type": "memory"},
-			"web":     map[string]any{"http": "0.0.0.0:5556"},
-			"oauth2":  map[string]any{"skipApprovalScreen": true},
+			// Only set tlsCert/tlsKey — the chart's CLI flag already
+			// binds the HTTPS listener to 0.0.0.0:5554.
+			"web": map[string]any{
+				"tlsCert": "/etc/dex/tls/tls.crt",
+				"tlsKey":  "/etc/dex/tls/tls.key",
+			},
+			"oauth2": map[string]any{"skipApprovalScreen": true},
 			"staticClients": []map[string]any{{
 				"id":           devDexClientID,
 				"public":       true,
@@ -708,7 +751,7 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 	// Static auth token is only used in token mode. In OIDC/IDP mode the hub
 	// authenticates via Dex; mixing both would be confusing and unnecessary.
 	if !withIDP {
-		hubValues["staticAuthTokens"] = []string{"dev-token"}
+		hubValues["staticAuthTokens"] = devStaticTokens
 	}
 	// IDP settings are passed via the top-level `idp` helm values (not under `hub`).
 	// See deploy/charts/kedge-hub/templates/statefulset.yaml.
@@ -751,6 +794,14 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 		values["idp"] = map[string]any{
 			"issuerURL": devDexIssuerURL,
 			"clientID":  devDexClientID,
+			// Mount Dex's TLS secret into the hub so embedded kcp can verify
+			// the issuer's HTTPS cert. The secret is in the same namespace as
+			// the hub release (kedge-system).
+			"caSecretName": devDexTLSSecret,
+			// Self-signed Certificates from the kedge-selfsigned ClusterIssuer
+			// don't reliably populate ca.crt, but tls.crt itself is the CA
+			// (it's its own root) — use it as the trust anchor.
+			"caSecretKey": "tls.crt",
 		}
 	}
 

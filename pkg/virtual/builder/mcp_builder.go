@@ -313,7 +313,7 @@ func clusterScopedDynamicClient(kcpConfig *rest.Config, cluster string) (dynamic
 		return nil, fmt.Errorf("kcpConfig is nil")
 	}
 	clusterConfig := *kcpConfig
-	clusterConfig.Host = apiurl.HubServerURL(kcpConfig.Host, cluster)
+	clusterConfig.Host = apiurl.KCPClusterURL(kcpConfig.Host, cluster)
 	return dynamic.NewForConfig(&clusterConfig)
 }
 

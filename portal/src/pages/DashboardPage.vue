@@ -5,7 +5,7 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
 import { LIST_EDGES, type ListEdgesResult } from '@/graphql/queries/edges'
 import { LIST_VIRTUAL_WORKLOADS, type ListVirtualWorkloadsResult } from '@/graphql/queries/workloads'
-import { Server, Wifi, WifiOff, CheckCircle, ChevronRight, Activity, Gauge, Layers } from 'lucide-vue-next'
+import { Server, Wifi, WifiOff, CheckCircle, XCircle, ChevronRight, Activity, Gauge, Layers } from 'lucide-vue-next'
 
 const { data, loading, error } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
 const { data: workloadsData } = useGraphQLQuery<ListVirtualWorkloadsResult>(LIST_VIRTUAL_WORKLOADS, undefined, 10000)
@@ -18,7 +18,7 @@ const stats = computed(() => {
   const total = items.length
   const ready = items.filter((e) => e.status?.phase === 'Ready').length
   const connected = items.filter((e) => e.status?.connected).length
-  return { total, ready, connected, disconnected: total - connected }
+  return { total, ready, notReady: total - ready, connected, disconnected: total - connected }
 })
 
 const healthPct = computed(() => {
@@ -29,8 +29,10 @@ const healthPct = computed(() => {
 const workloadStats = computed(() => {
   const total = workloads.value.length
   const running = workloads.value.filter((w) => w.status?.phase === 'Running').length
+  const pending = workloads.value.filter((w) => w.status?.phase === 'Pending' || w.status?.phase === 'Scheduling').length
+  const failed = workloads.value.filter((w) => w.status?.phase === 'Failed').length
   const totalEdges = workloads.value.reduce((sum, w) => sum + (w.status?.edges?.length ?? 0), 0)
-  return { total, running, totalEdges }
+  return { total, running, pending, failed, totalEdges }
 })
 </script>
 
@@ -46,129 +48,123 @@ const workloadStats = computed(() => {
     </div>
 
     <template v-else>
-      <!-- Bento grid -->
-      <div class="bento">
-        <!-- Hero: fleet health (big, 2x2) -->
+      <div class="dashboard-grid">
+        <!-- Fleet health compact panel -->
         <div
-          class="border-beam bento-hero stagger-item flex flex-col justify-between rounded-2xl border border-border-subtle bg-surface-raised/80 p-6 backdrop-blur"
+          class="border-beam stagger-item rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
           style="animation-delay: 0ms"
         >
-          <div>
-            <div class="flex items-center gap-2">
-              <Gauge class="h-4 w-4 text-accent" :stroke-width="1.75" />
-              <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Fleet Health</span>
-            </div>
-            <div class="mt-6 flex items-end gap-3">
-              <span class="text-gradient text-6xl font-bold tabular-nums tracking-tighter">{{ healthPct }}</span>
-              <span class="mb-2 text-2xl font-light text-text-muted">%</span>
-            </div>
-            <p class="mt-1 text-[13px] text-text-muted">
-              {{ stats.ready }} of {{ stats.total }} edges ready
-            </p>
+          <div class="flex items-center gap-2">
+            <Gauge class="h-4 w-4 text-accent" :stroke-width="1.75" />
+            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Fleet Health</span>
           </div>
-          <!-- Mini bar chart -->
-          <div class="mt-auto flex items-end gap-1 pt-6">
+          <div class="mt-3 flex items-end gap-3">
+            <span class="text-gradient text-5xl font-bold tabular-nums tracking-tighter">{{ healthPct }}</span>
+            <span class="mb-1 text-xl font-light text-text-muted">%</span>
+          </div>
+          <!-- Progress bar -->
+          <div class="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-surface-overlay">
             <div
-              v-for="(edge, i) in edges.slice(0, 20)"
-              :key="i"
-              class="w-2 rounded-t transition-all duration-300"
-              :class="edge.status?.phase === 'Ready' ? 'bg-success/60' : 'bg-danger/40'"
-              :style="{ height: edge.status?.connected ? '24px' : '12px' }"
+              class="h-full rounded-full transition-all duration-500"
+              :class="healthPct >= 80 ? 'bg-success' : healthPct >= 50 ? 'bg-warning' : 'bg-danger'"
+              :style="{ width: `${healthPct}%` }"
             />
           </div>
+          <p class="mt-2 text-[12px] text-text-muted">{{ stats.ready }}/{{ stats.total }} edges ready</p>
         </div>
 
-        <!-- Stat: Total -->
+        <!-- Edge status combined: ready + not ready -->
         <div
-          class="tilt-card stagger-item flex flex-col justify-between rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
+          class="tilt-card stagger-item rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
           style="animation-delay: 60ms"
         >
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Total</span>
-            <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-subtle">
-              <Server class="h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
+          <div class="flex items-center gap-2">
+            <Server class="h-4 w-4 text-accent" :stroke-width="1.75" />
+            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Edge Status</span>
+            <span class="ml-auto rounded-md bg-accent-subtle px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-accent">{{ stats.total }}</span>
+          </div>
+          <div class="mt-3 flex gap-4">
+            <div class="flex-1 rounded-xl bg-success/[0.06] px-3 py-2.5">
+              <div class="flex items-center gap-1.5">
+                <CheckCircle class="h-3 w-3 text-success" :stroke-width="2" />
+                <span class="text-[10px] font-medium uppercase tracking-wider text-success/70">Ready</span>
+              </div>
+              <span class="mt-1 block text-2xl font-bold tabular-nums text-success">{{ stats.ready }}</span>
+            </div>
+            <div class="flex-1 rounded-xl bg-danger/[0.06] px-3 py-2.5">
+              <div class="flex items-center gap-1.5">
+                <XCircle class="h-3 w-3 text-danger" :stroke-width="2" />
+                <span class="text-[10px] font-medium uppercase tracking-wider text-danger/70">Not Ready</span>
+              </div>
+              <span class="mt-1 block text-2xl font-bold tabular-nums text-danger">{{ stats.notReady }}</span>
             </div>
           </div>
-          <span class="mt-auto text-3xl font-bold tabular-nums text-text-primary">{{ stats.total }}</span>
         </div>
 
-        <!-- Stat: Connected -->
+        <!-- Connection status combined: connected + disconnected -->
         <div
-          class="tilt-card stagger-item flex flex-col justify-between rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
+          class="tilt-card stagger-item rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
           style="animation-delay: 120ms"
         >
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Connected</span>
-            <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-success-subtle">
-              <Wifi class="h-3.5 w-3.5 text-success" :stroke-width="1.75" />
+          <div class="flex items-center gap-2">
+            <Wifi class="h-4 w-4 text-accent" :stroke-width="1.75" />
+            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Connectivity</span>
+          </div>
+          <div class="mt-3 flex gap-4">
+            <div class="flex-1 rounded-xl bg-success/[0.06] px-3 py-2.5">
+              <div class="flex items-center gap-1.5">
+                <Wifi class="h-3 w-3 text-success" :stroke-width="2" />
+                <span class="text-[10px] font-medium uppercase tracking-wider text-success/70">Online</span>
+              </div>
+              <span class="mt-1 block text-2xl font-bold tabular-nums text-success">{{ stats.connected }}</span>
+            </div>
+            <div class="flex-1 rounded-xl bg-danger/[0.06] px-3 py-2.5">
+              <div class="flex items-center gap-1.5">
+                <WifiOff class="h-3 w-3 text-danger" :stroke-width="2" />
+                <span class="text-[10px] font-medium uppercase tracking-wider text-danger/70">Offline</span>
+              </div>
+              <span class="mt-1 block text-2xl font-bold tabular-nums text-danger">{{ stats.disconnected }}</span>
             </div>
           </div>
-          <span class="mt-auto text-3xl font-bold tabular-nums text-success">{{ stats.connected }}</span>
         </div>
 
-        <!-- Stat: Ready (with glow) -->
+        <!-- Workloads combined panel -->
         <div
-          class="tilt-card stagger-item flex flex-col justify-between rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
+          class="tilt-card stagger-item rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
           style="animation-delay: 180ms"
         >
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Ready</span>
-            <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-success-subtle">
-              <CheckCircle class="h-3.5 w-3.5 text-success" :stroke-width="1.75" />
-            </div>
-          </div>
-          <span class="mt-auto text-3xl font-bold tabular-nums text-text-primary">{{ stats.ready }}</span>
-        </div>
-
-        <!-- Stat: Disconnected -->
-        <div
-          class="tilt-card stagger-item flex flex-col justify-between rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
-          style="animation-delay: 240ms"
-        >
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Disconnected</span>
-            <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-danger-subtle">
-              <WifiOff class="h-3.5 w-3.5 text-danger" :stroke-width="1.75" />
-            </div>
-          </div>
-          <span class="mt-auto text-3xl font-bold tabular-nums text-danger">{{ stats.disconnected }}</span>
-        </div>
-
-        <!-- Virtual Workloads -->
-        <div
-          class="tilt-card stagger-item flex flex-col justify-between rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
-          style="animation-delay: 280ms"
-        >
-          <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <Layers class="h-4 w-4 text-accent" :stroke-width="1.75" />
             <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Workloads</span>
-            <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-subtle">
-              <Layers class="h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
-            </div>
+            <router-link to="/workloads" class="ml-auto text-[10px] font-medium text-accent transition-colors hover:text-accent-hover">
+              View all &rarr;
+            </router-link>
           </div>
-          <div class="mt-auto flex items-end gap-2">
-            <span class="text-3xl font-bold tabular-nums text-text-primary">{{ workloadStats.total }}</span>
-            <span class="mb-0.5 text-[12px] text-success">{{ workloadStats.running }} running</span>
+          <div class="mt-3 grid grid-cols-2 gap-2">
+            <div class="rounded-xl bg-surface-overlay/60 px-3 py-2">
+              <span class="text-[10px] font-medium text-text-muted">Total</span>
+              <span class="block text-xl font-bold tabular-nums text-text-primary">{{ workloadStats.total }}</span>
+            </div>
+            <div class="rounded-xl bg-success/[0.06] px-3 py-2">
+              <span class="text-[10px] font-medium text-success/70">Running</span>
+              <span class="block text-xl font-bold tabular-nums text-success">{{ workloadStats.running }}</span>
+            </div>
+            <div class="rounded-xl bg-warning/[0.06] px-3 py-2">
+              <span class="text-[10px] font-medium text-warning/70">Pending</span>
+              <span class="block text-xl font-bold tabular-nums text-warning">{{ workloadStats.pending }}</span>
+            </div>
+            <div class="rounded-xl bg-accent-subtle px-3 py-2">
+              <span class="text-[10px] font-medium text-accent/70">Edge Placements</span>
+              <span class="block text-xl font-bold tabular-nums text-accent">{{ workloadStats.totalEdges }}</span>
+            </div>
           </div>
         </div>
 
-        <!-- Workloads quick link -->
-        <router-link
-          to="/workloads"
-          class="tilt-card stagger-item flex flex-col justify-between rounded-2xl border border-accent/20 bg-accent/[0.03] p-5 backdrop-blur transition-all hover:bg-accent/[0.06]"
-          style="animation-delay: 320ms"
-        >
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-accent">Virtual Workloads</span>
-            <ChevronRight class="h-4 w-4 text-accent/50" :stroke-width="1.75" />
-          </div>
-          <span class="mt-auto text-[13px] font-medium text-accent/80">Deploy across edges</span>
-        </router-link>
-
-        <!-- Recent edges (wide, spans 3 cols) -->
+        <!-- Recent edges (full width) -->
         <div
           v-if="edges.length > 0"
-          class="stagger-item col-span-3 rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
-          style="animation-delay: 300ms"
+          class="stagger-item col-span-full rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
+          style="animation-delay: 240ms"
         >
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-2">
@@ -179,13 +175,13 @@ const workloadStats = computed(() => {
               View all &rarr;
             </router-link>
           </div>
-          <div class="mt-4 space-y-1">
+          <div class="mt-3 space-y-1">
             <router-link
-              v-for="(edge, i) in edges.slice(0, 5)"
+              v-for="(edge, i) in edges.slice(0, 8)"
               :key="edge.metadata.name"
               :to="`/edges/${edge.metadata.name}`"
-              class="card-glow stagger-item group flex items-center justify-between rounded-xl border border-border-subtle bg-surface-overlay/50 px-4 py-2.5 transition-all duration-150 hover:bg-accent/[0.03]"
-              :style="{ animationDelay: `${(i + 5) * 50}ms` }"
+              class="card-glow stagger-item group flex items-center justify-between rounded-xl border border-border-subtle bg-surface-overlay/50 px-4 py-2 transition-all duration-150 hover:bg-accent/[0.03]"
+              :style="{ animationDelay: `${(i + 5) * 40}ms` }"
             >
               <div class="flex items-center gap-3">
                 <Server class="h-3.5 w-3.5 text-text-muted transition-colors group-hover:text-accent" :stroke-width="1.75" />

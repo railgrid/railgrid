@@ -41,9 +41,9 @@ func TestResolveKCPPath(t *testing.T) {
 		// ── issue #65 regression: bare paths must route to the user workspace ───
 		{
 			name:           "bare /api path routes to user workspace",
-			urlPath:        "/api/v1/pods",
+			urlPath:        "/apis/v1/pods",
 			defaultCluster: defaultCluster,
-			wantPath:       "/clusters/" + defaultCluster + "/api/v1/pods",
+			wantPath:       "/clusters/" + defaultCluster + "/apis/v1/pods",
 			wantStatus:     0,
 		},
 		{
@@ -55,7 +55,7 @@ func TestResolveKCPPath(t *testing.T) {
 		},
 		{
 			name:           "bare path with empty defaultCluster returns 403",
-			urlPath:        "/api/v1/pods",
+			urlPath:        "/apis/v1/pods",
 			defaultCluster: "",
 			wantStatus:     http.StatusForbidden,
 			wantMsgSubstr:  "user has no default cluster",
@@ -63,9 +63,9 @@ func TestResolveKCPPath(t *testing.T) {
 		// ── /clusters/{id}/... paths ─────────────────────────────────────────────
 		{
 			name:           "cluster-syntax path with matching cluster passes through",
-			urlPath:        "/clusters/" + defaultCluster + "/api/v1/pods",
+			urlPath:        "/clusters/" + defaultCluster + "/apis/v1/pods",
 			defaultCluster: defaultCluster,
-			wantPath:       "/clusters/" + defaultCluster + "/api/v1/pods",
+			wantPath:       "/clusters/" + defaultCluster + "/apis/v1/pods",
 			wantStatus:     0,
 		},
 		{

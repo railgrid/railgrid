@@ -5,8 +5,8 @@ import AppLayout from '@/components/AppLayout.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import WorkloadCreateModal from '@/components/WorkloadCreateModal.vue'
-import { useGraphQLQuery } from '@/composables/useGraphQL'
-import { deleteVirtualWorkload } from '@/composables/useWorkloadAPI'
+import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
+import { DELETE_VIRTUAL_WORKLOAD } from '@/graphql/mutations'
 import {
   LIST_VIRTUAL_WORKLOADS,
   type ListVirtualWorkloadsResult,
@@ -84,7 +84,7 @@ function formatAge(timestamp: string): string {
 }
 
 function handleRowClick(row: Record<string, unknown>) {
-  router.push(`/workloads/${row.name}`)
+  router.push(`/workloads/${row.namespace}/${row.name}`)
 }
 
 function handleCreated() {
@@ -101,7 +101,10 @@ async function executeDelete() {
   deleting.value = true
   deleteError.value = null
   try {
-    await deleteVirtualWorkload(deleteConfirm.value.name, deleteConfirm.value.namespace)
+    await graphqlMutate(DELETE_VIRTUAL_WORKLOAD, {
+      name: deleteConfirm.value.name,
+      namespace: deleteConfirm.value.namespace,
+    })
     deleteConfirm.value = null
     refetch()
   } catch (e) {

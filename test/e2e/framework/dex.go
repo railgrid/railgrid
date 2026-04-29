@@ -25,13 +25,17 @@ import (
 
 const (
 	// DexServicePort is the host port where Dex is reachable from the test
-	// runner via the kind port mapping (hostPort DexServicePort →
-	// containerPort 31556 → Dex NodePort inside kind).
-	DexServicePort = 5556
+	// runner via the kind port mapping. The dexidp Helm chart binds HTTPS
+	// to containerPort 5554 (hard-coded --web-https-addr), so we expose
+	// the same number on the host for consistency.
+	DexServicePort = 5554
 
 	// DexIssuerURL is the OIDC issuer URL used by both the hub pod (cluster
-	// DNS) and the test runner (/etc/hosts alias to localhost).
-	DexIssuerURL = "http://dex.kedge-system.svc.cluster.local:5556/dex"
+	// DNS) and the test runner (/etc/hosts alias to localhost). HTTPS so
+	// embedded kcp's authentication validator (which mandates scheme=https)
+	// accepts it; the cert is signed by the kedge-selfsigned ClusterIssuer
+	// and clients use InsecureSkipVerify.
+	DexIssuerURL = "https://dex.kedge-system.svc.cluster.local:5554/dex"
 
 	// DexExternalHost is added to the test runner's /etc/hosts as 127.0.0.1
 	// so it can reach the in-cluster Dex via the kind port mapping.
@@ -96,15 +100,16 @@ func DefaultDexEnv() *DexEnv {
 
 // WaitForDexReady polls Dex's OIDC discovery endpoint on localhost until it
 // returns 200 or the context deadline is exceeded.  The test runner reaches
-// Dex via the kind port mapping on localhost:DexServicePort.
+// Dex via the kind port mapping on localhost:DexServicePort. Dex serves TLS
+// with a cert valid for the in-cluster name; the client skips verification.
 func WaitForDexReady(ctx context.Context) error {
-	discoveryURL := fmt.Sprintf("http://localhost:%d/dex/.well-known/openid-configuration", DexServicePort)
+	discoveryURL := fmt.Sprintf("https://localhost:%d/dex/.well-known/openid-configuration", DexServicePort)
 	return Poll(ctx, 3*time.Second, 3*time.Minute, func(ctx context.Context) (bool, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
 		if err != nil {
 			return false, nil
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := insecureHTTPClient.Do(req)
 		if err != nil {
 			return false, nil
 		}

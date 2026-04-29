@@ -55,6 +55,24 @@ type EmbeddedKCPOptions struct {
 	// via its token-auth-file mechanism. This allows static token users
 	// to be authenticated natively by kcp (needed for workspace mounts).
 	StaticAuthTokens []string
+
+	// OIDC options for native kcp authentication. When OIDCIssuerURL and
+	// OIDCClientID are both set, kcp will verify bearer tokens against the
+	// configured issuer and run requests as the resulting OIDC identity.
+	//
+	// Defaults are tuned to match the proxy/User CRD identity scheme
+	// (User.Spec.RBACIdentity = "kedge:<sub>", see pkg/server/auth/handler.go):
+	//   UsernameClaim  = "sub"
+	//   UsernamePrefix = "kedge:"
+	//   GroupsClaim    = "groups"
+	//   GroupsPrefix   = "kedge:"
+	OIDCIssuerURL      string
+	OIDCClientID       string
+	OIDCCAFile         string
+	OIDCUsernameClaim  string
+	OIDCUsernamePrefix string
+	OIDCGroupsClaim    string
+	OIDCGroupsPrefix   string
 }
 
 // EmbeddedKCP wraps a kcp server that runs in-process.
@@ -140,6 +158,43 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 			kcpOpts.GenericControlPlane.Authentication.TokenFile.TokenFile = tokenFilePath
 			logger.Info("Static token auth file configured for kcp", "path", tokenFilePath, "tokens", len(lines))
 		}
+	}
+
+	// Configure OIDC authentication if provided. This lets kcp verify bearer
+	// tokens issued by the IdP natively, so the hub proxy can forward user
+	// tokens unchanged and have kcp enforce per-user RBAC.
+	if e.opts.OIDCIssuerURL != "" && e.opts.OIDCClientID != "" {
+		oidcOpts := kcpOpts.GenericControlPlane.Authentication.OIDC
+		oidcOpts.IssuerURL = e.opts.OIDCIssuerURL
+		oidcOpts.ClientID = e.opts.OIDCClientID
+		if e.opts.OIDCUsernameClaim != "" {
+			oidcOpts.UsernameClaim = e.opts.OIDCUsernameClaim
+		} else {
+			oidcOpts.UsernameClaim = "sub"
+		}
+		if e.opts.OIDCUsernamePrefix != "" {
+			oidcOpts.UsernamePrefix = e.opts.OIDCUsernamePrefix
+		} else {
+			oidcOpts.UsernamePrefix = "kedge:"
+		}
+		if e.opts.OIDCGroupsClaim != "" {
+			oidcOpts.GroupsClaim = e.opts.OIDCGroupsClaim
+		} else {
+			oidcOpts.GroupsClaim = "groups"
+		}
+		if e.opts.OIDCGroupsPrefix != "" {
+			oidcOpts.GroupsPrefix = e.opts.OIDCGroupsPrefix
+		} else {
+			oidcOpts.GroupsPrefix = "kedge:"
+		}
+		if e.opts.OIDCCAFile != "" {
+			oidcOpts.CAFile = e.opts.OIDCCAFile
+		}
+		logger.Info("OIDC authentication configured for kcp",
+			"issuer", e.opts.OIDCIssuerURL,
+			"clientID", e.opts.OIDCClientID,
+			"usernameClaim", oidcOpts.UsernameClaim,
+			"usernamePrefix", oidcOpts.UsernamePrefix)
 	}
 
 	// Configure batteries.

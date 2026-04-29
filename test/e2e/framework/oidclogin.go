@@ -26,11 +26,13 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"golang.org/x/net/html"
 	"golang.org/x/oauth2"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // OIDCLoginResult holds the result of a headless OIDC login.
@@ -230,8 +232,12 @@ func HeadlessOIDCLogin(ctx context.Context, hubURL, email, password string) (*OI
 		if res.err != nil {
 			return nil, res.err
 		}
+		kubeconfig, err := patchKubeconfigExecPath(res.payload.Kubeconfig)
+		if err != nil {
+			return nil, fmt.Errorf("patching kubeconfig exec path: %w", err)
+		}
 		return &OIDCLoginResult{
-			Kubeconfig:   res.payload.Kubeconfig,
+			Kubeconfig:   kubeconfig,
 			Email:        res.payload.Email,
 			UserID:       res.payload.UserID,
 			IDToken:      res.payload.IDToken,
@@ -245,6 +251,43 @@ func HeadlessOIDCLogin(ctx context.Context, hubURL, email, password string) (*OI
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// patchKubeconfigExecPath rewrites any AuthInfo.Exec.Command of "kedge" to
+// the absolute path of the kedge binary under test ($RepoRoot/bin/kedge).
+//
+// The hub generates kubeconfigs whose auth is an exec credential plugin with
+// Command: "kedge" (see pkg/server/auth/handler.go). That requires "kedge" to
+// be on PATH at kubectl-invocation time. In tests (and for users running
+// kubectl manually against these kubeconfigs) it usually is not, so we rewrite
+// the command to the absolute path we already know about.
+//
+// The input is returned unchanged if no matching exec block is present or if
+// the kubeconfig is empty.
+func patchKubeconfigExecPath(data []byte) ([]byte, error) {
+	if len(data) == 0 {
+		return data, nil
+	}
+	cfg, err := clientcmd.Load(data)
+	if err != nil {
+		return nil, fmt.Errorf("loading kubeconfig: %w", err)
+	}
+	kedgeBin := filepath.Join(RepoRoot(), "bin", "kedge")
+	changed := false
+	for _, authInfo := range cfg.AuthInfos {
+		if authInfo.Exec != nil && authInfo.Exec.Command == "kedge" {
+			authInfo.Exec.Command = kedgeBin
+			changed = true
+		}
+	}
+	if !changed {
+		return data, nil
+	}
+	out, err := clientcmd.Write(*cfg)
+	if err != nil {
+		return nil, fmt.Errorf("serialising kubeconfig: %w", err)
+	}
+	return out, nil
 }
 
 // loginResponse mirrors tenancyv1alpha1.LoginResponse for JSON parsing.
@@ -381,7 +424,8 @@ func parseLoginForm(resp *http.Response, currentURL string) (string, map[string]
 
 // rewriteDexToLocalhost rewrites a URL whose host is the Dex cluster-DNS name
 // or any Dex-ish hostname so the test runner can reach it via the kind port
-// mapping on localhost:DexServicePort.
+// mapping on localhost:DexServicePort. Scheme is forced to https since Dex
+// serves TLS — see DexIssuerURL.
 func rewriteDexToLocalhost(rawURL string) string {
 	if rawURL == "" {
 		return rawURL
@@ -392,7 +436,7 @@ func rewriteDexToLocalhost(rawURL string) string {
 	}
 	host := u.Hostname()
 	if host == DexExternalHost || strings.HasPrefix(host, "dex.") {
-		u.Scheme = "http"
+		u.Scheme = "https"
 		u.Host = fmt.Sprintf("localhost:%d", DexServicePort)
 		return u.String()
 	}

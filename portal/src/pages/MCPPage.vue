@@ -5,17 +5,19 @@ import AppLayout from '@/components/AppLayout.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import MCPCreateModal from '@/components/MCPCreateModal.vue'
-import { useMCPList, deleteMCP, type KubernetesMCP } from '@/composables/useKubeAPI'
+import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
+import { LIST_MCP_SERVERS, type ListMCPResult, type MCPItem } from '@/graphql/queries/mcp'
+import { DELETE_MCP } from '@/graphql/mutations'
 import { Bot, Plus, Server, Wifi, Copy, Check, Trash2, ClipboardCopy } from 'lucide-vue-next'
 
 const router = useRouter()
 const auth = useAuthStore()
-const { data, loading, error, refetch } = useMCPList(10000)
+const { data, loading, error, refetch } = useGraphQLQuery<ListMCPResult>(LIST_MCP_SERVERS, undefined, 10000)
 const showCreate = ref(false)
 const copiedField = ref<string | null>(null)
 
-const mcpServers = computed(() => data.value ?? [])
+const mcpServers = computed(() => data.value?.mcp_kedge_faros_sh?.v1alpha1?.KubernetesList?.items ?? [])
 const defaultMCP = computed(() => mcpServers.value.find((m) => m.metadata.name === 'default'))
 
 const columns = [
@@ -28,7 +30,7 @@ const columns = [
 ]
 
 const rows = computed(() =>
-  mcpServers.value.map((m: KubernetesMCP) => {
+  mcpServers.value.map((m: MCPItem) => {
     const readyCond = m.status?.conditions?.find((c) => c.type === 'Ready')
     return {
       name: m.metadata.name,
@@ -60,7 +62,7 @@ async function handleDelete(name: string, event: Event) {
   event.stopPropagation()
   if (!confirm(`Delete MCP server "${name}"?`)) return
   try {
-    await deleteMCP(name)
+    await graphqlMutate(DELETE_MCP, { name })
     await refetch()
   } catch (e) {
     alert(e instanceof Error ? e.message : 'Delete failed')

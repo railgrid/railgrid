@@ -310,6 +310,13 @@ HUB_FLAGS_GRAPHQL_EMBEDDED := \
 	--graphql-grpc-addr=$(GRAPHQL_GRPC_ADDR) \
 	--graphql-playground
 
+# Portal dev proxy: reverse-proxy /console/* to the Vite dev server at :3000
+# so UI changes hot-reload without rebuilding the hub. Start the Vite server
+# with: cd portal && npm run dev
+PORTAL_DEV_URL ?= http://localhost:3000
+HUB_FLAGS_PORTAL_DEV := \
+	--portal-dev-url=$(PORTAL_DEV_URL)
+
 # --- Run targets ---
 # Naming convention: run-hub-[auth]-[kcp]
 # auth: oidc | static
@@ -332,10 +339,10 @@ run-hub-embedded: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
 	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED)
 
-## Embedded KCP + static token auth + embedded GraphQL (standalone - no external deps)
+## Embedded KCP + static token auth + embedded GraphQL + portal dev proxy (standalone - no external deps)
 run-hub-embedded-static: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
+	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED) $(HUB_FLAGS_PORTAL_DEV)
 
 ## Embedded KCP + static token + embedded GraphQL (fully standalone)
 run-hub-standalone: build-hub certs
@@ -442,18 +449,46 @@ E2E_TIMEOUT ?= 20m
 e2e: e2e-standalone ## Run default e2e suite (standalone)
 
 e2e-standalone: build ## Run standalone e2e suite (embedded kcp + static token, no Dex)
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
+	docker build -f deploy/Dockerfile.agent -t ghcr.io/faroshq/kedge-agent:test .
+	KEDGE_HUB_IMAGE=ghcr.io/faroshq/kedge-hub \
+	KEDGE_HUB_IMAGE_TAG=test \
+	KEDGE_HUB_IMAGE_PULL_POLICY=Never \
+	KEDGE_AGENT_IMAGE=ghcr.io/faroshq/kedge-agent \
+	KEDGE_AGENT_IMAGE_TAG=test \
+	KEDGE_AGENT_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-ssh: build ## Run SSH server-mode e2e suite (hub-only cluster)
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
+	KEDGE_HUB_IMAGE=ghcr.io/faroshq/kedge-hub \
+	KEDGE_HUB_IMAGE_TAG=test \
+	KEDGE_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/ssh/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-oidc: build ## Run OIDC e2e suite (Dex OIDC provider, requires --with-dex cluster)
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
+	KEDGE_HUB_IMAGE=ghcr.io/faroshq/kedge-hub \
+	KEDGE_HUB_IMAGE_TAG=test \
+	KEDGE_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-external-kcp: build ## Run external KCP e2e suite (kcp via Helm in kind, push-to-main only in CI)
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
+	KEDGE_HUB_IMAGE=ghcr.io/faroshq/kedge-hub \
+	KEDGE_HUB_IMAGE_TAG=test \
+	KEDGE_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-all: build ## Run all e2e suites
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
+	docker build -f deploy/Dockerfile.agent -t ghcr.io/faroshq/kedge-agent:test .
+	KEDGE_HUB_IMAGE=ghcr.io/faroshq/kedge-hub \
+	KEDGE_HUB_IMAGE_TAG=test \
+	KEDGE_HUB_IMAGE_PULL_POLICY=Never \
+	KEDGE_AGENT_IMAGE=ghcr.io/faroshq/kedge-agent \
+	KEDGE_AGENT_IMAGE_TAG=test \
+	KEDGE_AGENT_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/... -v -timeout 30m $(E2E_FLAGS)
 
 e2e-keep: ## Run standalone e2e, keep clusters on failure for debugging

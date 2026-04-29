@@ -93,7 +93,7 @@ func extractBearerToken(r *http.Request) string {
 // Both calls use admin credentials scoped to the target workspace.
 func authorize(ctx context.Context, kcpConfig *rest.Config, token, clusterName, verb, resource, name string) error {
 	cfg := rest.CopyConfig(kcpConfig)
-	cfg.Host = apiurl.HubServerURL(cfg.Host, clusterName)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, clusterName)
 
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {

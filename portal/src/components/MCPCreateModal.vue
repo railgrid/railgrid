@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { createMCP } from '@/composables/useKubeAPI'
+import { graphqlMutate } from '@/composables/useGraphQL'
+import { CREATE_MCP } from '@/graphql/mutations'
 import { X } from 'lucide-vue-next'
 
 const emit = defineEmits<{
@@ -45,7 +46,12 @@ async function handleCreate() {
       spec.readOnly = true
     }
 
-    await createMCP(spec as any, name.value.trim())
+    await graphqlMutate(CREATE_MCP, {
+      object: {
+        metadata: { name: name.value.trim() },
+        spec,
+      },
+    })
     emit('created')
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Create failed'

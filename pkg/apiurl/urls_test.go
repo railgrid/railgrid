@@ -75,6 +75,18 @@ func TestSplitBaseAndCluster(t *testing.T) {
 			wantBase:    "https://hub:9443",
 			wantCluster: "default",
 		},
+		{
+			name:        "internal kcp URL with /clusters/ (no /api prefix)",
+			input:       "https://localhost:6443/clusters/root:kedge:providers",
+			wantBase:    "https://localhost:6443",
+			wantCluster: "root:kedge:providers",
+		},
+		{
+			name:        "internal kcp URL with /clusters/ and extra path",
+			input:       "https://localhost:6443/clusters/root:kedge/api/v1",
+			wantBase:    "https://localhost:6443",
+			wantCluster: "root:kedge",
+		},
 	}
 
 	for _, tt := range tests {
@@ -367,7 +379,7 @@ func TestExternalizeURL(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "services path gets externalized",
+			name:    "api services path gets externalized",
 			edgeURL: "/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
 			hubBase: "https://hub:9443",
 			want:    "https://hub:9443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",

@@ -1,3 +1,10 @@
+FROM --platform=$BUILDPLATFORM node:22-alpine AS portal
+WORKDIR /portal
+COPY portal/package.json portal/package-lock.json ./
+RUN npm ci
+COPY portal/ .
+RUN npm run build
+
 FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 
 ARG TARGETARCH
@@ -8,12 +15,14 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+COPY --from=portal /portal/dist pkg/hub/portal/dist/
 
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -tags portal_embed \
     -ldflags="-s -w \
       -X github.com/faroshq/faros-kedge/pkg/cli/cmd.version=${VERSION} \
       -X github.com/faroshq/faros-kedge/pkg/cli/cmd.gitCommit=${GIT_COMMIT} \

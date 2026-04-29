@@ -4,7 +4,6 @@ import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
-import { getEdge } from '@/composables/useKubeAPI'
 import { GET_EDGE, GET_EDGE_YAML, type GetEdgeResult, type GetEdgeYamlResult } from '@/graphql/queries/edges'
 import { Server, Wifi, WifiOff, Clock, Hash, FileCode, ChevronDown, ChevronUp, ArrowLeft, TerminalSquare, Copy, Check } from 'lucide-vue-next'
 
@@ -33,10 +32,14 @@ const canSSH = computed(() => {
 
 // --- Join instructions ---
 const showJoinInstructions = ref(false)
-const joinToken = ref<string | null>(null)
-const joinTokenLoading = ref(false)
-const joinTokenError = ref<string | null>(null)
 const copiedField = ref<string | null>(null)
+
+const joinToken = computed(() => edge.value?.status?.joinToken ?? null)
+const joinTokenError = computed(() => {
+  if (!edge.value) return null
+  if (!edge.value.status?.joinToken) return 'Join token not available. It may have been consumed after first connection.'
+  return null
+})
 
 const needsJoin = computed(() => {
   if (!edge.value) return false
@@ -80,23 +83,8 @@ const helmSnippet = computed(() => buildHelmSnippet(maskedToken))
 const cliJoinSnippet = computed(() => buildCLIJoinSnippet(maskedToken))
 const cliRunSnippet = computed(() => buildCLIRunSnippet(maskedToken))
 
-async function toggleJoinInstructions() {
+function toggleJoinInstructions() {
   showJoinInstructions.value = !showJoinInstructions.value
-  if (showJoinInstructions.value && !joinToken.value) {
-    joinTokenLoading.value = true
-    joinTokenError.value = null
-    try {
-      const edgeData = await getEdge(props.name)
-      joinToken.value = edgeData.status?.joinToken ?? null
-      if (!joinToken.value) {
-        joinTokenError.value = 'Join token not available. It may have been consumed after first connection.'
-      }
-    } catch (e) {
-      joinTokenError.value = e instanceof Error ? e.message : 'Failed to fetch join token'
-    } finally {
-      joinTokenLoading.value = false
-    }
-  }
 }
 
 async function copySnippet(builder: (token: string) => string, field: string) {
@@ -256,12 +244,7 @@ const details = computed(() => {
 
       <!-- Join Instructions -->
       <div v-if="showJoinInstructions" class="stagger-item mt-4" style="animation-delay: 220ms">
-        <div v-if="joinTokenLoading" class="flex items-center gap-2 text-[12px] text-text-muted">
-          <div class="shimmer h-4 w-4 rounded" />
-          Fetching join token...
-        </div>
-
-        <div v-else-if="joinTokenError" class="rounded-xl border border-warning/20 bg-warning/5 p-4 text-[12px] text-warning">
+        <div v-if="joinTokenError" class="rounded-xl border border-warning/20 bg-warning/5 p-4 text-[12px] text-warning">
           {{ joinTokenError }}
         </div>
 

@@ -485,9 +485,9 @@ func toUnstructured(obj runtime.Object) (*unstructured.Unstructured, error) {
 // If the host already contains a /clusters/ path (e.g. from the admin
 // kubeconfig), it is replaced rather than appended.
 //
-// Deprecated: use apiurl.HubServerURL directly.
+// Deprecated: use apiurl.KCPClusterURL directly.
 func AppendClusterPath(host, clusterPath string) string {
-	return apiurl.HubServerURL(host, clusterPath)
+	return apiurl.KCPClusterURL(host, clusterPath)
 }
 
 // waitForAPIBindingBound polls until an APIBinding has phase "Bound".

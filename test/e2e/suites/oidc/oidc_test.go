@@ -211,7 +211,7 @@ func TestOIDCTokenIssuerMatchesDiscovery(t *testing.T) {
 				t.Fatal("dex env not found in context")
 			}
 
-			discoveryURL := fmt.Sprintf("http://localhost:%d/dex/.well-known/openid-configuration",
+			discoveryURL := fmt.Sprintf("https://localhost:%d/dex/.well-known/openid-configuration",
 				framework.DexServicePort)
 
 			code, body, err := framework.HTTPGetBody(ctx, discoveryURL)

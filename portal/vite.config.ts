@@ -3,9 +3,12 @@ import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
 
-export default defineConfig(({ command }) => ({
-  // In production (embedded in hub), serve from /portal/. In dev, serve from root.
-  base: command === 'build' ? '/portal/' : '/',
+export default defineConfig(() => ({
+  // Always serve from /console/ so URLs match whether the portal is:
+  //  - embedded in the hub (production),
+  //  - proxied by the hub from the Vite dev server (--portal-dev-url),
+  //  - or accessed directly on the Vite port (http://localhost:3000/console/).
+  base: '/console/',
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: {
@@ -15,22 +18,7 @@ export default defineConfig(({ command }) => ({
   server: {
     port: 3000,
     proxy: {
-      '/graphql': {
-        target: 'https://localhost:9443',
-        changeOrigin: true,
-        secure: false,
-      },
-      '/auth': {
-        target: 'https://localhost:9443',
-        changeOrigin: true,
-        secure: false,
-      },
-      '/healthz': {
-        target: 'https://localhost:9443',
-        changeOrigin: true,
-        secure: false,
-      },
-      '/services': {
+      '/apis': {
         target: 'https://localhost:9443',
         changeOrigin: true,
         secure: false,
@@ -39,7 +27,7 @@ export default defineConfig(({ command }) => ({
           Origin: 'https://localhost:9443',
         },
       },
-      '/clusters': {
+      '/healthz': {
         target: 'https://localhost:9443',
         changeOrigin: true,
         secure: false,

@@ -29,6 +29,10 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         # --- kedge-hub ---
         - name: hub
@@ -59,12 +63,18 @@ spec:
             {{- if .Values.idp.issuerURL }}
             - --idp-issuer-url={{ .Values.idp.issuerURL }}
             - --idp-client-id={{ .Values.idp.clientID }}
+            {{- if .Values.idp.caSecretName }}
+            - --idp-ca-file=/idp-ca/{{ .Values.idp.caSecretKey }}
+            {{- end }}
             {{- end }}
             {{- range .Values.hub.staticAuthTokens }}
             - --static-auth-token={{ . }}
             {{- end }}
             {{- if .Values.hub.devMode }}
             - --dev-mode
+            {{- end }}
+            {{- if .Values.hub.embeddedGraphQL }}
+            - --embedded-graphql
             {{- end }}
             - --data-dir=/data/hub
           securityContext:
@@ -109,6 +119,11 @@ spec:
               mountPath: /kcp-kubeconfig
               readOnly: true
             {{- end }}
+            {{- if .Values.idp.caSecretName }}
+            - name: idp-ca
+              mountPath: /idp-ca
+              readOnly: true
+            {{- end }}
 
       volumes:
         {{- if include "kedge-hub.tlsEnabled" . }}
@@ -125,6 +140,11 @@ spec:
         - name: kcp-kubeconfig
           secret:
             secretName: {{ include "kedge-hub.kcpKubeconfigSecretName" . }}
+        {{- end }}
+        {{- if .Values.idp.caSecretName }}
+        - name: idp-ca
+          secret:
+            secretName: {{ .Values.idp.caSecretName }}
         {{- end }}
 
       {{- with .Values.nodeSelector }}

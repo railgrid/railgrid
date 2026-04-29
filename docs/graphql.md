@@ -61,17 +61,17 @@ INFO  Registered endpoint  {"cluster": "a08bvxnomis2m558"}
 Open the playground at:
 
 ```
-http://localhost:8080/api/clusters/<cluster-id>
+http://localhost:8080/clusters/<cluster-id>
 ```
 
-Example: `http://localhost:8080/api/clusters/a08bvxnomis2m558`
+Example: `http://localhost:8080/clusters/a08bvxnomis2m558`
 
 Other endpoints:
 
 | Path | Description |
 |------|-------------|
-| `GET /api/clusters/{cluster}` | GraphQL playground UI |
-| `POST /api/clusters/{cluster}` | GraphQL query endpoint |
+| `GET /clusters/{cluster}` | GraphQL playground UI |
+| `POST /clusters/{cluster}` | GraphQL query endpoint |
 | `GET /healthz` | Health check |
 | `GET /readyz` | Readiness check |
 | `GET /metrics` | Prometheus metrics |
@@ -86,7 +86,7 @@ The gateway uses a two-layer auth model:
 So clients must supply their own bearer token:
 
 ```bash
-curl -X POST http://localhost:8080/api/clusters/<cluster-id> \
+curl -X POST http://localhost:8080/clusters/<cluster-id> \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <your-kcp-token>" \
   -d '{"query":"{ v1 { Namespaces { items { metadata { name } } } } }"}'
@@ -128,7 +128,7 @@ kubectl get logicalclusters
 ### Send a GraphQL query via kubectl
 
 ```bash
-kubectl create --raw '/graphql/api/clusters/<cluster-id>' -f - <<'EOF'
+kubectl create --raw '/graphql/clusters/<cluster-id>' -f - <<'EOF'
 {"query":"{ v1 { Namespaces { items { metadata { name } } } } }"}
 EOF
 ```
@@ -136,7 +136,7 @@ EOF
 Example with a real cluster ID:
 
 ```bash
-kubectl create --raw '/graphql/api/clusters/a08bvxnomis2m558' -f - <<'EOF'
+kubectl create --raw '/graphql/clusters/a08bvxnomis2m558' -f - <<'EOF'
 {"query":"{ v1 { Namespaces { items { metadata { name } } } } }"}
 EOF
 ```
@@ -144,7 +144,7 @@ EOF
 ### Raw GET (no query body — returns schema error)
 
 ```bash
-kubectl get --raw '/graphql/api/clusters/a08bvxnomis2m558'
+kubectl get --raw '/graphql/clusters/a08bvxnomis2m558'
 # {"data":null,"errors":[{"message":"Must provide an operation."}]}
 ```
 

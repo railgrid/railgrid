@@ -325,9 +325,9 @@ func (h *Handler) Verifier() *oidc.IDTokenVerifier {
 
 // RegisterRoutes registers auth routes on the given gorilla/mux router.
 func (h *Handler) RegisterRoutes(router *mux.Router) {
-	router.HandleFunc("/auth/authorize", h.HandleAuthorize).Methods("GET")
-	router.HandleFunc("/auth/callback", h.HandleCallback).Methods("GET")
-	router.HandleFunc("/auth/refresh", h.HandleRefresh).Methods("POST")
+	router.HandleFunc(apiurl.PathAuthAuthorize, h.HandleAuthorize).Methods("GET")
+	router.HandleFunc(apiurl.PathAuthCallback, h.HandleCallback).Methods("GET")
+	router.HandleFunc(apiurl.PathAuthRefresh, h.HandleRefresh).Methods("POST")
 }
 
 // seedUser creates or updates a User CRD based on OIDC claims.

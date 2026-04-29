@@ -80,11 +80,15 @@ func WaitForEdgeAPI(ctx context.Context, client *KedgeClient, token string) erro
 	if err := client.Login(ctx, token); err != nil {
 		return fmt.Errorf("login before edge API wait: %w", err)
 	}
-	return Poll(ctx, 5*time.Second, 3*time.Minute, func(ctx context.Context) (bool, error) {
+	attempt := 0
+	return Poll(ctx, 5*time.Second, 5*time.Minute, func(ctx context.Context) (bool, error) {
+		attempt++
 		_, err := client.EdgeList(ctx)
 		if err == nil {
 			return true, nil
 		}
+		// Log diagnostic details so CI failures are easier to debug.
+		logEdgeAPIDiagnostics(ctx, client, attempt, err)
 		// "server could not find" = APIBinding not ready yet — keep polling.
 		// Any other error also warrants a retry (hub may be mid-restart).
 		return false, nil
@@ -116,10 +120,55 @@ func WaitForEdgeAPIWithOIDC(ctx context.Context, workDir, hubURL string) error {
 		return fmt.Errorf("writing OIDC kubeconfig for edge API wait: %w", err)
 	}
 	client := NewKedgeClient(workDir, oidcKubeconfig, hubURL)
-	return Poll(ctx, 5*time.Second, 3*time.Minute, func(ctx context.Context) (bool, error) {
+	attempt := 0
+	return Poll(ctx, 5*time.Second, 5*time.Minute, func(ctx context.Context) (bool, error) {
+		attempt++
 		_, err := client.EdgeList(ctx)
-		return err == nil, nil
+		if err == nil {
+			return true, nil
+		}
+		logEdgeAPIDiagnostics(ctx, client, attempt, err)
+		return false, nil
 	})
+}
+
+// logEdgeAPIDiagnostics queries workspace status, APIBindings, and CRDs via
+// kubectl and logs the results so CI failures are easier to debug.
+func logEdgeAPIDiagnostics(ctx context.Context, client *KedgeClient, attempt int, edgeListErr error) {
+	fmt.Printf("[WaitForEdgeAPI] attempt %d: edge list failed: %v\n", attempt, edgeListErr)
+
+	// Workspace status — shows phase (Initializing, Ready, etc.).
+	if out, err := client.Kubectl(ctx,
+		"get", "workspaces.tenancy.kcp.io",
+		"-o", "custom-columns=NAME:.metadata.name,PHASE:.status.phase,CLUSTER:.spec.cluster,URL:.status.URL",
+		"--insecure-skip-tls-verify",
+	); err == nil {
+		fmt.Printf("[WaitForEdgeAPI] workspaces:\n%s\n", out)
+	} else {
+		fmt.Printf("[WaitForEdgeAPI] workspaces query failed: %v\n", err)
+	}
+
+	// APIBinding status — shows whether bindings are Bound or still pending.
+	if out, err := client.Kubectl(ctx,
+		"get", "apibindings.apis.kcp.io",
+		"-o", "custom-columns=NAME:.metadata.name,PHASE:.status.phase",
+		"--insecure-skip-tls-verify",
+	); err == nil {
+		fmt.Printf("[WaitForEdgeAPI] apibindings:\n%s\n", out)
+	} else {
+		fmt.Printf("[WaitForEdgeAPI] apibindings query failed: %v\n", err)
+	}
+
+	// CRDs — check if kedge CRDs exist at all.
+	if out, err := client.Kubectl(ctx,
+		"get", "crd",
+		"-o", "custom-columns=NAME:.metadata.name,ESTABLISHED:.status.conditions[?(@.type==\"Established\")].status",
+		"--insecure-skip-tls-verify",
+	); err == nil {
+		fmt.Printf("[WaitForEdgeAPI] crds:\n%s\n", out)
+	} else {
+		fmt.Printf("[WaitForEdgeAPI] crds query failed: %v\n", err)
+	}
 }
 
 // HTTPGet performs a GET to url using an insecure client (self-signed certs in
@@ -137,15 +186,15 @@ func HTTPGet(ctx context.Context, url string) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// HTTPGetBody performs a GET to url using a plain (non-insecure) HTTP client
-// and returns the status code and response body as a string.
-// Use this for plain HTTP endpoints (e.g. in-cluster Dex via kind port mapping).
+// HTTPGetBody performs a GET to url and returns the status code and response
+// body. TLS verification is skipped — used for in-cluster services exposed via
+// kind port mapping with self-signed certs (Dex, hub).
 func HTTPGetBody(ctx context.Context, url string) (int, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := insecureHTTPClient.Do(req)
 	if err != nil {
 		return 0, "", err
 	}

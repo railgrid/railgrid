@@ -24,12 +24,16 @@ type Options struct {
 	ExternalKCPKubeconfig string
 	IDPIssuerURL          string
 	IDPClientID           string
-	ServingCertFile       string
-	ServingKeyFile        string
-	HubExternalURL        string
-	HubInternalURL        string // Internal URL for kcp mount resolution (avoids CDN/proxy loops)
-	DevMode               bool
-	StaticAuthTokens      []string
+	// IDPCAFile is a path to a PEM-encoded CA bundle used to verify the IdP's
+	// TLS certificate. Required when IDPIssuerURL is https and uses a cert
+	// not signed by a system trust anchor (e.g. the dev Dex deployment).
+	IDPCAFile        string
+	ServingCertFile  string
+	ServingKeyFile   string
+	HubExternalURL   string
+	HubInternalURL   string // Internal URL for kcp mount resolution (avoids CDN/proxy loops)
+	DevMode          bool
+	StaticAuthTokens []string
 
 	// GraphQLAddr is the address of an external GraphQL gateway to proxy /graphql/ requests to.
 	// If empty and EmbeddedGraphQL is false, the graphql proxy is disabled.
@@ -45,6 +49,11 @@ type Options struct {
 	GraphQLGRPCAddr                string // in-process gRPC address (default: "localhost:50051")
 	GraphQLPlayground              bool   // enable playground UI
 	GraphQLPort                    int    // port for the embedded GraphQL HTTP server; 0 = serve via hub mux only
+
+	// PortalDevURL, when set, reverse-proxies /console/* to this URL (typically
+	// a Vite dev server, e.g. http://localhost:3000). Takes precedence over the
+	// embedded portal dist (if built with -tags portal_embed).
+	PortalDevURL string
 
 	// Embedded kcp options
 	EmbeddedKCP         bool   // Enable embedded kcp server

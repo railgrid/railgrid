@@ -245,7 +245,7 @@ func (p *virtualWorkspaces) fetchSSHCredentials(ctx context.Context, cluster, ed
 
 	// Create cluster-scoped clients by modifying the host URL to include the cluster path.
 	clusterConfig := rest.CopyConfig(p.kcpConfig)
-	clusterConfig.Host = apiurl.HubServerURL(clusterConfig.Host, cluster)
+	clusterConfig.Host = apiurl.KCPClusterURL(clusterConfig.Host, cluster)
 
 	kedgeClient, err := kedgeclient.NewForConfig(clusterConfig)
 	if err != nil {

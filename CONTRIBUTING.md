@@ -37,17 +37,20 @@ make build
 # Build just the CLI
 make build-kedge
 
-# Cross-compile for all platforms
-make build-all
+# Build just the hub
+make build-hub
+
+# Build the GraphQL gateway
+make build-graphql
 ```
 
 Binaries produced:
 
 | Binary | Description |
 |--------|-------------|
-| `bin/kedge` | User CLI |
+| `bin/kedge` | User CLI (also runs as the agent via `kedge agent run`) |
 | `bin/kedge-hub` | Hub server |
-| `bin/kedge-agent` | Edge agent (standalone binary) |
+| `bin/kedge-graphql` | GraphQL gateway (listener + gateway subcommands) |
 
 ---
 
@@ -72,13 +75,15 @@ make build
 # Print the agent command
 ./bin/kedge edge join-command dev-edge-1
 
-# Run the agent in the background (foreground process)
+# Run the agent against a kind cluster (writes .kubeconfig-kedge-agent)
+hack/scripts/ensure-kind-cluster.sh kedge-agent
 ./bin/kedge agent run \
   --hub-url https://kedge.localhost:9443 \
+  --hub-insecure-skip-tls-verify \
   --token <join-token> \
   --edge-name dev-edge-1 \
   --type kubernetes \
-  --kubeconfig $(kind get kubeconfig --name kedge-e2e-agent-1 2>/dev/null)
+  --kubeconfig .kubeconfig-kedge-agent
 
 # Tear down
 ./bin/kedge dev delete
@@ -109,6 +114,8 @@ go build ./...   # must compile clean
 ### Unit tests
 
 ```bash
+make test          # all packages except /test/e2e
+# or target a subtree directly:
 go test ./pkg/...
 ```
 
@@ -117,29 +124,34 @@ go test ./pkg/...
 e2e tests spin up real kind clusters and require Docker.
 
 ```bash
-# Standalone suite (embedded kcp, static token)
-make test-e2e
+# Standalone suite (embedded kcp, static token) — also the default `make e2e`
+make e2e-standalone
 
 # SSH suite
-make test-e2e-ssh
+make e2e-ssh
 
 # OIDC suite (Dex)
-make test-e2e-oidc
+make e2e-oidc
 
 # External KCP suite
-make test-e2e-external-kcp
+make e2e-external-kcp
+
+# All suites
+make e2e-all
 ```
 
 **Reuse existing clusters** (faster iteration):
 
 ```bash
-KEDGE_USE_EXISTING_CLUSTERS=true make test-e2e
+KEDGE_USE_EXISTING_CLUSTERS=true make e2e-standalone
 ```
 
 **Keep clusters after failure** (for debugging):
 
 ```bash
-make test-e2e E2E_FLAGS=--keep-clusters
+make e2e-standalone E2E_FLAGS=-keep-clusters
+# or the shortcut:
+make e2e-keep
 ```
 
 ---
@@ -216,9 +228,9 @@ https://<hub>/clusters/<workspace-id>/apis/kedge.faros.sh/v1alpha1/edges/<name>/
 1. Fork the repo and create a feature branch from `main`.
 2. Make your changes. All commits must pass:
    ```bash
-   go build ./...    # must compile
-   make lint         # 0 issues
-   go test ./pkg/... # unit tests pass
+   go build ./...   # must compile
+   make lint        # 0 issues
+   make test        # unit tests pass
    ```
 3. Open a PR against `main`. CI runs build, lint, unit tests, and all four e2e suites.
 4. Address review comments. The bot (`@mjudeikis-bot`) monitors CI and posts status.

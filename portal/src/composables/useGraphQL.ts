@@ -65,3 +65,20 @@ export function useGraphQLQuery<T>(
 
   return { data, error, loading, refetch: execute }
 }
+
+export async function graphqlMutate<T = unknown>(
+  mutation: string,
+  variables: Record<string, unknown>,
+): Promise<T> {
+  const auth = useAuthStore()
+  if (!auth.clusterName) throw new Error('No cluster selected')
+
+  const client = createGraphQLClient(auth.clusterName, () => auth.getValidToken())
+  const result = await client.mutation(mutation, variables).toPromise()
+
+  if (result.error) {
+    throw new Error(result.error.message)
+  }
+
+  return result.data as T
+}

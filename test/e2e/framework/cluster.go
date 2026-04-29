@@ -270,14 +270,14 @@ func SetupClusters(workDir string) env.Func {
 			return ctx, fmt.Errorf("hub did not become healthy after setup: %w", err)
 		}
 
-		// Wait for KCP APIBindings to finish bootstrapping so the site API is
-		// available. Without this, tests that create sites immediately after setup
-		// can get "server could not find the requested resource".
+		// Wait for KCP APIBindings to finish bootstrapping so the edge API is
+		// available. Without this, tests that create resources immediately after
+		// setup can get "server could not find the requested resource".
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
-		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
+		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
 		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
-			return ctx, fmt.Errorf("site API did not become available after setup: %w", err)
+			return ctx, fmt.Errorf("edge API did not become available after setup: %w", err)
 		}
 
 		return WithClusterEnv(ctx, clusterEnv), nil
@@ -287,8 +287,8 @@ func SetupClusters(workDir string) env.Func {
 // SetupClustersWithOIDC is like SetupClusters but also deploys Dex as an OIDC
 // provider inside the hub kind cluster (via --with-dex).
 //
-// Networking: Dex is exposed as NodePort 31556 on the hub kind node; the kind
-// cluster maps that to localhost:5556.  The test runner adds a /etc/hosts entry
+// Networking: Dex is exposed as NodePort 31554 on the hub kind node; the kind
+// cluster maps that to localhost:5554.  The test runner adds a /etc/hosts entry
 // (127.0.0.1 dex.kedge-system.svc.cluster.local) so it can reach the in-cluster
 // Dex on the same hostname that the hub pod uses via cluster DNS.
 func SetupClustersWithOIDC(workDir string) env.Func {
@@ -357,12 +357,12 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 			return ctx, fmt.Errorf("dex did not become ready: %w", err)
 		}
 
-		// Wait for site API via OIDC login — static tokens are not configured
+		// Wait for edge API via OIDC login — static tokens are not configured
 		// in Dex mode, so we authenticate with the test Dex user instead.
 		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
 		if err := WaitForEdgeAPIWithOIDC(apiCtx, workDir, DefaultHubURL); err != nil {
-			return ctx, fmt.Errorf("site API did not become available after OIDC setup: %w", err)
+			return ctx, fmt.Errorf("edge API did not become available after OIDC setup: %w", err)
 		}
 
 		ctx = WithClusterEnv(ctx, clusterEnv)
@@ -423,7 +423,7 @@ func UseExistingClusters(workDir string) env.Func {
 		apiCtx, apiCancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer apiCancel()
 		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
-			return ctx, fmt.Errorf("site API not ready for existing clusters: %w", err)
+			return ctx, fmt.Errorf("edge API not ready for existing clusters: %w", err)
 		}
 
 		return WithClusterEnv(ctx, clusterEnv), nil
@@ -511,13 +511,30 @@ func TeardownClusters(workDir string) env.Func {
 // WaitForHubReady polls the hub's /healthz endpoint until it returns 200 or the
 // context deadline is exceeded.
 func WaitForHubReady(ctx context.Context, hubURL string) error {
-	return Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
-		code, err := HTTPGet(ctx, hubURL+"/healthz")
+	target := hubURL + "/healthz"
+	var lastCode int
+	var lastErr error
+	err := Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+		code, err := HTTPGet(ctx, target)
 		if err != nil {
+			if lastErr == nil || err.Error() != lastErr.Error() {
+				fmt.Printf("WaitForHubReady: GET %s: %v\n", target, err)
+			}
+			lastErr = err
+			lastCode = 0
 			return false, nil // retry
 		}
+		if code != lastCode {
+			fmt.Printf("WaitForHubReady: GET %s → %d\n", target, code)
+		}
+		lastCode = code
+		lastErr = nil
 		return code == 200, nil
 	})
+	if err != nil {
+		return fmt.Errorf("%w (last GET %s → code=%d, err=%v)", err, target, lastCode, lastErr)
+	}
+	return nil
 }
 
 // DefaultKCPExternalKubeconfigFile is the filename written by kedge dev create
@@ -595,12 +612,12 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 			return ctx, fmt.Errorf("hub did not become healthy after external kcp setup: %w", err)
 		}
 
-		// Wait for site API.
+		// Wait for edge API.
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
-		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
+		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
 		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
-			return ctx, fmt.Errorf("site API did not become available after external kcp setup: %w", err)
+			return ctx, fmt.Errorf("edge API did not become available after external kcp setup: %w", err)
 		}
 
 		return WithClusterEnv(ctx, clusterEnv), nil
@@ -772,10 +789,10 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 		}
 
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
-		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
+		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
 		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
-			return ctx, fmt.Errorf("site API did not become available after setup: %w", err)
+			return ctx, fmt.Errorf("edge API did not become available after setup: %w", err)
 		}
 
 		return WithClusterEnv(ctx, clusterEnv), nil

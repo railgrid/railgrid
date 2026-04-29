@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, toRef } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import { useMCPGet, updateMCP, deleteMCP, type KubernetesMCP } from '@/composables/useKubeAPI'
+import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
+import { GET_MCP_SERVER, type GetMCPResult } from '@/graphql/queries/mcp'
+import { UPDATE_MCP, DELETE_MCP } from '@/graphql/mutations'
 import {
   Bot, ArrowLeft, Wifi, WifiOff, Server, Hash, Clock, Copy, Check,
   FileCode, ChevronDown, ChevronUp, Pencil, Trash2, Shield,
@@ -14,8 +16,12 @@ const props = defineProps<{ name: string }>()
 const router = useRouter()
 const auth = useAuthStore()
 
-const nameRef = toRef(props, 'name')
-const { data: mcp, loading, error, refetch } = useMCPGet(nameRef, 10000)
+const { data: rawData, loading, error, refetch } = useGraphQLQuery<GetMCPResult>(
+  GET_MCP_SERVER,
+  { name: props.name },
+  10000,
+)
+const mcp = computed(() => rawData.value?.mcp_kedge_faros_sh?.v1alpha1?.Kubernetes ?? null)
 
 const showYaml = ref(false)
 const editing = ref(false)
@@ -103,27 +109,26 @@ async function saveEdit() {
   saving.value = true
   saveError.value = null
   try {
-    const updated: KubernetesMCP = {
-      ...mcp.value,
-      spec: {
-        ...mcp.value.spec,
-        toolsets: editToolsets.value.trim()
-          ? editToolsets.value.split(',').map((s) => s.trim()).filter(Boolean)
-          : undefined,
-        readOnly: editReadOnly.value,
-        edgeSelector: editMatchLabels.value.trim()
-          ? {
-              matchLabels: Object.fromEntries(
-                editMatchLabels.value.split(',').map((pair) => {
-                  const [k, v] = pair.split('=').map((s) => s.trim())
-                  return [k, v ?? '']
-                }),
-              ),
-            }
-          : undefined,
-      },
+    const spec: Record<string, unknown> = {
+      readOnly: editReadOnly.value,
     }
-    await updateMCP(updated)
+    if (editToolsets.value.trim()) {
+      spec.toolsets = editToolsets.value.split(',').map((s) => s.trim()).filter(Boolean)
+    }
+    if (editMatchLabels.value.trim()) {
+      spec.edgeSelector = {
+        matchLabels: Object.fromEntries(
+          editMatchLabels.value.split(',').map((pair) => {
+            const [k, v] = pair.split('=').map((s) => s.trim())
+            return [k, v ?? '']
+          }),
+        ),
+      }
+    }
+    await graphqlMutate(UPDATE_MCP, {
+      name: props.name,
+      object: { spec },
+    })
     editing.value = false
     await refetch()
   } catch (e) {
@@ -136,7 +141,7 @@ async function saveEdit() {
 async function handleDelete() {
   if (!confirm(`Delete MCP server "${props.name}"? This cannot be undone.`)) return
   try {
-    await deleteMCP(props.name)
+    await graphqlMutate(DELETE_MCP, { name: props.name })
     router.push('/mcp')
   } catch (e) {
     alert(e instanceof Error ? e.message : 'Delete failed')
