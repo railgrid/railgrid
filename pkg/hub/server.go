@@ -390,8 +390,9 @@ func (s *Server) Run(ctx context.Context) error {
 		logger.Info("kcp API proxy enabled")
 
 		// Register static token login endpoint if static tokens are configured.
+		// Use HandleTokenLoginRateLimited to protect against brute force attacks.
 		if len(s.opts.StaticAuthTokens) > 0 {
-			router.HandleFunc(apiurl.PathAuthTokenLogin, kcpProxy.HandleTokenLogin).Methods("POST")
+			router.HandleFunc(apiurl.PathAuthTokenLogin, kcpProxy.HandleTokenLoginRateLimited).Methods("POST")
 			logger.Info("Static token login endpoint registered at " + apiurl.PathAuthTokenLogin)
 		}
 	}

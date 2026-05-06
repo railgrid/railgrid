@@ -30,15 +30,34 @@ import (
 )
 
 const (
-	// inClusterNamespace is the namespace where the agent kubeconfig Secret is stored.
-	inClusterNamespace = "kedge-agent"
 	// kubeconfigSecretKey is the data key within the Secret.
 	kubeconfigSecretKey = "kubeconfig"
+	// saNamespaceFile is the standard ServiceAccount namespace file mounted
+	// into every Pod by the kubelet.
+	saNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 )
 
 // IsInCluster returns true when the process is running inside a Kubernetes Pod.
 func IsInCluster() bool {
 	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
+}
+
+// inClusterNamespace returns the namespace this Pod is running in.
+// Reads from POD_NAMESPACE if set (downward API), otherwise from the
+// ServiceAccount namespace file mounted into every Pod.
+func inClusterNamespace() (string, error) {
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return ns, nil
+	}
+	data, err := os.ReadFile(saNamespaceFile)
+	if err != nil {
+		return "", fmt.Errorf("reading pod namespace from %s: %w", saNamespaceFile, err)
+	}
+	ns := string(data)
+	if ns == "" {
+		return "", fmt.Errorf("pod namespace at %s is empty", saNamespaceFile)
+	}
+	return ns, nil
 }
 
 // AgentKubeconfigSecretName returns the name of the Secret used to persist
@@ -78,8 +97,12 @@ func LoadKubeconfigFromSecret(edgeName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	ns, err := inClusterNamespace()
+	if err != nil {
+		return "", err
+	}
 	secretName := AgentKubeconfigSecretName(edgeName)
-	secret, err := cs.CoreV1().Secrets(inClusterNamespace).Get(
+	secret, err := cs.CoreV1().Secrets(ns).Get(
 		context.Background(),
 		secretName,
 		metav1.GetOptions{},
@@ -104,19 +127,23 @@ func SaveKubeconfigToSecret(edgeName, kubeconfigData string) error {
 	if err != nil {
 		return err
 	}
+	ns, err := inClusterNamespace()
+	if err != nil {
+		return err
+	}
 	secretName := AgentKubeconfigSecretName(edgeName)
-	existing, err := cs.CoreV1().Secrets(inClusterNamespace).Get(
+	existing, err := cs.CoreV1().Secrets(ns).Get(
 		context.Background(),
 		secretName,
 		metav1.GetOptions{},
 	)
 	if apierrors.IsNotFound(err) {
-		_, err = cs.CoreV1().Secrets(inClusterNamespace).Create(
+		_, err = cs.CoreV1().Secrets(ns).Create(
 			context.Background(),
 			&corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      secretName,
-					Namespace: inClusterNamespace,
+					Namespace: ns,
 				},
 				Type: corev1.SecretTypeOpaque,
 				Data: map[string][]byte{
@@ -137,7 +164,7 @@ func SaveKubeconfigToSecret(edgeName, kubeconfigData string) error {
 		existing.Data = make(map[string][]byte)
 	}
 	existing.Data[kubeconfigSecretKey] = []byte(kubeconfigData)
-	_, err = cs.CoreV1().Secrets(inClusterNamespace).Update(
+	_, err = cs.CoreV1().Secrets(ns).Update(
 		context.Background(),
 		existing,
 		metav1.UpdateOptions{},

@@ -62,7 +62,6 @@ const (
 // +kubebuilder:printcolumn:name="Type",type="string",JSONPath=".spec.type"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Connected",type="boolean",JSONPath=".status.connected"
-// +kubebuilder:printcolumn:name="Hostname",type="string",JSONPath=".status.hostname"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:printcolumn:name="Agent Version",type="string",JSONPath=".status.agentVersion",priority=1
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -170,7 +169,9 @@ type EdgeStatus struct {
 	Phase EdgePhase `json:"phase,omitempty"`
 
 	// Connected indicates whether the edge agent currently has an active tunnel.
-	Connected bool `json:"connected,omitempty"`
+	// No `omitempty`: `false` must serialize so controller-runtime PUT-replace
+	// updates don't drop the field and blank the CRD print column.
+	Connected bool `json:"connected"`
 
 	// Hostname is the hostname reported by the connected edge agent.
 	Hostname string `json:"hostname,omitempty"`

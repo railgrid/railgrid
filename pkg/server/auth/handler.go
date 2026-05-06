@@ -27,8 +27,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
@@ -44,6 +46,12 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 )
 
+// defaultRateLimit is the default number of requests allowed per minute per IP.
+const defaultRateLimit = 20
+
+// defaultBurstDuration is the default time window for rate limiting.
+const defaultBurstDuration = time.Minute
+
 // Handler provides OAuth2/OIDC authentication endpoints.
 type Handler struct {
 	oidcProvider   *oidc.Provider
@@ -54,6 +62,8 @@ type Handler struct {
 	hubExternalURL string
 	devMode        bool
 	logger         klog.Logger
+	// rateLimiter protects auth endpoints against brute force attacks
+	rateLimiter *rateLimiter
 }
 
 // NewHandler creates a new OIDC auth handler.
@@ -86,7 +96,7 @@ func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclien
 		Scopes:      config.Scopes,
 	}
 
-	return &Handler{
+	handler := &Handler{
 		oidcProvider:   provider,
 		oauth2Config:   oauth2Config,
 		oidcConfig:     config,
@@ -95,7 +105,11 @@ func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclien
 		hubExternalURL: hubExternalURL,
 		devMode:        devMode,
 		logger:         klog.Background().WithName("auth-handler"),
-	}, nil
+		// Initialize rate limiter with sane defaults for auth endpoints
+		rateLimiter: newRateLimiter(defaultRateLimit, defaultBurstDuration, klog.Background().WithName("auth-rate-limit")),
+	}
+
+	return handler, nil
 }
 
 // HandleAuthorize redirects to the OIDC provider for authentication.
@@ -167,6 +181,8 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 // validateRedirectURI checks that the redirect URI shares the same origin as
 // the hub external URL or is a localhost address (for development).
+// In production mode (devMode=false), localhost redirects are rejected unless
+// explicitly allowed via KEDGE_ALLOW_LOCALHOST_REDIRECTS environment variable.
 func (h *Handler) validateRedirectURI(redirectURI string) error {
 	parsed, err := url.Parse(redirectURI)
 	if err != nil {
@@ -179,6 +195,14 @@ func (h *Handler) validateRedirectURI(redirectURI string) error {
 	// Allow localhost for development.
 	host := strings.Split(parsed.Host, ":")[0]
 	if host == "localhost" || host == "127.0.0.1" {
+		// In production mode, require explicit opt-in for localhost redirects
+		if !h.devMode && os.Getenv("KEDGE_ALLOW_LOCALHOST_REDIRECTS") != "true" {
+			h.logger.Info("blocked localhost redirect_uri in production mode",
+				"redirectURI", redirectURI,
+				"hint", "set KEDGE_ALLOW_LOCALHOST_REDIRECTS=true to allow (not recommended for production)")
+			return fmt.Errorf("localhost redirects are not allowed in production mode")
+		}
+		h.logger.V(4).Info("allowing localhost redirect_uri", "host", host, "devMode", h.devMode)
 		return nil
 	}
 
@@ -324,10 +348,11 @@ func (h *Handler) Verifier() *oidc.IDTokenVerifier {
 }
 
 // RegisterRoutes registers auth routes on the given gorilla/mux router.
+// Auth endpoints are protected by per-IP rate limiting to prevent brute force attacks.
 func (h *Handler) RegisterRoutes(router *mux.Router) {
-	router.HandleFunc(apiurl.PathAuthAuthorize, h.HandleAuthorize).Methods("GET")
-	router.HandleFunc(apiurl.PathAuthCallback, h.HandleCallback).Methods("GET")
-	router.HandleFunc(apiurl.PathAuthRefresh, h.HandleRefresh).Methods("POST")
+	router.HandleFunc(apiurl.PathAuthAuthorize, h.rateLimiter.middleware(h.HandleAuthorize)).Methods("GET")
+	router.HandleFunc(apiurl.PathAuthCallback, h.rateLimiter.middleware(h.HandleCallback)).Methods("GET")
+	router.HandleFunc(apiurl.PathAuthRefresh, h.rateLimiter.middleware(h.HandleRefresh)).Methods("POST")
 }
 
 // seedUser creates or updates a User CRD based on OIDC claims.

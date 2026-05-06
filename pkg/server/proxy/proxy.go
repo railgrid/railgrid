@@ -26,11 +26,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	oidc "github.com/coreos/go-oidc"
 	"golang.org/x/oauth2"
@@ -47,6 +50,12 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 )
 
+// defaultStaticTokenRateLimit is the default number of token-login requests allowed per minute per IP.
+const defaultStaticTokenRateLimit = 10
+
+// defaultStaticTokenBurstDuration is the default time window for static token rate limiting.
+const defaultStaticTokenBurstDuration = time.Minute
+
 // KCPProxy is a reverse proxy that authenticates requests via OIDC
 // and forwards them to the user's dedicated kcp tenant workspace.
 type KCPProxy struct {
@@ -60,6 +69,107 @@ type KCPProxy struct {
 	hubExternalURL       string
 	devMode              bool
 	logger               klog.Logger
+	// staticTokenRateLimiter protects the token-login endpoint against brute force attacks
+	staticTokenRateLimiter *tokenRateLimiter
+}
+
+// tokenRateLimiter wraps the auth rate limiter for static token endpoints.
+type tokenRateLimiter struct {
+	limiter   *rateLimiter
+	interval  time.Duration
+	burstSize int
+}
+
+// rateLimiter implements a simple rate limiter for auth endpoints.
+type rateLimiter struct {
+	visitors  map[string]*visitor
+	mu        sync.RWMutex
+	interval  time.Duration
+	burstSize int
+}
+
+// visitor tracks rate limiting state for a single IP.
+type visitor struct {
+	tokens    int
+	lastVisit time.Time
+}
+
+// newRateLimiter creates a new in-memory rate limiter.
+func newRateLimiter(interval time.Duration, burstSize int) *rateLimiter {
+	return &rateLimiter{
+		visitors:  make(map[string]*visitor),
+		interval:  interval,
+		burstSize: burstSize,
+	}
+}
+
+// isAllowed checks if a request from the given client IP is allowed.
+func (rl *rateLimiter) isAllowed(clientIP string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	v, exists := rl.visitors[clientIP]
+	if !exists {
+		// First request from this IP
+		rl.visitors[clientIP] = &visitor{
+			tokens:    rl.burstSize - 1,
+			lastVisit: time.Now(),
+		}
+		return true
+	}
+
+	// Refill tokens based on time elapsed
+	elapsed := time.Since(v.lastVisit)
+	refill := int(elapsed / rl.interval)
+	if refill > 0 {
+		v.tokens = min(v.tokens+refill, rl.burstSize)
+		v.lastVisit = time.Now()
+	}
+
+	if v.tokens <= 0 {
+		return false
+	}
+
+	v.tokens--
+	return true
+}
+
+// middleware wraps an http.HandlerFunc with rate limiting.
+func (rl *rateLimiter) middleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		clientIP := getClientIP(r)
+		if !rl.isAllowed(clientIP) {
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "rate limit exceeded - too many requests", http.StatusTooManyRequests)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// getClientIP extracts the client IP from the request.
+func getClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff != "" {
+		ips := strings.Split(xff, ",")
+		if len(ips) > 0 {
+			return strings.TrimSpace(ips[0])
+		}
+	}
+
+	// Check X-Real-IP header
+	xri := r.Header.Get("X-Real-IP")
+	if xri != "" {
+		return strings.TrimSpace(xri)
+	}
+
+	// Fall back to RemoteAddr
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // NewKCPProxy creates a reverse proxy to kcp.
@@ -119,6 +229,12 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 		hubExternalURL:       hubExternalURL,
 		devMode:              devMode,
 		logger:               klog.Background().WithName("kcp-proxy"),
+		// Initialize rate limiter for token-login endpoint (10 requests per minute)
+		staticTokenRateLimiter: &tokenRateLimiter{
+			limiter:   newRateLimiter(defaultStaticTokenBurstDuration, defaultStaticTokenRateLimit),
+			interval:  defaultStaticTokenBurstDuration,
+			burstSize: defaultStaticTokenRateLimit,
+		},
 	}, nil
 }
 
@@ -168,16 +284,11 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.logger.Info("proxy auth: OIDC verify failed", "path", r.URL.Path, "err", err.Error())
 	}
 
-	p.logger.Info("proxy auth: no match — returning 401", "path", r.URL.Path, "tokenPrefix", firstN(token, 12))
+	// Log only SHA-256 hash prefix to prevent token information disclosure
+	// while still allowing correlation for debugging
+	tokenHash := sha256.Sum256([]byte(token))
+	p.logger.Info("proxy auth: no match — returning 401", "path", r.URL.Path, "tokenHash", hex.EncodeToString(tokenHash[:])[:16])
 	writeUnauthorized(w)
-}
-
-// firstN returns the first n runes of s (or all of s if shorter).
-func firstN(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
 
 // serveOIDC handles OIDC-authenticated requests by resolving the user's tenant
@@ -593,9 +704,24 @@ func (p *KCPProxy) resolveUser(ctx context.Context, issuer, sub string) (*tenanc
 	return &users.Items[0], nil
 }
 
+// HandleTokenLoginRateLimited wraps HandleTokenLogin with rate limiting.
+// This should be used when registering the route to protect against brute force attacks.
+// In devMode the limiter is bypassed: dev clusters share a single client IP
+// (localhost) across many test/CLI invocations, which trivially exhausts the
+// per-IP bucket and is not a realistic threat model for dev.
+func (p *KCPProxy) HandleTokenLoginRateLimited(w http.ResponseWriter, r *http.Request) {
+	if p.devMode {
+		p.HandleTokenLogin(w, r)
+		return
+	}
+	p.staticTokenRateLimiter.limiter.middleware(p.HandleTokenLogin)(w, r)
+}
+
 // HandleTokenLogin handles static token login requests.
 // POST /auth/token-login with Authorization: Bearer <token>
 // Returns a LoginResponse with kubeconfig pointing to the user's workspace.
+// Note: This handler should be wrapped with rate limiting using HandleTokenLoginRateLimited
+// when registering routes to prevent brute force attacks.
 func (p *KCPProxy) HandleTokenLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Content-Type", "application/json")

@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 )
@@ -58,7 +59,12 @@ func (a *LocalhostCallbackAuthenticator) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", a.callback)
 
-	a.server = &http.Server{Handler: mux}
+	a.server = &http.Server{
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 	go func() {
 		if err := a.server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			a.err = err
@@ -94,8 +100,14 @@ func (a *LocalhostCallbackAuthenticator) WaitForResponse(ctx context.Context) (t
 	}
 }
 
+// maxRequestBodySize limits the size of incoming requests to prevent resource exhaustion
+const maxRequestBodySize = 32 * 1024 // 32KB
+
 // callback handles the redirect from the hub with the encoded login response.
 func (a *LocalhostCallbackAuthenticator) callback(w http.ResponseWriter, r *http.Request) {
+	// Limit request body size to prevent resource exhaustion
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
 	encoded := r.URL.Query().Get("response")
 	if encoded == "" {
 		http.Error(w, "missing response parameter", http.StatusBadRequest)

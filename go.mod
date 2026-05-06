@@ -23,6 +23,7 @@ require (
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/term v0.40.0
+	golang.org/x/time v0.14.0
 	helm.sh/helm/v3 v3.20.0
 	k8s.io/api v0.35.2
 	k8s.io/apiextensions-apiserver v0.35.1
@@ -42,7 +43,7 @@ require (
 replace (
 	github.com/kcp-dev/kcp => github.com/kcp-dev/kcp v0.31.1-0.20260429083913-36c9ef30f3f1
 	github.com/kcp-dev/sdk => github.com/kcp-dev/sdk v0.28.1-0.20260427121207-2cb4e1eeabc0
-	github.com/platform-mesh/kubernetes-graphql-gateway => github.com/faroshq/kubernetes-graphql-gateway v0.0.7
+	github.com/platform-mesh/kubernetes-graphql-gateway => github.com/faroshq/kubernetes-graphql-gateway v0.0.8
 )
 
 // KCP kubernetes forks - required for cluster-aware API machinery
@@ -268,7 +269,6 @@ require (
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
-	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools v0.42.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260209200024-4cfbd4190f57 // indirect
