@@ -35,7 +35,7 @@ import (
 	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
 )
 
-// dialAndFetchSSHHostKey connects to the SSH server on the given local port and
+// DialAndFetchSSHHostKey connects to the SSH server on the given local port and
 // captures its public host key by performing a handshake with a capturing
 // HostKeyCallback. The key is returned in authorized_keys format
 // ("<type> <base64>"). An empty string is returned on any error.
@@ -44,7 +44,7 @@ import (
 // e2e tests (embedded TestSSHServer with an in-memory random key), because
 // it asks the actual server for its key rather than reading a file that may
 // belong to a different sshd instance.
-func dialAndFetchSSHHostKey(port int, logger klog.Logger) string {
+func DialAndFetchSSHHostKey(port int, logger klog.Logger) string {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	var capturedKey gossh.PublicKey
@@ -149,7 +149,7 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 	// We dial the SSH server directly to fetch its actual key, which works for
 	// both the real sshd (production) and the embedded TestSSHServer (e2e tests).
 	if r.sshProxyPort > 0 {
-		if hostKey := dialAndFetchSSHHostKey(r.sshProxyPort, logger); hostKey != "" {
+		if hostKey := DialAndFetchSSHHostKey(r.sshProxyPort, logger); hostKey != "" {
 			statusPatch["sshHostKey"] = hostKey
 		}
 	}

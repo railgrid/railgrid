@@ -117,6 +117,14 @@ func (p *virtualWorkspaces) markEdgeConnected(ctx context.Context, cluster, name
 		}
 	}
 
+	// Persist the agent's sshd host public key so the hub can perform strict
+	// host-key verification on subsequent SSH sessions. This is independent of
+	// auth credentials: an agent without password/privateKey still benefits
+	// from MITM protection.
+	if sshCreds != nil && sshCreds.HostKey != "" {
+		status["sshHostKey"] = sshCreds.HostKey
+	}
+
 	if err := unstructured.SetNestedField(edge.Object, status, "status"); err != nil {
 		p.logger.Error(err, "markEdgeConnected: failed to set status",
 			"cluster", cluster, "edge", name)

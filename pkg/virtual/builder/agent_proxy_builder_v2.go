@@ -392,11 +392,15 @@ func (p *virtualWorkspaces) authorizeByJoinToken(ctx context.Context, token, clu
 }
 
 // sshCredsFromAgent holds SSH credentials passed by the agent via WebSocket
-// upgrade headers during join-token registration.
+// upgrade headers during join-token registration. HostKey is the agent's
+// sshd host public key in authorized_keys format; it is independent of
+// authentication credentials and is used by the hub for strict host-key
+// verification.
 type sshCredsFromAgent struct {
 	User       string
 	Password   string
 	PrivateKey []byte
+	HostKey    string
 }
 
 // extractSSHCredsFromHeaders reads SSH credential headers set by the agent.
@@ -416,6 +420,12 @@ func extractSSHCredsFromHeaders(r *http.Request) *sshCredsFromAgent {
 		decoded, err := base64.StdEncoding.DecodeString(pk)
 		if err == nil {
 			creds.PrivateKey = decoded
+		}
+	}
+	if hk := r.Header.Get("X-Kedge-SSH-HostKey"); hk != "" {
+		decoded, err := base64.StdEncoding.DecodeString(hk)
+		if err == nil {
+			creds.HostKey = string(decoded)
 		}
 	}
 	return creds

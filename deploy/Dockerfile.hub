@@ -24,9 +24,9 @@ ARG BUILD_DATE=unknown
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -tags portal_embed \
     -ldflags="-s -w \
-      -X github.com/faroshq/faros-kedge/pkg/cli/cmd.version=${VERSION} \
-      -X github.com/faroshq/faros-kedge/pkg/cli/cmd.gitCommit=${GIT_COMMIT} \
-      -X github.com/faroshq/faros-kedge/pkg/cli/cmd.buildDate=${BUILD_DATE}" \
+      -X github.com/faroshq/faros-kedge/pkg/version.Version=${VERSION} \
+      -X github.com/faroshq/faros-kedge/pkg/version.GitCommit=${GIT_COMMIT} \
+      -X github.com/faroshq/faros-kedge/pkg/version.BuildDate=${BUILD_DATE}" \
     -o /kedge-hub ./cmd/kedge-hub/
 
 FROM alpine:3.21

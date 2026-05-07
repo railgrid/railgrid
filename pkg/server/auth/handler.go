@@ -27,7 +27,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -181,8 +180,6 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 // validateRedirectURI checks that the redirect URI shares the same origin as
 // the hub external URL or is a localhost address (for development).
-// In production mode (devMode=false), localhost redirects are rejected unless
-// explicitly allowed via KEDGE_ALLOW_LOCALHOST_REDIRECTS environment variable.
 func (h *Handler) validateRedirectURI(redirectURI string) error {
 	parsed, err := url.Parse(redirectURI)
 	if err != nil {
@@ -195,14 +192,6 @@ func (h *Handler) validateRedirectURI(redirectURI string) error {
 	// Allow localhost for development.
 	host := strings.Split(parsed.Host, ":")[0]
 	if host == "localhost" || host == "127.0.0.1" {
-		// In production mode, require explicit opt-in for localhost redirects
-		if !h.devMode && os.Getenv("KEDGE_ALLOW_LOCALHOST_REDIRECTS") != "true" {
-			h.logger.Info("blocked localhost redirect_uri in production mode",
-				"redirectURI", redirectURI,
-				"hint", "set KEDGE_ALLOW_LOCALHOST_REDIRECTS=true to allow (not recommended for production)")
-			return fmt.Errorf("localhost redirects are not allowed in production mode")
-		}
-		h.logger.V(4).Info("allowing localhost redirect_uri", "host", host, "devMode", h.devMode)
 		return nil
 	}
 

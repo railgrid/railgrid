@@ -21,9 +21,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"os"
@@ -32,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	gossh "golang.org/x/crypto/ssh"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -322,7 +326,12 @@ func New(opts *Options) (*Agent, error) {
 		return nil, err
 	}
 
-	// Auto-discover SSH private key for server-type edges when none is provided.
+	// Auto-discover or auto-generate an SSH private key for server-type edges
+	// when no credentials were provided. This makes `kedge agent join --type
+	// server` work out of the box: the agent generates a keypair, installs the
+	// public half into authorized_keys, and ships the private half to the hub
+	// via the X-Kedge-SSH-PrivateKey header (join-token mode) or the
+	// SSH-credentials Secret (kubeconfig mode).
 	if agentType == AgentTypeServer && opts.SSHPrivateKeyPath == "" && opts.SSHPassword == "" {
 		home, err := os.UserHomeDir()
 		if err == nil {
@@ -337,7 +346,13 @@ func New(opts *Options) (*Agent, error) {
 			}
 		}
 		if opts.SSHPrivateKeyPath == "" {
-			klog.Warning("No SSH private key found in ~/.ssh (tried id_ed25519, id_rsa, id_ecdsa) and no --ssh-password provided; SSH authentication will fail")
+			generated, err := ensureGeneratedAgentKey(opts.EdgeName)
+			if err != nil {
+				klog.Warningf("Failed to auto-generate SSH key: %v; SSH authentication will fail", err)
+			} else {
+				opts.SSHPrivateKeyPath = generated
+				klog.Infof("Auto-generated SSH private key: %s", generated)
+			}
 		}
 	}
 
@@ -632,6 +647,84 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	return nil
 }
 
+// ensureGeneratedAgentKey returns the path to a kedge-managed ed25519 keypair,
+// generating it on first call. The key lives under <homeDir>/.kedge/agents/<edge>/
+// (or /etc/kedge/agents/<edge>/ when no usable home directory is available — typical
+// for some systemd-hardened sandboxes). Both the private key and a sibling ".pub"
+// are written. Subsequent calls reuse the existing keypair.
+func ensureGeneratedAgentKey(edgeName string) (string, error) {
+	dir, err := agentKeyDir(edgeName)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("creating %s: %w", dir, err)
+	}
+	keyPath := filepath.Join(dir, "agent_ed25519")
+	pubPath := keyPath + ".pub"
+
+	if _, err := os.Stat(keyPath); err == nil {
+		// Key already exists; ensure the .pub sibling is present (regenerate
+		// just the public half from the private if it went missing).
+		if _, perr := os.Stat(pubPath); os.IsNotExist(perr) {
+			if perr := writePubFromPrivate(keyPath, pubPath); perr != nil {
+				return "", fmt.Errorf("recreating %s: %w", pubPath, perr)
+			}
+		}
+		return keyPath, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat %s: %w", keyPath, err)
+	}
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", fmt.Errorf("generating ed25519 key: %w", err)
+	}
+
+	pemBlock, err := gossh.MarshalPrivateKey(priv, "kedge-agent-"+edgeName)
+	if err != nil {
+		return "", fmt.Errorf("marshaling private key: %w", err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(pemBlock), 0600); err != nil {
+		return "", fmt.Errorf("writing %s: %w", keyPath, err)
+	}
+
+	sshPub, err := gossh.NewPublicKey(pub)
+	if err != nil {
+		return "", fmt.Errorf("converting public key: %w", err)
+	}
+	pubLine := strings.TrimRight(string(gossh.MarshalAuthorizedKey(sshPub)), "\n") +
+		" kedge-agent-" + edgeName + "\n"
+	if err := os.WriteFile(pubPath, []byte(pubLine), 0644); err != nil {
+		return "", fmt.Errorf("writing %s: %w", pubPath, err)
+	}
+	return keyPath, nil
+}
+
+// agentKeyDir returns the directory where the agent stores its self-generated
+// SSH keypair. Prefers $HOME/.kedge/agents/<edge>; falls back to /etc/kedge/agents/<edge>.
+func agentKeyDir(edgeName string) (string, error) {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".kedge", "agents", edgeName), nil
+	}
+	return filepath.Join("/etc", "kedge", "agents", edgeName), nil
+}
+
+// writePubFromPrivate derives the public key from a private key file on disk
+// and writes it in authorized_keys format to pubPath.
+func writePubFromPrivate(keyPath, pubPath string) error {
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		return err
+	}
+	signer, err := gossh.ParsePrivateKey(data)
+	if err != nil {
+		return err
+	}
+	line := strings.TrimRight(string(gossh.MarshalAuthorizedKey(signer.PublicKey())), "\n") + "\n"
+	return os.WriteFile(pubPath, []byte(line), 0644)
+}
+
 // ensureAuthorizedKey reads the public key corresponding to the given private
 // key path (by appending ".pub") and ensures it is present in
 // ~/.ssh/authorized_keys. This allows the hub to SSH back into the agent
@@ -716,6 +809,15 @@ func (a *Agent) buildSSHHeaders() http.Header {
 			klog.Infof("Sending SSH private key to hub via headers (key path: %s)", a.opts.SSHPrivateKeyPath)
 		} else {
 			klog.Warningf("Failed to read SSH private key from %s: %v", a.opts.SSHPrivateKeyPath, err)
+		}
+	}
+	// Probe the local sshd for its host public key so the hub can pin it for
+	// strict host-key verification (avoids the InsecureIgnoreHostKey fallback
+	// in pkg/virtual/builder/agent_proxy_builder.go). Best-effort: an empty
+	// result simply leaves the hub on its existing fallback path.
+	if a.opts.SSHProxyPort > 0 {
+		if hostKey := agentStatus.DialAndFetchSSHHostKey(a.opts.SSHProxyPort, klog.Background()); hostKey != "" {
+			h.Set("X-Kedge-SSH-HostKey", base64.StdEncoding.EncodeToString([]byte(hostKey)))
 		}
 	}
 	return h
