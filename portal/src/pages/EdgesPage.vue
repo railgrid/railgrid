@@ -22,7 +22,6 @@ const columns = [
   { key: 'type', label: 'Type' },
   { key: 'phase', label: 'Phase' },
   { key: 'connected', label: 'Connected' },
-  { key: 'hostname', label: 'Hostname' },
   { key: 'agentVersion', label: 'Agent Version' },
   { key: 'age', label: 'Age' },
 ]
@@ -43,7 +42,6 @@ const rows = computed(() =>
     type: e.spec?.type ?? '',
     phase: e.status?.phase ?? 'Unknown',
     connected: e.status?.connected ?? false,
-    hostname: e.status?.hostname ?? '',
     agentVersion: e.status?.agentVersion ?? '',
     age: formatAge(e.metadata.creationTimestamp),
     _raw: e,

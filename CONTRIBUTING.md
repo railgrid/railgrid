@@ -92,7 +92,8 @@ hack/scripts/ensure-kind-cluster.sh kedge-agent
 ### Make shortcuts
 
 ```bash
-make run-hub-embedded-static # run hub with embedded kcp and static token (no helm)
+make run-hub-embedded-static # run hub with embedded kcp and static token (no helm) (no UI)
+make dev-portal              # runs local intance of the portal pointing to the dev hub
 make dev-login-static        # log in with static token
 make dev-edge-create         # create dev-edge-1 (kubernetes type)
 make dev-run-edge            # run agent for dev-edge-1

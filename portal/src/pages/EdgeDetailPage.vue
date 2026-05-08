@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import YamlViewer from '@/components/YamlViewer.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
 import { GET_EDGE, GET_EDGE_YAML, type GetEdgeResult, type GetEdgeYamlResult } from '@/graphql/queries/edges'
@@ -30,8 +31,32 @@ const canSSH = computed(() => {
   return edge.value.spec?.type === 'server' && edge.value.status?.connected
 })
 
+// CLI access commands
+const isServerType = computed(() => edge.value?.spec?.type === 'server')
+const isK8sType = computed(() => edge.value?.spec?.type === 'kubernetes')
+
+const sshCommand = computed(() => {
+  if (!isServerType.value || !edge.value?.status?.connected) return ''
+  return `kedge ssh ${props.name}`
+})
+
+const sshCommandWithArgs = computed(() => {
+  if (!isServerType.value || !edge.value?.status?.connected) return ''
+  return `kedge ssh ${props.name} -- <command>`
+})
+
+const mcpCommand = computed(() => {
+  if (!isK8sType.value || !edge.value?.status?.connected) return ''
+  return `kedge mcp url --edge ${props.name}`
+})
+
+const hasAccessCommands = computed(() => {
+  return (isServerType.value && sshCommand.value) || (isK8sType.value && mcpCommand.value)
+})
+
 // --- Join instructions ---
 const showJoinInstructions = ref(false)
+const showAccessCommands = ref(false)
 const copiedField = ref<string | null>(null)
 
 const joinToken = computed(() => edge.value?.status?.joinToken ?? null)
@@ -96,11 +121,18 @@ async function copySnippet(builder: (token: string) => string, field: string) {
   } catch {}
 }
 
+async function copyToClipboard(text: string, field: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    copiedField.value = field
+    setTimeout(() => (copiedField.value = null), 2000)
+  } catch {}
+}
+
 const details = computed(() => {
   if (!edge.value) return []
   return [
     { label: 'Type', value: edge.value.spec?.type, icon: Server },
-    { label: 'Hostname', value: edge.value.status?.hostname || '-', icon: Server },
     { label: 'Agent Version', value: edge.value.status?.agentVersion || '-', icon: Hash },
     { label: 'Created', value: edge.value.metadata?.creationTimestamp, icon: Clock },
     { label: 'UID', value: edge.value.metadata?.uid, icon: Hash, mono: true },
@@ -240,6 +272,16 @@ const details = computed(() => {
           {{ showYaml ? 'Hide' : 'Show' }} YAML
           <component :is="showYaml ? ChevronUp : ChevronDown" class="h-3 w-3 text-text-muted" :stroke-width="1.75" />
         </button>
+
+        <button
+          v-if="hasAccessCommands"
+          class="glow-ring flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-raised/80 px-4 py-2 text-[12px] font-medium text-text-secondary backdrop-blur transition-all duration-150 hover:border-accent/30 hover:text-text-primary"
+          @click="showAccessCommands = !showAccessCommands"
+        >
+          <TerminalSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ showAccessCommands ? 'Hide' : 'Show' }} CLI Commands
+          <component :is="showAccessCommands ? ChevronUp : ChevronDown" class="h-3 w-3 text-text-muted" :stroke-width="1.75" />
+        </button>
       </div>
 
       <!-- Join Instructions -->
@@ -325,7 +367,71 @@ kubectl krew install faros/kedge</pre>
           Loading...
         </div>
         <div v-else class="border-beam rounded-2xl">
-          <pre class="max-h-[500px] overflow-auto rounded-2xl border border-border-subtle bg-surface-overlay/60 p-5 font-mono text-[11px] leading-relaxed text-text-secondary backdrop-blur">{{ yaml }}</pre>
+          <YamlViewer :source="yaml" />
+        </div>
+      </div>
+
+      <!-- Access Commands -->
+      <div v-if="showAccessCommands && hasAccessCommands" class="stagger-item mt-4" style="animation-delay: 260ms">
+        <div class="rounded-xl border border-border-subtle bg-surface-overlay/60 p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-[11px] font-semibold uppercase tracking-[0.15em] text-text-muted">
+              CLI Access Commands
+            </h3>
+          </div>
+
+          <!-- SSH Commands for Server Type -->
+          <div v-if="isServerType && sshCommand" class="space-y-3 mb-4">
+            <div class="text-[12px] text-text-secondary mb-2">
+              Connect to this server via SSH:
+            </div>
+            <div class="rounded-lg bg-surface/80 p-3">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] font-medium text-text-muted">Interactive SSH session</span>
+                <button
+                  class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  @click="copyToClipboard(sshCommand, 'ssh')"
+                >
+                  <component :is="copiedField === 'ssh' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                  {{ copiedField === 'ssh' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre class="font-mono text-[11px] text-text-secondary">{{ sshCommand }}</pre>
+            </div>
+            <div class="rounded-lg bg-surface/80 p-3">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] font-medium text-text-muted">Run single command</span>
+                <button
+                  class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  @click="copyToClipboard(sshCommandWithArgs, 'ssh-cmd')"
+                >
+                  <component :is="copiedField === 'ssh-cmd' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                  {{ copiedField === 'ssh-cmd' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre class="font-mono text-[11px] text-text-secondary">{{ sshCommandWithArgs }}</pre>
+            </div>
+          </div>
+
+          <!-- MCP Command for Kubernetes Type -->
+          <div v-if="isK8sType && mcpCommand" class="space-y-3">
+            <div class="text-[12px] text-text-secondary mb-2">
+              Connect to this Kubernetes cluster via WebSocket (MCP):
+            </div>
+            <div class="rounded-lg bg-surface/80 p-3">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] font-medium text-text-muted">MCP endpoint URL</span>
+                <button
+                  class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  @click="copyToClipboard(mcpCommand, 'mcp')"
+                >
+                  <component :is="copiedField === 'mcp' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                  {{ copiedField === 'mcp' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre class="font-mono text-[11px] text-text-secondary">{{ mcpCommand }}</pre>
+            </div>
+          </div>
         </div>
       </div>
     </template>
