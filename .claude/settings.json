@@ -13,7 +13,8 @@
       "Bash(npx vue-tsc *)",
       "Bash(grep -vE \"command not found|^$\")",
       "Bash(grep -E \"\\\\.\\(vue|ts|js\\)$\")",
-      "Bash(grep -E \"\\\\.\\(vue|ts\\)$\")"
+      "Bash(grep -E \"\\\\.\\(vue|ts\\)$\")",
+      "Bash(echo \"TSC_EXIT=$?\")"
     ]
   }
 }
