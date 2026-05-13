@@ -8,6 +8,7 @@ export const LIST_EDGES = `
               name
               namespace
               creationTimestamp
+              labels
             }
             spec {
               type
@@ -17,6 +18,7 @@ export const LIST_EDGES = `
               connected
               hostname
               agentVersion
+              lastHeartbeatTime
             }
           }
         }
@@ -34,7 +36,7 @@ export const GET_EDGE = `
             name
             namespace
             creationTimestamp
-            uid
+            labels
           }
           spec {
             type
@@ -44,6 +46,7 @@ export const GET_EDGE = `
             connected
             hostname
             agentVersion
+            lastHeartbeatTime
             joinToken
             conditions {
               type
@@ -73,7 +76,7 @@ export interface EdgeItem {
     name: string
     namespace?: string
     creationTimestamp: string
-    uid?: string
+    labels?: Record<string, string>
   }
   spec: {
     type: string
@@ -83,6 +86,7 @@ export interface EdgeItem {
     connected: boolean
     hostname: string
     agentVersion: string
+    lastHeartbeatTime?: string
     joinToken?: string
     conditions?: Array<{
       type: string

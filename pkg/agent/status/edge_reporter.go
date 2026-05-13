@@ -140,9 +140,10 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 	}
 	// The hub may set Hostname/WorkspaceURL; we only patch the fields we own.
 	statusPatch := map[string]interface{}{
-		"phase":        string(status.Phase),
-		"connected":    status.Connected,
-		"agentVersion": pkgversion.Get(),
+		"phase":             string(status.Phase),
+		"connected":         status.Connected,
+		"agentVersion":      pkgversion.Get(),
+		"lastHeartbeatTime": metav1.Now(),
 	}
 
 	// Report the sshd host public key so the hub can verify the agent's identity.

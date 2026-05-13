@@ -5,7 +5,8 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
 import { LIST_EDGES, type ListEdgesResult } from '@/graphql/queries/edges'
 import { LIST_VIRTUAL_WORKLOADS, type ListVirtualWorkloadsResult } from '@/graphql/queries/workloads'
-import { Server, Wifi, ChevronRight, Activity, Gauge, Layers } from 'lucide-vue-next'
+import { formatAge } from '@/utils/time'
+import { Server, Wifi, WifiOff, ChevronRight, Activity, Gauge, Layers } from 'lucide-vue-next'
 
 const { data, loading, error } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
 const { data: workloadsData } = useGraphQLQuery<ListVirtualWorkloadsResult>(LIST_VIRTUAL_WORKLOADS, undefined, 10000)
@@ -25,6 +26,12 @@ const healthPct = computed(() => {
   if (stats.value.total === 0) return 0
   return Math.round((stats.value.ready / stats.value.total) * 100)
 })
+
+const recentEdges = computed(() =>
+  [...edges.value]
+    .sort((a, b) => (b.metadata.creationTimestamp ?? '').localeCompare(a.metadata.creationTimestamp ?? ''))
+    .slice(0, 8),
+)
 
 const workloadStats = computed(() => {
   const total = workloads.value.length
@@ -156,28 +163,63 @@ const workloadStats = computed(() => {
             <div class="flex items-center gap-2">
               <Activity class="h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
               <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Recent Edges</span>
+              <span class="text-[10px] tabular-nums text-text-muted/60">({{ recentEdges.length }}/{{ edges.length }})</span>
             </div>
             <router-link to="/edges" class="text-[11px] font-medium text-accent transition-colors hover:text-accent-hover">
               View all &rarr;
             </router-link>
           </div>
-          <div class="mt-3 space-y-1">
+
+          <!-- Column headers (lg+ only; below that the rows just stack key info) -->
+          <div class="mt-4 hidden lg:grid grid-cols-[minmax(0,1fr)_140px_130px_80px_70px_100px_16px] items-center gap-4 px-4 pb-2 text-[9px] font-semibold uppercase tracking-[0.15em] text-text-muted/60">
+            <span>Edge</span>
+            <span>Connection</span>
+            <span>Agent</span>
+            <span>Heartbeat</span>
+            <span>Age</span>
+            <span class="text-right">Status</span>
+            <span aria-hidden="true" />
+          </div>
+
+          <div class="mt-1 space-y-1 lg:mt-0">
             <router-link
-              v-for="(edge, i) in edges.slice(0, 8)"
+              v-for="(edge, i) in recentEdges"
               :key="edge.metadata.name"
               :to="`/edges/${edge.metadata.name}`"
-              class="card-glow stagger-item group flex items-center justify-between rounded-xl border border-border-subtle bg-surface-overlay/50 px-4 py-2 transition-all duration-150 hover:bg-accent/[0.03]"
+              class="card-glow stagger-item group flex items-center justify-between gap-4 rounded-xl border border-border-subtle bg-surface-overlay/50 px-4 py-2.5 transition-all duration-150 hover:bg-accent/[0.03] lg:grid lg:grid-cols-[minmax(0,1fr)_140px_130px_80px_70px_100px_16px]"
               :style="{ animationDelay: `${(i + 5) * 40}ms` }"
             >
-              <div class="flex items-center gap-3">
-                <Server class="h-3.5 w-3.5 text-text-muted transition-colors group-hover:text-accent" :stroke-width="1.75" />
-                <span class="text-[13px] font-medium text-text-primary">{{ edge.metadata.name }}</span>
-                <span class="font-mono text-[10px] text-text-muted">{{ edge.spec?.type }}</span>
+              <!-- Identity: name + type subtitle -->
+              <div class="flex min-w-0 items-center gap-3">
+                <Server class="h-3.5 w-3.5 shrink-0 text-text-muted transition-colors group-hover:text-accent" :stroke-width="1.75" />
+                <div class="min-w-0 leading-tight">
+                  <div class="truncate text-[13px] font-medium text-text-primary">{{ edge.metadata.name }}</div>
+                  <div class="font-mono text-[10px] text-text-muted">{{ edge.spec?.type ?? '—' }}</div>
+                </div>
               </div>
-              <div class="flex items-center gap-3">
+
+              <!-- Connection -->
+              <div class="hidden items-center gap-1.5 text-[11px] lg:flex" :class="edge.status?.connected ? 'text-success' : 'text-danger'">
+                <component :is="edge.status?.connected ? Wifi : WifiOff" class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                <span>{{ edge.status?.connected ? 'Connected' : 'Disconnected' }}</span>
+              </div>
+
+              <!-- Agent version -->
+              <span class="hidden truncate font-mono text-[11px] text-text-muted lg:inline">{{ edge.status?.agentVersion || '—' }}</span>
+
+              <!-- Last heartbeat -->
+              <span class="hidden tabular-nums text-[11px] text-text-muted lg:inline">{{ edge.status?.lastHeartbeatTime ? formatAge(edge.status.lastHeartbeatTime) : '—' }}</span>
+
+              <!-- Age -->
+              <span class="hidden tabular-nums text-[11px] text-text-muted lg:inline">{{ formatAge(edge.metadata.creationTimestamp) }}</span>
+
+              <!-- Status badge -->
+              <div class="flex justify-end">
                 <StatusBadge :status="edge.status?.phase" :connected="edge.status?.connected" />
-                <ChevronRight class="h-3.5 w-3.5 text-text-muted/20 transition-all group-hover:translate-x-0.5 group-hover:text-accent/50" :stroke-width="1.75" />
               </div>
+
+              <!-- Chevron -->
+              <ChevronRight class="h-3.5 w-3.5 shrink-0 text-text-muted/20 transition-all group-hover:translate-x-0.5 group-hover:text-accent/50" :stroke-width="1.75" />
             </router-link>
           </div>
         </div>

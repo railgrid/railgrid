@@ -5,16 +5,49 @@ import AppLayout from '@/components/AppLayout.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import EdgeCreateModal from '@/components/EdgeCreateModal.vue'
-import { useGraphQLQuery } from '@/composables/useGraphQL'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { LIST_EDGES, type ListEdgesResult, type EdgeItem } from '@/graphql/queries/edges'
-import { Wifi, WifiOff, Server, CheckCircle, Plus } from 'lucide-vue-next'
+import { DELETE_EDGE } from '@/graphql/mutations'
+import { formatAge } from '@/utils/time'
+import { Wifi, WifiOff, Server, CheckCircle, Plus, Trash2 } from 'lucide-vue-next'
 
 const router = useRouter()
 const { data, loading, error, refetch } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
 const showCreate = ref(false)
+const deleteTarget = ref<string | null>(null)
+const deleteBusy = ref(false)
+const deleteError = ref<string | null>(null)
 
 function handleCreated() {
   refetch()
+}
+
+function requestDelete(name: string, event: Event) {
+  event.stopPropagation()
+  deleteError.value = null
+  deleteTarget.value = name
+}
+
+async function confirmDelete() {
+  if (!deleteTarget.value) return
+  deleteBusy.value = true
+  deleteError.value = null
+  try {
+    await graphqlMutate(DELETE_EDGE, { name: deleteTarget.value })
+    deleteTarget.value = null
+    await refetch()
+  } catch (e) {
+    deleteError.value = e instanceof Error ? e.message : 'Delete failed'
+  } finally {
+    deleteBusy.value = false
+  }
+}
+
+function cancelDelete() {
+  if (deleteBusy.value) return
+  deleteTarget.value = null
+  deleteError.value = null
 }
 
 const columns = [
@@ -23,16 +56,10 @@ const columns = [
   { key: 'phase', label: 'Phase' },
   { key: 'connected', label: 'Connected' },
   { key: 'agentVersion', label: 'Agent Version' },
+  { key: 'lastHeartbeat', label: 'Last Heartbeat' },
   { key: 'age', label: 'Age' },
+  { key: 'actions', label: '' },
 ]
-
-function formatAge(timestamp: string): string {
-  const diff = Date.now() - new Date(timestamp).getTime()
-  const hours = Math.floor(diff / 3600000)
-  if (hours < 1) return `${Math.floor(diff / 60000)}m`
-  if (hours < 24) return `${hours}h`
-  return `${Math.floor(hours / 24)}d`
-}
 
 const edges = computed(() => data.value?.kedge_faros_sh?.v1alpha1?.Edges?.items ?? [])
 
@@ -43,6 +70,7 @@ const rows = computed(() =>
     phase: e.status?.phase ?? 'Unknown',
     connected: e.status?.connected ?? false,
     agentVersion: e.status?.agentVersion ?? '',
+    lastHeartbeat: e.status?.lastHeartbeatTime ? formatAge(e.status.lastHeartbeatTime) : '-',
     age: formatAge(e.metadata.creationTimestamp),
     _raw: e,
   })),
@@ -126,6 +154,15 @@ function handleRowClick(row: Record<string, unknown>) {
         <template #age="{ value }">
           <span class="font-mono text-[12px] text-text-muted">{{ value }}</span>
         </template>
+        <template #actions="{ row }">
+          <button
+            class="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted/40 opacity-0 transition-all group-hover:opacity-100 hover:bg-danger-subtle hover:text-danger"
+            title="Delete edge"
+            @click.stop="requestDelete(row.name as string, $event)"
+          >
+            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </button>
+        </template>
       </ResourceTable>
     </div>
 
@@ -135,5 +172,22 @@ function handleRowClick(row: Record<string, unknown>) {
       @close="showCreate = false"
       @created="handleCreated"
     />
+
+    <!-- Delete confirmation -->
+    <ConfirmDialog
+      v-if="deleteTarget"
+      title="Delete edge?"
+      :message="`This will permanently delete edge ${deleteTarget} and revoke its agent credentials. This cannot be undone.`"
+      confirm-label="Delete"
+      :busy="deleteBusy"
+      @cancel="cancelDelete"
+      @confirm="confirmDelete"
+    />
+    <div
+      v-if="deleteError"
+      class="fixed bottom-4 right-4 z-[110] rounded-lg border border-danger/20 bg-danger-subtle px-4 py-3 text-[12px] text-danger shadow-lg"
+    >
+      {{ deleteError }}
+    </div>
   </AppLayout>
 </template>

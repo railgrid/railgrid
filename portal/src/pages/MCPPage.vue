@@ -5,6 +5,7 @@ import AppLayout from '@/components/AppLayout.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import MCPCreateModal from '@/components/MCPCreateModal.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
 import { LIST_MCP_SERVERS, type ListMCPResult, type MCPItem } from '@/graphql/queries/mcp'
@@ -27,6 +28,7 @@ const columns = [
   { key: 'toolsets', label: 'Toolsets' },
   { key: 'readOnly', label: 'Read Only' },
   { key: 'status', label: 'Status' },
+  { key: 'actions', label: '' },
 ]
 
 const rows = computed(() =>
@@ -58,15 +60,35 @@ function handleRowClick(row: Record<string, unknown>) {
   router.push(`/mcp/${row.name}`)
 }
 
-async function handleDelete(name: string, event: Event) {
+const deleteTarget = ref<string | null>(null)
+const deleteBusy = ref(false)
+const deleteError = ref<string | null>(null)
+
+function requestDelete(name: string, event: Event) {
   event.stopPropagation()
-  if (!confirm(`Delete MCP server "${name}"?`)) return
+  deleteError.value = null
+  deleteTarget.value = name
+}
+
+async function confirmDelete() {
+  if (!deleteTarget.value) return
+  deleteBusy.value = true
+  deleteError.value = null
   try {
-    await graphqlMutate(DELETE_MCP, { name })
+    await graphqlMutate(DELETE_MCP, { name: deleteTarget.value })
+    deleteTarget.value = null
     await refetch()
   } catch (e) {
-    alert(e instanceof Error ? e.message : 'Delete failed')
+    deleteError.value = e instanceof Error ? e.message : 'Delete failed'
+  } finally {
+    deleteBusy.value = false
   }
+}
+
+function cancelDelete() {
+  if (deleteBusy.value) return
+  deleteTarget.value = null
+  deleteError.value = null
 }
 
 function handleCreated() {
@@ -255,18 +277,18 @@ async function copyToClipboard(text: string, field: string) {
         <template #status="{ value }">
           <StatusBadge :status="value as string" />
         </template>
-        <template #readOnly="{ value, row }">
-          <div class="flex items-center justify-between">
-            <span class="text-[12px]" :class="value === 'Yes' ? 'text-warning' : 'text-text-muted'">{{ value }}</span>
-            <button
-              v-if="row.name !== 'default'"
-              class="ml-4 opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded-lg text-text-muted transition-all hover:bg-danger-subtle hover:text-danger"
-              title="Delete"
-              @click="handleDelete(row.name as string, $event)"
-            >
-              <Trash2 class="h-3 w-3" :stroke-width="2" />
-            </button>
-          </div>
+        <template #readOnly="{ value }">
+          <span class="text-[12px]" :class="value === 'Yes' ? 'text-warning' : 'text-text-muted'">{{ value }}</span>
+        </template>
+        <template #actions="{ row }">
+          <button
+            v-if="row.name !== 'default'"
+            class="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted/40 opacity-0 transition-all group-hover:opacity-100 hover:bg-danger-subtle hover:text-danger"
+            title="Delete MCP server"
+            @click.stop="requestDelete(row.name as string, $event)"
+          >
+            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </button>
         </template>
       </ResourceTable>
     </div>
@@ -277,5 +299,22 @@ async function copyToClipboard(text: string, field: string) {
       @close="showCreate = false"
       @created="handleCreated"
     />
+
+    <!-- Delete confirmation -->
+    <ConfirmDialog
+      v-if="deleteTarget"
+      title="Delete MCP server?"
+      :message="`This will permanently delete MCP server ${deleteTarget}. This cannot be undone.`"
+      confirm-label="Delete"
+      :busy="deleteBusy"
+      @cancel="cancelDelete"
+      @confirm="confirmDelete"
+    />
+    <div
+      v-if="deleteError"
+      class="fixed bottom-4 right-4 z-[110] rounded-lg border border-danger/20 bg-danger-subtle px-4 py-3 text-[12px] text-danger shadow-lg"
+    >
+      {{ deleteError }}
+    </div>
   </AppLayout>
 </template>

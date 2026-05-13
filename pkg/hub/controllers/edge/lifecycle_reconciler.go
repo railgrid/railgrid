@@ -32,21 +32,40 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
+// ConnManager is the minimal interface the controller needs to verify tunnel liveness.
+type ConnManager interface {
+	HasConnection(key string) bool
+}
+
+// connKey must match edgeConnKey in pkg/virtual/builder/agent_proxy_builder_v2.go.
+func connKey(cluster, name string) string {
+	return "edges/" + cluster + "/" + name
+}
+
 // LifecycleReconciler monitors Edge connectivity and marks stale edges as Disconnected.
 type LifecycleReconciler struct {
-	mgr mcmanager.Manager
+	mgr         mcmanager.Manager
+	connManager ConnManager
 }
 
 // SetupLifecycleWithManager registers the edge lifecycle controller with the multicluster manager.
-func SetupLifecycleWithManager(mgr mcmanager.Manager) error {
-	r := &LifecycleReconciler{mgr: mgr}
+func SetupLifecycleWithManager(mgr mcmanager.Manager, connManager ConnManager) error {
+	r := &LifecycleReconciler{mgr: mgr, connManager: connManager}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("edge-lifecycle").
 		For(&kedgev1alpha1.Edge{}).
 		Complete(r)
 }
 
-// Reconcile checks an Edge's connected state and transitions its phase accordingly.
+// Reconcile reconciles status.connected/phase against the in-process tunnel registry.
+//
+// status.connected is only flipped to true by the agent-proxy handler when a
+// revdial tunnel is established, and is supposed to be flipped to false when
+// that tunnel closes. On hub cold restart (in-memory ConnManager is empty
+// while etcd still says connected=true), or when an agent dies ungracefully
+// and socket-close detection races reconnect, the status drifts. This
+// reconciler corrects the drift by cross-checking ConnManager — which already
+// fast-path-evicts closed dialers on Load and sweeps every 30s.
 func (r *LifecycleReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := klog.FromContext(ctx).WithValues("edge", req.Name, "cluster", req.ClusterName)
 
@@ -64,8 +83,17 @@ func (r *LifecycleReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, err
 	}
 
-	// If edge is not connected but phase is still Ready, mark it Disconnected.
-	if !edge.Status.Connected && edge.Status.Phase == kedgev1alpha1.EdgePhaseReady {
+	hasTunnel := r.connManager.HasConnection(connKey(req.ClusterName, req.Name))
+
+	switch {
+	case edge.Status.Connected && !hasTunnel:
+		logger.Info("Edge has no live tunnel, marking Disconnected")
+		edge.Status.Connected = false
+		edge.Status.Phase = kedgev1alpha1.EdgePhaseDisconnected
+		if err := c.Status().Update(ctx, &edge); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating edge status: %w", err)
+		}
+	case !edge.Status.Connected && edge.Status.Phase == kedgev1alpha1.EdgePhaseReady:
 		logger.Info("Edge no longer connected, marking Disconnected")
 		edge.Status.Phase = kedgev1alpha1.EdgePhaseDisconnected
 		if err := c.Status().Update(ctx, &edge); err != nil {

@@ -3,10 +3,12 @@ import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
 import { GET_MCP_SERVER, type GetMCPResult } from '@/graphql/queries/mcp'
 import { UPDATE_MCP, DELETE_MCP } from '@/graphql/mutations'
+import { formatDateTimeWithAge } from '@/utils/time'
 import {
   Bot, ArrowLeft, Wifi, WifiOff, Server, Hash, Clock, Copy, Check,
   FileCode, ChevronDown, ChevronUp, Pencil, Trash2, Shield,
@@ -41,7 +43,7 @@ const details = computed(() => {
     { label: 'Connected Edges', value: String(mcp.value.status?.connectedEdges ?? 0), icon: Wifi },
     { label: 'Toolsets', value: mcp.value.spec?.toolsets?.length ? mcp.value.spec.toolsets.join(', ') : 'all', icon: Hash },
     { label: 'Read Only', value: mcp.value.spec?.readOnly ? 'Yes' : 'No', icon: Shield },
-    { label: 'Created', value: mcp.value.metadata?.creationTimestamp ?? '-', icon: Clock },
+    { label: 'Created', value: formatDateTimeWithAge(mcp.value.metadata?.creationTimestamp), icon: Clock },
     { label: 'UID', value: mcp.value.metadata?.uid ?? '-', icon: Hash, mono: true },
   ]
 })
@@ -138,13 +140,20 @@ async function saveEdit() {
   }
 }
 
+const showDeleteConfirm = ref(false)
+const deleteBusy = ref(false)
+const deleteError = ref<string | null>(null)
+
 async function handleDelete() {
-  if (!confirm(`Delete MCP server "${props.name}"? This cannot be undone.`)) return
+  deleteBusy.value = true
+  deleteError.value = null
   try {
     await graphqlMutate(DELETE_MCP, { name: props.name })
     router.push('/mcp')
   } catch (e) {
-    alert(e instanceof Error ? e.message : 'Delete failed')
+    deleteError.value = e instanceof Error ? e.message : 'Delete failed'
+  } finally {
+    deleteBusy.value = false
   }
 }
 
@@ -230,7 +239,7 @@ async function copySnippet(builder: (token: string) => string, field: string) {
               <button
                 v-if="mcp.metadata.name !== 'default'"
                 class="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-overlay/80 px-3 py-1.5 text-[11px] font-medium text-text-secondary transition-all hover:border-danger/30 hover:bg-danger-subtle hover:text-danger"
-                @click="handleDelete"
+                @click="showDeleteConfirm = true"
               >
                 <Trash2 class="h-3 w-3" :stroke-width="2" />
                 Delete
@@ -396,5 +405,21 @@ async function copySnippet(builder: (token: string) => string, field: string) {
         </div>
       </Teleport>
     </template>
+
+    <ConfirmDialog
+      v-if="showDeleteConfirm"
+      title="Delete MCP server?"
+      :message="`This will permanently delete MCP server ${props.name}. This cannot be undone.`"
+      confirm-label="Delete"
+      :busy="deleteBusy"
+      @cancel="showDeleteConfirm = false"
+      @confirm="handleDelete"
+    />
+    <div
+      v-if="deleteError"
+      class="fixed bottom-4 right-4 z-[110] rounded-lg border border-danger/20 bg-danger-subtle px-4 py-3 text-[12px] text-danger shadow-lg"
+    >
+      {{ deleteError }}
+    </div>
   </AppLayout>
 </template>

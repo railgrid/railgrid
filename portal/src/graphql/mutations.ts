@@ -1,7 +1,7 @@
 // --- Edge mutations (cluster-scoped) ---
 
 export const CREATE_EDGE = `
-  mutation CreateEdge($object: kedge_faros_sh_v1alpha1_EdgeInput!) {
+  mutation CreateEdge($object: EdgeInput!) {
     kedge_faros_sh {
       v1alpha1 {
         createEdge(object: $object) {
@@ -11,6 +11,21 @@ export const CREATE_EDGE = `
           }
           status {
             joinToken
+          }
+        }
+      }
+    }
+  }
+`
+
+export const UPDATE_EDGE = `
+  mutation UpdateEdge($name: String!, $object: EdgeInput!) {
+    kedge_faros_sh {
+      v1alpha1 {
+        updateEdge(name: $name, object: $object) {
+          metadata {
+            name
+            labels
           }
         }
       }
@@ -31,7 +46,7 @@ export const DELETE_EDGE = `
 // --- VirtualWorkload mutations (namespace-scoped) ---
 
 export const CREATE_VIRTUAL_WORKLOAD = `
-  mutation CreateVirtualWorkload($namespace: String!, $object: kedge_faros_sh_v1alpha1_VirtualWorkloadInput!) {
+  mutation CreateVirtualWorkload($namespace: String!, $object: VirtualWorkloadInput!) {
     kedge_faros_sh {
       v1alpha1 {
         createVirtualWorkload(namespace: $namespace, object: $object) {
@@ -47,7 +62,7 @@ export const CREATE_VIRTUAL_WORKLOAD = `
 `
 
 export const UPDATE_VIRTUAL_WORKLOAD = `
-  mutation UpdateVirtualWorkload($name: String!, $namespace: String!, $object: kedge_faros_sh_v1alpha1_VirtualWorkloadInput!) {
+  mutation UpdateVirtualWorkload($name: String!, $namespace: String!, $object: VirtualWorkloadInput!) {
     kedge_faros_sh {
       v1alpha1 {
         updateVirtualWorkload(name: $name, namespace: $namespace, object: $object) {
@@ -77,7 +92,7 @@ export const DELETE_VIRTUAL_WORKLOAD = `
 // --- MCP Kubernetes mutations (cluster-scoped) ---
 
 export const CREATE_MCP = `
-  mutation CreateMCP($object: mcp_kedge_faros_sh_v1alpha1_KubernetesInput!) {
+  mutation CreateMCP($object: KubernetesInput!) {
     mcp_kedge_faros_sh {
       v1alpha1 {
         createKubernetes(object: $object) {
@@ -92,7 +107,7 @@ export const CREATE_MCP = `
 `
 
 export const UPDATE_MCP = `
-  mutation UpdateMCP($name: String!, $object: mcp_kedge_faros_sh_v1alpha1_KubernetesInput!) {
+  mutation UpdateMCP($name: String!, $object: KubernetesInput!) {
     mcp_kedge_faros_sh {
       v1alpha1 {
         updateKubernetes(name: $name, object: $object) {

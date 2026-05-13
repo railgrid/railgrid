@@ -1,0 +1,17 @@
+apiVersion: v1
+clusters:
+- cluster:
+    insecure-skip-tls-verify: true
+    server: https://localhost:9443/clusters/2if559065l8js0zf
+  name: kedge
+contexts:
+- context:
+    cluster: kedge
+    user: kedge
+  name: kedge
+current-context: kedge
+kind: Config
+users:
+- name: kedge
+  user:
+    token: dev-token

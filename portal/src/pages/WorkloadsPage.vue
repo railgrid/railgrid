@@ -12,6 +12,7 @@ import {
   type ListVirtualWorkloadsResult,
   type VirtualWorkloadItem,
 } from '@/graphql/queries/workloads'
+import { formatAge } from '@/utils/time'
 import {
   CheckCircle,
   AlertTriangle,
@@ -73,15 +74,6 @@ const stats = computed(() => {
   const totalEdges = workloads.value.reduce((sum, w) => sum + (w.status?.edges?.length ?? 0), 0)
   return { total, running, pending, failed, totalEdges }
 })
-
-// --- Helpers ---
-function formatAge(timestamp: string): string {
-  const diff = Date.now() - new Date(timestamp).getTime()
-  const hours = Math.floor(diff / 3600000)
-  if (hours < 1) return `${Math.floor(diff / 60000)}m`
-  if (hours < 24) return `${hours}h`
-  return `${Math.floor(hours / 24)}d`
-}
 
 function handleRowClick(row: Record<string, unknown>) {
   router.push(`/workloads/${row.namespace}/${row.name}`)

@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260505-cb4f68b.edges.kedge.faros.sh
+  name: v260513-78d76fb.edges.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.connected
       name: Connected
       type: boolean
+    - jsonPath: .status.lastHeartbeatTime
+      name: Last Heartbeat
+      type: date
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -234,6 +237,14 @@ spec:
               description: Labels are propagated from the edge agent (e.g. region,
                 provider tags).
               type: object
+            lastHeartbeatTime:
+              description: |-
+                LastHeartbeatTime is the timestamp of the most recent heartbeat the agent
+                sent to the hub. Stamped agent-side, so accuracy depends on the agent's
+                clock; useful as a liveness signal. Heartbeats arrive every ~30s; the hub
+                marks an edge disconnected after ~90s without one.
+              format: date-time
+              type: string
             phase:
               description: Phase describes the current lifecycle phase of the Edge.
               type: string

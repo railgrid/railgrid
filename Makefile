@@ -162,23 +162,24 @@ dev-login: build-kedge
 dev-login-static: build-kedge ## Login using static token auth (for use with run-hub-static)
 	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:9443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
 
-DEV_EDGE_NAME ?= dev-edge-1
 # TYPE selects the Edge type for dev-edge-create and dev-run-edge.
 # Values: kubernetes (default) | server
 TYPE ?= kubernetes
+# Default DEV_EDGE_NAME is per-type so kubernetes and server edges can coexist.
+DEV_EDGE_NAME ?= $(if $(filter server,$(TYPE)),dev-edge-server-1,dev-edge-kube-1)
 
 dev-edge-create: build-kedge ## Create an Edge resource: TYPE=kubernetes (default) or TYPE=server
 	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-edge-setup.sh $(DEV_EDGE_NAME) $(TYPE) "env=dev,provider=local"
 
 dev-run-edge: build-kedge ## Run the edge agent: TYPE=kubernetes (default) or TYPE=server
-	@test -f .env.edge || (echo "Run 'make dev-edge-create [TYPE=$(TYPE)]' first"; exit 1)
+	@test -f .env.edge.$(TYPE) || (echo "Run 'make dev-edge-create TYPE=$(TYPE)' first (expected .env.edge.$(TYPE))"; exit 1)
 ifeq ($(TYPE),server)
 	$(BINDIR)/kedge agent run \
 		--hub-url=https://localhost:9443 \
 		--hub-insecure-skip-tls-verify \
 		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
 		--tunnel-url=https://localhost:9443 \
-		--edge-name=$(DEV_EDGE_NAME) \
+		--edge-name=$(KEDGE_EDGE_NAME) \
 		--cluster=$(KEDGE_EDGE_CLUSTER) \
 		--type=server \
 		--ssh-proxy-port=2222 \
@@ -191,7 +192,7 @@ else
 		--hub-insecure-skip-tls-verify \
 		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
 		--tunnel-url=https://localhost:9443 \
-		--edge-name=$(DEV_EDGE_NAME) \
+		--edge-name=$(KEDGE_EDGE_NAME) \
 		--kubeconfig=.kubeconfig-kedge-agent \
 		--cluster=$(KEDGE_EDGE_CLUSTER) \
 		--type=kubernetes
@@ -201,7 +202,7 @@ dev-create-workload: ## Create a demo VirtualWorkload targeting dev sites
 	kubectl apply -f hack/dev/examples/virtualworkload-nginx.yaml
 
 -include .env
--include .env.edge
+-include .env.edge.$(TYPE)
 export
 
 dev-infra: $(KCP) $(DEX) certs ## Run infra only (kcp + Dex)

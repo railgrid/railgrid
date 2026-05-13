@@ -3,10 +3,20 @@ import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
+import { useTerminalSessionsStore } from '@/stores/terminalSessions'
+import TerminalDock from '@/components/TerminalDock.vue'
 import { Hexagon, LayoutDashboard, Server, Layers, Bot, LogOut, Zap, Sun, Moon, Monitor, GripHorizontal, GripVertical, Pin } from 'lucide-vue-next'
 
 const auth = useAuthStore()
 const theme = useThemeStore()
+const terminalStore = useTerminalSessionsStore()
+
+const mainPaddingBottom = computed(() => {
+  if (!terminalStore.isVisible || terminalStore.sessions.length === 0) return undefined
+  if (terminalStore.panelState.isFullscreen) return undefined
+  const h = terminalStore.panelState.isMinimized ? 40 : terminalStore.panelState.height
+  return `${h + 16}px`
+})
 
 const themeIcon = computed(() => {
   if (theme.mode === 'light') return Sun
@@ -189,10 +199,23 @@ const layoutClass = computed(() => {
   if (isVerticalDock.value) return 'flex-row'
   return 'flex-col'
 })
+
+// CSS-variable insets so fixed-position overlays (like the terminal dock) can
+// avoid sliding under the side/bottom nav docks.
+const layoutInsetsStyle = computed<Record<string, string>>(() => {
+  const left = isVerticalDock.value && dockState.value.mode === 'left' ? '12rem' : '0px'
+  const right = isVerticalDock.value && dockState.value.mode === 'right' ? '12rem' : '0px'
+  const bottom = isHorizontalDock.value && dockState.value.mode === 'bottom' ? '44px' : '0px'
+  return {
+    '--app-inset-left': left,
+    '--app-inset-right': right,
+    '--app-inset-bottom': bottom,
+  }
+})
 </script>
 
 <template>
-  <div class="cross-grid relative flex h-screen bg-surface" :class="layoutClass">
+  <div class="cross-grid relative flex h-screen bg-surface" :class="layoutClass" :style="layoutInsetsStyle">
     <!-- Ambient orbs -->
     <div class="pointer-events-none fixed inset-0 overflow-hidden">
       <div class="absolute -top-40 left-1/3 h-80 w-80 rounded-full bg-accent/4 blur-[160px]" />
@@ -387,7 +410,10 @@ const layoutClass = computed(() => {
     </nav>
 
     <!-- Main content -->
-    <main class="relative z-10 flex-1 overflow-y-auto px-8 py-5">
+    <main
+      class="relative z-10 flex-1 overflow-y-auto px-8 py-5"
+      :style="mainPaddingBottom ? { paddingBottom: mainPaddingBottom } : undefined"
+    >
       <div class="dot-grid pointer-events-none absolute inset-0 opacity-40" />
       <div class="relative z-10">
         <slot />
@@ -484,6 +510,9 @@ const layoutClass = computed(() => {
         </button>
       </div>
     </div>
+
+    <!-- Global SSH terminal dock (persists across route changes) -->
+    <TerminalDock />
   </div>
 </template>
 

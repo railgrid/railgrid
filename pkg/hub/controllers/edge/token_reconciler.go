@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 
@@ -69,6 +70,17 @@ func (r *TokenReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 		return ctrl.Result{}, err
 	}
 
+	// A user-set regenerate annotation forces a fresh token even on an
+	// already-registered edge. Clear the annotation first so a failure mid-way
+	// doesn't loop forever.
+	if _, regenerate := edge.Annotations[kedgev1alpha1.EdgeAnnotationRegenerateJoinToken]; regenerate {
+		delete(edge.Annotations, kedgev1alpha1.EdgeAnnotationRegenerateJoinToken)
+		if err := c.Update(ctx, &edge); err != nil {
+			return ctrl.Result{}, fmt.Errorf("clearing regenerate annotation: %w", err)
+		}
+		return r.issueToken(ctx, c, &edge, "RegenerateRequested", "Bootstrap join token regenerated on request.", logger)
+	}
+
 	// Nothing to do if the token already exists or the edge is already registered.
 	registered := meta.FindStatusCondition(edge.Status.Conditions, kedgev1alpha1.EdgeConditionRegistered)
 	if registered != nil && registered.Status == metav1.ConditionTrue {
@@ -78,6 +90,10 @@ func (r *TokenReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 		return ctrl.Result{}, nil
 	}
 
+	return r.issueToken(ctx, c, &edge, "AwaitingAgent", "Waiting for agent to register using the bootstrap join token.", logger)
+}
+
+func (r *TokenReconciler) issueToken(ctx context.Context, c client.Client, edge *kedgev1alpha1.Edge, reason, message string, logger klog.Logger) (ctrl.Result, error) {
 	token, err := generateJoinToken()
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("generating join token: %w", err)
@@ -87,15 +103,15 @@ func (r *TokenReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 	meta.SetStatusCondition(&edge.Status.Conditions, metav1.Condition{
 		Type:               kedgev1alpha1.EdgeConditionRegistered,
 		Status:             metav1.ConditionFalse,
-		Reason:             "AwaitingAgent",
-		Message:            "Waiting for agent to register using the bootstrap join token.",
+		Reason:             reason,
+		Message:            message,
 		LastTransitionTime: metav1.NewTime(time.Now()),
 	})
-	if err := c.Status().Update(ctx, &edge); err != nil {
+	if err := c.Status().Update(ctx, edge); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating edge status with join token: %w", err)
 	}
 
-	logger.Info("Join token generated for edge", "edge", req.Name)
+	logger.Info("Join token generated for edge", "edge", edge.Name, "reason", reason)
 	return ctrl.Result{}, nil
 }
 

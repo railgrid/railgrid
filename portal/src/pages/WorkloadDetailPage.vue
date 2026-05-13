@@ -9,6 +9,7 @@ import {
   type GetVirtualWorkloadResult,
 } from '@/graphql/queries/workloads'
 import { UPDATE_VIRTUAL_WORKLOAD, DELETE_VIRTUAL_WORKLOAD } from '@/graphql/mutations'
+import { formatDateTimeWithAge } from '@/utils/time'
 import {
   ArrowLeft,
   Layers,
@@ -103,7 +104,7 @@ const details = computed(() => {
     { label: 'Replicas', value: `${workload.value.status?.readyReplicas ?? 0}/${workload.value.spec?.replicas ?? 0} ready`, icon: Layers },
     { label: 'Available', value: String(workload.value.status?.availableReplicas ?? 0), icon: Layers },
     { label: 'Strategy', value: workload.value.spec?.placement?.strategy, icon: MapPin },
-    { label: 'Created', value: workload.value.metadata?.creationTimestamp, icon: Clock },
+    { label: 'Created', value: formatDateTimeWithAge(workload.value.metadata?.creationTimestamp), icon: Clock },
     { label: 'UID', value: workload.value.metadata?.uid, icon: Hash, mono: true },
   ].filter((d) => d.value)
 })

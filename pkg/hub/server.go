@@ -431,7 +431,7 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("setting up status aggregator: %w", err)
 		}
 		// Edge controllers.
-		if err := edge.SetupLifecycleWithManager(mgr); err != nil {
+		if err := edge.SetupLifecycleWithManager(mgr, vws.EdgeConnManager()); err != nil {
 			return fmt.Errorf("setting up edge lifecycle controller: %w", err)
 		}
 		var hubCAData []byte

@@ -63,4 +63,5 @@ edge-kubeconfig
 .planning/
 .env.server
 .env.edge
+.env.edge.*
 .site-kubeconfig

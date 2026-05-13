@@ -1,21 +1,105 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import YamlViewer from '@/components/YamlViewer.vue'
-import { useGraphQLQuery } from '@/composables/useGraphQL'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
+import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import { GET_EDGE, GET_EDGE_YAML, type GetEdgeResult, type GetEdgeYamlResult } from '@/graphql/queries/edges'
-import { Server, Wifi, WifiOff, Clock, Hash, FileCode, ChevronDown, ChevronUp, ArrowLeft, TerminalSquare, Copy, Check } from 'lucide-vue-next'
+import { DELETE_EDGE, UPDATE_EDGE } from '@/graphql/mutations'
+import { formatDateTimeWithAge } from '@/utils/time'
+import { Server, Wifi, WifiOff, Clock, Hash, Activity, FileCode, ChevronDown, ChevronUp, ArrowLeft, TerminalSquare, Copy, Check, Trash2, Pencil, Tag } from 'lucide-vue-next'
 
 const props = defineProps<{ name: string }>()
 const auth = useAuthStore()
+const router = useRouter()
+const terminalStore = useTerminalSessionsStore()
 
-const { data, loading, error } = useGraphQLQuery<GetEdgeResult>(
+function openTerminal(event: MouseEvent) {
+  const cluster = auth.clusterName
+  if (!cluster) return
+  // Shift-click opens a brand-new session even if one already exists for this edge.
+  terminalStore.openSession({
+    edgeName: props.name,
+    cluster,
+    forceNew: event.shiftKey,
+  })
+}
+
+const { data, loading, error, refetch } = useGraphQLQuery<GetEdgeResult>(
   GET_EDGE,
   { name: props.name },
   10000,
 )
+
+const showDeleteConfirm = ref(false)
+const deleteBusy = ref(false)
+const deleteError = ref<string | null>(null)
+
+async function handleDelete() {
+  deleteBusy.value = true
+  deleteError.value = null
+  try {
+    await graphqlMutate(DELETE_EDGE, { name: props.name })
+    router.push('/edges')
+  } catch (e) {
+    deleteError.value = e instanceof Error ? e.message : 'Delete failed'
+  } finally {
+    deleteBusy.value = false
+  }
+}
+
+// --- Labels edit ---
+const editingLabels = ref(false)
+const labelsInput = ref('')
+const labelsSaving = ref(false)
+const labelsError = ref<string | null>(null)
+
+const labelEntries = computed(() => {
+  const labels = edge.value?.metadata?.labels ?? {}
+  return Object.entries(labels)
+})
+
+function startLabelsEdit() {
+  const labels = edge.value?.metadata?.labels ?? {}
+  labelsInput.value = Object.entries(labels)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(', ')
+  labelsError.value = null
+  editingLabels.value = true
+}
+
+function cancelLabelsEdit() {
+  editingLabels.value = false
+  labelsError.value = null
+}
+
+async function saveLabels() {
+  labelsSaving.value = true
+  labelsError.value = null
+  try {
+    const parsed: Record<string, string> = {}
+    if (labelsInput.value.trim()) {
+      for (const pair of labelsInput.value.split(',')) {
+        const [k, v] = pair.split('=').map((s) => s.trim())
+        if (k) parsed[k] = v ?? ''
+      }
+    }
+    await graphqlMutate(UPDATE_EDGE, {
+      name: props.name,
+      object: { metadata: { labels: parsed } },
+    })
+    editingLabels.value = false
+    await refetch()
+  } catch (e) {
+    labelsError.value = e instanceof Error ? e.message : 'Save failed'
+  } finally {
+    labelsSaving.value = false
+  }
+}
 
 const showYaml = ref(false)
 const { data: yamlData, loading: yamlLoading } = useGraphQLQuery<GetEdgeYamlResult>(
@@ -112,6 +196,43 @@ function toggleJoinInstructions() {
   showJoinInstructions.value = !showJoinInstructions.value
 }
 
+// --- Regenerate join token ---
+const regenerating = ref(false)
+const regenerateError = ref<string | null>(null)
+
+async function regenerateJoinToken() {
+  regenerating.value = true
+  regenerateError.value = null
+  try {
+    const existing = edge.value?.metadata?.labels ?? {}
+    await graphqlMutate(UPDATE_EDGE, {
+      name: props.name,
+      object: {
+        metadata: {
+          annotations: { 'kedge.faros.sh/regenerate-join-token': 'true' },
+          // Preserve labels so the partial update doesn't drop them.
+          ...(Object.keys(existing).length > 0 ? { labels: existing } : {}),
+        },
+      },
+    })
+    // Poll until the controller mints a fresh token (typically <2s).
+    const deadline = Date.now() + 30000
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1000))
+      await refetch()
+      if (edge.value?.status?.joinToken) {
+        showJoinInstructions.value = true
+        return
+      }
+    }
+    regenerateError.value = 'Timed out waiting for new join token. Refresh and try again.'
+  } catch (e) {
+    regenerateError.value = e instanceof Error ? e.message : 'Regenerate failed'
+  } finally {
+    regenerating.value = false
+  }
+}
+
 async function copySnippet(builder: (token: string) => string, field: string) {
   if (!joinToken.value) return
   try {
@@ -134,8 +255,8 @@ const details = computed(() => {
   return [
     { label: 'Type', value: edge.value.spec?.type, icon: Server },
     { label: 'Agent Version', value: edge.value.status?.agentVersion || '-', icon: Hash },
-    { label: 'Created', value: edge.value.metadata?.creationTimestamp, icon: Clock },
-    { label: 'UID', value: edge.value.metadata?.uid, icon: Hash, mono: true },
+    { label: 'Last Heartbeat', value: edge.value.status?.lastHeartbeatTime ? formatDateTimeWithAge(edge.value.status.lastHeartbeatTime) : '-', icon: Activity },
+    { label: 'Created', value: formatDateTimeWithAge(edge.value.metadata?.creationTimestamp), icon: Clock },
   ].filter((d) => d.value)
 })
 </script>
@@ -194,6 +315,15 @@ const details = computed(() => {
                 <span class="font-mono text-[11px] text-text-muted/60">{{ edge.spec?.type }}</span>
               </div>
             </div>
+            <div class="flex items-center gap-2">
+              <button
+                class="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-overlay/80 px-3 py-1.5 text-[11px] font-medium text-text-secondary transition-all hover:border-danger/30 hover:bg-danger-subtle hover:text-danger"
+                @click="showDeleteConfirm = true"
+              >
+                <Trash2 class="h-3 w-3" :stroke-width="2" />
+                Delete
+              </button>
+            </div>
           </div>
 
           <!-- Details grid inside hero -->
@@ -207,10 +337,7 @@ const details = computed(() => {
                 <component :is="item.icon" class="h-3 w-3" :stroke-width="1.75" />
                 {{ item.label }}
               </dt>
-              <dd
-                class="text-[12px] text-text-secondary"
-                :class="{ 'font-mono text-[11px]': item.mono, 'max-w-[160px] truncate': item.mono }"
-              >
+              <dd class="text-[12px] text-text-secondary">
                 {{ item.value }}
               </dd>
             </div>
@@ -242,17 +369,81 @@ const details = computed(() => {
         </div>
       </div>
 
+      <!-- Labels -->
+      <div
+        class="stagger-item mt-4 rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
+        style="animation-delay: 160ms"
+      >
+        <div class="flex items-center justify-between">
+          <h2 class="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">
+            <Tag class="h-3 w-3" :stroke-width="1.75" />
+            Labels
+          </h2>
+          <button
+            v-if="!editingLabels"
+            class="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-overlay/80 px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-all hover:border-accent/30 hover:text-accent"
+            @click="startLabelsEdit"
+          >
+            <Pencil class="h-3 w-3" :stroke-width="2" />
+            Edit
+          </button>
+        </div>
+
+        <div v-if="!editingLabels" class="mt-3">
+          <div v-if="labelEntries.length" class="flex flex-wrap gap-2">
+            <span
+              v-for="[k, v] in labelEntries"
+              :key="k"
+              class="rounded-md border border-border-subtle bg-surface-overlay px-2 py-0.5 font-mono text-[11px] text-text-secondary"
+            >
+              {{ k }}<span class="text-text-muted">=</span>{{ v }}
+            </span>
+          </div>
+          <p v-else class="text-[12px] text-text-muted/60">No labels. Edit to add labels for MCP edge selectors.</p>
+        </div>
+
+        <div v-else class="mt-3">
+          <input
+            v-model="labelsInput"
+            type="text"
+            placeholder="env=prod, region=us-east"
+            class="w-full rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 font-mono text-[12px] text-text-primary placeholder:text-text-muted/40 focus:border-accent/50 focus:outline-none"
+          />
+          <p class="mt-1 text-[10px] text-text-muted">Comma-separated key=value pairs. Leave empty to remove all labels.</p>
+          <div v-if="labelsError" class="mt-2 rounded-lg border border-danger/20 bg-danger-subtle p-2 text-[11px] text-danger">
+            {{ labelsError }}
+          </div>
+          <div class="mt-3 flex items-center justify-end gap-2">
+            <button
+              class="rounded-lg border border-border-subtle px-3 py-1.5 text-[11px] font-medium text-text-secondary transition-all hover:bg-surface-hover"
+              :disabled="labelsSaving"
+              @click="cancelLabelsEdit"
+            >
+              Cancel
+            </button>
+            <button
+              class="rounded-lg bg-accent px-3 py-1.5 text-[11px] font-medium text-white transition-all hover:bg-accent-hover disabled:opacity-50"
+              :disabled="labelsSaving"
+              @click="saveLabels"
+            >
+              {{ labelsSaving ? 'Saving...' : 'Save' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Actions -->
       <div class="stagger-item mt-5 flex items-center gap-3" style="animation-delay: 200ms">
-        <!-- SSH Terminal button -->
-        <router-link
+        <!-- SSH Terminal button — opens in the bottom dock; shift-click for a new tab -->
+        <button
           v-if="canSSH"
-          :to="`/edges/${props.name}/terminal`"
           class="glow-ring flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/10 px-4 py-2 text-[12px] font-medium text-accent backdrop-blur transition-all duration-150 hover:bg-accent/20 hover:shadow-lg hover:shadow-accent/10"
+          title="Open SSH terminal (shift-click for a new session)"
+          @click="openTerminal"
         >
           <TerminalSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
           SSH Terminal
-        </router-link>
+        </button>
 
         <button
           v-if="needsJoin"
@@ -287,7 +478,15 @@ const details = computed(() => {
       <!-- Join Instructions -->
       <div v-if="showJoinInstructions" class="stagger-item mt-4" style="animation-delay: 220ms">
         <div v-if="joinTokenError" class="rounded-xl border border-warning/20 bg-warning/5 p-4 text-[12px] text-warning">
-          {{ joinTokenError }}
+          <p>{{ joinTokenError }}</p>
+          <div v-if="regenerateError" class="mt-2 text-[11px] text-danger">{{ regenerateError }}</div>
+          <button
+            class="mt-3 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-1.5 text-[11px] font-medium text-warning transition-all hover:bg-warning/20 disabled:opacity-50"
+            :disabled="regenerating"
+            @click="regenerateJoinToken"
+          >
+            {{ regenerating ? 'Generating new token...' : 'Regenerate join token' }}
+          </button>
         </div>
 
         <template v-else-if="joinToken">
@@ -434,6 +633,86 @@ kubectl krew install faros/kedge</pre>
           </div>
         </div>
       </div>
+
+      <!-- Access Commands -->
+      <div v-if="showAccessCommands && hasAccessCommands" class="stagger-item mt-4" style="animation-delay: 260ms">
+        <div class="rounded-xl border border-border-subtle bg-surface-overlay/60 p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-[11px] font-semibold uppercase tracking-[0.15em] text-text-muted">
+              CLI Access Commands
+            </h3>
+          </div>
+
+          <!-- SSH Commands for Server Type -->
+          <div v-if="isServerType && sshCommand" class="space-y-3 mb-4">
+            <div class="text-[12px] text-text-secondary mb-2">
+              Connect to this server via SSH:
+            </div>
+            <div class="rounded-lg bg-surface/80 p-3">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] font-medium text-text-muted">Interactive SSH session</span>
+                <button
+                  class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  @click="copyToClipboard(sshCommand, 'ssh')"
+                >
+                  <component :is="copiedField === 'ssh' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                  {{ copiedField === 'ssh' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre class="font-mono text-[11px] text-text-secondary">{{ sshCommand }}</pre>
+            </div>
+            <div class="rounded-lg bg-surface/80 p-3">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] font-medium text-text-muted">Run single command</span>
+                <button
+                  class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  @click="copyToClipboard(sshCommandWithArgs, 'ssh-cmd')"
+                >
+                  <component :is="copiedField === 'ssh-cmd' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                  {{ copiedField === 'ssh-cmd' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre class="font-mono text-[11px] text-text-secondary">{{ sshCommandWithArgs }}</pre>
+            </div>
+          </div>
+
+          <!-- MCP Command for Kubernetes Type -->
+          <div v-if="isK8sType && mcpCommand" class="space-y-3">
+            <div class="text-[12px] text-text-secondary mb-2">
+              Connect to this Kubernetes cluster via WebSocket (MCP):
+            </div>
+            <div class="rounded-lg bg-surface/80 p-3">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] font-medium text-text-muted">MCP endpoint URL</span>
+                <button
+                  class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  @click="copyToClipboard(mcpCommand, 'mcp')"
+                >
+                  <component :is="copiedField === 'mcp' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                  {{ copiedField === 'mcp' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre class="font-mono text-[11px] text-text-secondary">{{ mcpCommand }}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
     </template>
+
+    <ConfirmDialog
+      v-if="showDeleteConfirm"
+      title="Delete edge?"
+      :message="`This will permanently delete edge ${props.name} and revoke its agent credentials. This cannot be undone.`"
+      confirm-label="Delete"
+      :busy="deleteBusy"
+      @cancel="showDeleteConfirm = false"
+      @confirm="handleDelete"
+    />
+    <div
+      v-if="deleteError"
+      class="fixed bottom-4 right-4 z-[110] rounded-lg border border-danger/20 bg-danger-subtle px-4 py-3 text-[12px] text-danger shadow-lg"
+    >
+      {{ deleteError }}
+    </div>
   </AppLayout>
 </template>

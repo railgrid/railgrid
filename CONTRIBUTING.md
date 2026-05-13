@@ -95,10 +95,11 @@ hack/scripts/ensure-kind-cluster.sh kedge-agent
 make run-hub-embedded-static # run hub with embedded kcp and static token (no helm) (no UI)
 make dev-portal              # runs local intance of the portal pointing to the dev hub
 make dev-login-static        # log in with static token
-make dev-edge-create         # create dev-edge-1 (kubernetes type)
-make dev-run-edge            # run agent for dev-edge-1
-make dev-edge-create TYPE=server DEV_EDGE_NAME=my-server
-make dev-run-edge TYPE=server DEV_EDGE_NAME=my-server
+make dev-edge-create         # create dev-edge-kube-1 (kubernetes type)
+make dev-run-edge            # run kubernetes agent (reads .env.edge.kubernetes)
+make dev-edge-create TYPE=server                   # create dev-edge-server-1
+make dev-run-edge   TYPE=server                    # run server agent (reads .env.edge.server)
+make dev-edge-create TYPE=server DEV_EDGE_NAME=my-server  # custom name
 ```
 
 ### Lint
