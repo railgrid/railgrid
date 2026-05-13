@@ -30,7 +30,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
-	mcpv1alpha1 "github.com/faroshq/faros-kedge/apis/mcp/v1alpha1"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
@@ -66,13 +65,13 @@ func SetupWithManager(mgr mcmanager.Manager, connManager ConnManager, hubExterna
 	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("kubernetes-mcp").
-		For(&mcpv1alpha1.Kubernetes{}).
+		For(&kedgev1alpha1.KubernetesMCP{}).
 		Complete(r)
 }
 
-// Reconcile reconciles a single Kubernetes MCP object.
+// Reconcile reconciles a single KubernetesMCP object.
 func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	logger := klog.FromContext(ctx).WithValues("kubernetes", req.Name, "cluster", req.ClusterName)
+	logger := klog.FromContext(ctx).WithValues("kubernetesmcp", req.Name, "cluster", req.ClusterName)
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -80,7 +79,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	c := cl.GetClient()
 
-	var kmcp mcpv1alpha1.Kubernetes
+	var kmcp kedgev1alpha1.KubernetesMCP
 	if err := c.Get(ctx, req.NamespacedName, &kmcp); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -89,7 +88,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	// Compute the endpoint URL.
-	// Format: {hubExternalURL}/services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
+	// Format: {hubExternalURL}/services/mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
 	endpoint := apiurl.KubernetesMCPURL(r.hubExternalURL, req.ClusterName, kmcp.Name)
 
 	// List all edges in the cluster.
@@ -152,10 +151,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("patching Kubernetes MCP status: %w", err)
+		return ctrl.Result{}, fmt.Errorf("patching KubernetesMCP status: %w", err)
 	}
 
-	logger.Info("Reconciled Kubernetes MCP", "URL", endpoint, "connectedEdges", connectedCount)
+	logger.Info("Reconciled KubernetesMCP", "URL", endpoint, "connectedEdges", connectedCount)
 
 	// Requeue periodically so ConnectedEdges stays fresh.
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil

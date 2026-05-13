@@ -71,6 +71,11 @@ spec:
     storage:
       crd: {}
   - group: kedge.faros.sh
+    name: kubernetesmcps
+    schema: v260513-9502580.kubernetesmcps.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: kedge.faros.sh
     name: placements
     schema: v260301-c08d8fa.placements.kedge.faros.sh
     storage:
@@ -83,11 +88,6 @@ spec:
   - group: kedge.faros.sh
     name: virtualworkloads
     schema: v260429-d9dc8b1.virtualworkloads.kedge.faros.sh
-    storage:
-      crd: {}
-  - group: mcp.kedge.faros.sh
-    name: kubernetes
-    schema: v260313-6cb746e.kubernetes.mcp.kedge.faros.sh
     storage:
       crd: {}
   - group: tenancy.kedge.faros.sh

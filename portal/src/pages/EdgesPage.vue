@@ -7,13 +7,15 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import EdgeCreateModal from '@/components/EdgeCreateModal.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
+import { useHubVersion, isAgentOutdated } from '@/composables/useHubVersion'
 import { LIST_EDGES, type ListEdgesResult, type EdgeItem } from '@/graphql/queries/edges'
 import { DELETE_EDGE } from '@/graphql/mutations'
 import { formatAge } from '@/utils/time'
-import { Wifi, WifiOff, Server, CheckCircle, Plus, Trash2 } from 'lucide-vue-next'
+import { Wifi, WifiOff, Server, CheckCircle, Plus, Trash2, ArrowUpCircle } from 'lucide-vue-next'
 
 const router = useRouter()
 const { data, loading, error, refetch } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
+const { hubVersion } = useHubVersion()
 const showCreate = ref(false)
 const deleteTarget = ref<string | null>(null)
 const deleteBusy = ref(false)
@@ -148,6 +150,19 @@ function handleRowClick(row: Record<string, unknown>) {
             />
             <span :class="value ? 'text-success' : 'text-danger'" class="text-[12px] font-medium">
               {{ value ? 'Yes' : 'No' }}
+            </span>
+          </div>
+        </template>
+        <template #agentVersion="{ value }">
+          <div class="flex items-center gap-1.5">
+            <span class="font-mono text-[11px] text-text-secondary">{{ value || '-' }}</span>
+            <span
+              v-if="isAgentOutdated(value as string, hubVersion?.version)"
+              class="flex items-center gap-1 rounded-md border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+              :title="`Hub is on ${hubVersion?.version}. Click the edge to see upgrade instructions.`"
+            >
+              <ArrowUpCircle class="h-3 w-3" :stroke-width="2" />
+              Upgrade
             </span>
           </div>
         </template>

@@ -26,18 +26,16 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
-	mcpv1alpha1 "github.com/faroshq/faros-kedge/apis/mcp/v1alpha1"
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 )
 
 // NewScheme builds a runtime.Scheme containing all types needed by the
-// multicluster manager: core k8s types, kedge CRDs, mcp CRDs, tenancy CRDs,
+// multicluster manager: core k8s types, kedge CRDs, tenancy CRDs,
 // and the kcp SDK types required by multicluster-provider internals.
 func NewScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
 	utilruntime.Must(kedgev1alpha1.AddToScheme(s))
-	utilruntime.Must(mcpv1alpha1.AddToScheme(s))
 	utilruntime.Must(tenancyv1alpha1.AddToScheme(s))
 	utilruntime.Must(corev1alpha1.AddToScheme(s))
 	utilruntime.Must(kcptenancyv1alpha1.AddToScheme(s))

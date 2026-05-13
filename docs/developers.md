@@ -315,7 +315,7 @@ kedge exposes all connected Kubernetes clusters as a single [Model Context Proto
 ### URL format
 
 ```
-https://<hub>/services/mcp/<workspace-cluster-id>/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/<name>/mcp
+https://<hub>/services/mcp/<workspace-cluster-id>/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/<name>/mcp
 ```
 
 ### Getting the URL

@@ -195,8 +195,7 @@ make e2e-keep
 | `pkg/agent/` | Agent core: registration, tunnel, edge_reporter |
 | `pkg/agent/tunnel/` | revdial tunnel client (`StartProxyTunnel`) |
 | `pkg/cli/cmd/` | CLI command implementations (including `kedge mcp url`) |
-| `apis/kedge/v1alpha1/` | Edge CRD types |
-| `apis/mcp/v1alpha1/` | Kubernetes CRD type (`mcp.kedge.faros.sh`) |
+| `apis/kedge/v1alpha1/` | Edge and KubernetesMCP CRD types (`kedge.faros.sh`) |
 
 ### Join token bootstrap flow
 

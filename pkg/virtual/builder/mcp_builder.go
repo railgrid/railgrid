@@ -103,11 +103,11 @@ func (p *virtualWorkspaces) buildMCPHandler(cluster, edgeName string) http.Handl
 	})
 }
 
-// kubernetesGVR is the GVR for Kubernetes MCP objects in the mcp.kedge.faros.sh group.
-var kubernetesGVR = schema.GroupVersionResource{
-	Group:    "mcp.kedge.faros.sh",
+// kubernetesMCPGVR is the GVR for KubernetesMCP objects in the kedge.faros.sh group.
+var kubernetesMCPGVR = schema.GroupVersionResource{
+	Group:    "kedge.faros.sh",
 	Version:  "v1alpha1",
-	Resource: "kubernetes",
+	Resource: "kubernetesmcps",
 }
 
 // edgeGVRForMCPSelector is the GVR used to list Edge objects when resolving a
@@ -118,16 +118,16 @@ var edgeGVRForMCPSelector = schema.GroupVersionResource{
 	Resource: "edges",
 }
 
-// buildKubernetesMCPHandler creates an HTTP handler for the Kubernetes MCP endpoint.
+// buildKubernetesMCPHandler creates an HTTP handler for the KubernetesMCP endpoint.
 //
 // URL pattern (after stripping /services/mcp prefix):
 //
-//	/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
+//	/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
 //
 // On each request the handler:
-//  1. Parses cluster and Kubernetes MCP name from the path.
+//  1. Parses cluster and KubernetesMCP name from the path.
 //  2. Authenticates the caller via bearer token.
-//  3. Fetches the Kubernetes MCP object to get the edge selector.
+//  3. Fetches the KubernetesMCP object to get the edge selector.
 //  4. Lists all edges in the cluster and filters by selector + connected state.
 //  5. Builds a MultiEdgeKedgeEdgeProvider and serves via MCP streamable HTTP.
 func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
@@ -137,7 +137,7 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 		// 1. Parse path.
 		cluster, kubernetesName, ok := parseKubernetesMCPPath(r.URL.Path)
 		if !ok {
-			http.Error(w, "invalid path: expected /{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp", http.StatusBadRequest)
+			http.Error(w, "invalid path: expected /{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp", http.StatusBadRequest)
 			return
 		}
 
@@ -160,12 +160,12 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 			return
 		}
 
-		// 4. Fetch the Kubernetes MCP object.
+		// 4. Fetch the KubernetesMCP object.
 		ctx := r.Context()
-		kmcpObj, err := dynClient.Resource(kubernetesGVR).Get(ctx, kubernetesName, metav1.GetOptions{})
+		kmcpObj, err := dynClient.Resource(kubernetesMCPGVR).Get(ctx, kubernetesName, metav1.GetOptions{})
 		if err != nil {
-			logger.Error(err, "failed to get Kubernetes MCP", "name", kubernetesName)
-			http.Error(w, fmt.Sprintf("Kubernetes MCP %q not found: %v", kubernetesName, err), http.StatusNotFound)
+			logger.Error(err, "failed to get KubernetesMCP", "name", kubernetesName)
+			http.Error(w, fmt.Sprintf("KubernetesMCP %q not found: %v", kubernetesName, err), http.StatusNotFound)
 			return
 		}
 
@@ -275,20 +275,20 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 	})
 }
 
-// parseKubernetesMCPPath extracts cluster and Kubernetes MCP name from the path
+// parseKubernetesMCPPath extracts cluster and KubernetesMCP name from the path
 // seen by the /services/mcp handler.
 //
 // Expected format after prefix strip:
 //
-//	/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
+//	/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
 func parseKubernetesMCPPath(path string) (cluster, name string, ok bool) {
 	path = strings.TrimPrefix(path, "/")
-	// Expected segments: [cluster, "apis", "mcp.kedge.faros.sh", "v1alpha1", "kubernetes", name, "mcp"]
+	// Expected segments: [cluster, "apis", "kedge.faros.sh", "v1alpha1", "kubernetesmcps", name, "mcp"]
 	parts := strings.SplitN(path, "/", 8)
 	if len(parts) < 7 {
 		return "", "", false
 	}
-	if parts[1] != "apis" || parts[2] != "mcp.kedge.faros.sh" || parts[3] != "v1alpha1" || parts[4] != "kubernetes" || parts[6] != "mcp" {
+	if parts[1] != "apis" || parts[2] != "kedge.faros.sh" || parts[3] != "v1alpha1" || parts[4] != "kubernetesmcps" || parts[6] != "mcp" {
 		return "", "", false
 	}
 	return parts[0], parts[5], true

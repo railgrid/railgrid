@@ -89,13 +89,13 @@ export const DELETE_VIRTUAL_WORKLOAD = `
   }
 `
 
-// --- MCP Kubernetes mutations (cluster-scoped) ---
+// --- KubernetesMCP mutations (cluster-scoped) ---
 
 export const CREATE_MCP = `
-  mutation CreateMCP($object: KubernetesInput!) {
-    mcp_kedge_faros_sh {
+  mutation CreateMCP($object: KubernetesMCPInput!) {
+    kedge_faros_sh {
       v1alpha1 {
-        createKubernetes(object: $object) {
+        createKubernetesMCP(object: $object) {
           metadata {
             name
             uid
@@ -107,10 +107,10 @@ export const CREATE_MCP = `
 `
 
 export const UPDATE_MCP = `
-  mutation UpdateMCP($name: String!, $object: KubernetesInput!) {
-    mcp_kedge_faros_sh {
+  mutation UpdateMCP($name: String!, $object: KubernetesMCPInput!) {
+    kedge_faros_sh {
       v1alpha1 {
-        updateKubernetes(name: $name, object: $object) {
+        updateKubernetesMCP(name: $name, object: $object) {
           metadata {
             name
           }
@@ -122,9 +122,9 @@ export const UPDATE_MCP = `
 
 export const DELETE_MCP = `
   mutation DeleteMCP($name: String!) {
-    mcp_kedge_faros_sh {
+    kedge_faros_sh {
       v1alpha1 {
-        deleteKubernetes(name: $name)
+        deleteKubernetesMCP(name: $name)
       }
     }
   }

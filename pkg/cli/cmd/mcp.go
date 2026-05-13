@@ -45,8 +45,8 @@ func newMCPURLCommand() *cobra.Command {
 		Short: "Print the MCP endpoint URL",
 		Long: `Prints the MCP endpoint URL derived from the current kubeconfig context.
 
-Use --name to print the Kubernetes multi-edge MCP endpoint URL:
-  https://kedge.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp
+Use --name to print the KubernetesMCP multi-edge MCP endpoint URL:
+  https://kedge.example.com/services/mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp
 
 Use --edge to print the per-edge MCP endpoint URL:
   https://kedge.example.com/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp
@@ -171,11 +171,11 @@ func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
 	return apiurl.EdgeAgentProxyURL(base, cluster, edgeName, "mcp"), nil
 }
 
-// mcpKubernetesURLFromServerURL derives the Kubernetes MCP endpoint URL from a
-// kcp server URL and a Kubernetes MCP object name.
+// mcpKubernetesURLFromServerURL derives the KubernetesMCP endpoint URL from a
+// kcp server URL and a KubernetesMCP object name.
 //
 // Input:  https://kedge.example.com/clusters/root:kedge:user-default, "default"
-// Output: https://kedge.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp
+// Output: https://kedge.example.com/services/mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp
 func mcpKubernetesURLFromServerURL(serverURL, kubernetesName string) (string, error) {
 	base, cluster := apiurl.SplitBaseAndCluster(serverURL)
 	if cluster == "default" {

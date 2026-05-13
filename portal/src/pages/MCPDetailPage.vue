@@ -23,7 +23,7 @@ const { data: rawData, loading, error, refetch } = useGraphQLQuery<GetMCPResult>
   { name: props.name },
   10000,
 )
-const mcp = computed(() => rawData.value?.mcp_kedge_faros_sh?.v1alpha1?.Kubernetes ?? null)
+const mcp = computed(() => rawData.value?.kedge_faros_sh?.v1alpha1?.KubernetesMCP ?? null)
 
 const showYaml = ref(false)
 const editing = ref(false)

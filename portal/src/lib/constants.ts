@@ -1,5 +1,6 @@
 export const API_PATHS = {
   healthz: '/healthz',
+  version: '/version',
   tokenLogin: '/auth/token-login',
   authorize: '/auth/authorize',
   graphql: (clusterName: string) => `/graphql/${clusterName}`,

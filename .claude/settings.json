@@ -14,7 +14,9 @@
       "Bash(grep -vE \"command not found|^$\")",
       "Bash(grep -E \"\\\\.\\(vue|ts|js\\)$\")",
       "Bash(grep -E \"\\\\.\\(vue|ts\\)$\")",
-      "Bash(echo \"TSC_EXIT=$?\")"
+      "Bash(echo \"TSC_EXIT=$?\")",
+      "Bash(helm list *)",
+      "Bash(helm get *)"
     ]
   }
 }

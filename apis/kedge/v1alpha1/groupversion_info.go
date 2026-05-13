@@ -45,6 +45,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&PlacementList{},
 		&Edge{},
 		&EdgeList{},
+		&KubernetesMCP{},
+		&KubernetesMCPList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

@@ -1,8 +1,8 @@
 export const LIST_MCP_SERVERS = `
   query ListMCPServers {
-    mcp_kedge_faros_sh {
+    kedge_faros_sh {
       v1alpha1 {
-        KubernetesList {
+        KubernetesMCPs {
           items {
             metadata {
               name
@@ -43,9 +43,9 @@ export const LIST_MCP_SERVERS = `
 
 export const GET_MCP_SERVER = `
   query GetMCPServer($name: String!) {
-    mcp_kedge_faros_sh {
+    kedge_faros_sh {
       v1alpha1 {
-        Kubernetes(name: $name) {
+        KubernetesMCP(name: $name) {
           metadata {
             name
             creationTimestamp
@@ -120,9 +120,9 @@ export interface MCPItem {
 }
 
 export interface ListMCPResult {
-  mcp_kedge_faros_sh: {
+  kedge_faros_sh: {
     v1alpha1: {
-      KubernetesList: {
+      KubernetesMCPs: {
         items: MCPItem[]
       }
     }
@@ -130,9 +130,9 @@ export interface ListMCPResult {
 }
 
 export interface GetMCPResult {
-  mcp_kedge_faros_sh: {
+  kedge_faros_sh: {
     v1alpha1: {
-      Kubernetes: MCPItem
+      KubernetesMCP: MCPItem
     }
   }
 }

@@ -6,12 +6,13 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import YamlViewer from '@/components/YamlViewer.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
+import { useHubVersion, isAgentOutdated } from '@/composables/useHubVersion'
 import { useAuthStore } from '@/stores/auth'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import { GET_EDGE, GET_EDGE_YAML, type GetEdgeResult, type GetEdgeYamlResult } from '@/graphql/queries/edges'
 import { DELETE_EDGE, UPDATE_EDGE } from '@/graphql/mutations'
 import { formatDateTimeWithAge } from '@/utils/time'
-import { Server, Wifi, WifiOff, Clock, Hash, Activity, FileCode, ChevronDown, ChevronUp, ArrowLeft, TerminalSquare, Copy, Check, Trash2, Pencil, Tag } from 'lucide-vue-next'
+import { Server, Wifi, WifiOff, Clock, Hash, Activity, FileCode, ChevronDown, ChevronUp, ArrowLeft, ArrowUpCircle, TerminalSquare, Copy, Check, Trash2, Pencil, Tag } from 'lucide-vue-next'
 
 const props = defineProps<{ name: string }>()
 const auth = useAuthStore()
@@ -34,6 +35,7 @@ const { data, loading, error, refetch } = useGraphQLQuery<GetEdgeResult>(
   { name: props.name },
   10000,
 )
+const { hubVersion } = useHubVersion()
 
 const showDeleteConfirm = ref(false)
 const deleteBusy = ref(false)
@@ -250,6 +252,30 @@ async function copyToClipboard(text: string, field: string) {
   } catch {}
 }
 
+// --- Upgrade instructions ---
+const showUpgradeCommands = ref(false)
+const agentVersionStr = computed(() => edge.value?.status?.agentVersion ?? '')
+const upgradeAvailable = computed(() => isAgentOutdated(agentVersionStr.value, hubVersion.value?.version))
+
+const upgradeCliCommand = computed(() => `kedge agent upgrade ${props.name}`)
+
+const upgradeHelmSnippet = computed(
+  () => `helm upgrade kedge-agent oci://ghcr.io/faroshq/charts/kedge-agent \\
+  --namespace kedge-agent \\
+  --reuse-values \\
+  --set agent.image.tag=${hubVersion.value?.version ?? 'latest'}`,
+)
+
+const upgradeServerSnippet = computed(
+  () => `curl -fsSL https://github.com/faroshq/kedge/releases/latest/download/kubectl-kedge_linux_amd64.tar.gz | tar xz
+sudo mv kubectl-kedge /usr/local/bin/kedge
+sudo systemctl restart kedge-agent-${props.name}`,
+)
+
+function toggleUpgradeCommands() {
+  showUpgradeCommands.value = !showUpgradeCommands.value
+}
+
 const details = computed(() => {
   if (!edge.value) return []
   return [
@@ -337,8 +363,16 @@ const details = computed(() => {
                 <component :is="item.icon" class="h-3 w-3" :stroke-width="1.75" />
                 {{ item.label }}
               </dt>
-              <dd class="text-[12px] text-text-secondary">
-                {{ item.value }}
+              <dd class="flex items-center gap-1.5 text-[12px] text-text-secondary">
+                <span>{{ item.value }}</span>
+                <span
+                  v-if="item.label === 'Agent Version' && upgradeAvailable"
+                  class="flex items-center gap-1 rounded-md border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+                  :title="`Hub is on ${hubVersion?.version}`"
+                >
+                  <ArrowUpCircle class="h-3 w-3" :stroke-width="2" />
+                  Upgrade
+                </span>
               </dd>
             </div>
           </dl>
@@ -473,6 +507,80 @@ const details = computed(() => {
           {{ showAccessCommands ? 'Hide' : 'Show' }} CLI Commands
           <component :is="showAccessCommands ? ChevronUp : ChevronDown" class="h-3 w-3 text-text-muted" :stroke-width="1.75" />
         </button>
+
+        <button
+          v-if="upgradeAvailable"
+          class="glow-ring flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/10 px-4 py-2 text-[12px] font-medium text-warning backdrop-blur transition-all duration-150 hover:bg-warning/20"
+          :title="`Hub is on ${hubVersion?.version}, agent reports ${agentVersionStr || 'unknown'}`"
+          @click="toggleUpgradeCommands"
+        >
+          <ArrowUpCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ showUpgradeCommands ? 'Hide' : 'Show' }} Upgrade
+          <component :is="showUpgradeCommands ? ChevronUp : ChevronDown" class="h-3 w-3" :stroke-width="1.75" />
+        </button>
+      </div>
+
+      <!-- Upgrade Commands -->
+      <div v-if="showUpgradeCommands && upgradeAvailable" class="stagger-item mt-4" style="animation-delay: 280ms">
+        <div class="rounded-xl border border-warning/20 bg-warning/5 p-4">
+          <div class="mb-3 flex items-center gap-2 text-[12px] text-warning">
+            <ArrowUpCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <span>
+              Agent is running
+              <span class="font-mono">{{ agentVersionStr || 'unknown' }}</span>.
+              Hub is on
+              <span class="font-mono">{{ hubVersion?.version }}</span>.
+            </span>
+          </div>
+
+          <div v-if="isK8sType" class="space-y-3">
+            <div class="rounded-lg bg-surface/80 p-3">
+              <div class="mb-1 flex items-center justify-between">
+                <span class="text-[10px] font-medium uppercase tracking-wider text-text-muted">Option A — CLI (kedge agent join installs)</span>
+                <button
+                  class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  @click="copyToClipboard(upgradeCliCommand, 'upgrade-cli')"
+                >
+                  <component :is="copiedField === 'upgrade-cli' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                  {{ copiedField === 'upgrade-cli' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre class="overflow-x-auto font-mono text-[11px] leading-relaxed text-text-secondary">{{ upgradeCliCommand }}</pre>
+            </div>
+
+            <div class="rounded-lg bg-surface/80 p-3">
+              <div class="mb-1 flex items-center justify-between">
+                <span class="text-[10px] font-medium uppercase tracking-wider text-text-muted">Option B — Helm installs</span>
+                <button
+                  class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  @click="copyToClipboard(upgradeHelmSnippet, 'upgrade-helm')"
+                >
+                  <component :is="copiedField === 'upgrade-helm' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                  {{ copiedField === 'upgrade-helm' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre class="overflow-x-auto font-mono text-[11px] leading-relaxed text-text-secondary">{{ upgradeHelmSnippet }}</pre>
+            </div>
+          </div>
+
+          <div v-else-if="isServerType" class="rounded-lg bg-surface/80 p-3">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[10px] font-medium uppercase tracking-wider text-text-muted">Replace binary and restart</span>
+              <button
+                class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                @click="copyToClipboard(upgradeServerSnippet, 'upgrade-server')"
+              >
+                <component :is="copiedField === 'upgrade-server' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                {{ copiedField === 'upgrade-server' ? 'Copied' : 'Copy' }}
+              </button>
+            </div>
+            <pre class="overflow-x-auto font-mono text-[11px] leading-relaxed text-text-secondary">{{ upgradeServerSnippet }}</pre>
+          </div>
+
+          <p class="mt-3 text-[10px] text-text-muted">
+            After upgrading, the agent's reported version updates automatically — refresh to verify.
+          </p>
+        </div>
       </div>
 
       <!-- Join Instructions -->

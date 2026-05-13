@@ -28,3 +28,9 @@ export interface HealthzResponse {
   issuerUrl?: string
   clientId?: string
 }
+
+export interface VersionResponse {
+  version: string
+  gitCommit: string
+  buildDate: string
+}

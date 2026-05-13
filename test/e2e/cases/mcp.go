@@ -80,7 +80,7 @@ func newMCPClientWithKubernetes(hubKubeconfig, edgeName, kubernetesName string) 
 
 	var mcpURL string
 	if kubernetesName != "" {
-		mcpURL = fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/%s/mcp",
+		mcpURL = fmt.Sprintf("%s/services/mcp/%s/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/%s/mcp",
 			nodePortBase, clusterName, kubernetesName)
 	} else {
 		mcpURL = fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp",
@@ -351,8 +351,8 @@ func MCPURL() features.Feature {
 			if !strings.Contains(out, "/services/mcp/") {
 				t.Errorf("expected URL to contain /services/mcp/, got: %s", out)
 			}
-			if !strings.Contains(out, "/kubernetes/default/mcp") {
-				t.Errorf("expected URL to contain /kubernetes/default/mcp, got: %s", out)
+			if !strings.Contains(out, "/kubernetesmcps/default/mcp") {
+				t.Errorf("expected URL to contain /kubernetesmcps/default/mcp, got: %s", out)
 			}
 			return ctx
 		}).

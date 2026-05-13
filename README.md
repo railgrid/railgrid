@@ -98,7 +98,7 @@ kedge mcp url --name default
 
 Example output:
 ```
-https://hub.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp
+https://hub.example.com/services/mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp
 
 To add this MCP server to Claude Code:
   claude mcp add --transport http kedge "https://hub.example.com/..." -H "Authorization: Bearer <token>"

@@ -98,19 +98,19 @@ func TestMCPKubernetesURLFromServerURL(t *testing.T) {
 			name:           "standard kcp URL with default",
 			serverURL:      "https://kedge.localhost:9443/clusters/root:kedge:user-default",
 			kubernetesName: "default",
-			wantURL:        "https://kedge.localhost:9443/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp",
+			wantURL:        "https://kedge.localhost:9443/services/mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp",
 		},
 		{
 			name:           "trailing slash is stripped",
 			serverURL:      "https://kedge.localhost:9443/clusters/root:kedge:user-default/",
 			kubernetesName: "default",
-			wantURL:        "https://kedge.localhost:9443/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp",
+			wantURL:        "https://kedge.localhost:9443/services/mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp",
 		},
 		{
-			name:           "custom Kubernetes MCP name",
+			name:           "custom KubernetesMCP name",
 			serverURL:      "https://hub.example.com/clusters/root",
 			kubernetesName: "my-mcp",
-			wantURL:        "https://hub.example.com/services/mcp/root/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/my-mcp/mcp",
+			wantURL:        "https://hub.example.com/services/mcp/root/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/my-mcp/mcp",
 		},
 		{
 			name:           "no /clusters/ path returns error",

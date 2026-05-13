@@ -310,13 +310,13 @@ func TestKubernetesMCPPath(t *testing.T) {
 			name:           "default kubernetes",
 			cluster:        "abc123",
 			kubernetesName: "default",
-			want:           "/services/mcp/abc123/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp",
+			want:           "/services/mcp/abc123/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp",
 		},
 		{
 			name:           "named kubernetes",
 			cluster:        "abc123",
 			kubernetesName: "my-cluster",
-			want:           "/services/mcp/abc123/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/my-cluster/mcp",
+			want:           "/services/mcp/abc123/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/my-cluster/mcp",
 		},
 	}
 
@@ -333,7 +333,7 @@ func TestKubernetesMCPPath(t *testing.T) {
 
 func TestKubernetesMCPURL(t *testing.T) {
 	got := KubernetesMCPURL("https://hub:9443", "abc123", "default")
-	want := "https://hub:9443/services/mcp/abc123/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp"
+	want := "https://hub:9443/services/mcp/abc123/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp"
 	if got != want {
 		t.Errorf("KubernetesMCPURL = %q, want %q", got, want)
 	}

@@ -24,24 +24,24 @@ import (
 // +genclient:nonNamespaced
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=kubernetes,singular=kubernetes,scope=Cluster,shortName=kmcp
+// +kubebuilder:resource:path=kubernetesmcps,singular=kubernetesmcp,scope=Cluster,shortName=kmcp
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=".status.URL"
 // +kubebuilder:printcolumn:name="ConnectedEdges",type=integer,JSONPath=".status.connectedEdges"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
-// Kubernetes represents a multi-edge MCP (Model Context Protocol) server for
+// KubernetesMCP represents a multi-edge MCP (Model Context Protocol) server for
 // a set of Kubernetes edges matched by a label selector.  Users point MCP-compatible
 // AI clients at the URL to interact with all matching connected edges.
-type Kubernetes struct {
+type KubernetesMCP struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   KubernetesSpec   `json:"spec,omitempty"`
-	Status KubernetesStatus `json:"status,omitempty"`
+	Spec   KubernetesMCPSpec   `json:"spec,omitempty"`
+	Status KubernetesMCPStatus `json:"status,omitempty"`
 }
 
-// KubernetesSpec defines the desired state of Kubernetes.
-type KubernetesSpec struct {
+// KubernetesMCPSpec defines the desired state of KubernetesMCP.
+type KubernetesMCPSpec struct {
 	// EdgeSelector selects which edges to include in this MCP server.
 	// An empty selector matches all connected edges.
 	// +optional
@@ -57,8 +57,8 @@ type KubernetesSpec struct {
 	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
-// KubernetesStatus defines the observed state of Kubernetes.
-type KubernetesStatus struct {
+// KubernetesMCPStatus defines the observed state of KubernetesMCP.
+type KubernetesMCPStatus struct {
 	// URL is the MCP endpoint URL at which this server is reachable.
 	// +optional
 	URL string `json:"URL,omitempty"`
@@ -67,16 +67,16 @@ type KubernetesStatus struct {
 	// +optional
 	ConnectedEdges int `json:"connectedEdges,omitempty"`
 
-	// Conditions describe the current state of the Kubernetes MCP resource.
+	// Conditions describe the current state of the KubernetesMCP resource.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// KubernetesList contains a list of Kubernetes.
-type KubernetesList struct {
+// KubernetesMCPList contains a list of KubernetesMCP.
+type KubernetesMCPList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Kubernetes `json:"items"`
+	Items           []KubernetesMCP `json:"items"`
 }

@@ -18,7 +18,7 @@ const { data, loading, error, refetch } = useGraphQLQuery<ListMCPResult>(LIST_MC
 const showCreate = ref(false)
 const copiedField = ref<string | null>(null)
 
-const mcpServers = computed(() => data.value?.mcp_kedge_faros_sh?.v1alpha1?.KubernetesList?.items ?? [])
+const mcpServers = computed(() => data.value?.kedge_faros_sh?.v1alpha1?.KubernetesMCPs?.items ?? [])
 const defaultMCP = computed(() => mcpServers.value.find((m) => m.metadata.name === 'default'))
 
 const columns = [

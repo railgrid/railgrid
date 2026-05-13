@@ -38,6 +38,7 @@ const (
 	PathAuthRefresh      = "/auth/refresh"
 	PathAuthTokenLogin   = "/auth/token-login"
 	PathHealthz          = "/healthz"
+	PathVersion          = "/version"
 )
 
 // SplitBaseAndCluster splits a URL that contains a /clusters/<name> path into
@@ -123,9 +124,9 @@ func EdgeProxyURL(hubBase, cluster, edgeName, subresource string) string {
 
 // KubernetesMCPPath returns the URL path for the MCP virtual workspace endpoint.
 //
-// Pattern: /services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
+// Pattern: /services/mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
 func KubernetesMCPPath(cluster, kubernetesName string) string {
-	return fmt.Sprintf("%s/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/%s/mcp",
+	return fmt.Sprintf("%s/%s/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/%s/mcp",
 		PathPrefixMCP, cluster, kubernetesName)
 }
 

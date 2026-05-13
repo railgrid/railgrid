@@ -1,16 +1,16 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260313-6cb746e.kubernetes.mcp.kedge.faros.sh
+  name: v260513-9502580.kubernetesmcps.kedge.faros.sh
 spec:
-  group: mcp.kedge.faros.sh
+  group: kedge.faros.sh
   names:
-    kind: Kubernetes
-    listKind: KubernetesList
-    plural: kubernetes
+    kind: KubernetesMCP
+    listKind: KubernetesMCPList
+    plural: kubernetesmcps
     shortNames:
     - kmcp
-    singular: kubernetes
+    singular: kubernetesmcp
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -26,7 +26,7 @@ spec:
     name: v1alpha1
     schema:
       description: |-
-        Kubernetes represents a multi-edge MCP (Model Context Protocol) server for
+        KubernetesMCP represents a multi-edge MCP (Model Context Protocol) server for
         a set of Kubernetes edges matched by a label selector.  Users point MCP-compatible
         AI clients at the URL to interact with all matching connected edges.
       properties:
@@ -48,7 +48,7 @@ spec:
         metadata:
           type: object
         spec:
-          description: KubernetesSpec defines the desired state of Kubernetes.
+          description: KubernetesMCPSpec defines the desired state of KubernetesMCP.
           properties:
             edgeSelector:
               description: |-
@@ -110,14 +110,14 @@ spec:
               type: array
           type: object
         status:
-          description: KubernetesStatus defines the observed state of Kubernetes.
+          description: KubernetesMCPStatus defines the observed state of KubernetesMCP.
           properties:
             URL:
               description: URL is the MCP endpoint URL at which this server is reachable.
               type: string
             conditions:
-              description: Conditions describe the current state of the Kubernetes
-                MCP resource.
+              description: Conditions describe the current state of the KubernetesMCP
+                resource.
               items:
                 description: Condition contains details for one aspect of the current
                   state of this API Resource.

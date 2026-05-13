@@ -57,8 +57,8 @@ var (
 	apiBindingGVR = schema.GroupVersionResource{
 		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings",
 	}
-	kubernetesGVR = schema.GroupVersionResource{
-		Group: "mcp.kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetes",
+	kubernetesMCPGVR = schema.GroupVersionResource{
+		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesmcps",
 	}
 )
 
@@ -329,7 +329,7 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 	}
 
 	// Wait for the core.faros.sh APIBinding to be Bound — this single binding
-	// gives access to all kedge API groups (kedge.faros.sh, mcp.kedge.faros.sh, etc.).
+	// gives access to all kedge API groups (kedge.faros.sh, tenancy.kedge.faros.sh, etc.).
 	if waitErr := waitForAPIBindingBound(ctx, tenantClient, "kedge"); waitErr != nil {
 		logger.Error(waitErr, "kedge APIBinding did not become Bound (non-fatal)", "userID", userID)
 	}
@@ -343,28 +343,50 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 		}
 	}
 
-	// Ensure a "default" Kubernetes MCP object exists in the tenant workspace.
-	// This object enables the multi-edge MCP endpoint without requiring the
-	// user to create it manually.  An empty EdgeSelector selects all edges.
-	defaultKubernetes := &unstructured.Unstructured{
+	// Ensure a "default" KubernetesMCP object exists in the tenant workspace.
+	if err := ensureDefaultKubernetesMCP(ctx, tenantClient); err != nil {
+		// Non-fatal: log and continue.
+		logger.Error(err, "Failed to create default KubernetesMCP in tenant workspace (non-fatal)", "userID", userID)
+	}
+
+	logger.Info("Tenant workspace created", "userID", userID, "clusterName", clusterName)
+	return clusterName, nil
+}
+
+// EnsureDefaultKubernetesMCP creates the "default" KubernetesMCP object in the
+// tenant workspace identified by clusterName if it doesn't already exist.
+// Idempotent — safe to call on every login.
+func (b *Bootstrapper) EnsureDefaultKubernetesMCP(ctx context.Context, clusterName string) error {
+	if clusterName == "" {
+		return nil
+	}
+	tenantConfig := configForPath(b.config, clusterName)
+	tenantClient, err := dynamic.NewForConfig(tenantConfig)
+	if err != nil {
+		return fmt.Errorf("creating tenant client for %s: %w", clusterName, err)
+	}
+	return ensureDefaultKubernetesMCP(ctx, tenantClient)
+}
+
+// ensureDefaultKubernetesMCP creates the "default" KubernetesMCP if missing.
+// An empty EdgeSelector matches all edges, enabling the multi-edge MCP endpoint
+// without manual user setup.
+func ensureDefaultKubernetesMCP(ctx context.Context, tenantClient dynamic.Interface) error {
+	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "mcp.kedge.faros.sh/v1alpha1",
-			"kind":       "Kubernetes",
+			"apiVersion": "kedge.faros.sh/v1alpha1",
+			"kind":       "KubernetesMCP",
 			"metadata": map[string]interface{}{
 				"name": "default",
 			},
 			"spec": map[string]interface{}{},
 		},
 	}
-	if _, createErr := tenantClient.Resource(kubernetesGVR).Create(ctx, defaultKubernetes, metav1.CreateOptions{}); createErr != nil {
-		if !errors.IsAlreadyExists(createErr) {
-			// Non-fatal: log and continue.
-			logger.Error(createErr, "Failed to create default Kubernetes MCP in tenant workspace (non-fatal)", "userID", userID)
-		}
+	_, err := tenantClient.Resource(kubernetesMCPGVR).Create(ctx, obj, metav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
+		return err
 	}
-
-	logger.Info("Tenant workspace created", "userID", userID, "clusterName", clusterName)
-	return clusterName, nil
+	return nil
 }
 
 // EnsureWorkspaceAdmin ensures cluster-admin is granted to rbacIdentity in the
