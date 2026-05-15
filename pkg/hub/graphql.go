@@ -31,6 +31,7 @@ import (
 	"k8s.io/klog/v2"
 
 	gatewaygw "github.com/platform-mesh/kubernetes-graphql-gateway/gateway/gateway"
+	"github.com/platform-mesh/kubernetes-graphql-gateway/gateway/gateway/authn"
 	gatewayconfig "github.com/platform-mesh/kubernetes-graphql-gateway/gateway/gateway/config"
 	utilscontext "github.com/platform-mesh/kubernetes-graphql-gateway/gateway/utils/context"
 	"github.com/platform-mesh/kubernetes-graphql-gateway/listener"
@@ -69,6 +70,13 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	listenerOpts.SchemaHandler = "grpc"
 	listenerOpts.KubeConfig = kubeconfigPath
 	listenerOpts.GRPCListenAddr = grpcAddr
+	// The default anchor (`namespaces.v1` / name=='default') doesn't work
+	// against a kcp APIExport virtual workspace — the VW doesn't surface the
+	// core/v1 group, so the resource controller's watch never starts. Use the
+	// APIBinding for this APIExport as the anchor instead: every consumer has
+	// exactly one such binding, so we reconcile once per consumer cluster.
+	listenerOpts.ResourceGVR = "apibindings.v1alpha2.apis.kcp.io"
+	listenerOpts.AnchorResource = fmt.Sprintf("object.spec.reference.export.name == %q", opts.GraphQLAPIExportSliceName)
 	listenerOpts.ProviderKcp = &kcplisteneroptions.Options{
 		ExtraOptions: kcplisteneroptions.ExtraOptions{
 			APIExportEndpointSliceName:           opts.GraphQLAPIExportSliceName,
@@ -100,14 +108,19 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	}
 
 	// ── Gateway service ───────────────────────────────────────────────────────
+	// Upstream wires GRPCMaxRecvMsgSize directly into grpc.MaxCallRecvMsgSize,
+	// so leaving it at zero rejects every message (incl. our ~750 KB kcp schemas).
+	// 32 MB is comfortably above the largest schema we generate today.
 	gatewayService, err := gatewaygw.New(gatewayconfig.Gateway{
-		SchemaHandler: "grpc",
-		GRPCAddress:   grpcAddr,
+		SchemaHandler:      "grpc",
+		GRPCAddress:        grpcAddr,
+		GRPCMaxRecvMsgSize: 32 * 1024 * 1024,
 		GraphQL: gatewayconfig.GraphQL{
-			Pretty:     true,
-			Playground: opts.GraphQLPlayground,
-			GraphiQL:   opts.GraphQLPlayground,
+			Pretty:            true,
+			PlaygroundEnabled: opts.GraphQLPlayground,
+			GraphiQL:          opts.GraphQLPlayground,
 		},
+		Validator: authn.NoopValidator{},
 	})
 	if err != nil {
 		cleanup()

@@ -107,11 +107,11 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 	// If the type changed from kubernetes to server, delete the existing workspace.
 	if edge.Spec.Type == kedgev1alpha1.EdgeTypeServer {
 		logger.V(4).Info("Server-type edge, ensuring no workspace exists")
-		if err := r.deleteMountWorkspace(ctx, logger, req.ClusterName, edge.Name); err != nil {
+		if err := r.deleteMountWorkspace(ctx, logger, string(req.ClusterName), edge.Name); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting mount workspace for server edge: %w", err)
 		}
 		// Set the SSH URL on the edge status so clients can reach the SSH endpoint.
-		expectedSSHURL := apiurl.EdgeProxyURL(r.hubMountURL, req.ClusterName, edge.Name, "ssh")
+		expectedSSHURL := apiurl.EdgeProxyURL(r.hubMountURL, string(req.ClusterName), edge.Name, "ssh")
 		if edge.Status.URL != expectedSSHURL {
 			logger.Info("Setting edge SSH URL", "url", expectedSSHURL)
 			edge.Status.URL = expectedSSHURL
@@ -126,7 +126,7 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 
 	// Set the workspace URL on the edge status if not already set.
 	// The URL is served by the hub's edge-proxy virtual workspace handler.
-	expectedURL := apiurl.EdgeProxyURL(r.hubMountURL, req.ClusterName, edge.Name, "k8s")
+	expectedURL := apiurl.EdgeProxyURL(r.hubMountURL, string(req.ClusterName), edge.Name, "k8s")
 	if edge.Status.URL != expectedURL {
 		logger.Info("Setting edge workspace URL", "url", expectedURL)
 		edge.Status.URL = expectedURL
@@ -145,7 +145,7 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 	// (kcp-dev/kcp@v0.30.0/pkg/reconciler/tenancy/workspacemounts/workspace_indexes.go).
 	// So we wait for discovery to expose `edges.kedge.faros.sh/v1alpha1` in
 	// the tenant cluster before creating the Workspace with the mount ref.
-	ready, err := r.edgeAPIReadyInCluster(ctx, req.ClusterName)
+	ready, err := r.edgeAPIReadyInCluster(ctx, string(req.ClusterName))
 	if err != nil {
 		logger.V(4).Info("edge API readiness check failed, requeuing", "err", err.Error())
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
@@ -156,7 +156,7 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 	}
 
 	// Create mount workspace in kcp via admin dynamic client.
-	if err := r.workspaceEnsureFn(ctx, logger, req.ClusterName, &edge); err != nil {
+	if err := r.workspaceEnsureFn(ctx, logger, string(req.ClusterName), &edge); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring mount workspace: %w", err)
 	}
 

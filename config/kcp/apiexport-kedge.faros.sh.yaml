@@ -85,7 +85,7 @@ spec:
       crd: {}
   - group: kedge.faros.sh
     name: virtualworkloads
-    schema: v260429-d9dc8b1.virtualworkloads.kedge.faros.sh
+    schema: v260515-2974e60.virtualworkloads.kedge.faros.sh
     storage:
       crd: {}
 status: {}

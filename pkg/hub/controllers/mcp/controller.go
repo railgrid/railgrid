@@ -89,7 +89,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	// Compute the endpoint URL.
 	// Format: {hubExternalURL}/services/mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
-	endpoint := apiurl.KubernetesMCPURL(r.hubExternalURL, req.ClusterName, kmcp.Name)
+	endpoint := apiurl.KubernetesMCPURL(r.hubExternalURL, string(req.ClusterName), kmcp.Name)
 
 	// List all edges in the cluster.
 	var edgeList kedgev1alpha1.EdgeList
@@ -114,7 +114,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		if !selector.Matches(labels.Set(edge.Labels)) {
 			continue
 		}
-		key := connKeyFn(req.ClusterName, edge.Name)
+		key := connKeyFn(string(req.ClusterName), edge.Name)
 		if r.connManager.HasConnection(key) {
 			connectedCount++
 		}

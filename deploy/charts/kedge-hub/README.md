@@ -169,5 +169,5 @@ kcp:
 helm upgrade kedge oci://ghcr.io/faroshq/charts/kedge-hub \
   --namespace kedge-system \
   --reuse-values \
-  --set image.hub.tag=v0.0.33
+  --set image.hub.tag=v0.0.40
 ```

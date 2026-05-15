@@ -19,6 +19,7 @@ package testfakes
 import (
 	"k8s.io/apimachinery/pkg/types"
 	crtreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
@@ -26,6 +27,6 @@ import (
 func NewRequest(clusterName, namespace, name string) mcreconcile.Request {
 	return mcreconcile.Request{
 		Request:     crtreconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}},
-		ClusterName: clusterName,
+		ClusterName: multicluster.ClusterName(clusterName),
 	}
 }

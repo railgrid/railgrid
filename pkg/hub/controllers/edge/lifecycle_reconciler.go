@@ -83,7 +83,7 @@ func (r *LifecycleReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, err
 	}
 
-	hasTunnel := r.connManager.HasConnection(connKey(req.ClusterName, req.Name))
+	hasTunnel := r.connManager.HasConnection(connKey(string(req.ClusterName), req.Name))
 
 	switch {
 	case edge.Status.Connected && !hasTunnel:

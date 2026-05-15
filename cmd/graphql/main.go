@@ -98,8 +98,6 @@ func newRunCmd() *cobra.Command {
 		"enable the GraphQL playground")
 	fs.StringSliceVar(&gatewayOpts.CORSAllowedOrigins, "cors-allowed-origins", gatewayOpts.CORSAllowedOrigins,
 		"list of allowed origins for CORS")
-	fs.StringVar(&gatewayOpts.URLSuffix, "url-suffix", gatewayOpts.URLSuffix,
-		"URL suffix for the GraphQL endpoint")
 	fs.StringVar(&listenerOpts.ProviderKcp.APIExportEndpointSliceName, "apiexport-endpoint-slice-name",
 		listenerOpts.ProviderKcp.APIExportEndpointSliceName,
 		"name of the APIExport EndpointSlice to watch")

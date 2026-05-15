@@ -934,8 +934,14 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 	// Format: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
 	edgeURL := apiurl.EdgeAPIPath(a.opts.Cluster, a.opts.EdgeName)
 
+	// The Edge CRD marks status.connected as required (no `omitempty` on the
+	// Go field) so a merge patch on a freshly-created Edge that omits it
+	// fails validation. setupSSHCredentials runs before the tunnel is
+	// established, so `false` is the truthful initial value here — the
+	// heartbeat reporter will set it to true once the tunnel is up.
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
+			"connected":      false,
 			"sshCredentials": sshCreds,
 			"URL":            edgeURL,
 		},

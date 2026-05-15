@@ -36,6 +36,7 @@ import (
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
@@ -177,7 +178,7 @@ func (r *Reconciler) mapEdgeToVirtualWorkloads(ctx context.Context, obj client.O
 	// fall back to the kcp annotation if the context value is absent.
 	clusterKey, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
-		clusterKey = obj.GetAnnotations()["kcp.io/cluster"]
+		clusterKey = multicluster.ClusterName(obj.GetAnnotations()["kcp.io/cluster"])
 	}
 	klog.V(2).InfoS("mapEdgeToVirtualWorkloads", "edge", obj.GetName(), "cluster", clusterKey)
 	cl, err := r.mgr.GetCluster(ctx, clusterKey)

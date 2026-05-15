@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 )
 
 // Manager is a minimal fake mcmanager.Manager for unit tests.
@@ -41,7 +42,7 @@ func NewManager(c client.Client) *Manager {
 }
 
 // GetCluster returns the configured test cluster regardless of clusterName.
-func (m *Manager) GetCluster(_ context.Context, _ string) (cluster.Cluster, error) {
+func (m *Manager) GetCluster(_ context.Context, _ multicluster.ClusterName) (cluster.Cluster, error) {
 	return m.FakeCluster, nil
 }
 
