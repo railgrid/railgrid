@@ -6,7 +6,7 @@ hub:
   # Authentication - choose one:
   # 
   staticAuthTokens:
-    - "f782d49d86e73e5b9"  # Simple option
+    - "f782d49d86e73e5b12312339"  # Simple option
   # OR use OIDC (see Security docs)
 
   tls:
