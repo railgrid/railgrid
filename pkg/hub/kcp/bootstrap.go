@@ -236,7 +236,12 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 		return "", fmt.Errorf("creating tenants client: %w", err)
 	}
 
-	// Create workspace for the user.
+	// Create workspace for the user. The kedge-owned "tenant" WorkspaceType
+	// (bootstrapped in root:kedge) declares tenancy.kcp.io in its
+	// defaultAPIBindings so child workspace creation works out of the box.
+	// We additionally ensure that binding exists below (see
+	// ensureTenancyAPIBinding) so workspaces created before that addition
+	// also pick it up on the next login.
 	ws := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "tenancy.kcp.io/v1alpha1",
@@ -246,8 +251,8 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 			},
 			"spec": map[string]interface{}{
 				"type": map[string]interface{}{
-					"name": "universal",
-					"path": "root",
+					"name": "tenant",
+					"path": "root:kedge",
 				},
 			},
 		},
@@ -334,6 +339,18 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 		logger.Error(waitErr, "kedge APIBinding did not become Bound (non-fatal)", "userID", userID)
 	}
 
+	// Ensure the tenancy.kcp.io APIBinding exists in the tenant workspace so
+	// the edge-mount controller (and anything else that needs sub-workspaces)
+	// can POST to /apis/tenancy.kcp.io/v1alpha1/workspaces. The "tenant"
+	// WorkspaceType's defaultAPIBindings handles this for newly-created
+	// workspaces; this call backfills the binding for workspaces that pre-date
+	// that change.
+	if err := ensureTenancyAPIBinding(ctx, tenantClient); err != nil {
+		// Non-fatal: log and continue. Mount workspace creation will retry,
+		// and the user can still use most kedge features without it.
+		logger.Error(err, "Failed to ensure tenancy.kcp.io APIBinding (non-fatal)", "userID", userID)
+	}
+
 	// Grant the user cluster-admin in their own workspace so they can manage
 	// their resources directly (e.g. via GraphQL or kubectl with their token).
 	if rbacIdentity != "" {
@@ -385,6 +402,59 @@ func ensureDefaultKubernetesMCP(ctx context.Context, tenantClient dynamic.Interf
 	_, err := tenantClient.Resource(kubernetesMCPGVR).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil && !errors.IsAlreadyExists(err) {
 		return err
+	}
+	return nil
+}
+
+// ensureTenancyAPIBinding makes sure an APIBinding to root:tenancy.kcp.io
+// exists in the tenant workspace. New workspaces get this binding automatically
+// via the "tenant" WorkspaceType's defaultAPIBindings, but workspaces created
+// before that field was added need it backfilled so the edge-mount controller
+// can create child Workspaces.
+//
+// Idempotent: if any APIBinding already references root:tenancy.kcp.io
+// (regardless of name), this is a no-op. We also tolerate the "Create raced
+// with WorkspaceType auto-bind" case by ignoring AlreadyExists.
+func ensureTenancyAPIBinding(ctx context.Context, tenantClient dynamic.Interface) error {
+	const (
+		tenancyExportPath = "root"
+		tenancyExportName = "tenancy.kcp.io"
+		bindingName       = "tenancy.kcp.io"
+	)
+
+	existing, err := tenantClient.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("listing APIBindings: %w", err)
+	}
+	for _, b := range existing.Items {
+		path, _, _ := unstructured.NestedString(b.Object, "spec", "reference", "export", "path")
+		name, _, _ := unstructured.NestedString(b.Object, "spec", "reference", "export", "name")
+		if path == tenancyExportPath && name == tenancyExportName {
+			return nil
+		}
+	}
+
+	binding := &apisv1alpha2.APIBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
+			Kind:       "APIBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName},
+		Spec: apisv1alpha2.APIBindingSpec{
+			Reference: apisv1alpha2.BindingReference{
+				Export: &apisv1alpha2.ExportBindingReference{
+					Path: tenancyExportPath,
+					Name: tenancyExportName,
+				},
+			},
+		},
+	}
+	u, err := toUnstructured(binding)
+	if err != nil {
+		return fmt.Errorf("converting tenancy APIBinding to unstructured: %w", err)
+	}
+	if _, err := tenantClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating tenancy.kcp.io APIBinding: %w", err)
 	}
 	return nil
 }

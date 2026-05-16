@@ -33,6 +33,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -487,11 +488,19 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
+	// agentKubeconfigDelivered is closed (once) when the hub returns a SA
+	// kubeconfig via the token-exchange flow and we've saved it to disk. In
+	// out-of-cluster join-token mode the main flow waits on this signal so it
+	// can rebuild hubClient with valid kcp credentials before starting any
+	// goroutines that talk to the hub.
+	agentKubeconfigDelivered := make(chan struct{})
+	var deliverOnce sync.Once
 	onAgentToken := func(kubeconfigB64 string) {
 		path, _ := AgentKubeconfigPath(a.opts.EdgeName)
 		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName, "path", path)
 		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
 			logger.Error(err, "failed to save agent kubeconfig from hub")
+			return
 		}
 		// In-cluster mode: also persist to Secret so it survives pod restarts,
 		// then force a restart so the agent re-launches with the saved kubeconfig.
@@ -505,9 +514,32 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 				logger.Info("Saved kubeconfig to in-cluster Secret; restarting pod to activate", "edgeName", a.opts.EdgeName)
 				os.Exit(1)
 			}
+			return
 		}
+		deliverOnce.Do(func() { close(agentKubeconfigDelivered) })
 	}
 	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken, nil)
+
+	// Out-of-cluster join-token mode: the in-memory hubClient was built from
+	// the bootstrap join token, which is not a valid kcp credential. Wait for
+	// the tunnel to deliver a SA kubeconfig via token-exchange, then rebuild
+	// hubClient from it so the reporters/reconcilers below have working
+	// credentials on the first run (instead of needing a manual restart).
+	if a.opts.Token != "" && !IsInCluster() {
+		logger.Info("Join-token mode: waiting for hub to deliver SA kubeconfig via token-exchange...")
+		select {
+		case <-ctx.Done():
+			logger.Info("Agent shutting down before token-exchange completed")
+			return nil
+		case <-agentKubeconfigDelivered:
+		}
+		refreshed, err := a.refreshHubClientFromSavedKubeconfig()
+		if err != nil {
+			return fmt.Errorf("refreshing hub client after token-exchange: %w", err)
+		}
+		hubClient = refreshed
+		logger.Info("Refreshed hub client from saved SA kubeconfig")
+	}
 
 	wkr := reconciler.NewWorkloadReconciler(a.opts.EdgeName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
@@ -526,18 +558,23 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		}
 	}()
 
-	// In join-token mode the hub manages edge status server-side.
-	if a.opts.Token == "" {
+	// In-cluster join-token mode is the only path where the agent does not yet
+	// hold a valid kcp credential when reaching this point (it will os.Exit on
+	// kubeconfig delivery and the next pod restart picks up the saved one).
+	// Everywhere else we have working credentials and should run the
+	// edge_reporter so the agent owns its heartbeat instead of relying solely
+	// on the hub-side stamp.
+	if a.opts.Token != "" && IsInCluster() {
+		logger.Info("In-cluster join-token mode: hub manages edge status until kubeconfig-triggered restart")
+		go func() {
+			for range tunnelState {
+			}
+		}()
+	} else {
 		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
 		go func() {
 			if err := reporter.Run(ctx); err != nil {
 				logger.Error(err, "Edge status reporter failed")
-			}
-		}()
-	} else {
-		logger.Info("Join-token mode: hub manages edge status; skipping agent-side edge_reporter")
-		go func() {
-			for range tunnelState {
 			}
 		}()
 	}
@@ -546,6 +583,36 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	<-ctx.Done()
 	logger.Info("Agent shutting down")
 	return nil
+}
+
+// refreshHubClientFromSavedKubeconfig loads the SA kubeconfig that the tunnel
+// token-exchange callback just saved to disk, builds a fresh rest.Config from
+// it, updates a.hubConfig in place, and returns a kedge client backed by the
+// new credentials. Used by out-of-cluster join-token startup to transition the
+// agent's in-memory clients from the bootstrap join token (no kcp access) to
+// the durable SA credential without exiting the process.
+func (a *Agent) refreshHubClientFromSavedKubeconfig() (*kedgeclient.Client, error) {
+	kubeconfigPath, err := AgentKubeconfigPath(a.opts.EdgeName)
+	if err != nil {
+		return nil, fmt.Errorf("resolving saved kubeconfig path: %w", err)
+	}
+	rules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
+	newCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{}).ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading saved kubeconfig %s: %w", kubeconfigPath, err)
+	}
+	if a.opts.InsecureSkipTLSVerify {
+		newCfg.Insecure = true
+		// CA data combined with Insecure=true is rejected by rest.TLSConfigFor.
+		newCfg.CAData = nil
+		newCfg.CAFile = ""
+	}
+	dynClient, err := dynamic.NewForConfig(newCfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating dynamic client from saved kubeconfig: %w", err)
+	}
+	a.hubConfig = newCfg
+	return kedgeclient.NewFromDynamic(dynClient), nil
 }
 
 // runServerMode is the bare-metal / systemd mode: no k8s, just SSH over revdial.
@@ -590,11 +657,18 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
+	// serverAgentKubeconfigDelivered mirrors the kubernetes-mode signal: closed
+	// once when the hub delivers a SA kubeconfig via token-exchange, used to
+	// refresh hubClient before starting the edge_reporter in out-of-cluster
+	// join-token mode (so heartbeats actually work on the first run).
+	serverAgentKubeconfigDelivered := make(chan struct{})
+	var serverDeliverOnce sync.Once
 	serverOnAgentToken := func(kubeconfigB64 string) {
 		path, _ := AgentKubeconfigPath(a.opts.EdgeName)
 		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName, "path", path)
 		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
 			logger.Error(err, "failed to save agent kubeconfig from hub")
+			return
 		}
 		// In-cluster mode: also persist to Secret and restart.
 		if IsInCluster() {
@@ -607,7 +681,9 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 				logger.Info("Saved kubeconfig to in-cluster Secret; restarting pod to activate", "edgeName", a.opts.EdgeName)
 				os.Exit(1)
 			}
+			return
 		}
+		serverDeliverOnce.Do(func() { close(serverAgentKubeconfigDelivered) })
 	}
 
 	// In join-token mode, pass SSH credentials as WebSocket headers so the hub
@@ -621,22 +697,40 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
 	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName, serverOnAgentToken, sshHeaders)
 
-	// In join-token mode the hub marks the edge Ready/Disconnected server-side
-	// (via markEdgeConnected/markEdgeDisconnected) because the join token is not
-	// a valid kcp credential and the edge_reporter would get Unauthorized on every
-	// status-update call.
-	if a.opts.Token == "" {
+	// Out-of-cluster join-token mode: wait for the SA kubeconfig before
+	// starting the edge_reporter, otherwise its patch calls would all return
+	// Unauthorized until a restart.
+	if a.opts.Token != "" && !IsInCluster() {
+		logger.Info("Join-token mode: waiting for hub to deliver SA kubeconfig via token-exchange...")
+		select {
+		case <-ctx.Done():
+			logger.Info("Agent shutting down before token-exchange completed")
+			return nil
+		case <-serverAgentKubeconfigDelivered:
+		}
+		refreshed, err := a.refreshHubClientFromSavedKubeconfig()
+		if err != nil {
+			return fmt.Errorf("refreshing hub client after token-exchange: %w", err)
+		}
+		hubClient = refreshed
+		logger.Info("Refreshed hub client from saved SA kubeconfig")
+	}
+
+	// In-cluster join-token mode is the only path where we still lack working
+	// credentials at this point (the os.Exit-on-delivery handles the
+	// transition). Everywhere else we run the agent-side edge_reporter so the
+	// agent owns its heartbeat rather than relying solely on hub-side stamps.
+	if a.opts.Token != "" && IsInCluster() {
+		logger.Info("In-cluster join-token mode: hub manages edge status until kubeconfig-triggered restart")
+		go func() {
+			for range tunnelState {
+			}
+		}()
+	} else {
 		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
 		go func() {
 			if err := reporter.Run(ctx); err != nil {
 				logger.Error(err, "Edge status reporter failed")
-			}
-		}()
-	} else {
-		logger.Info("Join-token mode: hub manages edge status; skipping agent-side edge_reporter")
-		// Drain the tunnel state channel to prevent goroutine leak.
-		go func() {
-			for range tunnelState {
 			}
 		}()
 	}

@@ -31,9 +31,11 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
 
 var edgeGVR = schema.GroupVersionResource{
@@ -60,78 +62,100 @@ func (p *virtualWorkspaces) markEdgeConnected(ctx context.Context, cluster, name
 		return
 	}
 
-	// Get the current edge so we can read and update its status.
-	edge, err := dynClient.Resource(edgeGVR).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		p.logger.Error(err, "markEdgeConnected: failed to get edge",
-			"cluster", cluster, "edge", name)
-		return
-	}
-
-	// Build the updated status: clear joinToken, set connected/phase, set Registered condition.
-	status, _, _ := unstructured.NestedMap(edge.Object, "status")
-	if status == nil {
-		status = map[string]interface{}{}
-	}
-	status["connected"] = true
-	status["phase"] = string(kedgev1alpha1.EdgePhaseReady)
+	// Clear joinToken with a dedicated MergePatch BEFORE the read-modify-write
+	// loop below. MergePatch has no resourceVersion check, so it can't conflict
+	// with the agent-side edge_reporter and hub-side stampEdgeHeartbeat
+	// patchers that race us. The retry loop's UpdateStatus, by contrast, can
+	// lose every attempt under contention and silently leave joinToken set —
+	// which broke TestJoinTokenClearedAfterRegistration once the agent's
+	// edge_reporter started heartbeating in join-token mode.
 	if clearJoinToken {
-		delete(status, "joinToken")
-	}
-
-	// Set the Registered condition to True.
-	now := metav1.NewTime(time.Now())
-	registeredCondition := metav1.Condition{
-		Type:               kedgev1alpha1.EdgeConditionRegistered,
-		Status:             metav1.ConditionTrue,
-		Reason:             "AgentRegistered",
-		Message:            "Agent has registered and received a durable ServiceAccount credential.",
-		LastTransitionTime: now,
-	}
-	condJSON, _ := json.Marshal(registeredCondition)
-	var condMap map[string]interface{}
-	_ = json.Unmarshal(condJSON, &condMap)
-
-	// Replace or append the Registered condition in the conditions array.
-	conditions, _, _ := unstructured.NestedSlice(status, "conditions")
-	found := false
-	for i, c := range conditions {
-		cMap, ok := c.(map[string]interface{})
-		if ok && cMap["type"] == kedgev1alpha1.EdgeConditionRegistered {
-			conditions[i] = condMap
-			found = true
-			break
-		}
-	}
-	if !found {
-		conditions = append(conditions, condMap)
-	}
-	status["conditions"] = conditions
-
-	// If the agent sent SSH credentials, create a secret and set sshCredentials in status.
-	if sshCreds != nil && sshCreds.User != "" {
-		if err := p.storeSSHCredentials(ctx, cfg, cluster, name, sshCreds, status); err != nil {
-			p.logger.Error(err, "markEdgeConnected: failed to store SSH credentials",
+		patch := []byte(`{"status":{"joinToken":null}}`)
+		if _, perr := dynClient.Resource(edgeGVR).Patch(ctx, name,
+			types.MergePatchType, patch, metav1.PatchOptions{}, "status"); perr != nil {
+			p.logger.Error(perr, "markEdgeConnected: failed to clear joinToken",
 				"cluster", cluster, "edge", name)
-			// Continue — edge status update is more important.
+			// Continue: the read-modify-write loop below will retry on conflict.
 		}
 	}
 
-	// Persist the agent's sshd host public key so the hub can perform strict
-	// host-key verification on subsequent SSH sessions. This is independent of
-	// auth credentials: an agent without password/privateKey still benefits
-	// from MITM protection.
-	if sshCreds != nil && sshCreds.HostKey != "" {
-		status["sshHostKey"] = sshCreds.HostKey
-	}
+	// Read-modify-write of status races against the hub-side
+	// stampEdgeHeartbeat patcher (started from the same handler) and the
+	// agent-side edge_reporter that runs as soon as out-of-cluster join-token
+	// agents refresh their hub client. Retry on conflict until UpdateStatus
+	// wins; joinToken clearing above is already durable independent of this.
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		edge, err := dynClient.Resource(edgeGVR).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
 
-	if err := unstructured.SetNestedField(edge.Object, status, "status"); err != nil {
-		p.logger.Error(err, "markEdgeConnected: failed to set status",
-			"cluster", cluster, "edge", name)
-		return
-	}
+		// Build the updated status: set connected/phase, set Registered condition,
+		// and re-clear joinToken in case the targeted MergePatch above raced and
+		// lost to the TokenReconciler (extra safety, normally a no-op).
+		status, _, _ := unstructured.NestedMap(edge.Object, "status")
+		if status == nil {
+			status = map[string]interface{}{}
+		}
+		status["connected"] = true
+		status["phase"] = string(kedgev1alpha1.EdgePhaseReady)
+		if clearJoinToken {
+			delete(status, "joinToken")
+		}
 
-	_, err = dynClient.Resource(edgeGVR).UpdateStatus(ctx, edge, metav1.UpdateOptions{})
+		// Set the Registered condition to True.
+		now := metav1.NewTime(time.Now())
+		registeredCondition := metav1.Condition{
+			Type:               kedgev1alpha1.EdgeConditionRegistered,
+			Status:             metav1.ConditionTrue,
+			Reason:             "AgentRegistered",
+			Message:            "Agent has registered and received a durable ServiceAccount credential.",
+			LastTransitionTime: now,
+		}
+		condJSON, _ := json.Marshal(registeredCondition)
+		var condMap map[string]interface{}
+		_ = json.Unmarshal(condJSON, &condMap)
+
+		// Replace or append the Registered condition in the conditions array.
+		conditions, _, _ := unstructured.NestedSlice(status, "conditions")
+		found := false
+		for i, c := range conditions {
+			cMap, ok := c.(map[string]interface{})
+			if ok && cMap["type"] == kedgev1alpha1.EdgeConditionRegistered {
+				conditions[i] = condMap
+				found = true
+				break
+			}
+		}
+		if !found {
+			conditions = append(conditions, condMap)
+		}
+		status["conditions"] = conditions
+
+		// If the agent sent SSH credentials, create a secret and set sshCredentials in status.
+		if sshCreds != nil && sshCreds.User != "" {
+			if err := p.storeSSHCredentials(ctx, cfg, cluster, name, sshCreds, status); err != nil {
+				p.logger.Error(err, "markEdgeConnected: failed to store SSH credentials",
+					"cluster", cluster, "edge", name)
+				// Continue — edge status update is more important.
+			}
+		}
+
+		// Persist the agent's sshd host public key so the hub can perform strict
+		// host-key verification on subsequent SSH sessions. This is independent of
+		// auth credentials: an agent without password/privateKey still benefits
+		// from MITM protection.
+		if sshCreds != nil && sshCreds.HostKey != "" {
+			status["sshHostKey"] = sshCreds.HostKey
+		}
+
+		if err := unstructured.SetNestedField(edge.Object, status, "status"); err != nil {
+			return fmt.Errorf("setting status: %w", err)
+		}
+
+		_, err = dynClient.Resource(edgeGVR).UpdateStatus(ctx, edge, metav1.UpdateOptions{})
+		return err
+	})
 	if err != nil {
 		p.logger.Error(err, "markEdgeConnected: failed to update edge status",
 			"cluster", cluster, "edge", name)
@@ -216,6 +240,57 @@ func (p *virtualWorkspaces) storeSSHCredentials(ctx context.Context, cfg *rest.C
 
 	p.logger.Info("SSH credentials stored for edge", "cluster", cluster, "edge", edgeName, "user", creds.User)
 	return nil
+}
+
+// runEdgeHeartbeatLoop ticks until ctx is cancelled, stamping the Edge's
+// status.lastHeartbeatTime from dialer.LastPong on each tick. Cancellation
+// happens when the agent-proxy handler observes dialer.Done(), so the loop
+// terminates within one tick of the tunnel dying.
+func (p *virtualWorkspaces) runEdgeHeartbeatLoop(ctx context.Context, cluster, name string, dialer *revdial.Dialer) {
+	// First stamp immediately so the LAST HEARTBEAT column becomes non-empty
+	// without waiting for the first tick.
+	p.stampEdgeHeartbeat(ctx, cluster, name, dialer.LastPong())
+
+	ticker := time.NewTicker(edgeHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.stampEdgeHeartbeat(ctx, cluster, name, dialer.LastPong())
+		}
+	}
+}
+
+// stampEdgeHeartbeat patches an Edge's status.lastHeartbeatTime to t.  It is
+// used by the agent-proxy-v2 handler to surface revdial-level liveness (the
+// last successful "pong" from the agent) on the Edge resource.  Agents
+// connected via join token can't write their own kcp status, so the hub does
+// it for them.
+//
+// Best-effort: errors are logged at V(4) only — heartbeat staleness is a soft
+// signal, and the LifecycleReconciler will eventually reconcile state.
+func (p *virtualWorkspaces) stampEdgeHeartbeat(ctx context.Context, cluster, name string, t time.Time) {
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, cluster)
+
+	dynClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		p.logger.V(4).Info("stampEdgeHeartbeat: failed to create dynamic client",
+			"cluster", cluster, "edge", name, "err", err)
+		return
+	}
+
+	// MergePatch with RFC3339-formatted timestamp; the field is typed as
+	// metav1.Time (date-time) in the APIResourceSchema.
+	patch := []byte(`{"status":{"lastHeartbeatTime":"` + t.UTC().Format(time.RFC3339) + `"}}`)
+	_, err = dynClient.Resource(edgeGVR).Patch(ctx, name,
+		types.MergePatchType, patch, metav1.PatchOptions{}, "status")
+	if err != nil {
+		p.logger.V(4).Info("stampEdgeHeartbeat: patch failed",
+			"cluster", cluster, "edge", name, "err", err)
+	}
 }
 
 // markEdgeDisconnected patches an Edge's status to Connected=false,

@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/function61/holepunch-server/pkg/wsconnadapter"
 	"github.com/gorilla/websocket"
@@ -41,6 +42,10 @@ import (
 	utilhttp "github.com/faroshq/faros-kedge/pkg/util/http"
 	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
+
+// edgeHeartbeatInterval is how often the hub stamps status.lastHeartbeatTime
+// for a connected Edge using the revdial Dialer's LastPong timestamp.
+const edgeHeartbeatInterval = 30 * time.Second
 
 var secretGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 
@@ -192,9 +197,18 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		sshCreds := extractSSHCredsFromHeaders(r)
 		go p.markEdgeConnected(context.Background(), cluster, name, sshCreds, clearJoinToken)
 
+		// Stamp status.lastHeartbeatTime from the dialer's LastPong while the
+		// tunnel is alive. revdial's keep-alive/pong loop already detects dead
+		// tunnels within ~60s; LastPong gives us a positive liveness signal
+		// that we can surface on the Edge resource so the LifecycleReconciler
+		// (and CLI/UI) can spot a stalled connection.
+		heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
+		go p.runEdgeHeartbeatLoop(heartbeatCtx, cluster, name, dialer)
+
 		// Block until the tunnel closes, then clean up the entry so stale
 		// look-ups don't succeed.
 		<-dialer.Done()
+		cancelHeartbeat()
 		p.edgeConnManager.Delete(key)
 		p.logger.Info("Edge agent tunnel closed", "key", key)
 

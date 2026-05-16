@@ -1,0 +1,28 @@
+apiVersion: tenancy.kcp.io/v1alpha1
+kind: WorkspaceType
+metadata:
+  name: tenant
+  annotations:
+    bootstrap.kcp.io/create-only: "true"
+spec:
+  # Extend root:universal so tenant workspaces inherit the universal initializer.
+  # That initializer is what bootstraps the "default" namespace (see
+  # kcp/config/universal/default-namespace.yaml); without it new tenant
+  # workspaces have no "default" namespace and `kubectl apply` of any
+  # namespaced resource without an explicit namespace fails with
+  # `namespaces "default" not found`.
+  extend:
+    with:
+    - name: universal
+      path: root
+  defaultChildWorkspaceType:
+    name: tenant
+    path: root:kedge
+  # Auto-bind tenancy.kcp.io so users can create child Workspaces inside their
+  # tenant workspace (the edge-mount controller does this, and so does any
+  # workload that needs sub-workspaces). Without this binding the
+  # tenancy.kcp.io/v1alpha1.Workspaces resource is not discoverable in the
+  # workspace, and POSTs to /apis/tenancy.kcp.io/v1alpha1/workspaces 404.
+  defaultAPIBindings:
+  - path: root
+    export: tenancy.kcp.io

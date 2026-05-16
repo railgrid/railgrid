@@ -15,7 +15,7 @@ require (
 	github.com/kcp-dev/multicluster-provider v0.7.1-0.20260515112510-8f4137891edf
 	github.com/kcp-dev/sdk v0.31.1
 	github.com/modelcontextprotocol/go-sdk v1.3.1
-	github.com/platform-mesh/kubernetes-graphql-gateway v0.0.0-00010101000000-000000000000
+	github.com/platform-mesh/kubernetes-graphql-gateway v1.14.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/crypto v0.50.0
@@ -32,7 +32,7 @@ require (
 	k8s.io/cli-runtime v0.35.1
 	k8s.io/client-go v0.36.0
 	k8s.io/klog/v2 v2.140.0
-	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5
+	k8s.io/utils v0.0.0-20260507154919-ff6756f316d2
 	sigs.k8s.io/controller-runtime v0.24.1
 	sigs.k8s.io/e2e-framework v0.6.0
 	sigs.k8s.io/kind v0.31.0
@@ -46,7 +46,6 @@ replace (
 	github.com/kcp-dev/sdk => github.com/kcp-dev/sdk v0.28.1-0.20260504075209-315ebd35273b
 	// TODO: drop this once virtual-workspace-framework is synced from kcp staging.
 	github.com/kcp-dev/virtual-workspace-framework => github.com/kcp-dev/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260515065710-c59a62d43e19
-	github.com/platform-mesh/kubernetes-graphql-gateway => github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260514114051-4f3a10182d4d
 )
 
 // KCP kubernetes forks - required for cluster-aware API machinery

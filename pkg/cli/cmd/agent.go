@@ -31,6 +31,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/faroshq/faros-kedge/pkg/agent"
+	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
 )
 
 func newAgentCommand() *cobra.Command {
@@ -446,7 +447,7 @@ roleRef:
 	}
 	agentImageTag := os.Getenv("KEDGE_AGENT_IMAGE_TAG")
 	if agentImageTag == "" {
-		agentImageTag = "latest"
+		agentImageTag = pkgversion.Get()
 	}
 	agentImagePullPolicy := os.Getenv("KEDGE_AGENT_IMAGE_PULL_POLICY")
 	if agentImagePullPolicy == "" {

@@ -76,6 +76,13 @@ type Dialer struct {
 	connReady    chan bool
 	donec        chan struct{}
 	closeOnce    sync.Once
+
+	// lastPongMu guards lastPong, which records the time of the most recent
+	// "pong" received from the peer. Callers (e.g. hub heartbeat reporters)
+	// use this as a positive liveness signal: a recent pong means the tunnel
+	// was end-to-end healthy at that moment.
+	lastPongMu sync.RWMutex
+	lastPong   time.Time
 }
 
 var (
@@ -98,6 +105,9 @@ func NewDialer(c net.Conn, connPath string) *Dialer {
 		connReady:    make(chan bool),
 		incomingConn: make(chan net.Conn),
 		pickupFailed: make(chan error),
+		// Seed lastPong with creation time: we only enter NewDialer after a
+		// successful WebSocket upgrade, so the peer was alive a moment ago.
+		lastPong: time.Now(),
 	}
 
 	join := "?"
@@ -132,6 +142,16 @@ func (d *Dialer) unregister() {
 // this process on purpose, by a local error, or close or error from
 // the peer).
 func (d *Dialer) Done() <-chan struct{} { return d.donec }
+
+// LastPong returns the time of the most recent "pong" received from the peer,
+// or the dialer's creation time if no pong has been received yet. Callers can
+// use this as a positive liveness signal — if it falls too far behind
+// time.Now(), the tunnel is silently dead even if Done() has not yet fired.
+func (d *Dialer) LastPong() time.Time {
+	d.lastPongMu.RLock()
+	defer d.lastPongMu.RUnlock()
+	return d.lastPong
+}
 
 // IsClosed reports whether the Dialer has been closed.
 func (d *Dialer) IsClosed() bool {
@@ -210,7 +230,11 @@ func (d *Dialer) serve() error {
 			}
 			switch msg.Command {
 			case "pong":
-				// Hub confirmed it is alive — nothing to do.
+				// Peer confirmed it is alive — record the timestamp so callers
+				// can use it as a positive liveness signal.
+				d.lastPongMu.Lock()
+				d.lastPong = time.Now()
+				d.lastPongMu.Unlock()
 			case "pickup-failed":
 				err := fmt.Errorf("revdial listener failed to pick up connection: %v", msg.Err)
 				select {

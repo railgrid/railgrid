@@ -57,6 +57,12 @@ func SetupLifecycleWithManager(mgr mcmanager.Manager, connManager ConnManager) e
 		Complete(r)
 }
 
+// staleHeartbeatThreshold is how long an Edge can go without a hub-stamped
+// heartbeat before this reconciler considers the tunnel stale even when
+// ConnManager still reports a live connection. Sized as 3× the agent-proxy
+// heartbeat interval (30s) — see edgeHeartbeatInterval in pkg/virtual/builder.
+const staleHeartbeatThreshold = 90 * time.Second
+
 // Reconcile reconciles status.connected/phase against the in-process tunnel registry.
 //
 // status.connected is only flipped to true by the agent-proxy handler when a
@@ -65,7 +71,8 @@ func SetupLifecycleWithManager(mgr mcmanager.Manager, connManager ConnManager) e
 // while etcd still says connected=true), or when an agent dies ungracefully
 // and socket-close detection races reconnect, the status drifts. This
 // reconciler corrects the drift by cross-checking ConnManager — which already
-// fast-path-evicts closed dialers on Load and sweeps every 30s.
+// fast-path-evicts closed dialers on Load and sweeps every 30s — and by
+// flipping edges whose hub-stamped lastHeartbeatTime has gone stale.
 func (r *LifecycleReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := klog.FromContext(ctx).WithValues("edge", req.Name, "cluster", req.ClusterName)
 
@@ -84,10 +91,25 @@ func (r *LifecycleReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 	}
 
 	hasTunnel := r.connManager.HasConnection(connKey(string(req.ClusterName), req.Name))
+	heartbeatStale := edge.Status.LastHeartbeatTime != nil &&
+		time.Since(edge.Status.LastHeartbeatTime.Time) > staleHeartbeatThreshold
 
 	switch {
 	case edge.Status.Connected && !hasTunnel:
 		logger.Info("Edge has no live tunnel, marking Disconnected")
+		edge.Status.Connected = false
+		edge.Status.Phase = kedgev1alpha1.EdgePhaseDisconnected
+		if err := c.Status().Update(ctx, &edge); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating edge status: %w", err)
+		}
+	case edge.Status.Connected && heartbeatStale:
+		// connManager still reports a tunnel, but the hub-side heartbeat
+		// goroutine hasn't stamped lastHeartbeatTime within the threshold.
+		// That means revdial pongs have stopped flowing — treat the edge as
+		// disconnected even though the dialer entry hasn't been evicted yet.
+		logger.Info("Edge heartbeat stale, marking Disconnected",
+			"lastHeartbeat", edge.Status.LastHeartbeatTime.Time,
+			"age", time.Since(edge.Status.LastHeartbeatTime.Time).Round(time.Second))
 		edge.Status.Connected = false
 		edge.Status.Phase = kedgev1alpha1.EdgePhaseDisconnected
 		if err := c.Status().Update(ctx, &edge); err != nil {
