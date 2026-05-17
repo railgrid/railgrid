@@ -49,7 +49,7 @@ function handleOIDCLogin() {
   sessionStorage.setItem('oidc_verifier', codeVerifier)
   sessionStorage.setItem('oidc_session', sessionId)
 
-  const callbackUrl = `${window.location.origin}/auth/callback`
+  const callbackUrl = `${window.location.origin}${import.meta.env.BASE_URL}auth/callback`
   const params = new URLSearchParams({
     redirect_uri: callbackUrl,
     s: sessionId,
