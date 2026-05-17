@@ -43,6 +43,10 @@ spec:
             {{- if .Values.kcp.external.enabled }}
             # External kcp mode: connect to kcp running outside the cluster
             - --external-kcp-kubeconfig=/kcp-kubeconfig/admin.kubeconfig
+            {{- if include "kedge-hub.kcpShardKubeconfigEnabled" . }}
+            # Separate kubeconfig for APIExport virtual-workspace (shard-direct) URLs
+            - --kcp-shard-kubeconfig=/kcp-shard-kubeconfig/admin.kubeconfig
+            {{- end }}
             {{- else }}
             # Embedded kcp mode (default): kcp runs in-process
             - --embedded-kcp
@@ -119,6 +123,11 @@ spec:
               mountPath: /kcp-kubeconfig
               readOnly: true
             {{- end }}
+            {{- if include "kedge-hub.kcpShardKubeconfigEnabled" . }}
+            - name: kcp-shard-kubeconfig
+              mountPath: /kcp-shard-kubeconfig
+              readOnly: true
+            {{- end }}
             {{- if .Values.idp.caSecretName }}
             - name: idp-ca
               mountPath: /idp-ca
@@ -140,6 +149,11 @@ spec:
         - name: kcp-kubeconfig
           secret:
             secretName: {{ include "kedge-hub.kcpKubeconfigSecretName" . }}
+        {{- end }}
+        {{- if include "kedge-hub.kcpShardKubeconfigEnabled" . }}
+        - name: kcp-shard-kubeconfig
+          secret:
+            secretName: {{ include "kedge-hub.kcpShardKubeconfigSecretName" . }}
         {{- end }}
         {{- if .Values.idp.caSecretName }}
         - name: idp-ca

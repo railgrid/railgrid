@@ -160,6 +160,17 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 
+	// Optional separate kubeconfig for APIExport virtual-workspace (shard-direct)
+	// connections — see Options.KCPShardKubeconfig. Defaults to kcpConfig.
+	kcpShardConfig := kcpConfig
+	if s.opts.KCPShardKubeconfig != "" {
+		var err error
+		kcpShardConfig, err = clientcmd.BuildConfigFromFlags("", s.opts.KCPShardKubeconfig)
+		if err != nil {
+			return fmt.Errorf("building kcp shard rest config: %w", err)
+		}
+	}
+
 	// 1. Build rest.Config for the base cluster (used for CRDs when no kcp).
 	// If kcp is configured (embedded or external), use its config directly.
 	var config *rest.Config
@@ -415,8 +426,12 @@ func (s *Server) Run(ctx context.Context) error {
 		scheme := NewScheme()
 
 		// The multicluster provider watches APIExportEndpointSlice which
-		// lives in the root:kedge:providers workspace.
-		providersConfig := rest.CopyConfig(kcpConfig)
+		// lives in the root:kedge:providers workspace. Use kcpShardConfig so
+		// that connections to shard-direct virtual-workspace URLs (advertised
+		// in APIExportEndpointSlice.status.endpoints) authenticate against the
+		// shards' ClientCA, not the front-proxy's. When --kcp-shard-kubeconfig
+		// is not set, kcpShardConfig == kcpConfig.
+		providersConfig := rest.CopyConfig(kcpShardConfig)
 		providersConfig.Host = apiurl.KCPClusterURL(providersConfig.Host, "root:kedge:providers")
 
 		// core.faros.sh is the merged APIExport that covers all kedge API groups

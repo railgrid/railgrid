@@ -67,3 +67,4 @@ edge-kubeconfig
 .site-kubeconfig
 .env.edge.server
 .env.edge.kubernetes
+values.yaml

@@ -22,8 +22,19 @@ type Options struct {
 	ListenAddr            string
 	Kubeconfig            string
 	ExternalKCPKubeconfig string
-	IDPIssuerURL          string
-	IDPClientID           string
+	// KCPShardKubeconfig is an optional kubeconfig used only for connections
+	// to APIExport virtual-workspace URLs (which kcp publishes as shard-direct
+	// addresses in APIExportEndpointSlice). When the primary kubeconfig
+	// (ExternalKCPKubeconfig) authenticates via the kcp front-proxy, its
+	// client cert is signed by the front-proxy CA and is not trusted by
+	// shards directly — so cluster discovery via the multicluster provider
+	// fails with "the server has asked for the client to provide credentials".
+	// Set this to a kubeconfig whose cert is signed by the shared shard
+	// ClientCA (e.g. one produced by a kcp-operator Kubeconfig CR targeting
+	// rootShardRef). If empty, ExternalKCPKubeconfig is used for both.
+	KCPShardKubeconfig string
+	IDPIssuerURL       string
+	IDPClientID        string
 	// IDPCAFile is a path to a PEM-encoded CA bundle used to verify the IdP's
 	// TLS certificate. Required when IDPIssuerURL is https and uses a cert
 	// not signed by a system trust anchor (e.g. the dev Dex deployment).

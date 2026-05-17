@@ -54,6 +54,7 @@ func main() {
 	cmd.Flags().StringVar(&opts.ListenAddr, "listen-addr", opts.ListenAddr, "Address to listen on")
 	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Kubeconfig for hub cluster")
 	cmd.Flags().StringVar(&opts.ExternalKCPKubeconfig, "external-kcp-kubeconfig", "", "Kubeconfig for external kcp (empty for embedded)")
+	cmd.Flags().StringVar(&opts.KCPShardKubeconfig, "kcp-shard-kubeconfig", "", "Optional kubeconfig used only for APIExport virtual-workspace connections (shard-direct URLs). If empty, --external-kcp-kubeconfig is used for both. Set this when the primary kubeconfig auths via the kcp front-proxy and shards reject its cert.")
 	cmd.Flags().StringVar(&opts.IDPIssuerURL, "idp-issuer-url", "", "OIDC identity provider issuer URL")
 	cmd.Flags().StringVar(&opts.IDPClientID, "idp-client-id", "kedge", "OIDC identity provider client ID")
 	cmd.Flags().StringVar(&opts.IDPCAFile, "idp-ca-file", "", "PEM-encoded CA bundle for verifying the IdP's TLS cert (required for self-signed/private CAs)")

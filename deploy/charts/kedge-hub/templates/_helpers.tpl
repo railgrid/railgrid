@@ -102,3 +102,23 @@ KCP kubeconfig Secret name (for external kcp mode).
 {{- printf "%s-kcp-kubeconfig" (include "kedge-hub.fullname" .) }}
 {{- end }}
 {{- end }}
+
+{{/*
+Whether a separate shard kubeconfig is configured for APIExport vws.
+*/}}
+{{- define "kedge-hub.kcpShardKubeconfigEnabled" -}}
+{{- if and .Values.kcp.external.enabled (or .Values.kcp.external.shard.existingSecret .Values.kcp.external.shard.kubeconfig) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+KCP shard kubeconfig Secret name (for APIExport shard-direct auth).
+*/}}
+{{- define "kedge-hub.kcpShardKubeconfigSecretName" -}}
+{{- if .Values.kcp.external.shard.existingSecret }}
+{{- .Values.kcp.external.shard.existingSecret }}
+{{- else }}
+{{- printf "%s-kcp-shard-kubeconfig" (include "kedge-hub.fullname" .) }}
+{{- end }}
+{{- end }}
