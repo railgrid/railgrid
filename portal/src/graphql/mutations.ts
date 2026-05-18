@@ -1,7 +1,7 @@
 // --- Edge mutations (cluster-scoped) ---
 
 export const CREATE_EDGE = `
-  mutation CreateEdge($object: EdgeInput!) {
+  mutation CreateEdge($object: KedgeFarosShV1alpha1Edge_Input!) {
     kedge_faros_sh {
       v1alpha1 {
         createEdge(object: $object) {
@@ -19,7 +19,7 @@ export const CREATE_EDGE = `
 `
 
 export const UPDATE_EDGE = `
-  mutation UpdateEdge($name: String!, $object: EdgeInput!) {
+  mutation UpdateEdge($name: String!, $object: KedgeFarosShV1alpha1Edge_Input!) {
     kedge_faros_sh {
       v1alpha1 {
         updateEdge(name: $name, object: $object) {
@@ -46,7 +46,7 @@ export const DELETE_EDGE = `
 // --- VirtualWorkload mutations (namespace-scoped) ---
 
 export const CREATE_VIRTUAL_WORKLOAD = `
-  mutation CreateVirtualWorkload($namespace: String!, $object: VirtualWorkloadInput!) {
+  mutation CreateVirtualWorkload($namespace: String!, $object: KedgeFarosShV1alpha1VirtualWorkload_Input!) {
     kedge_faros_sh {
       v1alpha1 {
         createVirtualWorkload(namespace: $namespace, object: $object) {
@@ -62,7 +62,7 @@ export const CREATE_VIRTUAL_WORKLOAD = `
 `
 
 export const UPDATE_VIRTUAL_WORKLOAD = `
-  mutation UpdateVirtualWorkload($name: String!, $namespace: String!, $object: VirtualWorkloadInput!) {
+  mutation UpdateVirtualWorkload($name: String!, $namespace: String!, $object: KedgeFarosShV1alpha1VirtualWorkload_Input!) {
     kedge_faros_sh {
       v1alpha1 {
         updateVirtualWorkload(name: $name, namespace: $namespace, object: $object) {
@@ -92,7 +92,7 @@ export const DELETE_VIRTUAL_WORKLOAD = `
 // --- KubernetesMCP mutations (cluster-scoped) ---
 
 export const CREATE_MCP = `
-  mutation CreateMCP($object: KubernetesMCPInput!) {
+  mutation CreateMCP($object: KedgeFarosShV1alpha1KubernetesMCP_Input!) {
     kedge_faros_sh {
       v1alpha1 {
         createKubernetesMCP(object: $object) {
@@ -107,7 +107,7 @@ export const CREATE_MCP = `
 `
 
 export const UPDATE_MCP = `
-  mutation UpdateMCP($name: String!, $object: KubernetesMCPInput!) {
+  mutation UpdateMCP($name: String!, $object: KedgeFarosShV1alpha1KubernetesMCP_Input!) {
     kedge_faros_sh {
       v1alpha1 {
         updateKubernetesMCP(name: $name, object: $object) {

@@ -347,7 +347,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.opts.EmbeddedGraphQL && kcpConfig != nil {
 		g, gctx := errgroup.WithContext(ctx)
 		graphqlGroup = g
-		if err := startEmbeddedGraphQL(gctx, g, s.opts, kcpConfig, router); err != nil {
+		if err := startEmbeddedGraphQL(gctx, g, s.opts, kcpShardConfig, router); err != nil {
 			return fmt.Errorf("starting embedded GraphQL: %w", err)
 		}
 		logger.Info("Embedded GraphQL enabled")
