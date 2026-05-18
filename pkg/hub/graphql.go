@@ -30,6 +30,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/klog/v2"
 
+	gatewayv1alpha1 "github.com/platform-mesh/kubernetes-graphql-gateway/apis/v1alpha1"
 	gatewaygw "github.com/platform-mesh/kubernetes-graphql-gateway/gateway/gateway"
 	"github.com/platform-mesh/kubernetes-graphql-gateway/gateway/gateway/authn"
 	gatewayconfig "github.com/platform-mesh/kubernetes-graphql-gateway/gateway/gateway/config"
@@ -90,6 +91,13 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 		cleanup()
 		return fmt.Errorf("completing listener options: %w", err)
 	}
+	// The kcp provider's Complete() installs a ClusterURLResolverFunc that
+	// rewrites the APIExport VW URL emitted by the multicluster provider to a
+	// workspace URL (<shard>/clusters/<id>). Only the VW URL surfaces the bound
+	// CRD schemas in OpenAPI v3, so use identity here to keep schema discovery
+	// pointed at the VW. ClusterMetadataFunc stays untouched so gateway
+	// resolvers continue to hit the consumer workspace where the data lives.
+	listenerCompleted.ClusterURLResolverFunc = gatewayv1alpha1.DefaultClusterURLResolverFunc
 	if err := listenerCompleted.Validate(); err != nil {
 		cleanup()
 		return fmt.Errorf("validating listener options: %w", err)
