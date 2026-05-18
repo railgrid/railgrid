@@ -138,6 +138,9 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 			clusterName, _, _ := strings.Cut(rest, "/")
 
 			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if token == "" {
+				token = r.URL.Query().Get("token")
+			}
 
 			rctx := utilscontext.SetToken(r.Context(), token)
 			rctx = utilscontext.SetCluster(rctx, clusterName)
