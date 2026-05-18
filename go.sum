@@ -303,10 +303,6 @@ github.com/kcp-dev/client-go v0.28.1-0.20260511140521-487de9552c40 h1:ptDzRsZJ3Y
 github.com/kcp-dev/client-go v0.28.1-0.20260511140521-487de9552c40/go.mod h1:SVLehuEWP57f8F4rKUn8hJXCFXJFtER4va77pY+x2m8=
 github.com/kcp-dev/embeddedetcd v1.1.1-0.20260402110232-2cc5c5cce35e h1:nOcf6Id7wozcS2pwoNNmuKqIozAAn/K+0wu3z7xGxE0=
 github.com/kcp-dev/embeddedetcd v1.1.1-0.20260402110232-2cc5c5cce35e/go.mod h1:bv5D/GGLuILI1Y5tZzbBvzOjkdixKS9lM+bbN1vWZTE=
-github.com/kcp-dev/kcp v0.31.1-0.20260515065710-c59a62d43e19 h1:W+FyoLnQGH0hxpn+5SlPD+4gV+B0Eo80vW1pwdW8gU8=
-github.com/kcp-dev/kcp v0.31.1-0.20260515065710-c59a62d43e19/go.mod h1:ycza5hpuibpv1jEq7oW/bVOSpves43mTTQkJZtCsQ80=
-github.com/kcp-dev/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260515065710-c59a62d43e19 h1:dppHnaLMrIKhq5h7UN6sdq3CrocA6kvx0+/5vDDUtvI=
-github.com/kcp-dev/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260515065710-c59a62d43e19/go.mod h1:ofkPoylH0omwqdnCLuixQo750J+HoE/N4KtQXFcRRU8=
 github.com/kcp-dev/kubernetes v1.37.0-alpha.0.0.20260513103013-2d7bf6b3c556 h1:gHufBA5fzKyabXrxOBd3Zj4DemfdmYtvXJStX9bIsXA=
 github.com/kcp-dev/kubernetes v1.37.0-alpha.0.0.20260513103013-2d7bf6b3c556/go.mod h1:AFa3aeDT60XGwma3vwcqDzXJNx8csQ9u9r+/NmK7aHE=
 github.com/kcp-dev/kubernetes/staging/src/k8s.io/api v0.0.0-20260513103013-2d7bf6b3c556 h1:UHcfhrA0gtY+yfue5MB7vJBUalVVZtYHtzHZbxBY3e4=
@@ -414,6 +410,10 @@ github.com/mitchellh/go-wordwrap v1.0.1 h1:TLuKupo69TCn6TQSyGxwI1EblZZEsQ0vMlAFQ
 github.com/mitchellh/go-wordwrap v1.0.1/go.mod h1:R62XHJLzvMFRBbcrT7m7WgmE1eOyTSsCt+hzestvNj0=
 github.com/mitchellh/reflectwalk v1.0.2 h1:G2LzWKi524PWgd3mLHV8Y5k7s6XUvT0Gef6zxSIeXaQ=
 github.com/mitchellh/reflectwalk v1.0.2/go.mod h1:mSTlrgnPZtwu0c4WaC2kGObEpuNDbx0jmZXqmk4esnw=
+github.com/mjudeikis/kcp v0.0.0-20260518141734-ea6103f11755 h1:+ULDQccFjbIVjgkmMJzW8QRY/nSv4PH6Reck3H0UjWc=
+github.com/mjudeikis/kcp v0.0.0-20260518141734-ea6103f11755/go.mod h1:ycza5hpuibpv1jEq7oW/bVOSpves43mTTQkJZtCsQ80=
+github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260518141734-ea6103f11755 h1:IlFrocwVEwRmEuWTbo68p9GAU0yrdL9CpzYP7Y/uStI=
+github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260518141734-ea6103f11755/go.mod h1:ofkPoylH0omwqdnCLuixQo750J+HoE/N4KtQXFcRRU8=
 github.com/moby/docker-image-spec v1.3.1 h1:jMKff3w6PgbfSa69GfNg+zN/XLhfXJGnEx3Nl2EsFP0=
 github.com/moby/docker-image-spec v1.3.1/go.mod h1:eKmb5VW8vQEh/BAr2yvVNvuiJuY6UIocYsFu/DxxRpo=
 github.com/moby/spdystream v0.5.1 h1:9sNYeYZUcci9R6/w7KDaFWEWeV4LStVG78Mpyq/Zm/Y=

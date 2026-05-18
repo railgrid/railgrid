@@ -41,11 +41,11 @@ require (
 )
 
 replace (
-	github.com/kcp-dev/kcp => github.com/kcp-dev/kcp v0.31.1-0.20260515065710-c59a62d43e19
+	github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20260518141734-ea6103f11755
 	github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.7.1-0.20260515112510-8f4137891edf
 	github.com/kcp-dev/sdk => github.com/kcp-dev/sdk v0.28.1-0.20260504075209-315ebd35273b
 	// TODO: drop this once virtual-workspace-framework is synced from kcp staging.
-	github.com/kcp-dev/virtual-workspace-framework => github.com/kcp-dev/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260515065710-c59a62d43e19
+	github.com/kcp-dev/virtual-workspace-framework => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260518141734-ea6103f11755
 )
 
 // KCP kubernetes forks - required for cluster-aware API machinery
