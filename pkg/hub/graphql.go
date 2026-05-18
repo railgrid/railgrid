@@ -20,7 +20,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/gorilla/mux"
@@ -44,11 +46,17 @@ import (
 // registers the GraphQL handler on the provided router under
 // /graphql/clusters/{clusterName}, and launches both goroutines into g.
 //
+// kcpFrontProxyConfig is the front-proxy-fronted kcp config; gateway resolver
+// clients use this host so per-request workspace traffic is routed to the
+// correct shard. kcpShardConfig is the shard-direct config; the listener uses
+// it because the APIExport endpoint slice advertises shard-direct VW URLs that
+// only succeed when reached from a shard-direct kubeconfig.
+//
 // The listener watches the kcp APIExportEndpointSlice and pushes OpenAPI schemas
 // over an in-process gRPC connection. The gateway subscribes to those schemas
 // and serves GraphQL. No separate process or port is required; all requests
 // arrive via the hub's own mux.
-func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options, kcpConfig *rest.Config, router *mux.Router) error {
+func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options, kcpFrontProxyConfig, kcpShardConfig *rest.Config, router *mux.Router) error {
 	logger := klog.FromContext(ctx)
 
 	grpcAddr := opts.GraphQLGRPCAddr
@@ -60,7 +68,9 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	// credentials) so the listener and kcp-provider can locate the server.
 	// Per-request authentication uses the user's own bearer token injected via
 	// utilscontext.SetToken; admin credentials are intentionally excluded.
-	kubeconfigPath, cleanup, err := writeKubeconfigTemp(kcpConfig)
+	// The listener side targets shard-direct URLs so the APIExportEndpointSlice
+	// endpoints (which advertise shard-direct VW hosts) are reachable.
+	kubeconfigPath, cleanup, err := writeKubeconfigTemp(kcpShardConfig)
 	if err != nil {
 		return fmt.Errorf("writing temp kubeconfig for GraphQL listener: %w", err)
 	}
@@ -95,9 +105,30 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	// rewrites the APIExport VW URL emitted by the multicluster provider to a
 	// workspace URL (<shard>/clusters/<id>). Only the VW URL surfaces the bound
 	// CRD schemas in OpenAPI v3, so use identity here to keep schema discovery
-	// pointed at the VW. ClusterMetadataFunc stays untouched so gateway
-	// resolvers continue to hit the consumer workspace where the data lives.
+	// pointed at the VW.
 	listenerCompleted.ClusterURLResolverFunc = gatewayv1alpha1.DefaultClusterURLResolverFunc
+
+	// The kcp provider also defaults ClusterMetadataFunc to the shard kubeconfig
+	// host (which may be a different shard than the one hosting the workspace).
+	// In a multi-shard topology that yields empty discovery responses for the
+	// cross-shard workspaces — the gateway resolver then trips
+	// `no matches for kind` even though the schema is correct. Route gateway
+	// runtime traffic through the front-proxy so kcp picks the right shard per
+	// workspace.
+	frontProxyHost := kcpFrontProxyConfig.Host
+	listenerCompleted.ClusterMetadataFunc = func(clusterName string) (*gatewayv1alpha1.ClusterMetadata, error) {
+		metadata, err := gatewayv1alpha1.BuildClusterMetadataFromConfig(kcpFrontProxyConfig)
+		if err != nil {
+			return nil, fmt.Errorf("building front-proxy cluster metadata: %w", err)
+		}
+		parsed, err := url.Parse(frontProxyHost)
+		if err != nil {
+			return nil, fmt.Errorf("parsing front-proxy host %q: %w", frontProxyHost, err)
+		}
+		parsed.Path = path.Join("/clusters", clusterName)
+		metadata.Host = parsed.String()
+		return metadata, nil
+	}
 	if err := listenerCompleted.Validate(); err != nil {
 		cleanup()
 		return fmt.Errorf("validating listener options: %w", err)
