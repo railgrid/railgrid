@@ -5,6 +5,7 @@ import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
+import { useEscapeKey } from '@/composables/useEscapeKey'
 import { useAuthStore } from '@/stores/auth'
 import { GET_MCP_SERVER, type GetMCPResult } from '@/graphql/queries/mcp'
 import { UPDATE_MCP, DELETE_MCP } from '@/graphql/mutations'
@@ -33,6 +34,10 @@ const editMatchLabels = ref('')
 const saving = ref(false)
 const saveError = ref<string | null>(null)
 const copiedField = ref<string | null>(null)
+
+useEscapeKey(() => {
+  if (!saving.value) editing.value = false
+}, editing)
 
 const readyCond = computed(() => mcp.value?.status?.conditions?.find((c) => c.type === 'Ready'))
 

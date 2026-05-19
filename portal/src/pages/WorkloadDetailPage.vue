@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
+import { useEscapeKey } from '@/composables/useEscapeKey'
 import {
   GET_VIRTUAL_WORKLOAD,
   type GetVirtualWorkloadResult,
@@ -80,6 +81,10 @@ async function handleScaleSubmit() {
 const showDeleteConfirm = ref(false)
 const deleteDeleting = ref(false)
 const deleteErr = ref<string | null>(null)
+
+useEscapeKey(() => {
+  if (!deleteDeleting.value) showDeleteConfirm.value = false
+}, showDeleteConfirm)
 
 async function handleDelete() {
   deleteDeleting.value = true

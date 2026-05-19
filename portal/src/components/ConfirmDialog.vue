@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { X, AlertTriangle } from 'lucide-vue-next'
+import { useEscapeKey } from '@/composables/useEscapeKey'
 
 defineProps<{
   title: string
@@ -12,6 +13,8 @@ const emit = defineEmits<{
   confirm: []
   cancel: []
 }>()
+
+useEscapeKey(() => emit('cancel'))
 </script>
 
 <template>
@@ -19,7 +22,6 @@ const emit = defineEmits<{
     <div
       class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
       @click.self="emit('cancel')"
-      @keydown.esc="emit('cancel')"
     >
       <div class="w-full max-w-md rounded-2xl border border-border-subtle bg-surface-raised p-6 shadow-2xl">
         <div class="flex items-start justify-between gap-4">

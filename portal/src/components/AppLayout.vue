@@ -5,7 +5,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import TerminalDock from '@/components/TerminalDock.vue'
-import { Hexagon, LayoutDashboard, Server, Layers, Bot, LogOut, Zap, Sun, Moon, Monitor, GripHorizontal, GripVertical, Pin } from 'lucide-vue-next'
+import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
+import { Hexagon, LayoutDashboard, Server, Layers, Bot, LogOut, Zap, Sun, Moon, Monitor, GripHorizontal, GripVertical, Pin, Terminal } from 'lucide-vue-next'
 
 const auth = useAuthStore()
 const theme = useThemeStore()
@@ -60,6 +61,8 @@ function handleLogout() {
   auth.logout()
   router.push('/login')
 }
+
+const showCliModal = ref(false)
 
 // --- Draggable dock with edge-snap (all 4 edges) ---
 type DockMode = 'float' | 'left' | 'right' | 'top' | 'bottom'
@@ -281,6 +284,16 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 
+      <!-- CLI quickstart -->
+      <button
+        class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium text-text-muted transition-all hover:bg-surface-overlay/50 hover:text-text-secondary"
+        title="Install the kedge CLI"
+        @click="showCliModal = true"
+      >
+        <Terminal class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
+        <span>CLI</span>
+      </button>
+
       <!-- Theme toggle -->
       <button
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium text-text-muted transition-all hover:bg-surface-overlay/50 hover:text-text-secondary"
@@ -374,6 +387,14 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
       <span v-if="auth.clusterName" class="px-1 font-mono text-[9px] tracking-wider text-text-muted">
         {{ auth.clusterName }}
       </span>
+      <button
+        class="flex items-center gap-1 rounded-md border border-border-subtle px-1.5 py-1 text-text-muted transition-all hover:border-accent/30 hover:text-accent"
+        title="Install the kedge CLI"
+        @click="showCliModal = true"
+      >
+        <Terminal class="h-3 w-3" :stroke-width="1.75" />
+        <span class="text-[8px] font-semibold uppercase tracking-wider">CLI</span>
+      </button>
       <button
         class="flex items-center gap-1 rounded-md border border-border-subtle px-1.5 py-1 text-text-muted transition-all hover:border-accent/30 hover:text-text-secondary"
         :title="`Theme: ${themeLabel}`"
@@ -513,6 +534,9 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
     <!-- Global SSH terminal dock (persists across route changes) -->
     <TerminalDock />
+
+    <!-- CLI quickstart modal -->
+    <CliQuickstartModal v-if="showCliModal" @close="showCliModal = false" />
   </div>
 </template>
 

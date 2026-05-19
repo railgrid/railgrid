@@ -1,18 +1,39 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import FirstEdgeWizard from '@/components/FirstEdgeWizard.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
 import { LIST_EDGES, type ListEdgesResult } from '@/graphql/queries/edges'
 import { LIST_VIRTUAL_WORKLOADS, type ListVirtualWorkloadsResult } from '@/graphql/queries/workloads'
 import { formatAge } from '@/utils/time'
 import { Server, Wifi, WifiOff, ChevronRight, Activity, Gauge, Layers } from 'lucide-vue-next'
 
-const { data, loading, error } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
+const { data, loading, error, refetch } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
 const { data: workloadsData } = useGraphQLQuery<ListVirtualWorkloadsResult>(LIST_VIRTUAL_WORKLOADS, undefined, 10000)
 
 const edges = computed(() => data.value?.kedge_faros_sh?.v1alpha1?.Edges?.items ?? [])
 const workloads = computed(() => workloadsData.value?.kedge_faros_sh?.v1alpha1?.VirtualWorkloads?.items ?? [])
+
+// Latch the wizard decision on first load. Once the wizard is open, it stays open
+// (even after the new edge appears in LIST_EDGES) until the wizard itself completes.
+const wizardOpen = ref<boolean | null>(null)
+watch(
+  [loading, error, edges],
+  () => {
+    if (wizardOpen.value !== null) return
+    if (loading.value) return
+    if (error.value) return
+    wizardOpen.value = edges.value.length === 0
+  },
+  { immediate: true },
+)
+const showWizard = computed(() => wizardOpen.value === true)
+
+function onWizardConnected() {
+  wizardOpen.value = false
+  refetch()
+}
 
 const stats = computed(() => {
   const items = edges.value
@@ -52,6 +73,10 @@ const workloadStats = computed(() => {
     <div v-else-if="loading && !data" class="mt-20 flex flex-col items-center justify-center">
       <div class="shimmer h-8 w-8 rounded-xl" />
       <div class="shimmer mt-4 h-3 w-40 rounded" />
+    </div>
+
+    <div v-else-if="showWizard" class="py-8">
+      <FirstEdgeWizard @connected="onWizardConnected" />
     </div>
 
     <template v-else>

@@ -6,6 +6,7 @@ import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import WorkloadCreateModal from '@/components/WorkloadCreateModal.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
+import { useEscapeKey } from '@/composables/useEscapeKey'
 import { DELETE_VIRTUAL_WORKLOAD } from '@/graphql/mutations'
 import {
   LIST_VIRTUAL_WORKLOADS,
@@ -27,6 +28,10 @@ const showCreate = ref(false)
 const deleteConfirm = ref<{ name: string; namespace: string } | null>(null)
 const deleting = ref(false)
 const deleteError = ref<string | null>(null)
+
+useEscapeKey(() => {
+  if (!deleting.value) deleteConfirm.value = null
+}, () => deleteConfirm.value !== null)
 
 const {
   data,

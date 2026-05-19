@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import { graphqlMutate } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
+import { useEscapeKey } from '@/composables/useEscapeKey'
 import { CREATE_EDGE } from '@/graphql/mutations'
 import { GET_EDGE } from '@/graphql/queries/edges'
 import { createGraphQLClient } from '@/graphql/client'
@@ -11,6 +12,8 @@ const emit = defineEmits<{
   close: []
   created: []
 }>()
+
+useEscapeKey(() => emit('close'))
 
 const name = ref('')
 const edgeType = ref('kubernetes')

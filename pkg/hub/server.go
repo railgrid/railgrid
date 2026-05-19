@@ -484,13 +484,13 @@ func (s *Server) Run(ctx context.Context) error {
 		}()
 	}
 
-	// Portal: serve Vue.js SPA under /console. Two modes:
-	//   1. --portal-dev-url set → reverse-proxy /console/* to the Vite dev server
+	// Portal: serve Vue.js SPA under /ui. Two modes:
+	//   1. --portal-dev-url set → reverse-proxy /ui/* to the Vite dev server
 	//      (hot reload, no rebuild); takes precedence over embedded dist.
 	//   2. Built with -tags portal_embed → serve embedded portal/dist via the
 	//      SPA handler returned by registerPortalRoutes.
 	// Static asset mux routes are only registered for the embedded mode; in dev
-	// proxy mode the proxy handles everything under /console/.
+	// proxy mode the proxy handles everything under /ui/.
 	var portalSPA http.Handler
 	portalAvailable := false
 	if s.opts.PortalDevURL != "" {
@@ -504,7 +504,7 @@ func (s *Server) Run(ctx context.Context) error {
 				req.URL.Host = devTarget.Host
 				req.Host = devTarget.Host
 				// Forward paths unchanged — Vite is configured with
-				// base=/console/ so it already expects /console/*.
+				// base=/ui/ so it already expects /ui/*.
 			},
 		}
 		portalSPA = devProxy
@@ -515,13 +515,13 @@ func (s *Server) Run(ctx context.Context) error {
 	} else {
 		portalSPA = h
 		portalAvailable = true
-		logger.Info("Portal routes registered at /console/")
+		logger.Info("Portal routes registered at /ui/")
 	}
 
-	// Redirect / → /console/ when portal is available, otherwise it's a 404.
+	// Redirect / → /ui/ when portal is available, otherwise it's a 404.
 	if portalAvailable {
 		router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "/console/", http.StatusFound)
+			http.Redirect(w, r, "/ui/", http.StatusFound)
 		})
 	}
 
@@ -552,8 +552,8 @@ func (s *Server) Run(ctx context.Context) error {
 				return
 			}
 		}
-		// 3. Portal SPA — only for /console/ paths.
-		if portalSPA != nil && (r.URL.Path == "/console" || strings.HasPrefix(r.URL.Path, "/console/")) {
+		// 3. Portal SPA — only for /ui/ paths.
+		if portalSPA != nil && (r.URL.Path == "/ui" || strings.HasPrefix(r.URL.Path, "/ui/")) {
 			portalSPA.ServeHTTP(w, r)
 			return
 		}

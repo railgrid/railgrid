@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { API_PATHS } from '@/lib/constants'
-import { Hexagon, KeyRound, ShieldCheck, Loader2, AlertCircle, Sun, Moon, Monitor } from 'lucide-vue-next'
+import { Hexagon, KeyRound, ShieldCheck, Loader2, AlertCircle, Sun, Moon, Monitor, Plus } from 'lucide-vue-next'
 
 const auth = useAuthStore()
 const theme = useThemeStore()
@@ -17,6 +17,14 @@ const router = useRouter()
 const tokenInput = ref('')
 const loginError = ref<string | null>(null)
 const inputFocused = ref(false)
+const showTokenForm = ref(false)
+
+const oidcAvailable = computed(
+  () => auth.authMode === 'oidc' || auth.authMode === 'both',
+)
+const tokenFormVisible = computed(
+  () => !oidcAvailable.value || showTokenForm.value,
+)
 
 onMounted(async () => {
   if (auth.isAuthenticated) {
@@ -132,15 +140,26 @@ function handleOIDCLogin() {
               Sign in with SSO
             </button>
 
-            <!-- Divider -->
-            <div v-if="auth.authMode === 'both'" class="relative flex items-center">
+            <!-- Divider (only when token form is visible alongside OIDC) -->
+            <div v-if="oidcAvailable && tokenFormVisible" class="relative flex items-center">
               <div class="energy-line h-px flex-grow" />
               <span class="mx-3 text-[9px] font-semibold uppercase tracking-[0.2em] text-text-muted">or</span>
               <div class="energy-line h-px flex-grow" />
             </div>
 
+            <!-- Toggle to reveal bearer token form when OIDC is available -->
+            <button
+              v-if="oidcAvailable && !showTokenForm"
+              type="button"
+              class="group flex w-full items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
+              @click="showTokenForm = true"
+            >
+              <Plus class="h-3 w-3 transition-transform group-hover:rotate-90" :stroke-width="2" />
+              Use bearer token instead
+            </button>
+
             <!-- Token -->
-            <form @submit.prevent="handleTokenLogin" class="space-y-3">
+            <form v-if="tokenFormVisible" @submit.prevent="handleTokenLogin" class="space-y-3">
               <div>
                 <label for="token" class="mb-1 block text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Bearer Token</label>
                 <div

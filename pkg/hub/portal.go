@@ -33,7 +33,7 @@ var portalFS embed.FS
 // PortalPathPrefix is the URL prefix the embedded portal SPA is served under.
 // Kept distinct from /, /api, /apis, and /clusters so there is no ambiguity
 // between UI and API traffic.
-const PortalPathPrefix = "/console"
+const PortalPathPrefix = "/ui"
 
 // registerPortalRoutes serves the Vue.js SPA from the embedded portal/dist
 // directory under PortalPathPrefix. Static assets and favicon are registered
@@ -47,14 +47,14 @@ func registerPortalRoutes(router *mux.Router) (http.Handler, error) {
 	}
 
 	// File server strips the portal prefix before looking up the file in distFS,
-	// so a request for /console/assets/foo.js resolves to assets/foo.js in the
+	// so a request for /ui/assets/foo.js resolves to assets/foo.js in the
 	// embedded FS (Vite builds asset URLs relative to the base — see vite.config.ts).
 	fileServer := http.StripPrefix(PortalPathPrefix, http.FileServer(http.FS(distFS)))
 
-	// Serve static assets under /console/assets/.
+	// Serve static assets under /ui/assets/.
 	router.PathPrefix(PortalPathPrefix + "/assets/").Handler(fileServer)
 
-	// Serve root-level static files (favicon, etc.) under /console/.
+	// Serve root-level static files (favicon, etc.) under /ui/.
 	for _, name := range []string{"favicon.ico", "favicon.svg"} {
 		name := name
 		router.HandleFunc(PortalPathPrefix+"/"+name, func(w http.ResponseWriter, r *http.Request) {
@@ -63,18 +63,18 @@ func registerPortalRoutes(router *mux.Router) (http.Handler, error) {
 		})
 	}
 
-	// Redirect /console → /console/ (trailing slash) so relative asset URLs in
+	// Redirect /ui → /ui/ (trailing slash) so relative asset URLs in
 	// index.html resolve correctly.
 	router.HandleFunc(PortalPathPrefix, func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, PortalPathPrefix+"/", http.StatusMovedPermanently)
 	})
 
-	// SPA catch-all for /console/*: tries to serve the requested file; falls
+	// SPA catch-all for /ui/*: tries to serve the requested file; falls
 	// back to index.html so Vue Router handles client-side routing.
 	// NOT registered on the mux — the caller invokes this only for paths that
 	// already start with PortalPathPrefix.
 	spaHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Translate /console/xyz → xyz for the embedded FS lookup.
+		// Translate /ui/xyz → xyz for the embedded FS lookup.
 		sub := strings.TrimPrefix(r.URL.Path, PortalPathPrefix+"/")
 		if sub == "" {
 			r.URL.Path = PortalPathPrefix + "/"

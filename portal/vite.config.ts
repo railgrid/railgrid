@@ -4,11 +4,11 @@ import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
 
 export default defineConfig(() => ({
-  // Always serve from /console/ so URLs match whether the portal is:
+  // Always serve from /ui/ so URLs match whether the portal is:
   //  - embedded in the hub (production),
   //  - proxied by the hub from the Vite dev server (--portal-dev-url),
-  //  - or accessed directly on the Vite port (http://localhost:3000/console/).
-  base: '/console/',
+  //  - or accessed directly on the Vite port (http://localhost:3000/ui/).
+  base: '/ui/',
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: {

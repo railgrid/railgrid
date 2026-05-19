@@ -61,7 +61,7 @@ type Options struct {
 	GraphQLPlayground              bool   // enable playground UI
 	GraphQLPort                    int    // port for the embedded GraphQL HTTP server; 0 = serve via hub mux only
 
-	// PortalDevURL, when set, reverse-proxies /console/* to this URL (typically
+	// PortalDevURL, when set, reverse-proxies /ui/* to this URL (typically
 	// a Vite dev server, e.g. http://localhost:3000). Takes precedence over the
 	// embedded portal dist (if built with -tags portal_embed).
 	PortalDevURL string

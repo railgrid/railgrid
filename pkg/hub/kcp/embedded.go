@@ -61,8 +61,8 @@ type EmbeddedKCPOptions struct {
 	// configured issuer and run requests as the resulting OIDC identity.
 	//
 	// Defaults are tuned to match the proxy/User CRD identity scheme
-	// (User.Spec.RBACIdentity = "kedge:<sub>", see pkg/server/auth/handler.go):
-	//   UsernameClaim  = "sub"
+	// (User.Spec.RBACIdentity = "kedge:<email>", see pkg/server/auth/handler.go):
+	//   UsernameClaim  = "email"
 	//   UsernamePrefix = "kedge:"
 	//   GroupsClaim    = "groups"
 	//   GroupsPrefix   = "kedge:"
@@ -170,7 +170,7 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 		if e.opts.OIDCUsernameClaim != "" {
 			oidcOpts.UsernameClaim = e.opts.OIDCUsernameClaim
 		} else {
-			oidcOpts.UsernameClaim = "sub"
+			oidcOpts.UsernameClaim = "email"
 		}
 		if e.opts.OIDCUsernamePrefix != "" {
 			oidcOpts.UsernamePrefix = e.opts.OIDCUsernamePrefix

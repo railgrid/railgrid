@@ -65,7 +65,13 @@ go install github.com/faroshq/kedge/cmd/kedge@latest
 
 ### 1. Log in
 
+`--hub-url` defaults to `https://console.faros.sh`, the hosted hub. Pass your own to use a self-hosted hub.
+
 ```bash
+# Hosted hub
+kedge login
+
+# Self-hosted hub
 kedge login --hub-url https://kedge.example.com
 ```
 

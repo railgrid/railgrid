@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { graphqlMutate } from '@/composables/useGraphQL'
+import { useEscapeKey } from '@/composables/useEscapeKey'
 import { CREATE_VIRTUAL_WORKLOAD } from '@/graphql/mutations'
 import { X, Plus, Trash2 } from 'lucide-vue-next'
 
@@ -8,6 +9,8 @@ const emit = defineEmits<{
   close: []
   created: []
 }>()
+
+useEscapeKey(() => emit('close'))
 
 const name = ref('')
 const namespace = ref('default')
