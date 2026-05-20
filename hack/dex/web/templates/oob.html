@@ -1,0 +1,15 @@
+{{ template "header.html" . }}
+
+<div class="theme-panel">
+  <h2 class="theme-heading">Authorization code</h2>
+  <p class="dex-subtitle">Paste this into your application to finish signing in.</p>
+  <div class="code-section">
+    <div class="theme-form-label">
+      <label for="auth-code">Code</label>
+    </div>
+    <input type="text" id="auth-code" class="theme-form-input" value="{{ .Code }}" readonly onclick="this.select();" />
+    <p class="dex-footer-text">Click the code to select it.</p>
+  </div>
+</div>
+
+{{ template "footer.html" . }}

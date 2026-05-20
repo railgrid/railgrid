@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -417,6 +417,15 @@ docker-push-hub: docker-build-hub ## Build and push kedge-hub container image
 
 docker-push-agent: docker-build-agent ## Build and push kedge-agent container image
 	docker push ghcr.io/faroshq/kedge-agent:$(VERSION)
+
+docker-build-dex: ## Build kedge-dex container image (custom dex with branded web overlay)
+	cd hack/dex && docker build \
+		--platform $(DOCKER_PLATFORM) \
+		-f Dockerfile \
+		-t ghcr.io/faroshq/kedge-dex:$(VERSION) .
+
+docker-push-dex: docker-build-dex ## Build and push kedge-dex container image
+	docker push ghcr.io/faroshq/kedge-dex:$(VERSION)
 
 docker-push: docker-push-hub docker-push-agent ## Build and push all container images
 

@@ -1,0 +1,16 @@
+{{ template "header.html" . }}
+
+<div class="theme-panel">
+  <h2 class="theme-heading">Device authorized</h2>
+  <p class="dex-subtitle">You're signed in.</p>
+  <div class="success-message">
+    <p class="dex-subtle-text">Return to {{ .ClientName }} to continue.</p>
+  </div>
+  <div class="theme-form-row">
+    <button class="dex-btn theme-btn--success" onclick="window.close();">
+      <span class="dex-btn-text">Close window</span>
+    </button>
+  </div>
+</div>
+
+{{ template "footer.html" . }}

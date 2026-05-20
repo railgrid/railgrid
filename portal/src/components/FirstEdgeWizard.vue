@@ -77,16 +77,15 @@ function buildCLIJoinSnippet(token: string) {
   --token ${token}`
 }
 
-const helmSnippet = computed(() =>
-  joinToken.value ? buildHelmSnippet(joinToken.value) : buildHelmSnippet('••••••••••••••••'),
-)
-const cliJoinSnippet = computed(() =>
-  joinToken.value ? buildCLIJoinSnippet(joinToken.value) : buildCLIJoinSnippet('••••••••••••••••'),
-)
+const maskedToken = '••••••••••••••••'
 
-async function copyText(text: string, field: string) {
+const helmSnippet = computed(() => buildHelmSnippet(maskedToken))
+const cliJoinSnippet = computed(() => buildCLIJoinSnippet(maskedToken))
+
+async function copySnippet(builder: (token: string) => string, field: string) {
+  if (!joinToken.value) return
   try {
-    await navigator.clipboard.writeText(text)
+    await navigator.clipboard.writeText(builder(joinToken.value))
     copiedField.value = field
     setTimeout(() => (copiedField.value = null), 2000)
   } catch {}
@@ -369,7 +368,7 @@ function finish() {
                   type="button"
                   class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent disabled:opacity-40"
                   :disabled="!joinToken"
-                  @click="copyText(helmSnippet, 'helm')"
+                  @click="copySnippet(buildHelmSnippet, 'helm')"
                 >
                   <component :is="copiedField === 'helm' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
                   {{ copiedField === 'helm' ? 'Copied' : 'Copy' }}
@@ -388,7 +387,7 @@ function finish() {
                   type="button"
                   class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent disabled:opacity-40"
                   :disabled="!joinToken"
-                  @click="copyText(cliJoinSnippet, 'cli')"
+                  @click="copySnippet(buildCLIJoinSnippet, 'cli')"
                 >
                   <component :is="copiedField === 'cli' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
                   {{ copiedField === 'cli' ? 'Copied' : 'Copy' }}

@@ -1,0 +1,27 @@
+{{ template "header.html" . }}
+
+<div class="theme-panel">
+  <h2 class="theme-heading">Authorize device</h2>
+  <p class="dex-subtitle">Enter the code shown on your device.</p>
+  <form method="post" action="{{ .PostURL }}">
+    <div class="theme-form-row">
+      <div class="theme-form-label">
+        <label for="user_code">Device code</label>
+      </div>
+      {{ if( .UserCode  )}}
+      <input tabindex="2" required id="user_code" name="user_code" type="text" class="theme-form-input" autocomplete="off" value="{{.UserCode}}" {{ if .Invalid }} autofocus {{ end }}/>
+      {{ else }}
+      <input tabindex="2" required id="user_code" name="user_code" type="text" class="theme-form-input" placeholder="XXXX-XXXX" autocomplete="off"  {{ if .Invalid }} autofocus {{ end }}/>
+      {{ end }}
+    </div>
+
+    {{ if .Invalid }}
+    <div id="login-error" class="dex-error-box">
+      That code is invalid or expired — check the value on your device and try again.
+    </div>
+    {{ end }}
+    <button tabindex="3" id="submit-login" type="submit" class="dex-btn theme-btn--primary">Continue</button>
+  </form>
+</div>
+
+{{ template "footer.html" . }}

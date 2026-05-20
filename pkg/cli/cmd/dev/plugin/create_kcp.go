@@ -725,6 +725,7 @@ func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restCo
 			"listenAddr":       fmt.Sprintf(":%d", o.HubHTTPSPort),
 			"devMode":          true,
 			"staticAuthTokens": devStaticTokens,
+			"embeddedGraphQL":  true,
 		},
 		"kcp": map[string]any{
 			"embedded": map[string]any{

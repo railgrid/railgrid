@@ -51,12 +51,15 @@ make build-kedge
 ### 2. Create the development environment
 
 ```bash
-./bin/kedge dev create --chart-path deploy/charts/kedge-hub
+./bin/kedge dev init --worker-count 1 --chart-path deploy/charts/kedge-hub
 ```
 
 This creates two kind clusters:
 - `kedge-hub` — Hub cluster with kedge-hub installed
-- `kedge-agent` — Agent cluster (empty, ready for agent deployment)
+- `kedge-agent` — Worker cluster (empty, ready for agent deployment)
+
+The default `--worker-count` is `0` (hub only). Use `--worker-count N` to
+spin up additional worker kind clusters when developing agents.
 
 ### 3. Follow the printed instructions
 
@@ -132,12 +135,12 @@ The site should show `tunnelConnected: true` and have a recent heartbeat.
 
 ## Command Reference
 
-### kedge dev create
+### kedge dev init
 
-Creates the development environment.
+Initializes a local kedge environment.
 
 ```bash
-kedge dev create [flags]
+kedge dev init [flags]
 ```
 
 **Flags:**
@@ -145,36 +148,53 @@ kedge dev create [flags]
 | Flag | Default | Description |
 |:-----|:--------|:------------|
 | `--hub-cluster-name` | `kedge-hub` | Name of the hub kind cluster |
-| `--agent-cluster-name` | `kedge-agent` | Name of the agent kind cluster |
-| `--chart-path` | `deploy/charts/kedge-hub` | Path to hub Helm chart (local or OCI) |
-| `--chart-version` | `0.1.0` | Helm chart version (for OCI charts) |
+| `--agent-cluster-name` | `kedge-agent` | Name of the worker (agent) kind cluster(s) |
+| `--worker-count` | `0` | Number of worker kind clusters (0 = hub only) |
+| `--chart-path` | `oci://ghcr.io/faroshq/charts/kedge-hub` | Hub Helm chart (local path or OCI) |
+| `--chart-version` | (auto) | Helm chart version (for OCI charts) |
 | `--image` | `ghcr.io/faroshq/kedge-hub` | Hub container image |
 | `--tag` | (auto) | Hub image tag |
 | `--kind-network` | `kedge-dev` | Docker network for kind clusters |
 | `--wait-for-ready-timeout` | `2m` | Timeout waiting for cluster readiness |
 
+`--agent-count` is accepted as a deprecated alias for `--worker-count`.
+
 **Examples:**
 
 ```bash
-# Use local charts (development)
-kedge dev create --chart-path deploy/charts/kedge-hub
+# Hub-only local environment (end users)
+kedge dev init
 
-# Use published OCI chart
-kedge dev create --chart-path oci://ghcr.io/faroshq/charts/kedge-hub --chart-version 0.1.0
+# Hub + 1 worker (typical developer setup)
+kedge dev init --worker-count 1 --chart-path deploy/charts/kedge-hub
 
-# Custom cluster names
-kedge dev create --hub-cluster-name my-hub --agent-cluster-name my-agent
+# Hub + 3 workers
+kedge dev init --worker-count 3
+
+# Published OCI chart, pinned version
+kedge dev init --chart-path oci://ghcr.io/faroshq/charts/kedge-hub --chart-version 0.1.0
+```
+
+### kedge dev update
+
+Upgrades the kedge-hub Helm release on the existing hub kind cluster (image,
+tag, chart version, …). Kind clusters themselves are not modified.
+
+```bash
+kedge dev update [flags]
 ```
 
 ### kedge dev delete
 
-Deletes the development environment.
+Deletes the local kedge environment.
 
 ```bash
 kedge dev delete [flags]
 ```
 
-This removes both kind clusters and cleans up kubeconfig files.
+This removes the hub kind cluster, any worker kind clusters that were
+created (pass the same `--worker-count` you used at init time), and cleans
+up kubeconfig files.
 
 ---
 
@@ -235,7 +255,7 @@ Error: failed to locate OCI chart: ghcr.io/faroshq/charts/kedge-hub:0.1.0: not f
 
 Use the local chart path instead:
 ```bash
-kedge dev create --chart-path deploy/charts/kedge-hub
+kedge dev init --chart-path deploy/charts/kedge-hub
 ```
 
 ### Agent can't connect to hub
@@ -275,7 +295,7 @@ If the clusters already exist, the command will skip creation and reuse them. To
 
 ```bash
 kedge dev delete
-kedge dev create --chart-path deploy/charts/kedge-hub
+kedge dev init --chart-path deploy/charts/kedge-hub
 ```
 
 ---

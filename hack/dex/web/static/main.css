@@ -1,0 +1,408 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   kedge — auth UI styling
+   Matches the marketing site (faros.sh) and the console portal:
+   dark-first surface, violet accent (#7c5bf5), emerald flow (#34d399).
+   Class names preserved so the upstream dex templates keep working.
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --kedge-violet: #7c5bf5;
+  --kedge-violet-hover: #9b85f7;
+  --kedge-violet-soft: rgba(124, 91, 245, 0.12);
+  --kedge-violet-border: rgba(124, 91, 245, 0.32);
+  --kedge-emerald: #34d399;
+  --kedge-danger: #f87171;
+  --kedge-text: #eeeef3;
+  --kedge-text-muted: #9494a8;
+  --kedge-text-dim: #6e6e84;
+  --kedge-surface: #06060b;
+  --kedge-surface-raised: #0d0d14;
+  --kedge-surface-overlay: rgba(255, 255, 255, 0.04);
+  --kedge-border: rgba(255, 255, 255, 0.06);
+  --kedge-border-strong: rgba(255, 255, 255, 0.1);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(900px 420px at 50% -80px, rgba(124, 91, 245, 0.20), transparent 60%),
+    radial-gradient(700px 380px at 90% 110%, rgba(52, 211, 153, 0.10), transparent 60%),
+    var(--kedge-surface);
+  background-attachment: fixed;
+  color: var(--kedge-text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-feature-settings: 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+/* Subtle dot grid behind the card */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 28px 28px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Card wrapper */
+.dex-container {
+  position: relative;
+  z-index: 1;
+  margin: 80px auto 32px;
+  max-width: 420px;
+  min-width: 320px;
+  padding: 0;
+  text-align: center;
+  color: var(--kedge-text);
+}
+
+/* Wordmark above the card */
+.dex-container::before {
+  content: 'KEDGE';
+  display: block;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.32em;
+  background: linear-gradient(90deg, var(--kedge-violet) 0%, #b2a3fb 50%, var(--kedge-emerald) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 18px;
+}
+
+/* The panel each template wraps in */
+.theme-panel,
+.dex-container {
+  /* nothing here — actual panel surface is on .theme-panel below */
+}
+
+.theme-panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, transparent 100%), var(--kedge-surface-raised);
+  border: 1px solid var(--kedge-border);
+  border-radius: 16px;
+  padding: 36px 32px 30px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 24px 60px -20px rgba(0, 0, 0, 0.6),
+    0 0 0 1px var(--kedge-border) inset;
+  backdrop-filter: blur(8px);
+}
+
+/* Heading + subtitle */
+.theme-heading {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--kedge-text);
+  margin: 0 0 6px;
+}
+
+.dex-subtitle {
+  color: var(--kedge-text-muted);
+  font-size: 13px;
+  margin: 0 0 24px;
+  line-height: 1.5;
+}
+
+.dex-subtle-text {
+  color: var(--kedge-text-muted);
+  font-size: 12px;
+}
+
+.dex-separator {
+  color: var(--kedge-text-dim);
+}
+
+/* Provider button (full-width, icon + label) */
+.dex-btn {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid var(--kedge-border-strong);
+  background: var(--kedge-surface-overlay);
+  color: var(--kedge-text);
+  text-decoration: none;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.dex-btn:hover {
+  background: rgba(124, 91, 245, 0.08);
+  border-color: var(--kedge-violet-border);
+}
+
+.dex-btn:focus-visible {
+  outline: none;
+  border-color: var(--kedge-violet);
+  box-shadow: 0 0 0 3px rgba(124, 91, 245, 0.25);
+}
+
+.dex-btn:active {
+  transform: translateY(0.5px);
+}
+
+.dex-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Icon square inside the provider button */
+.dex-btn-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 20px;
+  border-right: 1px solid var(--kedge-border);
+  border-radius: 9px 0 0 9px;
+}
+
+.dex-btn-icon--google        { background-color: #ffffff;             background-image: url(../static/img/google-icon.svg); }
+.dex-btn-icon--local         { background-color: rgba(124,91,245,0.18); background-image: url(../static/img/email-icon.svg); }
+.dex-btn-icon--gitea         { background-color: #f5f5f5;             background-image: url(../static/img/gitea-icon.svg); }
+.dex-btn-icon--github        { background-color: #f5f5f5;             background-image: url(../static/img/github-icon.svg); }
+.dex-btn-icon--gitlab        { background-color: #f5f5f5;             background-image: url(../static/img/gitlab-icon.svg); background-size: contain; }
+.dex-btn-icon--keystone      { background-color: #f5f5f5;             background-image: url(../static/img/keystone-icon.svg); background-size: contain; }
+.dex-btn-icon--oidc          { background-color: rgba(255,255,255,0.94); background-image: url(../static/img/oidc-icon.svg); background-size: contain; }
+.dex-btn-icon--bitbucket-cloud { background-color: #205081;           background-image: url(../static/img/bitbucket-icon.svg); }
+.dex-btn-icon--atlassian-crowd { background-color: #cfdcea;           background-image: url(../static/img/atlassian-crowd-icon.svg); }
+.dex-btn-icon--ldap          { background-color: rgba(124,91,245,0.18); background-image: url(../static/img/ldap-icon.svg); }
+.dex-btn-icon--saml          { background-color: rgba(124,91,245,0.18); background-image: url(../static/img/saml-icon.svg); }
+.dex-btn-icon--linkedin      {                                         background-image: url(../static/img/linkedin-icon.svg); background-size: contain; }
+.dex-btn-icon--microsoft     {                                         background-image: url(../static/img/microsoft-icon.svg); }
+
+.dex-btn-text {
+  flex: 1;
+  padding: 0 16px;
+  line-height: 44px;
+  font-weight: 500;
+  text-align: center;
+  letter-spacing: -0.005em;
+}
+
+/* Primary action (violet) */
+.theme-btn--primary {
+  background: var(--kedge-violet);
+  border: 1px solid var(--kedge-violet);
+  color: #ffffff;
+  width: 100%;
+  height: 44px;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.theme-btn--primary:hover { background: var(--kedge-violet-hover); border-color: var(--kedge-violet-hover); box-shadow: 0 8px 24px -8px rgba(124,91,245,0.55); }
+.theme-btn--primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(124, 91, 245, 0.35); }
+.theme-btn--primary:active { transform: translateY(0.5px); }
+.theme-btn--primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Success / approval — emerald accent */
+.theme-btn--success {
+  background: rgba(52, 211, 153, 0.14);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  color: #6ee7b7;
+  width: 100%;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.theme-btn--success:hover { background: rgba(52, 211, 153, 0.22); border-color: rgba(52, 211, 153, 0.65); color: #d1fae5; }
+
+/* Provider / secondary button styling on light theme — re-targeted in theme dir */
+.theme-btn-provider {
+  background: var(--kedge-surface-overlay);
+  color: var(--kedge-text);
+  border: 1px solid var(--kedge-border-strong);
+}
+.theme-btn-provider:hover {
+  background: rgba(124, 91, 245, 0.08);
+  border-color: var(--kedge-violet-border);
+}
+
+/* Form rows + inputs */
+.theme-form-row {
+  display: block;
+  margin: 12px 0;
+  text-align: left;
+}
+
+.theme-form-label {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--kedge-text-muted);
+}
+
+.theme-form-input {
+  display: block;
+  width: 100%;
+  height: 42px;
+  padding: 10px 12px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--kedge-text);
+  background: var(--kedge-surface);
+  border: 1px solid var(--kedge-border-strong);
+  border-radius: 10px;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.theme-form-input::placeholder {
+  color: rgba(110, 110, 132, 0.7);
+}
+
+.theme-form-input:focus,
+.theme-form-input:active {
+  outline: none;
+  border-color: var(--kedge-violet);
+  box-shadow: 0 0 0 3px rgba(124, 91, 245, 0.20);
+  background: #08080f;
+}
+
+/* Error box */
+.dex-error-box {
+  margin: 16px 0 4px;
+  padding: 10px 14px;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.30);
+  color: #fecaca;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 10px;
+  text-align: left;
+}
+
+/* Permission list (approval screen) */
+.permissions-section {
+  margin: 18px 0 8px;
+  padding: 14px 16px;
+  background: var(--kedge-surface-overlay);
+  border: 1px solid var(--kedge-border);
+  border-radius: 12px;
+  text-align: left;
+}
+
+.dex-list {
+  display: block;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--kedge-text-muted);
+  text-align: left;
+}
+
+.dex-list li {
+  position: relative;
+  padding-left: 14px;
+  margin: 4px 0;
+}
+
+.dex-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--kedge-violet);
+  opacity: 0.7;
+}
+
+/* OOB / device-code section */
+.code-section {
+  margin: 18px 0 4px;
+  padding: 14px 16px;
+  background: var(--kedge-surface-overlay);
+  border: 1px solid var(--kedge-border);
+  border-radius: 12px;
+  text-align: left;
+}
+
+.code-section input {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  background: var(--kedge-surface);
+  border: 1px dashed var(--kedge-border-strong);
+  cursor: pointer;
+  text-align: center;
+  letter-spacing: 0.08em;
+}
+
+.code-section input:focus,
+.code-section input:hover {
+  border-color: var(--kedge-violet);
+  background: #08080f;
+}
+
+/* Success block */
+.success-message {
+  margin: 18px 0;
+  padding: 14px 16px;
+  background: rgba(52, 211, 153, 0.06);
+  border: 1px solid rgba(52, 211, 153, 0.25);
+  border-radius: 12px;
+}
+
+.success-message p { margin: 0; color: #d1fae5; font-size: 12px; }
+
+/* Action button stack on approval */
+.action-buttons { margin-top: 20px; }
+.action-buttons .theme-form-row { margin: 8px 0; }
+
+.login-providers { margin: 8px 0; }
+.login-providers .theme-form-row { margin: 10px 0; }
+
+/* Back link */
+.theme-link-back {
+  display: inline-block;
+  margin-top: 18px;
+  color: var(--kedge-text-muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+.theme-link-back a { color: inherit; text-decoration: none; }
+.theme-link-back:hover,
+.theme-link-back a:hover { color: var(--kedge-violet-hover); }
+
+/* Footer text */
+.dex-footer-text {
+  margin: 18px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--kedge-text-dim);
+}
+
+/* Anchors wrapping a button shouldn't add underline */
+a:has(.dex-btn) { text-decoration: none; display: block; }

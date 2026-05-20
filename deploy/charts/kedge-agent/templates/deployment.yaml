@@ -64,6 +64,9 @@ spec:
             {{- range $key, $value := .Values.agent.labels }}
             - --labels={{ $key }}={{ $value }}
             {{- end }}
+            {{- if .Values.agent.debugAddr }}
+            - --debug-addr={{ .Values.agent.debugAddr }}
+            {{- end }}
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
           {{- if not .Values.agent.hub.token }}

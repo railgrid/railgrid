@@ -45,15 +45,15 @@ func RepoRoot() string {
 
 const (
 	// hubImagePullPolicyEnv overrides the hub image pull policy passed to
-	// `kedge dev create`. Set to "Never" in CI when the image is pre-loaded.
+	// `kedge dev init`. Set to "Never" in CI when the image is pre-loaded.
 	hubImagePullPolicyEnv = "KEDGE_HUB_IMAGE_PULL_POLICY"
 
-	// hubImageEnv overrides the hub image repository passed to `kedge dev create`.
+	// hubImageEnv overrides the hub image repository passed to `kedge dev init`.
 	// Use this in CI when the image is built with a non-default name
 	// (e.g. "ghcr.io/faroshq/kedge-hub" instead of "ghcr.io/faroshq/kedge").
 	hubImageEnv = "KEDGE_HUB_IMAGE"
 
-	// hubImageTagEnv overrides the hub image tag passed to `kedge dev create`.
+	// hubImageTagEnv overrides the hub image tag passed to `kedge dev init`.
 	// Use this in CI to ensure the built image tag matches what the chart uses.
 	hubImageTagEnv = "KEDGE_HUB_IMAGE_TAG"
 
@@ -120,7 +120,7 @@ func effectiveAgentClusterName() string {
 
 // apiServerPortArgs returns the --api-server-port flag and value when the
 // KEDGE_HUB_API_SERVER_PORT env var is set, so callers can forward it to
-// `kedge dev create`. Returns nil when the env var is not set (use the default).
+// `kedge dev init`. Returns nil when the env var is not set (use the default).
 func apiServerPortArgs() []string {
 	if v := os.Getenv(hubAPIServerPortEnv); v != "" {
 		return []string{"--api-server-port", v}
@@ -211,20 +211,20 @@ func probeAgentClusters(workDir, baseName string) []AgentClusterInfo {
 }
 
 // SetupClusters returns an env.Func that creates the hub and agent kind clusters
-// using `kedge dev create` with the local Helm chart. It stores a ClusterEnv
+// using `kedge dev init` with the local Helm chart. It stores a ClusterEnv
 // in the context for use by tests.
 //
 // If the KEDGE_HUB_IMAGE_PULL_POLICY env var is set (e.g. to "Never" in CI when
-// the image is pre-loaded into kind), it is forwarded to `kedge dev create`.
+// the image is pre-loaded into kind), it is forwarded to `kedge dev init`.
 func SetupClusters(workDir string) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
 		kedge := filepath.Join(workDir, KedgeBin)
 
 		args := []string{
-			"dev", "create",
+			"dev", "init",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
-			"--agent-count", fmt.Sprintf("%d", DefaultAgentCount),
+			"--worker-count", fmt.Sprintf("%d", DefaultAgentCount),
 			"--kind-network", DefaultKindNetwork,
 			"--chart-path", filepath.Join(workDir, DefaultChartPath),
 			"--wait-for-ready-timeout", "10m",
@@ -247,7 +247,7 @@ func SetupClusters(workDir string) env.Func {
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Run(); err != nil {
-			return ctx, fmt.Errorf("kedge dev create failed: %w", err)
+			return ctx, fmt.Errorf("kedge dev init failed: %w", err)
 		}
 
 		agents := agentClusterInfos(workDir, DefaultAgentClusterName, DefaultAgentCount)
@@ -262,7 +262,7 @@ func SetupClusters(workDir string) env.Func {
 			AgentKubeconfig:  agents[0].Kubeconfig,
 		}
 
-		// Belt-and-suspenders: wait for the hub /healthz even if kedge dev create
+		// Belt-and-suspenders: wait for the hub /healthz even if kedge dev init
 		// already waited (it may return before the TLS listener is fully up).
 		healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer healthCancel()
@@ -296,10 +296,10 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 		kedge := filepath.Join(workDir, KedgeBin)
 
 		args := []string{
-			"dev", "create",
+			"dev", "init",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
-			"--agent-count", fmt.Sprintf("%d", DefaultAgentCount),
+			"--worker-count", fmt.Sprintf("%d", DefaultAgentCount),
 			"--kind-network", DefaultKindNetwork,
 			"--chart-path", filepath.Join(workDir, DefaultChartPath),
 			"--wait-for-ready-timeout", "10m",
@@ -321,7 +321,7 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			return ctx, fmt.Errorf("kedge dev create --with-dex failed: %w", err)
+			return ctx, fmt.Errorf("kedge dev init --with-dex failed: %w", err)
 		}
 
 		// Ensure the test runner resolves the Dex hostname to localhost so it can
@@ -491,7 +491,7 @@ func TeardownClusters(workDir string) env.Func {
 			"dev", "delete",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
-			"--agent-count", fmt.Sprintf("%d", DefaultAgentCount),
+			"--worker-count", fmt.Sprintf("%d", DefaultAgentCount),
 		}
 
 		// Best-effort: log but don't fail if delete fails.
@@ -537,12 +537,12 @@ func WaitForHubReady(ctx context.Context, hubURL string) error {
 	return nil
 }
 
-// DefaultKCPExternalKubeconfigFile is the filename written by kedge dev create
+// DefaultKCPExternalKubeconfigFile is the filename written by kedge dev init
 // --with-external-kcp for the test runner to reach kcp directly.
 const DefaultKCPExternalKubeconfigFile = "kcp-admin.kubeconfig"
 
 // SetupClustersWithExternalKCP returns an env.Func that creates hub and agent
-// kind clusters using `kedge dev create --with-external-kcp`. kcp is deployed
+// kind clusters using `kedge dev init --with-external-kcp`. kcp is deployed
 // via Helm into the hub cluster; the hub is configured to use it.
 //
 // The external kcp kubeconfig (for test assertions against kcp directly) is
@@ -552,10 +552,10 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 		kedge := filepath.Join(workDir, KedgeBin)
 
 		args := []string{
-			"dev", "create",
+			"dev", "init",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
-			"--agent-count", fmt.Sprintf("%d", DefaultAgentCount),
+			"--worker-count", fmt.Sprintf("%d", DefaultAgentCount),
 			"--kind-network", DefaultKindNetwork,
 			"--chart-path", filepath.Join(workDir, DefaultChartPath),
 			"--wait-for-ready-timeout", "45m",
@@ -579,7 +579,7 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Run(); err != nil {
-			return ctx, fmt.Errorf("kedge dev create --with-external-kcp failed: %w", err)
+			return ctx, fmt.Errorf("kedge dev init --with-external-kcp failed: %w", err)
 		}
 
 		hubKubeconfig := filepath.Join(workDir, DefaultHubClusterName+".kubeconfig")
@@ -741,10 +741,10 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 		kedge := filepath.Join(workDir, KedgeBin)
 
 		args := []string{
-			"dev", "create",
+			"dev", "init",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
-			"--agent-count", fmt.Sprintf("%d", agentCount),
+			"--worker-count", fmt.Sprintf("%d", agentCount),
 			"--kind-network", DefaultKindNetwork,
 			"--chart-path", filepath.Join(workDir, DefaultChartPath),
 			"--wait-for-ready-timeout", "10m",
@@ -767,7 +767,7 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Run(); err != nil {
-			return ctx, fmt.Errorf("kedge dev create failed: %w", err)
+			return ctx, fmt.Errorf("kedge dev init failed: %w", err)
 		}
 
 		agents := agentClusterInfos(workDir, DefaultAgentClusterName, agentCount)
@@ -836,7 +836,7 @@ func TeardownClustersWithAgentCount(workDir string, agentCount int) env.Func {
 			"dev", "delete",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
-			"--agent-count", fmt.Sprintf("%d", agentCount),
+			"--worker-count", fmt.Sprintf("%d", agentCount),
 		}
 		cmd := exec.CommandContext(ctx, kedge, args...)
 		cmd.Dir = workDir

@@ -1,0 +1,61 @@
+# Helm values for the upstream dex chart (https://github.com/dexidp/helm-charts).
+# Used together with the custom image built from hack/dex/Dockerfile:
+#
+#   helm upgrade -i --create-namespace --namespace dex dex dex/dex \
+#     -f hack/dex/dex-values.yaml \
+#     --set image.repository=ghcr.io/faroshq/kedge-dex \
+#     --set image.tag=$TAG
+
+config:
+  issuer: https://auth.kedge.example.com
+
+  logger:
+    level: "debug"
+
+  storage:
+    type: postgres
+    config:
+      host: pg-auth-rw.dex.svc.cluster.local
+      port: 5432
+      database: dex
+      user: postgres
+      password: password
+      ssl:
+        mode: disable
+
+  # Dex listens on plain HTTP inside the cluster; TLS is terminated at the ingress.
+  web:
+    http: 0.0.0.0:5556
+
+  connectors:
+    - type: github
+      id: github
+      name: GitHub
+      config:
+        clientID: REPLACE_ME
+        clientSecret: REPLACE_ME
+        redirectURI: https://auth.kedge.example.com/callback
+        org: faroshq
+
+  staticClients:
+    - id: kedge
+      name: Kedge
+      public: true
+      redirectURIs:
+        - https://console.kedge.example.com/auth/callback
+
+service:
+  type: ClusterIP
+
+ingress:
+  enabled: true
+  className: "cloudflare-tunnel"
+  hosts:
+    - host: auth.kedge.example.com
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls:
+    - secretName: dex-tls
+      hosts:
+        - auth.kedge.example.com

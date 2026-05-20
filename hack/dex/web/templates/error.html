@@ -1,0 +1,14 @@
+{{ template "header.html" . }}
+
+<div class="theme-panel">
+  <h2 class="theme-heading">Sign-in failed</h2>
+  <p class="dex-subtitle">{{ .ErrMsg }}</p>
+  <div class="dex-error-box">
+    <strong>{{ .ErrType }}</strong>
+  </div>
+  <div class="theme-form-row">
+    <a href="/" class="theme-link-back">Back to sign-in</a>
+  </div>
+</div>
+
+{{ template "footer.html" . }}

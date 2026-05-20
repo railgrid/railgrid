@@ -74,6 +74,7 @@ func agentRunFlags(cmd *cobra.Command, opts *agent.Options) {
 	cmd.Flags().StringVar(&opts.SSHUser, "ssh-user", "", "SSH username for server-type edges (default: current user)")
 	cmd.Flags().StringVar(&opts.SSHPassword, "ssh-password", "", "SSH password for password-based authentication (prefer --ssh-private-key for security)")
 	cmd.Flags().StringVar(&opts.SSHPrivateKeyPath, "ssh-private-key", "", "Path to SSH private key file for key-based authentication")
+	cmd.Flags().StringVar(&opts.DebugAddr, "debug-addr", "", "Bind address for the debug HTTP server exposing /healthz and /debug/pprof/* (e.g. \"127.0.0.1:6060\"). Empty disables the server.")
 }
 
 // runAgentForeground contains the shared foreground-process logic used by both

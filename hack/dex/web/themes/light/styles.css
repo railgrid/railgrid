@@ -1,0 +1,18 @@
+/* Theme overrides on top of static/main.css.
+   The dex frontend loads this file via `theme/styles.css`, so anything here
+   wins over the shared base. The full visual styling lives in main.css —
+   this file exists so we have a hook for theme-specific tweaks. */
+
+.theme-body {
+  /* main.css drives body background via :root + body rule; nothing to add. */
+}
+
+/* Provider button on this theme reuses the base look, just slightly elevated
+   so it's distinguishable from a flat surface tile. */
+.theme-btn-provider {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.theme-btn-provider:hover {
+  background: rgba(124, 91, 245, 0.10);
+}

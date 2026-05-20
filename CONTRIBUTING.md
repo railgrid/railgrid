@@ -56,14 +56,17 @@ Binaries produced:
 
 ## Local Development Stack
 
-`kedge dev create` spins up a complete local environment with two kind clusters (hub + one agent), deploys the hub via Helm, and wires everything together.
+`kedge dev init` spins up a local environment with a hub kind cluster (and
+optional worker kind clusters via `--worker-count N`), deploys the hub via
+Helm, and wires everything together. The default is hub-only; pass
+`--worker-count 1` (or more) when you also need agent clusters.
 
 ```bash
 # Build first
 make build
 
-# Create hub + agent kind clusters and deploy the hub
-./bin/kedge dev create --chart-path deploy/charts/kedge-hub
+# Create hub + 1 worker kind cluster and deploy the hub
+./bin/kedge dev init --worker-count 1 --chart-path deploy/charts/kedge-hub
 
 # Log in with the static dev token
 ./bin/kedge login --hub-url https://kedge.localhost:9443 \

@@ -80,14 +80,16 @@ type DevOptions struct {
 	WithExternalKCP bool
 	KCPHTTPSPort    int // host port for the kcp NodePort mapping (default 7443)
 
-	// AgentCount controls how many agent kind clusters to create.
+	// AgentCount controls how many agent (worker) kind clusters to create.
 	// Default is 1 (single agent cluster named AgentClusterName).
 	// When > 1, clusters are named AgentClusterName-1, AgentClusterName-2, …
+	// When 0, no agent clusters are created — useful for end users running a
+	// local hub without any edges (`kedge dev init --worker-count 0`).
 	AgentCount int
 }
 
 // fallbackAssetVersion is used when unable to fetch the latest version
-const fallbackAssetVersion = "0.0.1"
+const fallbackAssetVersion = "0.0.51"
 
 // Dex constants used when --with-dex is set.
 const (
@@ -122,8 +124,8 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 		Streams:          streams,
 		HubClusterName:   "kedge-hub",
 		AgentClusterName: "kedge-agent",
-		AgentCount:       1,
-		ChartPath:        "deploy/charts/kedge-hub",
+		AgentCount:       0,
+		ChartPath:        "oci://ghcr.io/faroshq/charts/kedge-hub",
 		AgentChartPath:   "oci://ghcr.io/faroshq/charts/kedge-agent",
 		ChartVersion:     fallbackAssetVersion,
 		APIServerPort:    6443,
@@ -153,7 +155,9 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&o.DexHTTPPort, "dex-http-port", 5554, "Host port for the Dex NodePort mapping (Dex serves HTTPS on this port; default 5554)")
 	cmd.Flags().BoolVar(&o.WithExternalKCP, "with-external-kcp", false, "Deploy kcp via Helm into the hub kind cluster instead of using embedded kcp")
 	cmd.Flags().IntVar(&o.KCPHTTPSPort, "kcp-https-port", 7443, "Host port for the kcp front-proxy NodePort mapping (default 7443)")
-	cmd.Flags().IntVar(&o.AgentCount, "agent-count", 1, "Number of agent kind clusters to create (default 1). When > 1, clusters are named <agent-cluster-name>-1, -2, …")
+	cmd.Flags().IntVar(&o.AgentCount, "worker-count", o.AgentCount, "Number of worker (agent) kind clusters to create. Default 0 = hub-only (local user). Use 1+ for development/tests; >1 names clusters <agent-cluster-name>-1, -2, …")
+	cmd.Flags().IntVar(&o.AgentCount, "agent-count", o.AgentCount, "Number of agent kind clusters to create (deprecated: use --worker-count)")
+	_ = cmd.Flags().MarkDeprecated("agent-count", "use --worker-count")
 }
 
 // Complete completes the options
@@ -277,10 +281,14 @@ func redText(text string) string {
 
 // agentClusterNames returns the list of agent cluster names derived from
 // AgentClusterName and AgentCount.
-//   - count == 1 → ["<AgentClusterName>"]  (preserves backwards-compat naming)
+//   - count == 0 → []                       (hub-only setup)
+//   - count == 1 → ["<AgentClusterName>"]   (preserves backwards-compat naming)
 //   - count  > 1 → ["<AgentClusterName>-1", "<AgentClusterName>-2", …]
 func (o *DevOptions) agentClusterNames() []string {
-	if o.AgentCount <= 1 {
+	if o.AgentCount <= 0 {
+		return nil
+	}
+	if o.AgentCount == 1 {
 		return []string{o.AgentClusterName}
 	}
 	names := make([]string, o.AgentCount)
@@ -329,9 +337,10 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	for _, agentName := range o.agentClusterNames() {
 		fmt.Fprintf(o.Streams.ErrOut, "  Agent cluster kubeconfig: %s.kubeconfig\n", agentName) // nolint:errcheck
 	}
-	fmt.Fprint(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:9443\n") // nolint:errcheck
-	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                   // nolint:errcheck
-	if hubIP != "" {
+	fmt.Fprintf(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:%d\n", o.HubHTTPSPort)    // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  kedge UI URL:     https://kedge.localhost:%d/ui\n", o.HubHTTPSPort) // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                                     // nolint:errcheck
+	if hubIP != "" && o.AgentCount > 0 {
 		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP (for agent): %s\n", hubIP) // nolint:errcheck
 	}
 	fmt.Fprint(o.Streams.ErrOut, "\n") // nolint:errcheck
@@ -356,42 +365,50 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge login --hub-url https://kedge.localhost:9443 --insecure-skip-tls-verify --token=dev-token"))
 	stepNum++
 
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Create an edge in the hub:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge edge create my-edge --labels env=dev"))
-	stepNum++
+	if o.AgentCount > 0 {
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Create an edge in the hub:\n", stepNum)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge edge create my-edge --labels env=dev"))
+		stepNum++
 
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Wait for the edge kubeconfig secret and extract it:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kubectl get secret -n kedge-system edge-my-edge-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-kubeconfig"))
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "   (The secret is created automatically after the edge is registered)\n\n")
-	stepNum++
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Wait for the edge kubeconfig secret and extract it:\n", stepNum)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kubectl get secret -n kedge-system edge-my-edge-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-kubeconfig"))
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "   (The secret is created automatically after the edge is registered)\n\n")
+		stepNum++
 
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Deploy the agent into the agent cluster using Helm:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "   First, create a secret with the edge kubeconfig in the agent cluster:\n")
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-		"kubectl --kubeconfig %s.kubeconfig create namespace kedge-agent && \\\n   kubectl --kubeconfig %s.kubeconfig create secret generic edge-kubeconfig -n kedge-agent --from-file=kubeconfig=edge-kubeconfig",
-		o.AgentClusterName, o.AgentClusterName)))
-
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then install the agent Helm chart:\n")
-	if hubIP != "" {
-		// Use hub.url to override the kubeconfig server URL with the correct NodePort address
-		// The kubeconfig has kedge.localhost:9443 which works from host, but from within
-		// the Docker network we need to use the hub's IP and NodePort 31443
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Deploy the agent into the agent cluster using Helm:\n", stepNum)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "   First, create a secret with the edge kubeconfig in the agent cluster:\n")
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-			"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set agent.hub.url=https://%s:31443 \\\n     --set image.tag=%s",
-			o.AgentChartPath, o.ChartVersion, o.AgentClusterName, hubIP, o.Tag)))
+			"kubectl --kubeconfig %s.kubeconfig create namespace kedge-agent && \\\n   kubectl --kubeconfig %s.kubeconfig create secret generic edge-kubeconfig -n kedge-agent --from-file=kubeconfig=edge-kubeconfig",
+			o.AgentClusterName, o.AgentClusterName)))
+
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then install the agent Helm chart:\n")
+		if hubIP != "" {
+			// Use hub.url to override the kubeconfig server URL with the correct NodePort address
+			// The kubeconfig has kedge.localhost:9443 which works from host, but from within
+			// the Docker network we need to use the hub's IP and NodePort 31443
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
+				"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set agent.hub.url=https://%s:31443 \\\n     --set image.tag=%s",
+				o.AgentChartPath, o.ChartVersion, o.AgentClusterName, hubIP, o.Tag)))
+		} else {
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
+				"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set image.tag=%s",
+				o.AgentChartPath, o.ChartVersion, o.AgentClusterName, o.Tag)))
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Note: You may need to set agent.hub.url to the hub's Docker network IP and NodePort.\n")
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Get hub IP: docker inspect kedge-hub-control-plane | jq -r '.[0].NetworkSettings.Networks[\"kedge-dev\"].IPAddress'\n")
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then add: --set agent.hub.url=https://<HUB_IP>:31443\n\n")
+		}
 	} else {
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-			"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set image.tag=%s",
-			o.AgentChartPath, o.ChartVersion, o.AgentClusterName, o.Tag)))
-		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Note: You may need to set agent.hub.url to the hub's Docker network IP and NodePort.\n")
-		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Get hub IP: docker inspect kedge-hub-control-plane | jq -r '.[0].NetworkSettings.Networks[\"kedge-dev\"].IPAddress'\n")
-		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then add: --set agent.hub.url=https://<HUB_IP>:31443\n\n")
+		uiURL := fmt.Sprintf("https://kedge.localhost:%d/ui", o.HubHTTPSPort)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Open the kedge UI in your browser:\n", stepNum)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(uiURL))
 	}
 
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "Useful commands:\n")
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  List edges:       %s\n", blueCommand("kedge edge list"))
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get edge info:    %s\n", blueCommand("kedge edge get my-edge"))
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Check agent logs: %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig logs -n kedge-agent -l app.kubernetes.io/name=kedge-agent -f", o.AgentClusterName)))
+	if o.AgentCount > 0 {
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get edge info:    %s\n", blueCommand("kedge edge get my-edge"))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Check agent logs: %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig logs -n kedge-agent -l app.kubernetes.io/name=kedge-agent -f", o.AgentClusterName)))
+	}
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Delete env:       %s\n", blueCommand("kedge dev delete"))
 
 	return nil
@@ -400,6 +417,34 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 // Run runs the dev command
 func (o *DevOptions) Run(ctx context.Context) error {
 	return o.runWithColors(ctx)
+}
+
+// RunUpdate upgrades the kedge-hub Helm release on the existing hub kind
+// cluster using current image / chart settings. The cluster itself is not
+// touched; only the hub release is upgraded.
+func (o *DevOptions) RunUpdate(ctx context.Context) error {
+	kubeconfigPath := fmt.Sprintf("%s.kubeconfig", o.HubClusterName)
+	if _, err := os.Stat(kubeconfigPath); err != nil {
+		return fmt.Errorf("hub kubeconfig %s not found (did you run `kedge dev init`?): %w", kubeconfigPath, err)
+	}
+
+	restConfig, err := loadRestConfigFromFile(kubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("loading hub kubeconfig: %w", err)
+	}
+
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "Upgrading kedge-hub release on cluster %s...\n", o.HubClusterName)
+	if o.WithExternalKCP {
+		if err := o.installHelmChartWithExternalKCP(ctx, restConfig); err != nil {
+			return err
+		}
+	} else {
+		if err := o.installHelmChart(ctx, restConfig, o.WithDex); err != nil {
+			return err
+		}
+	}
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "kedge-hub upgraded successfully\n")
+	return nil
 }
 
 func (o *DevOptions) setupHostEntries() bool {
@@ -747,6 +792,10 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 		"hubExternalURL": hubExternalURL,
 		"listenAddr":     fmt.Sprintf(":%d", o.HubHTTPSPort),
 		"devMode":        true,
+		// The portal makes GraphQL calls under /graphql/{clusterName}; run the
+		// gateway in-process so a default `kedge dev init` setup serves the UI
+		// out of the box.
+		"embeddedGraphQL": true,
 	}
 	// Static auth token is only used in token mode. In OIDC/IDP mode the hub
 	// authenticates via Dex; mixing both would be confusing and unnecessary.

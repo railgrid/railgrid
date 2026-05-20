@@ -58,7 +58,7 @@ import (
 // the hub returns an X-Kedge-Agent-Token header (token-exchange flow). The
 // callback receives the durable token string. Callers can use this to persist
 // the token locally so the agent can reconnect without the bootstrap join token.
-func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string, onAgentToken func(string), extraHeaders http.Header) {
+func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, cluster string, onAgentToken func(string), extraHeaders http.Header) {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "edgeName", edgeName, "resourceType", resourceType)
 
@@ -82,9 +82,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName
 			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
 
-		if stateChannel != nil {
-			stateChannel <- false
-		}
+		sendTunnelState(stateChannel, false)
 
 		select {
 		case <-ctx.Done():
@@ -94,7 +92,31 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName
 	}
 }
 
-func startTunneler(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string, onAgentToken func(string), extraHeaders http.Header) error {
+// sendTunnelState publishes the current tunnel state on the cap-1 channel
+// without ever blocking. If a previous value is still buffered it is dropped
+// first, so the reader always sees the most recent state. We rely on the
+// single-sender invariant (only StartProxyTunnel writes to stateChannel) to
+// guarantee the post-drain send fits.
+//
+// A blocking send here used to deadlock the reconnect loop: if the reader
+// (EdgeReporter) was stuck inside a slow status PATCH, the tunnel goroutine
+// would wedge on the send and stop retrying entirely, leaving the agent
+// permanently disconnected even though its heartbeat goroutine kept running.
+func sendTunnelState(c chan bool, v bool) {
+	if c == nil {
+		return
+	}
+	select {
+	case <-c:
+	default:
+	}
+	select {
+	case c <- v:
+	default:
+	}
+}
+
+func startTunneler(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, cluster string, onAgentToken func(string), extraHeaders http.Header) error {
 	logger := klog.FromContext(ctx)
 
 	// Connect to hub's tunnel endpoint.
@@ -135,9 +157,7 @@ func startTunneler(ctx context.Context, hubURL string, token string, edgeName st
 	}
 
 	logger.Info("Tunnel connection established")
-	if stateChannel != nil {
-		stateChannel <- true
-	}
+	sendTunnelState(stateChannel, true)
 
 	// Create revdial listener
 	ln := revdial.NewListener(conn, revdialFunc(hubURL, token, tlsConfig))

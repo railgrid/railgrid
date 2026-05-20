@@ -40,6 +40,12 @@ agent:
   # -- Optional: separate tunnel URL (defaults to hub URL from kubeconfig)
   tunnelURL: ""
 
+  # -- Bind address for the agent's debug HTTP server (pprof + healthz).
+  # Empty disables the server. Bind to "127.0.0.1:6060" and use
+  # `kubectl port-forward` to access; binding to all interfaces would
+  # expose goroutine dumps across the pod network.
+  debugAddr: ""
+
   resources:
     requests:
       cpu: 50m

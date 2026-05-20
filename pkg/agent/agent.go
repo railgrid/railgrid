@@ -29,6 +29,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -291,6 +292,11 @@ type Options struct {
 	// kubeconfig from a previous join-token registration. When true, edge
 	// registration is skipped (the edge was already registered).
 	UsingSavedKubeconfig bool
+	// DebugAddr, if non-empty, is the bind address for the agent's debug
+	// HTTP server. It exposes /healthz and the standard /debug/pprof/*
+	// endpoints. Use "127.0.0.1:6060" for local-only access; bind to a
+	// non-loopback address only when port-forwarding is not an option.
+	DebugAddr string
 }
 
 // NewOptions returns default agent options.
@@ -439,6 +445,10 @@ func (a *Agent) Run(ctx context.Context) error {
 		"labels", a.opts.Labels,
 	)
 
+	if a.opts.DebugAddr != "" {
+		go runDebugServer(ctx, logger, a.opts.DebugAddr)
+	}
+
 	hubDynamic, err := dynamic.NewForConfig(a.hubConfig)
 	if err != nil {
 		return fmt.Errorf("creating hub dynamic client: %w", err)
@@ -449,6 +459,38 @@ func (a *Agent) Run(ctx context.Context) error {
 		return a.runServerMode(ctx, logger, hubClient)
 	}
 	return a.runKubernetesMode(ctx, logger, hubClient)
+}
+
+// runDebugServer starts an HTTP server exposing /healthz and the standard
+// net/http/pprof endpoints (/debug/pprof/, /goroutine, /heap, /profile, ...).
+// Goroutine dumps from this server are the primary way to diagnose tunnel
+// reconnect-loop hangs, since the agent has no other introspection surface.
+func runDebugServer(ctx context.Context, logger klog.Logger, addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		_ = server.Shutdown(context.Background())
+	}()
+
+	logger.Info("Starting debug HTTP server (pprof + healthz)", "addr", addr)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error(err, "debug HTTP server exited", "addr", addr)
+	}
 }
 
 // runKubernetesMode is the Kubernetes-cluster edge mode.

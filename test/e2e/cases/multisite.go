@@ -52,7 +52,7 @@ const (
 func requireTwoAgentClusters(t *testing.T, env *framework.ClusterEnv) {
 	t.Helper()
 	if env == nil || len(env.AgentClusters) < 2 {
-		t.Skip("multi-edge tests require at least 2 agent clusters (run with --agent-count 2)")
+		t.Skip("multi-edge tests require at least 2 agent clusters (run with --worker-count 2)")
 	}
 }
 
