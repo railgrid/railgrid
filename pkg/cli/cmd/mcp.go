@@ -200,40 +200,42 @@ func runMCPURL(_ *cobra.Command, edgeName, kubernetesName, linuxName, mcpserverN
 }
 
 // mcpServerName chooses a friendly identifier for the `claude mcp add` name
-// argument. Per-edge endpoints are suffixed with the edge type so users can
-// tell at a glance what each registered server connects to.
+// argument. All names share a `kedge-` prefix so multiple kedge MCP servers
+// registered in a single client config sort together. The CRD kind picks
+// the middle segment: KubernetesMCP groups become "kubernetes-clusters",
+// LinuxMCP groups become "servers". Per-edge entries drop the plural and
+// the edge type picks "kubernetes-cluster" vs "server".
 func mcpServerName(edgeName, kubernetesName, linuxName, mcpserverName string) string {
 	switch {
 	case mcpserverName != "":
-		return mcpserverName
+		return "kedge-" + mcpserverName
 	case kubernetesName != "":
-		return kubernetesName + "-kubernetes-cluster"
+		return "kedge-kubernetes-clusters-" + kubernetesName
 	case linuxName != "":
-		return linuxName + "-server"
+		return "kedge-servers-" + linuxName
 	case edgeName != "":
-		suffix := edgeTypeSuffix(edgeName)
-		return edgeName + suffix
+		return "kedge-" + edgeTypeKind(edgeName) + "-" + edgeName
 	}
 	return "kedge"
 }
 
-// edgeTypeSuffix returns a suffix matching the edge's spec.type. Failure to
-// resolve the type (e.g. no kubeconfig, RBAC) falls back to a generic suffix
-// so the command still emits a usable hint.
-func edgeTypeSuffix(edgeName string) string {
+// edgeTypeKind returns the singular per-edge segment matching the edge's
+// spec.type. Failure to resolve the type (no kubeconfig, RBAC, etc.) falls
+// back to "kubernetes-cluster" so the command still emits a usable hint.
+func edgeTypeKind(edgeName string) string {
 	dynClient, err := loadDynamicClient()
 	if err != nil {
-		return "-kubernetes-cluster"
+		return "kubernetes-cluster"
 	}
 	edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(context.Background(), edgeName, metav1.GetOptions{})
 	if err != nil {
-		return "-kubernetes-cluster"
+		return "kubernetes-cluster"
 	}
 	switch getNestedString(*edge, "spec", "type") {
 	case "server":
-		return "-server"
+		return "server"
 	default:
-		return "-kubernetes-cluster"
+		return "kubernetes-cluster"
 	}
 }
 

@@ -166,9 +166,25 @@ const yamlContent = computed(() => {
 // --- Config snippets ---
 const maskedToken = '••••••••••••••••'
 
+// claudeServerName mirrors the CLI's mcpServerName / portal MCPPage.serverNameFor.
+// Detail page is single-MCP so the name is fixed once kind+name are known:
+//   aggregate   -> kedge-<name>
+//   kubernetes  -> kedge-kubernetes-clusters-<name>
+//   linux       -> kedge-servers-<name>
+const claudeServerName = computed(() => {
+  switch (kind.value) {
+    case 'aggregate':
+      return `kedge-${props.name}`
+    case 'linux':
+      return `kedge-servers-${props.name}`
+    default:
+      return `kedge-kubernetes-clusters-${props.name}`
+  }
+})
+
 function buildClaudeCodeSnippet(token: string) {
   const url = mcp.value?.status?.URL ?? '<MCP_URL>'
-  return `claude mcp add --transport http kedge-${props.name} "${url}" \\
+  return `claude mcp add --transport http ${claudeServerName.value} "${url}" \\
   -H "Authorization: Bearer ${token}"`
 }
 
@@ -177,7 +193,7 @@ function buildClaudeDesktopSnippet(token: string) {
   return JSON.stringify(
     {
       mcpServers: {
-        [`kedge-${props.name}`]: {
+        [claudeServerName.value]: {
           url,
           headers: { Authorization: `Bearer ${token}` },
         },

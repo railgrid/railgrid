@@ -5,17 +5,19 @@ import AppLayout from '@/components/AppLayout.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import MCPCreateModal from '@/components/MCPCreateModal.vue'
+import MCPHelpModal from '@/components/MCPHelpModal.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
 import { LIST_MCP_SERVERS, type ListMCPResult, type MCPItem, type MCPKind } from '@/graphql/queries/mcp'
 import { DELETE_MCP, DELETE_LINUX_MCP, DELETE_AGGREGATE_MCP } from '@/graphql/mutations'
-import { Bot, Plus, Server, Wifi, Copy, Check, Trash2, ClipboardCopy, Terminal, Layers, ChevronDown, ChevronUp } from 'lucide-vue-next'
+import { Bot, Plus, Server, Wifi, Copy, Check, Trash2, ClipboardCopy, Terminal, Layers, ChevronDown, ChevronUp, HelpCircle } from 'lucide-vue-next'
 
 const router = useRouter()
 const auth = useAuthStore()
 const { data, loading, error, refetch } = useGraphQLQuery<ListMCPResult>(LIST_MCP_SERVERS, undefined, 10000)
 const showCreate = ref(false)
+const showHelp = ref(false)
 const copiedField = ref<string | null>(null)
 // Per-card expanded state for the three "Default" snippet cards.  Default to
 // collapsed so the page stays compact; the user expands a card to reveal the
@@ -193,17 +195,22 @@ function urlFor(kind: MCPKind): string {
   return item?.status?.URL ?? '<MCP_URL>'
 }
 
-// labelFor / serverNameFor produce the bits that vary by kind (Claude config
-// shortname, headline label).  Keeping these tiny helpers next to the
-// snippet builders so any future field stays co-located.
-function serverNameFor(kind: MCPKind): string {
+// serverNameFor builds the `claude mcp add` short name. Matches the kedge CLI
+// (`kedge mcp url`) so identifiers are stable whether the user wires up MCPs
+// from the portal or the terminal:
+//   aggregate (MCPServers/<n>)   -> kedge-<n>
+//   kubernetes (KubernetesMCPs/<n>) -> kedge-kubernetes-clusters-<n>
+//   linux (LinuxMCPs/<n>)        -> kedge-servers-<n>
+// `name` defaults to "default" because the three header cards target the
+// built-in `default` CR for each kind.
+function serverNameFor(kind: MCPKind, name = 'default'): string {
   switch (kind) {
     case 'aggregate':
-      return 'kedge'
+      return `kedge-${name}`
     case 'linux':
-      return 'kedge-linux'
+      return `kedge-servers-${name}`
     default:
-      return 'kedge-kube'
+      return `kedge-kubernetes-clusters-${name}`
   }
 }
 
@@ -280,13 +287,23 @@ async function copyToClipboard(text: string, field: string) {
           <span class="font-mono text-[10px] text-text-muted">auto-refresh 10s</span>
         </div>
       </div>
-      <button
-        class="glow-ring flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/10 px-3.5 py-2 text-[12px] font-medium text-accent transition-all hover:bg-accent/20"
-        @click="showCreate = true"
-      >
-        <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-        New MCP Server
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          class="flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-raised/80 px-3 py-2 text-[12px] font-medium text-text-secondary transition-all hover:border-accent/30 hover:text-accent"
+          title="What's the difference between Aggregate, Kubernetes, and Linux MCP servers?"
+          @click="showHelp = true"
+        >
+          <HelpCircle class="h-3.5 w-3.5" :stroke-width="1.75" />
+          Which one do I use?
+        </button>
+        <button
+          class="glow-ring flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/10 px-3.5 py-2 text-[12px] font-medium text-accent transition-all hover:bg-accent/20"
+          @click="showCreate = true"
+        >
+          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+          New MCP Server
+        </button>
+      </div>
     </div>
 
     <!-- Aggregate MCP (kube + linux + list_targets) — recommended entry point -->
@@ -609,6 +626,9 @@ async function copyToClipboard(text: string, field: string) {
         </template>
       </ResourceTable>
     </div>
+
+    <!-- Help modal: explains aggregate vs kubernetes vs linux. -->
+    <MCPHelpModal v-if="showHelp" @close="showHelp = false" />
 
     <!-- Create modal -->
     <MCPCreateModal
