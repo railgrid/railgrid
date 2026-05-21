@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -315,6 +316,58 @@ type Agent struct {
 	hubConfig        *rest.Config
 	hubTLSConfig     *tls.Config
 	downstreamConfig *rest.Config // nil in server mode
+
+	// tunnelToken holds the bearer token used by the proxy tunnel goroutine on
+	// every (re)connect. It is seeded with the bootstrap token at startup and
+	// replaced by the SA token after the hub delivers a kubeconfig via the
+	// token-exchange flow. Atomic because the tunnel goroutine reads it while
+	// onAgentToken (running on the tunnel goroutine's connect path) writes it.
+	//
+	// Without this, the tunnel keeps using the bootstrap join token forever,
+	// which the hub rejects on reconnect once edge.Status.JoinToken has been
+	// cleared on the first successful auth — leaving the agent in an endless
+	// "websocket: bad handshake" loop until manually restarted.
+	tunnelToken atomic.Pointer[string]
+}
+
+// setTunnelToken stores t as the token used for tunnel (re)connects.
+func (a *Agent) setTunnelToken(t string) {
+	a.tunnelToken.Store(&t)
+}
+
+// currentTunnelToken returns the bearer token the tunnel should use for the
+// next (re)connect. Returns "" if no token has been set yet.
+func (a *Agent) currentTunnelToken() string {
+	if p := a.tunnelToken.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// extractTokenFromKubeconfigB64 decodes a base64-encoded kubeconfig (as
+// delivered by the hub in the X-Kedge-Agent-Kubeconfig header) and returns the
+// bearer token of its current context's AuthInfo.
+func extractTokenFromKubeconfigB64(kubeconfigB64 string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(kubeconfigB64)
+	if err != nil {
+		return "", fmt.Errorf("decoding kubeconfig: %w", err)
+	}
+	cfg, err := clientcmd.Load(raw)
+	if err != nil {
+		return "", fmt.Errorf("parsing kubeconfig: %w", err)
+	}
+	ctx, ok := cfg.Contexts[cfg.CurrentContext]
+	if !ok {
+		return "", fmt.Errorf("kubeconfig has no current context %q", cfg.CurrentContext)
+	}
+	auth, ok := cfg.AuthInfos[ctx.AuthInfo]
+	if !ok {
+		return "", fmt.Errorf("kubeconfig has no auth info %q", ctx.AuthInfo)
+	}
+	if auth.Token == "" {
+		return "", fmt.Errorf("kubeconfig auth info %q has no token", ctx.AuthInfo)
+	}
+	return auth.Token, nil
 }
 
 // New creates a new agent.
@@ -544,6 +597,14 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 			logger.Error(err, "failed to save agent kubeconfig from hub")
 			return
 		}
+		// Swap the tunnel's bearer token to the SA token before the hub clears
+		// edge.Status.JoinToken — otherwise reconnects after a hub restart fail
+		// with "websocket: bad handshake".
+		if saToken, err := extractTokenFromKubeconfigB64(kubeconfigB64); err != nil {
+			logger.Error(err, "failed to extract SA token from delivered kubeconfig; tunnel reconnects may fail")
+		} else {
+			a.setTunnelToken(saToken)
+		}
 		// In-cluster mode: also persist to Secret so it survives pod restarts,
 		// then force a restart so the agent re-launches with the saved kubeconfig.
 		if IsInCluster() {
@@ -560,7 +621,8 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		}
 		deliverOnce.Do(func() { close(agentKubeconfigDelivered) })
 	}
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken, nil)
+	a.setTunnelToken(a.hubConfig.BearerToken)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken, nil)
 
 	// Out-of-cluster join-token mode: the in-memory hubClient was built from
 	// the bootstrap join token, which is not a valid kcp credential. Wait for
@@ -712,6 +774,14 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 			logger.Error(err, "failed to save agent kubeconfig from hub")
 			return
 		}
+		// Swap the tunnel's bearer token to the SA token before the hub clears
+		// edge.Status.JoinToken — otherwise reconnects after a hub restart fail
+		// with "websocket: bad handshake".
+		if saToken, err := extractTokenFromKubeconfigB64(kubeconfigB64); err != nil {
+			logger.Error(err, "failed to extract SA token from delivered kubeconfig; tunnel reconnects may fail")
+		} else {
+			a.setTunnelToken(saToken)
+		}
 		// In-cluster mode: also persist to Secret and restart.
 		if IsInCluster() {
 			kubeconfigData, decErr := decodeKubeconfigB64(kubeconfigB64)
@@ -737,7 +807,8 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	}
 
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName, serverOnAgentToken, sshHeaders)
+	a.setTunnelToken(a.hubConfig.BearerToken)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName, serverOnAgentToken, sshHeaders)
 
 	// Out-of-cluster join-token mode: wait for the SA kubeconfig before
 	// starting the edge_reporter, otherwise its patch calls would all return

@@ -129,3 +129,85 @@ export const DELETE_MCP = `
     }
   }
 `
+
+// --- LinuxMCP mutations (cluster-scoped) ---
+
+export const CREATE_LINUX_MCP = `
+  mutation CreateLinuxMCP($object: KedgeFarosShV1alpha1LinuxMCP_Input!) {
+    kedge_faros_sh {
+      v1alpha1 {
+        createLinuxMCP(object: $object) {
+          metadata {
+            name
+            uid
+          }
+        }
+      }
+    }
+  }
+`
+
+export const UPDATE_LINUX_MCP = `
+  mutation UpdateLinuxMCP($name: String!, $object: KedgeFarosShV1alpha1LinuxMCP_Input!) {
+    kedge_faros_sh {
+      v1alpha1 {
+        updateLinuxMCP(name: $name, object: $object) {
+          metadata {
+            name
+          }
+        }
+      }
+    }
+  }
+`
+
+export const DELETE_LINUX_MCP = `
+  mutation DeleteLinuxMCP($name: String!) {
+    kedge_faros_sh {
+      v1alpha1 {
+        deleteLinuxMCP(name: $name)
+      }
+    }
+  }
+`
+
+// --- MCPServer (aggregate kube + linux) mutations (cluster-scoped) ---
+
+export const CREATE_AGGREGATE_MCP = `
+  mutation CreateMCPServer($object: KedgeFarosShV1alpha1MCPServer_Input!) {
+    kedge_faros_sh {
+      v1alpha1 {
+        createMCPServer(object: $object) {
+          metadata {
+            name
+            uid
+          }
+        }
+      }
+    }
+  }
+`
+
+export const UPDATE_AGGREGATE_MCP = `
+  mutation UpdateMCPServer($name: String!, $object: KedgeFarosShV1alpha1MCPServer_Input!) {
+    kedge_faros_sh {
+      v1alpha1 {
+        updateMCPServer(name: $name, object: $object) {
+          metadata {
+            name
+          }
+        }
+      }
+    }
+  }
+`
+
+export const DELETE_AGGREGATE_MCP = `
+  mutation DeleteMCPServer($name: String!) {
+    kedge_faros_sh {
+      v1alpha1 {
+        deleteMCPServer(name: $name)
+      }
+    }
+  }
+`

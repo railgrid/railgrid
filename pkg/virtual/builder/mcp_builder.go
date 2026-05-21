@@ -87,9 +87,16 @@ func (p *virtualWorkspaces) buildMCPHandler(cluster, edgeName string) http.Handl
 		// 3. Create a stateless MCP server for this request.
 		// Use the default toolset configuration (core, config, helm) so that
 		// tools/list returns the expected tools. Override Stateless=true for
-		// load-balanced / serverless deployments.
+		// load-balanced / serverless deployments.  ServerInstructions seeds
+		// the LLM with kedge-specific context the moment it connects.
 		staticCfg := mcpconfig.Default()
 		staticCfg.Stateless = true
+		staticCfg.ServerInstructions = fmt.Sprintf(
+			"You are connected to a kedge per-edge Kubernetes MCP endpoint for edge %q in tenant workspace %q. "+
+				"All kube tools route to this single edge — there is no \"cluster\" selection to make here. "+
+				"For multi-cluster operation, point your MCP client at the kedge aggregate endpoint instead.",
+			edgeName, cluster,
+		)
 		srv, err := mcpserver.NewServer(mcpserver.Configuration{StaticConfig: staticCfg}, provider)
 		if err != nil {
 			logger.Error(err, "failed to create MCP server", "cluster", cluster, "edge", edgeName)
@@ -249,10 +256,25 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 
 		// 8. Create a stateless MCP server and serve.
 		// Start from defaults (core, config, helm toolsets) and override with any
-		// toolsets explicitly listed in the KubernetesMCP spec.
+		// toolsets explicitly listed in the KubernetesMCP spec.  spec.instructions
+		// lets users override the auto-generated LLM-context blurb (e.g. to add
+		// "this is prod, ask before applying" guardrails).
 		staticCfg := mcpconfig.Default()
 		staticCfg.Stateless = true
-		if toolsetsRaw, ok := specRaw["toolsets"].([]interface{}); ok && len(toolsetsRaw) > 0 {
+		userInstructions, _, _ := unstructured.NestedString(kmcpObj.Object, "spec", "instructions")
+		if userInstructions != "" {
+			staticCfg.ServerInstructions = userInstructions
+		} else {
+			staticCfg.ServerInstructions = fmt.Sprintf(
+				"You are connected to the kedge KubernetesMCP endpoint %q in tenant workspace %q. "+
+					"It exposes Kubernetes tools across every kubernetes-type edge matched by the "+
+					"KubernetesMCP edgeSelector (use the \"cluster\" argument to pick a target). "+
+					"For Linux servers, use the LinuxMCP endpoint instead; for one combined view of "+
+					"both, use the kedge aggregate MCPServer endpoint.",
+				kubernetesName, cluster,
+			)
+		}
+		if toolsetsRaw, ok := specRaw["toolsets"].([]any); ok && len(toolsetsRaw) > 0 {
 			names := make([]string, 0, len(toolsetsRaw))
 			for _, t := range toolsetsRaw {
 				if s, ok := t.(string); ok {

@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260513-9502580.kubernetesmcps.kedge.faros.sh
+  name: v260520-b6b9fee.kubernetesmcps.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -50,6 +50,12 @@ spec:
         spec:
           description: KubernetesMCPSpec defines the desired state of KubernetesMCP.
           properties:
+            displayName:
+              description: |-
+                DisplayName overrides the human-readable title MCP clients show.
+                When empty, the hub generates "Kedge Kube — <name> (tenant <cluster>)".
+              maxLength: 128
+              type: string
             edgeSelector:
               description: |-
                 EdgeSelector selects which edges to include in this MCP server.
@@ -98,6 +104,12 @@ spec:
                   type: object
               type: object
               x-kubernetes-map-type: atomic
+            instructions:
+              description: |-
+                Instructions overrides the system-prompt blurb forwarded to the LLM
+                on initialize.  Use to add per-environment guardrails or context.
+              maxLength: 4096
+              type: string
             readOnly:
               description: ReadOnly makes all MCP tools read-only when true.
               type: boolean

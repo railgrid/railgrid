@@ -55,6 +55,18 @@ type KubernetesMCPSpec struct {
 	// ReadOnly makes all MCP tools read-only when true.
 	// +optional
 	ReadOnly bool `json:"readOnly,omitempty"`
+
+	// DisplayName overrides the human-readable title MCP clients show.
+	// When empty, the hub generates "Kedge Kube — <name> (tenant <cluster>)".
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	DisplayName string `json:"displayName,omitempty"`
+
+	// Instructions overrides the system-prompt blurb forwarded to the LLM
+	// on initialize.  Use to add per-environment guardrails or context.
+	// +optional
+	// +kubebuilder:validation:MaxLength=4096
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // KubernetesMCPStatus defines the observed state of KubernetesMCP.

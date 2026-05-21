@@ -33,6 +33,8 @@ const (
 	PathPrefixAgentProxy = "/services/agent-proxy"
 	PathPrefixEdgesProxy = "/services/edges-proxy"
 	PathPrefixMCP        = "/services/mcp"
+	PathPrefixLinuxMCP   = "/services/linux-mcp"
+	PathPrefixMCPServer  = "/services/mcpserver"
 	PathAuthAuthorize    = "/auth/authorize"
 	PathAuthCallback     = "/auth/callback"
 	PathAuthRefresh      = "/auth/refresh"
@@ -133,6 +135,33 @@ func KubernetesMCPPath(cluster, kubernetesName string) string {
 // KubernetesMCPURL returns the full MCP endpoint URL.
 func KubernetesMCPURL(hubBase, cluster, kubernetesName string) string {
 	return strings.TrimRight(hubBase, "/") + KubernetesMCPPath(cluster, kubernetesName)
+}
+
+// LinuxMCPPath returns the URL path for the Linux MCP virtual workspace endpoint.
+//
+// Pattern: /services/linux-mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/linuxmcps/{name}/mcp
+func LinuxMCPPath(cluster, linuxName string) string {
+	return fmt.Sprintf("%s/%s/apis/kedge.faros.sh/v1alpha1/linuxmcps/%s/mcp",
+		PathPrefixLinuxMCP, cluster, linuxName)
+}
+
+// LinuxMCPURL returns the full Linux MCP endpoint URL.
+func LinuxMCPURL(hubBase, cluster, linuxName string) string {
+	return strings.TrimRight(hubBase, "/") + LinuxMCPPath(cluster, linuxName)
+}
+
+// MCPServerPath returns the URL path for the unified MCPServer virtual
+// workspace endpoint (aggregates kube + linux edges).
+//
+// Pattern: /services/mcpserver/{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp
+func MCPServerPath(cluster, mcpServerName string) string {
+	return fmt.Sprintf("%s/%s/apis/kedge.faros.sh/v1alpha1/mcpservers/%s/mcp",
+		PathPrefixMCPServer, cluster, mcpServerName)
+}
+
+// MCPServerURL returns the full MCPServer endpoint URL.
+func MCPServerURL(hubBase, cluster, mcpServerName string) string {
+	return strings.TrimRight(hubBase, "/") + MCPServerPath(cluster, mcpServerName)
 }
 
 // EdgeAPIPath returns the kcp API path for an Edge resource, suitable for use

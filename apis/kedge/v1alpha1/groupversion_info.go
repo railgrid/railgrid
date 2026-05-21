@@ -47,6 +47,10 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&EdgeList{},
 		&KubernetesMCP{},
 		&KubernetesMCPList{},
+		&LinuxMCP{},
+		&LinuxMCPList{},
+		&MCPServer{},
+		&MCPServerList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

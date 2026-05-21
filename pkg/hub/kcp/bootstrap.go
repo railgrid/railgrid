@@ -60,6 +60,12 @@ var (
 	kubernetesMCPGVR = schema.GroupVersionResource{
 		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesmcps",
 	}
+	linuxMCPGVR = schema.GroupVersionResource{
+		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "linuxmcps",
+	}
+	mcpServerGVR = schema.GroupVersionResource{
+		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "mcpservers",
+	}
 )
 
 // Bootstrapper sets up the kcp workspace hierarchy and API exports.
@@ -360,10 +366,18 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 		}
 	}
 
-	// Ensure a "default" KubernetesMCP object exists in the tenant workspace.
-	if err := ensureDefaultKubernetesMCP(ctx, tenantClient); err != nil {
-		// Non-fatal: log and continue.
+	// Ensure "default" KubernetesMCP and LinuxMCP objects exist in the tenant
+	// workspace.  Both are best-effort — the per-login proxy.go path will
+	// re-attempt them on the next sign-in, and the user can always create
+	// these by hand from the portal.
+	if err := createDefaultMCPObject(ctx, tenantClient, kubernetesMCPGVR, "KubernetesMCP"); err != nil {
 		logger.Error(err, "Failed to create default KubernetesMCP in tenant workspace (non-fatal)", "userID", userID)
+	}
+	if err := createDefaultMCPObject(ctx, tenantClient, linuxMCPGVR, "LinuxMCP"); err != nil {
+		logger.Error(err, "Failed to create default LinuxMCP in tenant workspace (non-fatal)", "userID", userID)
+	}
+	if err := createDefaultMCPObject(ctx, tenantClient, mcpServerGVR, "MCPServer"); err != nil {
+		logger.Error(err, "Failed to create default MCPServer in tenant workspace (non-fatal)", "userID", userID)
 	}
 
 	logger.Info("Tenant workspace created", "userID", userID, "clusterName", clusterName)
@@ -374,6 +388,29 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 // tenant workspace identified by clusterName if it doesn't already exist.
 // Idempotent — safe to call on every login.
 func (b *Bootstrapper) EnsureDefaultKubernetesMCP(ctx context.Context, clusterName string) error {
+	return b.ensureDefaultMCP(ctx, clusterName, kubernetesMCPGVR, "KubernetesMCP")
+}
+
+// EnsureDefaultLinuxMCP creates the "default" LinuxMCP object in the tenant
+// workspace identified by clusterName if it doesn't already exist.  This is
+// the SSH/server-edge counterpart to EnsureDefaultKubernetesMCP and is invoked
+// from the same login path so both MCP servers show up automatically.
+// Idempotent.
+func (b *Bootstrapper) EnsureDefaultLinuxMCP(ctx context.Context, clusterName string) error {
+	return b.ensureDefaultMCP(ctx, clusterName, linuxMCPGVR, "LinuxMCP")
+}
+
+// EnsureDefaultMCPServer creates the "default" MCPServer (aggregate kube +
+// linux endpoint) in the tenant workspace.  Idempotent.  Counterpart to the
+// per-kind ensures; called from the same login + backfill paths.
+func (b *Bootstrapper) EnsureDefaultMCPServer(ctx context.Context, clusterName string) error {
+	return b.ensureDefaultMCP(ctx, clusterName, mcpServerGVR, "MCPServer")
+}
+
+// ensureDefaultMCP is the shared get-or-create used by EnsureDefaultKubernetesMCP
+// and EnsureDefaultLinuxMCP. An empty spec means an empty edgeSelector, which
+// matches all connected edges of the corresponding type.
+func (b *Bootstrapper) ensureDefaultMCP(ctx context.Context, clusterName string, gvr schema.GroupVersionResource, kind string) error {
 	if clusterName == "" {
 		return nil
 	}
@@ -382,26 +419,94 @@ func (b *Bootstrapper) EnsureDefaultKubernetesMCP(ctx context.Context, clusterNa
 	if err != nil {
 		return fmt.Errorf("creating tenant client for %s: %w", clusterName, err)
 	}
-	return ensureDefaultKubernetesMCP(ctx, tenantClient)
+	return createDefaultMCPObject(ctx, tenantClient, gvr, kind)
 }
 
-// ensureDefaultKubernetesMCP creates the "default" KubernetesMCP if missing.
-// An empty EdgeSelector matches all edges, enabling the multi-edge MCP endpoint
-// without manual user setup.
-func ensureDefaultKubernetesMCP(ctx context.Context, tenantClient dynamic.Interface) error {
+// createDefaultMCPObject creates a "default" object of the given MCP kind in
+// the given tenant workspace.  Empty spec = empty edgeSelector = match all
+// connected edges of that kind's edge type.  Returns nil on AlreadyExists.
+func createDefaultMCPObject(ctx context.Context, tenantClient dynamic.Interface, gvr schema.GroupVersionResource, kind string) error {
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "kedge.faros.sh/v1alpha1",
-			"kind":       "KubernetesMCP",
+			"kind":       kind,
 			"metadata": map[string]interface{}{
 				"name": "default",
 			},
 			"spec": map[string]interface{}{},
 		},
 	}
-	_, err := tenantClient.Resource(kubernetesMCPGVR).Create(ctx, obj, metav1.CreateOptions{})
+	_, err := tenantClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil && !errors.IsAlreadyExists(err) {
 		return err
+	}
+	return nil
+}
+
+// BackfillDefaultMCPs walks every tenant workspace under root:kedge:tenants
+// and ensures both kubernetesmcps/default and linuxmcps/default exist there.
+//
+// Why this exists: the per-tenant defaults are normally seeded in two places:
+//   - CreateTenantWorkspace (for brand-new workspaces)
+//   - EnsureDefault*MCP, called from the OIDC + static-token login paths
+//
+// Static-token users authenticated directly by the embedded kcp's
+// token-auth-file *bypass* the kedge proxy's login hook entirely, so they
+// never trigger the per-login backfill.  Workspaces created before LinuxMCP
+// existed also miss out on the new default.  This method runs once at hub
+// startup as a safety net so both default MCP servers always exist for every
+// tenant.  Best-effort: per-tenant errors are logged and the loop continues.
+func (b *Bootstrapper) BackfillDefaultMCPs(ctx context.Context) error {
+	logger := klog.FromContext(ctx).WithName("backfill-default-mcps")
+
+	tenantsConfig := configForPath(b.config, "root:kedge:tenants")
+	tenantsClient, err := dynamic.NewForConfig(tenantsConfig)
+	if err != nil {
+		return fmt.Errorf("creating root:kedge:tenants client: %w", err)
+	}
+
+	wsList, err := tenantsClient.Resource(workspaceGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("listing tenant workspaces: %w", err)
+	}
+
+	type gvkPair struct {
+		gvr  schema.GroupVersionResource
+		kind string
+	}
+	kinds := []gvkPair{
+		{kubernetesMCPGVR, "KubernetesMCP"},
+		{linuxMCPGVR, "LinuxMCP"},
+		{mcpServerGVR, "MCPServer"},
+	}
+
+	for _, ws := range wsList.Items {
+		userID := ws.GetName()
+		clusterName, _, _ := unstructured.NestedString(ws.Object, "spec", "cluster")
+		if clusterName == "" {
+			// Workspace not yet ready / no logical cluster assigned — skip.
+			logger.V(4).Info("skipping workspace without spec.cluster", "workspace", userID)
+			continue
+		}
+
+		// Connect by clusterName (logical cluster) which is what the rest of
+		// the system identifies tenants by — it's also what status.URL bakes
+		// into per-tenant MCP endpoint URLs.
+		tenantCfg := configForPath(b.config, clusterName)
+		tenantClient, err := dynamic.NewForConfig(tenantCfg)
+		if err != nil {
+			logger.Error(err, "skipping tenant", "userID", userID, "cluster", clusterName)
+			continue
+		}
+
+		for _, k := range kinds {
+			if err := createDefaultMCPObject(ctx, tenantClient, k.gvr, k.kind); err != nil {
+				logger.Error(err, "failed to create default in tenant (non-fatal)",
+					"userID", userID, "cluster", clusterName, "kind", k.kind)
+				continue
+			}
+		}
+		logger.V(2).Info("ensured default MCPs", "userID", userID, "cluster", clusterName)
 	}
 	return nil
 }

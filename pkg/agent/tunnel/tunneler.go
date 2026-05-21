@@ -58,7 +58,12 @@ import (
 // the hub returns an X-Kedge-Agent-Token header (token-exchange flow). The
 // callback receives the durable token string. Callers can use this to persist
 // the token locally so the agent can reconnect without the bootstrap join token.
-func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, cluster string, onAgentToken func(string), extraHeaders http.Header) {
+//
+// getToken is invoked on every connect/reconnect attempt to obtain the current
+// bearer token. Callers should return the SA token from the saved kubeconfig
+// after token-exchange has succeeded, otherwise the join token is rejected on
+// reconnect once the hub has cleared edge.Status.JoinToken.
+func StartProxyTunnel(ctx context.Context, hubURL string, getToken func() string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, cluster string, onAgentToken func(string), extraHeaders http.Header) {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "edgeName", edgeName, "resourceType", resourceType)
 
@@ -77,7 +82,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName
 		default:
 		}
 
-		err := startTunneler(ctx, hubURL, token, edgeName, resourceType, downstream, tlsConfig, stateChannel, sshPort, cluster, onAgentToken, extraHeaders)
+		err := startTunneler(ctx, hubURL, getToken, edgeName, resourceType, downstream, tlsConfig, stateChannel, sshPort, cluster, onAgentToken, extraHeaders)
 		if err != nil {
 			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
@@ -116,8 +121,17 @@ func sendTunnelState(c chan bool, v bool) {
 	}
 }
 
-func startTunneler(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, cluster string, onAgentToken func(string), extraHeaders http.Header) error {
+func startTunneler(ctx context.Context, hubURL string, getToken func() string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, cluster string, onAgentToken func(string), extraHeaders http.Header) error {
 	logger := klog.FromContext(ctx)
+
+	// Resolve the current bearer token for this connect attempt. After
+	// token-exchange the caller's closure should return the SA token rather
+	// than the bootstrap join token (which the hub clears from
+	// edge.Status.JoinToken on first successful auth).
+	token := ""
+	if getToken != nil {
+		token = getToken()
+	}
 
 	// Connect to hub's tunnel endpoint.
 	// Determine the kcp cluster name and the base hub URL (without /clusters/ path).
@@ -159,8 +173,9 @@ func startTunneler(ctx context.Context, hubURL string, token string, edgeName st
 	logger.Info("Tunnel connection established")
 	sendTunnelState(stateChannel, true)
 
-	// Create revdial listener
-	ln := revdial.NewListener(conn, revdialFunc(hubURL, token, tlsConfig))
+	// Create revdial listener. Pass the token-provider through so each new
+	// sub-connection picked up over the tunnel uses the freshest token.
+	ln := revdial.NewListener(conn, revdialFunc(hubURL, getToken, tlsConfig))
 	defer ln.Close() //nolint:errcheck
 
 	// Create and serve local HTTP server
@@ -270,8 +285,10 @@ func extractClusterNameFromToken(token string) string {
 }
 
 // revdialFunc returns the dial function used by the revdial.Listener to
-// pick up new connections from the hub.
-func revdialFunc(baseURL string, token string, tlsConfig *tls.Config) func(context.Context, string) (*websocket.Conn, *http.Response, error) {
+// pick up new connections from the hub. getToken is invoked on every dial so
+// pick-up connections track the latest bearer token (e.g. the SA token issued
+// via token-exchange) rather than the original join token.
+func revdialFunc(baseURL string, getToken func() string, tlsConfig *tls.Config) func(context.Context, string) (*websocket.Conn, *http.Response, error) {
 	return func(ctx context.Context, path string) (*websocket.Conn, *http.Response, error) {
 		u, err := url.Parse(baseURL)
 		if err != nil {
@@ -300,6 +317,10 @@ func revdialFunc(baseURL string, token string, tlsConfig *tls.Config) func(conte
 		}
 
 		header := http.Header{}
+		token := ""
+		if getToken != nil {
+			token = getToken()
+		}
 		if token != "" {
 			header.Set("Authorization", "Bearer "+token)
 		}

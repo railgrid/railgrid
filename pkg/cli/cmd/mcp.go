@@ -39,14 +39,25 @@ func newMCPCommand() *cobra.Command {
 func newMCPURLCommand() *cobra.Command {
 	var edgeName string
 	var kubernetesName string
+	var linuxName string
+	var mcpserverName string
 
 	cmd := &cobra.Command{
 		Use:   "url",
 		Short: "Print the MCP endpoint URL",
 		Long: `Prints the MCP endpoint URL derived from the current kubeconfig context.
 
-Use --name to print the KubernetesMCP multi-edge MCP endpoint URL:
+Use --mcpserver-name to print the aggregate MCPServer endpoint URL — one
+endpoint that exposes both kube and linux edges plus a list_targets tool the
+AI uses to discover what's reachable.  This is the recommended entry point
+for Claude / Cursor / similar MCP clients:
+  https://kedge.example.com/services/mcpserver/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/mcpservers/default/mcp
+
+Use --name to print the KubernetesMCP multi-edge MCP endpoint URL (kubernetes-type edges):
   https://kedge.example.com/services/mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp
+
+Use --linux-name to print the LinuxMCP multi-edge MCP endpoint URL (server-type edges, SSH transport):
+  https://kedge.example.com/services/linux-mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/linuxmcps/default/mcp
 
 Use --edge to print the per-edge MCP endpoint URL:
   https://kedge.example.com/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp
@@ -62,20 +73,38 @@ Usage with Claude Desktop (claude_desktop_config.json):
 `,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if kubernetesName == "" && edgeName == "" {
-				return fmt.Errorf("specify --name <kubernetes-mcp-name> for the multi-edge MCP endpoint, or --edge <edge-name> for the per-edge MCP endpoint")
+			set := 0
+			if kubernetesName != "" {
+				set++
 			}
-			return runMCPURL(cmd, edgeName, kubernetesName)
+			if linuxName != "" {
+				set++
+			}
+			if mcpserverName != "" {
+				set++
+			}
+			if edgeName != "" {
+				set++
+			}
+			if set == 0 {
+				return fmt.Errorf("specify exactly one of --mcpserver-name <aggregate-mcp-name>, --name <kubernetes-mcp-name>, --linux-name <linux-mcp-name>, or --edge <edge-name>")
+			}
+			if set > 1 {
+				return fmt.Errorf("--mcpserver-name, --name, --linux-name, and --edge are mutually exclusive")
+			}
+			return runMCPURL(cmd, edgeName, kubernetesName, linuxName, mcpserverName)
 		},
 	}
 
 	cmd.Flags().StringVar(&edgeName, "edge", "", "Name of the edge (for per-edge MCP endpoint)")
-	cmd.Flags().StringVar(&kubernetesName, "name", "", "Name of the Kubernetes MCP object (for multi-edge MCP endpoint)")
+	cmd.Flags().StringVar(&kubernetesName, "name", "", "Name of the KubernetesMCP object (kubernetes-type edges)")
+	cmd.Flags().StringVar(&linuxName, "linux-name", "", "Name of the LinuxMCP object (server-type edges, SSH transport)")
+	cmd.Flags().StringVar(&mcpserverName, "mcpserver-name", "", "Name of the aggregate MCPServer object (recommended — kube + linux + list_targets)")
 
 	return cmd
 }
 
-func runMCPURL(_ *cobra.Command, edgeName, kubernetesName string) error {
+func runMCPURL(_ *cobra.Command, edgeName, kubernetesName, linuxName, mcpserverName string) error {
 	// Load the current kubeconfig.
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
@@ -114,9 +143,14 @@ func runMCPURL(_ *cobra.Command, edgeName, kubernetesName string) error {
 
 	var mcpURL string
 	var mcpErr error
-	if kubernetesName != "" {
+	switch {
+	case mcpserverName != "":
+		mcpURL, mcpErr = mcpAggregateURLFromServerURL(serverURL, mcpserverName)
+	case kubernetesName != "":
 		mcpURL, mcpErr = mcpKubernetesURLFromServerURL(serverURL, kubernetesName)
-	} else {
+	case linuxName != "":
+		mcpURL, mcpErr = mcpLinuxURLFromServerURL(serverURL, linuxName)
+	default:
 		mcpURL, mcpErr = mcpURLFromServerURL(serverURL, edgeName)
 	}
 	if mcpErr != nil {
@@ -182,4 +216,30 @@ func mcpKubernetesURLFromServerURL(serverURL, kubernetesName string) (string, er
 		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
 	}
 	return apiurl.KubernetesMCPURL(base, cluster, kubernetesName), nil
+}
+
+// mcpLinuxURLFromServerURL derives the LinuxMCP endpoint URL from a kcp
+// server URL and a LinuxMCP object name.
+//
+// Input:  https://kedge.example.com/clusters/root:kedge:user-default, "default"
+// Output: https://kedge.example.com/services/linux-mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/linuxmcps/default/mcp
+func mcpLinuxURLFromServerURL(serverURL, linuxName string) (string, error) {
+	base, cluster := apiurl.SplitBaseAndCluster(serverURL)
+	if cluster == "default" {
+		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
+	}
+	return apiurl.LinuxMCPURL(base, cluster, linuxName), nil
+}
+
+// mcpAggregateURLFromServerURL derives the aggregate MCPServer endpoint URL
+// from a kcp server URL and an MCPServer object name.
+//
+// Input:  https://kedge.example.com/clusters/root:kedge:user-default, "default"
+// Output: https://kedge.example.com/services/mcpserver/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/mcpservers/default/mcp
+func mcpAggregateURLFromServerURL(serverURL, mcpserverName string) (string, error) {
+	base, cluster := apiurl.SplitBaseAndCluster(serverURL)
+	if cluster == "default" {
+		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
+	}
+	return apiurl.MCPServerURL(base, cluster, mcpserverName), nil
 }

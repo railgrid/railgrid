@@ -112,6 +112,28 @@ make lint        # golangci-lint (must be 0 issues before pushing)
 go build ./...   # must compile clean
 ```
 
+### Connecting Claude Code to a local MCP server
+
+The dev hub serves MCP endpoints over HTTPS with a self-signed cert (e.g.
+`https://localhost:9443/services/linux-mcp/.../mcp`). Claude Code's MCP client
+will refuse the connection with `SDK auth failed: self signed certificate`.
+
+For local dev, start Claude with TLS verification disabled:
+
+```bash
+NODE_TLS_REJECT_UNAUTHORIZED=0 claude
+```
+
+Or alias it:
+
+```bash
+alias claude-dev='NODE_TLS_REJECT_UNAUTHORIZED=0 claude'
+```
+
+Dev-only — this disables TLS verification for **all** HTTPS in that Claude
+session. For a scoped alternative, point `NODE_EXTRA_CA_CERTS` at the hub's
+CA file in `~/.claude/settings.json`.
+
 ---
 
 ## Running Tests

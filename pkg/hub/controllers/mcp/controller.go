@@ -111,11 +111,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	connectedCount := 0
 	for i := range edgeList.Items {
 		edge := &edgeList.Items[i]
+		// KubernetesMCP only ever targets kubernetes-type edges; server edges
+		// are served by LinuxMCP.  Mirror the filter in
+		// pkg/virtual/builder/mcp_builder.go so status.connectedEdges matches
+		// what the HTTP handler will actually expose.
+		if edge.Spec.Type != kedgev1alpha1.EdgeTypeKubernetes {
+			continue
+		}
 		if !selector.Matches(labels.Set(edge.Labels)) {
 			continue
 		}
-		key := connKeyFn(string(req.ClusterName), edge.Name)
-		if r.connManager.HasConnection(key) {
+		if r.connManager.HasConnection(connKeyFn(string(req.ClusterName), edge.Name)) {
 			connectedCount++
 		}
 	}

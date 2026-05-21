@@ -52,16 +52,22 @@ type mcpClient struct {
 // newMCPClient creates an mcpClient using the NodePort URL of the hub and the
 // kcp cluster name derived from the hub kubeconfig.
 func newMCPClient(hubKubeconfig, edgeName string) (*mcpClient, error) {
-	return newMCPClientWithKubernetes(hubKubeconfig, edgeName, "")
+	return newMCPClientFor(hubKubeconfig, edgeName, "", "")
 }
 
 // newMCPClientKubernetes creates an mcpClient that targets the Kubernetes
 // multi-edge MCP endpoint.
 func newMCPClientKubernetes(hubKubeconfig, kubernetesName string) (*mcpClient, error) {
-	return newMCPClientWithKubernetes(hubKubeconfig, "", kubernetesName)
+	return newMCPClientFor(hubKubeconfig, "", kubernetesName, "")
 }
 
-func newMCPClientWithKubernetes(hubKubeconfig, edgeName, kubernetesName string) (*mcpClient, error) {
+// newMCPClientLinux creates an mcpClient that targets the Linux multi-edge
+// MCP endpoint.
+func newMCPClientLinux(hubKubeconfig, linuxName string) (*mcpClient, error) {
+	return newMCPClientFor(hubKubeconfig, "", "", linuxName)
+}
+
+func newMCPClientFor(hubKubeconfig, edgeName, kubernetesName, linuxName string) (*mcpClient, error) {
 	nodePortBase := framework.HubNodePortURL()
 	if nodePortBase == "" {
 		return nil, fmt.Errorf("could not determine hub NodePort URL (docker inspect failed)")
@@ -79,10 +85,14 @@ func newMCPClientWithKubernetes(hubKubeconfig, edgeName, kubernetesName string) 
 	token := restCfg.BearerToken
 
 	var mcpURL string
-	if kubernetesName != "" {
+	switch {
+	case kubernetesName != "":
 		mcpURL = fmt.Sprintf("%s/services/mcp/%s/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/%s/mcp",
 			nodePortBase, clusterName, kubernetesName)
-	} else {
+	case linuxName != "":
+		mcpURL = fmt.Sprintf("%s/services/linux-mcp/%s/apis/kedge.faros.sh/v1alpha1/linuxmcps/%s/mcp",
+			nodePortBase, clusterName, linuxName)
+	default:
 		mcpURL = fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp",
 			nodePortBase, clusterName, edgeName)
 	}
@@ -442,6 +452,175 @@ func MCPKubernetes() features.Feature {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
+			return ctx
+		}).
+		Feature()
+}
+
+// MCPLinux verifies the LinuxMCP multi-edge MCP endpoint end-to-end.
+//
+// It runs a Docker openssh container as a server-type edge (reusing the same
+// fixture as SSHDockerServerModeConnect), waits for the edge to register and
+// the default LinuxMCP to pick it up, then drives the MCP protocol:
+//
+//	initialize → tools/list (expects run_command) → tools/call run_command
+//
+// The run_command call executes `echo <marker>` over SSH and asserts the
+// marker appears in the tool's stdout.
+func MCPLinux() features.Feature {
+	const dockerServerName = "e2e-lmcp-docker-server"
+	const linuxMarker = "kedge_lmcp_e2e_ok"
+
+	return features.New("MCP/LinuxMCP").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if clusterEnv == nil {
+				t.Fatal("cluster environment not found in context")
+			}
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.Login(ctx, framework.DevToken); err != nil {
+				t.Fatalf("login failed: %v", err)
+			}
+			if err := client.EdgeCreate(ctx, dockerServerName, "server"); err != nil {
+				t.Fatalf("creating server edge: %v", err)
+			}
+
+			joinToken, err := client.WaitForEdgeJoinToken(ctx, dockerServerName, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("join token not generated for edge %q: %v", dockerServerName, err)
+			}
+
+			container := &framework.ServerContainer{
+				Name:       "kedge-e2e-lmcp-docker",
+				ServerName: dockerServerName,
+				HubURL:     clusterEnv.HubURL,
+				HubCluster: framework.ClusterNameFromKubeconfig(clusterEnv.HubKubeconfig),
+				Token:      joinToken,
+				AgentBin:   framework.AgentBinPath(),
+			}
+
+			if err := container.Start(ctx); err != nil {
+				t.Fatalf("starting Docker SSH container: %v", err)
+			}
+			if err := container.WaitForAgentReady(ctx, 90*time.Second); err != nil {
+				logs, _ := container.AgentLogs(ctx)
+				t.Fatalf("agent not ready in container: %v\nlogs:\n%s", err, logs)
+			}
+
+			return framework.WithServerContainer(ctx, container)
+		}).
+		Assess("server edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if err := framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+				out, err := framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+					"get", "edges", dockerServerName,
+					"-o", "jsonpath={.status.phase},{.status.connected}",
+				)
+				if err != nil {
+					return false, nil
+				}
+				return strings.TrimSpace(out) == "Ready,true", nil
+			}); err != nil {
+				t.Fatalf("Edge %s did not become Ready: %v", dockerServerName, err)
+			}
+			return ctx
+		}).
+		Assess("LinuxMCP initialize succeeds against default LinuxMCP", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+
+			mcp, err := newMCPClientLinux(clusterEnv.HubKubeconfig, "default")
+			if err != nil {
+				t.Fatalf("creating LinuxMCP client: %v", err)
+			}
+			t.Logf("LinuxMCP URL: %s", mcp.baseURL)
+
+			if err := mcp.initialize(ctx); err != nil {
+				t.Fatalf("LinuxMCP initialize failed: %v", err)
+			}
+			return context.WithValue(ctx, mcpClientKey{}, mcp)
+		}).
+		Assess("LinuxMCP tools/list returns run_command", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			mcp, ok := ctx.Value(mcpClientKey{}).(*mcpClient)
+			if !ok || mcp == nil {
+				t.Fatal("mcpClient not found in context — initialize step may have failed")
+			}
+			names, err := mcp.toolsList(ctx)
+			if err != nil {
+				t.Fatalf("LinuxMCP tools/list failed: %v", err)
+			}
+			t.Logf("LinuxMCP tools: %v", names)
+
+			nameSet := make(map[string]bool, len(names))
+			for _, n := range names {
+				nameSet[n] = true
+			}
+			if !nameSet["run_command"] {
+				t.Errorf("expected tool 'run_command' in tools/list, got: %v", names)
+			}
+			return ctx
+		}).
+		Assess("LinuxMCP run_command echoes the marker over SSH", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			mcp, ok := ctx.Value(mcpClientKey{}).(*mcpClient)
+			if !ok || mcp == nil {
+				t.Fatal("mcpClient not found in context — initialize step may have failed")
+			}
+			result, err := mcp.toolsCall(ctx, "run_command", map[string]any{
+				"command": "echo " + linuxMarker,
+				"target":  dockerServerName,
+			})
+			if err != nil {
+				t.Fatalf("tools/call run_command failed: %v", err)
+			}
+			t.Logf("run_command result: %s", result)
+			if !strings.Contains(result, linuxMarker) {
+				t.Errorf("expected run_command output to contain %q, got: %s", linuxMarker, result)
+			}
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if container, ok := framework.ServerContainerFromContext(ctx); ok {
+				if err := container.Stop(ctx); err != nil {
+					t.Logf("warning: stopping container: %v", err)
+				}
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			_, _ = framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"delete", "edges", dockerServerName, "--ignore-not-found",
+			)
+			return ctx
+		}).
+		Feature()
+}
+
+// MCPLinuxURL verifies that `kedge mcp url --linux-name default` prints a
+// well-formed LinuxMCP endpoint URL derived from the current kubeconfig.
+func MCPLinuxURL() features.Feature {
+	return features.New("MCP/LinuxMCP/URL").
+		Assess("kedge mcp url --linux-name default prints LinuxMCP URL", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if clusterEnv == nil {
+				t.Fatal("cluster environment not found in context")
+			}
+
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			out, err := client.Run(ctx, "mcp", "url", "--linux-name", "default")
+			if err != nil {
+				t.Fatalf("kedge mcp url --linux-name failed: %v (output: %s)", err, out)
+			}
+			out = strings.TrimSpace(out)
+			t.Logf("kedge mcp url --linux-name output: %s", out)
+
+			if !strings.HasPrefix(out, "https://") {
+				t.Errorf("expected URL to start with https://, got: %s", out)
+			}
+			if !strings.Contains(out, "/services/linux-mcp/") {
+				t.Errorf("expected URL to contain /services/linux-mcp/, got: %s", out)
+			}
+			if !strings.Contains(out, "/linuxmcps/default/mcp") {
+				t.Errorf("expected URL to contain /linuxmcps/default/mcp, got: %s", out)
+			}
 			return ctx
 		}).
 		Feature()

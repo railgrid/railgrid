@@ -16,7 +16,9 @@
       "Bash(grep -E \"\\\\.\\(vue|ts\\)$\")",
       "Bash(echo \"TSC_EXIT=$?\")",
       "Bash(helm list *)",
-      "Bash(helm get *)"
+      "Bash(helm get *)",
+      "Bash(export KUBECONFIG=~/.kube/home.kubeconfig && kubectl)"
     ]
   }
 }
+  

@@ -339,6 +339,22 @@ func TestKubernetesMCPURL(t *testing.T) {
 	}
 }
 
+func TestLinuxMCPPath(t *testing.T) {
+	got := LinuxMCPPath("abc123", "default")
+	want := "/services/linux-mcp/abc123/apis/kedge.faros.sh/v1alpha1/linuxmcps/default/mcp"
+	if got != want {
+		t.Errorf("LinuxMCPPath = %q, want %q", got, want)
+	}
+}
+
+func TestLinuxMCPURL(t *testing.T) {
+	got := LinuxMCPURL("https://hub:9443", "abc123", "default")
+	want := "https://hub:9443/services/linux-mcp/abc123/apis/kedge.faros.sh/v1alpha1/linuxmcps/default/mcp"
+	if got != want {
+		t.Errorf("LinuxMCPURL = %q, want %q", got, want)
+	}
+}
+
 func TestEdgeAPIPath(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -1,36 +1,90 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import { useAuthStore } from '@/stores/auth'
-import { GET_MCP_SERVER, type GetMCPResult } from '@/graphql/queries/mcp'
-import { UPDATE_MCP, DELETE_MCP } from '@/graphql/mutations'
+import {
+  GET_MCP_SERVER,
+  GET_LINUX_MCP_SERVER,
+  GET_AGGREGATE_MCP_SERVER,
+  type GetMCPResult,
+  type GetLinuxMCPResult,
+  type GetAggregateMCPResult,
+  type MCPKind,
+} from '@/graphql/queries/mcp'
+import {
+  UPDATE_MCP, DELETE_MCP,
+  UPDATE_LINUX_MCP, DELETE_LINUX_MCP,
+  UPDATE_AGGREGATE_MCP, DELETE_AGGREGATE_MCP,
+} from '@/graphql/mutations'
 import { formatDateTimeWithAge } from '@/utils/time'
 import {
   Bot, ArrowLeft, Wifi, WifiOff, Server, Hash, Clock, Copy, Check,
-  FileCode, ChevronDown, ChevronUp, Pencil, Trash2, Shield,
+  FileCode, ChevronDown, ChevronUp, Pencil, Trash2, Shield, Terminal, Layers,
 } from 'lucide-vue-next'
 
 const props = defineProps<{ name: string }>()
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 
-const { data: rawData, loading, error, refetch } = useGraphQLQuery<GetMCPResult>(
-  GET_MCP_SERVER,
-  { name: props.name },
-  10000,
-)
-const mcp = computed(() => rawData.value?.kedge_faros_sh?.v1alpha1?.KubernetesMCP ?? null)
+// Kind comes from the ?kind= query the table appends; default to kubernetes
+// so any link minted before this page understood Linux/aggregate still works.
+const kind = computed<MCPKind>(() => {
+  switch (route.query.kind) {
+    case 'linux':
+      return 'linux'
+    case 'aggregate':
+      return 'aggregate'
+    default:
+      return 'kubernetes'
+  }
+})
+const isLinux = computed(() => kind.value === 'linux')
+const isAggregate = computed(() => kind.value === 'aggregate')
+
+// Pick the right GET query for this kind.  All three return the same MCPItem
+// shape (with optional aggregate-specific fields populated only for aggregate).
+const query = computed(() => {
+  switch (kind.value) {
+    case 'linux':
+      return GET_LINUX_MCP_SERVER
+    case 'aggregate':
+      return GET_AGGREGATE_MCP_SERVER
+    default:
+      return GET_MCP_SERVER
+  }
+})
+
+const { data: rawData, loading, error, refetch } = useGraphQLQuery<
+  GetMCPResult | GetLinuxMCPResult | GetAggregateMCPResult
+>(query.value, { name: props.name }, 10000)
+
+const mcp = computed(() => {
+  if (!rawData.value) return null
+  const v1 = rawData.value.kedge_faros_sh?.v1alpha1
+  if (!v1) return null
+  switch (kind.value) {
+    case 'linux':
+      return (v1 as GetLinuxMCPResult['kedge_faros_sh']['v1alpha1']).LinuxMCP ?? null
+    case 'aggregate':
+      return (v1 as GetAggregateMCPResult['kedge_faros_sh']['v1alpha1']).MCPServer ?? null
+    default:
+      return (v1 as GetMCPResult['kedge_faros_sh']['v1alpha1']).KubernetesMCP ?? null
+  }
+})
 
 const showYaml = ref(false)
 const editing = ref(false)
 const editToolsets = ref('')
 const editReadOnly = ref(false)
 const editMatchLabels = ref('')
+const editDisplayName = ref('')
+const editInstructions = ref('')
 const saving = ref(false)
 const saveError = ref<string | null>(null)
 const copiedField = ref<string | null>(null)
@@ -43,14 +97,52 @@ const readyCond = computed(() => mcp.value?.status?.conditions?.find((c) => c.ty
 
 const details = computed(() => {
   if (!mcp.value) return []
+  const m = mcp.value
+  // Aggregate splits counts + toolsets across the two edge kinds; per-kind
+  // CRDs report a single total/list.
+  if (isAggregate.value) {
+    const kubeCount = m.status?.kubernetesEdges ?? 0
+    const linuxCount = m.status?.linuxEdges ?? 0
+    const kubeTs = m.spec?.kubernetesToolsets?.length ? m.spec.kubernetesToolsets.join(', ') : 'defaults'
+    const linuxTs = m.spec?.linuxToolsets?.length ? m.spec.linuxToolsets.join(', ') : 'core'
+    return [
+      { label: 'Endpoint URL', value: m.status?.URL || 'Pending...', icon: Server, mono: true },
+      { label: 'Display Name', value: m.spec?.displayName || '(auto-generated)', icon: Hash },
+      { label: 'Connected Edges', value: `${kubeCount} kube · ${linuxCount} linux`, icon: Wifi },
+      { label: 'Kubernetes Toolsets', value: kubeTs, icon: Hash },
+      { label: 'Linux Toolsets', value: linuxTs, icon: Hash },
+      { label: 'Read Only', value: m.spec?.readOnly ? 'Yes' : 'No', icon: Shield },
+      { label: 'Created', value: formatDateTimeWithAge(m.metadata?.creationTimestamp), icon: Clock },
+      { label: 'UID', value: m.metadata?.uid ?? '-', icon: Hash, mono: true },
+    ]
+  }
   return [
-    { label: 'Endpoint URL', value: mcp.value.status?.URL || 'Pending...', icon: Server, mono: true },
-    { label: 'Connected Edges', value: String(mcp.value.status?.connectedEdges ?? 0), icon: Wifi },
-    { label: 'Toolsets', value: mcp.value.spec?.toolsets?.length ? mcp.value.spec.toolsets.join(', ') : 'all', icon: Hash },
-    { label: 'Read Only', value: mcp.value.spec?.readOnly ? 'Yes' : 'No', icon: Shield },
-    { label: 'Created', value: formatDateTimeWithAge(mcp.value.metadata?.creationTimestamp), icon: Clock },
-    { label: 'UID', value: mcp.value.metadata?.uid ?? '-', icon: Hash, mono: true },
+    { label: 'Endpoint URL', value: m.status?.URL || 'Pending...', icon: Server, mono: true },
+    { label: 'Display Name', value: m.spec?.displayName || '(auto-generated)', icon: Hash },
+    { label: 'Connected Edges', value: String(m.status?.connectedEdges ?? 0), icon: Wifi },
+    { label: 'Toolsets', value: m.spec?.toolsets?.length ? m.spec.toolsets.join(', ') : 'all', icon: Hash },
+    { label: 'Read Only', value: m.spec?.readOnly ? 'Yes' : 'No', icon: Shield },
+    { label: 'Created', value: formatDateTimeWithAge(m.metadata?.creationTimestamp), icon: Clock },
+    { label: 'UID', value: m.metadata?.uid ?? '-', icon: Hash, mono: true },
   ]
+})
+
+// instructionsDisplay surfaces spec.instructions as a separate "card" below
+// the details table — long text doesn't fit a row well and we want it
+// rendered in a monospace block so the operator can see exactly what the
+// LLM will see on initialize.
+const instructionsDisplay = computed(() => mcp.value?.spec?.instructions ?? '')
+
+// connectedTotal collapses the aggregate's two counters into one number for
+// the page-header "X edges connected" pill so the existing template doesn't
+// need to branch.
+const connectedTotal = computed(() => {
+  const m = mcp.value
+  if (!m) return 0
+  if (isAggregate.value) {
+    return (m.status?.kubernetesEdges ?? 0) + (m.status?.linuxEdges ?? 0)
+  }
+  return m.status?.connectedEdges ?? 0
 })
 
 const edgeSelectorDisplay = computed(() => {
@@ -103,6 +195,8 @@ function startEdit() {
   if (!mcp.value) return
   editToolsets.value = mcp.value.spec?.toolsets?.join(', ') ?? ''
   editReadOnly.value = mcp.value.spec?.readOnly ?? false
+  editDisplayName.value = mcp.value.spec?.displayName ?? ''
+  editInstructions.value = mcp.value.spec?.instructions ?? ''
   const labels = mcp.value.spec?.edgeSelector?.matchLabels
   editMatchLabels.value = labels
     ? Object.entries(labels).map(([k, v]) => `${k}=${v}`).join(', ')
@@ -122,6 +216,12 @@ async function saveEdit() {
     if (editToolsets.value.trim()) {
       spec.toolsets = editToolsets.value.split(',').map((s) => s.trim()).filter(Boolean)
     }
+    if (editDisplayName.value.trim()) {
+      spec.displayName = editDisplayName.value.trim()
+    }
+    if (editInstructions.value.trim()) {
+      spec.instructions = editInstructions.value.trim()
+    }
     if (editMatchLabels.value.trim()) {
       spec.edgeSelector = {
         matchLabels: Object.fromEntries(
@@ -132,7 +232,12 @@ async function saveEdit() {
         ),
       }
     }
-    await graphqlMutate(UPDATE_MCP, {
+    const updateMutation = isAggregate.value
+      ? UPDATE_AGGREGATE_MCP
+      : isLinux.value
+      ? UPDATE_LINUX_MCP
+      : UPDATE_MCP
+    await graphqlMutate(updateMutation, {
       name: props.name,
       object: { spec },
     })
@@ -153,7 +258,12 @@ async function handleDelete() {
   deleteBusy.value = true
   deleteError.value = null
   try {
-    await graphqlMutate(DELETE_MCP, { name: props.name })
+    const deleteMutation = isAggregate.value
+      ? DELETE_AGGREGATE_MCP
+      : isLinux.value
+      ? DELETE_LINUX_MCP
+      : DELETE_MCP
+    await graphqlMutate(deleteMutation, { name: props.name })
     router.push('/mcp')
   } catch (e) {
     deleteError.value = e instanceof Error ? e.message : 'Delete failed'
@@ -205,8 +315,16 @@ async function copySnippet(builder: (token: string) => string, field: string) {
           <div class="flex items-start gap-4">
             <div class="relative flex h-14 w-14 shrink-0 items-center justify-center">
               <div class="absolute inset-0 rounded-xl bg-accent/15 blur-md" />
-              <div class="relative flex h-14 w-14 items-center justify-center rounded-xl border border-accent/20 bg-surface-overlay">
-                <Bot class="h-7 w-7 text-accent" :stroke-width="1.5" />
+              <div
+                class="relative flex h-14 w-14 items-center justify-center rounded-xl border bg-surface-overlay"
+                :class="isAggregate ? 'border-success/30' : isLinux ? 'border-warning/30' : 'border-accent/20'"
+              >
+                <component
+                  :is="isAggregate ? Layers : isLinux ? Terminal : Bot"
+                  class="h-7 w-7"
+                  :class="isAggregate ? 'text-success' : isLinux ? 'text-warning' : 'text-accent'"
+                  :stroke-width="1.5"
+                />
               </div>
             </div>
             <div class="flex-1">
@@ -223,12 +341,12 @@ async function copySnippet(builder: (token: string) => string, field: string) {
               <div class="mt-1.5 flex items-center gap-4 text-[12px] text-text-muted">
                 <div class="flex items-center gap-1.5">
                   <component
-                    :is="(mcp.status?.connectedEdges ?? 0) > 0 ? Wifi : WifiOff"
+                    :is="connectedTotal > 0 ? Wifi : WifiOff"
                     class="h-3 w-3"
-                    :class="(mcp.status?.connectedEdges ?? 0) > 0 ? 'text-success' : 'text-danger'"
+                    :class="connectedTotal > 0 ? 'text-success' : 'text-danger'"
                     :stroke-width="1.75"
                   />
-                  {{ mcp.status?.connectedEdges ?? 0 }} edges connected
+                  {{ connectedTotal }} edges connected
                 </div>
                 <span class="font-mono text-[11px] text-text-muted/60">{{ edgeSelectorDisplay }}</span>
               </div>
@@ -267,6 +385,22 @@ async function copySnippet(builder: (token: string) => string, field: string) {
               </dd>
             </div>
           </dl>
+
+          <!-- Custom MCP Instructions block (only shown when the operator has
+               set spec.instructions to override the auto-generated context). -->
+          <div
+            v-if="instructionsDisplay"
+            class="mt-6 rounded-xl border border-border-subtle bg-surface-overlay/60 p-4"
+          >
+            <div class="flex items-center gap-2 mb-2">
+              <FileCode class="h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
+              <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+                Custom MCP Instructions
+              </span>
+              <span class="text-[10px] text-text-muted/70">forwarded to the LLM on every initialize</span>
+            </div>
+            <pre class="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-text-secondary">{{ instructionsDisplay }}</pre>
+          </div>
         </div>
 
         <!-- Conditions + config snippets (right column) -->
@@ -387,6 +521,28 @@ async function copySnippet(builder: (token: string) => string, field: string) {
                   class="h-4 w-4 rounded border-border-subtle accent-accent"
                 />
                 <label for="edit-readonly" class="text-[12px] text-text-secondary">Read-only mode</label>
+              </div>
+
+              <!-- MCP metadata overrides (optional). -->
+              <div>
+                <label class="block text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1">Display Name (optional)</label>
+                <input
+                  v-model="editDisplayName"
+                  type="text"
+                  placeholder="(auto-generated if empty)"
+                  class="w-full rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 text-[12px] text-text-primary placeholder:text-text-muted/40 focus:border-accent/50 focus:outline-none"
+                />
+                <p class="mt-1 text-[10px] text-text-muted">Shown in MCP client server pickers.</p>
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1">LLM Instructions (optional)</label>
+                <textarea
+                  v-model="editInstructions"
+                  rows="4"
+                  placeholder="(auto-generated if empty)"
+                  class="w-full rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 font-mono text-[11px] text-text-primary placeholder:text-text-muted/40 focus:border-accent/50 focus:outline-none resize-y"
+                ></textarea>
+                <p class="mt-1 text-[10px] text-text-muted">System-prompt context forwarded to the LLM on initialize. Use for env-specific guardrails.</p>
               </div>
             </div>
 

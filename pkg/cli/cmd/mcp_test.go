@@ -140,3 +140,101 @@ func TestMCPKubernetesURLFromServerURL(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPLinuxURLFromServerURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		serverURL  string
+		linuxName  string
+		wantURL    string
+		wantErrMsg string
+	}{
+		{
+			name:      "standard kcp URL with default",
+			serverURL: "https://kedge.localhost:9443/clusters/root:kedge:user-default",
+			linuxName: "default",
+			wantURL:   "https://kedge.localhost:9443/services/linux-mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/linuxmcps/default/mcp",
+		},
+		{
+			name:      "custom LinuxMCP name",
+			serverURL: "https://hub.example.com/clusters/root",
+			linuxName: "my-linux-mcp",
+			wantURL:   "https://hub.example.com/services/linux-mcp/root/apis/kedge.faros.sh/v1alpha1/linuxmcps/my-linux-mcp/mcp",
+		},
+		{
+			name:       "no /clusters/ path returns error",
+			serverURL:  "https://kedge.localhost:9443",
+			linuxName:  "default",
+			wantErrMsg: "cannot determine cluster name",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := mcpLinuxURLFromServerURL(tc.serverURL, tc.linuxName)
+
+			if tc.wantErrMsg != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil (url=%q)", tc.wantErrMsg, got)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantURL {
+				t.Errorf("mcpLinuxURLFromServerURL(%q, %q)\n  got:  %q\n  want: %q", tc.serverURL, tc.linuxName, got, tc.wantURL)
+			}
+		})
+	}
+}
+
+func TestMCPAggregateURLFromServerURL(t *testing.T) {
+	tests := []struct {
+		name          string
+		serverURL     string
+		mcpserverName string
+		wantURL       string
+		wantErrMsg    string
+	}{
+		{
+			name:          "standard kcp URL with default",
+			serverURL:     "https://kedge.localhost:9443/clusters/root:kedge:user-default",
+			mcpserverName: "default",
+			wantURL:       "https://kedge.localhost:9443/services/mcpserver/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/mcpservers/default/mcp",
+		},
+		{
+			name:          "custom MCPServer name",
+			serverURL:     "https://hub.example.com/clusters/root",
+			mcpserverName: "prod",
+			wantURL:       "https://hub.example.com/services/mcpserver/root/apis/kedge.faros.sh/v1alpha1/mcpservers/prod/mcp",
+		},
+		{
+			name:          "no /clusters/ path returns error",
+			serverURL:     "https://kedge.localhost:9443",
+			mcpserverName: "default",
+			wantErrMsg:    "cannot determine cluster name",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := mcpAggregateURLFromServerURL(tc.serverURL, tc.mcpserverName)
+
+			if tc.wantErrMsg != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil (url=%q)", tc.wantErrMsg, got)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantURL {
+				t.Errorf("mcpAggregateURLFromServerURL(%q, %q)\n  got:  %q\n  want: %q", tc.serverURL, tc.mcpserverName, got, tc.wantURL)
+			}
+		})
+	}
+}

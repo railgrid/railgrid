@@ -50,7 +50,9 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
+	linuxmcpcontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/linuxmcp"
 	mcpcontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/mcp"
+	mcpservercontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/mcpserver"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
@@ -202,6 +204,10 @@ func (s *Server) Run(ctx context.Context) error {
 		// may not be globally accessible from the base config.
 		logger.Error(err, "Failed to create default KubernetesMCP (non-fatal)")
 	}
+	// Create the default LinuxMCP object (all-server-edges SSH MCP server).
+	if err := ensureDefaultLinuxMCP(ctx, dynamicClient); err != nil {
+		logger.Error(err, "Failed to create default LinuxMCP (non-fatal)")
+	}
 
 	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
 
@@ -278,6 +284,14 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		logger.Info("kcp bootstrap complete")
 
+		// Backfill default MCP objects (KubernetesMCP and LinuxMCP) in every
+		// pre-existing tenant workspace.  Best-effort safety net for
+		// static-token users (who bypass the proxy's per-login seed) and for
+		// workspaces created before either default existed.
+		if err := bootstrapper.BackfillDefaultMCPs(ctx); err != nil {
+			logger.Error(err, "Backfill default MCPs failed (non-fatal)")
+		}
+
 		// Create user client targeting root:kedge:users workspace.
 		userDynamic, err := dynamic.NewForConfig(bootstrapper.UsersConfig())
 		if err != nil {
@@ -337,6 +351,12 @@ func (s *Server) Run(ctx context.Context) error {
 	// KubernetesMCP multi-edge MCP handler:
 	//   /services/mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
 	router.PathPrefix(apiurl.PathPrefixMCP + "/").Handler(http.StripPrefix(apiurl.PathPrefixMCP, vws.KubernetesMCPHandler()))
+	// LinuxMCP multi-edge MCP handler (server-type edges, SSH transport):
+	//   /services/linux-mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/linuxmcps/{name}/mcp
+	router.PathPrefix(apiurl.PathPrefixLinuxMCP + "/").Handler(http.StripPrefix(apiurl.PathPrefixLinuxMCP, vws.LinuxMCPHandler()))
+	// MCPServer aggregate (kube + linux edges in one endpoint, plus list_targets):
+	//   /services/mcpserver/{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp
+	router.PathPrefix(apiurl.PathPrefixMCPServer + "/").Handler(http.StripPrefix(apiurl.PathPrefixMCPServer, vws.MCPServerHandler()))
 	// Per-edge MCP is served under the agent-proxy route:
 	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
 
@@ -475,6 +495,12 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		if err := mcpcontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
 			return fmt.Errorf("setting up kubernetes-mcp controller: %w", err)
+		}
+		if err := linuxmcpcontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
+			return fmt.Errorf("setting up linux-mcp controller: %w", err)
+		}
+		if err := mcpservercontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
+			return fmt.Errorf("setting up mcpserver controller: %w", err)
 		}
 		go func() {
 			logger.Info("Starting multicluster manager")
@@ -638,13 +664,32 @@ var kubernetesMCPGVR = schema.GroupVersionResource{
 	Resource: "kubernetesmcps",
 }
 
+// linuxMCPGVR is the GroupVersionResource for LinuxMCP.
+var linuxMCPGVR = schema.GroupVersionResource{
+	Group:    "kedge.faros.sh",
+	Version:  "v1alpha1",
+	Resource: "linuxmcps",
+}
+
 // ensureDefaultKubernetesMCP creates a default KubernetesMCP object named "default"
 // (with an empty edge selector — matches all edges) if it doesn't exist.
 func ensureDefaultKubernetesMCP(ctx context.Context, dynClient dynamic.Interface) error {
+	return ensureDefaultMCP(ctx, dynClient, kubernetesMCPGVR, "KubernetesMCP")
+}
+
+// ensureDefaultLinuxMCP creates a default LinuxMCP object named "default"
+// (with an empty edge selector — matches all server-type edges) if it doesn't
+// already exist.
+func ensureDefaultLinuxMCP(ctx context.Context, dynClient dynamic.Interface) error {
+	return ensureDefaultMCP(ctx, dynClient, linuxMCPGVR, "LinuxMCP")
+}
+
+// ensureDefaultMCP is the shared get-or-create helper used by both MCP CRDs.
+func ensureDefaultMCP(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, kind string) error {
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "kedge.faros.sh/v1alpha1",
-			"kind":       "KubernetesMCP",
+			"kind":       kind,
 			"metadata": map[string]interface{}{
 				"name": "default",
 			},
@@ -652,17 +697,17 @@ func ensureDefaultKubernetesMCP(ctx context.Context, dynClient dynamic.Interface
 		},
 	}
 
-	_, err := dynClient.Resource(kubernetesMCPGVR).Get(ctx, "default", metav1.GetOptions{})
+	_, err := dynClient.Resource(gvr).Get(ctx, "default", metav1.GetOptions{})
 	if err == nil {
-		return nil // already exists
+		return nil
 	}
 	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("checking for default KubernetesMCP: %w", err)
+		return fmt.Errorf("checking for default %s: %w", kind, err)
 	}
 
-	_, err = dynClient.Resource(kubernetesMCPGVR).Create(ctx, obj, metav1.CreateOptions{})
+	_, err = dynClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating default KubernetesMCP: %w", err)
+		return fmt.Errorf("creating default %s: %w", kind, err)
 	}
 	return nil
 }
