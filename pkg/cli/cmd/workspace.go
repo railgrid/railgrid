@@ -32,5 +32,13 @@ func newWorkspaceCommand() *cobra.Command {
 		// shouldn't happen. Panic rather than silently returning nil.
 		panic(err)
 	}
+	// Surface the kcp workspace command under the kedge-native name `connect`,
+	// which matches what users actually do: connect to a specific edge cluster.
+	// `kedge connect <edge>` enters its mount; `kedge connect :` returns to the
+	// hub root, effectively disconnecting. Keep the old names as aliases so
+	// existing muscle memory and docs keep working.
+	wsCmd.Use = "connect [<edge>|:|..|.|-|~|<root:absolute:workspace>] [-i|--interactive]"
+	wsCmd.Short = "Connect to (or disconnect from) an edge cluster — use ':' to return to the hub root"
+	wsCmd.Aliases = []string{"ws", "workspace", "workspaces"}
 	return wsCmd
 }

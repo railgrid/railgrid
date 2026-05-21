@@ -136,6 +136,16 @@ const mcpCommand = computed(() => {
   return `kedge mcp url --edge ${props.name}`
 })
 
+const connectCommand = computed(() => {
+  if (!isK8sType.value || !edge.value?.status?.connected) return ''
+  return `kedge connect ${props.name}`
+})
+
+const disconnectCommand = computed(() => {
+  if (!isK8sType.value || !edge.value?.status?.connected) return ''
+  return 'kedge connect :'
+})
+
 const hasAccessCommands = computed(() => {
   return (isServerType.value && sshCommand.value) || (isK8sType.value && mcpCommand.value)
 })
@@ -720,10 +730,10 @@ kubectl krew install faros/kedge</pre>
             </div>
           </div>
 
-          <!-- MCP Command for Kubernetes Type -->
+          <!-- MCP / kubectl access for Kubernetes Type -->
           <div v-if="isK8sType && mcpCommand" class="space-y-3">
             <div class="text-[12px] text-text-secondary mb-2">
-              Connect to this Kubernetes cluster via WebSocket (MCP):
+              Print the per-edge MCP endpoint (paste into Claude / Cursor):
             </div>
             <div class="rounded-lg bg-surface/80 p-3">
               <div class="flex items-center justify-between mb-1">
@@ -737,6 +747,37 @@ kubectl krew install faros/kedge</pre>
                 </button>
               </div>
               <pre class="font-mono text-[11px] text-text-secondary">{{ mcpCommand }}</pre>
+            </div>
+
+            <div class="text-[12px] text-text-secondary mb-2 mt-3">
+              Point your kubeconfig at this cluster (then <code class="font-mono text-[11px]">kubectl</code> talks to it directly):
+            </div>
+            <div class="rounded-lg bg-surface/80 p-3">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] font-medium text-text-muted">Connect</span>
+                <button
+                  class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  @click="copyToClipboard(connectCommand, 'connect')"
+                >
+                  <component :is="copiedField === 'connect' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                  {{ copiedField === 'connect' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre class="font-mono text-[11px] text-text-secondary">{{ connectCommand }}</pre>
+            </div>
+
+            <div class="rounded-lg bg-surface/80 p-3">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] font-medium text-text-muted">Disconnect (return to hub root)</span>
+                <button
+                  class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  @click="copyToClipboard(disconnectCommand, 'disconnect')"
+                >
+                  <component :is="copiedField === 'disconnect' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                  {{ copiedField === 'disconnect' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre class="font-mono text-[11px] text-text-secondary">{{ disconnectCommand }}</pre>
             </div>
           </div>
         </div>

@@ -17,12 +17,15 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
 func newMCPCommand() *cobra.Command {
@@ -167,18 +170,23 @@ func runMCPURL(_ *cobra.Command, edgeName, kubernetesName, linuxName, mcpserverN
 		}
 	}
 
+	// Derive the MCP server name for the `claude mcp add` hint.
+	// For per-edge endpoints, query the edge type so the name reflects
+	// what's being connected (<edge>-kubernetes-cluster or <edge>-server).
+	mcpName := mcpServerName(edgeName, kubernetesName, linuxName, mcpserverName)
+
 	fmt.Println()
 	fmt.Println("To add this MCP server to Claude Code:")
 	if token != "" {
-		fmt.Printf("  claude mcp add --transport http kedge \"%s\" -H \"Authorization: Bearer %s\"\n", mcpURL, token)
+		fmt.Printf("  claude mcp add --transport http %s \"%s\" -H \"Authorization: Bearer %s\"\n", mcpName, mcpURL, token)
 	} else {
-		fmt.Printf("  claude mcp add --transport http kedge \"%s\" -H \"Authorization: Bearer <your-token>\"\n", mcpURL)
+		fmt.Printf("  claude mcp add --transport http %s \"%s\" -H \"Authorization: Bearer <your-token>\"\n", mcpName, mcpURL)
 	}
 	fmt.Println()
 	fmt.Println("To add to Claude Desktop (claude_desktop_config.json):")
 	fmt.Println("  {")
 	fmt.Println("    \"mcpServers\": {")
-	fmt.Println("      \"kedge\": {")
+	fmt.Printf("      \"%s\": {\n", mcpName)
 	fmt.Printf("        \"url\": \"%s\",\n", mcpURL)
 	if token != "" {
 		fmt.Printf("        \"headers\": { \"Authorization\": \"Bearer %s\" }\n", token)
@@ -189,6 +197,44 @@ func runMCPURL(_ *cobra.Command, edgeName, kubernetesName, linuxName, mcpserverN
 	fmt.Println("    }")
 	fmt.Println("  }")
 	return nil
+}
+
+// mcpServerName chooses a friendly identifier for the `claude mcp add` name
+// argument. Per-edge endpoints are suffixed with the edge type so users can
+// tell at a glance what each registered server connects to.
+func mcpServerName(edgeName, kubernetesName, linuxName, mcpserverName string) string {
+	switch {
+	case mcpserverName != "":
+		return mcpserverName
+	case kubernetesName != "":
+		return kubernetesName + "-kubernetes-cluster"
+	case linuxName != "":
+		return linuxName + "-server"
+	case edgeName != "":
+		suffix := edgeTypeSuffix(edgeName)
+		return edgeName + suffix
+	}
+	return "kedge"
+}
+
+// edgeTypeSuffix returns a suffix matching the edge's spec.type. Failure to
+// resolve the type (e.g. no kubeconfig, RBAC) falls back to a generic suffix
+// so the command still emits a usable hint.
+func edgeTypeSuffix(edgeName string) string {
+	dynClient, err := loadDynamicClient()
+	if err != nil {
+		return "-kubernetes-cluster"
+	}
+	edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(context.Background(), edgeName, metav1.GetOptions{})
+	if err != nil {
+		return "-kubernetes-cluster"
+	}
+	switch getNestedString(*edge, "spec", "type") {
+	case "server":
+		return "-server"
+	default:
+		return "-kubernetes-cluster"
+	}
 }
 
 // mcpURLFromServerURL derives the per-edge MCP endpoint URL from a kcp server URL and edge name.
