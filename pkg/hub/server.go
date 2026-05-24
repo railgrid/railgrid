@@ -56,6 +56,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	"github.com/faroshq/faros-kedge/pkg/hub/providers"
 	"github.com/faroshq/faros-kedge/pkg/server/auth"
 	"github.com/faroshq/faros-kedge/pkg/server/proxy"
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
@@ -360,6 +361,20 @@ func (s *Server) Run(ctx context.Context) error {
 	// Per-edge MCP is served under the agent-proxy route:
 	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
 
+	// Provider extension proxies (Phase 1A — see docs/providers.md).
+	// The proxies key off an in-memory registry that the catalog controller
+	// (wired below alongside other multicluster controllers) keeps in sync
+	// with ProviderCatalogEntry resources.
+	providerRegistry := providers.NewRegistry()
+	router.PathPrefix(apiurl.PathPrefixProvidersUI + "/").Handler(providers.NewUIProxy(providerRegistry, logger))
+	router.PathPrefix(apiurl.PathPrefixProvidersProxy + "/").Handler(providers.NewBackendProxy(providerRegistry, logger))
+	router.Handle(providers.PathListProviders, providers.NewListHandler(providerRegistry)).Methods("GET")
+	// Heartbeat endpoint matches /api/providers/{name}/heartbeat. The
+	// parsing happens inside the handler; gorilla/mux just needs the prefix.
+	router.PathPrefix(providers.PathProviderHeartbeat + "/").Handler(providers.NewHeartbeatHandler(providerRegistry, logger)).Methods("POST")
+	// Background sweeper marks providers stale when heartbeats stop.
+	go providers.RunSweeper(ctx, providerRegistry, logger)
+
 	// GraphQL: either embedded (in-process) or external reverse proxy.
 	// graphqlGroup is non-nil when embedded mode is active; we wait on it after
 	// the HTTP server exits so the listener/gateway goroutines are cleanly joined.
@@ -502,6 +517,37 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := mcpservercontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
 			return fmt.Errorf("setting up mcpserver controller: %w", err)
 		}
+		// Provider-catalog reconciler runs against a SECOND multicluster
+		// manager bound to the providers.kedge.faros.sh APIExport. That
+		// APIExport is intentionally absent from core.faros.sh (see
+		// hack/gen-core-apiexport) so tenants cannot see or create catalog
+		// entries. The hub binds it once in root:kedge:providers (during
+		// kcp bootstrap, ensureProvidersSelfBinding) and reconciles there.
+		providersExportProvider, err := apiexport.New(providersConfig, "providers.kedge.faros.sh", apiexport.Options{Scheme: scheme})
+		if err != nil {
+			return fmt.Errorf("creating providers.kedge.faros.sh multicluster provider: %w", err)
+		}
+		providersMgr, err := mcmanager.New(providersConfig, providersExportProvider, manager.Options{
+			Scheme:  scheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
+		})
+		if err != nil {
+			return fmt.Errorf("creating providers multicluster manager: %w", err)
+		}
+		if err := providers.SetupCatalogWithManager(providersMgr, providerRegistry, kcpConfig, providers.CatalogReconcilerOptions{
+			HubExternalURL: s.opts.HubExternalURL,
+			// HostSecretWriter intentionally left nil for now: kedge-hub
+			// doesn't yet take a host-cluster kubeconfig flag. Real
+			// deployments will wire this when --kubeconfig is provided.
+		}); err != nil {
+			return fmt.Errorf("setting up provider catalog controller: %w", err)
+		}
+		go func() {
+			logger.Info("Starting providers multicluster manager")
+			if err := providersMgr.Start(ctx); err != nil {
+				logger.Error(err, "Providers multicluster manager failed")
+			}
+		}()
 		go func() {
 			logger.Info("Starting multicluster manager")
 			if err := mgr.Start(ctx); err != nil {
@@ -533,7 +579,7 @@ func (s *Server) Run(ctx context.Context) error {
 				// base=/ui/ so it already expects /ui/*.
 			},
 		}
-		portalSPA = devProxy
+		portalSPA = WithPortalSecurityHeaders(devProxy)
 		portalAvailable = true
 		logger.Info("Portal dev proxy enabled", "target", s.opts.PortalDevURL)
 	} else if h, portalErr := registerPortalRoutes(router); portalErr != nil {

@@ -91,5 +91,5 @@ func registerPortalRoutes(router *mux.Router) (http.Handler, error) {
 		fileServer.ServeHTTP(w, r)
 	})
 
-	return spaHandler, nil
+	return WithPortalSecurityHeaders(spaHandler), nil
 }

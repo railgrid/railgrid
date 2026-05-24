@@ -26,6 +26,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
+	providersv1alpha1 "github.com/faroshq/faros-kedge/apis/providers/v1alpha1"
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 )
 
@@ -36,6 +37,7 @@ func NewScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
 	utilruntime.Must(kedgev1alpha1.AddToScheme(s))
+	utilruntime.Must(providersv1alpha1.AddToScheme(s))
 	utilruntime.Must(tenancyv1alpha1.AddToScheme(s))
 	utilruntime.Must(corev1alpha1.AddToScheme(s))
 	utilruntime.Must(kcptenancyv1alpha1.AddToScheme(s))

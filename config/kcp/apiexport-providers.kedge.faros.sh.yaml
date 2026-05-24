@@ -1,0 +1,12 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: providers.kedge.faros.sh
+spec:
+  resources:
+  - group: providers.kedge.faros.sh
+    name: catalogentries
+    schema: v260522-05ca01f.catalogentries.providers.kedge.faros.sh
+    storage:
+      crd: {}
+status: {}

@@ -1,0 +1,88 @@
+# Quickstart provider — register with the kedge hub.
+#
+# Apply this against the kcp workspace where the kedge.faros.sh APIExport is
+# bound (typically the user's tenant workspace, or root:kedge:providers when
+# running embedded kcp for development).
+#
+#   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
+#
+# For local dev with the provider binary running on the host machine:
+#   - spec.ui.url / spec.backend.url point at host.docker.internal or the
+#     loopback the hub can reach. Override below as needed.
+#
+# For in-cluster deployment, change the URLs to the Service DNS, e.g.
+#   url: http://quickstart.providers.svc.cluster.local:8081
+---
+apiVersion: providers.kedge.faros.sh/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: quickstart
+spec:
+  displayName: "Quickstart"
+  description: "Reference provider demonstrating the kedge plugin surface."
+  vendor: "kedge"
+  version: "0.1.0"
+  iconURL: "/ui/providers/quickstart/icon.svg"
+  serviceAccountNamespace: "quickstart"
+  ui:
+    url: "http://localhost:8081"
+    indexPath: "/"
+  backend:
+    url: "http://localhost:8081"
+    healthPath: "/healthz"
+  # Provider-owned APIExport. The hub catalog controller materializes the
+  # sub-workspace root:kedge:providers:quickstart, applies the inline
+  # APIResourceSchema(s), and creates an APIExport that tenants can bind
+  # to. Phase 3 will wire the tenant-side Enable flow.
+  apiExport:
+    name: "quickstart.providers.kedge.faros.sh"
+    # Sample permission claim so the portal's Enable dialog has something to
+    # render. The quickstart provider does not actually read configmaps —
+    # this is purely for demonstration. Marked tenantScoped so the dialog
+    # pre-checks it as safe-to-accept.
+    permissionClaims:
+      - resource: configmaps
+        verbs: [get, list, watch]
+        tenantScoped: true
+    schemas:
+      - groupResource: "greetings.quickstart.providers.kedge.faros.sh"
+        # Schema body is applied verbatim into the sub-workspace. The name
+        # must include a content-version segment because kcp treats
+        # APIResourceSchemas as immutable; a body change requires a new name.
+        body: |
+          apiVersion: apis.kcp.io/v1alpha1
+          kind: APIResourceSchema
+          metadata:
+            name: v260522-001.greetings.quickstart.providers.kedge.faros.sh
+          spec:
+            group: quickstart.providers.kedge.faros.sh
+            names:
+              kind: Greeting
+              listKind: GreetingList
+              plural: greetings
+              singular: greeting
+            scope: Namespaced
+            versions:
+              - name: v1alpha1
+                served: true
+                storage: true
+                subresources:
+                  status: {}
+                schema:
+                  type: object
+                  properties:
+                    apiVersion: { type: string }
+                    kind: { type: string }
+                    metadata: { type: object }
+                    spec:
+                      type: object
+                      properties:
+                        message:
+                          type: string
+                          maxLength: 256
+                    status:
+                      type: object
+                      properties:
+                        observedAt:
+                          type: string
+                          format: date-time

@@ -105,6 +105,38 @@ make dev-run-edge   TYPE=server                    # run server agent (reads .en
 make dev-edge-create TYPE=server DEV_EDGE_NAME=my-server  # custom name
 ```
 
+### Provider quickstart (local dev)
+
+The `providers/quickstart/` reference provider validates the platform's
+plugin surface end-to-end. After the hub is running, three commands wire
+everything up:
+
+```bash
+# Terminal 1 — the hub (gives you a kcp admin kubeconfig at .kcp/admin.kubeconfig)
+make run-hub-embedded-static
+
+# Terminal 2 — admin: register the CatalogEntry in root:kedge:providers
+make install-provider-quickstart
+
+# Terminal 3 — tenant: run the provider binary; it heartbeats to the hub
+make run-provider-quickstart
+```
+
+Now open the portal at `https://localhost:9443/ui/providers`, click
+**Enable** on Quickstart, confirm the permission claim dialog, and
+`kubectl get greetings.quickstart.providers.kedge.faros.sh` will work in
+your tenant workspace.
+
+To iterate on the manifest, `make uninstall-provider-quickstart` removes
+the catalog entry; re-running `install-provider-quickstart` reapplies.
+
+Override the port/URL/token via env if you're running multiple instances:
+
+```bash
+QUICKSTART_PORT=8090 QUICKSTART_HUB_URL=https://localhost:9443 \
+  make run-provider-quickstart
+```
+
 ### Lint
 
 ```bash

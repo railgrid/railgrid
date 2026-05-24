@@ -1,0 +1,342 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: catalogentries.providers.kedge.faros.sh
+spec:
+  group: providers.kedge.faros.sh
+  names:
+    kind: CatalogEntry
+    listKind: CatalogEntryList
+    plural: catalogentries
+    shortNames:
+    - ce
+    singular: catalogentry
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.displayName
+      name: DisplayName
+      type: string
+    - jsonPath: .status.reportedVersion
+      name: Version
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CatalogEntry registers a third-party extension ("provider") with the hub.
+          Provider chart admins create one of these to advertise UI, backend, and
+          APIExport endpoints. The hub's catalog controller projects it into a
+          routing table that backs /ui/providers/{name}/* and
+          /services/providers/{name}/*.
+
+          The group is providers.kedge.faros.sh, so the fully-qualified name reads
+          "catalogentries.providers.kedge.faros.sh" — no redundant "Provider"
+          prefix on the kind itself.
+
+          Phase 1A note: workspace/ServiceAccount/Secret provisioning and inline
+          APIResourceSchema apply are NOT yet implemented (see docs/providers.md).
+          This iteration only honors spec.ui.url and spec.backend.url to route HTTP.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CatalogEntrySpec defines the desired state of a CatalogEntry.
+            properties:
+              apiExport:
+                description: |-
+                  APIExport declares the provider's kcp APIExport. Not yet honored by
+                  the hub (Phase 1B will wire it up).
+                properties:
+                  name:
+                    description: |-
+                      Name is the APIExport name (also the API group binding consumers
+                      reference).
+                    minLength: 1
+                    type: string
+                  permissionClaims:
+                    description: |-
+                      PermissionClaims mirrors the APIExport's permissionClaims for display
+                      in the Enable dialog. Each claim must be marked TenantScoped=true to
+                      be auto-acceptable.
+                    items:
+                      description: |-
+                        ProviderPermissionClaim describes a permission the provider's APIExport
+                        claims against bound tenants' workspaces.
+                      properties:
+                        group:
+                          description: Group is the API group (empty for core).
+                          type: string
+                        resource:
+                          description: Resource is the resource name (plural).
+                          minLength: 1
+                          type: string
+                        tenantScoped:
+                          description: |-
+                            TenantScoped declares the claim is bounded to the binding tenant's own
+                            workspace. Non-tenant-scoped claims are refused unless an admin sets
+                            the kedge.faros.sh/accept-untrusted-claims annotation on the
+                            CatalogEntry.
+                          type: boolean
+                        verbs:
+                          description: Verbs are the requested verbs.
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - resource
+                      type: object
+                    type: array
+                  schemas:
+                    description: |-
+                      Schemas are inline APIResourceSchema bodies the hub will apply to the
+                      provider's workspace. Not yet honored (Phase 1B).
+                    items:
+                      description: |-
+                        ProviderAPIResourceSchema is an inline APIResourceSchema definition the hub
+                        applies to the provider's workspace on first reconcile.
+                      properties:
+                        body:
+                          description: Body is the full APIResourceSchema YAML as
+                            a string.
+                          minLength: 1
+                          type: string
+                        groupResource:
+                          description: GroupResource identifies the schema (e.g. "greetings.cost.faros.sh").
+                          minLength: 1
+                          type: string
+                      required:
+                      - body
+                      - groupResource
+                      type: object
+                    type: array
+                required:
+                - name
+                type: object
+              backend:
+                description: |-
+                  Backend declares the provider's custom HTTP backend (REST/GraphQL/WS).
+                  NOT used for CR traffic — CRs flow through kcp directly. Omit for
+                  providers that only expose CRs.
+                properties:
+                  healthPath:
+                    default: /healthz
+                    description: |-
+                      HealthPath is the relative path the hub will probe to gate the
+                      BackendHealthy condition. Defaults to "/healthz".
+                    type: string
+                  url:
+                    description: |-
+                      URL is the in-cluster address the hub reverse-proxies for
+                      /services/providers/{name}/*.
+                    minLength: 1
+                    type: string
+                required:
+                - url
+                type: object
+              description:
+                description: Description is a short blurb shown on the catalog card.
+                maxLength: 512
+                type: string
+              displayName:
+                description: DisplayName is the human-readable name shown in the portal
+                  catalog.
+                maxLength: 128
+                type: string
+              iconURL:
+                description: |-
+                  IconURL is a portal-relative path to an icon for the catalog card.
+                  Typically "/ui/providers/{name}/icon.svg" so it is served through the
+                  UI proxy.
+                maxLength: 256
+                type: string
+              serviceAccountNamespace:
+                description: |-
+                  ServiceAccountNamespace is the host-cluster namespace where the
+                  provider Deployment runs. In future iterations the hub will write the
+                  kedge-provider-kubeconfig Secret here. Currently informational.
+                maxLength: 63
+                type: string
+              ui:
+                description: |-
+                  UI declares the provider's micro-frontend. Omit to ship a UI-less
+                  provider (controllers + APIExport only).
+                properties:
+                  indexPath:
+                    default: /
+                    description: |-
+                      IndexPath is the default landing path within the provider UI.
+                      Defaults to "/".
+                    type: string
+                  url:
+                    description: |-
+                      URL is the in-cluster address the hub reverse-proxies for
+                      /ui/providers/{name}/*. Must be reachable from the hub pod.
+                    minLength: 1
+                    type: string
+                required:
+                - url
+                type: object
+              vendor:
+                description: Vendor identifies the provider author.
+                maxLength: 128
+                type: string
+              version:
+                description: Version is the chart-declared version of the provider.
+                maxLength: 64
+                type: string
+              virtualWorkspace:
+                description: |-
+                  VirtualWorkspace is an advanced opt-in for providers that need custom
+                  non-CRD verbs. Routed at /services/providers/{name}/vw/*. Not yet
+                  honored by the hub (Phase 5).
+                properties:
+                  url:
+                    description: |-
+                      URL is the in-cluster address the hub reverse-proxies for
+                      /services/providers/{name}/vw/*.
+                    minLength: 1
+                    type: string
+                required:
+                - url
+                type: object
+            required:
+            - displayName
+            type: object
+          status:
+            description: CatalogEntryStatus defines the observed state of a CatalogEntry.
+            properties:
+              conditions:
+                description: Conditions describe the current state of the provider.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              endpoints:
+                description: Endpoints echo the resolved URLs from spec, for debugging.
+                properties:
+                  backend:
+                    type: string
+                  ui:
+                    type: string
+                  virtualWorkspace:
+                    type: string
+                type: object
+              kubeconfigSecret:
+                description: |-
+                  KubeconfigSecret, when set, points at the host-cluster Secret the
+                  hub wrote the provider's kubeconfig into. Populated only when the
+                  hub was started with --provider-secret-write and could resolve a
+                  host-cluster client.
+                properties:
+                  name:
+                    description: Name is the Secret name. Conventionally kedge-provider-kubeconfig.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is the host-cluster Namespace (matches
+                      spec.serviceAccountNamespace from the CatalogEntry).
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              lastHeartbeat:
+                description: |-
+                  LastHeartbeat is the wall-clock time the provider last heartbeated.
+                  Phase 1C will populate this from the heartbeat endpoint.
+                format: date-time
+                type: string
+              reportedVersion:
+                description: |-
+                  ReportedVersion is the version the provider pod reports via heartbeat.
+                  Differs from spec.version when a chart upgrade is in flight.
+                type: string
+              workspace:
+                description: |-
+                  Workspace is the kcp workspace path the catalog controller created for
+                  this provider. Empty in Phase 1A.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

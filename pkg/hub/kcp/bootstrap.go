@@ -21,6 +21,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"reflect"
 	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
@@ -162,6 +163,15 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		confighelpers.ReplaceOption("__TENANCY_IDENTITY_HASH__", identityHash),
 	); err != nil {
 		return fmt.Errorf("bootstrapping providers: %w", err)
+	}
+
+	// 5b. APIBinding from root:kedge:providers → providers.kedge.faros.sh.
+	//     Lets the catalog controller (and admins) create ProviderCatalogEntry
+	//     resources in the same workspace that hosts the APIExport. The
+	//     providers.kedge.faros.sh export is deliberately NOT bound by tenant
+	//     workspaces — see hack/gen-core-apiexport/main.go excludedAPIExports.
+	if err := ensureProvidersSelfBinding(ctx, providersDynamic); err != nil {
+		return fmt.Errorf("creating providers self APIBinding: %w", err)
 	}
 
 	// 6. Install User CRD in root:kedge:users workspace.
@@ -511,6 +521,60 @@ func (b *Bootstrapper) BackfillDefaultMCPs(ctx context.Context) error {
 	return nil
 }
 
+// ensureProvidersSelfBinding creates (idempotently) an APIBinding inside
+// root:kedge:providers that points at the providers.kedge.faros.sh APIExport
+// in that same workspace. Without this binding, ProviderCatalogEntry CRs
+// cannot be created in root:kedge:providers — kcp serves the APIExport's
+// schemas only to workspaces that have explicitly bound to it.
+//
+// We bind self-to-self deliberately: the catalog controller and platform
+// administrators both work against root:kedge:providers, and the export is
+// intentionally excluded from tenant-bound core.faros.sh (see
+// hack/gen-core-apiexport/main.go).
+func ensureProvidersSelfBinding(ctx context.Context, providersDynamic dynamic.Interface) error {
+	const (
+		exportPath  = "root:kedge:providers"
+		exportName  = "providers.kedge.faros.sh"
+		bindingName = "providers.kedge.faros.sh"
+	)
+
+	existing, err := providersDynamic.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("listing APIBindings in providers workspace: %w", err)
+	}
+	for _, b := range existing.Items {
+		path, _, _ := unstructured.NestedString(b.Object, "spec", "reference", "export", "path")
+		name, _, _ := unstructured.NestedString(b.Object, "spec", "reference", "export", "name")
+		if path == exportPath && name == exportName {
+			return nil
+		}
+	}
+
+	binding := &apisv1alpha2.APIBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
+			Kind:       "APIBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName},
+		Spec: apisv1alpha2.APIBindingSpec{
+			Reference: apisv1alpha2.BindingReference{
+				Export: &apisv1alpha2.ExportBindingReference{
+					Path: exportPath,
+					Name: exportName,
+				},
+			},
+		},
+	}
+	u, err := toUnstructured(binding)
+	if err != nil {
+		return fmt.Errorf("converting providers APIBinding to unstructured: %w", err)
+	}
+	if _, err := providersDynamic.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating providers.kedge.faros.sh APIBinding: %w", err)
+	}
+	return nil
+}
+
 // ensureTenancyAPIBinding makes sure an APIBinding to root:tenancy.kcp.io
 // exists in the tenant workspace. New workspaces get this binding automatically
 // via the "tenant" WorkspaceType's defaultAPIBindings, but workspaces created
@@ -589,6 +653,13 @@ var clusterRoleBindingGVR = schema.GroupVersionResource{
 // Uses the name "kedge-user-admin" to avoid conflicting with the kcp-provisioned
 // "workspace-admin" binding.
 func ensureWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, rbacIdentity string) error {
+	wantSubjects := []interface{}{
+		map[string]interface{}{
+			"apiGroup": "rbac.authorization.k8s.io",
+			"kind":     "User",
+			"name":     rbacIdentity,
+		},
+	}
 	crb := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "rbac.authorization.k8s.io/v1",
@@ -601,18 +672,33 @@ func ensureWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, r
 				"kind":     "ClusterRole",
 				"name":     "cluster-admin",
 			},
-			"subjects": []interface{}{
-				map[string]interface{}{
-					"apiGroup": "rbac.authorization.k8s.io",
-					"kind":     "User",
-					"name":     rbacIdentity,
-				},
-			},
+			"subjects": wantSubjects,
 		},
 	}
 	_, err := tenantClient.Resource(clusterRoleBindingGVR).Create(ctx, crb, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
+	if err == nil {
+		return nil
+	}
+	if !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("creating workspace-admin ClusterRoleBinding: %w", err)
+	}
+
+	// Reconcile subjects so legacy bindings (e.g. left over from the sub→email
+	// RBAC switch) get their subject rewritten to the current rbacIdentity
+	// instead of being silently stale.
+	existing, getErr := tenantClient.Resource(clusterRoleBindingGVR).Get(ctx, "kedge-cluster-admin", metav1.GetOptions{})
+	if getErr != nil {
+		return fmt.Errorf("getting existing workspace-admin ClusterRoleBinding: %w", getErr)
+	}
+	gotSubjects, _, _ := unstructured.NestedSlice(existing.Object, "subjects")
+	if reflect.DeepEqual(gotSubjects, wantSubjects) {
+		return nil
+	}
+	if err := unstructured.SetNestedSlice(existing.Object, wantSubjects, "subjects"); err != nil {
+		return fmt.Errorf("rewriting workspace-admin subjects: %w", err)
+	}
+	if _, err := tenantClient.Resource(clusterRoleBindingGVR).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating workspace-admin ClusterRoleBinding: %w", err)
 	}
 	return nil
 }

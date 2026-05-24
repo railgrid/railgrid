@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart e2e-provider
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -73,6 +73,9 @@ build-graphql: ## Build the GraphQL gateway binary (listener + gateway subcomman
 # build-agent is an alias for build-kedge: the agent container image now ships
 # the kedge CLI binary (cmd/kedge/) with ENTRYPOINT [/kedge, agent, run].
 build-agent: build-kedge
+
+build-quickstart-provider: ## Build the quickstart reference provider binary
+	cd providers/quickstart && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/quickstart-provider .
 
 test:
 	go test $(shell go list ./... | grep -v '/test/e2e')
@@ -356,6 +359,70 @@ run-hub-embedded-graphql: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
 	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
 
+# --- Provider quickstart (local dev) ---
+# The quickstart provider is a small standalone HTTP server that registers
+# itself with the hub via a CatalogEntry. To exercise the full provider
+# flow locally:
+#
+#   Terminal 1: make run-hub-embedded-static
+#   Terminal 2: make install-provider-quickstart   # admin: register the entry
+#   Terminal 3: make run-provider-quickstart       # tenant: run the binary
+#
+# The hub proxies /ui/providers/quickstart and /services/providers/quickstart
+# to the binary in Terminal 3; the quickstart heartbeats every 30s so the
+# hub's TTL-driven readiness stays True.
+
+QUICKSTART_PORT ?= 8081
+QUICKSTART_HUB_URL ?= https://localhost:9443
+QUICKSTART_TOKEN ?= $(STATIC_AUTH_TOKEN)
+# kcp admin kubeconfig produced by embedded-kcp mode (see HUB_FLAGS_KCP_EMBEDDED).
+QUICKSTART_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
+QUICKSTART_MANIFEST ?= providers/quickstart/manifest.yaml
+
+## Run the quickstart provider binary locally. Heartbeats to the hub on
+## $(QUICKSTART_HUB_URL); TLS verification skipped (dev cert is self-signed).
+run-provider-quickstart: build-quickstart-provider ## Run the quickstart provider (requires: make run-hub-embedded-static + make install-provider-quickstart)
+	@echo "Starting quickstart provider on :$(QUICKSTART_PORT)"
+	@echo "  hub:   $(QUICKSTART_HUB_URL)"
+	@echo "  token: $(QUICKSTART_TOKEN)"
+	PORT=$(QUICKSTART_PORT) \
+	KEDGE_HUB_URL=$(QUICKSTART_HUB_URL) \
+	KEDGE_HUB_TOKEN=$(QUICKSTART_TOKEN) \
+	KEDGE_HUB_INSECURE=true \
+	KEDGE_PROVIDER_NAME=quickstart \
+		$(BINDIR)/quickstart-provider
+
+## Apply the quickstart CatalogEntry into root:kedge:providers. Idempotent.
+## Requires the hub to be running so the admin kubeconfig exists.
+install-provider-quickstart: ## Apply quickstart CatalogEntry into root:kedge:providers
+	@test -f $(QUICKSTART_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(QUICKSTART_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
+		--server=https://localhost:6443/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		apply -f $(QUICKSTART_MANIFEST)
+
+## Run provider e2e suite (embedded kcp + quickstart-provider subprocess).
+## Lightweight — no kind/Helm, just two host binaries the suite drives over
+## HTTP + kcp dynamic clients. KEDGE_E2E_KEEP_DATA=true preserves logs/data.
+E2E_PROVIDER_TIMEOUT ?= 10m
+e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
+	@test -z "$$(lsof -ti :19443 :16443 :18081 :2380 2>/dev/null)" || { \
+		echo "ports 19443/16443/18081/2380 are in use; stop any running kedge-hub/quickstart-provider first"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Delete the quickstart CatalogEntry. Useful while iterating on the manifest.
+uninstall-provider-quickstart: ## Delete quickstart CatalogEntry
+	-kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
+		--server=https://localhost:6443/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		delete -f $(QUICKSTART_MANIFEST)
+
 dev-status: ## Show status of dev services (dex, kcp)
 	@source $(SERVICE_HOOKS) && list_services
 
@@ -387,9 +454,16 @@ help-dev: ## Show development environment options
 	@echo "  Terminal 3: make run-hub             - External kcp + OIDC"
 	@echo "          or: make run-hub-static      - External kcp + static token"
 	@echo ""
+	@echo "PROVIDER QUICKSTART (after the hub is running):"
+	@echo "  Terminal A: make install-provider-quickstart   - Apply CatalogEntry"
+	@echo "  Terminal B: make run-provider-quickstart       - Run the provider"
+	@echo "  Then open https://localhost:9443/ui/providers (Enable the provider)"
+	@echo ""
 	@echo "ENVIRONMENT VARIABLES:"
 	@echo "  STATIC_AUTH_TOKEN  - Token for static auth (default: dev-token)"
 	@echo "  KCP_DATA_DIR       - Directory for kcp data (default: .kcp)"
+	@echo "  QUICKSTART_PORT    - Port the quickstart provider listens on (default: 8081)"
+	@echo "  QUICKSTART_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
 	@echo ""
 
 DOCKER_PLATFORM ?= linux/amd64

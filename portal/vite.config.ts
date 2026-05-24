@@ -32,6 +32,25 @@ export default defineConfig(() => ({
         changeOrigin: true,
         secure: false,
       },
+      // Provider-extension surface: list API, backend HTTP proxy, and UI
+      // proxy. All must route to the hub in dev so the iframe + handshake
+      // observe the same same-origin guarantee they have in production.
+      '/api/providers': {
+        target: 'https://localhost:9443',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/services/providers': {
+        target: 'https://localhost:9443',
+        changeOrigin: true,
+        secure: false,
+        ws: true,
+      },
+      '/ui/providers': {
+        target: 'https://localhost:9443',
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
   build: {

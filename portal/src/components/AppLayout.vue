@@ -6,11 +6,13 @@ import { useThemeStore } from '@/stores/theme'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import TerminalDock from '@/components/TerminalDock.vue'
 import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
-import { Hexagon, LayoutDashboard, Server, Layers, Bot, LogOut, Zap, Sun, Moon, Monitor, GripHorizontal, GripVertical, Pin, Terminal } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, Server, Layers, Bot, LogOut, Zap, Sun, Moon, Monitor, GripHorizontal, GripVertical, Pin, Terminal, Puzzle } from 'lucide-vue-next'
+import { useProvidersStore } from '@/stores/providers'
 
 const auth = useAuthStore()
 const theme = useThemeStore()
 const terminalStore = useTerminalSessionsStore()
+const providersStore = useProvidersStore()
 
 const mainPaddingBottom = computed(() => {
   if (!terminalStore.isVisible || terminalStore.sessions.length === 0) return undefined
@@ -45,12 +47,33 @@ const timeStr = computed(() =>
   `${pad(now.value.getHours())}:${pad(now.value.getMinutes())}:${pad(now.value.getSeconds())}`
 )
 
-const navItems = [
+interface NavItem {
+  label: string
+  to: string
+  // Either a lucide component (static) or a URL string (dynamic provider icon).
+  icon?: unknown
+  iconURL?: string | null
+}
+
+const staticNavItems: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: LayoutDashboard },
   { label: 'Edges', to: '/edges', icon: Server },
   { label: 'Workloads', to: '/workloads', icon: Layers },
   { label: 'MCP', to: '/mcp', icon: Bot },
+  { label: 'Providers', to: '/providers', icon: Puzzle },
 ]
+
+const navItems = computed<NavItem[]>(() => [
+  ...staticNavItems,
+  // Each enabled provider gets its own nav entry directly below
+  // "Providers". Phase 3 will gate this on a ProviderBinding; today every
+  // ready provider with a UI shows up.
+  ...providersStore.enabledNavItems.map((p) => ({
+    label: p.label,
+    to: p.to,
+    iconURL: p.iconURL,
+  })),
+])
 
 function isActive(path: string) {
   if (path === '/') return route.path === '/'
@@ -278,7 +301,8 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
         :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
       >
-        <component :is="item.icon" class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
+        <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-4 w-4 flex-shrink-0 object-contain" />
+        <component v-else :is="item.icon" class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
         <span>{{ item.label }}</span>
       </router-link>
 
@@ -377,7 +401,8 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         class="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
         :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
       >
-        <component :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
+        <component v-else :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
         <span v-if="isActive(item.to)">{{ item.label }}</span>
       </router-link>
 
@@ -486,7 +511,8 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
           class="island-nav flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
           :class="isActive(item.to) ? 'active bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
         >
-          <component :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
+        <component v-else :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
           <span v-if="isActive(item.to)">{{ item.label }}</span>
         </router-link>
 

@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep -A 20 \"type ConnManager struct\" /Users/mjudeikis/go/src/github.com/faroshq/kedge/pkg/virtual/builder/*.go)",
+      "Bash(*)",
       "Bash(grep -n \"func newSSHClient\\\\|func openAgentSSHTunnel\\\\|func sshExec\" /Users/mjudeikis/go/src/github.com/faroshq/kedge/pkg/virtual/builder/*.go)",
       "Bash(npm run build)",
       "mcp__kedge__resources_get",

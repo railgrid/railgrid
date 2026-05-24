@@ -30,17 +30,19 @@ import (
 // kcp's native /clusters, /apis/<group>, /api/v1 paths, which are forwarded
 // straight to kcp.
 const (
-	PathPrefixAgentProxy = "/services/agent-proxy"
-	PathPrefixEdgesProxy = "/services/edges-proxy"
-	PathPrefixMCP        = "/services/mcp"
-	PathPrefixLinuxMCP   = "/services/linux-mcp"
-	PathPrefixMCPServer  = "/services/mcpserver"
-	PathAuthAuthorize    = "/auth/authorize"
-	PathAuthCallback     = "/auth/callback"
-	PathAuthRefresh      = "/auth/refresh"
-	PathAuthTokenLogin   = "/auth/token-login"
-	PathHealthz          = "/healthz"
-	PathVersion          = "/version"
+	PathPrefixAgentProxy     = "/services/agent-proxy"
+	PathPrefixEdgesProxy     = "/services/edges-proxy"
+	PathPrefixMCP            = "/services/mcp"
+	PathPrefixLinuxMCP       = "/services/linux-mcp"
+	PathPrefixMCPServer      = "/services/mcpserver"
+	PathPrefixProvidersUI    = "/ui/providers"
+	PathPrefixProvidersProxy = "/services/providers"
+	PathAuthAuthorize        = "/auth/authorize"
+	PathAuthCallback         = "/auth/callback"
+	PathAuthRefresh          = "/auth/refresh"
+	PathAuthTokenLogin       = "/auth/token-login"
+	PathHealthz              = "/healthz"
+	PathVersion              = "/version"
 )
 
 // SplitBaseAndCluster splits a URL that contains a /clusters/<name> path into

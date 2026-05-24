@@ -53,6 +53,11 @@ const routes = [
     props: true,
   },
   {
+    path: '/providers',
+    name: 'providers',
+    component: () => import('@/pages/ProvidersPage.vue'),
+  },
+  {
     path: '/edges/:name/terminal',
     name: 'edge-terminal',
     component: () => import('@/pages/TerminalPage.vue'),

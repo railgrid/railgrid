@@ -360,6 +360,23 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 
 	if len(users.Items) > 0 {
 		user := &users.Items[0]
+
+		// Reconcile spec fields that may have drifted on legacy users created
+		// before the sub→email RBAC switch. Without this, an old User CRD keeps
+		// kedge:<sub> in RBACIdentity forever, which no longer matches the
+		// kcp-extracted username (now email-based) and locks the user out.
+		wantRBAC := fmt.Sprintf("kedge:%s", email)
+		if user.Spec.RBACIdentity != wantRBAC || user.Spec.Email != email || user.Spec.Name != name {
+			user.Spec.RBACIdentity = wantRBAC
+			user.Spec.Email = email
+			user.Spec.Name = name
+			updatedSpec, err := h.kedgeClient.Users().Update(ctx, user, metav1.UpdateOptions{})
+			if err != nil {
+				return "", fmt.Errorf("updating user spec: %w", err)
+			}
+			user = updatedSpec
+		}
+
 		// Update status with last login.
 		user.Status.Active = true
 		user.Status.LastLogin = &now

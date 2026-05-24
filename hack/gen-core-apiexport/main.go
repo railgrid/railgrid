@@ -67,6 +67,14 @@ func main() {
 
 	// Process files alphabetically, skip the output file itself and non-apiexport files.
 	outputBase := filepath.Base(*output)
+
+	// excludedAPIExports are API groups whose APIExports must NOT be merged
+	// into core.faros.sh. These exports are platform-owner-only and are not
+	// bound into tenant workspaces.
+	excludedAPIExports := map[string]bool{
+		"apiexport-providers.kedge.faros.sh.yaml": true,
+	}
+
 	var files []string
 	for _, e := range entries {
 		if e.IsDir() {
@@ -75,6 +83,9 @@ func main() {
 		name := e.Name()
 		if name == outputBase {
 			continue // skip previously generated output
+		}
+		if excludedAPIExports[name] {
+			continue // skip admin-only exports
 		}
 		if !strings.HasPrefix(name, "apiexport-") || !strings.HasSuffix(name, ".yaml") {
 			continue
