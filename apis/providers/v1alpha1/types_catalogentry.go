@@ -79,6 +79,14 @@ type CatalogEntrySpec struct {
 	// +kubebuilder:validation:MaxLength=256
 	IconURL string `json:"iconURL,omitempty"`
 
+	// Category groups this entry under a heading in the portal's nav and
+	// catalog page. Empty/omitted entries appear at the top level. Free-
+	// form string — providers in the same category appear together, sorted
+	// alphabetically. Examples: "Edges", "AI", "Observability".
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	Category string `json:"category,omitempty"`
+
 	// ServiceAccountNamespace is the host-cluster namespace where the
 	// provider Deployment runs. In future iterations the hub will write the
 	// kedge-provider-kubeconfig Secret here. Currently informational.
@@ -109,18 +117,60 @@ type CatalogEntrySpec struct {
 	APIExport *ProviderAPIExport `json:"apiExport,omitempty"`
 }
 
-// ProviderUI declares a provider's micro-frontend target.
+// ProviderUI declares a provider's micro-frontend target. Exactly one of
+// URL or BuiltinRoute should be set:
+//
+//   - URL: the hub reverse-proxies /ui/providers/{name}/* to this address,
+//     and the portal loads the resulting /main.js as a custom element.
+//   - BuiltinRoute: the portal renders an in-tree Vue route by this name
+//     instead of loading anything. Used by first-party providers (mcp,
+//     kubernetes-edges, server-edges, workloads) whose pages ship as
+//     part of the portal SPA. No proxy traffic, no custom element load.
 type ProviderUI struct {
 	// URL is the in-cluster address the hub reverse-proxies for
 	// /ui/providers/{name}/*. Must be reachable from the hub pod.
-	// +kubebuilder:validation:MinLength=1
-	URL string `json:"url"`
+	// Mutually exclusive with BuiltinRoute.
+	// +optional
+	URL string `json:"url,omitempty"`
 
 	// IndexPath is the default landing path within the provider UI.
-	// Defaults to "/".
+	// Only meaningful when URL is set. Defaults to "/".
 	// +optional
 	// +kubebuilder:default="/"
 	IndexPath string `json:"indexPath,omitempty"`
+
+	// BuiltinRoute is the Vue Router route name (or path) the portal
+	// renders for this provider's tab. When set, the portal does NOT load
+	// a /main.js bundle — the page is part of the portal's own SPA.
+	// Mutually exclusive with URL.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	BuiltinRoute string `json:"builtinRoute,omitempty"`
+
+	// Children declares additional in-tree navigation items the portal
+	// renders nested under the provider's main entry. Used by providers
+	// that span multiple SPA pages — e.g. kubernetes-edges exposes both
+	// its main "Kubernetes" page and a "Workloads" sub-page.
+	//
+	// Only meaningful when BuiltinRoute is set (third-party custom-element
+	// providers manage their own internal routing).
+	// +optional
+	Children []ProviderNavChild `json:"children,omitempty"`
+}
+
+// ProviderNavChild is a single sub-navigation entry for a provider with
+// children. Renders indented under the parent in the portal side nav.
+type ProviderNavChild struct {
+	// DisplayName is the label shown in the side nav.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	DisplayName string `json:"displayName"`
+
+	// BuiltinRoute is the Vue Router route name the portal navigates to
+	// when this child is clicked.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	BuiltinRoute string `json:"builtinRoute"`
 }
 
 // ProviderBackend declares a provider's custom HTTP backend.

@@ -30,10 +30,11 @@ import (
 // kcp's native /clusters, /apis/<group>, /api/v1 paths, which are forwarded
 // straight to kcp.
 const (
-	PathPrefixAgentProxy     = "/services/agent-proxy"
-	PathPrefixEdgesProxy     = "/services/edges-proxy"
-	PathPrefixMCP            = "/services/mcp"
-	PathPrefixLinuxMCP       = "/services/linux-mcp"
+	PathPrefixAgentProxy = "/services/agent-proxy"
+	PathPrefixEdgesProxy = "/services/edges-proxy"
+	// PathPrefixMCP + PathPrefixLinuxMCP were removed in the MCP
+	// collapse refactor — both surfaces live behind PathPrefixMCPServer
+	// (the aggregate endpoint) now.
 	PathPrefixMCPServer      = "/services/mcpserver"
 	PathPrefixProvidersUI    = "/ui/providers"
 	PathPrefixProvidersProxy = "/services/providers"
@@ -126,31 +127,10 @@ func EdgeProxyURL(hubBase, cluster, edgeName, subresource string) string {
 	return strings.TrimRight(hubBase, "/") + EdgeProxyPath(cluster, edgeName, subresource)
 }
 
-// KubernetesMCPPath returns the URL path for the MCP virtual workspace endpoint.
-//
-// Pattern: /services/mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
-func KubernetesMCPPath(cluster, kubernetesName string) string {
-	return fmt.Sprintf("%s/%s/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/%s/mcp",
-		PathPrefixMCP, cluster, kubernetesName)
-}
-
-// KubernetesMCPURL returns the full MCP endpoint URL.
-func KubernetesMCPURL(hubBase, cluster, kubernetesName string) string {
-	return strings.TrimRight(hubBase, "/") + KubernetesMCPPath(cluster, kubernetesName)
-}
-
-// LinuxMCPPath returns the URL path for the Linux MCP virtual workspace endpoint.
-//
-// Pattern: /services/linux-mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/linuxmcps/{name}/mcp
-func LinuxMCPPath(cluster, linuxName string) string {
-	return fmt.Sprintf("%s/%s/apis/kedge.faros.sh/v1alpha1/linuxmcps/%s/mcp",
-		PathPrefixLinuxMCP, cluster, linuxName)
-}
-
-// LinuxMCPURL returns the full Linux MCP endpoint URL.
-func LinuxMCPURL(hubBase, cluster, linuxName string) string {
-	return strings.TrimRight(hubBase, "/") + LinuxMCPPath(cluster, linuxName)
-}
+// KubernetesMCPPath / KubernetesMCPURL / LinuxMCPPath / LinuxMCPURL
+// were removed when the dedicated per-kind MCP endpoints collapsed
+// into the MCPServer aggregate. Use MCPServerURL below for the single
+// unified endpoint.
 
 // MCPServerPath returns the URL path for the unified MCPServer virtual
 // workspace endpoint (aggregates kube + linux edges).

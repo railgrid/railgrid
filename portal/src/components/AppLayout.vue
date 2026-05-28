@@ -6,8 +6,9 @@ import { useThemeStore } from '@/stores/theme'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import TerminalDock from '@/components/TerminalDock.vue'
 import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
-import { Hexagon, LayoutDashboard, Server, Layers, Bot, LogOut, Zap, Sun, Moon, Monitor, GripHorizontal, GripVertical, Pin, Terminal, Puzzle } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, LogOut, Zap, Sun, Moon, Monitor, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
+import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 
 const auth = useAuthStore()
 const theme = useThemeStore()
@@ -55,19 +56,31 @@ interface NavItem {
   iconURL?: string | null
 }
 
+// Static items above the Providers section. Everything provider-shaped
+// (Edges, MCP, Workloads, etc.) flows through providersStore — those
+// items get categorized + sub-nav treatment below. Dashboard is the
+// only true platform-wide page.
 const staticNavItems: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: LayoutDashboard },
-  { label: 'Edges', to: '/edges', icon: Server },
-  { label: 'Workloads', to: '/workloads', icon: Layers },
-  { label: 'MCP', to: '/mcp', icon: Bot },
-  { label: 'Providers', to: '/providers', icon: Puzzle },
 ]
 
-const navItems = computed<NavItem[]>(() => [
+// Catalog link sits at the top of the Providers section as a header that
+// also routes to the full catalog page when clicked.
+const providersHeaderItem: NavItem = { label: 'Providers', to: '/providers', icon: Puzzle }
+
+// Resolve a category's Lucide component from the icon-name registry.
+// Categories the hub doesn't know (third-party ad-hoc) get a fallback.
+function categoryIcon(name: string | null): unknown {
+  if (!name) return fallbackCategoryIcon
+  return categoryIcons[name] ?? fallbackCategoryIcon
+}
+
+// flatNavItems is used by the horizontal bar + floating bar layouts,
+// where vertical space for category headers doesn't exist. Categories
+// are collapsed; every provider shows as a sibling of the static items.
+const flatNavItems = computed<NavItem[]>(() => [
   ...staticNavItems,
-  // Each enabled provider gets its own nav entry directly below
-  // "Providers". Phase 3 will gate this on a ProviderBinding; today every
-  // ready provider with a UI shows up.
+  providersHeaderItem,
   ...providersStore.enabledNavItems.map((p) => ({
     label: p.label,
     to: p.to,
@@ -75,9 +88,16 @@ const navItems = computed<NavItem[]>(() => [
   })),
 ])
 
-function isActive(path: string) {
-  if (path === '/') return route.path === '/'
-  return route.path.startsWith(path)
+// isActive lights up a nav row when the current route matches its target.
+// `exact` opts out of prefix matching for links whose URL is a parent of
+// other nav entries — the Providers catalog (/providers) is a sibling of
+// /providers/{name} provider frames in the nav, so a prefix match would
+// double-highlight both rows when you're inside a provider. `/providers`
+// is treated as exact by default since every flat-nav loop renders both
+// the catalog row and the per-provider rows.
+function isActive(path: string, exact = false) {
+  if (path === '/' || path === '/providers' || exact) return route.path === path
+  return route.path === path || route.path.startsWith(path + '/')
 }
 
 function handleLogout() {
@@ -106,12 +126,12 @@ interface DockState {
 function loadDockState(): DockState {
   try {
     const raw = localStorage.getItem(DOCK_STORAGE_KEY)
-    if (!raw) return { mode: 'float', x: -1, y: -1 }
+    if (!raw) return { mode: 'left', x: -1, y: -1 }
     const s = JSON.parse(raw) as DockState
     if (['left', 'right', 'top', 'bottom'].includes(s.mode)) return s
     if (s.x >= 0 && s.y >= 0 && s.x < window.innerWidth && s.y < window.innerHeight) return s
   } catch { /* ignore */ }
-  return { mode: 'float', x: -1, y: -1 }
+  return { mode: 'left', x: -1, y: -1 }
 }
 
 function saveDockState() {
@@ -293,17 +313,96 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 
-      <!-- Nav items with labels -->
+      <!-- Static nav items (Dashboard, Workloads) -->
       <router-link
-        v-for="item in navItems"
+        v-for="item in staticNavItems"
         :key="item.to"
         :to="item.to"
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
         :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
       >
-        <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-4 w-4 flex-shrink-0 object-contain" />
-        <component v-else :is="item.icon" class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
+        <component :is="item.icon" class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
         <span>{{ item.label }}</span>
+      </router-link>
+
+      <!-- Provider categories render as non-clickable section dividers:
+           a thin rule with the category icon + label inline, then the
+           providers in that category as indented rows. Children of a
+           provider (e.g. Workloads under Kubernetes) get one more level
+           of indent, with a leading dot glyph for visual hierarchy. -->
+      <template v-for="group in providersStore.categorizedNavItems.groups" :key="'cat-' + group.name">
+        <div class="mt-3 mb-1 flex items-center gap-2 px-3">
+          <component :is="categoryIcon(group.icon)" class="h-3 w-3 flex-shrink-0 text-text-muted/70" :stroke-width="2" />
+          <span class="text-[9px] font-semibold uppercase tracking-wider text-text-muted/70">{{ group.name }}</span>
+          <div class="h-px flex-1 bg-border-default/40" />
+        </div>
+        <template v-for="item in group.items" :key="item.to">
+          <router-link
+            :to="item.to"
+            class="flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
+            :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+          >
+            <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
+            <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
+            <span>{{ item.label }}</span>
+          </router-link>
+          <router-link
+            v-for="child in item.children"
+            :key="'c-' + child.to"
+            :to="child.to"
+            class="flex items-center gap-2 rounded-xl py-1.5 pr-3 pl-8 text-[11px] font-medium transition-all duration-200"
+            :class="isActive(child.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+          >
+            <Dot class="h-3.5 w-3.5 flex-shrink-0 -ml-1" :stroke-width="3" />
+            <span>{{ child.label }}</span>
+          </router-link>
+        </template>
+      </template>
+
+      <!-- Uncategorized providers (third-party with no spec.category) sit
+           under their own divider so the rhythm of the sidebar stays
+           consistent. -->
+      <template v-if="providersStore.categorizedNavItems.uncategorized.length">
+        <div class="mt-3 mb-1 flex items-center gap-2 px-3">
+          <Puzzle class="h-3 w-3 flex-shrink-0 text-text-muted/70" :stroke-width="2" />
+          <span class="text-[9px] font-semibold uppercase tracking-wider text-text-muted/70">Other</span>
+          <div class="h-px flex-1 bg-border-default/40" />
+        </div>
+        <template v-for="item in providersStore.categorizedNavItems.uncategorized" :key="'u-' + item.to">
+          <router-link
+            :to="item.to"
+            class="flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
+            :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+          >
+            <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
+            <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
+            <span>{{ item.label }}</span>
+          </router-link>
+          <router-link
+            v-for="child in item.children"
+            :key="'uc-' + child.to"
+            :to="child.to"
+            class="flex items-center gap-2 rounded-xl py-1.5 pr-3 pl-8 text-[11px] font-medium transition-all duration-200"
+            :class="isActive(child.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+          >
+            <Dot class="h-3.5 w-3.5 flex-shrink-0 -ml-1" :stroke-width="3" />
+            <span>{{ child.label }}</span>
+          </router-link>
+        </template>
+      </template>
+
+      <!-- Providers catalog link sits at the end as a slim tertiary link;
+           the rest of the section above is the actual provider tree. -->
+      <div class="mt-3 mb-1 flex items-center gap-2 px-3">
+        <div class="h-px flex-1 bg-border-default/40" />
+      </div>
+      <router-link
+        :to="providersHeaderItem.to"
+        class="flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider transition-all duration-200"
+        :class="isActive(providersHeaderItem.to, true) ? 'bg-accent/15 text-accent' : 'text-text-muted/80 hover:bg-surface-overlay/50 hover:text-text-secondary'"
+      >
+        <Puzzle class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
+        <span>{{ providersHeaderItem.label }}</span>
       </router-link>
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
@@ -395,14 +494,15 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
       <!-- Nav items -->
       <router-link
-        v-for="item in navItems"
+        v-for="item in flatNavItems"
         :key="item.to"
         :to="item.to"
         class="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
         :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
       >
         <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
-        <component v-else :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
         <span v-if="isActive(item.to)">{{ item.label }}</span>
       </router-link>
 
@@ -505,14 +605,15 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
         <router-link
-          v-for="item in navItems"
+          v-for="item in flatNavItems"
           :key="item.to"
           :to="item.to"
           class="island-nav flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
           :class="isActive(item.to) ? 'active bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
         >
           <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
-        <component v-else :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
           <span v-if="isActive(item.to)">{{ item.label }}</span>
         </router-link>
 

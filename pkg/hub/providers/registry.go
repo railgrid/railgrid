@@ -22,6 +22,7 @@ package providers
 
 import (
 	"fmt"
+	"io/fs"
 	"net/url"
 	"sync"
 	"time"
@@ -41,18 +42,28 @@ const SweepInterval = 30 * time.Second
 // in the source ProviderCatalogEntry.
 type Provider struct {
 	Name             string
-	DisplayName      string   // human-readable label, surfaced to the portal
-	IconURL          string   // optional, defaults to /ui/providers/{name}/icon.svg
-	UIURL            *url.URL // proxy target for /ui/providers/{name}/*; nil → 404
-	BackendURL       *url.URL // proxy target for /services/providers/{name}/*; nil → 404
-	Version          string   // CatalogEntry.spec.version (chart-declared)
-	APIExportPath    string   // kcp workspace path hosting the APIExport (e.g. root:kedge:providers:cost)
-	APIExportName    string   // APIExport name (e.g. cost.providers.kedge.faros.sh)
+	DisplayName      string     // human-readable label, surfaced to the portal
+	IconURL          string     // optional, defaults to /ui/providers/{name}/icon.svg
+	Category         string     // optional grouping in the portal nav; empty = top-level
+	UIURL            *url.URL   // proxy target for /ui/providers/{name}/*; nil → 404
+	BackendURL       *url.URL   // proxy target for /services/providers/{name}/*; nil → 404
+	BuiltinRoute     string     // when set, portal renders this Vue route instead of loading /main.js
+	Children         []NavChild // sub-nav entries surfaced indented under this provider
+	Version          string     // CatalogEntry.spec.version (chart-declared)
+	APIExportPath    string     // kcp workspace path hosting the APIExport (e.g. root:kedge:providers:cost)
+	APIExportName    string     // APIExport name (e.g. cost.providers.kedge.faros.sh)
 	PermissionClaims []PermissionClaim
 
+	// LocalUIAssets, when non-nil, is an embedded fs.FS that the UI proxy
+	// serves under /ui/providers/{Name}/* instead of forwarding to UIURL.
+	// Populated for first-party providers whose Vite-built portal/dist is
+	// baked into the hub binary via //go:embed. Third-party providers leave
+	// it nil and rely on UIURL.
+	LocalUIAssets fs.FS
+
 	// EndpointsValid is true when spec.ui.url/spec.backend.url parsed cleanly
-	// and at least one endpoint was declared. The catalog controller sets
-	// this; the sweeper does not touch it.
+	// and at least one endpoint was declared (or LocalUIAssets is set).
+	// The catalog controller sets this; the sweeper does not touch it.
 	EndpointsValid bool
 
 	// LastHeartbeat is updated by the POST /api/providers/{name}/heartbeat
@@ -95,6 +106,13 @@ type PermissionClaim struct {
 	Resource     string
 	Verbs        []string
 	TenantScoped bool
+}
+
+// NavChild mirrors CatalogEntry.spec.ui.children — a single sub-nav
+// entry the portal renders indented under its parent provider.
+type NavChild struct {
+	DisplayName  string
+	BuiltinRoute string
 }
 
 // Registry is the hub's source of truth for provider routing. It is updated

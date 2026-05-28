@@ -86,11 +86,11 @@ func TestAgentHelmInstall(t *testing.T) {
 }
 
 // MCP tests (issue #124 / #125).
-func TestMCPEndpoint(t *testing.T)   { testenv.Test(t, cases.MCPEndpoint()) }
-func TestMCPURL(t *testing.T)        { testenv.Test(t, cases.MCPURL()) }
-func TestMCPKubernetes(t *testing.T) { testenv.Test(t, cases.MCPKubernetes()) }
-func TestMCPLinux(t *testing.T)      { testenv.Test(t, cases.MCPLinux()) }
-func TestMCPLinuxURL(t *testing.T)   { testenv.Test(t, cases.MCPLinuxURL()) }
+func TestMCPEndpoint(t *testing.T) { testenv.Test(t, cases.MCPEndpoint()) }
+func TestMCPURL(t *testing.T)      { testenv.Test(t, cases.MCPURL()) }
+
+// TestMCPKubernetes / TestMCPLinux / TestMCPLinuxURL removed when both
+// per-kind MCP endpoints collapsed into the MCPServer aggregate.
 
 // Join-token + SSH credentials test requires the token reconciler (needs kcp).
 func TestJoinTokenSSHCredentialsStoredAfterConnect(t *testing.T) {

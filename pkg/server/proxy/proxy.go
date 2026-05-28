@@ -498,12 +498,9 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 			if err := p.bootstrapper.EnsureWorkspaceAdmin(ctx, user.Spec.DefaultCluster, user.Spec.RBACIdentity); err != nil {
 				p.logger.Error(err, "failed to ensure workspace-admin binding (non-fatal)", "user", user.Name)
 			}
-			if err := p.bootstrapper.EnsureDefaultKubernetesMCP(ctx, user.Spec.DefaultCluster); err != nil {
-				p.logger.Error(err, "failed to ensure default KubernetesMCP (non-fatal)", "user", user.Name)
-			}
-			if err := p.bootstrapper.EnsureDefaultLinuxMCP(ctx, user.Spec.DefaultCluster); err != nil {
-				p.logger.Error(err, "failed to ensure default LinuxMCP (non-fatal)", "user", user.Name)
-			}
+			// KubernetesMCP + LinuxMCP per-tenant defaults used to be
+			// ensured here; both CRDs were removed in favor of the
+			// MCPServer aggregate, which is still created below.
 			if err := p.bootstrapper.EnsureDefaultMCPServer(ctx, user.Spec.DefaultCluster); err != nil {
 				p.logger.Error(err, "failed to ensure default MCPServer (non-fatal)", "user", user.Name)
 			}

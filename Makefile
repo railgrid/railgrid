@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart e2e-provider
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -54,18 +54,54 @@ build: build-kedge build-hub build-graphql
 build-kedge:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge ./cmd/kedge/
 
-build-hub:
+build-hub: build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
 build-hub-portal: build-portal ## Build hub with embedded portal
 	cp -r portal/dist pkg/hub/portal/
 	go build $(GOFLAGS) -tags portal_embed -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
-build-portal: ## Build the portal Vue.js SPA
+build-portal: portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal ## Build the portal Vue.js SPA (and built-in provider micro-frontends it depends on)
 	cd portal && npm ci && npm run build
 
-dev-portal: ## Run the portal dev server
+dev-portal: portal-provider-symlinks ## Run the portal dev server
 	cd portal && npm run dev
+
+# Built-in providers ship their UI as separate Vite bundles under
+# providers/{name}/portal/. The hub binary embeds those dist/ outputs via
+# //go:embed and serves them under /ui/providers/{name}/* from memory
+# (see pkg/hub/providers/proxy.go LocalUIAssets branch). The build chain
+# below is per-provider so a portal-only rebuild doesn't trigger every
+# provider's bundle, but build-hub depends on each one to keep the
+# embedded FS in sync with the binary.
+build-mcp-provider-portal: portal-provider-symlinks ## Build the mcp provider's micro-frontend (Vite → providers/mcp/portal/dist)
+	cd providers/mcp/portal && npx vite build
+
+build-kubernetes-edges-provider-portal: portal-provider-symlinks ## Build the kubernetes-edges provider's micro-frontend
+	cd providers/kubernetesedges/portal && npx vite build
+
+build-server-edges-provider-portal: portal-provider-symlinks build-kubernetes-edges-provider-portal ## Build the server-edges provider's micro-frontend (depends on kubernetes-edges sources via Vite alias)
+	cd providers/serveredges/portal && npx vite build
+
+# portal-provider-symlinks creates the local node_modules symlink each
+# provider portal needs to resolve shared deps (vue, vue-router, pinia,
+# urql, tailwind, …) from the main portal's installation. The .vue
+# files in providers/{name}/portal/src/ live outside portal/node_modules'
+# default Node lookup path, so without the symlink Vite/Rollup fail to
+# resolve `vue-router` etc. Symlinks are gitignored and idempotent.
+# Installs portal/node_modules first if missing — fresh CI checkouts
+# otherwise symlink into a nonexistent dir and `npx vite build` fails.
+portal-provider-symlinks:
+	@if [ ! -d portal/node_modules ]; then \
+		echo "  → installing portal dependencies"; \
+		(cd portal && npm ci); \
+	fi
+	@for d in providers/mcp/portal providers/kubernetesedges/portal providers/serveredges/portal; do \
+		if [ ! -L "$$d/node_modules" ]; then \
+			ln -sfn ../../../portal/node_modules "$$d/node_modules" && \
+			echo "  → symlinked $$d/node_modules"; \
+		fi; \
+	done
 
 build-graphql: ## Build the GraphQL gateway binary (listener + gateway subcommands)
 	go build $(GOFLAGS) -o $(BINDIR)/kedge-graphql ./cmd/graphql/
@@ -74,7 +110,10 @@ build-graphql: ## Build the GraphQL gateway binary (listener + gateway subcomman
 # the kedge CLI binary (cmd/kedge/) with ENTRYPOINT [/kedge, agent, run].
 build-agent: build-kedge
 
-build-quickstart-provider: ## Build the quickstart reference provider binary
+build-quickstart-provider-portal: ## Build the quickstart provider's micro-frontend (Vite + TS → portal/dist)
+	cd providers/quickstart/portal && npm install --no-audit --no-fund && npm run build
+
+build-quickstart-provider: build-quickstart-provider-portal ## Build the quickstart reference provider binary (portal embedded)
 	cd providers/quickstart && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/quickstart-provider .
 
 test:
@@ -415,6 +454,21 @@ e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
 		exit 1; \
 	}
 	go test ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Run --providers flag mechanics suite (dep validation, unknown name,
+## filtered enable). Each test spawns its own hub on the standard
+## 19443/16443/2380 ports, so this MUST NOT run concurrently with
+## `e2e-provider` — the Makefile checks the port up-front.
+E2E_PROVIDER_FLAGS_TIMEOUT ?= 10m
+e2e-provider-flags: build-hub ## Run --providers flag mechanics suite
+	@test -z "$$(lsof -ti :19443 :16443 :2380 2>/dev/null)" || { \
+		echo "ports 19443/16443/2380 are in use; stop any running kedge-hub first (e.g. pkill kedge-hub)"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/providerflags/... -v -timeout $(E2E_PROVIDER_FLAGS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Run both provider suites back-to-back (sequential — they share port 2380).
+e2e-provider-all: e2e-provider e2e-provider-flags ## Run provider + provider-flags suites sequentially
 
 ## Delete the quickstart CatalogEntry. Useful while iterating on the manifest.
 uninstall-provider-quickstart: ## Delete quickstart CatalogEntry

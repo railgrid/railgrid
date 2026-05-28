@@ -45,10 +45,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&PlacementList{},
 		&Edge{},
 		&EdgeList{},
-		&KubernetesMCP{},
-		&KubernetesMCPList{},
-		&LinuxMCP{},
-		&LinuxMCPList{},
+		// KubernetesMCP + LinuxMCP CRDs removed in the MCP collapse
+		// refactor — both surfaces live behind MCPServer now.
 		&MCPServer{},
 		&MCPServerList{},
 	)

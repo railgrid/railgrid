@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260522-05ca01f.catalogentries.providers.kedge.faros.sh
+  name: v260524-1238369.catalogentries.providers.kedge.faros.sh
 spec:
   group: providers.kedge.faros.sh
   names:
@@ -154,6 +154,14 @@ spec:
               required:
               - url
               type: object
+            category:
+              description: |-
+                Category groups this entry under a heading in the portal's nav and
+                catalog page. Empty/omitted entries appear at the top level. Free-
+                form string — providers in the same category appear together, sorted
+                alphabetically. Examples: "Edges", "AI", "Observability".
+              maxLength: 64
+              type: string
             description:
               description: Description is a short blurb shown on the catalog card.
               maxLength: 512
@@ -182,20 +190,57 @@ spec:
                 UI declares the provider's micro-frontend. Omit to ship a UI-less
                 provider (controllers + APIExport only).
               properties:
+                builtinRoute:
+                  description: |-
+                    BuiltinRoute is the Vue Router route name (or path) the portal
+                    renders for this provider's tab. When set, the portal does NOT load
+                    a /main.js bundle — the page is part of the portal's own SPA.
+                    Mutually exclusive with URL.
+                  maxLength: 128
+                  type: string
+                children:
+                  description: |-
+                    Children declares additional in-tree navigation items the portal
+                    renders nested under the provider's main entry. Used by providers
+                    that span multiple SPA pages — e.g. kubernetes-edges exposes both
+                    its main "Kubernetes" page and a "Workloads" sub-page.
+
+                    Only meaningful when BuiltinRoute is set (third-party custom-element
+                    providers manage their own internal routing).
+                  items:
+                    description: |-
+                      ProviderNavChild is a single sub-navigation entry for a provider with
+                      children. Renders indented under the parent in the portal side nav.
+                    properties:
+                      builtinRoute:
+                        description: |-
+                          BuiltinRoute is the Vue Router route name the portal navigates to
+                          when this child is clicked.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                      displayName:
+                        description: DisplayName is the label shown in the side nav.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - builtinRoute
+                    - displayName
+                    type: object
+                  type: array
                 indexPath:
                   default: /
                   description: |-
                     IndexPath is the default landing path within the provider UI.
-                    Defaults to "/".
+                    Only meaningful when URL is set. Defaults to "/".
                   type: string
                 url:
                   description: |-
                     URL is the in-cluster address the hub reverse-proxies for
                     /ui/providers/{name}/*. Must be reachable from the hub pod.
-                  minLength: 1
+                    Mutually exclusive with BuiltinRoute.
                   type: string
-              required:
-              - url
               type: object
             vendor:
               description: Vendor identifies the provider author.

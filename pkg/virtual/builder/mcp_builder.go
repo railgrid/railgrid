@@ -31,10 +31,6 @@ import (
 	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kcp"
 	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kiali"
 	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kubevirt"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -110,226 +106,22 @@ func (p *virtualWorkspaces) buildMCPHandler(cluster, edgeName string) http.Handl
 	})
 }
 
-// kubernetesMCPGVR is the GVR for KubernetesMCP objects in the kedge.faros.sh group.
-var kubernetesMCPGVR = schema.GroupVersionResource{
-	Group:    "kedge.faros.sh",
-	Version:  "v1alpha1",
-	Resource: "kubernetesmcps",
-}
-
-// edgeGVRForMCPSelector is the GVR used to list Edge objects when resolving a
-// KubernetesMCP edge selector.
-var edgeGVRForMCPSelector = schema.GroupVersionResource{
-	Group:    "kedge.faros.sh",
-	Version:  "v1alpha1",
-	Resource: "edges",
-}
-
-// buildKubernetesMCPHandler creates an HTTP handler for the KubernetesMCP endpoint.
-//
-// URL pattern (after stripping /services/mcp prefix):
-//
-//	/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
-//
-// On each request the handler:
-//  1. Parses cluster and KubernetesMCP name from the path.
-//  2. Authenticates the caller via bearer token.
-//  3. Fetches the KubernetesMCP object to get the edge selector.
-//  4. Lists all edges in the cluster and filters by selector + connected state.
-//  5. Builds a MultiEdgeKedgeEdgeProvider and serves via MCP streamable HTTP.
-func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger := klog.FromContext(r.Context()).WithName("kubernetes-mcp-handler")
-
-		// 1. Parse path.
-		cluster, kubernetesName, ok := parseKubernetesMCPPath(r.URL.Path)
-		if !ok {
-			http.Error(w, "invalid path: expected /{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp", http.StatusBadRequest)
-			return
-		}
-
-		// 2. Authenticate: require bearer token.
-		token := extractBearerToken(r)
-		if token == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		// 3. Build a cluster-scoped dynamic client for the kcp cluster.
-		if p.kcpConfig == nil {
-			http.Error(w, "kcp not configured", http.StatusInternalServerError)
-			return
-		}
-		dynClient, err := clusterScopedDynamicClient(p.kcpConfig, cluster)
-		if err != nil {
-			logger.Error(err, "failed to build cluster-scoped dynamic client", "cluster", cluster)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-
-		// 4. Fetch the KubernetesMCP object.
-		ctx := r.Context()
-		kmcpObj, err := dynClient.Resource(kubernetesMCPGVR).Get(ctx, kubernetesName, metav1.GetOptions{})
-		if err != nil {
-			logger.Error(err, "failed to get KubernetesMCP", "name", kubernetesName)
-			http.Error(w, fmt.Sprintf("KubernetesMCP %q not found: %v", kubernetesName, err), http.StatusNotFound)
-			return
-		}
-
-		// 5. Parse edge selector from spec.
-		var edgeSelector labels.Selector
-		specRaw, _, _ := unstructuredNestedMap(kmcpObj.Object, "spec")
-		edgeSelectorRaw, _, _ := unstructuredNestedMap(specRaw, "edgeSelector")
-		if len(edgeSelectorRaw) > 0 {
-			// Convert the unstructured selector to a metav1.LabelSelector.
-			ls := &metav1.LabelSelector{}
-			if matchLabels, ok := edgeSelectorRaw["matchLabels"].(map[string]interface{}); ok {
-				ls.MatchLabels = make(map[string]string)
-				for k, v := range matchLabels {
-					if s, ok := v.(string); ok {
-						ls.MatchLabels[k] = s
-					}
-				}
-			}
-			edgeSelector, err = metav1.LabelSelectorAsSelector(ls)
-			if err != nil {
-				logger.Error(err, "invalid edgeSelector")
-				http.Error(w, "invalid edgeSelector", http.StatusBadRequest)
-				return
-			}
-		} else {
-			edgeSelector = labels.Everything()
-		}
-
-		// 6. List all edges in the cluster and filter by selector + tunnel state.
-		edgeList, err := dynClient.Resource(edgeGVRForMCPSelector).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			logger.Error(err, "failed to list edges", "cluster", cluster)
-			http.Error(w, "failed to list edges", http.StatusInternalServerError)
-			return
-		}
-
-		logger.Info("KubernetesMCP edge resolution",
-			"cluster", cluster,
-			"edgeCount", len(edgeList.Items),
-			"connManagerKeys", p.edgeConnManager.Keys())
-
-		var resolvedEdges []string
-		for _, edgeObj := range edgeList.Items {
-			edgeName := edgeObj.GetName()
-			edgeLabels := edgeObj.GetLabels()
-
-			// Only include kubernetes-type edges — server-type edges provide
-			// SSH access only and have no Kubernetes API to proxy via MCP.
-			edgeType, _, _ := unstructured.NestedString(edgeObj.Object, "spec", "type")
-			if edgeType != "kubernetes" {
-				logger.V(4).Info("Skipping non-kubernetes edge", "edge", edgeName, "type", edgeType)
-				continue
-			}
-
-			if !edgeSelector.Matches(labels.Set(edgeLabels)) {
-				logger.V(4).Info("Skipping edge not matching selector", "edge", edgeName)
-				continue
-			}
-			key := edgeConnKey(cluster, edgeName)
-			if _, ok := p.edgeConnManager.Load(key); ok {
-				resolvedEdges = append(resolvedEdges, edgeName)
-			} else {
-				logger.Info("Edge not in connManager", "edge", edgeName, "key", key)
-			}
-		}
-		logger.Info("KubernetesMCP resolved edges", "resolvedEdges", resolvedEdges)
-
-		// 7. Build multi-edge provider.
-		//    Use internal URL to avoid CDN/proxy loops (same as single-edge handler).
-		baseURL := p.hubInternalURL
-		if baseURL == "" {
-			baseURL = p.hubExternalURL
-		}
-		provider := &MultiEdgeKedgeEdgeProvider{
-			cluster:         cluster,
-			edgeNames:       resolvedEdges,
-			edgeConnManager: p.edgeConnManager,
-			hubBase:         strings.TrimRight(baseURL, "/"),
-			bearerToken:     token,
-		}
-
-		// 8. Create a stateless MCP server and serve.
-		// Start from defaults (core, config, helm toolsets) and override with any
-		// toolsets explicitly listed in the KubernetesMCP spec.  spec.instructions
-		// lets users override the auto-generated LLM-context blurb (e.g. to add
-		// "this is prod, ask before applying" guardrails).
-		staticCfg := mcpconfig.Default()
-		staticCfg.Stateless = true
-		userInstructions, _, _ := unstructured.NestedString(kmcpObj.Object, "spec", "instructions")
-		if userInstructions != "" {
-			staticCfg.ServerInstructions = userInstructions
-		} else {
-			staticCfg.ServerInstructions = fmt.Sprintf(
-				"You are connected to the kedge KubernetesMCP endpoint %q in tenant workspace %q. "+
-					"It exposes Kubernetes tools across every kubernetes-type edge matched by the "+
-					"KubernetesMCP edgeSelector (use the \"cluster\" argument to pick a target). "+
-					"For Linux servers, use the LinuxMCP endpoint instead; for one combined view of "+
-					"both, use the kedge aggregate MCPServer endpoint.",
-				kubernetesName, cluster,
-			)
-		}
-		if toolsetsRaw, ok := specRaw["toolsets"].([]any); ok && len(toolsetsRaw) > 0 {
-			names := make([]string, 0, len(toolsetsRaw))
-			for _, t := range toolsetsRaw {
-				if s, ok := t.(string); ok {
-					names = append(names, s)
-				}
-			}
-			if len(names) > 0 {
-				staticCfg.Toolsets = names
-			}
-		}
-		srv, err := mcpserver.NewServer(mcpserver.Configuration{StaticConfig: staticCfg}, provider)
-		if err != nil {
-			logger.Error(err, "failed to create MCP server", "cluster", cluster, "kubernetes", kubernetesName)
-			http.Error(w, fmt.Sprintf("failed to initialize MCP server: %v", err), http.StatusInternalServerError)
-			return
-		}
-		defer srv.Close()
-
-		srv.ServeHTTP().ServeHTTP(w, r)
-	})
-}
-
-// parseKubernetesMCPPath extracts cluster and KubernetesMCP name from the path
-// seen by the /services/mcp handler.
-//
-// Expected format after prefix strip:
-//
-//	/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
-func parseKubernetesMCPPath(path string) (cluster, name string, ok bool) {
-	path = strings.TrimPrefix(path, "/")
-	// Expected segments: [cluster, "apis", "kedge.faros.sh", "v1alpha1", "kubernetesmcps", name, "mcp"]
-	parts := strings.SplitN(path, "/", 8)
-	if len(parts) < 7 {
-		return "", "", false
-	}
-	if parts[1] != "apis" || parts[2] != "kedge.faros.sh" || parts[3] != "v1alpha1" || parts[4] != "kubernetesmcps" || parts[6] != "mcp" {
-		return "", "", false
-	}
-	return parts[0], parts[5], true
-}
-
-// unstructuredNestedMap is a helper to extract a nested map from an unstructured object.
-func unstructuredNestedMap(obj map[string]interface{}, key string) (map[string]interface{}, bool, error) {
+// unstructuredNestedMap extracts a nested map from an unstructured object.
+// Kept here because api.go's UnstructuredNestedMap exports a public wrapper.
+func unstructuredNestedMap(obj map[string]any, key string) (map[string]any, bool, error) {
 	v, ok := obj[key]
 	if !ok {
 		return nil, false, nil
 	}
-	m, ok := v.(map[string]interface{})
+	m, ok := v.(map[string]any)
 	if !ok {
 		return nil, false, fmt.Errorf("expected map for key %q, got %T", key, v)
 	}
 	return m, true, nil
 }
 
-// clusterScopedDynamicClient creates a dynamic client scoped to a kcp cluster.
+// clusterScopedDynamicClient creates a dynamic client scoped to a kcp
+// cluster. api.go's ClusterScopedDynamicClient exports a public wrapper.
 func clusterScopedDynamicClient(kcpConfig *rest.Config, cluster string) (dynamic.Interface, error) {
 	if kcpConfig == nil {
 		return nil, fmt.Errorf("kcpConfig is nil")
@@ -337,10 +129,4 @@ func clusterScopedDynamicClient(kcpConfig *rest.Config, cluster string) (dynamic
 	clusterConfig := *kcpConfig
 	clusterConfig.Host = apiurl.KCPClusterURL(kcpConfig.Host, cluster)
 	return dynamic.NewForConfig(&clusterConfig)
-}
-
-// KubernetesMCPHandler returns an HTTP handler for the KubernetesMCP endpoint.
-// Mount at /services/mcp/.
-func (h *VirtualWorkspaceHandlers) KubernetesMCPHandler() http.Handler {
-	return h.vws.buildKubernetesMCPHandler()
 }

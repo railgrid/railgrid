@@ -34,10 +34,6 @@ import (
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -50,9 +46,6 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
-	linuxmcpcontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/linuxmcp"
-	mcpcontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/mcp"
-	mcpservercontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/mcpserver"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
@@ -62,6 +55,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
 	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
 	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
+	mcpservercontroller "github.com/faroshq/faros-kedge/providers/mcp/controllers"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
@@ -86,6 +80,13 @@ func (s *Server) Run(ctx context.Context) error {
 		"listenAddr", s.opts.ListenAddr,
 		"embeddedKCP", s.opts.EmbeddedKCP,
 	)
+
+	// Validate --providers BEFORE any expensive init (embedded kcp takes
+	// ~60s to bootstrap). A typo or dep violation should error in
+	// milliseconds, not after the user watches kcp boot.
+	if err := kcp.ValidateProviders(s.opts.Providers); err != nil {
+		return err
+	}
 
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
@@ -199,16 +200,10 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("creating dynamic client: %w", err)
 	}
 
-	// Create the default KubernetesMCP object (all-edges MCP server).
-	if err := ensureDefaultKubernetesMCP(ctx, dynamicClient); err != nil {
-		// Non-fatal: the controller will keep retrying, and in kcp-mode the CRD
-		// may not be globally accessible from the base config.
-		logger.Error(err, "Failed to create default KubernetesMCP (non-fatal)")
-	}
-	// Create the default LinuxMCP object (all-server-edges SSH MCP server).
-	if err := ensureDefaultLinuxMCP(ctx, dynamicClient); err != nil {
-		logger.Error(err, "Failed to create default LinuxMCP (non-fatal)")
-	}
+	// Default KubernetesMCP/LinuxMCP objects used to be created here; both
+	// CRDs have been removed in favor of the aggregate MCPServer endpoint.
+	// kcp bootstrap creates the per-tenant default MCPServer instead (see
+	// pkg/hub/kcp/bootstrap.go EnsureDefaultMCPServer).
 
 	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
 
@@ -279,7 +274,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// Defaults to the base kedgeClient; overridden to root:kedge:users when kcp is configured.
 	userClient := kedgeClient
 	if kcpConfig != nil {
-		bootstrapper = kcp.NewBootstrapper(kcpConfig)
+		bootstrapper = kcp.NewBootstrapper(kcpConfig).WithEnabledProviders(s.opts.Providers)
 		if err := bootstrapper.Bootstrap(ctx); err != nil {
 			return fmt.Errorf("bootstrapping kcp: %w", err)
 		}
@@ -349,24 +344,36 @@ func (s *Server) Run(ctx context.Context) error {
 	vws.Start(ctx.Done()) // start background stale-tunnel sweeper
 	router.PathPrefix(apiurl.PathPrefixAgentProxy + "/").Handler(http.StripPrefix(apiurl.PathPrefixAgentProxy, vws.EdgeAgentProxyHandler()))
 	router.PathPrefix(apiurl.PathPrefixEdgesProxy + "/").Handler(http.StripPrefix(apiurl.PathPrefixEdgesProxy, vws.EdgesProxyHandler()))
-	// KubernetesMCP multi-edge MCP handler:
-	//   /services/mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
-	router.PathPrefix(apiurl.PathPrefixMCP + "/").Handler(http.StripPrefix(apiurl.PathPrefixMCP, vws.KubernetesMCPHandler()))
-	// LinuxMCP multi-edge MCP handler (server-type edges, SSH transport):
-	//   /services/linux-mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/linuxmcps/{name}/mcp
-	router.PathPrefix(apiurl.PathPrefixLinuxMCP + "/").Handler(http.StripPrefix(apiurl.PathPrefixLinuxMCP, vws.LinuxMCPHandler()))
-	// MCPServer aggregate (kube + linux edges in one endpoint, plus list_targets):
-	//   /services/mcpserver/{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp
-	router.PathPrefix(apiurl.PathPrefixMCPServer + "/").Handler(http.StripPrefix(apiurl.PathPrefixMCPServer, vws.MCPServerHandler()))
 	// Per-edge MCP is served under the agent-proxy route:
 	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
+
+	// Provider-owned virtual-workspace handlers: each first-party provider
+	// registers a mount path + factory in its manifest.go (BuiltinSpec.
+	// VirtualWorkspaceHandler). We iterate that registry here so the hub
+	// stays decoupled from any one provider's URL or implementation. The
+	// remaining direct vws.*Handler() calls above are pending extraction
+	// into their respective provider packages.
+	for _, b := range providers.AllBuiltins() {
+		if b.VirtualWorkspaceHandler == nil || b.VirtualWorkspaceMount == "" {
+			continue
+		}
+		mount := b.VirtualWorkspaceMount
+		router.PathPrefix(mount + "/").Handler(http.StripPrefix(mount, b.VirtualWorkspaceHandler(vws.Deps())))
+		logger.Info("Mounted provider virtual workspace", "provider", b.Name, "mount", mount)
+	}
 
 	// Provider extension proxies (Phase 1A — see docs/providers.md).
 	// The proxies key off an in-memory registry that the catalog controller
 	// (wired below alongside other multicluster controllers) keeps in sync
 	// with ProviderCatalogEntry resources.
 	providerRegistry := providers.NewRegistry()
-	router.PathPrefix(apiurl.PathPrefixProvidersUI + "/").Handler(providers.NewUIProxy(providerRegistry, logger))
+	// Keep the UI proxy reference around so we can install the portal SPA as
+	// its fallback once the portal handler is built later in this function.
+	// Without that fallback, a hard refresh of /ui/providers/{name} would
+	// hit this proxy and serve the provider's raw HTML, losing the portal
+	// chrome (nav, header, etc.).
+	uiProxy := providers.NewUIProxy(providerRegistry, logger)
+	router.PathPrefix(apiurl.PathPrefixProvidersUI + "/").Handler(uiProxy)
 	router.PathPrefix(apiurl.PathPrefixProvidersProxy + "/").Handler(providers.NewBackendProxy(providerRegistry, logger))
 	router.Handle(providers.PathListProviders, providers.NewListHandler(providerRegistry)).Methods("GET")
 	// Heartbeat endpoint matches /api/providers/{name}/heartbeat. The
@@ -508,12 +515,10 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := edge.SetupTokenWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up edge token controller: %w", err)
 		}
-		if err := mcpcontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
-			return fmt.Errorf("setting up kubernetes-mcp controller: %w", err)
-		}
-		if err := linuxmcpcontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
-			return fmt.Errorf("setting up linux-mcp controller: %w", err)
-		}
+		// KubernetesMCP + LinuxMCP per-kind controllers were removed in
+		// the MCP collapse refactor — both surfaces now live behind the
+		// single MCPServer aggregate via the ToolFamily registry in
+		// providers/mcp/aggregate.
 		if err := mcpservercontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
 			return fmt.Errorf("setting up mcpserver controller: %w", err)
 		}
@@ -595,6 +600,10 @@ func (s *Server) Run(ctx context.Context) error {
 		router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/ui/", http.StatusFound)
 		})
+		// Now that the portal handler exists, wire it into the UI proxy so
+		// hard refreshes of /ui/providers/{name}/<spa-route> fall through to
+		// the SPA instead of being served by the provider's raw HTTP server.
+		uiProxy.SetFallback(portalSPA)
 	}
 
 	// 8. Swap the HTTP server handler from the early bootstrap mux to the full
@@ -703,57 +712,7 @@ func (d *delegatingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.ServeHTTP(w, r)
 }
 
-// kubernetesMCPGVR is the GroupVersionResource for KubernetesMCP.
-var kubernetesMCPGVR = schema.GroupVersionResource{
-	Group:    "kedge.faros.sh",
-	Version:  "v1alpha1",
-	Resource: "kubernetesmcps",
-}
-
-// linuxMCPGVR is the GroupVersionResource for LinuxMCP.
-var linuxMCPGVR = schema.GroupVersionResource{
-	Group:    "kedge.faros.sh",
-	Version:  "v1alpha1",
-	Resource: "linuxmcps",
-}
-
-// ensureDefaultKubernetesMCP creates a default KubernetesMCP object named "default"
-// (with an empty edge selector — matches all edges) if it doesn't exist.
-func ensureDefaultKubernetesMCP(ctx context.Context, dynClient dynamic.Interface) error {
-	return ensureDefaultMCP(ctx, dynClient, kubernetesMCPGVR, "KubernetesMCP")
-}
-
-// ensureDefaultLinuxMCP creates a default LinuxMCP object named "default"
-// (with an empty edge selector — matches all server-type edges) if it doesn't
-// already exist.
-func ensureDefaultLinuxMCP(ctx context.Context, dynClient dynamic.Interface) error {
-	return ensureDefaultMCP(ctx, dynClient, linuxMCPGVR, "LinuxMCP")
-}
-
-// ensureDefaultMCP is the shared get-or-create helper used by both MCP CRDs.
-func ensureDefaultMCP(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, kind string) error {
-	obj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "kedge.faros.sh/v1alpha1",
-			"kind":       kind,
-			"metadata": map[string]interface{}{
-				"name": "default",
-			},
-			"spec": map[string]interface{}{},
-		},
-	}
-
-	_, err := dynClient.Resource(gvr).Get(ctx, "default", metav1.GetOptions{})
-	if err == nil {
-		return nil
-	}
-	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("checking for default %s: %w", kind, err)
-	}
-
-	_, err = dynClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating default %s: %w", kind, err)
-	}
-	return nil
-}
+// KubernetesMCP + LinuxMCP default-creation helpers were removed when
+// the dedicated per-kind CRDs were collapsed into the MCPServer
+// aggregate. Per-tenant default MCPServer creation lives in
+// pkg/hub/kcp/bootstrap.go (EnsureDefaultMCPServer).

@@ -39,6 +39,18 @@ type providerDTO struct {
 	HasUI       bool   `json:"hasUI"`
 	HasBackend  bool   `json:"hasBackend"`
 	IconURL     string `json:"iconURL,omitempty"`
+	// BuiltinRoute, when set, tells the portal to render the named Vue
+	// route inside its own SPA instead of loading /main.js as a custom
+	// element. Set on first-party providers shipped with the portal (mcp,
+	// kubernetes-edges, server-edges).
+	BuiltinRoute string `json:"builtinRoute,omitempty"`
+	// Children are sub-nav entries the portal renders indented under
+	// this provider in the side nav.
+	Children []navChildDTO `json:"children,omitempty"`
+	// Category groups this entry in the portal's nav and catalog page.
+	// Empty means top-level / uncategorized. Free-form string; providers
+	// in the same category render under one heading.
+	Category string `json:"category,omitempty"`
 	// APIExport coordinates the portal needs to construct a tenant-side
 	// APIBinding when the user clicks Enable. Empty when the provider does
 	// not declare an APIExport (UI/backend-only providers).
@@ -49,6 +61,12 @@ type providerDTO struct {
 	// what the provider's controllers will be able to access in their
 	// workspace before they accept.
 	PermissionClaims []permissionClaimDTO `json:"permissionClaims,omitempty"`
+	// Builtin is true for first-party providers (those that registered via
+	// providers.RegisterBuiltin) regardless of how they surface their UI
+	// (legacy BuiltinRoute or new LocalUIAssets custom element). The portal
+	// uses this flag to skip the "Enable" / APIBinding gate that third-
+	// party providers require before appearing in the side nav.
+	Builtin bool `json:"builtin,omitempty"`
 }
 
 type permissionClaimDTO struct {
@@ -59,8 +77,26 @@ type permissionClaimDTO struct {
 }
 
 // listResponse wraps the list to leave room for future fields (paging, etc.).
+// `categories` is the registry from categories.go — the portal renders
+// nav headings + icons from this so the hub stays authoritative on which
+// categories are first-class.
 type listResponse struct {
-	Items []providerDTO `json:"items"`
+	Items      []providerDTO `json:"items"`
+	Categories []categoryDTO `json:"categories,omitempty"`
+}
+
+type categoryDTO struct {
+	Name  string `json:"name"`
+	Icon  string `json:"icon,omitempty"`
+	Order int    `json:"order,omitempty"`
+}
+
+// navChildDTO mirrors NavChild on the wire so the portal renders indented
+// sub-nav entries (e.g. Workloads under Kubernetes) using the parent
+// provider's category icon + a different route per child.
+type navChildDTO struct {
+	DisplayName  string `json:"displayName"`
+	BuiltinRoute string `json:"builtinRoute"`
 }
 
 // NewListHandler returns an http.Handler serving GET /api/providers.
@@ -98,21 +134,42 @@ func NewListHandler(reg *Registry) http.Handler {
 					TenantScoped: c.TenantScoped,
 				})
 			}
+			var children []navChildDTO
+			for _, c := range p.Children {
+				children = append(children, navChildDTO(c))
+			}
+			_, isBuiltin := BuiltinByName(p.Name)
 			items = append(items, providerDTO{
 				Name:             p.Name,
 				DisplayName:      displayName,
 				Version:          p.Version,
 				Ready:            p.Ready(),
-				HasUI:            p.UIURL != nil,
+				HasUI:            p.UIURL != nil || p.BuiltinRoute != "" || p.LocalUIAssets != nil,
 				HasBackend:       p.BackendURL != nil,
 				IconURL:          iconURL,
+				BuiltinRoute:     p.BuiltinRoute,
+				Children:         children,
+				Category:         p.Category,
 				APIExportPath:    p.APIExportPath,
 				APIExportName:    p.APIExportName,
 				PermissionClaims: claims,
+				Builtin:          isBuiltin,
 			})
 		}
 
+		// Surface the canonical category registry so the portal can
+		// render nav headings with the right icons. Built-in categories
+		// always appear (even if no provider currently uses them) so the
+		// portal can lay out the menu predictably.
+		// categoryDTO has the same fields as Category — just with JSON
+		// tags — so the conversion is a no-op shape change satisfying
+		// staticcheck.
+		cats := make([]categoryDTO, 0, len(Categories))
+		for _, c := range Categories {
+			cats = append(cats, categoryDTO(c))
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(listResponse{Items: items})
+		_ = json.NewEncoder(w).Encode(listResponse{Items: items, Categories: cats})
 	})
 }

@@ -89,87 +89,8 @@ export const DELETE_VIRTUAL_WORKLOAD = `
   }
 `
 
-// --- KubernetesMCP mutations (cluster-scoped) ---
-
-export const CREATE_MCP = `
-  mutation CreateMCP($object: KedgeFarosShV1alpha1KubernetesMCP_Input!) {
-    kedge_faros_sh {
-      v1alpha1 {
-        createKubernetesMCP(object: $object) {
-          metadata {
-            name
-            uid
-          }
-        }
-      }
-    }
-  }
-`
-
-export const UPDATE_MCP = `
-  mutation UpdateMCP($name: String!, $object: KedgeFarosShV1alpha1KubernetesMCP_Input!) {
-    kedge_faros_sh {
-      v1alpha1 {
-        updateKubernetesMCP(name: $name, object: $object) {
-          metadata {
-            name
-          }
-        }
-      }
-    }
-  }
-`
-
-export const DELETE_MCP = `
-  mutation DeleteMCP($name: String!) {
-    kedge_faros_sh {
-      v1alpha1 {
-        deleteKubernetesMCP(name: $name)
-      }
-    }
-  }
-`
-
-// --- LinuxMCP mutations (cluster-scoped) ---
-
-export const CREATE_LINUX_MCP = `
-  mutation CreateLinuxMCP($object: KedgeFarosShV1alpha1LinuxMCP_Input!) {
-    kedge_faros_sh {
-      v1alpha1 {
-        createLinuxMCP(object: $object) {
-          metadata {
-            name
-            uid
-          }
-        }
-      }
-    }
-  }
-`
-
-export const UPDATE_LINUX_MCP = `
-  mutation UpdateLinuxMCP($name: String!, $object: KedgeFarosShV1alpha1LinuxMCP_Input!) {
-    kedge_faros_sh {
-      v1alpha1 {
-        updateLinuxMCP(name: $name, object: $object) {
-          metadata {
-            name
-          }
-        }
-      }
-    }
-  }
-`
-
-export const DELETE_LINUX_MCP = `
-  mutation DeleteLinuxMCP($name: String!) {
-    kedge_faros_sh {
-      v1alpha1 {
-        deleteLinuxMCP(name: $name)
-      }
-    }
-  }
-`
+// KubernetesMCP + LinuxMCP mutations were removed when both per-kind
+// CRDs collapsed into the MCPServer aggregate.
 
 // --- MCPServer (aggregate kube + linux) mutations (cluster-scoped) ---
 

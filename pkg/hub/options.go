@@ -46,6 +46,14 @@ type Options struct {
 	DevMode          bool
 	StaticAuthTokens []string
 
+	// Providers is the list of first-party builtin providers to materialize
+	// into root:kedge:providers at bootstrap. The flag accepts a comma-
+	// separated list or repeats; see cmd/kedge-hub/main.go for the default.
+	// Empty/nil enables every known builtin (kcp.BuiltinProviderNames()).
+	// Dependencies between builtins are validated at hub startup — see
+	// pkg/hub/kcp.builtinEntries[].Requires.
+	Providers []string
+
 	// GraphQLAddr is the address of an external GraphQL gateway to proxy /graphql/ requests to.
 	// If empty and EmbeddedGraphQL is false, the graphql proxy is disabled.
 	GraphQLAddr string

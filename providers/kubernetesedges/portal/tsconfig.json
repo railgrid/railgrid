@@ -1,0 +1,12 @@
+{
+  "extends": "../../../portal/tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/stores/auth": ["src/auth-adapter.ts"],
+      "@/stores/terminalSessions": ["src/terminal-adapter.ts"],
+      "@/*": ["../../../portal/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue", "../../../portal/env.d.ts"]
+}

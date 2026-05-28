@@ -29,6 +29,15 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/faroshq/faros-kedge/pkg/hub"
+	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+
+	// First-party provider registrations. Each package's init() calls
+	// providers.RegisterBuiltin, so the catalog controller can find them
+	// without a central data list. Adding a new builtin = new blank import
+	// here + a providers/<name>/manifest.go file.
+	_ "github.com/faroshq/faros-kedge/providers/kubernetesedges"
+	_ "github.com/faroshq/faros-kedge/providers/mcp"
+	_ "github.com/faroshq/faros-kedge/providers/serveredges"
 )
 
 func main() {
@@ -64,6 +73,9 @@ func main() {
 	cmd.Flags().StringVar(&opts.HubInternalURL, "hub-internal-url", "", "Internal URL for kcp mount resolution (default: derived from listen-addr; avoids CDN loops)")
 	cmd.Flags().BoolVar(&opts.DevMode, "dev-mode", false, "Enable dev mode (skip TLS verification for OIDC)")
 	cmd.Flags().StringSliceVar(&opts.StaticAuthTokens, "static-auth-token", nil, "Static bearer tokens for access (can be specified multiple times)")
+	cmd.Flags().StringSliceVar(&opts.Providers, "providers", providers.BuiltinNames(),
+		"First-party providers to enable as CatalogEntries (comma-separated or repeat). "+
+			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")
 
 	cmd.Flags().StringVar(&opts.GraphQLAddr, "graphql-addr", opts.GraphQLAddr, "Address of an external GraphQL gateway to proxy /graphql/* requests to (empty to disable)")
 	cmd.Flags().BoolVar(&opts.EmbeddedGraphQL, "embedded-graphql", opts.EmbeddedGraphQL, "Run GraphQL listener+gateway in-process (requires embedded or external kcp; overrides --graphql-addr)")

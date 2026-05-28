@@ -41,8 +41,6 @@ func newMCPCommand() *cobra.Command {
 
 func newMCPURLCommand() *cobra.Command {
 	var edgeName string
-	var kubernetesName string
-	var linuxName string
 	var mcpserverName string
 
 	cmd := &cobra.Command{
@@ -52,18 +50,16 @@ func newMCPURLCommand() *cobra.Command {
 
 Use --mcpserver-name to print the aggregate MCPServer endpoint URL — one
 endpoint that exposes both kube and linux edges plus a list_targets tool the
-AI uses to discover what's reachable.  This is the recommended entry point
-for Claude / Cursor / similar MCP clients:
+AI uses to discover what's reachable.  This is the entry point for
+Claude / Cursor / similar MCP clients:
   https://kedge.example.com/services/mcpserver/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/mcpservers/default/mcp
 
-Use --name to print the KubernetesMCP multi-edge MCP endpoint URL (kubernetes-type edges):
-  https://kedge.example.com/services/mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp
-
-Use --linux-name to print the LinuxMCP multi-edge MCP endpoint URL (server-type edges, SSH transport):
-  https://kedge.example.com/services/linux-mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/linuxmcps/default/mcp
-
-Use --edge to print the per-edge MCP endpoint URL:
+Use --edge to print the per-edge MCP endpoint URL (single Kubernetes edge):
   https://kedge.example.com/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp
+
+The previous per-kind MCP endpoints (--name for KubernetesMCP,
+--linux-name for LinuxMCP) were removed; their tools now appear on the
+MCPServer aggregate via the in-binary ToolFamily registry.
 
 Usage with Claude Desktop (claude_desktop_config.json):
   {
@@ -77,12 +73,6 @@ Usage with Claude Desktop (claude_desktop_config.json):
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			set := 0
-			if kubernetesName != "" {
-				set++
-			}
-			if linuxName != "" {
-				set++
-			}
 			if mcpserverName != "" {
 				set++
 			}
@@ -90,24 +80,22 @@ Usage with Claude Desktop (claude_desktop_config.json):
 				set++
 			}
 			if set == 0 {
-				return fmt.Errorf("specify exactly one of --mcpserver-name <aggregate-mcp-name>, --name <kubernetes-mcp-name>, --linux-name <linux-mcp-name>, or --edge <edge-name>")
+				return fmt.Errorf("specify exactly one of --mcpserver-name <aggregate-mcp-name> or --edge <edge-name>")
 			}
 			if set > 1 {
-				return fmt.Errorf("--mcpserver-name, --name, --linux-name, and --edge are mutually exclusive")
+				return fmt.Errorf("--mcpserver-name and --edge are mutually exclusive")
 			}
-			return runMCPURL(cmd, edgeName, kubernetesName, linuxName, mcpserverName)
+			return runMCPURL(cmd, edgeName, mcpserverName)
 		},
 	}
 
 	cmd.Flags().StringVar(&edgeName, "edge", "", "Name of the edge (for per-edge MCP endpoint)")
-	cmd.Flags().StringVar(&kubernetesName, "name", "", "Name of the KubernetesMCP object (kubernetes-type edges)")
-	cmd.Flags().StringVar(&linuxName, "linux-name", "", "Name of the LinuxMCP object (server-type edges, SSH transport)")
-	cmd.Flags().StringVar(&mcpserverName, "mcpserver-name", "", "Name of the aggregate MCPServer object (recommended — kube + linux + list_targets)")
+	cmd.Flags().StringVar(&mcpserverName, "mcpserver-name", "", "Name of the aggregate MCPServer object (kube + linux + list_targets)")
 
 	return cmd
 }
 
-func runMCPURL(_ *cobra.Command, edgeName, kubernetesName, linuxName, mcpserverName string) error {
+func runMCPURL(_ *cobra.Command, edgeName, mcpserverName string) error {
 	// Load the current kubeconfig.
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
@@ -149,10 +137,6 @@ func runMCPURL(_ *cobra.Command, edgeName, kubernetesName, linuxName, mcpserverN
 	switch {
 	case mcpserverName != "":
 		mcpURL, mcpErr = mcpAggregateURLFromServerURL(serverURL, mcpserverName)
-	case kubernetesName != "":
-		mcpURL, mcpErr = mcpKubernetesURLFromServerURL(serverURL, kubernetesName)
-	case linuxName != "":
-		mcpURL, mcpErr = mcpLinuxURLFromServerURL(serverURL, linuxName)
 	default:
 		mcpURL, mcpErr = mcpURLFromServerURL(serverURL, edgeName)
 	}
@@ -173,7 +157,7 @@ func runMCPURL(_ *cobra.Command, edgeName, kubernetesName, linuxName, mcpserverN
 	// Derive the MCP server name for the `claude mcp add` hint.
 	// For per-edge endpoints, query the edge type so the name reflects
 	// what's being connected (<edge>-kubernetes-cluster or <edge>-server).
-	mcpName := mcpServerName(edgeName, kubernetesName, linuxName, mcpserverName)
+	mcpName := mcpServerName(edgeName, mcpserverName)
 
 	fmt.Println()
 	fmt.Println("To add this MCP server to Claude Code:")
@@ -199,20 +183,19 @@ func runMCPURL(_ *cobra.Command, edgeName, kubernetesName, linuxName, mcpserverN
 	return nil
 }
 
-// mcpServerName chooses a friendly identifier for the `claude mcp add` name
-// argument. All names share a `kedge-` prefix so multiple kedge MCP servers
-// registered in a single client config sort together. The CRD kind picks
-// the middle segment: KubernetesMCP groups become "kubernetes-clusters",
-// LinuxMCP groups become "servers". Per-edge entries drop the plural and
-// the edge type picks "kubernetes-cluster" vs "server".
-func mcpServerName(edgeName, kubernetesName, linuxName, mcpserverName string) string {
+// mcpServerName chooses a friendly identifier for the `claude mcp add`
+// name argument. All names share a `kedge-` prefix so multiple kedge
+// MCP servers registered in a single client config sort together.
+// Aggregate MCPServer entries take the CR name directly; per-edge
+// entries derive their middle segment from the edge's spec.type
+// ("kubernetes-cluster" or "server").
+//
+// KubernetesMCP / LinuxMCP cases were removed when both per-kind CRDs
+// collapsed into the MCPServer aggregate.
+func mcpServerName(edgeName, mcpserverName string) string {
 	switch {
 	case mcpserverName != "":
 		return "kedge-" + mcpserverName
-	case kubernetesName != "":
-		return "kedge-kubernetes-clusters-" + kubernetesName
-	case linuxName != "":
-		return "kedge-servers-" + linuxName
 	case edgeName != "":
 		return "kedge-" + edgeTypeKind(edgeName) + "-" + edgeName
 	}
@@ -253,31 +236,10 @@ func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
 	return apiurl.EdgeAgentProxyURL(base, cluster, edgeName, "mcp"), nil
 }
 
-// mcpKubernetesURLFromServerURL derives the KubernetesMCP endpoint URL from a
-// kcp server URL and a KubernetesMCP object name.
-//
-// Input:  https://kedge.example.com/clusters/root:kedge:user-default, "default"
-// Output: https://kedge.example.com/services/mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp
-func mcpKubernetesURLFromServerURL(serverURL, kubernetesName string) (string, error) {
-	base, cluster := apiurl.SplitBaseAndCluster(serverURL)
-	if cluster == "default" {
-		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
-	}
-	return apiurl.KubernetesMCPURL(base, cluster, kubernetesName), nil
-}
-
-// mcpLinuxURLFromServerURL derives the LinuxMCP endpoint URL from a kcp
-// server URL and a LinuxMCP object name.
-//
-// Input:  https://kedge.example.com/clusters/root:kedge:user-default, "default"
-// Output: https://kedge.example.com/services/linux-mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/linuxmcps/default/mcp
-func mcpLinuxURLFromServerURL(serverURL, linuxName string) (string, error) {
-	base, cluster := apiurl.SplitBaseAndCluster(serverURL)
-	if cluster == "default" {
-		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
-	}
-	return apiurl.LinuxMCPURL(base, cluster, linuxName), nil
-}
+// mcpKubernetesURLFromServerURL / mcpLinuxURLFromServerURL were
+// removed when both per-kind endpoints collapsed into the MCPServer
+// aggregate. Use mcpAggregateURLFromServerURL below for the unified
+// endpoint.
 
 // mcpAggregateURLFromServerURL derives the aggregate MCPServer endpoint URL
 // from a kcp server URL and an MCPServer object name.

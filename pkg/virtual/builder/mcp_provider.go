@@ -139,6 +139,20 @@ type MultiEdgeKedgeEdgeProvider struct {
 	bearerToken     string       // caller's bearer token to forward to edge proxies
 }
 
+// NewMultiEdgeKedgeEdgeProvider constructs a MultiEdgeKedgeEdgeProvider.
+// Provider builders use this from outside the package since the struct
+// fields are private. hubBase must already be trimmed of any trailing
+// slash and not include the /services path segment.
+func NewMultiEdgeKedgeEdgeProvider(cluster string, edgeNames []string, edgeConnManager *ConnManager, hubBase, bearerToken string) *MultiEdgeKedgeEdgeProvider {
+	return &MultiEdgeKedgeEdgeProvider{
+		cluster:         cluster,
+		edgeNames:       edgeNames,
+		edgeConnManager: edgeConnManager,
+		hubBase:         hubBase,
+		bearerToken:     bearerToken,
+	}
+}
+
 // Ensure MultiEdgeKedgeEdgeProvider implements mcpkubernetes.Provider.
 var _ mcpkubernetes.Provider = (*MultiEdgeKedgeEdgeProvider)(nil)
 

@@ -1,11 +1,57 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
+import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 import { Puzzle, ExternalLink, AlertCircle, Plus, X, Loader2 } from 'lucide-vue-next'
 
 const providers = useProvidersStore()
+
+// Group the catalog cards by category to match the side-nav structure.
+// Categories the hub knows (registry) appear first by their declared
+// order; ad-hoc categories follow alphabetically; uncategorized providers
+// fall into the synthetic "Other" bucket at the end.
+const groupedItems = computed(() => {
+  const known = new Map(providers.categories.map((c) => [c.name, c]))
+  const byCat = new Map<string, ProviderDTO[]>()
+  const other: ProviderDTO[] = []
+  for (const p of providers.items) {
+    if (!p.category) {
+      other.push(p)
+      continue
+    }
+    const arr = byCat.get(p.category) ?? []
+    arr.push(p)
+    byCat.set(p.category, arr)
+  }
+  const names = [...byCat.keys()].sort((a, b) => {
+    const ka = known.get(a)
+    const kb = known.get(b)
+    if (ka && !kb) return -1
+    if (!ka && kb) return 1
+    if (ka && kb) return (ka.order ?? 0) - (kb.order ?? 0) || a.localeCompare(b)
+    return a.localeCompare(b)
+  })
+  const groups = names.map((n) => ({
+    name: n,
+    icon: known.get(n)?.icon ?? null,
+    items: byCat.get(n)!.slice().sort((a, b) => a.displayName.localeCompare(b.displayName)),
+  }))
+  if (other.length) {
+    groups.push({
+      name: 'Other',
+      icon: null,
+      items: other.sort((a, b) => a.displayName.localeCompare(b.displayName)),
+    })
+  }
+  return groups
+})
+
+function categoryIcon(name: string | null): unknown {
+  if (!name) return fallbackCategoryIcon
+  return categoryIcons[name] ?? fallbackCategoryIcon
+}
 
 // per-provider in-flight flag so Enable/Disable buttons can show a spinner
 // without coupling to the global loading state.
@@ -17,8 +63,13 @@ const actionError = ref<string | null>(null)
 // is actually POSTed.
 const dialogProvider = ref<ProviderDTO | null>(null)
 
+// Always refetch on mount. The store's initial load happens at app boot
+// (App.vue), but new CatalogEntry installs are common while the portal is
+// open — users navigate here precisely to see what's now installed, so a
+// stale cached list defeats the page's purpose. The store guards against
+// concurrent calls so a no-op fast-path is safe.
 onMounted(() => {
-  if (!providers.loaded) providers.load()
+  providers.load()
 })
 
 function openEnableDialog(p: ProviderDTO) {
@@ -94,12 +145,18 @@ async function onDisable(p: ProviderDTO) {
         </div>
       </div>
 
-      <ul v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <li
-          v-for="p in providers.items"
-          :key="p.name"
-          class="rounded-xl border border-border-subtle bg-surface-raised/60 p-4 transition-colors hover:border-accent/30"
-        >
+      <div v-else class="space-y-6">
+        <section v-for="group in groupedItems" :key="group.name">
+          <h2 class="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+            <component :is="categoryIcon(group.icon)" class="h-3 w-3" :stroke-width="2" />
+            {{ group.name }}
+          </h2>
+          <ul class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <li
+              v-for="p in group.items"
+              :key="p.name"
+              class="rounded-xl border border-border-subtle bg-surface-raised/60 p-4 transition-colors hover:border-accent/30"
+            >
           <div class="flex items-start gap-3">
             <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-overlay">
               <img v-if="p.iconURL" :src="p.iconURL" alt="" class="h-6 w-6" @error="(e) => ((e.target as HTMLImageElement).style.display = 'none')" />
@@ -113,12 +170,14 @@ async function onDisable(p: ProviderDTO) {
                   :class="
                     !p.ready
                       ? 'border border-border-default bg-surface-overlay text-text-muted'
-                      : providers.isEnabled(p.name)
-                        ? 'border border-accent/30 bg-accent/10 text-accent'
-                        : 'border border-success/30 bg-success-subtle text-success'
+                      : p.builtinRoute
+                        ? 'border border-border-default bg-surface-overlay text-text-secondary'
+                        : providers.isEnabled(p.name)
+                          ? 'border border-accent/30 bg-accent/10 text-accent'
+                          : 'border border-success/30 bg-success-subtle text-success'
                   "
                 >
-                  {{ !p.ready ? 'Pending' : providers.isEnabled(p.name) ? 'Enabled' : 'Available' }}
+                  {{ !p.ready ? 'Pending' : p.builtinRoute ? 'Built-in' : providers.isEnabled(p.name) ? 'Enabled' : 'Available' }}
                 </span>
               </div>
               <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">{{ p.name }}<span v-if="p.version"> · {{ p.version }}</span></p>
@@ -132,10 +191,12 @@ async function onDisable(p: ProviderDTO) {
           </div>
 
           <div class="mt-4 flex items-center gap-2">
-            <!-- Open: only when ready and has UI -->
+            <!-- Open: only when ready and has UI. Builtin providers go
+                 to their in-tree Vue route; third-party load via
+                 /providers/{name} → ProviderFrame. -->
             <router-link
               v-if="p.hasUI && p.ready"
-              :to="`/providers/${p.name}`"
+              :to="p.builtinRoute ? `/${p.builtinRoute}` : `/providers/${p.name}`"
               class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20"
             >
               Open
@@ -170,8 +231,10 @@ async function onDisable(p: ProviderDTO) {
               Provider is starting&hellip;
             </span>
           </div>
-        </li>
-      </ul>
+            </li>
+          </ul>
+        </section>
+      </div>
     </div>
 
     <ProviderEnableDialog

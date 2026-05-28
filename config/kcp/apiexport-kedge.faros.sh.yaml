@@ -69,16 +69,6 @@ spec:
     storage:
       crd: {}
   - group: kedge.faros.sh
-    name: kubernetesmcps
-    schema: v260520-b6b9fee.kubernetesmcps.kedge.faros.sh
-    storage:
-      crd: {}
-  - group: kedge.faros.sh
-    name: linuxmcps
-    schema: v260520-b6b9fee.linuxmcps.kedge.faros.sh
-    storage:
-      crd: {}
-  - group: kedge.faros.sh
     name: mcpservers
     schema: v260520-b6b9fee.mcpservers.kedge.faros.sh
     storage:

@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+/*
+ * Built-in providers ship their UI as separate Vite bundles under
+ * providers/{name}/portal/, but their pages render inside this portal's
+ * DOM via the <kedge-provider-{name}> custom element. Their classes
+ * therefore need to live in THIS stylesheet (which is the only one the
+ * host page loads). These @source directives pull provider .vue/.ts
+ * files into Tailwind's scan so the utility classes they use are
+ * compiled here.
+ */
+@source "../../../providers/mcp/portal/src/**/*.{vue,ts}";
+@source "../../../providers/kubernetesedges/portal/src/**/*.{vue,ts}";
+
 @theme {
   --color-surface: #06060b;
   --color-surface-raised: #0d0d14;

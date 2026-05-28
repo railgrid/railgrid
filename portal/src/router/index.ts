@@ -19,49 +19,20 @@ const routes = [
     name: 'dashboard',
     component: () => import('@/pages/DashboardPage.vue'),
   },
-  {
-    path: '/edges',
-    name: 'edges',
-    component: () => import('@/pages/EdgesPage.vue'),
-  },
-  {
-    path: '/edges/:name',
-    name: 'edge-detail',
-    component: () => import('@/pages/EdgeDetailPage.vue'),
-    props: true,
-  },
-  {
-    path: '/workloads',
-    name: 'workloads',
-    component: () => import('@/pages/WorkloadsPage.vue'),
-  },
-  {
-    path: '/workloads/:namespace/:name',
-    name: 'workload-detail',
-    component: () => import('@/pages/WorkloadDetailPage.vue'),
-    props: true,
-  },
-  {
-    path: '/mcp',
-    name: 'mcp',
-    component: () => import('@/pages/MCPPage.vue'),
-  },
-  {
-    path: '/mcp/:name',
-    name: 'mcp-detail',
-    component: () => import('@/pages/MCPDetailPage.vue'),
-    props: true,
-  },
+  // /edges, /servers, /edges/:name, /workloads, /workloads/:ns/:name,
+  // /edges/:name/terminal removed: the kubernetes-edges and server-edges
+  // providers now ship their own custom-element micro-frontends under
+  // providers/{name}/portal/. Their internal memory-history routers
+  // handle the in-provider navigation; the URLs land on the portal SPA
+  // at /providers/kubernetes-edges/* and /providers/server-edges/* via
+  // ProviderFrame.
+  // /mcp + /mcp/:name removed: the mcp provider now ships its own custom-
+  // element micro-frontend under providers/mcp/portal/ and renders via
+  // the dynamic /providers/:name/:rest(.*)* route handled by ProviderFrame.
   {
     path: '/providers',
     name: 'providers',
     component: () => import('@/pages/ProvidersPage.vue'),
-  },
-  {
-    path: '/edges/:name/terminal',
-    name: 'edge-terminal',
-    component: () => import('@/pages/TerminalPage.vue'),
-    props: true,
   },
   {
     path: '/:pathMatch(.*)*',

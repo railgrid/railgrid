@@ -78,14 +78,14 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 		}
 	}
 
-	// Wait for all CRDs to be established
+	// Wait for all CRDs to be established. KubernetesMCP + LinuxMCP
+	// CRDs were removed when both per-kind endpoints collapsed into
+	// the MCPServer aggregate.
 	crdNames := []string{
 		"edges.kedge.faros.sh",
 		"virtualworkloads.kedge.faros.sh",
 		"placements.kedge.faros.sh",
 		"users.kedge.faros.sh",
-		"kubernetesmcps.kedge.faros.sh",
-		"linuxmcps.kedge.faros.sh",
 		"mcpservers.kedge.faros.sh",
 	}
 

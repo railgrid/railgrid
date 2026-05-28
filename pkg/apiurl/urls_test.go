@@ -299,61 +299,10 @@ func TestEdgeProxyURL(t *testing.T) {
 	}
 }
 
-func TestKubernetesMCPPath(t *testing.T) {
-	tests := []struct {
-		name           string
-		cluster        string
-		kubernetesName string
-		want           string
-	}{
-		{
-			name:           "default kubernetes",
-			cluster:        "abc123",
-			kubernetesName: "default",
-			want:           "/services/mcp/abc123/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp",
-		},
-		{
-			name:           "named kubernetes",
-			cluster:        "abc123",
-			kubernetesName: "my-cluster",
-			want:           "/services/mcp/abc123/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/my-cluster/mcp",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := KubernetesMCPPath(tt.cluster, tt.kubernetesName)
-			if got != tt.want {
-				t.Errorf("KubernetesMCPPath(%q, %q) = %q, want %q",
-					tt.cluster, tt.kubernetesName, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestKubernetesMCPURL(t *testing.T) {
-	got := KubernetesMCPURL("https://hub:9443", "abc123", "default")
-	want := "https://hub:9443/services/mcp/abc123/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp"
-	if got != want {
-		t.Errorf("KubernetesMCPURL = %q, want %q", got, want)
-	}
-}
-
-func TestLinuxMCPPath(t *testing.T) {
-	got := LinuxMCPPath("abc123", "default")
-	want := "/services/linux-mcp/abc123/apis/kedge.faros.sh/v1alpha1/linuxmcps/default/mcp"
-	if got != want {
-		t.Errorf("LinuxMCPPath = %q, want %q", got, want)
-	}
-}
-
-func TestLinuxMCPURL(t *testing.T) {
-	got := LinuxMCPURL("https://hub:9443", "abc123", "default")
-	want := "https://hub:9443/services/linux-mcp/abc123/apis/kedge.faros.sh/v1alpha1/linuxmcps/default/mcp"
-	if got != want {
-		t.Errorf("LinuxMCPURL = %q, want %q", got, want)
-	}
-}
+// TestKubernetesMCPPath / TestKubernetesMCPURL / TestLinuxMCPPath /
+// TestLinuxMCPURL removed alongside their helpers when the per-kind
+// MCP endpoints collapsed into the MCPServer aggregate. MCPServer
+// helper coverage lives in TestMCPServerPath / TestMCPServerURL.
 
 func TestEdgeAPIPath(t *testing.T) {
 	tests := []struct {
@@ -441,8 +390,8 @@ func TestConstants(t *testing.T) {
 	if PathPrefixEdgesProxy != "/services/edges-proxy" {
 		t.Errorf("PathPrefixEdgesProxy = %q, want %q", PathPrefixEdgesProxy, "/services/edges-proxy")
 	}
-	if PathPrefixMCP != "/services/mcp" {
-		t.Errorf("PathPrefixMCP = %q, want %q", PathPrefixMCP, "/services/mcp")
+	if PathPrefixMCPServer != "/services/mcpserver" {
+		t.Errorf("PathPrefixMCPServer = %q, want %q", PathPrefixMCPServer, "/services/mcpserver")
 	}
 	if PathAuthCallback != "/auth/callback" {
 		t.Errorf("PathAuthCallback = %q, want %q", PathAuthCallback, "/auth/callback")

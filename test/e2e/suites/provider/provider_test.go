@@ -243,28 +243,172 @@ func TestBAPIProvidersDTO(t *testing.T) {
 	if len(items) == 0 {
 		t.Fatal("expected at least one provider")
 	}
-	var qs map[string]any
+
+	byName := map[string]map[string]any{}
 	for _, it := range items {
 		m := it.(map[string]any)
-		if m["name"] == "quickstart" {
-			qs = m
+		byName[m["name"].(string)] = m
+	}
+
+	t.Run("quickstart third-party provider shape", func(t *testing.T) {
+		qs := byName["quickstart"]
+		if qs == nil {
+			t.Fatalf("quickstart not in /api/providers: keys=%v", keysOf(byName))
 		}
-	}
-	if qs == nil {
-		t.Fatalf("quickstart not in /api/providers: %v", items)
-	}
-	for _, k := range []string{"displayName", "ready", "hasUI", "hasBackend", "apiExportPath", "apiExportName", "permissionClaims"} {
-		if _, ok := qs[k]; !ok {
-			t.Errorf("expected key %q in DTO, got: %v", k, qs)
+		for _, k := range []string{"displayName", "ready", "hasUI", "hasBackend", "apiExportPath", "apiExportName", "permissionClaims"} {
+			if _, ok := qs[k]; !ok {
+				t.Errorf("expected key %q in DTO, got: %v", k, qs)
+			}
 		}
-	}
-	if qs["ready"] != true {
-		t.Errorf("expected ready=true, got %v", qs["ready"])
-	}
-	if qs["apiExportPath"] != "root:kedge:providers:quickstart" {
-		t.Errorf("apiExportPath = %v", qs["apiExportPath"])
-	}
+		if qs["ready"] != true {
+			t.Errorf("expected ready=true, got %v", qs["ready"])
+		}
+		if qs["apiExportPath"] != "root:kedge:providers:quickstart" {
+			t.Errorf("apiExportPath = %v", qs["apiExportPath"])
+		}
+		// Third-party provider should NOT carry a builtinRoute.
+		if br, ok := qs["builtinRoute"]; ok && br != "" {
+			t.Errorf("third-party provider should not have builtinRoute, got %v", br)
+		}
+	})
+
+	t.Run("all 3 first-party builtins bootstrapped by default with categories", func(t *testing.T) {
+		// All three first-party providers have migrated to custom-element
+		// micro-frontends loaded via ProviderFrame, so their DTOs have
+		// empty builtinRoute but builtin=true.
+		for _, want := range []struct {
+			name, route, displayName, category string
+		}{
+			{"mcp", "", "MCP", "AI"},
+			{"kubernetes-edges", "", "Kubernetes", "Edges"},
+			{"server-edges", "", "Servers", "Edges"},
+		} {
+			b := byName[want.name]
+			if b == nil {
+				t.Errorf("missing builtin %s; saw %v", want.name, keysOf(byName))
+				continue
+			}
+			if b["ready"] != true {
+				t.Errorf("%s: expected ready=true, got %v", want.name, b["ready"])
+			}
+			gotRoute, _ := b["builtinRoute"].(string)
+			if gotRoute != want.route {
+				t.Errorf("%s: builtinRoute = %q, want %q", want.name, gotRoute, want.route)
+			}
+			if b["displayName"] != want.displayName {
+				t.Errorf("%s: displayName = %v, want %s", want.name, b["displayName"], want.displayName)
+			}
+			if b["category"] != want.category {
+				t.Errorf("%s: category = %v, want %s", want.name, b["category"], want.category)
+			}
+			if path, _ := b["apiExportPath"].(string); path != "" {
+				t.Errorf("%s: builtin should not have apiExportPath, got %s", want.name, path)
+			}
+			// All three flip the new builtin=true flag so the portal's
+			// side-nav skips the APIBinding-required gate.
+			if b["builtin"] != true {
+				t.Errorf("%s: expected builtin=true in DTO, got %v", want.name, b["builtin"])
+			}
+		}
+	})
+
+	t.Run("mcp surfaces hasUI=true via embedded LocalUIAssets", func(t *testing.T) {
+		m := byName["mcp"]
+		if m == nil {
+			t.Fatalf("mcp missing from DTO; saw %v", keysOf(byName))
+		}
+		if m["hasUI"] != true {
+			t.Errorf("mcp hasUI = %v, want true (provider embeds its UI in the hub binary)", m["hasUI"])
+		}
+	})
+
+	t.Run("mcp UI proxy serves embedded main.js", func(t *testing.T) {
+		// Direct hit on the hub's /ui/providers/mcp/main.js — should be
+		// the embedded IIFE bundle, not a redirect or proxy to anywhere.
+		resp, err := http.Get(hubURL + "/ui/providers/mcp/main.js")
+		if err != nil {
+			t.Fatalf("GET main.js: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != 200 {
+			t.Fatalf("status %d", resp.StatusCode)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		if !bytes.Contains(b, []byte("kedge-provider-mcp")) {
+			t.Error("mcp main.js does not contain the custom-element tag name")
+		}
+	})
+
+	t.Run("kubernetes-edges declares Workloads child", func(t *testing.T) {
+		ke := byName["kubernetes-edges"]
+		if ke == nil {
+			t.Fatalf("kubernetes-edges not in DTO; saw %v", keysOf(byName))
+		}
+		children, _ := ke["children"].([]any)
+		if len(children) == 0 {
+			t.Fatalf("expected at least one child on kubernetes-edges, got %v", ke["children"])
+		}
+		var sawWorkloads bool
+		for _, c := range children {
+			m, _ := c.(map[string]any)
+			if m["displayName"] == "Workloads" && m["builtinRoute"] == "workloads" {
+				sawWorkloads = true
+			}
+		}
+		if !sawWorkloads {
+			t.Fatalf("expected Workloads child {builtinRoute: workloads}, got %v", children)
+		}
+	})
+
+	t.Run("server-edges has no children", func(t *testing.T) {
+		se := byName["server-edges"]
+		if se == nil {
+			t.Fatalf("server-edges not in DTO; saw %v", keysOf(byName))
+		}
+		if children, ok := se["children"]; ok && children != nil {
+			if list, _ := children.([]any); len(list) != 0 {
+				t.Errorf("server-edges should have no children, got %v", list)
+			}
+		}
+	})
+
+	t.Run("categories registry surfaced in response", func(t *testing.T) {
+		cats, _ := body["categories"].([]any)
+		if len(cats) == 0 {
+			t.Fatal("expected categories block in /api/providers response")
+		}
+		seen := map[string]map[string]any{}
+		for _, c := range cats {
+			m := c.(map[string]any)
+			seen[m["name"].(string)] = m
+		}
+		for _, want := range []struct{ name, icon string }{
+			{"Edges", "Server"},
+			{"AI", "Sparkles"},
+		} {
+			c := seen[want.name]
+			if c == nil {
+				t.Errorf("missing category %s; saw %v", want.name, seen)
+				continue
+			}
+			if c["icon"] != want.icon {
+				t.Errorf("category %s: icon = %v, want %s", want.name, c["icon"], want.icon)
+			}
+		}
+	})
 }
+
+func keysOf(m map[string]map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// --providers flag-mechanics tests live in test/e2e/suites/providerflags
+// because they must spawn their own hub on port 2380 (embedded etcd's
+// hard-coded port) and so cannot coexist with this suite's shared hub.
 
 func TestCBackendProxy(t *testing.T) {
 	body := httpGetJSON(t, hubURL+"/services/providers/quickstart/api/hello", staticToken)

@@ -1,0 +1,111 @@
+/*
+ * Quickstart provider element styles.
+ *
+ * Imported as a string by main.ts and injected as a single <style> tag in
+ * the host document. The element renders in LIGHT DOM (no Shadow DOM) so
+ * the portal's :root CSS custom properties (--color-accent, etc.) cascade
+ * in for free — palette parity with the portal without re-declaring tokens.
+ *
+ * Every selector is namespaced under the kedge-provider-quickstart tag so
+ * these styles cannot leak into the portal even though they live in the
+ * portal's stylesheet scope.
+ */
+
+kedge-provider-quickstart {
+  display: block;
+}
+
+kedge-provider-quickstart .grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 720px) {
+  kedge-provider-quickstart .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+kedge-provider-quickstart .panel {
+  background: var(--color-surface-raised, #0d0d14);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.04));
+  border-radius: 12px;
+  padding: 14px 16px;
+  color: var(--color-text-primary, inherit);
+}
+
+kedge-provider-quickstart .panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+kedge-provider-quickstart .panel-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary, currentColor);
+  text-transform: uppercase;
+}
+
+kedge-provider-quickstart .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-default, transparent);
+  background: var(--color-surface-overlay, transparent);
+  color: var(--color-text-muted, inherit);
+}
+
+kedge-provider-quickstart .badge.ok {
+  border-color: var(--color-success);
+  color: var(--color-success);
+  background: var(--color-success-subtle);
+}
+
+kedge-provider-quickstart .badge.warn {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+  background: transparent;
+}
+
+kedge-provider-quickstart pre {
+  margin: 0;
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+  color: var(--color-text-primary, inherit);
+  border: 1px solid var(--color-border-subtle, transparent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  overflow-x: auto;
+}
+
+kedge-provider-quickstart code {
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+  color: var(--color-text-secondary, currentColor);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+
+kedge-provider-quickstart .meta {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--color-text-muted, inherit);
+}
+
+kedge-provider-quickstart .muted {
+  color: var(--color-text-muted, inherit);
+}

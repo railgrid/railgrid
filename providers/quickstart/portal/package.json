@@ -1,0 +1,16 @@
+{
+  "name": "kedge-provider-quickstart-portal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Quickstart provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle plus static assets the kedge hub serves under /ui/providers/quickstart/.",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^6.4.1"
+  }
+}

@@ -50,6 +50,25 @@ export default defineConfig(() => ({
         target: 'https://localhost:9443',
         changeOrigin: true,
         secure: false,
+        // Mirror of pkg/hub/providers/proxy.go:isAssetPath — only forward
+        // static-asset requests (main.js, icon.svg, …) to the hub so the
+        // provider's HTTP server serves them. Bare /ui/providers/{name}
+        // and nested SPA routes like /ui/providers/{name}/some-page must
+        // be served locally by Vite's HTML5 history fallback so the Vue
+        // SPA can render ProviderFrame. Without this bypass, the hub's
+        // own SPA-fallback handler (which IS this Vite dev proxy) loops
+        // back through Vite and overflows the Node HTTP header buffer.
+        bypass(req) {
+          const url = req.url || ''
+          const pathOnly = url.split('?', 1)[0]
+          const slash = pathOnly.lastIndexOf('/')
+          const last = slash >= 0 ? pathOnly.slice(slash + 1) : pathOnly
+          if (!last.includes('.')) {
+            // Returning a path tells vite to serve that path locally
+            // (its SPA middleware then falls back to index.html).
+            return url
+          }
+        },
       },
     },
   },

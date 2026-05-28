@@ -19,6 +19,28 @@ import {
 
 const store = useTerminalSessionsStore()
 
+// Bridge: provider micro-frontends can't reach this Pinia store from
+// inside their isolated Vue apps, so they dispatch a
+// "kedge-terminal-open" CustomEvent (see e.g.
+// providers/kubernetesedges/portal/src/terminal-adapter.ts) which the
+// dock catches here and forwards to its real openSession path. Listener
+// is window-scoped because the provider's custom element lives in
+// light DOM but events from inside its own Vue app bubble through
+// document, not through the host element.
+interface ProviderTerminalDetail {
+  edgeName: string
+  cluster: string
+  displayName?: string
+  forceNew?: boolean
+}
+function onProviderTerminalOpen(e: Event) {
+  const ce = e as CustomEvent<ProviderTerminalDetail>
+  if (!ce.detail?.edgeName || !ce.detail?.cluster) return
+  store.openSession(ce.detail)
+}
+onMounted(() => window.addEventListener('kedge-terminal-open', onProviderTerminalOpen))
+onUnmounted(() => window.removeEventListener('kedge-terminal-open', onProviderTerminalOpen))
+
 type InstanceRef = InstanceType<typeof TerminalInstance> | null
 const instanceRefs = new Map<string, InstanceRef>()
 function setInstanceRef(sessionId: string, el: unknown) {

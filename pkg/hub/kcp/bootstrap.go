@@ -41,6 +41,7 @@ import (
 
 	"github.com/faroshq/faros-kedge/config/kcp"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/hub/providers"
 	"github.com/faroshq/faros-kedge/pkg/util/confighelpers"
 )
 
@@ -58,12 +59,9 @@ var (
 	apiBindingGVR = schema.GroupVersionResource{
 		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings",
 	}
-	kubernetesMCPGVR = schema.GroupVersionResource{
-		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesmcps",
-	}
-	linuxMCPGVR = schema.GroupVersionResource{
-		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "linuxmcps",
-	}
+	// KubernetesMCP + LinuxMCP per-kind CRDs were removed in favor of
+	// the MCPServer aggregate. Their GVRs and per-tenant default-
+	// creation helpers used to live here.
 	mcpServerGVR = schema.GroupVersionResource{
 		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "mcpservers",
 	}
@@ -75,11 +73,23 @@ type Bootstrapper struct {
 	// workspaceIdentityHash is the identity hash of the tenancy.kcp.io APIExport
 	// from the root workspace. Needed for permission claims on workspaces.
 	workspaceIdentityHash string
+	// enabledProviders is the value of `--providers`, controlling which
+	// first-party CatalogEntries get materialized. nil/empty means "all
+	// known builtins" (matches the flag's default).
+	enabledProviders []string
 }
 
 // NewBootstrapper creates a new bootstrapper.
 func NewBootstrapper(config *rest.Config) *Bootstrapper {
 	return &Bootstrapper{config: config}
+}
+
+// WithEnabledProviders sets the subset of builtin providers the
+// bootstrapper will write into root:kedge:providers. Pass the value of
+// the --providers flag; nil/empty selects every known builtin.
+func (b *Bootstrapper) WithEnabledProviders(names []string) *Bootstrapper {
+	b.enabledProviders = names
+	return b
 }
 
 // Bootstrap creates the workspace hierarchy:
@@ -172,6 +182,15 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	//     workspaces — see hack/gen-core-apiexport/main.go excludedAPIExports.
 	if err := ensureProvidersSelfBinding(ctx, providersDynamic); err != nil {
 		return fmt.Errorf("creating providers self APIBinding: %w", err)
+	}
+
+	// 5c. First-party CatalogEntries — the portal's MCP / Edges /
+	//     Workloads tabs surface as ordinary entries in the providers
+	//     list. They declare spec.ui.builtinRoute (not URL) so the portal
+	//     renders an in-tree Vue route instead of loading a custom
+	//     element bundle.
+	if err := ensureBuiltinCatalogEntries(ctx, providersDynamic, b.enabledProviders); err != nil {
+		return fmt.Errorf("creating builtin CatalogEntries: %w", err)
 	}
 
 	// 6. Install User CRD in root:kedge:users workspace.
@@ -376,16 +395,10 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 		}
 	}
 
-	// Ensure "default" KubernetesMCP and LinuxMCP objects exist in the tenant
-	// workspace.  Both are best-effort — the per-login proxy.go path will
-	// re-attempt them on the next sign-in, and the user can always create
-	// these by hand from the portal.
-	if err := createDefaultMCPObject(ctx, tenantClient, kubernetesMCPGVR, "KubernetesMCP"); err != nil {
-		logger.Error(err, "Failed to create default KubernetesMCP in tenant workspace (non-fatal)", "userID", userID)
-	}
-	if err := createDefaultMCPObject(ctx, tenantClient, linuxMCPGVR, "LinuxMCP"); err != nil {
-		logger.Error(err, "Failed to create default LinuxMCP in tenant workspace (non-fatal)", "userID", userID)
-	}
+	// Ensure the default MCPServer aggregate exists in the tenant
+	// workspace. Per-kind defaults (KubernetesMCP, LinuxMCP) used to be
+	// seeded alongside; both CRDs have been removed in favor of this
+	// single aggregate that exposes kube + linux tools at one endpoint.
 	if err := createDefaultMCPObject(ctx, tenantClient, mcpServerGVR, "MCPServer"); err != nil {
 		logger.Error(err, "Failed to create default MCPServer in tenant workspace (non-fatal)", "userID", userID)
 	}
@@ -394,32 +407,18 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 	return clusterName, nil
 }
 
-// EnsureDefaultKubernetesMCP creates the "default" KubernetesMCP object in the
-// tenant workspace identified by clusterName if it doesn't already exist.
-// Idempotent — safe to call on every login.
-func (b *Bootstrapper) EnsureDefaultKubernetesMCP(ctx context.Context, clusterName string) error {
-	return b.ensureDefaultMCP(ctx, clusterName, kubernetesMCPGVR, "KubernetesMCP")
-}
-
-// EnsureDefaultLinuxMCP creates the "default" LinuxMCP object in the tenant
-// workspace identified by clusterName if it doesn't already exist.  This is
-// the SSH/server-edge counterpart to EnsureDefaultKubernetesMCP and is invoked
-// from the same login path so both MCP servers show up automatically.
-// Idempotent.
-func (b *Bootstrapper) EnsureDefaultLinuxMCP(ctx context.Context, clusterName string) error {
-	return b.ensureDefaultMCP(ctx, clusterName, linuxMCPGVR, "LinuxMCP")
-}
-
-// EnsureDefaultMCPServer creates the "default" MCPServer (aggregate kube +
-// linux endpoint) in the tenant workspace.  Idempotent.  Counterpart to the
-// per-kind ensures; called from the same login + backfill paths.
+// EnsureDefaultMCPServer creates the "default" MCPServer (the aggregate
+// kube + linux endpoint) in the tenant workspace identified by
+// clusterName if it doesn't already exist. Idempotent — safe to call
+// on every login. Sister per-kind ensures (KubernetesMCP, LinuxMCP)
+// were removed in the MCP collapse refactor; this is now the only
+// per-tenant MCP CR.
 func (b *Bootstrapper) EnsureDefaultMCPServer(ctx context.Context, clusterName string) error {
 	return b.ensureDefaultMCP(ctx, clusterName, mcpServerGVR, "MCPServer")
 }
 
-// ensureDefaultMCP is the shared get-or-create used by EnsureDefaultKubernetesMCP
-// and EnsureDefaultLinuxMCP. An empty spec means an empty edgeSelector, which
-// matches all connected edges of the corresponding type.
+// ensureDefaultMCP is the shared get-or-create helper. An empty spec
+// means an empty edgeSelector, which matches all connected edges.
 func (b *Bootstrapper) ensureDefaultMCP(ctx context.Context, clusterName string, gvr schema.GroupVersionResource, kind string) error {
 	if clusterName == "" {
 		return nil
@@ -485,8 +484,9 @@ func (b *Bootstrapper) BackfillDefaultMCPs(ctx context.Context) error {
 		kind string
 	}
 	kinds := []gvkPair{
-		{kubernetesMCPGVR, "KubernetesMCP"},
-		{linuxMCPGVR, "LinuxMCP"},
+		// KubernetesMCP + LinuxMCP per-kind CRDs were removed; the
+		// MCPServer aggregate is the only per-tenant MCP default the
+		// backfill needs to seed.
 		{mcpServerGVR, "MCPServer"},
 	}
 
@@ -517,6 +517,122 @@ func (b *Bootstrapper) BackfillDefaultMCPs(ctx context.Context) error {
 			}
 		}
 		logger.V(2).Info("ensured default MCPs", "userID", userID, "cluster", clusterName)
+	}
+	return nil
+}
+
+// catalogEntryGVR is the resource the bootstrap writes when materializing
+// the first-party CatalogEntries declared by the providers/<name>/
+// packages (registered via providers.RegisterBuiltin in their init()).
+var catalogEntryGVR = schema.GroupVersionResource{
+	Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
+}
+
+// builtinAnnotation marks CatalogEntries the hub bootstrap owns. The
+// reconcile-delete step ignores any entry without this annotation, so a
+// third-party CatalogEntry that happens to share a name with a deleted
+// builtin is never touched.
+const builtinAnnotation = "providers.kedge.faros.sh/builtin"
+
+// ValidateProviders is a thin re-export of providers.ResolveEnabledBuiltins
+// that discards the resolved spec list. Used at process start (server.Run)
+// to fail fast on a bad --providers flag BEFORE embedded kcp boots —
+// callers in this package import providers anyway for the registry, so
+// the indirection only saves callers in pkg/hub from learning about the
+// providers.BuiltinSpec type when they just want a yes/no answer.
+func ValidateProviders(enabled []string) error {
+	_, err := providers.ResolveEnabledBuiltins(enabled)
+	return err
+}
+
+// ensureBuiltinCatalogEntries reconciles the enabled set against kcp:
+// writes (or updates) every entry in `enabled`, and deletes any
+// builtin-annotated entries that the user has disabled since the last
+// start. Third-party CatalogEntries with the same name are left alone —
+// only entries carrying providers.kedge.faros.sh/builtin=true are touched.
+//
+// Waits for the providers.kedge.faros.sh APIBinding to be Bound first;
+// without that wait the CatalogEntry resource isn't discoverable yet on
+// a fresh hub and we'd race-fail with "no matches for kind".
+func ensureBuiltinCatalogEntries(ctx context.Context, providersDynamic dynamic.Interface, enabled []string) error {
+	if err := waitForAPIBindingBound(ctx, providersDynamic, "providers.kedge.faros.sh"); err != nil {
+		return fmt.Errorf("waiting for providers.kedge.faros.sh APIBinding: %w", err)
+	}
+	picked, err := providers.ResolveEnabledBuiltins(enabled)
+	if err != nil {
+		return err
+	}
+
+	// Apply each enabled entry.
+	enabledSet := map[string]struct{}{}
+	for _, e := range picked {
+		enabledSet[e.Name] = struct{}{}
+
+		ui := map[string]interface{}{
+			"builtinRoute": e.BuiltinRoute,
+		}
+		if len(e.Children) > 0 {
+			children := make([]interface{}, 0, len(e.Children))
+			for _, c := range e.Children {
+				children = append(children, map[string]interface{}{
+					"displayName":  c.DisplayName,
+					"builtinRoute": c.BuiltinRoute,
+				})
+			}
+			ui["children"] = children
+		}
+
+		desired := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "providers.kedge.faros.sh/v1alpha1",
+			"kind":       "CatalogEntry",
+			"metadata": map[string]interface{}{
+				"name":        e.Name,
+				"annotations": map[string]interface{}{builtinAnnotation: "true"},
+			},
+			"spec": map[string]interface{}{
+				"displayName": e.DisplayName,
+				"description": e.Description,
+				"vendor":      "kedge",
+				"iconURL":     e.IconURL,
+				"category":    e.Category,
+				"ui":          ui,
+			},
+		}}
+		existing, err := providersDynamic.Resource(catalogEntryGVR).Get(ctx, e.Name, metav1.GetOptions{})
+		if errors.IsNotFound(err) {
+			if _, err := providersDynamic.Resource(catalogEntryGVR).Create(ctx, desired, metav1.CreateOptions{}); err != nil {
+				return fmt.Errorf("creating builtin CatalogEntry %s: %w", e.Name, err)
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("getting builtin CatalogEntry %s: %w", e.Name, err)
+		}
+		desired.SetResourceVersion(existing.GetResourceVersion())
+		if _, err := providersDynamic.Resource(catalogEntryGVR).Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("updating builtin CatalogEntry %s: %w", e.Name, err)
+		}
+	}
+
+	// Reconcile delete: walk every annotated builtin currently in kcp
+	// that isn't in the enabled set. This covers user removing a name
+	// from --providers without manually `kubectl delete`-ing the entry.
+	list, err := providersDynamic.Resource(catalogEntryGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("listing CatalogEntries for orphan cleanup: %w", err)
+	}
+	for _, item := range list.Items {
+		anns := item.GetAnnotations()
+		if anns[builtinAnnotation] != "true" {
+			continue // not ours
+		}
+		name := item.GetName()
+		if _, keep := enabledSet[name]; keep {
+			continue
+		}
+		if err := providersDynamic.Resource(catalogEntryGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("deleting orphan builtin CatalogEntry %s: %w", name, err)
+		}
 	}
 	return nil
 }
