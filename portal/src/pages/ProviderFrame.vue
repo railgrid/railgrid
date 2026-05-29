@@ -49,10 +49,14 @@ watch(
   { immediate: true },
 )
 
-// Theme / token changes → push fresh context to the mounted element via
-// the property setter. The element's setter re-renders without remount.
+// Theme / token / sub-route changes → push fresh context to the mounted
+// element via the property setter. The element's setter recomputes
+// subPath from window.location and re-syncs its internal router, so a
+// portal-side nav (clicking a child like "Workloads") actually reaches
+// the micro-frontend. Without props.subPath in the dep list the element
+// stayed on its initial route until a hard refresh.
 watch(
-  () => [theme.mode, auth.token, auth.clusterName] as const,
+  () => [theme.mode, auth.token, auth.clusterName, props.subPath] as const,
   () => pushContext(),
 )
 

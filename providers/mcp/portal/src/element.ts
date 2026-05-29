@@ -11,6 +11,7 @@
 
 import { createApp, h, reactive, type App } from 'vue'
 import { createPinia } from 'pinia'
+import type { Router } from 'vue-router'
 
 import MCPHost from './MCPHost.vue'
 import { createInternalRouter } from './router'
@@ -28,6 +29,7 @@ interface ElementState {
 
 class KedgeProviderMCP extends HTMLElement {
   private app: App | null = null
+  private router: Router | null = null
   private state: ElementState = reactive({ context: null, subPath: '' })
 
   // The portal sets this AS A PROPERTY (not attribute) after appending
@@ -38,7 +40,16 @@ class KedgeProviderMCP extends HTMLElement {
     // basePath is the canonical /ui/providers/mcp prefix; anything past
     // that is the in-provider sub-route. We compute it from the
     // browser location since the portal doesn't push it explicitly.
-    this.state.subPath = computeSubPath(v?.basePath)
+    const next = computeSubPath(v?.basePath)
+    if (next === this.state.subPath) return
+    this.state.subPath = next
+    // Drive the internal memory-history router from portal-side nav.
+    // afterEach skips re-emit when paths already match, keeping this a
+    // one-way push and avoiding navigation loops.
+    const target = '/' + next.replace(/^\//, '')
+    if (this.router && this.router.currentRoute.value.path !== target) {
+      this.router.replace(target)
+    }
   }
   get kedgeContext(): KedgeContext | null {
     return this.state.context
@@ -47,7 +58,8 @@ class KedgeProviderMCP extends HTMLElement {
   connectedCallback() {
     if (this.app) return // double-mount guard for HMR
 
-    const router = createInternalRouter('/' + this.state.subPath.replace(/^\//, ''))
+    this.router = createInternalRouter('/' + this.state.subPath.replace(/^\//, ''))
+    const router = this.router
 
     // Bubble internal navigations up to the portal's SPA router via the
     // kedge-navigate CustomEvent ProviderFrame listens for. The portal
@@ -77,6 +89,7 @@ class KedgeProviderMCP extends HTMLElement {
   disconnectedCallback() {
     this.app?.unmount()
     this.app = null
+    this.router = null
   }
 }
 

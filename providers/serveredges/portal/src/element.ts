@@ -5,6 +5,7 @@
 
 import { createApp, h, reactive, type App } from 'vue'
 import { createPinia } from 'pinia'
+import type { Router } from 'vue-router'
 
 import ServerEdgesHost from './ServerEdgesHost.vue'
 import { createInternalRouter } from './router'
@@ -19,11 +20,21 @@ interface ElementState {
 
 class KedgeProviderServerEdges extends HTMLElement {
   private app: App | null = null
+  private router: Router | null = null
   private state: ElementState = reactive({ context: null, subPath: '' })
 
   set kedgeContext(v: KedgeContext) {
     this.state.context = v
-    this.state.subPath = computeSubPath(v?.basePath)
+    const next = computeSubPath(v?.basePath)
+    if (next === this.state.subPath) return
+    this.state.subPath = next
+    // Drive the internal memory-history router from portal-side
+    // navigation. afterEach below skips re-emit when paths already
+    // match, so this stays a one-way push.
+    const target = '/' + next.replace(/^\//, '')
+    if (this.router && this.router.currentRoute.value.path !== target) {
+      this.router.replace(target)
+    }
   }
   get kedgeContext(): KedgeContext | null {
     return this.state.context
@@ -32,7 +43,8 @@ class KedgeProviderServerEdges extends HTMLElement {
   connectedCallback() {
     if (this.app) return
 
-    const router = createInternalRouter('/' + this.state.subPath.replace(/^\//, ''))
+    this.router = createInternalRouter('/' + this.state.subPath.replace(/^\//, ''))
+    const router = this.router
 
     router.afterEach((to) => {
       const path = to.path === '/' ? '' : to.path.replace(/^\//, '')
@@ -57,6 +69,7 @@ class KedgeProviderServerEdges extends HTMLElement {
   disconnectedCallback() {
     this.app?.unmount()
     this.app = null
+    this.router = null
   }
 }
 
