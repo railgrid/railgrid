@@ -346,7 +346,7 @@ const edgeSelectorLabels = computed(() => {
             <div class="flex items-center gap-3">
               <Server class="h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" />
               <router-link
-                :to="`/edges/${edge.edgeName}`"
+                :to="`/${edge.edgeName}`"
                 class="text-[13px] font-medium text-text-primary hover:text-accent transition-colors"
               >
                 {{ edge.edgeName }}

@@ -177,7 +177,9 @@ function formatElapsed(s: number) {
 }
 
 function viewEdge() {
-  router.push(`/edges/${trimmedName.value}`)
+  // /edges/:name was the legacy portal-level route; the kubernetes-edges
+  // micro-frontend now owns this URL space under /providers/.
+  router.push(`/providers/kubernetes-edges/${trimmedName.value}`)
 }
 
 function finish() {
@@ -420,7 +422,7 @@ function finish() {
             <button
               type="button"
               class="text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
-              @click="router.push(`/edges/${trimmedName}`)"
+              @click="router.push(`/providers/kubernetes-edges/${trimmedName}`)"
             >
               Skip — I'll come back later
             </button>
