@@ -17,8 +17,10 @@ limitations under the License.
 package providers
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
-	"io"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -26,6 +28,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -184,18 +187,26 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rp.ServeHTTP(w, r)
 }
 
+// localAssetCacheControl is what we serve on embedded provider assets.
+// `Cache-Control: no-cache` (the old value) is silently ignored by
+// Cloudflare for .js/.css under "Standard" caching — it falls back to
+// its 4h default, which once cached a 404 across every browser session
+// for hours after a fix shipped. An explicit short max-age is honored,
+// and the ETag below makes the post-expiry revalidation a cheap 304.
+const localAssetCacheControl = "public, max-age=60, must-revalidate"
+
 // serveLocalAsset writes the file at rest from the provider's embedded
 // LocalUIAssets FS to w. rest is the path after /ui/providers/{name} (so
 // "/main.js", "/icon.svg", "/assets/foo-abc.js"). 404s when the file
 // isn't present — the SPA-fallback branch upstream of this function
 // already handled non-asset paths, so 404 here is the right behavior:
 // the provider's bundle is missing an asset the portal asked for.
-func serveLocalAsset(w http.ResponseWriter, _ *http.Request, assets fs.FS, rest string, log logr.Logger) {
+func serveLocalAsset(w http.ResponseWriter, r *http.Request, assets fs.FS, rest string, log logr.Logger) {
 	name := strings.TrimPrefix(rest, "/")
 	if name == "" {
 		name = "index.html"
 	}
-	f, err := assets.Open(name)
+	data, err := fs.ReadFile(assets, name)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			log.Error(err, "open local asset", "name", name)
@@ -203,17 +214,20 @@ func serveLocalAsset(w http.ResponseWriter, _ *http.Request, assets fs.FS, rest 
 		http.NotFound(w, nil)
 		return
 	}
-	defer func() { _ = f.Close() }()
 
 	ct := mime.TypeByExtension(path.Ext(name))
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
+	sum := sha256.Sum256(data)
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+
 	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Cache-Control", "no-cache")
-	if _, err := io.Copy(w, f); err != nil {
-		log.Error(err, "write local asset", "name", name)
-	}
+	w.Header().Set("Cache-Control", localAssetCacheControl)
+	w.Header().Set("ETag", etag)
+	// ServeContent handles If-None-Match -> 304 and Content-Length for us.
+	// Zero ModTime skips Last-Modified so ETag alone drives revalidation.
+	http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
 }
 
 // splitProviderPath parses "/ui/providers/foo/bar" given prefix
