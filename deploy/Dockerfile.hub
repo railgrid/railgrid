@@ -1,9 +1,32 @@
 FROM --platform=$BUILDPLATFORM node:22-alpine AS portal
-WORKDIR /portal
-COPY portal/package.json portal/package-lock.json ./
-RUN npm ci
-COPY portal/ .
-RUN npm run build
+WORKDIR /src
+
+# Install the shared portal/node_modules once. Provider portals (mcp,
+# kubernetesedges, serveredges) resolve their deps by symlinking into
+# this tree, matching the local Makefile's portal-provider-symlinks.
+COPY portal/package.json portal/package-lock.json portal/
+RUN cd portal && npm ci
+
+# Sources for the main SPA and each provider micro-frontend. Done after
+# `npm ci` so the install layer caches across source-only edits.
+COPY portal/ portal/
+COPY providers/mcp/portal/ providers/mcp/portal/
+COPY providers/kubernetesedges/portal/ providers/kubernetesedges/portal/
+COPY providers/serveredges/portal/ providers/serveredges/portal/
+
+# Per-provider node_modules symlinks (.dockerignore strips the originals
+# from the build context because they dangle outside the workspace).
+RUN for d in providers/mcp/portal providers/kubernetesedges/portal providers/serveredges/portal; do \
+      ln -sfn ../../../portal/node_modules "$d/node_modules"; \
+    done
+
+# Build the main SPA + each provider bundle. server-edges' Vite config
+# pulls shared components from kubernetes-edges via alias, so the kube
+# bundle must exist when serveredges builds.
+RUN cd portal && npm run build && \
+    cd ../providers/mcp/portal && npx vite build && \
+    cd ../../kubernetesedges/portal && npx vite build && \
+    cd ../../serveredges/portal && npx vite build
 
 FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 
@@ -15,7 +38,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-COPY --from=portal /portal/dist pkg/hub/portal/dist/
+COPY --from=portal /src/portal/dist pkg/hub/portal/dist/
+COPY --from=portal /src/providers/mcp/portal/dist providers/mcp/portal/dist/
+COPY --from=portal /src/providers/kubernetesedges/portal/dist providers/kubernetesedges/portal/dist/
+COPY --from=portal /src/providers/serveredges/portal/dist providers/serveredges/portal/dist/
 
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown

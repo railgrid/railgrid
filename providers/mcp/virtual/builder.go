@@ -62,6 +62,12 @@ var mcpServerGVR = schema.GroupVersionResource{
 // Captures deps in the closure so per-request handler invocations re-read
 // the live edge inventory rather than a snapshot.
 func Build(deps *builder.Deps) http.Handler {
+	if families := aggregatemcp.RegisteredFamilies(); len(families) == 0 {
+		klog.Background().WithName("mcpserver-handler").Info(
+			"WARNING: no MCP ToolFamilies registered; aggregate endpoint will serve no toolsets. " +
+				"Enable a provider that calls aggregatemcp.RegisterToolFamily (e.g. kubernetes-edges, server-edges).",
+		)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		logger := klog.FromContext(r.Context()).WithName("mcpserver-handler")
 

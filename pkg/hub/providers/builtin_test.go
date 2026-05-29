@@ -19,9 +19,8 @@ package providers_test
 // The blank imports pull in the first-party provider packages, whose
 // init() calls populate the registry. The test exercises the public
 // resolver against that real canonical set rather than a fixture, since
-// the dep relationships we want to guarantee (e.g. mcp requires
-// kubernetes-edges + server-edges) are themselves part of the contract
-// each manifest declares.
+// the dep relationships each manifest declares (or doesn't — mcp is a
+// pure aggregator with no Requires) are part of the contract.
 
 import (
 	"slices"
@@ -57,33 +56,31 @@ func TestResolveEnabledBuiltins(t *testing.T) {
 		}
 	})
 
-	t.Run("mcp alone fails on both missing deps", func(t *testing.T) {
-		_, err := providers.ResolveEnabledBuiltins([]string{"mcp"})
-		if err == nil {
-			t.Fatal("expected dep-violation error, got nil")
+	t.Run("mcp alone is allowed (pure aggregator, BYO families)", func(t *testing.T) {
+		// mcp no longer hard-requires the edges providers. With zero
+		// registered ToolFamilies the endpoint serves an empty aggregate
+		// and Build logs a warning — exposed as a config option so users
+		// can plug their own provider into the aggregator.
+		got, err := providers.ResolveEnabledBuiltins([]string{"mcp"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		// Both missing deps must be listed — users want one fix, not
-		// iterative whack-a-mole.
-		msg := err.Error()
-		if !strings.Contains(msg, "mcp requires kubernetes-edges") {
-			t.Errorf("error should name kubernetes-edges, got: %v", err)
-		}
-		if !strings.Contains(msg, "mcp requires server-edges") {
-			t.Errorf("error should name server-edges, got: %v", err)
+		if len(got) != 1 || got[0].Name != "mcp" {
+			t.Fatalf("expected just mcp, got %+v", got)
 		}
 	})
 
-	t.Run("mcp + only one edge type still fails", func(t *testing.T) {
-		_, err := providers.ResolveEnabledBuiltins([]string{"mcp", "server-edges"})
-		if err == nil {
-			t.Fatal("expected dep-violation error, got nil")
+	t.Run("mcp + one edge type is allowed", func(t *testing.T) {
+		got, err := providers.ResolveEnabledBuiltins([]string{"mcp", "server-edges"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(err.Error(), "mcp requires kubernetes-edges") {
-			t.Errorf("error should name the still-missing dep, got: %v", err)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 entries, got %d", len(got))
 		}
 	})
 
-	t.Run("mcp + both edge types satisfies the dep", func(t *testing.T) {
+	t.Run("mcp + both edge types is also allowed", func(t *testing.T) {
 		got, err := providers.ResolveEnabledBuiltins([]string{"mcp", "kubernetes-edges", "server-edges"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)

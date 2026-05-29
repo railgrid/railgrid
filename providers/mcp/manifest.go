@@ -45,10 +45,11 @@ func init() {
 		// <kedge-provider-mcp> custom element rendered inline; assets
 		// are served from the embedded portal/dist below.
 		//
-		// mcp aggregates the per-edge-type MCP feeds shipped by both
-		// kubernetes-edges and server-edges. An aggregator with no source
-		// providers is empty by construction, so we hard-require both.
-		Requires: []string{"kubernetes-edges", "server-edges"},
+		// No Requires: mcp is a pure aggregator of whatever ToolFamilies
+		// register themselves via providers/mcp/aggregate. Any provider
+		// (built-in or BYO) can contribute a family; with zero registered
+		// the endpoint serves an empty aggregate (list_targets returns
+		// nothing) and Build logs a one-time warning.
 
 		VirtualWorkspaceMount:   apiurl.PathPrefixMCPServer,
 		VirtualWorkspaceHandler: mcpvirtual.Build,
