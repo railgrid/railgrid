@@ -1,0 +1,31 @@
+apiVersion: tenancy.kcp.io/v1alpha1
+kind: WorkspaceType
+metadata:
+  name: organization
+  annotations:
+    bootstrap.kcp.io/create-only: "true"
+spec:
+  # Extend root:universal so Organization workspaces inherit the
+  # universal initializer that bootstraps the "default" namespace.
+  # Without it, namespaced kubectl operations against the workspace
+  # would fail with `namespaces "default" not found` — even though the
+  # Organization workspace itself is hub-mediated (O-10) and tenants
+  # don't reach it, the hub's own service-account writes do go through
+  # it and expect the standard kcp surface.
+  extend:
+    with:
+    - name: universal
+      path: root
+  # NOTE: docs/organizations.md mandates that child workspaces inside an
+  # Organization are of type `workspace`. `defaultChildWorkspaceType` is
+  # intentionally omitted in PR #2 because the referenced WorkspaceType
+  # is created by PR #3; the dangling reference would fail kcp's
+  # admission check. PR #3 fills it in.
+  #
+  # tenancy.kcp.io (Workspace, WorkspaceType, etc.) is NOT redeclared
+  # here — it is inherited from root:universal via the `extend` above,
+  # which is also how the existing `tenant` WorkspaceType picks it up.
+  # Redeclaring it would add a redundant bind check for no benefit.
+  defaultAPIBindings:
+  - path: root:kedge:providers
+    export: tenancy.kedge.faros.sh

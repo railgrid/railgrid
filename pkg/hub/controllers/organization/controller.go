@@ -31,11 +31,18 @@ limitations under the License.
 //     AwaitingWorkspaceType so observers know the Organization is half-baked
 //     by design.
 //
-// Scope as of PR #1 (docs/organizations.md implementation order):
-//   - User → Organization bootstrap.
-//   - Organization status conditions.
-//   - NO Membership CRs (PR #4), NO kcp Workspace creation (PR #2), NO RBAC
-//     propagation (later).
+// Scope as of PR #2:
+//   - User → Organization bootstrap (PR #1).
+//   - kcp Workspace creation at root:kedge:orgs:{uuid} of type `organization`,
+//     idempotent + self-healing per O-11. Driven by an injected
+//     WorkspaceProvisioner so tests can run with a fake.
+//   - Organization status conditions flip to WorkspaceReady=True /
+//     Ready=True once the kcp workspace is in place.
+//
+// NOT yet:
+//   - Membership / UserMembershipIndex CRs (PR #4).
+//   - User-facing RBAC inside the Org workspace (Org workspaces are
+//     hub-mediated only per O-10; no per-User kubeconfig is ever issued).
 package organization
 
 import (
@@ -69,22 +76,39 @@ const (
 	orgWorkspaceParent = "root:kedge:orgs"
 )
 
+// WorkspaceProvisioner is the slice of the kcp Bootstrapper that this
+// controller needs to actually create Organization workspaces. Pulled out
+// as an interface so unit tests can use a fake (see controller_test.go)
+// without standing up an embedded kcp.
+//
+// Implemented by *pkg/hub/kcp.Bootstrapper.
+type WorkspaceProvisioner interface {
+	EnsureOrgWorkspace(ctx context.Context, orgUUID string) error
+}
+
 // Reconciler bootstraps personal Organizations for new Users and reconciles
 // Organization status. See package doc for scope.
 type Reconciler struct {
-	client client.Client
+	client      client.Client
+	provisioner WorkspaceProvisioner
 }
 
 // SetupWithManager registers the User and Organization watches with mgr.
+// provisioner is invoked from the status-reconcile step to materialize the
+// kcp Workspace at root:kedge:orgs:{uuid}. Pass nil only for tests that
+// don't exercise the workspace-creation path.
 //
 // The controller is keyed on User (the trigger for personal-Org creation)
 // and additionally watches Organization so existing Organizations whose
-// status is stale (missing workspacePath, missing conditions) get
-// reconciled too. Both kinds map to the User key — for User watches the
-// caller's name; for Organization watches, the user identified by
-// status.personalOrg back-reference.
-func SetupWithManager(mgr manager.Manager) error {
-	r := &Reconciler{client: mgr.GetClient()}
+// status is stale (missing workspacePath, missing conditions, or whose
+// workspace creation previously failed) get reconciled too. Both kinds map
+// to the User key — for User watches the caller's name; for Organization
+// watches, the user identified by status.personalOrg back-reference.
+func SetupWithManager(mgr manager.Manager, provisioner WorkspaceProvisioner) error {
+	r := &Reconciler{
+		client:      mgr.GetClient(),
+		provisioner: provisioner,
+	}
 	klog.Info("Registering organization bootstrap controller")
 	return builder.ControllerManagedBy(mgr).
 		Named(controllerName).
@@ -220,11 +244,18 @@ func (r *Reconciler) createPersonalOrg(ctx context.Context, user *tenancyv1alpha
 	return orgUUID, false, nil
 }
 
-// reconcileOrganizationStatus ensures status.workspacePath is set and the
-// Ready / WorkspaceReady conditions reflect the current bootstrap phase.
-// Until PR #2 lands the WorkspaceType: organization, WorkspaceReady stays
-// False with reason AwaitingWorkspaceType.
+// reconcileOrganizationStatus ensures status.workspacePath is set, calls the
+// WorkspaceProvisioner to materialize the kcp Workspace at that path, and
+// flips the Ready / WorkspaceReady conditions based on the outcome.
+//
+// Per O-11 the provisioning step is idempotent and self-healing: every
+// reconcile re-runs EnsureOrgWorkspace, which is a no-op once the workspace
+// exists. If provisioning fails the conditions reflect the failure with a
+// human-readable Message so observers (the portal, kubectl describe) see
+// why the Org is stuck. The next reconcile retries.
 func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, orgName string) error {
+	logger := klog.FromContext(ctx).WithValues("organization", orgName)
+
 	var org tenancyv1alpha1.Organization
 	if err := r.client.Get(ctx, types.NamespacedName{Name: orgName}, &org); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -242,25 +273,68 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, orgName st
 
 	desiredPath := orgWorkspaceParent + ":" + org.Name
 
+	// Step A: ensure status.workspacePath records the canonical path. This
+	// is independent of whether the workspace actually exists yet — it's
+	// just the address.
 	changed := false
 	if org.Status.WorkspacePath != desiredPath {
 		org.Status.WorkspacePath = desiredPath
 		changed = true
 	}
-	if setCondition(&org.Status.Conditions, metav1.Condition{
-		Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
-		Status:  metav1.ConditionFalse,
-		Reason:  tenancyv1alpha1.ReasonAwaitingWorkspaceType,
-		Message: "Organization workspace will be provisioned once the organization WorkspaceType is registered.",
-	}, org.Generation) {
+
+	// Step B: provision the kcp Workspace. When the provisioner is nil
+	// (test contexts that don't exercise this path) skip and leave the
+	// "Awaiting" condition in place.
+	var (
+		wsCond    metav1.Condition
+		readyCond metav1.Condition
+	)
+	if r.provisioner == nil {
+		wsCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  tenancyv1alpha1.ReasonAwaitingWorkspaceType,
+			Message: "WorkspaceProvisioner not configured; running without kcp.",
+		}
+		readyCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  tenancyv1alpha1.ReasonAwaitingWorkspaceType,
+			Message: "Awaiting workspace provisioning.",
+		}
+	} else if err := r.provisioner.EnsureOrgWorkspace(ctx, org.Name); err != nil {
+		logger.Error(err, "Provisioning Organization workspace failed; will retry")
+		wsCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonWorkspaceProvisioningFailed,
+			Message: err.Error(),
+		}
+		readyCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonWorkspaceProvisioningFailed,
+			Message: "Workspace provisioning failed; see WorkspaceReady condition.",
+		}
+	} else {
+		wsCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonWorkspaceProvisioned,
+			Message: "kcp Workspace " + desiredPath + " is Ready.",
+		}
+		readyCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonWorkspaceProvisioned,
+			Message: "Organization is ready for use.",
+		}
+	}
+
+	if setCondition(&org.Status.Conditions, wsCond, org.Generation) {
 		changed = true
 	}
-	if setCondition(&org.Status.Conditions, metav1.Condition{
-		Type:    tenancyv1alpha1.OrganizationConditionReady,
-		Status:  metav1.ConditionFalse,
-		Reason:  tenancyv1alpha1.ReasonAwaitingWorkspaceType,
-		Message: "Awaiting workspace provisioning.",
-	}, org.Generation) {
+	if setCondition(&org.Status.Conditions, readyCond, org.Generation) {
 		changed = true
 	}
 	if !changed {
@@ -276,6 +350,17 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, orgName st
 	}
 	return nil
 }
+
+const (
+	// reasonWorkspaceProvisioned marks WorkspaceReady=True / Ready=True
+	// after EnsureOrgWorkspace returns nil.
+	reasonWorkspaceProvisioned = "WorkspaceProvisioned"
+
+	// reasonWorkspaceProvisioningFailed is set on WorkspaceReady when
+	// EnsureOrgWorkspace returns an error. Message carries the underlying
+	// cause; the next reconcile retries.
+	reasonWorkspaceProvisioningFailed = "WorkspaceProvisioningFailed"
+)
 
 // mapOrganizationToUser maps an Organization event back to the owning User
 // so the reconciler can keep status.personalOrg consistent.

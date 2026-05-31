@@ -25,12 +25,29 @@ import "embed"
 var RootWorkspaceFS embed.FS
 
 // KedgeWorkspaceFS contains workspace definitions for children of root:kedge,
-// plus the kedge-owned WorkspaceTypes used for per-user tenant workspaces.
+// plus the kedge-owned WorkspaceTypes whose defaultAPIBindings do NOT depend
+// on an APIExport in root:kedge:providers (so they can be applied before
+// providers is fully populated). The `tenant` WorkspaceType only references
+// root.tenancy.kcp.io which is always available; the `organization`
+// WorkspaceType references the kedge-owned tenancy.kedge.faros.sh APIExport
+// and therefore ships in PostProvidersFS instead.
 //
-//go:embed workspace-providers.yaml workspace-tenants.yaml workspace-users.yaml workspacetype-tenant.yaml
+//go:embed workspace-providers.yaml workspace-tenants.yaml workspace-users.yaml workspace-orgs.yaml workspacetype-tenant.yaml
 var KedgeWorkspaceFS embed.FS
 
 // ProvidersFS contains APIResourceSchemas and APIExport applied to root:kedge:providers.
 //
 //go:embed apiresourceschema-*.yaml apiexport-*.yaml
 var ProvidersFS embed.FS
+
+// PostProvidersFS contains workspace-scoped objects that must be applied in
+// root:kedge AFTER ProvidersFS has populated root:kedge:providers with the
+// APIExports they reference. Today it ships the `organization` WorkspaceType
+// (defaultAPIBindings references root:kedge:providers.tenancy.kedge.faros.sh).
+// kcp's WorkspaceType admission validates bind permission on every APIExport
+// in defaultAPIBindings; the referenced export has to exist by the time the
+// WT is applied, otherwise the LogicalCluster lookup fails and admission
+// returns 403 forbidden.
+//
+//go:embed workspacetype-organization.yaml
+var PostProvidersFS embed.FS

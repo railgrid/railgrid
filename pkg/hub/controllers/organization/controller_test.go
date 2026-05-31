@@ -18,7 +18,9 @@ package organization
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +31,30 @@ import (
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 )
+
+// fakeProvisioner is the test double for WorkspaceProvisioner. By default
+// it succeeds and records each call; tests can override err to simulate
+// failure paths.
+type fakeProvisioner struct {
+	mu    sync.Mutex
+	calls []string
+	err   error
+}
+
+func (f *fakeProvisioner) EnsureOrgWorkspace(_ context.Context, orgUUID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, orgUUID)
+	return f.err
+}
+
+func (f *fakeProvisioner) Calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
 
 func newTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -58,7 +84,8 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}).
 		Build()
 
-	r := &Reconciler{client: c}
+	prov := &fakeProvisioner{}
+	r := &Reconciler{client: c, provisioner: prov}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "alice"}}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -87,8 +114,53 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 	if want := orgWorkspaceParent + ":" + org.Name; org.Status.WorkspacePath != want {
 		t.Errorf("workspacePath: got %q, want %q", org.Status.WorkspacePath, want)
 	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionWorkspaceReady, metav1.ConditionFalse, tenancyv1alpha1.ReasonAwaitingWorkspaceType) {
-		t.Errorf("expected WorkspaceReady=False/AwaitingWorkspaceType condition, got %#v", org.Status.Conditions)
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionWorkspaceReady, metav1.ConditionTrue, reasonWorkspaceProvisioned) {
+		t.Errorf("expected WorkspaceReady=True/WorkspaceProvisioned condition, got %#v", org.Status.Conditions)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady, metav1.ConditionTrue, reasonWorkspaceProvisioned) {
+		t.Errorf("expected Ready=True/WorkspaceProvisioned condition, got %#v", org.Status.Conditions)
+	}
+	if calls := prov.Calls(); len(calls) != 1 || calls[0] != org.Name {
+		t.Errorf("expected exactly one EnsureOrgWorkspace call for %q, got %v", org.Name, calls)
+	}
+}
+
+func TestReconciler_ProvisioningFailureSurfacesInStatus(t *testing.T) {
+	scheme := newTestScheme(t)
+	user := newUser("dora", "Dora")
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(user).
+		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}).
+		Build()
+
+	prov := &fakeProvisioner{err: errors.New("kcp unreachable")}
+	r := &Reconciler{client: c, provisioner: prov}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "dora"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got tenancyv1alpha1.User
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "dora"}, &got); err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	var org tenancyv1alpha1.Organization
+	if err := c.Get(context.Background(), types.NamespacedName{Name: got.Status.PersonalOrg}, &org); err != nil {
+		t.Fatalf("get organization: %v", err)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionWorkspaceReady, metav1.ConditionFalse, reasonWorkspaceProvisioningFailed) {
+		t.Errorf("expected WorkspaceReady=False/WorkspaceProvisioningFailed, got %#v", org.Status.Conditions)
+	}
+	// Next reconcile with a healthy provisioner should converge.
+	prov.err = nil
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "dora"}}); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: org.Name}, &org); err != nil {
+		t.Fatalf("re-get organization: %v", err)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionWorkspaceReady, metav1.ConditionTrue, reasonWorkspaceProvisioned) {
+		t.Errorf("expected WorkspaceReady to flip to True after provisioner recovery, got %#v", org.Status.Conditions)
 	}
 }
 
@@ -101,7 +173,8 @@ func TestReconciler_Idempotent(t *testing.T) {
 		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}).
 		Build()
 
-	r := &Reconciler{client: c}
+	prov := &fakeProvisioner{}
+	r := &Reconciler{client: c, provisioner: prov}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "bob"}}
 
 	if _, err := r.Reconcile(context.Background(), req); err != nil {
@@ -143,7 +216,7 @@ func TestReconciler_RecoversFromOrphanedOrg(t *testing.T) {
 		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}).
 		Build()
 
-	r := &Reconciler{client: c}
+	r := &Reconciler{client: c, provisioner: &fakeProvisioner{}}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "carol"}}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}

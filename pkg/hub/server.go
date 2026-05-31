@@ -563,7 +563,7 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("creating organization manager: %w", err)
 		}
-		if err := organization.SetupWithManager(orgMgr); err != nil {
+		if err := organization.SetupWithManager(orgMgr, bootstrapper); err != nil {
 			return fmt.Errorf("setting up organization bootstrap controller: %w", err)
 		}
 		go func() {

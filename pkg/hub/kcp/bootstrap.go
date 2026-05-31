@@ -125,11 +125,11 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("creating kedge clients: %w", err)
 	}
 
-	logger.Info("Bootstrapping child workspaces: providers, tenants, users")
+	logger.Info("Bootstrapping child workspaces: providers, tenants, users, orgs")
 	if err := confighelpers.Bootstrap(ctx, kedgeDiscovery, kedgeDynamic, kcp.KedgeWorkspaceFS); err != nil {
 		return fmt.Errorf("bootstrapping child workspaces: %w", err)
 	}
-	for _, name := range []string{"providers", "tenants", "users"} {
+	for _, name := range []string{"providers", "tenants", "users", "orgs"} {
 		if err := waitForWorkspaceReady(ctx, kedgeDynamic, name); err != nil {
 			return fmt.Errorf("waiting for %s workspace: %w", name, err)
 		}
@@ -193,6 +193,17 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("creating builtin CatalogEntries: %w", err)
 	}
 
+	// 5d. Apply post-providers workspace artefacts under root:kedge — namely
+	//     the `organization` WorkspaceType, which declares a defaultAPIBinding
+	//     to tenancy.kedge.faros.sh in root:kedge:providers. kcp's WT
+	//     admission resolves the binding's LogicalCluster and checks bind
+	//     RBAC at apply time, so the APIExport (created in step 5) must
+	//     exist beforehand or the apply fails with a 403 forbidden.
+	logger.Info("Bootstrapping post-providers workspace artefacts (organization WorkspaceType)")
+	if err := confighelpers.Bootstrap(ctx, kedgeDiscovery, kedgeDynamic, kcp.PostProvidersFS); err != nil {
+		return fmt.Errorf("bootstrapping post-providers artefacts: %w", err)
+	}
+
 	// 6. Install User CRD in root:kedge:users workspace.
 	logger.Info("Installing User CRD in root:kedge:users")
 	if err := b.installUserCRD(ctx); err != nil {
@@ -207,6 +218,88 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 // where User CRDs are stored.
 func (b *Bootstrapper) UsersConfig() *rest.Config {
 	return configForPath(b.config, "root:kedge:users")
+}
+
+// OrgsConfig returns a rest.Config targeting the root:kedge:orgs parent
+// workspace. The Organization bootstrap controller (PR #1) uses this to
+// create child Workspaces of type `organization` — one per Organization
+// CR — at root:kedge:orgs:{org-uuid}.
+func (b *Bootstrapper) OrgsConfig() *rest.Config {
+	return configForPath(b.config, "root:kedge:orgs")
+}
+
+// EnsureOrgWorkspace creates a kcp Workspace at root:kedge:orgs:{orgUUID}
+// of type `organization` (see config/kcp/workspacetype-organization.yaml).
+// Idempotent: returns nil on AlreadyExists. Blocks until the workspace is
+// Ready so callers can immediately patch the corresponding Organization
+// CR's status.
+//
+// Per docs/organizations.md decision O-10, Org workspaces are hub-mediated
+// only — tenants never receive a kubeconfig pointing here. This method is
+// invoked from the Organization bootstrap controller with the hub's own
+// admin config; no per-User RBAC is granted inside the workspace.
+//
+// The "organization" WorkspaceType's defaultAPIBindings bring
+// tenancy.kedge.faros.sh (Organization, CatalogEntry, future Membership)
+// and tenancy.kcp.io (Workspace for child team-workspace creation in
+// PR #3) into the Org workspace.
+func (b *Bootstrapper) EnsureOrgWorkspace(ctx context.Context, orgUUID string) error {
+	logger := klog.FromContext(ctx).WithValues("orgUUID", orgUUID)
+	orgsClient, err := dynamic.NewForConfig(b.OrgsConfig())
+	if err != nil {
+		return fmt.Errorf("creating orgs client: %w", err)
+	}
+
+	ws := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "tenancy.kcp.io/v1alpha1",
+			"kind":       "Workspace",
+			"metadata": map[string]interface{}{
+				"name": orgUUID,
+			},
+			"spec": map[string]interface{}{
+				"type": map[string]interface{}{
+					"name": "organization",
+					"path": "root:kedge",
+				},
+			},
+		},
+	}
+
+	if _, err := orgsClient.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{}); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating Organization workspace %s: %w", orgUUID, err)
+		}
+		logger.V(4).Info("Organization workspace already exists")
+	} else {
+		logger.Info("Created Organization workspace")
+	}
+
+	if err := waitForWorkspaceReady(ctx, orgsClient, orgUUID); err != nil {
+		return fmt.Errorf("waiting for Organization workspace %s: %w", orgUUID, err)
+	}
+	return nil
+}
+
+// GetOrgClusterName returns the kcp logical cluster name of an Organization
+// workspace at root:kedge:orgs:{orgUUID} once it is Ready. The cluster
+// name is what status.workspaceCluster on the Organization CR can record
+// for observers that need the canonical kcp identifier rather than the
+// human-readable path.
+func (b *Bootstrapper) GetOrgClusterName(ctx context.Context, orgUUID string) (string, error) {
+	orgsClient, err := dynamic.NewForConfig(b.OrgsConfig())
+	if err != nil {
+		return "", fmt.Errorf("creating orgs client: %w", err)
+	}
+	ws, err := orgsClient.Resource(workspaceGVR).Get(ctx, orgUUID, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("getting Organization workspace %s: %w", orgUUID, err)
+	}
+	clusterName, _, _ := unstructured.NestedString(ws.Object, "spec", "cluster")
+	if clusterName == "" {
+		return "", fmt.Errorf("organization workspace %s has no spec.cluster", orgUUID)
+	}
+	return clusterName, nil
 }
 
 // installUserCRD installs the User CRD in the root:kedge:users workspace.
