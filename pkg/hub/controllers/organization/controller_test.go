@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	"github.com/faroshq/faros-kedge/pkg/hub/quota"
 )
 
 // fakeProvisioner is the test double for WorkspaceProvisioner. By default
@@ -133,6 +134,9 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 	}
 	if org.Labels[labelPersonalOwner] != "alice" {
 		t.Errorf("expected personal-owner label = alice, got %q", org.Labels[labelPersonalOwner])
+	}
+	if org.Labels[quota.LabelCreatedBy] != "alice" {
+		t.Errorf("expected created-by label = alice (for roadmap step 7 Org-quota counting), got %q", org.Labels[quota.LabelCreatedBy])
 	}
 	if want := orgWorkspaceParent + ":" + org.Name; org.Status.WorkspacePath != want {
 		t.Errorf("workspacePath: got %q, want %q", org.Status.WorkspacePath, want)

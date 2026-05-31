@@ -69,6 +69,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	"github.com/faroshq/faros-kedge/pkg/hub/quota"
 )
 
 const (
@@ -236,6 +237,13 @@ func (r *Reconciler) createPersonalOrg(ctx context.Context, user *tenancyv1alpha
 			Name: orgUUID,
 			Labels: map[string]string{
 				labelPersonalOwner: user.Name,
+				// quota.LabelCreatedBy lets roadmap step 7's Org quota check
+				// (CheckOrgQuota) count Orgs by creator. Personal Orgs
+				// carry spec.personal=true and are filtered out at the
+				// Counter level, so labelling them here keeps the data
+				// model consistent across personal and non-personal Orgs
+				// without affecting the count.
+				quota.LabelCreatedBy: user.Name,
 			},
 		},
 		Spec: tenancyv1alpha1.OrganizationSpec{
