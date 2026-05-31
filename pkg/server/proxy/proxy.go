@@ -332,6 +332,14 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		return
 	}
 
+	// O-10 gate: refuse direct access to Organization workspaces.
+	// Tenants must use the hub REST surface for Org-scoped operations.
+	if clusterPath := extractClusterPathFromKCPPath(kcpPath); isOrgWorkspacePath(clusterPath) {
+		p.logger.Info("org workspace access denied (O-10)", "user", user.Name, "cluster", clusterPath)
+		writeOrgWorkspaceForbidden(w)
+		return
+	}
+
 	target := *p.kcpTarget
 	logger := p.logger
 
@@ -389,6 +397,14 @@ func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, toke
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(errStatus)
 		_, _ = fmt.Fprint(w, errBody)
+		return
+	}
+
+	// O-10 gate: refuse direct access to Organization workspaces.
+	// Tenants must use the hub REST surface for Org-scoped operations.
+	if clusterPath := extractClusterPathFromKCPPath(kcpPath); isOrgWorkspacePath(clusterPath) {
+		p.logger.Info("org workspace access denied (O-10)", "user", user.Name, "cluster", clusterPath)
+		writeOrgWorkspaceForbidden(w)
 		return
 	}
 
@@ -588,6 +604,17 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 		return
 	}
 
+	// O-10 gate: refuse direct access to Organization workspaces even when
+	// authenticated as a kcp ServiceAccount. SA tokens bound at the Org
+	// workspace shouldn't exist in v1, but defense-in-depth: the structural
+	// check here costs nothing and stops a misconfigured token from
+	// reaching the Org workspace's API server.
+	if isOrgWorkspacePath(clusterName) {
+		p.logger.Info("SA: org workspace access denied (O-10)", "cluster", clusterName)
+		writeOrgWorkspaceForbidden(w)
+		return
+	}
+
 	target := *p.kcpTarget
 	logger := p.logger
 
@@ -659,6 +686,69 @@ func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Unauthorized","reason":"Unauthorized","code":401}`)
+}
+
+// orgWorkspacePathPrefix is the kcp logical-cluster path under which every
+// Organization workspace lives (root:kedge:orgs:{org-uuid}). The proxy
+// uses this prefix together with the structural rule "an Organization
+// workspace has exactly one segment after orgs:" to decide whether a
+// requested target is an Org workspace.
+const orgWorkspacePathPrefix = "root:kedge:orgs:"
+
+// orgWorkspaceForbiddenBody is the JSON the proxy returns when refusing a
+// direct request to an Organization workspace per docs/organizations.md
+// decision O-10 ("Org workspaces are hub-mediated only"). The body uses
+// the standard Kubernetes Status envelope so kubectl renders the message
+// nicely while also carrying a kedge-specific reason + a pointer at the
+// hub REST surface so CLI tooling can suggest the right endpoint.
+const orgWorkspaceForbiddenBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Organization workspaces are hub-mediated and not directly accessible — use the hub REST endpoints at /api/orgs/{org-uuid}/... instead.","reason":"OrgWorkspaceNotDirectlyAccessible","code":403,"details":{"kind":"OrganizationWorkspace","group":"tenancy.kedge.faros.sh"}}`
+
+// isOrgWorkspacePath reports whether clusterPath addresses a kcp
+// Organization workspace (path root:kedge:orgs:{single-segment}). Child
+// "team" workspaces under an Org, which look like
+// root:kedge:orgs:{org-uuid}:{ws-uuid}, do NOT match — those remain
+// tenant-accessible per the design.
+//
+// The check is structural rather than annotation-based on purpose: every
+// Organization workspace lives at exactly this path shape by the
+// invariant established in PR #2 (workspacetype-organization.yaml +
+// Bootstrapper.EnsureOrgWorkspace). Using the path keeps the proxy hot
+// path free of kcp lookups and avoids a cache layer.
+func isOrgWorkspacePath(clusterPath string) bool {
+	if !strings.HasPrefix(clusterPath, orgWorkspacePathPrefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(clusterPath, orgWorkspacePathPrefix)
+	if rest == "" {
+		return false
+	}
+	// Exactly one segment after `orgs:` ⇒ an Org workspace. A second
+	// colon ⇒ child team Workspace (root:kedge:orgs:{org}:{ws}).
+	return !strings.Contains(rest, ":")
+}
+
+// extractClusterPathFromKCPPath returns the logical-cluster path portion
+// of a kcp-syntax URL path like `/clusters/{cluster}/api/...`. Returns
+// the empty string if the input doesn't carry a /clusters/ prefix
+// (i.e. it has already been resolved by resolveKCPPath, which would
+// have prepended the default cluster). The proxy calls this AFTER
+// resolveKCPPath so kcpPath is always /clusters/-prefixed.
+func extractClusterPathFromKCPPath(kcpPath string) string {
+	if !strings.HasPrefix(kcpPath, "/clusters/") {
+		return ""
+	}
+	rest := strings.TrimPrefix(kcpPath, "/clusters/")
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[:i]
+	}
+	return rest
+}
+
+// writeOrgWorkspaceForbidden writes the O-10 403 response.
+func writeOrgWorkspaceForbidden(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = fmt.Fprint(w, orgWorkspaceForbiddenBody)
 }
 
 // resolveKCPPath computes the target kcp path for the given request URL path.
