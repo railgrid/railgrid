@@ -16,12 +16,6 @@ spec:
     with:
     - name: universal
       path: root
-  # NOTE: docs/organizations.md mandates that child workspaces inside an
-  # Organization are of type `workspace`. `defaultChildWorkspaceType` is
-  # intentionally omitted in PR #2 because the referenced WorkspaceType
-  # is created by PR #3; the dangling reference would fail kcp's
-  # admission check. PR #3 fills it in.
-  #
   # tenancy.kcp.io (Workspace, WorkspaceType, etc.) is NOT redeclared
   # here — it is inherited from root:universal via the `extend` above,
   # which is also how the existing `tenant` WorkspaceType picks it up.
@@ -29,3 +23,12 @@ spec:
   defaultAPIBindings:
   - path: root:kedge:providers
     export: tenancy.kedge.faros.sh
+  # Child workspaces inside an Organization are the team / project
+  # spaces where tenant work (APIBindings, edges, MCP instances)
+  # actually lives. v1 caps the allowed child type to a single value
+  # so a tenant attempting to create a child of any other type fails
+  # at kcp admission. PR #3 brought the `workspace` WorkspaceType into
+  # the same PostProvidersFS bootstrap so this reference resolves.
+  defaultChildWorkspaceType:
+    name: workspace
+    path: root:kedge

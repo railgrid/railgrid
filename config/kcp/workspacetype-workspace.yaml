@@ -1,0 +1,44 @@
+apiVersion: tenancy.kcp.io/v1alpha1
+kind: WorkspaceType
+metadata:
+  name: workspace
+  annotations:
+    bootstrap.kcp.io/create-only: "true"
+spec:
+  # Extend root:universal so workspace workspaces inherit the universal
+  # initializer that bootstraps the "default" namespace (same reason the
+  # `tenant` and `organization` types extend universal). Without it,
+  # namespaced kubectl operations would fail with `namespaces "default"
+  # not found`.
+  extend:
+    with:
+    - name: universal
+      path: root
+  # Workspaces ("team" workspaces) are leaves in v1; they hold APIBindings,
+  # edges, mcp instances, and any other tenant work. Nested child
+  # workspaces are deferred to v2 per docs/organizations.md §Open questions.
+  # Without this constraint a tenant kubectl-apply could create arbitrary
+  # children inside their workspace.
+  limitAllowedChildren:
+    none: true
+  # workspace workspaces must be children of an `organization` workspace —
+  # they only make sense as a team inside an Org. The kcp WorkspaceType
+  # admission rejects an attempt to create one at any other path.
+  limitAllowedParents:
+    types:
+    - name: organization
+      path: root:kedge
+  # Default bindings the hub + tenant rely on inside a workspace:
+  #   - tenancy.kedge.faros.sh provides Membership (PR #4 lands the CRD
+  #     and the initializer that adds the creator as Membership{scope:
+  #     workspace, role: admin}). Organization and CatalogEntry CRDs come
+  #     in via the same APIExport but are not used inside a workspace —
+  #     CatalogEntries live one level up at the Org workspace, and
+  #     Organization is cluster-scoped at root:kedge:users.
+  # Provider APIExports (mcp, kubernetes-edges, etc.) are deliberately
+  # NOT in defaultAPIBindings per docs/provider-scoping.md P-4: every
+  # provider, including builtins, requires explicit Enable in the
+  # workspace.
+  defaultAPIBindings:
+  - path: root:kedge:providers
+    export: tenancy.kedge.faros.sh
