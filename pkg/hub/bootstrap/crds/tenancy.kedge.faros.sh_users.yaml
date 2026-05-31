@@ -81,6 +81,14 @@ spec:
                   - refreshToken
                   type: object
                 type: array
+              orgQuota:
+                description: |-
+                  OrgQuota overrides the platform default cap on how many Organizations
+                  this User may create (see docs/organizations.md O-5). 0 means use the
+                  platform default. Settable only by a platform admin.
+                format: int32
+                minimum: 0
+                type: integer
               rbacIdentity:
                 type: string
             required:
@@ -149,8 +157,24 @@ spec:
                   - type
                   type: object
                 type: array
+              deletionRequestedAt:
+                description: |-
+                  DeletionRequestedAt records when a soft-delete was initiated for
+                  this User. Per O-8 the cascade controller waits 30 days from this
+                  timestamp before removing the personal Org and its Workspaces and
+                  finally the User itself. Undelete clears this field.
+                format: date-time
+                type: string
               lastLogin:
                 format: date-time
+                type: string
+              personalOrg:
+                description: |-
+                  PersonalOrg is the metadata.name (UUID) of the Organization
+                  auto-created for this User at bootstrap. Set once by the
+                  organization bootstrap controller; never reassigned. The portal
+                  uses this as the default X-Kedge-Org when the user has not
+                  explicitly switched orgs. See docs/organizations.md §Personal Org.
                 type: string
             type: object
         type: object

@@ -46,6 +46,7 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
+	"github.com/faroshq/faros-kedge/pkg/hub/controllers/organization"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
@@ -553,6 +554,25 @@ func (s *Server) Run(ctx context.Context) error {
 				logger.Error(err, "Providers multicluster manager failed")
 			}
 		}()
+
+		// Organization bootstrap controller — runs against root:kedge:users
+		// where the User and (companion) Organization CRs live. This is a
+		// single-cluster controller-runtime manager, separate from the
+		// multicluster managers above which serve the kcp-tenant fleet.
+		orgMgr, err := organization.NewManager(bootstrapper.UsersConfig(), scheme)
+		if err != nil {
+			return fmt.Errorf("creating organization manager: %w", err)
+		}
+		if err := organization.SetupWithManager(orgMgr); err != nil {
+			return fmt.Errorf("setting up organization bootstrap controller: %w", err)
+		}
+		go func() {
+			logger.Info("Starting organization bootstrap manager")
+			if err := orgMgr.Start(ctx); err != nil {
+				logger.Error(err, "Organization bootstrap manager failed")
+			}
+		}()
+
 		go func() {
 			logger.Info("Starting multicluster manager")
 			if err := mgr.Start(ctx); err != nil {

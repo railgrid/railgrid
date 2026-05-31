@@ -53,6 +53,14 @@ type UserSpec struct {
 	RBACIdentity   string         `json:"rbacIdentity"`
 	DefaultCluster string         `json:"defaultCluster,omitempty"`
 	OIDCProviders  []OIDCProvider `json:"oidcProviders,omitempty"`
+
+	// OrgQuota overrides the platform default cap on how many Organizations
+	// this User may create (see docs/organizations.md O-5). 0 means use the
+	// platform default. Settable only by a platform admin.
+	//
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	OrgQuota int32 `json:"orgQuota,omitempty"`
 }
 
 // OIDCProvider stores OIDC provider information for a user.
@@ -70,4 +78,21 @@ type UserStatus struct {
 	Active     bool               `json:"active,omitempty"`
 	LastLogin  *metav1.Time       `json:"lastLogin,omitempty"`
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// PersonalOrg is the metadata.name (UUID) of the Organization
+	// auto-created for this User at bootstrap. Set once by the
+	// organization bootstrap controller; never reassigned. The portal
+	// uses this as the default X-Kedge-Org when the user has not
+	// explicitly switched orgs. See docs/organizations.md §Personal Org.
+	//
+	// +optional
+	PersonalOrg string `json:"personalOrg,omitempty"`
+
+	// DeletionRequestedAt records when a soft-delete was initiated for
+	// this User. Per O-8 the cascade controller waits 30 days from this
+	// timestamp before removing the personal Org and its Workspaces and
+	// finally the User itself. Undelete clears this field.
+	//
+	// +optional
+	DeletionRequestedAt *metav1.Time `json:"deletionRequestedAt,omitempty"`
 }

@@ -7,6 +7,8 @@ require (
 	github.com/coreos/go-oidc v2.5.0+incompatible
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/function61/holepunch-server v0.0.0-20210312073819-8f5e8775e813
+	github.com/go-logr/logr v1.4.3
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/kcp-dev/cli v0.28.1-0.20260512140523-cda0fe341135
@@ -141,7 +143,6 @@ require (
 	github.com/go-errors/errors v1.4.2 // indirect
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v0.23.1 // indirect
@@ -168,7 +169,6 @@ require (
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gosuri/uitable v0.0.4 // indirect
 	github.com/graphql-go/graphql v0.8.1 // indirect
 	github.com/graphql-go/handler v0.2.4 // indirect

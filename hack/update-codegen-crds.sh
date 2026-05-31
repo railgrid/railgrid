@@ -17,6 +17,19 @@ fi
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
+# Step 0: Generate deepcopy methods (zz_generated.deepcopy.go) for every
+# package under apis/. Required for the generated types to satisfy
+# runtime.Object so they can be registered with the scheme.
+# Generated files skip the license header — hack/ensure-boilerplate.sh
+# excludes zz_generated* by name.
+echo "Generating deepcopy methods with controller-gen..."
+(
+    cd "${REPO_ROOT}/apis"
+    "${REPO_ROOT}/${CONTROLLER_GEN}" \
+        object \
+        paths="./..."
+)
+
 # Step 1: Generate CRDs from Go types using controller-gen.
 # Run from kedge API dir so paths resolve correctly.
 echo "Generating CRDs with controller-gen..."
