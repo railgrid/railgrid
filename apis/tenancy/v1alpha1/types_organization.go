@@ -45,6 +45,17 @@ const (
 	// before the WorkspaceType: organization plumbing lands in a later PR.
 	OrganizationConditionWorkspaceReady = "WorkspaceReady"
 
+	// OrganizationConditionMembershipReady reports whether the admin
+	// Membership for the Organization's first admin (the personal-Org
+	// owner during bootstrap) has been written to the Org workspace.
+	// PR #4 introduces this condition together with the Membership CRD.
+	OrganizationConditionMembershipReady = "MembershipReady"
+
+	// OrganizationConditionIndexSynced reports whether the owning User's
+	// UserMembershipIndex carries an entry for this Organization. Drives
+	// the portal switcher: only Indexed Organizations are renderable.
+	OrganizationConditionIndexSynced = "IndexSynced"
+
 	// ReasonAwaitingWorkspaceType marks an Organization whose kcp workspace
 	// has not been created yet because the organization WorkspaceType is
 	// not yet registered (lands in a follow-up PR).

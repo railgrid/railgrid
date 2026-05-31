@@ -65,6 +65,9 @@ var (
 	mcpServerGVR = schema.GroupVersionResource{
 		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "mcpservers",
 	}
+	membershipGVR = schema.GroupVersionResource{
+		Group: "tenancy.kedge.faros.sh", Version: "v1alpha1", Resource: "memberships",
+	}
 )
 
 // Bootstrapper sets up the kcp workspace hierarchy and API exports.
@@ -210,7 +213,77 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("installing User CRD: %w", err)
 	}
 
+	// 7. Bind tenancy.kedge.faros.sh APIExport in root:kedge:users so
+	//    Organization and UserMembershipIndex CRDs are reachable there.
+	//    PR #4 ships Membership + UserMembershipIndex; the organization
+	//    bootstrap controller writes UserMembershipIndex CRs at this path.
+	//    Same admission rules as step 5d apply — the APIExport must exist
+	//    (step 5) and bind RBAC must be in place (step 5b) before this
+	//    APIBinding is created.
+	logger.Info("Binding tenancy.kedge.faros.sh in root:kedge:users")
+	if err := b.ensureUsersTenancyAPIBinding(ctx); err != nil {
+		return fmt.Errorf("binding tenancy.kedge.faros.sh in root:kedge:users: %w", err)
+	}
+
 	logger.Info("kcp bootstrap complete")
+	return nil
+}
+
+// ensureUsersTenancyAPIBinding creates an APIBinding to the
+// tenancy.kedge.faros.sh APIExport (at root:kedge:providers) inside
+// root:kedge:users. Idempotent: returns nil if a matching binding already
+// exists. Without this binding the organization bootstrap controller's
+// writes to Organization / UserMembershipIndex CRs in root:kedge:users
+// would fail with "no matches for kind".
+func (b *Bootstrapper) ensureUsersTenancyAPIBinding(ctx context.Context) error {
+	usersDynamic, err := dynamic.NewForConfig(b.UsersConfig())
+	if err != nil {
+		return fmt.Errorf("creating users client: %w", err)
+	}
+
+	const (
+		exportPath  = "root:kedge:providers"
+		exportName  = "tenancy.kedge.faros.sh"
+		bindingName = "tenancy.kedge.faros.sh"
+	)
+
+	existing, err := usersDynamic.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("listing APIBindings in root:kedge:users: %w", err)
+	}
+	for _, b := range existing.Items {
+		path, _, _ := unstructured.NestedString(b.Object, "spec", "reference", "export", "path")
+		name, _, _ := unstructured.NestedString(b.Object, "spec", "reference", "export", "name")
+		if path == exportPath && name == exportName {
+			return nil
+		}
+	}
+
+	binding := &apisv1alpha2.APIBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
+			Kind:       "APIBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName},
+		Spec: apisv1alpha2.APIBindingSpec{
+			Reference: apisv1alpha2.BindingReference{
+				Export: &apisv1alpha2.ExportBindingReference{
+					Path: exportPath,
+					Name: exportName,
+				},
+			},
+		},
+	}
+	raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(binding)
+	if err != nil {
+		return fmt.Errorf("encoding APIBinding: %w", err)
+	}
+	if _, err := usersDynamic.Resource(apiBindingGVR).Create(ctx, &unstructured.Unstructured{Object: raw}, metav1.CreateOptions{}); err != nil {
+		if errors.IsAlreadyExists(err) {
+			return nil
+		}
+		return fmt.Errorf("creating tenancy.kedge.faros.sh APIBinding in root:kedge:users: %w", err)
+	}
 	return nil
 }
 
@@ -300,6 +373,55 @@ func (b *Bootstrapper) GetOrgClusterName(ctx context.Context, orgUUID string) (s
 		return "", fmt.Errorf("organization workspace %s has no spec.cluster", orgUUID)
 	}
 	return clusterName, nil
+}
+
+// EnsureOrgMembership creates a Membership CR inside the Organization
+// workspace at root:kedge:orgs:{orgUUID} granting the given User the
+// given role at scope=org. Idempotent — returns nil if a Membership with
+// the same metadata.name already exists, regardless of role drift (an
+// admin demoting a member is owned by a separate Role-patch endpoint
+// per O-12 and never comes through this path).
+//
+// metadata.name = userName so the existence check is a cheap Get on a
+// known key, not a List+filter. PR #4 ships only the bootstrap path
+// (personal-Org admin Membership for the User); manual Org membership
+// management lands in PR #10.
+func (b *Bootstrapper) EnsureOrgMembership(ctx context.Context, orgUUID, userName, role string) error {
+	if userName == "" {
+		return fmt.Errorf("EnsureOrgMembership: userName is required")
+	}
+	if role != "admin" && role != "member" {
+		return fmt.Errorf("EnsureOrgMembership: invalid role %q (want admin or member)", role)
+	}
+
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return fmt.Errorf("creating org workspace client: %w", err)
+	}
+
+	membership := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "tenancy.kedge.faros.sh/v1alpha1",
+			"kind":       "Membership",
+			"metadata": map[string]interface{}{
+				"name": userName,
+			},
+			"spec": map[string]interface{}{
+				"user":  userName,
+				"scope": "org",
+				"role":  role,
+			},
+		},
+	}
+
+	if _, err := orgClient.Resource(membershipGVR).Create(ctx, membership, metav1.CreateOptions{}); err != nil {
+		if errors.IsAlreadyExists(err) {
+			return nil
+		}
+		return fmt.Errorf("creating Membership for %s in org %s: %w", userName, orgUUID, err)
+	}
+	return nil
 }
 
 // installUserCRD installs the User CRD in the root:kedge:users workspace.

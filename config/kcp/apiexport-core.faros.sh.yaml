@@ -91,8 +91,18 @@ spec:
     storage:
       crd: {}
   - group: tenancy.kedge.faros.sh
+    name: memberships
+    schema: v260531-014829c.memberships.tenancy.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: tenancy.kedge.faros.sh
     name: organizations
     schema: v260531-fb75204.organizations.tenancy.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: tenancy.kedge.faros.sh
+    name: usermembershipindices
+    schema: v260531-014829c.usermembershipindices.tenancy.kedge.faros.sh
     storage:
       crd: {}
   - group: tenancy.kedge.faros.sh

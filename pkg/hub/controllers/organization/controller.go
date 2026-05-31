@@ -31,16 +31,19 @@ limitations under the License.
 //     AwaitingWorkspaceType so observers know the Organization is half-baked
 //     by design.
 //
-// Scope as of PR #2:
+// Scope as of PR #4:
 //   - User → Organization bootstrap (PR #1).
-//   - kcp Workspace creation at root:kedge:orgs:{uuid} of type `organization`,
-//     idempotent + self-healing per O-11. Driven by an injected
-//     WorkspaceProvisioner so tests can run with a fake.
-//   - Organization status conditions flip to WorkspaceReady=True /
-//     Ready=True once the kcp workspace is in place.
+//   - kcp Workspace creation at root:kedge:orgs:{uuid} of type
+//     `organization`, idempotent + self-healing per O-11 (PR #2).
+//   - Admin Membership write inside the Org workspace + UserMembershipIndex
+//     entry sync (PR #4). The reconciler is now a four-step state
+//     machine: WorkspaceReady → MembershipReady → IndexSynced → Ready.
 //
 // NOT yet:
-//   - Membership / UserMembershipIndex CRs (PR #4).
+//   - Full multi-cluster Membership controller that watches user-added
+//     Memberships and reflects them in the index. PR #4 handles the
+//     personal-Org bootstrap path inline; manual Org / Workspace
+//     membership management lands with the portal REST surface.
 //   - User-facing RBAC inside the Org workspace (Org workspaces are
 //     hub-mediated only per O-10; no per-User kubeconfig is ever issued).
 package organization
@@ -49,6 +52,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -77,13 +81,22 @@ const (
 )
 
 // WorkspaceProvisioner is the slice of the kcp Bootstrapper that this
-// controller needs to actually create Organization workspaces. Pulled out
-// as an interface so unit tests can use a fake (see controller_test.go)
-// without standing up an embedded kcp.
+// controller needs to actually create Organization workspaces and write
+// the bootstrap Membership inside them. Pulled out as an interface so
+// unit tests can use a fake (see controller_test.go) without standing
+// up an embedded kcp.
 //
 // Implemented by *pkg/hub/kcp.Bootstrapper.
 type WorkspaceProvisioner interface {
+	// EnsureOrgWorkspace materializes the kcp Workspace at
+	// root:kedge:orgs:{orgUUID}. Idempotent (per O-11).
 	EnsureOrgWorkspace(ctx context.Context, orgUUID string) error
+
+	// EnsureOrgMembership creates a Membership CR inside the Organization
+	// workspace granting userName the given role at scope=org. Idempotent.
+	// Returns once the Membership is durable; the controller updates the
+	// User's UserMembershipIndex separately.
+	EnsureOrgMembership(ctx context.Context, orgUUID, userName, role string) error
 }
 
 // Reconciler bootstraps personal Organizations for new Users and reconciles
@@ -183,9 +196,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	// Step 2: reconcile the personal Organization's status (workspacePath +
-	// conditions). This runs on every reconcile so a manual edit to status
-	// gets healed.
-	if err := r.reconcileOrganizationStatus(ctx, user.Status.PersonalOrg); err != nil {
+	// conditions, kcp workspace, admin Membership, UserMembershipIndex entry).
+	// Runs on every reconcile so manual edits to status are healed.
+	if err := r.reconcileOrganizationStatus(ctx, &user); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling Organization status: %w", err)
 	}
 
@@ -244,28 +257,39 @@ func (r *Reconciler) createPersonalOrg(ctx context.Context, user *tenancyv1alpha
 	return orgUUID, false, nil
 }
 
-// reconcileOrganizationStatus ensures status.workspacePath is set, calls the
-// WorkspaceProvisioner to materialize the kcp Workspace at that path, and
-// flips the Ready / WorkspaceReady conditions based on the outcome.
+// reconcileOrganizationStatus is the four-step state machine for a
+// personal Organization:
 //
-// Per O-11 the provisioning step is idempotent and self-healing: every
-// reconcile re-runs EnsureOrgWorkspace, which is a no-op once the workspace
-// exists. If provisioning fails the conditions reflect the failure with a
-// human-readable Message so observers (the portal, kubectl describe) see
-// why the Org is stuck. The next reconcile retries.
-func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, orgName string) error {
+//	A. Workspace path        — record the canonical root:kedge:orgs:{uuid}
+//	                           in status.workspacePath.
+//	B. EnsureOrgWorkspace    — materialize the kcp Workspace (PR #2).
+//	                           Sets WorkspaceReady condition.
+//	C. EnsureOrgMembership   — create a Membership{user, scope:org,
+//	                           role:admin} CR inside the Org workspace
+//	                           so the user is the Org's first admin
+//	                           (PR #4). Sets MembershipReady condition.
+//	D. Sync UserMembershipIndex — append/update the user's index entry
+//	                           so the portal switcher can render the
+//	                           new Org (PR #4). Sets IndexSynced
+//	                           condition.
+//	─────
+//	Aggregate Ready=True when A+B+C+D all succeed.
+//
+// Per O-11 every step is idempotent + self-healing. A failure at any step
+// leaves the corresponding condition False with a human-readable Reason
+// and Message; the next reconcile retries from that step. Subsequent
+// steps are skipped when an earlier step has not yet succeeded — for
+// example, no Membership write is attempted before the workspace exists.
+func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tenancyv1alpha1.User) error {
+	orgName := user.Status.PersonalOrg
 	logger := klog.FromContext(ctx).WithValues("organization", orgName)
 
 	var org tenancyv1alpha1.Organization
 	if err := r.client.Get(ctx, types.NamespacedName{Name: orgName}, &org); err != nil {
 		if apierrors.IsNotFound(err) {
 			// The User references an Organization that no longer exists.
-			// This happens if an operator manually deleted the personal Org;
-			// the User-side status will get repaired on the next reconcile
-			// (the createPersonalOrg path runs again because status.personalOrg
-			// pointing at a missing Organization is the same as empty for our
-			// purposes — but we don't clear status here to avoid losing
-			// observer info; soft-delete cascade owns that).
+			// Soft-delete cascade owns the User-side cleanup (PR #8); we
+			// don't repair here to avoid masking observer-visible state.
 			return nil
 		}
 		return fmt.Errorf("getting Organization %q: %w", orgName, err)
@@ -273,67 +297,91 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, orgName st
 
 	desiredPath := orgWorkspaceParent + ":" + org.Name
 
-	// Step A: ensure status.workspacePath records the canonical path. This
-	// is independent of whether the workspace actually exists yet — it's
-	// just the address.
+	// Step A: status.workspacePath.
 	changed := false
 	if org.Status.WorkspacePath != desiredPath {
 		org.Status.WorkspacePath = desiredPath
 		changed = true
 	}
 
-	// Step B: provision the kcp Workspace. When the provisioner is nil
-	// (test contexts that don't exercise this path) skip and leave the
-	// "Awaiting" condition in place.
-	var (
-		wsCond    metav1.Condition
-		readyCond metav1.Condition
-	)
-	if r.provisioner == nil {
-		wsCond = metav1.Condition{
-			Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
+	// Step B: kcp Workspace.
+	wsCond, workspaceOK := r.reconcileWorkspace(ctx, &org, desiredPath, logger)
+	if setCondition(&org.Status.Conditions, wsCond, org.Generation) {
+		changed = true
+	}
+
+	// Step C: admin Membership inside the workspace (only attempt after B).
+	var memCond metav1.Condition
+	membershipOK := false
+	switch {
+	case !workspaceOK:
+		memCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionMembershipReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonAwaitingWorkspace,
+			Message: "Membership write deferred until the kcp workspace is Ready.",
+		}
+	case r.provisioner == nil:
+		memCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionMembershipReady,
 			Status:  metav1.ConditionFalse,
 			Reason:  tenancyv1alpha1.ReasonAwaitingWorkspaceType,
 			Message: "WorkspaceProvisioner not configured; running without kcp.",
 		}
-		readyCond = metav1.Condition{
-			Type:    tenancyv1alpha1.OrganizationConditionReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  tenancyv1alpha1.ReasonAwaitingWorkspaceType,
-			Message: "Awaiting workspace provisioning.",
-		}
-	} else if err := r.provisioner.EnsureOrgWorkspace(ctx, org.Name); err != nil {
-		logger.Error(err, "Provisioning Organization workspace failed; will retry")
-		wsCond = metav1.Condition{
-			Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  reasonWorkspaceProvisioningFailed,
-			Message: err.Error(),
-		}
-		readyCond = metav1.Condition{
-			Type:    tenancyv1alpha1.OrganizationConditionReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  reasonWorkspaceProvisioningFailed,
-			Message: "Workspace provisioning failed; see WorkspaceReady condition.",
-		}
-	} else {
-		wsCond = metav1.Condition{
-			Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
-			Status:  metav1.ConditionTrue,
-			Reason:  reasonWorkspaceProvisioned,
-			Message: "kcp Workspace " + desiredPath + " is Ready.",
-		}
-		readyCond = metav1.Condition{
-			Type:    tenancyv1alpha1.OrganizationConditionReady,
-			Status:  metav1.ConditionTrue,
-			Reason:  reasonWorkspaceProvisioned,
-			Message: "Organization is ready for use.",
+	default:
+		if err := r.provisioner.EnsureOrgMembership(ctx, org.Name, user.Name, tenancyv1alpha1.MembershipRoleAdmin); err != nil {
+			logger.Error(err, "Writing admin Membership failed; will retry")
+			memCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionMembershipReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonMembershipFailed,
+				Message: err.Error(),
+			}
+		} else {
+			memCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionMembershipReady,
+				Status:  metav1.ConditionTrue,
+				Reason:  reasonMembershipReady,
+				Message: "Admin Membership for " + user.Name + " written to " + desiredPath + ".",
+			}
+			membershipOK = true
 		}
 	}
-
-	if setCondition(&org.Status.Conditions, wsCond, org.Generation) {
+	if setCondition(&org.Status.Conditions, memCond, org.Generation) {
 		changed = true
 	}
+
+	// Step D: UserMembershipIndex sync (only after C succeeded).
+	var indexCond metav1.Condition
+	if !membershipOK {
+		indexCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonAwaitingMembership,
+			Message: "Index sync deferred until the admin Membership is written.",
+		}
+	} else if err := r.syncUserMembershipIndex(ctx, user, &org); err != nil {
+		logger.Error(err, "UserMembershipIndex sync failed; will retry")
+		indexCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonIndexSyncFailed,
+			Message: err.Error(),
+		}
+	} else {
+		indexCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonIndexSynced,
+			Message: "UserMembershipIndex/" + user.Name + " carries an entry for this Org.",
+		}
+	}
+	if setCondition(&org.Status.Conditions, indexCond, org.Generation) {
+		changed = true
+	}
+
+	// Aggregate Ready = all four steps green.
+	readyCond := aggregateReady(workspaceOK, membershipOK, indexCond.Status == metav1.ConditionTrue)
 	if setCondition(&org.Status.Conditions, readyCond, org.Generation) {
 		changed = true
 	}
@@ -360,7 +408,179 @@ const (
 	// EnsureOrgWorkspace returns an error. Message carries the underlying
 	// cause; the next reconcile retries.
 	reasonWorkspaceProvisioningFailed = "WorkspaceProvisioningFailed"
+
+	// reasonAwaitingWorkspace is set on MembershipReady when the kcp
+	// Workspace hasn't reached Ready yet, so no Membership has been
+	// attempted.
+	reasonAwaitingWorkspace = "AwaitingWorkspace"
+
+	// reasonMembershipReady marks MembershipReady=True after the admin
+	// Membership is written to the Org workspace.
+	reasonMembershipReady = "MembershipWritten"
+
+	// reasonMembershipFailed is set on MembershipReady when
+	// EnsureOrgMembership returns an error. Message carries the cause.
+	reasonMembershipFailed = "MembershipWriteFailed"
+
+	// reasonAwaitingMembership is set on IndexSynced when the admin
+	// Membership hasn't been written yet, so no index entry has been
+	// attempted.
+	reasonAwaitingMembership = "AwaitingMembership"
+
+	// reasonIndexSynced marks IndexSynced=True after the User's
+	// UserMembershipIndex carries an entry for the Organization.
+	reasonIndexSynced = "IndexEntryWritten"
+
+	// reasonIndexSyncFailed is set on IndexSynced when the
+	// UserMembershipIndex update returns an error.
+	reasonIndexSyncFailed = "IndexEntryWriteFailed"
+
+	// reasonAllSteps* drive the aggregate Ready condition Reason field.
+	reasonAllStepsReady    = "OrganizationReady"
+	reasonAllStepsNotReady = "BootstrapInProgress"
 )
+
+// reconcileWorkspace runs step B (EnsureOrgWorkspace) and returns the
+// resulting condition plus a boolean signalling whether the workspace is
+// now considered Ready. Pulled out of reconcileOrganizationStatus for
+// readability; behavior is unchanged from PR #2.
+func (r *Reconciler) reconcileWorkspace(ctx context.Context, org *tenancyv1alpha1.Organization, desiredPath string, logger logr.Logger) (metav1.Condition, bool) {
+	if r.provisioner == nil {
+		return metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  tenancyv1alpha1.ReasonAwaitingWorkspaceType,
+			Message: "WorkspaceProvisioner not configured; running without kcp.",
+		}, false
+	}
+	if err := r.provisioner.EnsureOrgWorkspace(ctx, org.Name); err != nil {
+		logger.Error(err, "Provisioning Organization workspace failed; will retry")
+		return metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonWorkspaceProvisioningFailed,
+			Message: err.Error(),
+		}, false
+	}
+	return metav1.Condition{
+		Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  reasonWorkspaceProvisioned,
+		Message: "kcp Workspace " + desiredPath + " is Ready.",
+	}, true
+}
+
+// aggregateReady combines the three step outcomes into the overall Ready
+// condition. Ready=True iff all three are True; otherwise Ready=False with
+// reasonAllStepsNotReady so observers know to consult the granular
+// conditions for the specific failure cause.
+func aggregateReady(workspaceOK, membershipOK, indexOK bool) metav1.Condition {
+	if workspaceOK && membershipOK && indexOK {
+		return metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonAllStepsReady,
+			Message: "Organization is ready for use.",
+		}
+	}
+	return metav1.Condition{
+		Type:    tenancyv1alpha1.OrganizationConditionReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  reasonAllStepsNotReady,
+		Message: "One or more bootstrap steps have not completed; see the granular conditions.",
+	}
+}
+
+// syncUserMembershipIndex appends or updates an entry for the given
+// Organization in the User's UserMembershipIndex. metadata.name of the
+// index matches user.Name. The function is idempotent: re-running with
+// the same inputs leaves the index unchanged.
+//
+// PR #4 only writes the org-scope index entry for the personal Org. The
+// full multi-cluster Membership controller that propagates additions
+// from manually-managed Memberships lands in a follow-up PR.
+func (r *Reconciler) syncUserMembershipIndex(ctx context.Context, user *tenancyv1alpha1.User, org *tenancyv1alpha1.Organization) error {
+	var index tenancyv1alpha1.UserMembershipIndex
+	err := r.client.Get(ctx, types.NamespacedName{Name: user.Name}, &index)
+	switch {
+	case apierrors.IsNotFound(err):
+		index = tenancyv1alpha1.UserMembershipIndex{
+			ObjectMeta: metav1.ObjectMeta{Name: user.Name},
+		}
+	case err != nil:
+		return fmt.Errorf("getting UserMembershipIndex %q: %w", user.Name, err)
+	}
+
+	desired := tenancyv1alpha1.MembershipIndexEntry{
+		OrgUUID:        org.Name,
+		OrgDisplayName: org.Spec.DisplayName,
+		OrgCreatedAt:   org.CreationTimestamp,
+		OrgFirstAdmin:  user.Name,
+		Role:           tenancyv1alpha1.MembershipRoleAdmin,
+		Personal:       org.Spec.Personal,
+	}
+
+	// Find existing entry for this Org+Workspace pair (Workspace empty
+	// for org-scope entries). Update in-place if present, append otherwise.
+	found := false
+	for i, e := range index.Spec.Entries {
+		if e.OrgUUID == desired.OrgUUID && e.WorkspaceUUID == desired.WorkspaceUUID {
+			if entriesEqual(e, desired) {
+				return nil
+			}
+			index.Spec.Entries[i] = desired
+			found = true
+			break
+		}
+	}
+	if !found {
+		index.Spec.Entries = append(index.Spec.Entries, desired)
+	}
+
+	if index.ResourceVersion == "" {
+		if err := r.client.Create(ctx, &index); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				// Lost the race; the next reconcile picks it up.
+				return nil
+			}
+			return fmt.Errorf("creating UserMembershipIndex %q: %w", user.Name, err)
+		}
+	} else if err := r.client.Update(ctx, &index); err != nil {
+		if apierrors.IsConflict(err) {
+			return nil
+		}
+		return fmt.Errorf("updating UserMembershipIndex %q: %w", user.Name, err)
+	}
+
+	// Update status.entryCount on a follow-up Get (the status subresource
+	// is separate from spec). Best-effort: failures here don't affect the
+	// caller because the spec write — which the portal reads from — has
+	// already succeeded.
+	if err := r.client.Get(ctx, types.NamespacedName{Name: user.Name}, &index); err != nil {
+		return nil
+	}
+	desiredCount := int32(len(index.Spec.Entries))
+	if index.Status.EntryCount == desiredCount {
+		return nil
+	}
+	index.Status.EntryCount = desiredCount
+	_ = r.client.Status().Update(ctx, &index)
+	return nil
+}
+
+// entriesEqual compares the user-set fields of two MembershipIndexEntry
+// values for equality. CreationTimestamp comparison uses .Equal so the
+// metav1.Time wrapping doesn't trip the comparison up.
+func entriesEqual(a, b tenancyv1alpha1.MembershipIndexEntry) bool {
+	return a.OrgUUID == b.OrgUUID &&
+		a.OrgDisplayName == b.OrgDisplayName &&
+		a.OrgCreatedAt.Equal(&b.OrgCreatedAt) &&
+		a.OrgFirstAdmin == b.OrgFirstAdmin &&
+		a.WorkspaceUUID == b.WorkspaceUUID &&
+		a.WorkspaceDisplayName == b.WorkspaceDisplayName &&
+		a.Role == b.Role &&
+		a.Personal == b.Personal
+}
 
 // mapOrganizationToUser maps an Organization event back to the owning User
 // so the reconciler can keep status.personalOrg consistent.

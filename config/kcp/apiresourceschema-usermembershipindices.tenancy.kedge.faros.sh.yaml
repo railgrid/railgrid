@@ -1,0 +1,128 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260531-014829c.usermembershipindices.tenancy.kedge.faros.sh
+spec:
+  group: tenancy.kedge.faros.sh
+  names:
+    kind: UserMembershipIndex
+    listKind: UserMembershipIndexList
+    plural: usermembershipindices
+    shortNames:
+    - umi
+    singular: usermembershipindex
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.entryCount
+      name: Entries
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      description: |-
+        UserMembershipIndex is the per-User flat view of "which Organizations
+        and Workspaces does this user belong to?" used by the portal switcher.
+        metadata.name matches the User's metadata.name; one UserMembershipIndex
+        exists per User. The index is owned by the Membership controller and
+        stays in sync with Membership writes and Org/Workspace displayName
+        patches. See docs/organizations.md O-3 + O-4.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: UserMembershipIndexSpec defines the desired state of a UserMembershipIndex.
+          properties:
+            entries:
+              description: |-
+                Entries lists every Membership this User has across every Org +
+                Workspace. One entry per Membership (so a user who is org admin
+                in acme and workspace admin in acme/platform gets two entries,
+                one with WorkspaceUUID empty and one with it set).
+              items:
+                description: |-
+                  MembershipIndexEntry is one row in a UserMembershipIndex — one Membership
+                  the user holds. Carries enough Org/Workspace metadata for the portal to
+                  render the switcher (per O-4 always shows "created {date} by {first
+                  admin}") without doing a fan-out lookup at request time.
+                properties:
+                  orgCreatedAt:
+                    description: |-
+                      OrgCreatedAt mirrors the Organization CR creationTimestamp. Drives
+                      the switcher subtitle per O-4.
+                    format: date-time
+                    type: string
+                  orgDisplayName:
+                    description: |-
+                      OrgDisplayName mirrors Organization.spec.displayName at index time;
+                      the Membership controller re-syncs this on displayName patches.
+                    type: string
+                  orgFirstAdmin:
+                    description: |-
+                      OrgFirstAdmin is the User.metadata.name of the first User given
+                      admin role in the Org. Drives the switcher subtitle per O-4.
+                    type: string
+                  orgUUID:
+                    description: OrgUUID is the Organization.metadata.name (UUID).
+                    type: string
+                  personal:
+                    description: |-
+                      Personal mirrors Organization.spec.personal so the portal can
+                      badge / filter the entry for the user's own personal Org.
+                    type: boolean
+                  role:
+                    description: 'Role is the granted role: admin or member.'
+                    enum:
+                    - admin
+                    - member
+                    type: string
+                  workspaceDisplayName:
+                    description: |-
+                      WorkspaceDisplayName mirrors the Workspace's displayName (kept
+                      in an annotation on the kcp Workspace CR — see PR #10). Empty for
+                      scope=org entries.
+                    type: string
+                  workspaceUUID:
+                    description: |-
+                      WorkspaceUUID is set for Memberships with scope=workspace; empty
+                      for scope=org.
+                    type: string
+                required:
+                - orgUUID
+                - role
+                type: object
+              type: array
+              x-kubernetes-list-type: atomic
+          type: object
+        status:
+          description: UserMembershipIndexStatus defines the observed state of a UserMembershipIndex.
+          properties:
+            entryCount:
+              description: |-
+                EntryCount mirrors len(spec.entries) so kubectl get can show it as
+                a column without server-side computation.
+              format: int32
+              type: integer
+          type: object
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
