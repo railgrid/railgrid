@@ -511,8 +511,20 @@ export const useTenantStore = defineStore('tenant', () => {
   // credential plugin (OIDC mode) or the caller's bearer token
   // (static-token mode); the portal just relays bytes. Returns true on
   // success — failures populate `error` and surface in the calling page.
-  async function downloadKubeconfig(targetOrgUUID: string, wsUUID: string): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/kubeconfig`, {
+  //
+  // `install` selects the exec credential plugin Command in OIDC mode:
+  //   - 'kedge'         → Command="kedge" (curl/tar.gz install on PATH)
+  //   - 'krew'          → Command="kubectl-kedge" (krew install, no
+  //                       symlink). The same binary, just renamed by krew.
+  // Defaults to 'kedge' for back-compat with the v1 endpoint. Ignored in
+  // static-token mode (no exec plugin emitted).
+  async function downloadKubeconfig(
+    targetOrgUUID: string,
+    wsUUID: string,
+    install: 'kedge' | 'krew' = 'kedge',
+  ): Promise<boolean> {
+    const url = `/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/kubeconfig?install=${encodeURIComponent(install)}`
+    const resp = await fetch(url, {
       headers: {
         ...authHeader(),
         'X-Kedge-Org': targetOrgUUID,
@@ -530,14 +542,14 @@ export const useTenantStore = defineStore('tenant', () => {
     const cd = resp.headers.get('Content-Disposition') ?? ''
     const match = cd.match(/filename="?([^";]+)"?/i)
     const filename = match?.[1] ?? `kedge-${wsUUID}.kubeconfig`
-    const url = URL.createObjectURL(blob)
+    const blobURL = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url
+    a.href = blobURL
     a.download = filename
     document.body.appendChild(a)
     a.click()
     a.remove()
-    URL.revokeObjectURL(url)
+    URL.revokeObjectURL(blobURL)
     return true
   }
 

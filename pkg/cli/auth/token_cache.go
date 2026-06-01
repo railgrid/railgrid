@@ -61,14 +61,22 @@ func cacheKey(issuerURL, clientID string) string {
 	return hex.EncodeToString(h[:])[:32]
 }
 
+// cachePath returns the path to the cache file for the given OIDC config.
+func cachePath(issuerURL, clientID string) (string, error) {
+	dir, err := cacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, cacheKey(issuerURL, clientID)+".json"), nil
+}
+
 // LoadTokenCache reads the cached token for the given OIDC config.
 func LoadTokenCache(issuerURL, clientID string) (*TokenCache, error) {
-	dir, err := cacheDir()
+	path, err := cachePath(issuerURL, clientID)
 	if err != nil {
 		return nil, err
 	}
 
-	path := filepath.Join(dir, cacheKey(issuerURL, clientID)+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading token cache: %w", err)
@@ -82,9 +90,12 @@ func LoadTokenCache(issuerURL, clientID string) (*TokenCache, error) {
 	return &cache, nil
 }
 
-// SaveTokenCache writes the token cache to disk.
+// SaveTokenCache writes the token cache to disk atomically (tmp file + rename).
+// Atomicity matters because a partial write that survives can leave the cache
+// holding a refresh token that the IdP has already rotated, permanently
+// bricking the cache until the next interactive login.
 func SaveTokenCache(cache *TokenCache) error {
-	dir, err := cacheDir()
+	path, err := cachePath(cache.IssuerURL, cache.ClientID)
 	if err != nil {
 		return err
 	}
@@ -94,10 +105,50 @@ func SaveTokenCache(cache *TokenCache) error {
 		return fmt.Errorf("marshaling token cache: %w", err)
 	}
 
-	path := filepath.Join(dir, cacheKey(cache.IssuerURL, cache.ClientID)+".json")
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("writing token cache: %w", err)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tokencache-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
 	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
 
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("syncing temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		cleanup()
+		return fmt.Errorf("renaming temp file: %w", err)
+	}
 	return nil
+}
+
+// LockTokenCache takes an exclusive OS-level file lock on a sidecar lock file
+// for the given OIDC config. Returns an unlock function that the caller MUST
+// invoke (e.g. via defer) — typically wrapping load → expiry-check → refresh →
+// save so that concurrent `kedge get-token` invocations don't race on the
+// refresh-token rotation. On platforms where advisory locking isn't supported
+// the returned unlock is a no-op.
+func LockTokenCache(issuerURL, clientID string) (unlock func(), err error) {
+	dir, err := cacheDir()
+	if err != nil {
+		return nil, err
+	}
+	lockPath := filepath.Join(dir, cacheKey(issuerURL, clientID)+".lock")
+	return acquireFileLock(lockPath)
 }

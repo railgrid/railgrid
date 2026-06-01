@@ -251,7 +251,11 @@ async function onDownloadKubeconfig(uuid: string) {
   const key = `kc:${uuid}`
   wsBusy.value = { ...wsBusy.value, [key]: true }
   try {
-    const ok = await tenant.downloadKubeconfig(tenant.orgUUID, uuid)
+    // Reuse the install variant the user picked in the TenantContextChip
+    // (persisted under the same key) so the per-row download in this
+    // page matches the chip's dropdown. Defaults to 'kedge'.
+    const install = (localStorage.getItem('kedge:portal:kubeconfig:install') === 'krew' ? 'krew' : 'kedge') as 'kedge' | 'krew'
+    const ok = await tenant.downloadKubeconfig(tenant.orgUUID, uuid, install)
     if (!ok) flash('error', tenant.error ?? 'Failed to download kubeconfig.')
   } finally {
     const next = { ...wsBusy.value }

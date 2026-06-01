@@ -622,6 +622,56 @@ func TestDeleteSelfUser_StampsTimestamp(t *testing.T) {
 	}
 }
 
+// ===== Kubeconfig download tests =====
+
+func TestDownloadKubeconfig_InstallVariant(t *testing.T) {
+	mgr, ops, _ := newTestManager(t)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	mgr.WithKubeconfig(KubeconfigConfig{
+		HubExternalURL: "https://hub.test",
+		OIDCIssuerURL:  "https://issuer.test",
+		OIDCClientID:   "test-client",
+	})
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	cases := []struct {
+		name        string
+		query       string
+		wantStatus  int
+		wantCommand string // empty if status != 200
+	}{
+		{"default", "", http.StatusOK, "kedge"},
+		{"explicit kedge", "?install=kedge", http.StatusOK, "kedge"},
+		{"krew alias", "?install=krew", http.StatusOK, "kubectl-kedge"},
+		{"explicit kubectl-kedge", "?install=kubectl-kedge", http.StatusOK, "kubectl-kedge"},
+		{"unknown", "?install=bogus", http.StatusBadRequest, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/api/orgs/org-a/workspaces/ws-1/kubeconfig" + tc.query)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status: got %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+			if tc.wantStatus != http.StatusOK {
+				return
+			}
+			body, _ := io.ReadAll(resp.Body)
+			// We only assert on the substring; a YAML parse here would drag in
+			// clientcmd just to re-check what the handler already produces.
+			want := "command: " + tc.wantCommand
+			if !bytes.Contains(body, []byte(want)) {
+				t.Errorf("response missing %q\nbody:\n%s", want, body)
+			}
+		})
+	}
+}
+
 // ===== helpers =====
 
 // jsonBody wraps a []byte as a Reader for http.Post.

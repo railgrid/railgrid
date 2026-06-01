@@ -38,6 +38,11 @@ import (
 //   - Static-token mode: the caller's bearer token is embedded directly.
 //     The downloaded file behaves the same way the live REST call did.
 //
+// The OIDC variant accepts ?install=krew to swap the exec Command from
+// `kedge` to `kubectl-kedge`, matching the binary name the krew plugin
+// installs (the only release channel that ships `kubectl-kedge` without
+// a `kedge` symlink). Default is `kedge` for back-compat.
+//
 // Either way the cluster URL is HubExternalURL + /clusters/<clusterName>,
 // where clusterName is the kcp logical-cluster hash for the workspace
 // (resolved via the bootstrapper).
@@ -71,7 +76,19 @@ func (h *Handler) downloadKubeconfig(w http.ResponseWriter, r *http.Request) {
 		staticToken = strings.TrimPrefix(ah, "Bearer ")
 	}
 
-	cfg, err := h.mgr.buildWorkspaceKubeconfig(tc.User, clusterName, staticToken)
+	execCommand := "kedge"
+	switch strings.ToLower(r.URL.Query().Get("install")) {
+	case "", "kedge", "standalone":
+		// default
+	case "krew", "kubectl-kedge":
+		execCommand = "kubectl-kedge"
+	default:
+		writeStatus(w, http.StatusBadRequest, "BadRequest",
+			"unknown install variant; expected 'kedge' or 'krew'")
+		return
+	}
+
+	cfg, err := h.mgr.buildWorkspaceKubeconfig(tc.User, clusterName, staticToken, execCommand)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -106,7 +123,7 @@ func kubeconfigFilename(displayName, uuid string) string {
 
 var filenameSafe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
-func (m *Manager) buildWorkspaceKubeconfig(userID, clusterName, staticToken string) ([]byte, error) {
+func (m *Manager) buildWorkspaceKubeconfig(userID, clusterName, staticToken, execCommand string) ([]byte, error) {
 	cfg := clientcmdapi.NewConfig()
 	serverURL := apiurl.HubServerURL(m.kubeconfig.HubExternalURL, clusterName)
 
@@ -117,6 +134,9 @@ func (m *Manager) buildWorkspaceKubeconfig(userID, clusterName, staticToken stri
 
 	authInfo := &clientcmdapi.AuthInfo{}
 	if m.kubeconfig.OIDCIssuerURL != "" {
+		if execCommand == "" {
+			execCommand = "kedge"
+		}
 		// PKCE public client — no --oidc-client-secret. Matches the args
 		// pkg/server/auth.Handler.generateKubeconfig writes on first login.
 		args := []string{
@@ -129,7 +149,7 @@ func (m *Manager) buildWorkspaceKubeconfig(userID, clusterName, staticToken stri
 		}
 		authInfo.Exec = &clientcmdapi.ExecConfig{
 			APIVersion: "client.authentication.k8s.io/v1beta1",
-			Command:    "kedge",
+			Command:    execCommand,
 			Args:       args,
 		}
 	} else {

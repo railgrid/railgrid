@@ -86,11 +86,29 @@ function onWorkspaceChange(e: Event) {
 }
 
 const downloading = ref(false)
+// 'install' picks the exec credential plugin Command in the downloaded
+// kubeconfig: 'kedge' for the curl/tar.gz binary on PATH, 'krew' for
+// kubectl-kedge (the krew plugin, which never installs a `kedge`
+// symlink). Persisted so the user doesn't have to re-pick on every
+// download.
+const INSTALL_STORAGE_KEY = 'kedge:portal:kubeconfig:install'
+function loadInstall(): 'kedge' | 'krew' {
+  const v = localStorage.getItem(INSTALL_STORAGE_KEY)
+  return v === 'krew' ? 'krew' : 'kedge'
+}
+const installVariant = ref<'kedge' | 'krew'>(loadInstall())
+watch(installVariant, (v) => {
+  try {
+    localStorage.setItem(INSTALL_STORAGE_KEY, v)
+  } catch {
+    /* ignore quota / private-mode errors */
+  }
+})
 async function onDownloadKubeconfig() {
   if (!tenant.orgUUID || !tenant.workspaceUUID || downloading.value) return
   downloading.value = true
   try {
-    await tenant.downloadKubeconfig(tenant.orgUUID, tenant.workspaceUUID)
+    await tenant.downloadKubeconfig(tenant.orgUUID, tenant.workspaceUUID, installVariant.value)
   } finally {
     downloading.value = false
   }
@@ -183,17 +201,29 @@ onUnmounted(() => {
 
         <div class="mx-1 my-2 h-px bg-border-default/40" />
 
-        <button
-          type="button"
-          class="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-surface-overlay/60 hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
-          :disabled="!tenant.workspaceUUID || downloading"
-          :title="tenant.workspaceUUID ? 'Download kubeconfig for the active workspace' : 'Select a workspace first'"
-          @click="onDownloadKubeconfig"
-        >
-          <Loader2 v-if="downloading" class="h-3 w-3 animate-spin" :stroke-width="2" />
-          <Download v-else class="h-3 w-3" :stroke-width="2" />
-          Download kubeconfig
-        </button>
+        <div class="flex items-stretch gap-1">
+          <button
+            type="button"
+            class="flex flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-surface-overlay/60 hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="!tenant.workspaceUUID || downloading"
+            :title="tenant.workspaceUUID ? 'Download kubeconfig for the active workspace' : 'Select a workspace first'"
+            @click="onDownloadKubeconfig"
+          >
+            <Loader2 v-if="downloading" class="h-3 w-3 animate-spin" :stroke-width="2" />
+            <Download v-else class="h-3 w-3" :stroke-width="2" />
+            Download kubeconfig
+          </button>
+          <select
+            v-model="installVariant"
+            class="rounded-md border border-border-default/50 bg-surface-overlay/60 px-1 py-1 text-[10px] text-text-muted focus:border-accent focus:outline-none"
+            :title="installVariant === 'krew'
+              ? 'Exec plugin will call kubectl-kedge (krew install)'
+              : 'Exec plugin will call kedge (curl/tar.gz install)'"
+          >
+            <option value="kedge">kedge</option>
+            <option value="krew">krew</option>
+          </select>
+        </div>
 
         <router-link
           to="/tenant"

@@ -72,9 +72,18 @@ func runGetToken(ctx context.Context, issuerURL, clientID string, insecure bool)
 		return fmt.Errorf("--oidc-issuer-url and --oidc-client-id are required")
 	}
 
-	// Try to load a cached token.
-	cache, err := cliauth.LoadTokenCache(issuerURL, clientID)
-	if err == nil && !cache.IsExpired() {
+	// Take an exclusive flock around the cache. OIDC refresh-token rotation is
+	// single-use, so two concurrent kubectl invocations racing here would burn
+	// one of the rotated tokens and brick the cache. With the lock the loser
+	// waits, re-reads the cache, and uses the IDToken the winner just stored.
+	unlock, err := cliauth.LockTokenCache(issuerURL, clientID)
+	if err != nil {
+		return fmt.Errorf("locking token cache: %w", err)
+	}
+	defer unlock()
+
+	cache, loadErr := cliauth.LoadTokenCache(issuerURL, clientID)
+	if loadErr == nil && !cache.IsExpired() {
 		return outputExecCredential(cache.IDToken, cache.ExpiresAt)
 	}
 
@@ -89,12 +98,15 @@ func runGetToken(ctx context.Context, issuerURL, clientID string, insecure bool)
 		return fmt.Errorf("token refresh failed (run 'kedge login' to re-authenticate): %w", err)
 	}
 
-	// Update cache.
+	// Persist BEFORE returning the token: a successful refresh has already
+	// rotated the refresh_token at the IdP, so silently failing the cache
+	// write would leave the cached refresh token consumed and the cache
+	// permanently bricked until the next interactive login.
 	cache.IDToken = newIDToken
 	cache.RefreshToken = newRefreshToken
 	cache.ExpiresAt = expiry.Unix()
 	if err := cliauth.SaveTokenCache(cache); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to save token cache: %v\n", err)
+		return fmt.Errorf("saving rotated token cache (run 'kedge login' to re-authenticate): %w", err)
 	}
 
 	return outputExecCredential(newIDToken, expiry.Unix())
