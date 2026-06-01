@@ -506,6 +506,41 @@ export const useTenantStore = defineStore('tenant', () => {
     return (await resp.json()) as TokenResponse
   }
 
+  // downloadKubeconfig fetches the workspace-scoped kubeconfig from the
+  // hub and triggers a browser download. The hub embeds either an exec
+  // credential plugin (OIDC mode) or the caller's bearer token
+  // (static-token mode); the portal just relays bytes. Returns true on
+  // success — failures populate `error` and surface in the calling page.
+  async function downloadKubeconfig(targetOrgUUID: string, wsUUID: string): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/kubeconfig`, {
+      headers: {
+        ...authHeader(),
+        'X-Kedge-Org': targetOrgUUID,
+        'X-Kedge-Workspace': wsUUID,
+      },
+    })
+    if (!resp.ok) {
+      error.value = `failed to download kubeconfig: ${resp.status}`
+      return false
+    }
+    const blob = await resp.blob()
+    // Prefer the server's Content-Disposition filename so the slug
+    // (display-name or UUID) stays in sync with what the backend
+    // sanitised. Fallback to a UUID-based name if the header is missing.
+    const cd = resp.headers.get('Content-Disposition') ?? ''
+    const match = cd.match(/filename="?([^";]+)"?/i)
+    const filename = match?.[1] ?? `kedge-${wsUUID}.kubeconfig`
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    return true
+  }
+
   async function revokeSATokens(targetOrgUUID: string, wsUUID: string, saUUID: string): Promise<boolean> {
     const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
       method: 'DELETE',
@@ -561,5 +596,7 @@ export const useTenantStore = defineStore('tenant', () => {
     deleteServiceAccount,
     issueSAToken,
     revokeSATokens,
+    // actions: kubeconfig
+    downloadKubeconfig,
   }
 })

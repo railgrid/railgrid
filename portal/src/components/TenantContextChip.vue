@@ -32,7 +32,7 @@ unobtrusive — the goal is "where am I" awareness, not management.
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useTenantStore } from '@/stores/tenant'
-import { Building2, FolderTree, ChevronDown, Settings, AlertCircle } from 'lucide-vue-next'
+import { Building2, FolderTree, ChevronDown, Settings, AlertCircle, Download, Loader2 } from 'lucide-vue-next'
 
 defineProps<{ variant?: 'sidebar' | 'horizontal' }>()
 
@@ -83,6 +83,17 @@ function onOrgChange(e: Event) {
 function onWorkspaceChange(e: Event) {
   const v = (e.target as HTMLSelectElement).value
   if (v) tenant.selectWorkspace(v)
+}
+
+const downloading = ref(false)
+async function onDownloadKubeconfig() {
+  if (!tenant.orgUUID || !tenant.workspaceUUID || downloading.value) return
+  downloading.value = true
+  try {
+    await tenant.downloadKubeconfig(tenant.orgUUID, tenant.workspaceUUID)
+  } finally {
+    downloading.value = false
+  }
 }
 
 // Close-on-outside-click. We bind on document so a click anywhere outside
@@ -171,6 +182,18 @@ onUnmounted(() => {
         </div>
 
         <div class="mx-1 my-2 h-px bg-border-default/40" />
+
+        <button
+          type="button"
+          class="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-surface-overlay/60 hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+          :disabled="!tenant.workspaceUUID || downloading"
+          :title="tenant.workspaceUUID ? 'Download kubeconfig for the active workspace' : 'Select a workspace first'"
+          @click="onDownloadKubeconfig"
+        >
+          <Loader2 v-if="downloading" class="h-3 w-3 animate-spin" :stroke-width="2" />
+          <Download v-else class="h-3 w-3" :stroke-width="2" />
+          Download kubeconfig
+        </button>
 
         <router-link
           to="/tenant"

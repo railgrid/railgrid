@@ -47,6 +47,7 @@ import {
   AlertCircle,
   Loader2,
   ShieldCheck,
+  Download,
   User as UserIcon,
 } from 'lucide-vue-next'
 
@@ -239,6 +240,22 @@ async function onUndeleteWorkspace(uuid: string) {
   } finally {
     const next = { ...wsBusy.value }
     delete next[uuid]
+    wsBusy.value = next
+  }
+}
+
+async function onDownloadKubeconfig(uuid: string) {
+  if (!tenant.orgUUID) return
+  // Use a `kc:` prefix so the busy spinner on the row's other actions
+  // (rename/delete) isn't blocked by an in-flight download.
+  const key = `kc:${uuid}`
+  wsBusy.value = { ...wsBusy.value, [key]: true }
+  try {
+    const ok = await tenant.downloadKubeconfig(tenant.orgUUID, uuid)
+    if (!ok) flash('error', tenant.error ?? 'Failed to download kubeconfig.')
+  } finally {
+    const next = { ...wsBusy.value }
+    delete next[key]
     wsBusy.value = next
   }
 }
@@ -758,6 +775,16 @@ function fmtDate(s?: string | null): string {
                 <div class="font-mono text-[10px] text-text-muted">{{ w.uuid }}</div>
               </div>
               <div class="flex items-center gap-1">
+                <button
+                  v-if="editingWS !== w.uuid && !w.deletionRequestedAt"
+                  class="rounded-md border border-border-subtle px-2 py-1 text-[11px] text-text-muted hover:border-accent/30 hover:text-accent disabled:opacity-50"
+                  :disabled="!!wsBusy[`kc:${w.uuid}`]"
+                  :title="`Download kubeconfig for ${w.displayName || w.uuid}`"
+                  @click="onDownloadKubeconfig(w.uuid)"
+                >
+                  <Loader2 v-if="wsBusy[`kc:${w.uuid}`]" class="inline h-3 w-3 animate-spin" :stroke-width="2" />
+                  <Download v-else class="inline h-3 w-3" :stroke-width="2" />
+                </button>
                 <button
                   v-if="editingWS !== w.uuid && !w.deletionRequestedAt"
                   class="rounded-md border border-border-subtle px-2 py-1 text-[11px] text-text-muted hover:border-accent/30 hover:text-accent"

@@ -79,6 +79,28 @@ type WorkspaceOps interface {
 	GetWorkspaceDeletionRequestedAt(ctx context.Context, orgUUID, wsUUID string) (*time.Time, bool, error)
 	SetWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string, at time.Time) error
 	ClearWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string) error
+
+	// GetChildWorkspaceClusterName returns the kcp logical-cluster name
+	// (the /clusters/<name> hash) for a child workspace. Used to build
+	// per-workspace kubeconfigs for the download endpoint.
+	GetChildWorkspaceClusterName(ctx context.Context, orgUUID, wsUUID string) (string, error)
+}
+
+// KubeconfigConfig configures the workspace-scoped kubeconfig download
+// endpoint. When OIDCIssuerURL is set, the generator emits an exec
+// credential plugin entry that runs `kedge get-token` against the issuer
+// — the same shape the OIDC login flow produces. When unset, the handler
+// embeds the caller's bearer token directly (static-token mode).
+//
+// HubExternalURL is required either way; the kubeconfig server URL is
+// HubExternalURL + /clusters/<clusterName>. DevMode toggles
+// insecure-skip-tls-verify so the file works against self-signed dev
+// hubs without extra flags.
+type KubeconfigConfig struct {
+	HubExternalURL string
+	DevMode        bool
+	OIDCIssuerURL  string
+	OIDCClientID   string
 }
 
 // Manager holds the dependencies every handler needs: the kedge
@@ -87,6 +109,7 @@ type WorkspaceOps interface {
 type Manager struct {
 	client       *kedgeclient.Client
 	bootstrapper WorkspaceOps
+	kubeconfig   KubeconfigConfig
 }
 
 // NewManager builds a Manager from the userClient (typed kedge client
@@ -94,6 +117,14 @@ type Manager struct {
 // pass a kcp.Bootstrapper; tests pass a fake.
 func NewManager(client *kedgeclient.Client, bootstrapper WorkspaceOps) *Manager {
 	return &Manager{client: client, bootstrapper: bootstrapper}
+}
+
+// WithKubeconfig sets the kubeconfig-download configuration. Optional —
+// when unset (the zero value) the download endpoint returns 503 so the
+// route registration stays independent of OIDC wiring.
+func (m *Manager) WithKubeconfig(cfg KubeconfigConfig) *Manager {
+	m.kubeconfig = cfg
+	return m
 }
 
 // Handler is the HTTP surface. One handler instance registers all
@@ -151,6 +182,8 @@ func (h *Handler) RegisterUserOnly(r *mux.Router) {
 //	DELETE /api/orgs/{org}/workspaces/{ws}/memberships/me                   self-leave Workspace
 //	PATCH  /api/orgs/{org}/workspaces/{ws}/memberships/{user}               role patch
 //	DELETE /api/orgs/{org}/workspaces/{ws}/memberships/{user}               remove a member
+//
+//	GET    /api/orgs/{org}/workspaces/{ws}/kubeconfig                       download a workspace-scoped kubeconfig
 func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// Org-scoped (no /workspaces in path)
 	r.HandleFunc("/{org}", h.getOrg).Methods(http.MethodGet)
@@ -177,6 +210,8 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	r.HandleFunc("/{org}/workspaces/{ws}/memberships/me", h.selfLeaveWorkspace).Methods(http.MethodDelete)
 	r.HandleFunc("/{org}/workspaces/{ws}/memberships/{user}", h.patchWorkspaceMembership).Methods(http.MethodPatch)
 	r.HandleFunc("/{org}/workspaces/{ws}/memberships/{user}", h.deleteWorkspaceMembership).Methods(http.MethodDelete)
+
+	r.HandleFunc("/{org}/workspaces/{ws}/kubeconfig", h.downloadKubeconfig).Methods(http.MethodGet)
 }
 
 // ===== shared helpers =====

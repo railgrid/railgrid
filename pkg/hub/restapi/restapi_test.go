@@ -201,6 +201,17 @@ func (f *fakeOps) ClearWorkspaceDeletionAnnotation(_ context.Context, orgUUID, w
 	return nil
 }
 
+func (f *fakeOps) GetChildWorkspaceClusterName(_ context.Context, orgUUID, wsUUID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.childWorkspaces[orgUUID][wsUUID]; !ok {
+		return "", fmt.Errorf("workspace not found")
+	}
+	// Deterministic fake cluster name; the kubeconfig handler only needs a
+	// non-empty value to build a valid /clusters/<name> URL in tests.
+	return "fake-" + wsUUID, nil
+}
+
 // ===== test fixtures =====
 
 func newTestScheme(t *testing.T) *runtime.Scheme {

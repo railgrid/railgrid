@@ -490,6 +490,19 @@ func (s *Server) Run(ctx context.Context) error {
 
 			// Step 10: Org / Workspace / Membership / User REST
 			apiMgr := restapi.NewManager(userClient, bootstrapper)
+			// Per-workspace kubeconfig download — OIDC mode emits an exec
+			// credential plugin entry (kedge get-token), static-token mode
+			// embeds the caller's bearer token. Either way the cluster URL
+			// is HubExternalURL + /clusters/<clusterName>.
+			kcCfg := restapi.KubeconfigConfig{
+				HubExternalURL: s.opts.HubExternalURL,
+				DevMode:        s.opts.DevMode,
+			}
+			if authHandler != nil {
+				kcCfg.OIDCIssuerURL = s.opts.IDPIssuerURL
+				kcCfg.OIDCClientID = s.opts.IDPClientID
+			}
+			apiMgr.WithKubeconfig(kcCfg)
 			apiHandler := restapi.NewHandler(apiMgr)
 
 			// User-only routes (no Org context required)
