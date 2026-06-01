@@ -19,6 +19,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -34,6 +35,7 @@ import (
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -42,6 +44,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
@@ -52,6 +55,8 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+	"github.com/faroshq/faros-kedge/pkg/hub/serviceaccounts"
+	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
 	"github.com/faroshq/faros-kedge/pkg/server/auth"
 	"github.com/faroshq/faros-kedge/pkg/server/proxy"
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
@@ -458,6 +463,34 @@ func (s *Server) Run(ctx context.Context) error {
 		if len(s.opts.StaticAuthTokens) > 0 {
 			router.HandleFunc(apiurl.PathAuthTokenLogin, kcpProxy.HandleTokenLoginRateLimited).Methods("POST")
 			logger.Info("Static token login endpoint registered at " + apiurl.PathAuthTokenLogin)
+		}
+
+		// ServiceAccount REST surface (roadmap step 9 / O-14).
+		// Routes mount at /api/orgs/{org}/workspaces/{ws}/serviceaccounts/...
+		// and run behind the tenant middleware so handlers receive a
+		// resolved (User, Org, Workspace, Role) context.
+		if bootstrapper != nil {
+			saMgr := serviceaccounts.NewManager(bootstrapper)
+			saHandler := serviceaccounts.NewHandler(saMgr)
+
+			userResolver := tenant.UserResolverFunc(func(r *http.Request) (string, error) {
+				name, err := kcpProxy.IdentifyUser(r)
+				if err != nil {
+					if errors.Is(err, proxy.ErrIdentifyNoBearer) {
+						return "", tenant.ErrUserNotResolved
+					}
+					return "", err
+				}
+				return name, nil
+			})
+			membershipLookup := tenant.MembershipLookupFunc(func(ctx context.Context, userName string) (*tenancyv1alpha1.UserMembershipIndex, error) {
+				return userClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
+			})
+
+			apiSub := router.PathPrefix("/api/orgs").Subrouter()
+			apiSub.Use(tenant.Middleware(userResolver, membershipLookup))
+			saHandler.Register(apiSub)
+			logger.Info("ServiceAccount REST routes registered behind tenant middleware")
 		}
 	}
 

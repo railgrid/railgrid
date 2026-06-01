@@ -477,6 +477,15 @@ func childWorkspacePath(orgUUID, wsUUID string) string {
 	return "root:kedge:orgs:" + orgUUID + ":" + wsUUID
 }
 
+// ChildWorkspaceConfig returns a rest.Config targeting the child
+// Workspace at root:kedge:orgs:{orgUUID}:{wsUUID}. Used by REST
+// endpoints that operate inside a Workspace (e.g. the ServiceAccount
+// surface) so they can mint a typed kube clientset without rebuilding
+// path strings themselves.
+func (b *Bootstrapper) ChildWorkspaceConfig(orgUUID, wsUUID string) *rest.Config {
+	return configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
+}
+
 // GetChildWorkspaceClusterName returns the kcp logical-cluster short
 // hash (e.g. "2mmugqjf6k4nwuve") for the child team Workspace at
 // root:kedge:orgs:{orgUUID}:{wsUUID}. kcp sets it in

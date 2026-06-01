@@ -25,6 +25,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -745,6 +746,64 @@ func resolveKCPPath(urlPath, defaultCluster string) (string, int, string) {
 		return "/clusters/" + defaultCluster + urlPath, 0, ""
 	}
 	return "", http.StatusForbidden, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"user has no default cluster","reason":"Forbidden","code":403}`
+}
+
+// ErrIdentifyNoBearer is returned by IdentifyUser when the request
+// carries no Authorization: Bearer header. Callers (e.g. the tenant
+// middleware) translate this into a 401.
+var ErrIdentifyNoBearer = errors.New("no Authorization: Bearer token")
+
+// IdentifyUser extracts the caller's User CR name from r's bearer
+// token, using the same auth schemes as ServeHTTP (static token,
+// OIDC). Used by hub REST endpoints behind the tenant middleware so
+// they can identify the caller without duplicating the proxy's auth
+// dispatch.
+//
+// Returns ErrIdentifyNoBearer for missing/unparseable Authorization
+// headers, and other errors for verification failures. kcp
+// ServiceAccount tokens are intentionally not accepted here — REST
+// endpoints are addressed by humans (or by their portal session) and
+// not by edge-side bots.
+func (p *KCPProxy) IdentifyUser(r *http.Request) (string, error) {
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return "", ErrIdentifyNoBearer
+	}
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+
+	// Static token branch first — constant-time compare per ServeHTTP.
+	for _, staticToken := range p.staticAuthTokens {
+		if staticToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(staticToken)) == 1 {
+			tokenHash := sha256.Sum256([]byte("static-token/" + token))
+			subHash := hex.EncodeToString(tokenHash[:])[:63]
+			user, err := p.ensureStaticTokenUser(r.Context(), token, subHash)
+			if err != nil {
+				return "", fmt.Errorf("resolving static-token user: %w", err)
+			}
+			return user.Name, nil
+		}
+	}
+
+	// OIDC branch.
+	if p.verifier != nil {
+		idToken, err := p.verifier.Verify(p.verifyCtx, token)
+		if err != nil {
+			return "", fmt.Errorf("verifying OIDC token: %w", err)
+		}
+		var claims struct {
+			Sub string `json:"sub"`
+		}
+		if err := idToken.Claims(&claims); err != nil {
+			return "", fmt.Errorf("parsing OIDC claims: %w", err)
+		}
+		user, err := p.resolveUser(r.Context(), idToken.Issuer, claims.Sub)
+		if err != nil {
+			return "", fmt.Errorf("resolving OIDC user: %w", err)
+		}
+		return user.Name, nil
+	}
+
+	return "", ErrIdentifyNoBearer
 }
 
 // resolveUser looks up the User CRD by OIDC issuer+sub hash and returns the full User object.

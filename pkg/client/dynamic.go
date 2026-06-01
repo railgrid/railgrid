@@ -62,6 +62,16 @@ var (
 		Version:  "v1alpha1",
 		Resource: "users",
 	}
+
+	// UserMembershipIndexGVR points at the cluster-scoped UMI CRD
+	// (see apis/tenancy/v1alpha1/types_user_membership_index.go).
+	// One UMI per User; the tenant middleware reads this on every
+	// request to authorise (Org, Workspace) header pairs.
+	UserMembershipIndexGVR = schema.GroupVersionResource{
+		Group:    "tenancy.kedge.faros.sh",
+		Version:  "v1alpha1",
+		Resource: "usermembershipindices",
+	}
 )
 
 // Client provides typed access to kedge custom resources via the dynamic client.
@@ -113,6 +123,16 @@ func (c *Client) Placements(namespace string) *TypedResource[kedgev1alpha1.Place
 func (c *Client) Users() *TypedResource[tenancyv1alpha1.User, tenancyv1alpha1.UserList] {
 	return &TypedResource[tenancyv1alpha1.User, tenancyv1alpha1.UserList]{
 		client: c.dynamic.Resource(UserGVR),
+	}
+}
+
+// UserMembershipIndices returns a typed interface for the UMI CRD
+// (cluster-scoped). One UMI per User; the tenant middleware uses
+// this to authorise X-Kedge-Org / X-Kedge-Workspace headers on every
+// /api/* request.
+func (c *Client) UserMembershipIndices() *TypedResource[tenancyv1alpha1.UserMembershipIndex, tenancyv1alpha1.UserMembershipIndexList] {
+	return &TypedResource[tenancyv1alpha1.UserMembershipIndex, tenancyv1alpha1.UserMembershipIndexList]{
+		client: c.dynamic.Resource(UserMembershipIndexGVR),
 	}
 }
 

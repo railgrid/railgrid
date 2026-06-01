@@ -58,7 +58,7 @@ Don't re-litigate; the doc body assumes these.
 | O-11 | **Workspace initializers must be idempotent + self-healing.** Every initializer checks for existing CRs/RBAC before creating; a post-init reconciler verifies all expected state exists before treating the Org/Workspace as fully provisioned. Failed initializers retry forever; the reconciler is the safety net. | kcp initializers are async with no rollback (verified). Without this rule a partial init leaves silent breakage that surfaces only when a tenant hits 403. |
 | O-12 | **Self-leave Org + multiple admins via Membership.role PATCH.** `DELETE /api/orgs/{uuid}/memberships/me` lets a member remove themselves (O-9 sole-admin/child-Workspace blocks still apply, so they must hand off first). Any Org admin can PATCH another Membership.role between `member` and `admin`; multiple admins are allowed. No separate "transfer ownership" endpoint. | Matches GitHub Orgs. Promotion + sole-admin block together cover the handoff case. |
 | O-13 | **Soft delete with 30-day grace for both Org and Workspace** (symmetric with O-8). `DELETE /api/orgs/{uuid}` sets `Organization.status.deletionRequestedAt`; same for Workspace. Hidden from switchers immediately, recoverable inside the window via `POST .../undelete`. After grace expires the cascade controller removes child Workspaces/Memberships/CatalogEntries/APIBindings/edges/etc. | One number (30 days) for every soft-delete. Recovery for accidental deletes. Carries cost (state lingers) — acceptable. |
-| O-14 | **ServiceAccount CR scoped to one Workspace** for non-human/CI access. Lives in a child Workspace; admins create via `POST /api/orgs/{org}/workspaces/{ws}/serviceaccounts`. Each SA has a token issued/rotated via the hub. Role is `admin` or `member`, same enum as `Membership.role`. Bot identities don't conflate with human Users. | Real platform users will run CI against Workspaces from day one; PATs on humans tie a person's lifecycle to a bot's. |
+| O-14 | **ServiceAccounts = native kube `core/v1.ServiceAccount`s in the child Workspace**, marked with kedge annotations. No wrapping CRD. Admins create via `POST /api/orgs/{org}/workspaces/{ws}/serviceaccounts`; the hub writes the kube SA + a `ClusterRoleBinding` mapping `system:serviceaccount:default:<sa-name>` → `kedge:workspace:admin` or `kedge:workspace:member`. Tokens are minted via the kube TokenRequest API and returned once; revoke = delete the SA (kills all its tokens; CRB GCs via owner ref). Role is `admin` or `member`, same enum as `Membership.role`. Bot identities don't conflate with human Users. | Real platform users will run CI against Workspaces from day one; PATs on humans tie a person's lifecycle to a bot's. Reusing kube SAs avoids a custom JWT signing path, validates tokens natively, and lets the workspace cascade kill SAs for free. |
 | O-15 | **Org admin has implicit admin in every child Workspace.** No "private from Org admin" Workspace in v1. Document loudly in onboarding so users understand the privacy boundary is the Org, not the Workspace. | Simplest mental model, matches GitHub Orgs default, makes audit/compliance straightforward. Sensitive teams should use a separate Org, not a private Workspace. |
 
 ---
@@ -176,24 +176,48 @@ kind: WorkspaceType
 metadata:
   name: workspace
 spec:
-  defaultAPIBindings:
-    - path: root:kedge:providers
-      export: tenancy.kedge.faros.sh   # Membership only (no Org/CatalogEntry)
+  # Deliberately NO `extend: universal` and NO defaultAPIBindings.
+  # Universal would pull tenancy.kcp.io + topology.kcp.io into the
+  # tenant's view, letting them spawn arbitrary child workspaces.
+  # tenancy.kedge.faros.sh (Membership / Organization / User / UMI)
+  # is a kedge-system surface and stays invisible to tenants.
   limitAllowedParents:
     types:
       - { path: root:kedge, name: organization }
   limitAllowedChildren:
     none: true                          # v1: workspaces are leaves
-  initializer: true
 ```
 
-Initializer adds the creating user as `Membership` scope=`workspace`,
-role=`admin`.
+Trade-off: dropping `extend: universal` means kcp does NOT auto-create
+a `default` namespace. The org-bootstrap controller compensates by
+creating one inside the child workspace right after it adds the kedge
+APIBinding (so tenant kubectl with no `-n` still works).
 
-Per P-4 in [provider-scoping.md](./provider-scoping.md), nothing else is
-auto-bound — not provider APIExports, not kedge `core.faros.sh`. Every
-API a Workspace consumes (including builtins like edges, mcp,
-server-edges) requires an explicit Enable that creates an APIBinding.
+The bootstrap controller (`pkg/hub/controllers/organization`) drives
+all post-create wiring — there is no kcp initializer:
+
+1. **kedge `core.faros.sh` APIBinding** with the permission claims
+   tenants need (secrets, namespaces, configmaps, serviceaccounts,
+   clusterroles, clusterrolebindings — explicitly NOT tenancy.kcp.io).
+2. **Default `default` namespace**, post-binding.
+3. **Cluster-admin `ClusterRoleBinding`** for the User's
+   `rbacIdentity`.
+4. **Default `MCPServer` CR**, so the user has a working MCP endpoint
+   out of the box.
+5. **`User.spec.DefaultCluster`** patched to the workspace's kcp
+   logical-cluster short hash (the form kubectl addresses by).
+
+Per P-4 in [provider-scoping.md](./provider-scoping.md), no provider
+APIExports are auto-bound; every builtin (edges, mcp, server-edges)
+requires an explicit Enable that creates an APIBinding.
+
+Workspace-scope `Membership` CRs intentionally do NOT exist in the
+tenant Workspace — the tenancy CRDs aren't bound there. The
+workspace-scope `UserMembershipIndex` entry written to the user's
+UMI at `root:kedge:users` is the canonical view for the portal
+switcher. Manual workspace-membership management (add/remove other
+users) lands later via a hub-mediated REST API rather than direct CR
+writes.
 
 ---
 
@@ -327,13 +351,25 @@ type MembershipIndexEntry struct {
     WorkspaceDisplayName string    `json:"workspaceDisplayName,omitempty"`
     Role               string      `json:"role"`               // admin | member
     Personal           bool        `json:"personal,omitempty"` // mirrors Organization.spec.personal
+
+    // SoftDeletedAt is set by the soft-delete reconciler (O-8 / O-13)
+    // while the referenced Org or Workspace is inside its 30-day grace
+    // window. The portal switcher hides entries with this field set so
+    // a member can't navigate into a workspace that's pending cascade.
+    SoftDeletedAt *metav1.Time `json:"softDeletedAt,omitempty"`
 }
 ```
 
 The Membership controller updates this index on Membership add/remove
 and on Org/Workspace displayName patches. The portal reads exactly one
 object per logged-in user to render the switcher (per O-4, the
-secondary line carries `OrgCreatedAt` + `OrgFirstAdmin`).
+secondary line carries `OrgCreatedAt` + `OrgFirstAdmin`); rows with
+`SoftDeletedAt` set are hidden client-side.
+
+The soft-delete reconciler ([pkg/hub/controllers/softdelete](../pkg/hub/controllers/softdelete))
+owns the `SoftDeletedAt` marker; the bootstrap controller preserves
+it across re-writes via an `entriesEqual` carve-out so the two
+controllers don't fight.
 
 ---
 
@@ -495,14 +531,20 @@ delete cascade (O-8).
 `DELETE /api/orgs/{org-uuid}/workspaces/{ws-uuid}` — soft-delete with
 30-day grace.
 
-1. Hub sets `Workspace.status.deletionRequestedAt = now()`.
-   Requires caller is Workspace admin or Org admin (O-15).
+1. Hub sets the
+   `tenancy.kedge.faros.sh/deletion-requested-at` annotation (RFC3339)
+   on the kcp Workspace. We don't extend kcp's `Workspace` CRD; an
+   annotation IS the source of truth. Requires caller is Workspace
+   admin or Org admin (O-15).
 2. The Workspace disappears from member switchers; existing
    exec-credentials targeting it stop being minted.
-3. Inside the window, `POST .../undelete` restores it.
-4. After 30 days, the cascade controller deletes all APIBindings,
-   tenant objects (edges, MCP instances, ServiceAccounts, …),
-   Memberships, then the kcp Workspace itself.
+3. Inside the window, `POST .../undelete` clears the annotation.
+4. After 30 days, the soft-delete reconciler
+   ([pkg/hub/controllers/softdelete](../pkg/hub/controllers/softdelete))
+   deletes the kcp Workspace — which cascades the namespace and
+   everything inside it (APIBindings, tenant objects like edges /
+   MCP instances / kube ServiceAccounts, RBAC) — and strips the
+   workspace-scope UMI rows for every member.
 
 The cascade controller logs the count of objects being deleted in
 each phase so an operator inspecting the audit log can see what was
@@ -512,65 +554,94 @@ lost.
 
 ## ServiceAccounts and tokens (O-14)
 
-Bots and CI pipelines authenticate as `ServiceAccount` CRs scoped to
-exactly one child Workspace. They are not Users; they do not appear in
-the User CR list or in Memberships.
+Bots and CI pipelines authenticate as kube `core/v1.ServiceAccount`s
+living in the child Workspace's `default` namespace, marked with kedge
+annotations. They are not Users; they do not appear in the User CR
+list or in Memberships.
 
-### `ServiceAccount` (workspace-scoped, `tenancy.kedge.faros.sh`)
+There is **no wrapping kedge CRD**. The kube SA itself, plus a few
+annotations and one ClusterRoleBinding, is the entire surface. This
+keeps the GVR count down, reuses native kube token issuance + token
+validation, and lets the workspace cascade kill SAs (and their
+tokens) without extra plumbing.
 
-```go
-type ServiceAccount struct {
-    metav1.TypeMeta
-    metav1.ObjectMeta  // metadata.name = server-assigned UUID; spec.displayName carries the label
+### Storage layout
 
-    Spec   ServiceAccountSpec
-    Status ServiceAccountStatus
-}
+A kedge ServiceAccount is exactly:
 
-type ServiceAccountSpec struct {
-    DisplayName string `json:"displayName"`
-
-    // Role grants admin or member in the parent Workspace, mirroring
-    // Membership.role.
-    // +kubebuilder:validation:Enum=admin;member
-    Role string `json:"role"`
-}
-
-type ServiceAccountStatus struct {
-    // LastTokenIssuedAt is set by the token-issuance endpoint and
-    // used by the rotation reminder UI.
-    LastTokenIssuedAt *metav1.Time `json:"lastTokenIssuedAt,omitempty"`
-
-    Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  # name is the UUID assigned by the hub; admin never picks it
+  name: 7d4e5b1c-…
+  namespace: default            # child Workspace's default ns (created by bootstrap)
+  labels:
+    tenancy.kedge.faros.sh/kedge-sa: "true"   # cheap listing selector
+  annotations:
+    tenancy.kedge.faros.sh/display-name: "ci-bot"
+    tenancy.kedge.faros.sh/role: "admin"      # admin | member
+    tenancy.kedge.faros.sh/last-token-issued-at: "2026-06-01T08:30:00Z"
 ```
 
-ServiceAccounts live in the child Workspace, written by the hub.
-Workspace admin and Org admin both have permission to create them
-(per O-15).
+Plus, in the same Workspace, a `ClusterRoleBinding` (owned by the SA
+via ownerReferences so it cascades on delete) mapping
+`system:serviceaccount:default:<sa-name>` to either
+`kedge:workspace:admin` or `kedge:workspace:member` — the same
+ClusterRoles human Users land on.
+
+Naming: `metadata.name` is a UUID, mirroring O-1's
+"identity = UUID; displayName is metadata" rule everywhere else in
+the doc. The annotation `tenancy.kedge.faros.sh/display-name` carries
+the human-facing label and is editable.
+
+Workspace admin and Org admin both have permission to create
+ServiceAccounts (per O-15). The hub uses its own privileged config
+(same as for Membership writes) to create the SA + CRB; tenants
+themselves never reach the kube SA API in the Workspace through any
+kedge code path.
 
 ### Endpoints
 
 ```
 POST   /api/orgs/{org}/workspaces/{ws}/serviceaccounts                       create SA (UUID assigned)
 GET    /api/orgs/{org}/workspaces/{ws}/serviceaccounts                       list SAs in this Workspace
-DELETE /api/orgs/{org}/workspaces/{ws}/serviceaccounts/{sa-uuid}             delete
+DELETE /api/orgs/{org}/workspaces/{ws}/serviceaccounts/{sa-uuid}             delete (cascades CRB + tokens)
 POST   /api/orgs/{org}/workspaces/{ws}/serviceaccounts/{sa-uuid}/tokens      issue/rotate token; returns the only copy
-DELETE /api/orgs/{org}/workspaces/{ws}/serviceaccounts/{sa-uuid}/tokens      revoke
+DELETE /api/orgs/{org}/workspaces/{ws}/serviceaccounts/{sa-uuid}/tokens      revoke (deletes + recreates the SA)
+PATCH  /api/orgs/{org}/workspaces/{ws}/serviceaccounts/{sa-uuid}             role patch + displayName patch
 ```
 
-Token issuance returns the credential exactly once (no Get endpoint
-to retrieve it later — admins must store it themselves; lost tokens
-require a rotation). Tokens carry the SA's `role` and Workspace UUID
-as claims; the kedge kcp proxy honors them the same way it honors
-User OIDC tokens.
+`POST .../tokens` calls the kube `TokenRequest` API against the SA
+with a fixed audience (`kedge`) and a default 1-year expiry; the
+response carries the token exactly once and the hub stamps
+`last-token-issued-at` on the SA. There is no Get endpoint — admins
+store the token themselves; lost tokens require a rotation.
+
+`DELETE .../tokens` is the "revoke everything" knob: the kube SA is
+deleted and immediately recreated under the same UUID + annotations +
+CRB. All previously-issued tokens become invalid in one shot. (kube
+SAs sign tokens with a per-SA secret-derived key; recreating the SA
+invalidates them.)
+
+`PATCH` accepts `role` and / or `displayName`. Role changes rewrite
+the CRB (delete + recreate with the new role-binding).
+
+### Wire-through to the proxy
+
+kedge proxy at [pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)
+already passes `Authorization: Bearer …` through unchanged once the
+caller has resolved a workspace. kube SA tokens go through the same
+path; kcp validates them natively at the kube layer, the CRB above
+gives them their role. No new proxy code path required for v1.
 
 ### Lifecycle
 
 - ServiceAccount belongs to its Workspace. Workspace soft-delete /
-  cascade also takes the SA and revokes outstanding tokens.
-- An SA's `role` can be patched the same way Membership.role is
-  patched.
+  cascade deletes the kube Workspace, which deletes the namespace,
+  which deletes the SA + the CRB + the bound tokens. No extra wiring
+  in the soft-delete reconciler.
+- An SA's `role` can be patched via the PATCH endpoint above.
 - Sole-admin block (O-9, O-12) ignores ServiceAccounts — they are
   not Users; an Org / Workspace cannot be "owned" by a SA.
 
@@ -676,8 +747,13 @@ Ten PRs:
 8. **Soft-delete reconciler (O-8, O-13).** One controller covering
    User, Org, and Workspace deletion: tracks `deletionRequestedAt`,
    honors undelete inside the 30-day window, runs the cascade after.
-9. **`ServiceAccount` CRD + token endpoints (O-14).** Bot identity
-   surface for Workspaces, with the once-only token-issuance flow.
+9. **ServiceAccount REST endpoints (O-14).** Bot identity surface for
+   Workspaces — kube `core/v1.ServiceAccount`s in the child Workspace's
+   `default` namespace, marked with kedge annotations + a
+   `ClusterRoleBinding` to `kedge:workspace:admin|member`. Tokens are
+   issued via the kube TokenRequest API and returned once. No new CRD;
+   no custom signing path; workspace soft-delete naturally cascades the
+   SA and its tokens.
 10. **Portal switcher UI + REST endpoints** for Org/Workspace/Membership
     CRUD (the hub-mediated surface from O-10), including the
     `?cascade=true` shortcut from O-9, self-leave (O-12), role PATCH
