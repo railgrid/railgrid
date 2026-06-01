@@ -84,6 +84,36 @@ func (f MembershipLookupFunc) GetUserMembershipIndex(ctx context.Context, userNa
 	return f(ctx, userName)
 }
 
+// UserOnlyMiddleware returns an HTTP middleware that resolves the
+// caller via userResolver and stashes a TenantContext with only the
+// User field populated. Used by endpoints that don't need an active
+// Org / Workspace context — chiefly the Org-list / Org-create surface
+// (no Org exists yet to claim membership in) and User self-service
+// endpoints.
+//
+// Errors:
+//   - 401 on ErrUserNotResolved
+//   - 500 on any other resolver error
+func UserOnlyMiddleware(userResolver UserResolver) func(next http.Handler) http.Handler {
+	if userResolver == nil {
+		panic("tenant.UserOnlyMiddleware: userResolver is required")
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, err := userResolver.ResolveUser(r)
+			if err != nil {
+				if errors.Is(err, ErrUserNotResolved) {
+					writeStatus(w, http.StatusUnauthorized, "Unauthorized", "Unauthorized")
+					return
+				}
+				writeStatus(w, http.StatusInternalServerError, "InternalError", "failed to resolve caller identity: "+err.Error())
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(WithContext(r.Context(), TenantContext{User: user})))
+		})
+	}
+}
+
 // Middleware returns the tenant-context HTTP middleware. The returned
 // function wraps an http.Handler chain so handlers downstream of it can
 // trust TenantContext from r.Context().

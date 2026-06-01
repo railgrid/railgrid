@@ -72,6 +72,15 @@ var (
 		Version:  "v1alpha1",
 		Resource: "usermembershipindices",
 	}
+
+	// OrganizationGVR points at the cluster-scoped Organization CRD
+	// (see apis/tenancy/v1alpha1/types_organization.go). Used by the
+	// step 10 REST surface for Org CRUD against root:kedge:users.
+	OrganizationGVR = schema.GroupVersionResource{
+		Group:    "tenancy.kedge.faros.sh",
+		Version:  "v1alpha1",
+		Resource: "organizations",
+	}
 )
 
 // Client provides typed access to kedge custom resources via the dynamic client.
@@ -102,6 +111,7 @@ func (c *Client) Dynamic() dynamic.Interface {
 func (c *Client) VirtualWorkloads(namespace string) *TypedResource[kedgev1alpha1.VirtualWorkload, kedgev1alpha1.VirtualWorkloadList] {
 	return &TypedResource[kedgev1alpha1.VirtualWorkload, kedgev1alpha1.VirtualWorkloadList]{
 		client: c.dynamic.Resource(VirtualWorkloadGVR).Namespace(namespace),
+		gvk:    VirtualWorkloadGVR.GroupVersion().WithKind("VirtualWorkload"),
 	}
 }
 
@@ -109,6 +119,7 @@ func (c *Client) VirtualWorkloads(namespace string) *TypedResource[kedgev1alpha1
 func (c *Client) Edges() *TypedResource[kedgev1alpha1.Edge, kedgev1alpha1.EdgeList] {
 	return &TypedResource[kedgev1alpha1.Edge, kedgev1alpha1.EdgeList]{
 		client: c.dynamic.Resource(EdgeGVR),
+		gvk:    EdgeGVR.GroupVersion().WithKind("Edge"),
 	}
 }
 
@@ -116,6 +127,7 @@ func (c *Client) Edges() *TypedResource[kedgev1alpha1.Edge, kedgev1alpha1.EdgeLi
 func (c *Client) Placements(namespace string) *TypedResource[kedgev1alpha1.Placement, kedgev1alpha1.PlacementList] {
 	return &TypedResource[kedgev1alpha1.Placement, kedgev1alpha1.PlacementList]{
 		client: c.dynamic.Resource(PlacementGVR).Namespace(namespace),
+		gvk:    PlacementGVR.GroupVersion().WithKind("Placement"),
 	}
 }
 
@@ -123,6 +135,7 @@ func (c *Client) Placements(namespace string) *TypedResource[kedgev1alpha1.Place
 func (c *Client) Users() *TypedResource[tenancyv1alpha1.User, tenancyv1alpha1.UserList] {
 	return &TypedResource[tenancyv1alpha1.User, tenancyv1alpha1.UserList]{
 		client: c.dynamic.Resource(UserGVR),
+		gvk:    UserGVR.GroupVersion().WithKind("User"),
 	}
 }
 
@@ -133,12 +146,28 @@ func (c *Client) Users() *TypedResource[tenancyv1alpha1.User, tenancyv1alpha1.Us
 func (c *Client) UserMembershipIndices() *TypedResource[tenancyv1alpha1.UserMembershipIndex, tenancyv1alpha1.UserMembershipIndexList] {
 	return &TypedResource[tenancyv1alpha1.UserMembershipIndex, tenancyv1alpha1.UserMembershipIndexList]{
 		client: c.dynamic.Resource(UserMembershipIndexGVR),
+		gvk:    UserMembershipIndexGVR.GroupVersion().WithKind("UserMembershipIndex"),
+	}
+}
+
+// Organizations returns a typed interface for the cluster-scoped
+// Organization CRD. Used by the step 10 REST surface.
+func (c *Client) Organizations() *TypedResource[tenancyv1alpha1.Organization, tenancyv1alpha1.OrganizationList] {
+	return &TypedResource[tenancyv1alpha1.Organization, tenancyv1alpha1.OrganizationList]{
+		client: c.dynamic.Resource(OrganizationGVR),
+		gvk:    OrganizationGVR.GroupVersion().WithKind("Organization"),
 	}
 }
 
 // TypedResource provides typed CRUD operations for a specific resource type.
+// gvk is used to populate apiVersion/kind on objects before sending them to
+// the dynamic client. The Go structs have TypeMeta tagged `omitempty`, so
+// callers that forget to set apiVersion/kind would otherwise produce a JSON
+// payload missing both fields — which the API server rejects with
+// "Object 'Kind' is missing".
 type TypedResource[T any, L any] struct {
 	client dynamic.ResourceInterface
+	gvk    schema.GroupVersionKind
 }
 
 // Get retrieves a resource by name.
@@ -161,7 +190,7 @@ func (r *TypedResource[T, L]) List(ctx context.Context, opts metav1.ListOptions)
 
 // Create creates a new resource.
 func (r *TypedResource[T, L]) Create(ctx context.Context, obj *T, opts metav1.CreateOptions) (*T, error) {
-	u, err := toUnstructured(obj)
+	u, err := r.toUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +203,7 @@ func (r *TypedResource[T, L]) Create(ctx context.Context, obj *T, opts metav1.Cr
 
 // Update updates an existing resource.
 func (r *TypedResource[T, L]) Update(ctx context.Context, obj *T, opts metav1.UpdateOptions) (*T, error) {
-	u, err := toUnstructured(obj)
+	u, err := r.toUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +216,7 @@ func (r *TypedResource[T, L]) Update(ctx context.Context, obj *T, opts metav1.Up
 
 // UpdateStatus updates the status subresource.
 func (r *TypedResource[T, L]) UpdateStatus(ctx context.Context, obj *T, opts metav1.UpdateOptions) (*T, error) {
-	u, err := toUnstructured(obj)
+	u, err := r.toUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +239,25 @@ func (r *TypedResource[T, L]) Patch(ctx context.Context, name string, pt types.P
 		return nil, err
 	}
 	return fromUnstructured[T](result)
+}
+
+// toUnstructured converts a typed object to unstructured, defaulting
+// apiVersion + kind from the resource's GVK so callers don't have to
+// remember to set them. (The Go structs' TypeMeta fields are tagged
+// `omitempty`; without this defaulting, a forgotten TypeMeta produces
+// a payload missing apiVersion/kind, which the API server rejects.)
+func (r *TypedResource[T, L]) toUnstructured(obj *T) (*unstructured.Unstructured, error) {
+	u, err := toUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+	if u.GetAPIVersion() == "" {
+		u.SetAPIVersion(r.gvk.GroupVersion().String())
+	}
+	if u.GetKind() == "" {
+		u.SetKind(r.gvk.Kind)
+	}
+	return u, nil
 }
 
 func toUnstructured(obj interface{}) (*unstructured.Unstructured, error) {

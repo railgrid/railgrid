@@ -12,9 +12,46 @@ Deep-dive reference for contributors working on kedge internals.
 - [MCP Integration](#mcp-integration)
 - [Hub Controller Reference](#hub-controller-reference)
 
----
+## Local Development with Tilt
 
-## Edge CRD Spec
+For the fastest local dev loop, use [Tilt](https://tilt.dev/) instead of running `make` in multiple terminals.
+
+### Prerequisites
+- [tilt](https://docs.tilt.dev/install.html) ≥ v0.35.0
+
+### Start everything
+
+```bash
+tilt up
+```
+
+This starts two local resources:
+
+1. **`portal`** — Vite dev server on `http://localhost:3000/ui/`  
+   Builds provider portal symlinks automatically and watches `portal/src/` for hot reload.
+
+2. **`hub`** — `kedge-hub` binary with embedded KCP, static auth, embedded GraphQL, and portal dev proxy  
+   Serves HTTPS on `https://localhost:9443`. The hub depends on the portal resource and rebuilds on Go file changes.
+
+### Smoke test
+
+```bash
+curl -k https://localhost:9443/healthz   # hub healthz
+curl -k https://localhost:9443/ui/       # portal via hub proxy
+curl http://localhost:3000/ui/           # portal direct (Vite dev server)
+```
+
+### Stop everything
+
+```bash
+tilt down
+```
+
+### Tips
+- The Tiltfile intentionally skips the slow provider-portal Vite builds (`make build-hub`) because `--portal-dev-url` proxies all UI traffic to the Vite dev server.
+- If port 3000 is already taken, kill the existing Vite process (`pkill -f vite`) before running `tilt up`.
+
+---
 
 **API group:** `kedge.faros.sh/v1alpha1`  
 **Kind:** `Edge`

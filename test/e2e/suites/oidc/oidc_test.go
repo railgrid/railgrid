@@ -201,6 +201,14 @@ func TestSSHOIDCUsernameMapping(t *testing.T) {
 	testenv.Test(t, cases.SSHOIDCUsernameMapping())
 }
 
+// TestMultiOrgIsolation verifies that the hub REST surface (PR #214) keeps
+// User B from observing or mutating User A's Organization, Workspaces,
+// Memberships, or Service Accounts. Covers every /api/orgs/* endpoint
+// added in roadmap step 10.
+func TestMultiOrgIsolation(t *testing.T) {
+	testenv.Test(t, cases.MultiOrgIsolation())
+}
+
 // TestOIDCTokenIssuerMatchesDiscovery verifies that the hub's OIDC issuer URL
 // matches what Dex advertises in its discovery document.
 func TestOIDCTokenIssuerMatchesDiscovery(t *testing.T) {

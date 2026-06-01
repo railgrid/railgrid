@@ -774,6 +774,162 @@ func (b *Bootstrapper) DeleteOrgMemberships(ctx context.Context, orgUUID string)
 	return nil
 }
 
+// WorkspaceDisplayNameAnnotation is the annotation key used to mark
+// the human-facing display name on a kcp Workspace. v1 stores it as
+// an annotation rather than a separate CRD field because kcp's
+// Workspace type doesn't carry a displayName slot. Editable via the
+// REST PATCH endpoint.
+const WorkspaceDisplayNameAnnotation = "tenancy.kedge.faros.sh/display-name"
+
+// SetWorkspaceDeletionAnnotation stamps the kcp Workspace at
+// root:kedge:orgs:{orgUUID}:{wsUUID} with the soft-delete annotation
+// (WorkspaceDeletionAnnotation) carrying the given timestamp. The
+// soft-delete reconciler picks it up on its next poll. Idempotent
+// when the annotation is already set to the same value.
+func (b *Bootstrapper) SetWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string, at time.Time) error {
+	return b.patchWorkspaceAnnotation(ctx, orgUUID, wsUUID, WorkspaceDeletionAnnotation, at.UTC().Format(time.RFC3339))
+}
+
+// ClearWorkspaceDeletionAnnotation removes the soft-delete annotation
+// from the Workspace, signalling undelete. Idempotent on already-absent.
+func (b *Bootstrapper) ClearWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string) error {
+	return b.patchWorkspaceAnnotation(ctx, orgUUID, wsUUID, WorkspaceDeletionAnnotation, "")
+}
+
+// SetWorkspaceDisplayName stamps / overwrites the display-name
+// annotation on the Workspace.
+func (b *Bootstrapper) SetWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID, displayName string) error {
+	return b.patchWorkspaceAnnotation(ctx, orgUUID, wsUUID, WorkspaceDisplayNameAnnotation, displayName)
+}
+
+// GetWorkspaceDisplayName reads the display-name annotation. Empty
+// string if absent. Workspace-not-found surfaces as IsNotFound.
+func (b *Bootstrapper) GetWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID string) (string, error) {
+	if orgUUID == "" || wsUUID == "" {
+		return "", fmt.Errorf("GetWorkspaceDisplayName: orgUUID and wsUUID are required")
+	}
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return "", fmt.Errorf("creating org workspace client: %w", err)
+	}
+	ws, err := orgClient.Resource(workspaceGVR).Get(ctx, wsUUID, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	v, _, _ := unstructured.NestedString(ws.Object, "metadata", "annotations", WorkspaceDisplayNameAnnotation)
+	return v, nil
+}
+
+// patchWorkspaceAnnotation centralises the get-modify-update dance
+// for annotation writes on the parent's Workspace CR. value="" means
+// "remove the annotation".
+func (b *Bootstrapper) patchWorkspaceAnnotation(ctx context.Context, orgUUID, wsUUID, key, value string) error {
+	if orgUUID == "" || wsUUID == "" {
+		return fmt.Errorf("patchWorkspaceAnnotation: orgUUID and wsUUID are required")
+	}
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return fmt.Errorf("creating org workspace client: %w", err)
+	}
+	ws, err := orgClient.Resource(workspaceGVR).Get(ctx, wsUUID, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	annos, _, _ := unstructured.NestedStringMap(ws.Object, "metadata", "annotations")
+	if annos == nil {
+		annos = map[string]string{}
+	}
+	if value == "" {
+		if _, present := annos[key]; !present {
+			return nil
+		}
+		delete(annos, key)
+	} else {
+		if existing := annos[key]; existing == value {
+			return nil
+		}
+		annos[key] = value
+	}
+	if err := unstructured.SetNestedStringMap(ws.Object, annos, "metadata", "annotations"); err != nil {
+		return fmt.Errorf("setting annotations: %w", err)
+	}
+	if _, err := orgClient.Resource(workspaceGVR).Update(ctx, ws, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating workspace %s/%s: %w", orgUUID, wsUUID, err)
+	}
+	return nil
+}
+
+// GetOrgMembershipRole returns the role of a single Membership in the
+// Org workspace. NotFound if the user has no Membership; "" plus nil
+// error if the Membership exists but has no role (shouldn't happen).
+func (b *Bootstrapper) GetOrgMembershipRole(ctx context.Context, orgUUID, userName string) (string, error) {
+	if orgUUID == "" || userName == "" {
+		return "", fmt.Errorf("GetOrgMembershipRole: orgUUID and userName are required")
+	}
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return "", fmt.Errorf("creating org workspace client: %w", err)
+	}
+	got, err := orgClient.Resource(membershipGVR).Get(ctx, userName, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	role, _, _ := unstructured.NestedString(got.Object, "spec", "role")
+	return role, nil
+}
+
+// PatchOrgMembershipRole updates the role on an existing Membership
+// CR in the Org workspace. NotFound if the Membership doesn't exist.
+// No-op when the role already matches.
+func (b *Bootstrapper) PatchOrgMembershipRole(ctx context.Context, orgUUID, userName, role string) error {
+	if orgUUID == "" || userName == "" {
+		return fmt.Errorf("PatchOrgMembershipRole: orgUUID and userName are required")
+	}
+	if role != "admin" && role != "member" {
+		return fmt.Errorf("PatchOrgMembershipRole: invalid role %q", role)
+	}
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return fmt.Errorf("creating org workspace client: %w", err)
+	}
+	got, err := orgClient.Resource(membershipGVR).Get(ctx, userName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	current, _, _ := unstructured.NestedString(got.Object, "spec", "role")
+	if current == role {
+		return nil
+	}
+	if err := unstructured.SetNestedField(got.Object, role, "spec", "role"); err != nil {
+		return fmt.Errorf("setting spec.role: %w", err)
+	}
+	if _, err := orgClient.Resource(membershipGVR).Update(ctx, got, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating Membership %s in org %s: %w", userName, orgUUID, err)
+	}
+	return nil
+}
+
+// DeleteOrgMembership removes a single Membership CR from the Org
+// workspace. Idempotent on NotFound.
+func (b *Bootstrapper) DeleteOrgMembership(ctx context.Context, orgUUID, userName string) error {
+	if orgUUID == "" || userName == "" {
+		return fmt.Errorf("DeleteOrgMembership: orgUUID and userName are required")
+	}
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return fmt.Errorf("creating org workspace client: %w", err)
+	}
+	if err := orgClient.Resource(membershipGVR).Delete(ctx, userName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("deleting Membership %s in org %s: %w", userName, orgUUID, err)
+	}
+	return nil
+}
+
 // ListOrgMemberships returns the user names (Membership.metadata.name)
 // of every Membership in the Organization workspace. Used by the
 // soft-delete cascade to find which UMIs to mark / strip when an Org

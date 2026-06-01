@@ -2,16 +2,16 @@
 import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { useThemeStore } from '@/stores/theme'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import TerminalDock from '@/components/TerminalDock.vue'
 import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
-import { Hexagon, LayoutDashboard, LogOut, Zap, Sun, Moon, Monitor, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot } from 'lucide-vue-next'
+import TenantContextChip from '@/components/TenantContextChip.vue'
+import ThemeSwitch from '@/components/ThemeSwitch.vue'
+import { Hexagon, LayoutDashboard, LogOut, Zap, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot, Settings } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 
 const auth = useAuthStore()
-const theme = useThemeStore()
 const terminalStore = useTerminalSessionsStore()
 const providersStore = useProvidersStore()
 
@@ -22,16 +22,6 @@ const mainPaddingBottom = computed(() => {
   return `${h + 16}px`
 })
 
-const themeIcon = computed(() => {
-  if (theme.mode === 'light') return Sun
-  if (theme.mode === 'dark') return Moon
-  return Monitor
-})
-const themeLabel = computed(() => {
-  if (theme.mode === 'light') return 'Light'
-  if (theme.mode === 'dark') return 'Dark'
-  return 'System'
-})
 const route = useRoute()
 const router = useRouter()
 
@@ -60,6 +50,11 @@ interface NavItem {
 // (Edges, MCP, Workloads, etc.) flows through providersStore — those
 // items get categorized + sub-nav treatment below. Dashboard is the
 // only true platform-wide page.
+// Settings used to live here but moved to the sidebar's bottom action
+// area (near Theme / Logout) — top-of-nav placement made it compete
+// with the providers nav and read as a peer of Dashboard, which it is
+// not. The horizontal/floating docks render it as a dedicated icon
+// button in the right-side action area instead.
 const staticNavItems: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: LayoutDashboard },
 ]
@@ -75,18 +70,42 @@ function categoryIcon(name: string | null): unknown {
   return categoryIcons[name] ?? fallbackCategoryIcon
 }
 
-// flatNavItems is used by the horizontal bar + floating bar layouts,
-// where vertical space for category headers doesn't exist. Categories
-// are collapsed; every provider shows as a sibling of the static items.
-const flatNavItems = computed<NavItem[]>(() => [
-  ...staticNavItems,
-  providersHeaderItem,
-  ...providersStore.enabledNavItems.map((p) => ({
-    label: p.label,
-    to: p.to,
-    iconURL: p.iconURL,
-  })),
-])
+// horizontalNavSections shape: the horizontal + floating docks need to
+// distinguish what would otherwise be a stream of identical Puzzle
+// icons. Group items by category and render a tiny category chip
+// before each group so the bar reads as "Static | Kubernetes: x y |
+// MCP: z | Other: w" instead of a flat icon parade.
+interface HorizontalSection {
+  key: string
+  label: string | null
+  icon: unknown | null
+  items: NavItem[]
+}
+const horizontalNavSections = computed<HorizontalSection[]>(() => {
+  const sections: HorizontalSection[] = []
+  sections.push({ key: 'static', label: null, icon: null, items: [...staticNavItems] })
+  const cat = providersStore.categorizedNavItems
+  for (const g of cat.groups) {
+    sections.push({
+      key: 'g-' + g.name,
+      label: g.name,
+      icon: categoryIcon(g.icon),
+      items: g.items.map((p) => ({ label: p.label, to: p.to, iconURL: p.iconURL })),
+    })
+  }
+  if (cat.uncategorized.length) {
+    sections.push({
+      key: 'uncat',
+      label: 'Other',
+      icon: fallbackCategoryIcon,
+      items: cat.uncategorized.map((p) => ({ label: p.label, to: p.to, iconURL: p.iconURL })),
+    })
+  }
+  // Providers catalog link goes last so it acts as "+" rather than a
+  // sibling of the items.
+  sections.push({ key: 'catalog', label: null, icon: null, items: [providersHeaderItem] })
+  return sections
+})
 
 // isActive lights up a nav row when the current route matches its target.
 // `exact` opts out of prefix matching for links whose URL is a parent of
@@ -313,6 +332,13 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 
+      <!-- Active org/workspace context. Compact selector + link to the
+           full /tenant settings page. Sits above the static nav so the
+           "where am I" cue is the first thing users see. -->
+      <TenantContextChip variant="sidebar" />
+
+      <div class="mx-2 my-2 h-px bg-border-default/50" />
+
       <!-- Static nav items (Dashboard, Workloads) -->
       <router-link
         v-for="item in staticNavItems"
@@ -417,14 +443,23 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         <span>CLI</span>
       </button>
 
-      <!-- Theme toggle -->
-      <button
-        class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium text-text-muted transition-all hover:bg-surface-overlay/50 hover:text-text-secondary"
-        @click="theme.toggle()"
+      <!-- Settings (formerly at the top of the nav). Sits alongside the
+           other workspace-level preferences here. -->
+      <router-link
+        to="/tenant"
+        class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
+        :class="isActive('/tenant') ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
       >
-        <component :is="themeIcon" class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-        <span>{{ themeLabel }}</span>
-      </button>
+        <Settings class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
+        <span>Settings</span>
+      </router-link>
+
+      <!-- Theme segmented control: shows all three options so users can
+           pick directly instead of cycling through unknown next states.
+           Icon-only — tooltips carry the per-option label. -->
+      <div class="px-1 py-1">
+        <ThemeSwitch variant="sidebar" />
+      </div>
 
       <div class="flex-1" />
 
@@ -492,19 +527,42 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
       <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
-      <!-- Nav items -->
-      <router-link
-        v-for="item in flatNavItems"
-        :key="item.to"
-        :to="item.to"
-        class="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
-        :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
-      >
-        <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
-        <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-        <span v-if="isActive(item.to)">{{ item.label }}</span>
-      </router-link>
+      <!-- Tenant context chip (horizontal variant) -->
+      <TenantContextChip variant="horizontal" />
+
+      <div class="mx-0.5 h-5 w-px bg-border-default/40" />
+
+      <!-- Nav sections: labels always visible, category chips between
+           groups so providers don't all look like Puzzle icons. -->
+      <template v-for="(section, sIdx) in horizontalNavSections" :key="section.key">
+        <div
+          v-if="section.label"
+          class="ml-1 flex items-center gap-1 rounded-md border border-border-subtle/60 bg-surface-overlay/40 px-1.5 py-0.5"
+          :title="section.label"
+        >
+          <component v-if="section.icon" :is="section.icon" class="h-3 w-3 text-text-muted/80" :stroke-width="2" />
+          <span class="text-[8px] font-semibold uppercase tracking-wider text-text-muted/80">
+            {{ section.label }}
+          </span>
+        </div>
+        <router-link
+          v-for="item in section.items"
+          :key="item.to"
+          :to="item.to"
+          class="flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
+          :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/40 hover:text-text-secondary'"
+          :title="item.label"
+        >
+          <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
+          <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <span>{{ item.label }}</span>
+        </router-link>
+        <div
+          v-if="sIdx < horizontalNavSections.length - 1"
+          class="mx-0.5 h-4 w-px bg-border-default/30"
+        />
+      </template>
 
       <div class="flex-1" />
 
@@ -520,14 +578,15 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         <Terminal class="h-3 w-3" :stroke-width="1.75" />
         <span class="text-[8px] font-semibold uppercase tracking-wider">CLI</span>
       </button>
-      <button
-        class="flex items-center gap-1 rounded-md border border-border-subtle px-1.5 py-1 text-text-muted transition-all hover:border-accent/30 hover:text-text-secondary"
-        :title="`Theme: ${themeLabel}`"
-        @click="theme.toggle()"
+      <router-link
+        to="/tenant"
+        class="flex h-7 w-7 items-center justify-center rounded-lg transition-all"
+        :class="isActive('/tenant') ? 'text-accent' : 'text-text-muted hover:text-text-secondary'"
+        title="Tenant settings"
       >
-        <component :is="themeIcon" class="h-3 w-3" :stroke-width="1.75" />
-        <span class="text-[8px] font-semibold uppercase tracking-wider">{{ themeLabel }}</span>
-      </button>
+        <Settings class="h-3.5 w-3.5" :stroke-width="2" />
+      </router-link>
+      <ThemeSwitch variant="compact" />
       <span class="px-0.5 font-mono text-[9px] tabular-nums tracking-wider text-text-muted/50">
         {{ timeStr }}
       </span>
@@ -604,32 +663,54 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
-        <router-link
-          v-for="item in flatNavItems"
-          :key="item.to"
-          :to="item.to"
-          class="island-nav flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
-          :class="isActive(item.to) ? 'active bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
-        >
-          <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
-        <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-          <span v-if="isActive(item.to)">{{ item.label }}</span>
-        </router-link>
+        <TenantContextChip variant="horizontal" />
+
+        <div class="mx-0.5 h-5 w-px bg-border-default/40" />
+
+        <template v-for="(section, sIdx) in horizontalNavSections" :key="section.key">
+          <div
+            v-if="section.label"
+            class="ml-1 flex items-center gap-1 rounded-md border border-border-subtle/60 bg-surface-overlay/40 px-1.5 py-0.5"
+            :title="section.label"
+          >
+            <component v-if="section.icon" :is="section.icon" class="h-3 w-3 text-text-muted/80" :stroke-width="2" />
+            <span class="text-[8px] font-semibold uppercase tracking-wider text-text-muted/80">
+              {{ section.label }}
+            </span>
+          </div>
+          <router-link
+            v-for="item in section.items"
+            :key="item.to"
+            :to="item.to"
+            class="island-nav flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
+            :class="isActive(item.to) ? 'active bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
+            :title="item.label"
+          >
+            <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
+            <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <span>{{ item.label }}</span>
+          </router-link>
+          <div
+            v-if="sIdx < horizontalNavSections.length - 1"
+            class="mx-0.5 h-4 w-px bg-border-default/30"
+          />
+        </template>
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
         <span v-if="auth.clusterName" class="px-1 font-mono text-[9px] tracking-wider text-text-muted">
           {{ auth.clusterName }}
         </span>
-        <button
-          class="flex items-center gap-1 rounded-md border border-border-subtle px-1.5 py-1 text-text-muted transition-all hover:border-accent/30 hover:text-text-secondary"
-          :title="`Theme: ${themeLabel}`"
-          @click="theme.toggle()"
+        <router-link
+          to="/tenant"
+          class="island-nav flex h-7 w-7 items-center justify-center rounded-lg transition-all duration-200"
+          :class="isActive('/tenant') ? 'text-accent' : 'text-text-muted hover:text-text-secondary'"
+          title="Tenant settings"
         >
-          <component :is="themeIcon" class="h-3 w-3" :stroke-width="1.75" />
-          <span class="text-[8px] font-semibold uppercase tracking-wider">{{ themeLabel }}</span>
-        </button>
+          <Settings class="h-3.5 w-3.5" :stroke-width="2" />
+        </router-link>
+        <ThemeSwitch variant="compact" />
         <span class="px-0.5 font-mono text-[9px] tabular-nums tracking-wider text-text-muted/50">
           {{ timeStr }}
         </span>

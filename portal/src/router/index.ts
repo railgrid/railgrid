@@ -35,6 +35,11 @@ const routes = [
     component: () => import('@/pages/ProvidersPage.vue'),
   },
   {
+    path: '/tenant',
+    name: 'tenant',
+    component: () => import('@/pages/TenantSettingsPage.vue'),
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/pages/NotFoundPage.vue'),

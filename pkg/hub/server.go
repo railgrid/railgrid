@@ -55,6 +55,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+	"github.com/faroshq/faros-kedge/pkg/hub/restapi"
 	"github.com/faroshq/faros-kedge/pkg/hub/serviceaccounts"
 	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
 	"github.com/faroshq/faros-kedge/pkg/server/auth"
@@ -465,14 +466,14 @@ func (s *Server) Run(ctx context.Context) error {
 			logger.Info("Static token login endpoint registered at " + apiurl.PathAuthTokenLogin)
 		}
 
-		// ServiceAccount REST surface (roadmap step 9 / O-14).
-		// Routes mount at /api/orgs/{org}/workspaces/{ws}/serviceaccounts/...
-		// and run behind the tenant middleware so handlers receive a
-		// resolved (User, Org, Workspace, Role) context.
+		// REST API surface for Org / Workspace / Membership CRUD
+		// (roadmap step 10), plus the ServiceAccount endpoints from
+		// step 9. Mounts under /api/ behind two middlewares:
+		//
+		//   - /api/orgs                 → UserOnlyMiddleware (list / create)
+		//   - /api/users                → UserOnlyMiddleware (self-service)
+		//   - /api/orgs/{org}/…         → full tenant.Middleware
 		if bootstrapper != nil {
-			saMgr := serviceaccounts.NewManager(bootstrapper)
-			saHandler := serviceaccounts.NewHandler(saMgr)
-
 			userResolver := tenant.UserResolverFunc(func(r *http.Request) (string, error) {
 				name, err := kcpProxy.IdentifyUser(r)
 				if err != nil {
@@ -487,10 +488,27 @@ func (s *Server) Run(ctx context.Context) error {
 				return userClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
 			})
 
-			apiSub := router.PathPrefix("/api/orgs").Subrouter()
-			apiSub.Use(tenant.Middleware(userResolver, membershipLookup))
-			saHandler.Register(apiSub)
-			logger.Info("ServiceAccount REST routes registered behind tenant middleware")
+			// Step 10: Org / Workspace / Membership / User REST
+			apiMgr := restapi.NewManager(userClient, bootstrapper)
+			apiHandler := restapi.NewHandler(apiMgr)
+
+			// User-only routes (no Org context required)
+			userOnlySub := router.PathPrefix("/api").Subrouter()
+			userOnlySub.Use(tenant.UserOnlyMiddleware(userResolver))
+			apiHandler.RegisterUserOnly(userOnlySub)
+
+			// Full tenant-context routes (Org admin / member, optionally Workspace)
+			tenantSub := router.PathPrefix("/api/orgs").Subrouter()
+			tenantSub.Use(tenant.Middleware(userResolver, membershipLookup))
+			apiHandler.RegisterTenantScoped(tenantSub)
+
+			// Step 9: ServiceAccount routes hang off the same
+			// tenant-scoped subrouter.
+			saMgr := serviceaccounts.NewManager(bootstrapper)
+			saHandler := serviceaccounts.NewHandler(saMgr)
+			saHandler.Register(tenantSub)
+
+			logger.Info("REST routes registered (Org/Workspace/Membership/User + ServiceAccount)")
 		}
 	}
 
