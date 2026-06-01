@@ -48,6 +48,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/organization"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
+	"github.com/faroshq/faros-kedge/pkg/hub/controllers/softdelete"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
@@ -569,6 +570,23 @@ func (s *Server) Run(ctx context.Context) error {
 			logger.Info("Starting organization bootstrap manager")
 			if err := orgMgr.Start(ctx); err != nil {
 				logger.Error(err, "Organization bootstrap manager failed")
+			}
+		}()
+
+		// Soft-delete reconciler — roadmap step 8 (docs/organizations.md
+		// O-8 + O-13). Separate manager from the bootstrap one so a
+		// soft-delete crash doesn't take the bootstrap workqueue down.
+		softdeleteMgr, err := softdelete.NewManager(bootstrapper.UsersConfig(), scheme)
+		if err != nil {
+			return fmt.Errorf("creating soft-delete manager: %w", err)
+		}
+		if err := softdelete.SetupWithManager(softdeleteMgr, bootstrapper); err != nil {
+			return fmt.Errorf("setting up soft-delete reconciler: %w", err)
+		}
+		go func() {
+			logger.Info("Starting soft-delete manager")
+			if err := softdeleteMgr.Start(ctx); err != nil {
+				logger.Error(err, "Soft-delete manager failed")
 			}
 		}()
 

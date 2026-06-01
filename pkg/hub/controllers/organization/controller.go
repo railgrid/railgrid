@@ -366,6 +366,15 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 		return fmt.Errorf("getting Organization %q: %w", orgName, err)
 	}
 
+	// An Organization in soft-delete is owned exclusively by the
+	// soft-delete reconciler (roadmap step 8). The bootstrap state
+	// machine would otherwise re-heal the same resources the cascade
+	// is tearing down, fighting it. Step out and let the soft-delete
+	// controller drive.
+	if org.Status.DeletionRequestedAt != nil {
+		return nil
+	}
+
 	desiredPath := orgWorkspaceParent + ":" + org.Name
 
 	// Step A: status.workspacePath.
@@ -857,6 +866,9 @@ func (r *Reconciler) syncUserMembershipIndex(ctx context.Context, user *tenancyv
 
 	// Upsert each desired entry; entries for other Orgs/workspaces (added
 	// by manual membership management in a follow-up PR) are untouched.
+	// SoftDeletedAt on the existing row is owned by the soft-delete
+	// reconciler (roadmap step 8) — preserve it across our writes so
+	// we don't fight it into the ground every reconcile.
 	mutated := false
 	for _, want := range desired {
 		idx := indexOfEntry(index.Spec.Entries, want.OrgUUID, want.WorkspaceUUID)
@@ -864,9 +876,12 @@ func (r *Reconciler) syncUserMembershipIndex(ctx context.Context, user *tenancyv
 		case idx < 0:
 			index.Spec.Entries = append(index.Spec.Entries, want)
 			mutated = true
-		case !entriesEqual(index.Spec.Entries[idx], want):
-			index.Spec.Entries[idx] = want
-			mutated = true
+		default:
+			want.SoftDeletedAt = index.Spec.Entries[idx].SoftDeletedAt
+			if !entriesEqual(index.Spec.Entries[idx], want) {
+				index.Spec.Entries[idx] = want
+				mutated = true
+			}
 		}
 	}
 	// If !mutated and index already exists, the spec is up to date and

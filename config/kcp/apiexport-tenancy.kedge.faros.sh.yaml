@@ -16,7 +16,7 @@ spec:
       crd: {}
   - group: tenancy.kedge.faros.sh
     name: usermembershipindices
-    schema: v260531-014829c.usermembershipindices.tenancy.kedge.faros.sh
+    schema: v260601-922907a.usermembershipindices.tenancy.kedge.faros.sh
     storage:
       crd: {}
   - group: tenancy.kedge.faros.sh

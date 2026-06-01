@@ -614,6 +614,185 @@ func (b *Bootstrapper) EnsureChildWorkspaceDefaultMCPServer(ctx context.Context,
 	return b.EnsureDefaultMCPServer(ctx, childWorkspacePath(orgUUID, wsUUID))
 }
 
+// WorkspaceDeletionAnnotation is the annotation key used to mark a kcp
+// Workspace as soft-deleted. The soft-delete reconciler (roadmap step 8)
+// reads this on every reconcile and triggers the cascade once the
+// 30-day grace window from the annotation's RFC3339 value has elapsed.
+// kept on the kcp Workspace (rather than a kedge wrapper CRD) because
+// the kcp Workspace IS the source of truth for workspace lifecycle.
+const WorkspaceDeletionAnnotation = "tenancy.kedge.faros.sh/deletion-requested-at"
+
+// DeleteOrgWorkspace removes the kcp Workspace at
+// root:kedge:orgs:{orgUUID}. Idempotent on NotFound. Cascade callers
+// should ensure all child Workspaces and the in-workspace Memberships
+// have already been removed; kcp will delete the LogicalCluster.
+func (b *Bootstrapper) DeleteOrgWorkspace(ctx context.Context, orgUUID string) error {
+	if orgUUID == "" {
+		return fmt.Errorf("DeleteOrgWorkspace: orgUUID is required")
+	}
+	orgsClient, err := dynamic.NewForConfig(b.OrgsConfig())
+	if err != nil {
+		return fmt.Errorf("creating orgs workspace client: %w", err)
+	}
+	if err := orgsClient.Resource(workspaceGVR).Delete(ctx, orgUUID, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("deleting Org Workspace %s: %w", orgUUID, err)
+	}
+	return nil
+}
+
+// DeleteChildWorkspace removes the kcp Workspace at
+// root:kedge:orgs:{orgUUID}:{wsUUID}. Idempotent on NotFound.
+func (b *Bootstrapper) DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error {
+	if orgUUID == "" || wsUUID == "" {
+		return fmt.Errorf("DeleteChildWorkspace: orgUUID and wsUUID are required")
+	}
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return fmt.Errorf("creating org workspace client: %w", err)
+	}
+	if err := orgClient.Resource(workspaceGVR).Delete(ctx, wsUUID, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("deleting child Workspace %s in org %s: %w", wsUUID, orgUUID, err)
+	}
+	return nil
+}
+
+// ListChildWorkspaces returns the names of every child Workspace under
+// root:kedge:orgs:{orgUUID}. Empty list if the Org workspace is gone.
+func (b *Bootstrapper) ListChildWorkspaces(ctx context.Context, orgUUID string) ([]string, error) {
+	if orgUUID == "" {
+		return nil, fmt.Errorf("ListChildWorkspaces: orgUUID is required")
+	}
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating org workspace client: %w", err)
+	}
+	list, err := orgClient.Resource(workspaceGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing child Workspaces in org %s: %w", orgUUID, err)
+	}
+	names := make([]string, 0, len(list.Items))
+	for i := range list.Items {
+		names = append(names, list.Items[i].GetName())
+	}
+	return names, nil
+}
+
+// ListOrgWorkspaces returns the names (UUIDs) of every Organization
+// workspace at root:kedge:orgs. Used by the soft-delete reconciler's
+// Workspace branch to fan out across Orgs at resync time without
+// standing up per-Org dynamic informers.
+func (b *Bootstrapper) ListOrgWorkspaces(ctx context.Context) ([]string, error) {
+	orgsClient, err := dynamic.NewForConfig(b.OrgsConfig())
+	if err != nil {
+		return nil, fmt.Errorf("creating orgs workspace client: %w", err)
+	}
+	list, err := orgsClient.Resource(workspaceGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing Org Workspaces: %w", err)
+	}
+	names := make([]string, 0, len(list.Items))
+	for i := range list.Items {
+		names = append(names, list.Items[i].GetName())
+	}
+	return names, nil
+}
+
+// GetWorkspaceDeletionRequestedAt reads the soft-delete annotation
+// (WorkspaceDeletionAnnotation) from the child Workspace and returns
+// the parsed timestamp. The bool reports whether the annotation was
+// present at all (so callers can distinguish "no soft-delete requested"
+// from "annotation present but malformed" — malformed surfaces as an
+// error rather than a missing timestamp).
+func (b *Bootstrapper) GetWorkspaceDeletionRequestedAt(ctx context.Context, orgUUID, wsUUID string) (*time.Time, bool, error) {
+	if orgUUID == "" || wsUUID == "" {
+		return nil, false, fmt.Errorf("GetWorkspaceDeletionRequestedAt: orgUUID and wsUUID are required")
+	}
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return nil, false, fmt.Errorf("creating org workspace client: %w", err)
+	}
+	ws, err := orgClient.Resource(workspaceGVR).Get(ctx, wsUUID, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("getting Workspace %s in org %s: %w", wsUUID, orgUUID, err)
+	}
+	raw, found, _ := unstructured.NestedString(ws.Object, "metadata", "annotations", WorkspaceDeletionAnnotation)
+	if !found || raw == "" {
+		return nil, false, nil
+	}
+	t, parseErr := time.Parse(time.RFC3339, raw)
+	if parseErr != nil {
+		return nil, true, fmt.Errorf("parsing %s annotation on workspace %s/%s: %w", WorkspaceDeletionAnnotation, orgUUID, wsUUID, parseErr)
+	}
+	return &t, true, nil
+}
+
+// DeleteOrgMemberships removes every Membership CR inside the
+// Organization workspace at root:kedge:orgs:{orgUUID}. Used by the
+// soft-delete cascade right before tearing down the workspace itself,
+// so the index sync sees a clean delta. Idempotent on NotFound /
+// empty list.
+func (b *Bootstrapper) DeleteOrgMemberships(ctx context.Context, orgUUID string) error {
+	if orgUUID == "" {
+		return fmt.Errorf("DeleteOrgMemberships: orgUUID is required")
+	}
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return fmt.Errorf("creating org workspace client: %w", err)
+	}
+	list, err := orgClient.Resource(membershipGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("listing Memberships in org %s: %w", orgUUID, err)
+	}
+	for i := range list.Items {
+		name := list.Items[i].GetName()
+		if err := orgClient.Resource(membershipGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("deleting Membership %s in org %s: %w", name, orgUUID, err)
+		}
+	}
+	return nil
+}
+
+// ListOrgMemberships returns the user names (Membership.metadata.name)
+// of every Membership in the Organization workspace. Used by the
+// soft-delete cascade to find which UMIs to mark / strip when an Org
+// or one of its Workspaces enters / exits its grace window. Empty
+// slice if the Org workspace has no Memberships or has been deleted.
+func (b *Bootstrapper) ListOrgMemberships(ctx context.Context, orgUUID string) ([]string, error) {
+	if orgUUID == "" {
+		return nil, fmt.Errorf("ListOrgMemberships: orgUUID is required")
+	}
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating org workspace client: %w", err)
+	}
+	list, err := orgClient.Resource(membershipGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing Memberships in org %s: %w", orgUUID, err)
+	}
+	names := make([]string, 0, len(list.Items))
+	for i := range list.Items {
+		names = append(names, list.Items[i].GetName())
+	}
+	return names, nil
+}
+
 // EnsureDefaultMCPServer creates the "default" MCPServer (the aggregate
 // kube + linux endpoint) in the tenant workspace identified by
 // clusterName if it doesn't already exist. Idempotent — safe to call

@@ -87,6 +87,12 @@ const (
 	// has not been created yet because the organization WorkspaceType is
 	// not yet registered (lands in a follow-up PR).
 	ReasonAwaitingWorkspaceType = "AwaitingWorkspaceType"
+
+	// OrganizationConditionDeletionInProgress reports the lifecycle
+	// stage of a soft-deleted Organization (status.deletionRequestedAt
+	// set). The soft-delete reconciler (roadmap step 8) sets this;
+	// the bootstrap controller never touches it.
+	OrganizationConditionDeletionInProgress = "DeletionInProgress"
 )
 
 // +genclient

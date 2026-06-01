@@ -20,6 +20,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	// UserConditionDeletionInProgress reports the lifecycle stage of a
+	// soft-deleted User (status.deletionRequestedAt set). The
+	// soft-delete reconciler sets this; the bootstrap controller never
+	// touches it.
+	UserConditionDeletionInProgress = "DeletionInProgress"
+)
+
 // +genclient
 // +genclient:nonNamespaced
 // +kubebuilder:subresource:status

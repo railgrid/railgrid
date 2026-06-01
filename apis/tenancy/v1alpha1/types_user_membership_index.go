@@ -116,4 +116,17 @@ type MembershipIndexEntry struct {
 	//
 	// +optional
 	Personal bool `json:"personal,omitempty"`
+
+	// SoftDeletedAt is set by the soft-delete reconciler (roadmap step 8)
+	// when the Org or Workspace this entry references has entered its
+	// 30-day grace window. The portal switcher hides entries with this
+	// field set so a member cannot navigate into a workspace that's
+	// pending cascade. Cleared on undelete. Mirrors the underlying
+	// Organization.status.deletionRequestedAt (for org-scope entries)
+	// or the Workspace annotation
+	// tenancy.kedge.faros.sh/deletion-requested-at (for workspace-scope
+	// entries).
+	//
+	// +optional
+	SoftDeletedAt *metav1.Time `json:"softDeletedAt,omitempty"`
 }
