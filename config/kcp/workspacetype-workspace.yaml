@@ -5,15 +5,6 @@ metadata:
   annotations:
     bootstrap.kcp.io/create-only: "true"
 spec:
-  # Extend root:universal so workspace workspaces inherit the universal
-  # initializer that bootstraps the "default" namespace (same reason the
-  # `tenant` and `organization` types extend universal). Without it,
-  # namespaced kubectl operations would fail with `namespaces "default"
-  # not found`.
-  extend:
-    with:
-    - name: universal
-      path: root
   # Workspaces ("team" workspaces) are leaves in v1; they hold APIBindings,
   # edges, mcp instances, and any other tenant work. Nested child
   # workspaces are deferred to v2 per docs/organizations.md §Open questions.
@@ -28,17 +19,22 @@ spec:
     types:
     - name: organization
       path: root:kedge
-  # Default bindings the hub + tenant rely on inside a workspace:
-  #   - tenancy.kedge.faros.sh provides Membership (PR #4 lands the CRD
-  #     and the initializer that adds the creator as Membership{scope:
-  #     workspace, role: admin}). Organization and CatalogEntry CRDs come
-  #     in via the same APIExport but are not used inside a workspace —
-  #     CatalogEntries live one level up at the Org workspace, and
-  #     Organization is cluster-scoped at root:kedge:users.
-  # Provider APIExports (mcp, kubernetes-edges, etc.) are deliberately
-  # NOT in defaultAPIBindings per docs/provider-scoping.md P-4: every
-  # provider, including builtins, requires explicit Enable in the
-  # workspace.
-  defaultAPIBindings:
-  - path: root:kedge:providers
-    export: tenancy.kedge.faros.sh
+  # Deliberately no `extend: universal` and no defaultAPIBindings:
+  #   * Universal would pull tenancy.kcp.io (Workspace/WorkspaceType) and
+  #     topology.kcp.io into the tenant's namespace, letting them spawn
+  #     arbitrary child workspaces and inspect cluster topology — both
+  #     are kedge-system surfaces, not tenant surfaces.
+  #   * tenancy.kedge.faros.sh (Membership / Organization / User /
+  #     UserMembershipIndex) is also a system primitive: tenants care
+  #     about edges, MCPServers, and Placements, not about org/user
+  #     plumbing. Membership management goes through the portal/hub
+  #     using admin creds, not via the tenant's kubectl.
+  # The trade-off: no `default` namespace is auto-created, so `kubectl
+  # get pods` (without -n) fails with `namespaces "default" not found`.
+  # Only cluster-scoped CRDs from the kedge APIBinding (Edge / MCPServer /
+  # Placement / VirtualWorkload) are reachable without -n; everything
+  # else needs an explicit namespace the user creates themselves.
+  # The kedge APIBinding (core.faros.sh) is added imperatively by the
+  # organization bootstrap controller (Step G) so the permission claims
+  # for secrets / namespaces / configmaps / serviceaccounts / clusterroles
+  # / clusterrolebindings are accepted at bind time.

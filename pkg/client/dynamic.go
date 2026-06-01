@@ -51,8 +51,14 @@ var (
 		Version:  kedgev1alpha1.Version,
 		Resource: "placements",
 	}
+	// UserGVR points at the new tenancy.kedge.faros.sh User CRD. PRs
+	// #204-#207 introduced the tenancy.kedge.faros.sh group; this GVR
+	// previously pointed at the legacy kedge.faros.sh group, which left
+	// User writes from the auth handler invisible to the org bootstrap
+	// controller (which watches the new group). Migration in roadmap
+	// step 7+ aligns both sides on tenancy.kedge.faros.sh.
 	UserGVR = schema.GroupVersionResource{
-		Group:    "kedge.faros.sh",
+		Group:    "tenancy.kedge.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "users",
 	}

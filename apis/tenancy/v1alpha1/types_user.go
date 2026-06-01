@@ -88,6 +88,16 @@ type UserStatus struct {
 	// +optional
 	PersonalOrg string `json:"personalOrg,omitempty"`
 
+	// DefaultWorkspace is the metadata.name (UUID) of the default child
+	// Workspace auto-created inside the personal Organization at
+	// bootstrap. Set once by the organization bootstrap controller;
+	// never reassigned. The portal uses this as the default
+	// X-Kedge-Workspace when the user has not explicitly picked a
+	// Workspace. Lives at root:kedge:orgs:{personalOrg}:{defaultWorkspace}.
+	//
+	// +optional
+	DefaultWorkspace string `json:"defaultWorkspace,omitempty"`
+
 	// DeletionRequestedAt records when a soft-delete was initiated for
 	// this User. Per O-8 the cascade controller waits 30 days from this
 	// timestamp before removing the personal Org and its Workspaces and

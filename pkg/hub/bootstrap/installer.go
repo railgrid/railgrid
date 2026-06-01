@@ -80,13 +80,20 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 
 	// Wait for all CRDs to be established. KubernetesMCP + LinuxMCP
 	// CRDs were removed when both per-kind endpoints collapsed into
-	// the MCPServer aggregate.
+	// the MCPServer aggregate. The legacy `users.kedge.faros.sh` CRD
+	// was retired in the User CRD migration; the User type now lives
+	// under tenancy.kedge.faros.sh alongside Organization, Membership,
+	// and UserMembershipIndex.
 	crdNames := []string{
 		"edges.kedge.faros.sh",
 		"virtualworkloads.kedge.faros.sh",
 		"placements.kedge.faros.sh",
-		"users.kedge.faros.sh",
 		"mcpservers.kedge.faros.sh",
+		"users.tenancy.kedge.faros.sh",
+		"organizations.tenancy.kedge.faros.sh",
+		"memberships.tenancy.kedge.faros.sh",
+		"usermembershipindices.tenancy.kedge.faros.sh",
+		"catalogentries.providers.kedge.faros.sh",
 	}
 
 	for _, name := range crdNames {

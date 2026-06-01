@@ -82,10 +82,11 @@ const (
 )
 
 // WorkspaceProvisioner is the slice of the kcp Bootstrapper that this
-// controller needs to actually create Organization workspaces and write
-// the bootstrap Membership inside them. Pulled out as an interface so
-// unit tests can use a fake (see controller_test.go) without standing
-// up an embedded kcp.
+// controller needs to materialize Organization workspaces, the default
+// child Workspace inside each personal Org, and the two scope-flavored
+// Memberships inside them. Pulled out as an interface so unit tests
+// can use a fake (see controller_test.go) without standing up an
+// embedded kcp.
 //
 // Implemented by *pkg/hub/kcp.Bootstrapper.
 type WorkspaceProvisioner interface {
@@ -93,11 +94,40 @@ type WorkspaceProvisioner interface {
 	// root:kedge:orgs:{orgUUID}. Idempotent (per O-11).
 	EnsureOrgWorkspace(ctx context.Context, orgUUID string) error
 
-	// EnsureOrgMembership creates a Membership CR inside the Organization
-	// workspace granting userName the given role at scope=org. Idempotent.
-	// Returns once the Membership is durable; the controller updates the
-	// User's UserMembershipIndex separately.
+	// EnsureOrgMembership creates an org-scope Membership CR inside the
+	// Organization workspace granting userName the given role.
+	// Idempotent.
 	EnsureOrgMembership(ctx context.Context, orgUUID, userName, role string) error
+
+	// EnsureChildWorkspace materializes the kcp Workspace at
+	// root:kedge:orgs:{orgUUID}:{wsUUID} of type `workspace`. Used to
+	// create the user's default team Workspace inside their personal
+	// Org so the portal can pin a default X-Kedge-Workspace header.
+	// Idempotent (per O-11).
+	EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error
+
+	// EnsureChildWorkspaceKedgeBinding materializes an APIBinding to
+	// root:kedge:providers.core.faros.sh inside the child team
+	// Workspace, with the permission claims kedge controllers need.
+	// This is what makes Edge / MCPServer / Placement / VirtualWorkload
+	// usable inside the user's default Workspace. Idempotent.
+	EnsureChildWorkspaceKedgeBinding(ctx context.Context, orgUUID, wsUUID string) error
+
+	// EnsureChildWorkspaceAdmin grants cluster-admin to the User in
+	// the child team Workspace via a ClusterRoleBinding for the User's
+	// rbacIdentity. Idempotent.
+	EnsureChildWorkspaceAdmin(ctx context.Context, orgUUID, wsUUID, rbacIdentity string) error
+
+	// EnsureChildWorkspaceDefaultMCPServer seeds the "default"
+	// MCPServer CR inside the child team Workspace so users have a
+	// working MCP endpoint out of the box. Idempotent.
+	EnsureChildWorkspaceDefaultMCPServer(ctx context.Context, orgUUID, wsUUID string) error
+
+	// GetChildWorkspaceClusterName returns the kcp logical-cluster
+	// short hash for the child team Workspace. Used by Step J to patch
+	// User.spec.DefaultCluster with the hash form (which kubectl /
+	// /clusters/{hash} address by) rather than the full path.
+	GetChildWorkspaceClusterName(ctx context.Context, orgUUID, wsUUID string) (string, error)
 }
 
 // Reconciler bootstraps personal Organizations for new Users and reconciles
@@ -196,9 +226,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		user = *userCopy
 	}
 
-	// Step 2: reconcile the personal Organization's status (workspacePath +
-	// conditions, kcp workspace, admin Membership, UserMembershipIndex entry).
-	// Runs on every reconcile so manual edits to status are healed.
+	// Step 2: ensure a stable DefaultWorkspace UUID is recorded on the
+	// User before the organization status reconcile uses it to materialize
+	// the child team workspace. Storing the UUID before we attempt the
+	// kcp Workspace create keeps the operation idempotent on retry — a
+	// crash between status patch and workspace create simply re-attempts
+	// the same UUID on the next reconcile.
+	if user.Status.DefaultWorkspace == "" {
+		wsUUID := uuid.NewString()
+		userCopy := user.DeepCopy()
+		userCopy.Status.DefaultWorkspace = wsUUID
+		if err := r.client.Status().Update(ctx, userCopy); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{}, fmt.Errorf("updating User.status.defaultWorkspace: %w", err)
+		}
+		logger.Info("Recorded default Workspace UUID", "workspace", wsUUID)
+		user = *userCopy
+	}
+
+	// Step 3: reconcile the personal Organization's status (workspacePath +
+	// conditions, kcp workspace, admin Membership, default child Workspace,
+	// workspace-scope Membership, UserMembershipIndex entries). Runs on
+	// every reconcile so manual edits to status are healed.
 	if err := r.reconcileOrganizationStatus(ctx, &user); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling Organization status: %w", err)
 	}
@@ -265,29 +316,41 @@ func (r *Reconciler) createPersonalOrg(ctx context.Context, user *tenancyv1alpha
 	return orgUUID, false, nil
 }
 
-// reconcileOrganizationStatus is the four-step state machine for a
+// reconcileOrganizationStatus is the six-step state machine for a
 // personal Organization:
 //
 //	A. Workspace path        — record the canonical root:kedge:orgs:{uuid}
 //	                           in status.workspacePath.
-//	B. EnsureOrgWorkspace    — materialize the kcp Workspace (PR #2).
+//	B. EnsureOrgWorkspace    — materialize the kcp Workspace.
 //	                           Sets WorkspaceReady condition.
 //	C. EnsureOrgMembership   — create a Membership{user, scope:org,
 //	                           role:admin} CR inside the Org workspace
-//	                           so the user is the Org's first admin
-//	                           (PR #4). Sets MembershipReady condition.
-//	D. Sync UserMembershipIndex — append/update the user's index entry
-//	                           so the portal switcher can render the
-//	                           new Org (PR #4). Sets IndexSynced
-//	                           condition.
+//	                           so the user is the Org's first admin.
+//	                           Sets MembershipReady condition.
+//	E. EnsureChildWorkspace  — materialize the default child team
+//	                           Workspace at root:kedge:orgs:{org}:{ws}
+//	                           so the portal can pin a default
+//	                           X-Kedge-Workspace header on first login.
+//	                           Sets DefaultWorkspaceReady condition.
+//	F. EnsureWorkspaceMembership — create a Membership{user,
+//	                           scope:workspace, role:admin} inside the
+//	                           default child Workspace so the user can
+//	                           reach it immediately. Sets
+//	                           DefaultWorkspaceMembershipReady condition.
+//	D. Sync UserMembershipIndex — reconcile the user's index entries
+//	                           (one org-scope + one workspace-scope) so
+//	                           the portal switcher can render both
+//	                           rows. Sets IndexSynced condition.
 //	─────
-//	Aggregate Ready=True when A+B+C+D all succeed.
+//	Aggregate Ready=True when A+B+C+E+F+D all succeed.
 //
 // Per O-11 every step is idempotent + self-healing. A failure at any step
 // leaves the corresponding condition False with a human-readable Reason
 // and Message; the next reconcile retries from that step. Subsequent
 // steps are skipped when an earlier step has not yet succeeded — for
-// example, no Membership write is attempted before the workspace exists.
+// example, no child Workspace is attempted before the parent Org
+// workspace exists; no workspace-scope Membership before the child
+// workspace exists; no index sync before both Memberships are written.
 func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tenancyv1alpha1.User) error {
 	orgName := user.Status.PersonalOrg
 	logger := klog.FromContext(ctx).WithValues("organization", orgName)
@@ -359,37 +422,253 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 		changed = true
 	}
 
-	// Step D: UserMembershipIndex sync (only after C succeeded).
+	// Step E: default child Workspace (only attempt after B succeeded
+	// and user.Status.DefaultWorkspace has a stable UUID).
+	wsUUID := user.Status.DefaultWorkspace
+	var childCond metav1.Condition
+	defaultWorkspaceOK := false
+	switch {
+	case !workspaceOK:
+		childCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonAwaitingWorkspace,
+			Message: "Default Workspace deferred until the Org workspace is Ready.",
+		}
+	case r.provisioner == nil:
+		childCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  tenancyv1alpha1.ReasonAwaitingWorkspaceType,
+			Message: "WorkspaceProvisioner not configured; running without kcp.",
+		}
+	case wsUUID == "":
+		// Should not normally happen — Reconcile sets a UUID before
+		// calling this function — but tolerate it so a test that drives
+		// reconcileOrganizationStatus directly sees a coherent condition.
+		childCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonAwaitingDefaultWorkspaceUUID,
+			Message: "User.status.defaultWorkspace has not yet been assigned a UUID.",
+		}
+	default:
+		if err := r.provisioner.EnsureChildWorkspace(ctx, org.Name, wsUUID); err != nil {
+			logger.Error(err, "Provisioning default child Workspace failed; will retry")
+			childCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonDefaultWorkspaceProvisioningFailed,
+				Message: err.Error(),
+			}
+		} else {
+			childCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady,
+				Status:  metav1.ConditionTrue,
+				Reason:  reasonDefaultWorkspaceProvisioned,
+				Message: "kcp Workspace " + desiredPath + ":" + wsUUID + " is Ready.",
+			}
+			defaultWorkspaceOK = true
+		}
+	}
+	if setCondition(&org.Status.Conditions, childCond, org.Generation) {
+		changed = true
+	}
+
+	// (Former Step F — workspace-scope Membership CR inside the child
+	// workspace — was dropped when the workspace WorkspaceType stopped
+	// binding tenancy.kedge.faros.sh. The tenancy CRDs are system
+	// primitives that the user shouldn't see in their default workspace;
+	// the UMI entry written by Step D below carries the same fact for
+	// the portal switcher to render. Manual workspace-membership
+	// management for additional users lands later via a hub-mediated
+	// API rather than direct in-workspace CR writes.)
+
+	// Step G: kedge APIBinding inside the default child Workspace
+	// (only attempt after E succeeded). Without this binding the user
+	// cannot read/write Edges / MCPServers / Placements in their
+	// default Workspace.
+	var kedgeBindCond metav1.Condition
+	kedgeBindOK := false
+	switch {
+	case !defaultWorkspaceOK:
+		kedgeBindCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceKedgeBound,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonAwaitingDefaultWorkspace,
+			Message: "kedge APIBinding deferred until the default Workspace is Ready.",
+		}
+	default:
+		if err := r.provisioner.EnsureChildWorkspaceKedgeBinding(ctx, org.Name, wsUUID); err != nil {
+			logger.Error(err, "Writing kedge APIBinding failed; will retry")
+			kedgeBindCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceKedgeBound,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonKedgeBindingFailed,
+				Message: err.Error(),
+			}
+		} else {
+			kedgeBindCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceKedgeBound,
+				Status:  metav1.ConditionTrue,
+				Reason:  reasonKedgeBindingReady,
+				Message: "kedge APIBinding (core.faros.sh) written to " + desiredPath + ":" + wsUUID + ".",
+			}
+			kedgeBindOK = true
+		}
+	}
+	if setCondition(&org.Status.Conditions, kedgeBindCond, org.Generation) {
+		changed = true
+	}
+
+	// Step H: cluster-admin RBAC for the user in the default Workspace
+	// (only attempt after G succeeded — the rbacIdentity needs the
+	// kedge APIBinding's claim acceptance to write the ClusterRoleBinding).
+	var adminCond metav1.Condition
+	workspaceAdminOK := false
+	switch {
+	case !kedgeBindOK:
+		adminCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonAwaitingKedgeBinding,
+			Message: "Workspace-admin grant deferred until the kedge APIBinding is Bound.",
+		}
+	case user.Spec.RBACIdentity == "":
+		// Sign-in flows that haven't yet set rbacIdentity (a transient
+		// state in the auth handler) are tolerated — Step H reports
+		// not-ready without failing the whole reconcile.
+		adminCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonAwaitingWorkspaceAdmin,
+			Message: "User.spec.RBACIdentity is empty; admin grant deferred.",
+		}
+	default:
+		if err := r.provisioner.EnsureChildWorkspaceAdmin(ctx, org.Name, wsUUID, user.Spec.RBACIdentity); err != nil {
+			logger.Error(err, "Granting workspace-admin failed; will retry")
+			adminCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonWorkspaceAdminFailed,
+				Message: err.Error(),
+			}
+		} else {
+			adminCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady,
+				Status:  metav1.ConditionTrue,
+				Reason:  reasonWorkspaceAdminReady,
+				Message: "Cluster-admin granted to " + user.Spec.RBACIdentity + " in " + desiredPath + ":" + wsUUID + ".",
+			}
+			workspaceAdminOK = true
+		}
+	}
+	if setCondition(&org.Status.Conditions, adminCond, org.Generation) {
+		changed = true
+	}
+
+	// Step I: default MCPServer (only after H succeeded — needs admin
+	// claims accepted via the kedge APIBinding).
+	var mcpCond metav1.Condition
+	mcpOK := false
+	switch {
+	case !workspaceAdminOK:
+		mcpCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceMCPServerReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonAwaitingWorkspaceAdmin,
+			Message: "Default MCPServer creation deferred until workspace-admin is granted.",
+		}
+	default:
+		if err := r.provisioner.EnsureChildWorkspaceDefaultMCPServer(ctx, org.Name, wsUUID); err != nil {
+			logger.Error(err, "Creating default MCPServer failed; will retry")
+			mcpCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceMCPServerReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonMCPServerFailed,
+				Message: err.Error(),
+			}
+		} else {
+			mcpCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceMCPServerReady,
+				Status:  metav1.ConditionTrue,
+				Reason:  reasonMCPServerReady,
+				Message: "Default MCPServer created in " + desiredPath + ":" + wsUUID + ".",
+			}
+			mcpOK = true
+		}
+	}
+	if setCondition(&org.Status.Conditions, mcpCond, org.Generation) {
+		changed = true
+	}
+
+	// Step J (no condition): patch User.spec.DefaultCluster to the kcp
+	// logical-cluster short hash for the child Workspace so kubectl can
+	// address it as /clusters/{hash}/api... — using the full
+	// root:kedge:orgs:{org}:{ws} path works but makes for ugly
+	// kubeconfig server URLs. Only runs after Step E succeeds; the
+	// lookup uses Workspace.spec.cluster which kcp populates on Ready.
+	if defaultWorkspaceOK {
+		clusterName, lookupErr := r.provisioner.GetChildWorkspaceClusterName(ctx, org.Name, wsUUID)
+		switch {
+		case lookupErr != nil:
+			logger.Error(lookupErr, "Looking up child Workspace cluster hash failed; will retry")
+		case user.Spec.DefaultCluster != clusterName:
+			userCopy := user.DeepCopy()
+			userCopy.Spec.DefaultCluster = clusterName
+			if err := r.client.Update(ctx, userCopy); err != nil && !apierrors.IsConflict(err) {
+				logger.Error(err, "Patching User.spec.DefaultCluster failed; will retry")
+			}
+		}
+	}
+
+	// Step D: UserMembershipIndex sync (gated on Step C — the org
+	// Membership. Step E provides the workspace UUID; the workspace-scope
+	// UMI entry is written here as well since the in-workspace Membership
+	// CR write was dropped along with the tenancy APIBinding from the
+	// workspace WorkspaceType).
 	var indexCond metav1.Condition
-	if !membershipOK {
+	switch {
+	case !membershipOK:
 		indexCond = metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
 			Status:  metav1.ConditionFalse,
 			Reason:  reasonAwaitingMembership,
-			Message: "Index sync deferred until the admin Membership is written.",
+			Message: "Index sync deferred until the org Membership is written.",
 		}
-	} else if err := r.syncUserMembershipIndex(ctx, user, &org); err != nil {
-		logger.Error(err, "UserMembershipIndex sync failed; will retry")
-		indexCond = metav1.Condition{
-			Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
-			Status:  metav1.ConditionFalse,
-			Reason:  reasonIndexSyncFailed,
-			Message: err.Error(),
+	default:
+		// Only carry the workspace-scope UMI entry once Step E has
+		// produced the default Workspace; otherwise sync just the
+		// org-scope entry.
+		wsForIndex := ""
+		if defaultWorkspaceOK {
+			wsForIndex = wsUUID
 		}
-	} else {
-		indexCond = metav1.Condition{
-			Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
-			Status:  metav1.ConditionTrue,
-			Reason:  reasonIndexSynced,
-			Message: "UserMembershipIndex/" + user.Name + " carries an entry for this Org.",
+		if err := r.syncUserMembershipIndex(ctx, user, &org, wsForIndex); err != nil {
+			logger.Error(err, "UserMembershipIndex sync failed; will retry")
+			indexCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonIndexSyncFailed,
+				Message: err.Error(),
+			}
+		} else {
+			indexCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionIndexSynced,
+				Status:  metav1.ConditionTrue,
+				Reason:  reasonIndexSynced,
+				Message: "UserMembershipIndex/" + user.Name + " carries entries for this Org and its default Workspace.",
+			}
 		}
 	}
 	if setCondition(&org.Status.Conditions, indexCond, org.Generation) {
 		changed = true
 	}
 
-	// Aggregate Ready = all four steps green.
-	readyCond := aggregateReady(workspaceOK, membershipOK, indexCond.Status == metav1.ConditionTrue)
+	// Aggregate Ready = all seven business steps green
+	// (workspace, membership, default WS, kedge binding, admin,
+	// MCPServer, index).
+	readyCond := aggregateReady(workspaceOK, membershipOK, defaultWorkspaceOK, kedgeBindOK, workspaceAdminOK, mcpOK, indexCond.Status == metav1.ConditionTrue)
 	if setCondition(&org.Status.Conditions, readyCond, org.Generation) {
 		changed = true
 	}
@@ -446,6 +725,29 @@ const (
 	// reasonAllSteps* drive the aggregate Ready condition Reason field.
 	reasonAllStepsReady    = "OrganizationReady"
 	reasonAllStepsNotReady = "BootstrapInProgress"
+
+	// Default child Workspace reasons (Step E).
+	reasonDefaultWorkspaceProvisioned        = "DefaultWorkspaceProvisioned"
+	reasonDefaultWorkspaceProvisioningFailed = "DefaultWorkspaceProvisioningFailed"
+	reasonAwaitingDefaultWorkspaceUUID       = "AwaitingDefaultWorkspaceUUID"
+	reasonAwaitingDefaultWorkspace           = "AwaitingDefaultWorkspace"
+
+	// kedge APIBinding reasons (Step G).
+	reasonKedgeBindingReady  = "KedgeBindingWritten"
+	reasonKedgeBindingFailed = "KedgeBindingWriteFailed"
+
+	// Workspace-admin RBAC reasons (Step H).
+	reasonWorkspaceAdminReady  = "WorkspaceAdminGranted"
+	reasonWorkspaceAdminFailed = "WorkspaceAdminGrantFailed"
+
+	// Default MCPServer reasons (Step I).
+	reasonMCPServerReady  = "DefaultMCPServerCreated"
+	reasonMCPServerFailed = "DefaultMCPServerCreateFailed"
+
+	// Awaiting reasons for downstream steps when the immediate prerequisite
+	// has not yet finished.
+	reasonAwaitingKedgeBinding   = "AwaitingKedgeBinding"
+	reasonAwaitingWorkspaceAdmin = "AwaitingWorkspaceAdmin"
 )
 
 // reconcileWorkspace runs step B (EnsureOrgWorkspace) and returns the
@@ -478,12 +780,14 @@ func (r *Reconciler) reconcileWorkspace(ctx context.Context, org *tenancyv1alpha
 	}, true
 }
 
-// aggregateReady combines the three step outcomes into the overall Ready
-// condition. Ready=True iff all three are True; otherwise Ready=False with
-// reasonAllStepsNotReady so observers know to consult the granular
-// conditions for the specific failure cause.
-func aggregateReady(workspaceOK, membershipOK, indexOK bool) metav1.Condition {
-	if workspaceOK && membershipOK && indexOK {
+// aggregateReady combines the seven step outcomes (workspace,
+// membership, default child workspace, kedge APIBinding,
+// workspace-admin grant, default MCPServer, index) into the overall
+// Ready condition. Ready=True iff all seven are True; otherwise
+// Ready=False with reasonAllStepsNotReady so observers know to
+// consult the granular conditions for the specific failure cause.
+func aggregateReady(workspaceOK, membershipOK, defaultWorkspaceOK, kedgeBindOK, workspaceAdminOK, mcpOK, indexOK bool) metav1.Condition {
+	if workspaceOK && membershipOK && defaultWorkspaceOK && kedgeBindOK && workspaceAdminOK && mcpOK && indexOK {
 		return metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionReady,
 			Status:  metav1.ConditionTrue,
@@ -499,15 +803,22 @@ func aggregateReady(workspaceOK, membershipOK, indexOK bool) metav1.Condition {
 	}
 }
 
-// syncUserMembershipIndex appends or updates an entry for the given
-// Organization in the User's UserMembershipIndex. metadata.name of the
-// index matches user.Name. The function is idempotent: re-running with
-// the same inputs leaves the index unchanged.
+// syncUserMembershipIndex reconciles the User's UserMembershipIndex to
+// carry exactly the two entries this Organization owns for the user:
 //
-// PR #4 only writes the org-scope index entry for the personal Org. The
-// full multi-cluster Membership controller that propagates additions
+//   - an org-scope entry (WorkspaceUUID == ""), and
+//   - a workspace-scope entry for the default child Workspace when
+//     defaultWorkspaceUUID is non-empty (it always is in the personal-Org
+//     bootstrap path once Step E has succeeded).
+//
+// metadata.name of the index matches user.Name. The function is
+// idempotent: re-running with the same inputs leaves the index unchanged.
+// Entries for OTHER Organizations or workspaces are left alone — this
+// function only owns the two rows for the personal Org bootstrap.
+//
+// The full multi-cluster Membership controller that propagates additions
 // from manually-managed Memberships lands in a follow-up PR.
-func (r *Reconciler) syncUserMembershipIndex(ctx context.Context, user *tenancyv1alpha1.User, org *tenancyv1alpha1.Organization) error {
+func (r *Reconciler) syncUserMembershipIndex(ctx context.Context, user *tenancyv1alpha1.User, org *tenancyv1alpha1.Organization, defaultWorkspaceUUID string) error {
 	var index tenancyv1alpha1.UserMembershipIndex
 	err := r.client.Get(ctx, types.NamespacedName{Name: user.Name}, &index)
 	switch {
@@ -519,31 +830,47 @@ func (r *Reconciler) syncUserMembershipIndex(ctx context.Context, user *tenancyv
 		return fmt.Errorf("getting UserMembershipIndex %q: %w", user.Name, err)
 	}
 
-	desired := tenancyv1alpha1.MembershipIndexEntry{
-		OrgUUID:        org.Name,
-		OrgDisplayName: org.Spec.DisplayName,
-		OrgCreatedAt:   org.CreationTimestamp,
-		OrgFirstAdmin:  user.Name,
-		Role:           tenancyv1alpha1.MembershipRoleAdmin,
-		Personal:       org.Spec.Personal,
+	// Build the desired entries this controller owns for the user's
+	// personal Org: one org-scope row plus one row per default Workspace.
+	desired := []tenancyv1alpha1.MembershipIndexEntry{
+		{
+			OrgUUID:        org.Name,
+			OrgDisplayName: org.Spec.DisplayName,
+			OrgCreatedAt:   org.CreationTimestamp,
+			OrgFirstAdmin:  user.Name,
+			Role:           tenancyv1alpha1.MembershipRoleAdmin,
+			Personal:       org.Spec.Personal,
+		},
+	}
+	if defaultWorkspaceUUID != "" {
+		desired = append(desired, tenancyv1alpha1.MembershipIndexEntry{
+			OrgUUID:              org.Name,
+			OrgDisplayName:       org.Spec.DisplayName,
+			OrgCreatedAt:         org.CreationTimestamp,
+			OrgFirstAdmin:        user.Name,
+			WorkspaceUUID:        defaultWorkspaceUUID,
+			WorkspaceDisplayName: defaultWorkspaceDisplayName,
+			Role:                 tenancyv1alpha1.MembershipRoleAdmin,
+			Personal:             org.Spec.Personal,
+		})
 	}
 
-	// Find existing entry for this Org+Workspace pair (Workspace empty
-	// for org-scope entries). Update in-place if present, append otherwise.
-	found := false
-	for i, e := range index.Spec.Entries {
-		if e.OrgUUID == desired.OrgUUID && e.WorkspaceUUID == desired.WorkspaceUUID {
-			if entriesEqual(e, desired) {
-				return nil
-			}
-			index.Spec.Entries[i] = desired
-			found = true
-			break
+	// Upsert each desired entry; entries for other Orgs/workspaces (added
+	// by manual membership management in a follow-up PR) are untouched.
+	mutated := false
+	for _, want := range desired {
+		idx := indexOfEntry(index.Spec.Entries, want.OrgUUID, want.WorkspaceUUID)
+		switch {
+		case idx < 0:
+			index.Spec.Entries = append(index.Spec.Entries, want)
+			mutated = true
+		case !entriesEqual(index.Spec.Entries[idx], want):
+			index.Spec.Entries[idx] = want
+			mutated = true
 		}
 	}
-	if !found {
-		index.Spec.Entries = append(index.Spec.Entries, desired)
-	}
+	// If !mutated and index already exists, the spec is up to date and
+	// only status.entryCount may need a tickle below.
 
 	if index.ResourceVersion == "" {
 		if err := r.client.Create(ctx, &index); err != nil {
@@ -553,11 +880,13 @@ func (r *Reconciler) syncUserMembershipIndex(ctx context.Context, user *tenancyv
 			}
 			return fmt.Errorf("creating UserMembershipIndex %q: %w", user.Name, err)
 		}
-	} else if err := r.client.Update(ctx, &index); err != nil {
-		if apierrors.IsConflict(err) {
-			return nil
+	} else if mutated {
+		if err := r.client.Update(ctx, &index); err != nil {
+			if apierrors.IsConflict(err) {
+				return nil
+			}
+			return fmt.Errorf("updating UserMembershipIndex %q: %w", user.Name, err)
 		}
-		return fmt.Errorf("updating UserMembershipIndex %q: %w", user.Name, err)
 	}
 
 	// Update status.entryCount on a follow-up Get (the status subresource
@@ -575,6 +904,22 @@ func (r *Reconciler) syncUserMembershipIndex(ctx context.Context, user *tenancyv
 	_ = r.client.Status().Update(ctx, &index)
 	return nil
 }
+
+// indexOfEntry returns the index of an existing MembershipIndexEntry
+// matching the given Org+Workspace pair, or -1 if none is present.
+func indexOfEntry(entries []tenancyv1alpha1.MembershipIndexEntry, orgUUID, workspaceUUID string) int {
+	for i, e := range entries {
+		if e.OrgUUID == orgUUID && e.WorkspaceUUID == workspaceUUID {
+			return i
+		}
+	}
+	return -1
+}
+
+// defaultWorkspaceDisplayName is the displayName attached to the default
+// child Workspace's UserMembershipIndex entry. The portal renders this
+// as the row label until the user renames the workspace.
+const defaultWorkspaceDisplayName = "default"
 
 // entriesEqual compares the user-set fields of two MembershipIndexEntry
 // values for equality. CreationTimestamp comparison uses .Equal so the

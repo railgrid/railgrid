@@ -56,6 +56,33 @@ const (
 	// the portal switcher: only Indexed Organizations are renderable.
 	OrganizationConditionIndexSynced = "IndexSynced"
 
+	// OrganizationConditionDefaultWorkspaceReady reports whether the
+	// personal Org's default child Workspace has been provisioned at
+	// root:kedge:orgs:{org-uuid}:{default-ws-uuid}. The portal pins this
+	// UUID as the default X-Kedge-Workspace so members always have
+	// somewhere to land on first login.
+	OrganizationConditionDefaultWorkspaceReady = "DefaultWorkspaceReady"
+
+	// OrganizationConditionDefaultWorkspaceKedgeBound reports whether
+	// the kedge APIBinding (core.faros.sh) has been written inside the
+	// default child Workspace, with the permission claims kedge
+	// controllers need. Until this flips True the user can't read or
+	// write Edges / MCPServers / Placements in their default
+	// Workspace.
+	OrganizationConditionDefaultWorkspaceKedgeBound = "DefaultWorkspaceKedgeBound"
+
+	// OrganizationConditionDefaultWorkspaceAdminReady reports whether
+	// the user has been granted cluster-admin (via ClusterRoleBinding
+	// against their rbacIdentity) inside the default child Workspace.
+	OrganizationConditionDefaultWorkspaceAdminReady = "DefaultWorkspaceAdminReady"
+
+	// OrganizationConditionDefaultWorkspaceMCPServerReady reports
+	// whether the default MCPServer CR has been created inside the
+	// default child Workspace. Surfaces the legacy
+	// CreateTenantWorkspace seeding step at the bootstrap state-machine
+	// level so observers can see when it lands.
+	OrganizationConditionDefaultWorkspaceMCPServerReady = "DefaultWorkspaceMCPServerReady"
+
 	// ReasonAwaitingWorkspaceType marks an Organization whose kcp workspace
 	// has not been created yet because the organization WorkspaceType is
 	// not yet registered (lands in a follow-up PR).

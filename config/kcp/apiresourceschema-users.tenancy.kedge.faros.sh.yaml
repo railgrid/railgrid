@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260531-fb75204.users.tenancy.kedge.faros.sh
+  name: v260531-0ae765d.users.tenancy.kedge.faros.sh
 spec:
   group: tenancy.kedge.faros.sh
   names:
@@ -152,6 +152,15 @@ spec:
                 - type
                 type: object
               type: array
+            defaultWorkspace:
+              description: |-
+                DefaultWorkspace is the metadata.name (UUID) of the default child
+                Workspace auto-created inside the personal Organization at
+                bootstrap. Set once by the organization bootstrap controller;
+                never reassigned. The portal uses this as the default
+                X-Kedge-Workspace when the user has not explicitly picked a
+                Workspace. Lives at root:kedge:orgs:{personalOrg}:{defaultWorkspace}.
+              type: string
             deletionRequestedAt:
               description: |-
                 DeletionRequestedAt records when a soft-delete was initiated for

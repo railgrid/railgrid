@@ -275,7 +275,14 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create or update User CRD.
+	// Create or update User CRD. The legacy CreateTenantWorkspace call
+	// (which materialized root:kedge:tenants:{userID} and patched
+	// User.spec.DefaultCluster) was removed when the new multi-org
+	// tenancy model took over: the organization bootstrap controller
+	// now creates the personal Org + its default child Workspace and
+	// patches User.spec.DefaultCluster itself once the Workspace is
+	// Ready. The auth handler just needs to write the User CR; the
+	// controller does the rest asynchronously.
 	userID, err := h.seedUser(ctx, claims.Email, claims.Name, claims.Sub, h.oidcConfig.IssuerURL)
 	if err != nil {
 		h.logger.Error(err, "failed to seed user")
@@ -283,18 +290,11 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create tenant workspace for the user in kcp and get the logical cluster name.
-	var clusterName string
-	if h.bootstrapper != nil {
-		var err error
-		clusterName, err = h.bootstrapper.CreateTenantWorkspace(ctx, userID, fmt.Sprintf("kedge:%s", claims.Email))
-		if err != nil {
-			h.logger.Error(err, "failed to create tenant workspace", "userID", userID)
-			http.Error(w, "failed to create tenant workspace", http.StatusInternalServerError)
-			return
-		}
-		h.setDefaultCluster(ctx, userID, clusterName)
-	}
+	// Read DefaultCluster after seeding — the org bootstrap controller may
+	// have set it on a previous login; on first login it will still be
+	// empty, in which case the issued kubeconfig points at the bare hub
+	// and the user re-logs after the controller catches up.
+	clusterName := h.lookupDefaultCluster(ctx, userID)
 
 	// Generate kubeconfig using exec credential plugin for automatic token refresh.
 	kubeconfigBytes, err := h.generateKubeconfig(userID, clusterName, claims.Email)
@@ -350,7 +350,7 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 	hash := sha256.Sum256([]byte(issuer + "/" + sub))
 	subHash := hex.EncodeToString(hash[:])[:63]
 
-	labelSelector := fmt.Sprintf("kedge.faros.sh/sub=%s", subHash)
+	labelSelector := fmt.Sprintf("tenancy.kedge.faros.sh/sub=%s", subHash)
 	users, err := h.kedgeClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		return "", fmt.Errorf("listing users: %w", err)
@@ -392,7 +392,7 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "user-",
 			Labels: map[string]string{
-				"kedge.faros.sh/sub": subHash,
+				"tenancy.kedge.faros.sh/sub": subHash,
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
@@ -409,7 +409,7 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 		},
 	}
 	// Set apiVersion and kind for dynamic client.
-	user.APIVersion = "kedge.faros.sh/v1alpha1"
+	user.APIVersion = "tenancy.kedge.faros.sh/v1alpha1"
 	user.Kind = "User"
 
 	created, err := h.kedgeClient.Users().Create(ctx, user, metav1.CreateOptions{})
@@ -427,21 +427,45 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 	return created.Name, nil
 }
 
-// setDefaultCluster updates the user's spec.defaultCluster if it differs.
-func (h *Handler) setDefaultCluster(ctx context.Context, userID, clusterName string) {
-	user, err := h.kedgeClient.Users().Get(ctx, userID, metav1.GetOptions{})
-	if err != nil {
-		h.logger.Error(err, "failed to get user for default cluster update", "userID", userID)
-		return
-	}
-	if user.Spec.DefaultCluster == clusterName {
-		return
-	}
-	user.Spec.DefaultCluster = clusterName
-	user.APIVersion = "kedge.faros.sh/v1alpha1"
-	user.Kind = "User"
-	if _, err := h.kedgeClient.Users().Update(ctx, user, metav1.UpdateOptions{}); err != nil {
-		h.logger.Error(err, "failed to update user default cluster", "userID", userID, "cluster", clusterName)
+// lookupDefaultCluster returns the User's spec.defaultCluster, polling
+// briefly to give the organization bootstrap controller time to
+// materialize the personal Org's default child Workspace and patch the
+// field. Without the poll, a fresh user's first login would get a
+// kubeconfig pointing at the bare hub (no /clusters/{name}) and every
+// kubectl request would 404 until they logged in a second time.
+//
+// The legacy setDefaultCluster method was removed when the auth handler
+// stopped calling CreateTenantWorkspace; the organization bootstrap
+// controller is now the sole writer of User.spec.DefaultCluster.
+func (h *Handler) lookupDefaultCluster(ctx context.Context, userID string) string {
+	// The bootstrap controller's chain (org workspace + child workspace
+	// + kedge APIBinding bind + ClusterRoleBinding + default MCPServer
+	// + cluster-hash lookup) takes ~10-25s on a cold start; the poll
+	// budget needs to cover that with margin. On subsequent logins the
+	// field is already set and the first iteration returns immediately.
+	const (
+		pollInterval = 500 * time.Millisecond
+		pollTimeout  = 90 * time.Second
+	)
+	start := time.Now()
+	deadline := start.Add(pollTimeout)
+	for {
+		user, err := h.kedgeClient.Users().Get(ctx, userID, metav1.GetOptions{})
+		if err == nil && user.Spec.DefaultCluster != "" {
+			if elapsed := time.Since(start); elapsed > pollInterval {
+				h.logger.Info("Waited for bootstrap controller to populate User.spec.defaultCluster", "userID", userID, "waited", elapsed.String())
+			}
+			return user.Spec.DefaultCluster
+		}
+		if time.Now().After(deadline) {
+			h.logger.Info("User.spec.defaultCluster still empty after poll; issuing kubeconfig without cluster name", "userID", userID, "waited", pollTimeout.String())
+			return ""
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(pollInterval):
+		}
 	}
 }
 

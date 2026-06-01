@@ -318,6 +318,10 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"user workspace not found","reason":"Forbidden","code":403}`)
 		return
 	}
+	// Wait for the bootstrap controller to populate DefaultCluster on
+	// the very first request after sign-up. Warm-path requests
+	// short-circuit on the first iteration.
+	user = p.waitForDefaultCluster(r.Context(), user)
 
 	kcpPath, errStatus, errBody := resolveKCPPath(r.URL.Path, user.Spec.DefaultCluster)
 	if errStatus != 0 {
@@ -386,6 +390,9 @@ func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, toke
 		_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"failed to create user","reason":"InternalError","code":500}`)
 		return
 	}
+	// Wait for the bootstrap controller to populate DefaultCluster on
+	// the very first request after sign-up.
+	user = p.waitForDefaultCluster(ctx, user)
 
 	kcpPath, errStatus, errBody := resolveKCPPath(r.URL.Path, user.Spec.DefaultCluster)
 	if errStatus != 0 {
@@ -471,7 +478,7 @@ func isConflictError(err error) bool {
 
 // ensureStaticTokenUserOnce is the single-attempt logic for ensureStaticTokenUser.
 func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash string) (*tenancyv1alpha1.User, error) {
-	labelSelector := fmt.Sprintf("kedge.faros.sh/sub=%s", subHash)
+	labelSelector := fmt.Sprintf("tenancy.kedge.faros.sh/sub=%s", subHash)
 	users, err := p.kedgeClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
@@ -487,40 +494,14 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 		user.Status.LastLogin = &now
 		_, _ = p.kedgeClient.Users().UpdateStatus(ctx, user, metav1.UpdateOptions{})
 
-		// Ensure workspace exists if bootstrapper is available.
-		if p.bootstrapper != nil && user.Spec.DefaultCluster == "" {
-			clusterName, err := p.bootstrapper.CreateTenantWorkspace(ctx, user.Name, user.Spec.RBACIdentity)
-			if err != nil {
-				return nil, fmt.Errorf("creating tenant workspace: %w", err)
-			}
-
-			// Re-fetch user to get latest version before update.
-			user, err = p.kedgeClient.Users().Get(ctx, user.Name, metav1.GetOptions{})
-			if err != nil {
-				return nil, fmt.Errorf("re-fetching user: %w", err)
-			}
-
-			user.Spec.DefaultCluster = clusterName
-			user.APIVersion = "kedge.faros.sh/v1alpha1"
-			user.Kind = "User"
-			user, err = p.kedgeClient.Users().Update(ctx, user, metav1.UpdateOptions{})
-			if err != nil {
-				return nil, fmt.Errorf("updating user default cluster: %w", err)
-			}
-		}
-
-		// Re-ensure workspace-admin binding on every login so it self-heals if deleted.
-		if p.bootstrapper != nil && user.Spec.DefaultCluster != "" {
-			if err := p.bootstrapper.EnsureWorkspaceAdmin(ctx, user.Spec.DefaultCluster, user.Spec.RBACIdentity); err != nil {
-				p.logger.Error(err, "failed to ensure workspace-admin binding (non-fatal)", "user", user.Name)
-			}
-			// KubernetesMCP + LinuxMCP per-tenant defaults used to be
-			// ensured here; both CRDs were removed in favor of the
-			// MCPServer aggregate, which is still created below.
-			if err := p.bootstrapper.EnsureDefaultMCPServer(ctx, user.Spec.DefaultCluster); err != nil {
-				p.logger.Error(err, "failed to ensure default MCPServer (non-fatal)", "user", user.Name)
-			}
-		}
+		// Workspace creation and User.spec.DefaultCluster patching are
+		// owned by the organization bootstrap controller (it materializes
+		// the personal Org's default child Workspace and writes its path
+		// into User.spec.DefaultCluster once Ready). The legacy
+		// CreateTenantWorkspace + EnsureWorkspaceAdmin + EnsureDefaultMCPServer
+		// chain that used to live here was removed; the controller
+		// re-runs those steps idempotently on every reconcile so the
+		// per-login backfill is unnecessary.
 		return user, nil
 	}
 
@@ -534,8 +515,8 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "static-user-",
 			Labels: map[string]string{
-				"kedge.faros.sh/sub":       subHash,
-				"kedge.faros.sh/auth-type": "static-token",
+				"tenancy.kedge.faros.sh/sub":       subHash,
+				"tenancy.kedge.faros.sh/auth-type": "static-token",
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
@@ -544,7 +525,7 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 			RBACIdentity: fmt.Sprintf("kedge:static:%s", subHash[:16]),
 		},
 	}
-	user.APIVersion = "kedge.faros.sh/v1alpha1"
+	user.APIVersion = "tenancy.kedge.faros.sh/v1alpha1"
 	user.Kind = "User"
 
 	created, err := p.kedgeClient.Users().Create(ctx, user, metav1.CreateOptions{})
@@ -567,28 +548,10 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 	created.Status.LastLogin = &now
 	_, _ = p.kedgeClient.Users().UpdateStatus(ctx, created, metav1.UpdateOptions{})
 
-	// Create tenant workspace if bootstrapper is available.
-	if p.bootstrapper != nil {
-		clusterName, err := p.bootstrapper.CreateTenantWorkspace(ctx, created.Name, created.Spec.RBACIdentity)
-		if err != nil {
-			return nil, fmt.Errorf("creating tenant workspace: %w", err)
-		}
-
-		// Re-fetch user to get latest version before update.
-		created, err = p.kedgeClient.Users().Get(ctx, created.Name, metav1.GetOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("re-fetching user: %w", err)
-		}
-
-		created.Spec.DefaultCluster = clusterName
-		created.APIVersion = "kedge.faros.sh/v1alpha1"
-		created.Kind = "User"
-		created, err = p.kedgeClient.Users().Update(ctx, created, metav1.UpdateOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("updating user default cluster: %w", err)
-		}
-	}
-
+	// Workspace creation + User.spec.DefaultCluster patching is owned
+	// by the organization bootstrap controller, not the auth path.
+	// See ensureStaticTokenUserOnce for the matching comment in the
+	// already-exists branch.
 	return created, nil
 }
 
@@ -789,7 +752,7 @@ func (p *KCPProxy) resolveUser(ctx context.Context, issuer, sub string) (*tenanc
 	hash := sha256.Sum256([]byte(issuer + "/" + sub))
 	subHash := hex.EncodeToString(hash[:])[:63]
 
-	labelSelector := fmt.Sprintf("kedge.faros.sh/sub=%s", subHash)
+	labelSelector := fmt.Sprintf("tenancy.kedge.faros.sh/sub=%s", subHash)
 	users, err := p.kedgeClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
@@ -798,6 +761,43 @@ func (p *KCPProxy) resolveUser(ctx context.Context, issuer, sub string) (*tenanc
 		return nil, fmt.Errorf("no user found for sub hash %s", subHash)
 	}
 	return &users.Items[0], nil
+}
+
+// waitForDefaultCluster blocks until User.spec.defaultCluster is
+// populated by the organization bootstrap controller, or the budget
+// runs out. Returns the most recent User snapshot. The first iteration
+// short-circuits when DefaultCluster is already set, so warm-path
+// requests pay no cost — only the very first request after a fresh
+// user creation pays the cold-start wait while Step E + G + H + I + J
+// of the bootstrap reconciler complete.
+func (p *KCPProxy) waitForDefaultCluster(ctx context.Context, user *tenancyv1alpha1.User) *tenancyv1alpha1.User {
+	if user.Spec.DefaultCluster != "" {
+		return user
+	}
+	const (
+		pollInterval = 500 * time.Millisecond
+		pollTimeout  = 90 * time.Second
+	)
+	start := time.Now()
+	deadline := start.Add(pollTimeout)
+	for {
+		fresh, err := p.kedgeClient.Users().Get(ctx, user.Name, metav1.GetOptions{})
+		if err == nil && fresh.Spec.DefaultCluster != "" {
+			if elapsed := time.Since(start); elapsed > pollInterval {
+				p.logger.Info("Waited for bootstrap controller to populate User.spec.defaultCluster", "user", user.Name, "waited", elapsed.String())
+			}
+			return fresh
+		}
+		if time.Now().After(deadline) {
+			p.logger.Info("User.spec.defaultCluster still empty after poll", "user", user.Name, "waited", pollTimeout.String())
+			return user
+		}
+		select {
+		case <-ctx.Done():
+			return user
+		case <-time.After(pollInterval):
+		}
+	}
 }
 
 // HandleTokenLoginRateLimited wraps HandleTokenLogin with rate limiting.
@@ -863,6 +863,11 @@ func (p *KCPProxy) HandleTokenLogin(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"failed to create user","reason":"InternalError","code":500}`)
 		return
 	}
+	// Wait for the bootstrap controller to populate DefaultCluster so
+	// the kubeconfig server URL includes /clusters/{hash}. Without
+	// this, e2e flows that POST /auth/token-login and then run kubectl
+	// immediately get a bare-hub server URL and hit 404.
+	user = p.waitForDefaultCluster(ctx, user)
 
 	// Generate kubeconfig pointing to the user's workspace.
 	kubeconfigBytes, err := p.generateStaticTokenKubeconfig(user, token)

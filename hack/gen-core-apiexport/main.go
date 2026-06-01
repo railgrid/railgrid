@@ -70,9 +70,12 @@ func main() {
 
 	// excludedAPIExports are API groups whose APIExports must NOT be merged
 	// into core.faros.sh. These exports are platform-owner-only and are not
-	// bound into tenant workspaces.
+	// bound into tenant workspaces — the hub binds them directly in its
+	// own workspaces (providers in root:kedge:providers, tenancy in
+	// root:kedge:users) and writes their CRs with admin credentials.
 	excludedAPIExports := map[string]bool{
 		"apiexport-providers.kedge.faros.sh.yaml": true,
+		"apiexport-tenancy.kedge.faros.sh.yaml":   true,
 	}
 
 	var files []string

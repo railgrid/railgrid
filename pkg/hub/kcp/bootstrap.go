@@ -19,14 +19,11 @@ package kcp
 
 import (
 	"context"
-	"embed"
 	"fmt"
 	"reflect"
 	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -37,16 +34,12 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/yaml"
 
 	"github.com/faroshq/faros-kedge/config/kcp"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
 	"github.com/faroshq/faros-kedge/pkg/util/confighelpers"
 )
-
-//go:embed user-crd/kedge.faros.sh_users.yaml
-var userCRDFS embed.FS
 
 // kcp resource GVRs.
 var (
@@ -128,11 +121,11 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("creating kedge clients: %w", err)
 	}
 
-	logger.Info("Bootstrapping child workspaces: providers, tenants, users, orgs")
+	logger.Info("Bootstrapping child workspaces: providers, users, orgs")
 	if err := confighelpers.Bootstrap(ctx, kedgeDiscovery, kedgeDynamic, kcp.KedgeWorkspaceFS); err != nil {
 		return fmt.Errorf("bootstrapping child workspaces: %w", err)
 	}
-	for _, name := range []string{"providers", "tenants", "users", "orgs"} {
+	for _, name := range []string{"providers", "users", "orgs"} {
 		if err := waitForWorkspaceReady(ctx, kedgeDynamic, name); err != nil {
 			return fmt.Errorf("waiting for %s workspace: %w", name, err)
 		}
@@ -207,19 +200,15 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("bootstrapping post-providers artefacts: %w", err)
 	}
 
-	// 6. Install User CRD in root:kedge:users workspace.
-	logger.Info("Installing User CRD in root:kedge:users")
-	if err := b.installUserCRD(ctx); err != nil {
-		return fmt.Errorf("installing User CRD: %w", err)
-	}
-
-	// 7. Bind tenancy.kedge.faros.sh APIExport in root:kedge:users so
-	//    Organization and UserMembershipIndex CRDs are reachable there.
-	//    PR #4 ships Membership + UserMembershipIndex; the organization
-	//    bootstrap controller writes UserMembershipIndex CRs at this path.
-	//    Same admission rules as step 5d apply — the APIExport must exist
-	//    (step 5) and bind RBAC must be in place (step 5b) before this
-	//    APIBinding is created.
+	// 6. Bind tenancy.kedge.faros.sh APIExport in root:kedge:users so
+	//    User, Organization, Membership, and UserMembershipIndex CRDs
+	//    are all reachable there. The previous standalone install of a
+	//    legacy `users.kedge.faros.sh` CRD was removed when the auth
+	//    handler + dynamic client were migrated to the new tenancy
+	//    group (User now ships via the same APIExport as the other
+	//    tenancy types). Same admission rules as step 5d apply — the
+	//    APIExport must exist (step 5) and bind RBAC must be in place
+	//    (step 5b) before this APIBinding is created.
 	logger.Info("Binding tenancy.kedge.faros.sh in root:kedge:users")
 	if err := b.ensureUsersTenancyAPIBinding(ctx); err != nil {
 		return fmt.Errorf("binding tenancy.kedge.faros.sh in root:kedge:users: %w", err)
@@ -424,126 +413,129 @@ func (b *Bootstrapper) EnsureOrgMembership(ctx context.Context, orgUUID, userNam
 	return nil
 }
 
-// installUserCRD installs the User CRD in the root:kedge:users workspace.
-func (b *Bootstrapper) installUserCRD(ctx context.Context) error {
-	usersConfig := b.UsersConfig()
+// EnsureChildWorkspace materializes a kcp Workspace at
+// root:kedge:orgs:{orgUUID}:{wsUUID} of type `workspace` (see
+// config/kcp/workspacetype-workspace.yaml). Used by the organization
+// bootstrap controller to create the User's default team Workspace
+// inside their personal Org so the portal can pin a default
+// X-Kedge-Workspace header. Idempotent: returns nil on AlreadyExists
+// and blocks until the workspace reports Ready.
+//
+// The hub-mediated rule from O-10 only applies to the Organization
+// workspace itself; the child team Workspace IS tenant-accessible.
+// This method is invoked from the org bootstrap controller with the
+// hub's admin credentials so the WorkspaceType admission's bind check
+// against tenancy.kedge.faros.sh passes (same chain that already
+// powers EnsureOrgWorkspace).
+func (b *Bootstrapper) EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error {
+	if orgUUID == "" || wsUUID == "" {
+		return fmt.Errorf("EnsureChildWorkspace: orgUUID and wsUUID are required")
+	}
+	logger := klog.FromContext(ctx).WithValues("orgUUID", orgUUID, "wsUUID", wsUUID)
 
-	apiextClient, err := apiextensionsclient.NewForConfig(usersConfig)
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
-		return fmt.Errorf("creating apiextensions client: %w", err)
+		return fmt.Errorf("creating org workspace client: %w", err)
 	}
 
-	data, err := userCRDFS.ReadFile("user-crd/kedge.faros.sh_users.yaml")
-	if err != nil {
-		return fmt.Errorf("reading embedded User CRD: %w", err)
-	}
-
-	var crd apiextensionsv1.CustomResourceDefinition
-	if err := yaml.Unmarshal(data, &crd); err != nil {
-		return fmt.Errorf("unmarshaling User CRD: %w", err)
-	}
-
-	existing, err := apiextClient.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crd.Name, metav1.GetOptions{})
-	if errors.IsNotFound(err) {
-		if _, err := apiextClient.ApiextensionsV1().CustomResourceDefinitions().Create(ctx, &crd, metav1.CreateOptions{}); err != nil {
-			return fmt.Errorf("creating User CRD: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("getting User CRD: %w", err)
-	} else {
-		crd.ResourceVersion = existing.ResourceVersion
-		if _, err := apiextClient.ApiextensionsV1().CustomResourceDefinitions().Update(ctx, &crd, metav1.UpdateOptions{}); err != nil {
-			return fmt.Errorf("updating User CRD: %w", err)
-		}
-	}
-
-	// Wait for CRD to be established.
-	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-		c, err := apiextClient.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crd.Name, metav1.GetOptions{})
-		if err != nil {
-			return false, nil
-		}
-		for _, cond := range c.Status.Conditions {
-			if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
-				return true, nil
-			}
-		}
-		return false, nil
-	})
-}
-
-// CreateTenantWorkspace creates a workspace for a user, binds the kedge API,
-// and returns the workspace's logical cluster name assigned by kcp.
-// rbacIdentity is the kcp user identity (e.g. "kedge:static:abc123") that will
-// be granted cluster-admin in the new workspace.
-func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacIdentity string) (string, error) {
-	logger := klog.FromContext(ctx)
-
-	// Client targeting root:kedge:tenants.
-	tenantsConfig := configForPath(b.config, "root:kedge:tenants")
-	tenantsClient, err := dynamic.NewForConfig(tenantsConfig)
-	if err != nil {
-		return "", fmt.Errorf("creating tenants client: %w", err)
-	}
-
-	// Create workspace for the user. The kedge-owned "tenant" WorkspaceType
-	// (bootstrapped in root:kedge) declares tenancy.kcp.io in its
-	// defaultAPIBindings so child workspace creation works out of the box.
-	// We additionally ensure that binding exists below (see
-	// ensureTenancyAPIBinding) so workspaces created before that addition
-	// also pick it up on the next login.
 	ws := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "tenancy.kcp.io/v1alpha1",
 			"kind":       "Workspace",
 			"metadata": map[string]interface{}{
-				"name": userID,
+				"name": wsUUID,
 			},
 			"spec": map[string]interface{}{
 				"type": map[string]interface{}{
-					"name": "tenant",
+					"name": "workspace",
 					"path": "root:kedge",
 				},
 			},
 		},
 	}
 
-	_, err = tenantsClient.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
-		return "", fmt.Errorf("creating tenant workspace %s: %w", userID, err)
+	if _, err := orgClient.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{}); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating child Workspace %s in org %s: %w", wsUUID, orgUUID, err)
+		}
+		logger.V(4).Info("Child Workspace already exists")
+	} else {
+		logger.Info("Created child Workspace")
 	}
 
-	if err := waitForWorkspaceReady(ctx, tenantsClient, userID); err != nil {
-		return "", fmt.Errorf("waiting for tenant workspace %s: %w", userID, err)
+	if err := waitForWorkspaceReady(ctx, orgClient, wsUUID); err != nil {
+		return fmt.Errorf("waiting for child Workspace %s in org %s: %w", wsUUID, orgUUID, err)
 	}
+	return nil
+}
 
-	// Read the workspace to get the logical cluster name assigned by kcp.
-	readyWS, err := tenantsClient.Resource(workspaceGVR).Get(ctx, userID, metav1.GetOptions{})
+// childWorkspacePath returns the canonical kcp workspace path for the
+// default team Workspace inside an Organization workspace. Centralized
+// here so all helpers compute it the same way.
+func childWorkspacePath(orgUUID, wsUUID string) string {
+	return "root:kedge:orgs:" + orgUUID + ":" + wsUUID
+}
+
+// GetChildWorkspaceClusterName returns the kcp logical-cluster short
+// hash (e.g. "2mmugqjf6k4nwuve") for the child team Workspace at
+// root:kedge:orgs:{orgUUID}:{wsUUID}. kcp sets it in
+// Workspace.spec.cluster when the workspace reaches phase Ready;
+// EnsureChildWorkspace blocks on Ready, so by the time this method is
+// called the field is populated. The short hash is the form kubectl /
+// the kcp proxy address by — using the full path in kubeconfigs makes
+// for ugly URLs and breaks tools that index on cluster name.
+func (b *Bootstrapper) GetChildWorkspaceClusterName(ctx context.Context, orgUUID, wsUUID string) (string, error) {
+	if orgUUID == "" || wsUUID == "" {
+		return "", fmt.Errorf("GetChildWorkspaceClusterName: orgUUID and wsUUID are required")
+	}
+	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
-		return "", fmt.Errorf("getting workspace %s: %w", userID, err)
+		return "", fmt.Errorf("creating org workspace client: %w", err)
 	}
-	clusterName, _, _ := unstructured.NestedString(readyWS.Object, "spec", "cluster")
-	if clusterName == "" {
-		return "", fmt.Errorf("workspace %s has no spec.cluster after becoming ready", userID)
-	}
-
-	// Client targeting root:kedge:tenants:<userID>.
-	tenantConfig := configForPath(b.config, "root:kedge:tenants:"+userID)
-	tenantClient, err := dynamic.NewForConfig(tenantConfig)
+	ws, err := orgClient.Resource(workspaceGVR).Get(ctx, wsUUID, metav1.GetOptions{})
 	if err != nil {
-		return "", fmt.Errorf("creating tenant client: %w", err)
+		return "", fmt.Errorf("getting Workspace %s in org %s: %w", wsUUID, orgUUID, err)
+	}
+	cluster, _, _ := unstructured.NestedString(ws.Object, "spec", "cluster")
+	if cluster == "" {
+		return "", fmt.Errorf("workspace %s in org %s has empty spec.cluster (not Ready yet?)", wsUUID, orgUUID)
+	}
+	return cluster, nil
+}
+
+// EnsureChildWorkspaceKedgeBinding creates an APIBinding to
+// root:kedge:providers.core.faros.sh inside the child team Workspace,
+// accepting the permission claims kedge controllers need. This is what
+// makes Edge, MCPServer, Placement, VirtualWorkload usable inside the
+// user's default Workspace.
+//
+// The legacy tenant-workspace path (CreateTenantWorkspace) used to
+// create the same binding inside root:kedge:tenants:{userID}. PR #211
+// retires that flow; the bootstrap controller now drives this method
+// for every personal-Org default Workspace.
+//
+// tenancy.kcp.io is intentionally NOT in the accepted claims: tenants
+// must not be able to create child kcp workspaces from inside their
+// own Workspace.
+func (b *Bootstrapper) EnsureChildWorkspaceKedgeBinding(ctx context.Context, orgUUID, wsUUID string) error {
+	if orgUUID == "" || wsUUID == "" {
+		return fmt.Errorf("EnsureChildWorkspaceKedgeBinding: orgUUID and wsUUID are required")
+	}
+	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
+	wsClient, err := dynamic.NewForConfig(wsConfig)
+	if err != nil {
+		return fmt.Errorf("creating child workspace client: %w", err)
 	}
 
-	// Create APIBinding with accepted permission claims for core resources.
 	allVerbs := []string{"get", "list", "watch", "create", "update", "delete"}
 	binding := &apisv1alpha2.APIBinding{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
 			Kind:       "APIBinding",
 		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "kedge",
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: "kedge"},
 		Spec: apisv1alpha2.APIBindingSpec{
 			Reference: apisv1alpha2.BindingReference{
 				Export: &apisv1alpha2.ExportBindingReference{
@@ -558,68 +550,68 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 				acceptedClaim("", "serviceaccounts", "", allVerbs),
 				acceptedClaim("rbac.authorization.k8s.io", "clusterroles", "", allVerbs),
 				acceptedClaim("rbac.authorization.k8s.io", "clusterrolebindings", "", allVerbs),
-				acceptedClaim("tenancy.kcp.io", "workspaces", b.workspaceIdentityHash, allVerbs),
 			},
 		},
 	}
-
 	u, err := toUnstructured(binding)
 	if err != nil {
-		return "", fmt.Errorf("converting APIBinding to unstructured: %w", err)
+		return fmt.Errorf("converting kedge APIBinding to unstructured: %w", err)
 	}
-
-	_, err = tenantClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{})
-	if errors.IsAlreadyExists(err) {
-		// Update existing binding to ensure permission claims are current.
-		existing, getErr := tenantClient.Resource(apiBindingGVR).Get(ctx, "kedge", metav1.GetOptions{})
-		if getErr != nil {
-			return "", fmt.Errorf("getting existing APIBinding in tenant workspace %s: %w", userID, getErr)
-		}
-		u.SetResourceVersion(existing.GetResourceVersion())
-		if _, err := tenantClient.Resource(apiBindingGVR).Update(ctx, u, metav1.UpdateOptions{}); err != nil {
-			return "", fmt.Errorf("updating APIBinding in tenant workspace %s: %w", userID, err)
-		}
-	} else if err != nil {
-		return "", fmt.Errorf("creating APIBinding in tenant workspace %s: %w", userID, err)
+	if _, err := wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating kedge APIBinding in %s/%s: %w", orgUUID, wsUUID, err)
 	}
-
-	// Wait for the core.faros.sh APIBinding to be Bound — this single binding
-	// gives access to all kedge API groups (kedge.faros.sh, tenancy.kedge.faros.sh, etc.).
-	if waitErr := waitForAPIBindingBound(ctx, tenantClient, "kedge"); waitErr != nil {
-		logger.Error(waitErr, "kedge APIBinding did not become Bound (non-fatal)", "userID", userID)
+	if err := waitForAPIBindingBound(ctx, wsClient, "kedge"); err != nil {
+		return err
 	}
+	// The `workspace` WorkspaceType deliberately does NOT extend
+	// root:universal (see config/kcp/workspacetype-workspace.yaml for
+	// the rationale), so kcp does not auto-create the `default`
+	// namespace. Create it ourselves once the kedge APIBinding's
+	// namespaces permission claim has been accepted — without this,
+	// `kubectl apply` for any namespaced resource fails with
+	// `namespaces "default" not found`.
+	return ensureDefaultNamespace(ctx, wsClient)
+}
 
-	// Ensure the tenancy.kcp.io APIBinding exists in the tenant workspace so
-	// the edge-mount controller (and anything else that needs sub-workspaces)
-	// can POST to /apis/tenancy.kcp.io/v1alpha1/workspaces. The "tenant"
-	// WorkspaceType's defaultAPIBindings handles this for newly-created
-	// workspaces; this call backfills the binding for workspaces that pre-date
-	// that change.
-	if err := ensureTenancyAPIBinding(ctx, tenantClient); err != nil {
-		// Non-fatal: log and continue. Mount workspace creation will retry,
-		// and the user can still use most kedge features without it.
-		logger.Error(err, "Failed to ensure tenancy.kcp.io APIBinding (non-fatal)", "userID", userID)
+// ensureDefaultNamespace creates the `default` Namespace in the given
+// workspace. Idempotent on AlreadyExists. Used to compensate for the
+// workspace WorkspaceType dropping `extend: universal`.
+func ensureDefaultNamespace(ctx context.Context, wsClient dynamic.Interface) error {
+	ns := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Namespace",
+			"metadata": map[string]interface{}{
+				"name": "default",
+			},
+		},
 	}
-
-	// Grant the user cluster-admin in their own workspace so they can manage
-	// their resources directly (e.g. via GraphQL or kubectl with their token).
-	if rbacIdentity != "" {
-		if err := ensureWorkspaceAdmin(ctx, tenantClient, rbacIdentity); err != nil {
-			// Non-fatal: log and continue.
-			logger.Error(err, "Failed to create workspace-admin ClusterRoleBinding (non-fatal)", "userID", userID)
-		}
+	if _, err := wsClient.Resource(schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}).Create(ctx, ns, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating default namespace: %w", err)
 	}
+	return nil
+}
 
-	// Ensure the default MCPServer aggregate exists in the tenant
-	// workspace. Per-kind defaults (KubernetesMCP, LinuxMCP) used to be
-	// seeded alongside; both CRDs have been removed in favor of this
-	// single aggregate that exposes kube + linux tools at one endpoint.
-	if err := createDefaultMCPObject(ctx, tenantClient, mcpServerGVR, "MCPServer"); err != nil {
-		logger.Error(err, "Failed to create default MCPServer in tenant workspace (non-fatal)", "userID", userID)
+// EnsureChildWorkspaceAdmin grants cluster-admin in the child team
+// Workspace to the given rbacIdentity. Thin wrapper over
+// EnsureWorkspaceAdmin with the canonical child-workspace path.
+// Idempotent.
+func (b *Bootstrapper) EnsureChildWorkspaceAdmin(ctx context.Context, orgUUID, wsUUID, rbacIdentity string) error {
+	if orgUUID == "" || wsUUID == "" {
+		return fmt.Errorf("EnsureChildWorkspaceAdmin: orgUUID and wsUUID are required")
 	}
+	return b.EnsureWorkspaceAdmin(ctx, childWorkspacePath(orgUUID, wsUUID), rbacIdentity)
+}
 
-	logger.Info("Tenant workspace created", "userID", userID, "clusterName", clusterName)
-	return clusterName, nil
+// EnsureChildWorkspaceDefaultMCPServer seeds the "default" MCPServer
+// CR inside the child team Workspace. Thin wrapper over
+// EnsureDefaultMCPServer with the canonical child-workspace path.
+// Idempotent.
+func (b *Bootstrapper) EnsureChildWorkspaceDefaultMCPServer(ctx context.Context, orgUUID, wsUUID string) error {
+	if orgUUID == "" || wsUUID == "" {
+		return fmt.Errorf("EnsureChildWorkspaceDefaultMCPServer: orgUUID and wsUUID are required")
+	}
+	return b.EnsureDefaultMCPServer(ctx, childWorkspacePath(orgUUID, wsUUID))
 }
 
 // EnsureDefaultMCPServer creates the "default" MCPServer (the aggregate
@@ -663,75 +655,6 @@ func createDefaultMCPObject(ctx context.Context, tenantClient dynamic.Interface,
 	_, err := tenantClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil && !errors.IsAlreadyExists(err) {
 		return err
-	}
-	return nil
-}
-
-// BackfillDefaultMCPs walks every tenant workspace under root:kedge:tenants
-// and ensures both kubernetesmcps/default and linuxmcps/default exist there.
-//
-// Why this exists: the per-tenant defaults are normally seeded in two places:
-//   - CreateTenantWorkspace (for brand-new workspaces)
-//   - EnsureDefault*MCP, called from the OIDC + static-token login paths
-//
-// Static-token users authenticated directly by the embedded kcp's
-// token-auth-file *bypass* the kedge proxy's login hook entirely, so they
-// never trigger the per-login backfill.  Workspaces created before LinuxMCP
-// existed also miss out on the new default.  This method runs once at hub
-// startup as a safety net so both default MCP servers always exist for every
-// tenant.  Best-effort: per-tenant errors are logged and the loop continues.
-func (b *Bootstrapper) BackfillDefaultMCPs(ctx context.Context) error {
-	logger := klog.FromContext(ctx).WithName("backfill-default-mcps")
-
-	tenantsConfig := configForPath(b.config, "root:kedge:tenants")
-	tenantsClient, err := dynamic.NewForConfig(tenantsConfig)
-	if err != nil {
-		return fmt.Errorf("creating root:kedge:tenants client: %w", err)
-	}
-
-	wsList, err := tenantsClient.Resource(workspaceGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("listing tenant workspaces: %w", err)
-	}
-
-	type gvkPair struct {
-		gvr  schema.GroupVersionResource
-		kind string
-	}
-	kinds := []gvkPair{
-		// KubernetesMCP + LinuxMCP per-kind CRDs were removed; the
-		// MCPServer aggregate is the only per-tenant MCP default the
-		// backfill needs to seed.
-		{mcpServerGVR, "MCPServer"},
-	}
-
-	for _, ws := range wsList.Items {
-		userID := ws.GetName()
-		clusterName, _, _ := unstructured.NestedString(ws.Object, "spec", "cluster")
-		if clusterName == "" {
-			// Workspace not yet ready / no logical cluster assigned — skip.
-			logger.V(4).Info("skipping workspace without spec.cluster", "workspace", userID)
-			continue
-		}
-
-		// Connect by clusterName (logical cluster) which is what the rest of
-		// the system identifies tenants by — it's also what status.URL bakes
-		// into per-tenant MCP endpoint URLs.
-		tenantCfg := configForPath(b.config, clusterName)
-		tenantClient, err := dynamic.NewForConfig(tenantCfg)
-		if err != nil {
-			logger.Error(err, "skipping tenant", "userID", userID, "cluster", clusterName)
-			continue
-		}
-
-		for _, k := range kinds {
-			if err := createDefaultMCPObject(ctx, tenantClient, k.gvr, k.kind); err != nil {
-				logger.Error(err, "failed to create default in tenant (non-fatal)",
-					"userID", userID, "cluster", clusterName, "kind", k.kind)
-				continue
-			}
-		}
-		logger.V(2).Info("ensured default MCPs", "userID", userID, "cluster", clusterName)
 	}
 	return nil
 }
@@ -902,59 +825,6 @@ func ensureProvidersSelfBinding(ctx context.Context, providersDynamic dynamic.In
 	}
 	if _, err := providersDynamic.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("creating providers.kedge.faros.sh APIBinding: %w", err)
-	}
-	return nil
-}
-
-// ensureTenancyAPIBinding makes sure an APIBinding to root:tenancy.kcp.io
-// exists in the tenant workspace. New workspaces get this binding automatically
-// via the "tenant" WorkspaceType's defaultAPIBindings, but workspaces created
-// before that field was added need it backfilled so the edge-mount controller
-// can create child Workspaces.
-//
-// Idempotent: if any APIBinding already references root:tenancy.kcp.io
-// (regardless of name), this is a no-op. We also tolerate the "Create raced
-// with WorkspaceType auto-bind" case by ignoring AlreadyExists.
-func ensureTenancyAPIBinding(ctx context.Context, tenantClient dynamic.Interface) error {
-	const (
-		tenancyExportPath = "root"
-		tenancyExportName = "tenancy.kcp.io"
-		bindingName       = "tenancy.kcp.io"
-	)
-
-	existing, err := tenantClient.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("listing APIBindings: %w", err)
-	}
-	for _, b := range existing.Items {
-		path, _, _ := unstructured.NestedString(b.Object, "spec", "reference", "export", "path")
-		name, _, _ := unstructured.NestedString(b.Object, "spec", "reference", "export", "name")
-		if path == tenancyExportPath && name == tenancyExportName {
-			return nil
-		}
-	}
-
-	binding := &apisv1alpha2.APIBinding{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
-			Kind:       "APIBinding",
-		},
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-		Spec: apisv1alpha2.APIBindingSpec{
-			Reference: apisv1alpha2.BindingReference{
-				Export: &apisv1alpha2.ExportBindingReference{
-					Path: tenancyExportPath,
-					Name: tenancyExportName,
-				},
-			},
-		},
-	}
-	u, err := toUnstructured(binding)
-	if err != nil {
-		return fmt.Errorf("converting tenancy APIBinding to unstructured: %w", err)
-	}
-	if _, err := tenantClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating tenancy.kcp.io APIBinding: %w", err)
 	}
 	return nil
 }

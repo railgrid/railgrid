@@ -24,15 +24,17 @@ import "embed"
 //go:embed workspace-kedge.yaml
 var RootWorkspaceFS embed.FS
 
-// KedgeWorkspaceFS contains workspace definitions for children of root:kedge,
-// plus the kedge-owned WorkspaceTypes whose defaultAPIBindings do NOT depend
-// on an APIExport in root:kedge:providers (so they can be applied before
-// providers is fully populated). The `tenant` WorkspaceType only references
-// root.tenancy.kcp.io which is always available; the `organization`
-// WorkspaceType references the kedge-owned tenancy.kedge.faros.sh APIExport
-// and therefore ships in PostProvidersFS instead.
+// KedgeWorkspaceFS contains workspace definitions for children of root:kedge.
+// The legacy `tenant` WorkspaceType and its `root:kedge:tenants` parent
+// workspace were retired when the new multi-org model took over (the
+// personal Org's default child Workspace replaces the per-user tenant
+// workspace); their YAMLs were deleted and dropped from the embed.
+// The `organization` + `workspace` WorkspaceTypes carry defaultAPIBindings
+// referencing the kedge-owned tenancy.kedge.faros.sh APIExport and ship in
+// PostProvidersFS instead, so KedgeWorkspaceFS now contains only
+// workspace bootstrap definitions.
 //
-//go:embed workspace-providers.yaml workspace-tenants.yaml workspace-users.yaml workspace-orgs.yaml workspacetype-tenant.yaml
+//go:embed workspace-providers.yaml workspace-users.yaml workspace-orgs.yaml
 var KedgeWorkspaceFS embed.FS
 
 // ProvidersFS contains APIResourceSchemas and APIExport applied to root:kedge:providers.

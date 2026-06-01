@@ -21,7 +21,7 @@ spec:
       crd: {}
   - group: tenancy.kedge.faros.sh
     name: users
-    schema: v260531-fb75204.users.tenancy.kedge.faros.sh
+    schema: v260531-0ae765d.users.tenancy.kedge.faros.sh
     storage:
       crd: {}
 status: {}

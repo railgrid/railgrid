@@ -281,13 +281,12 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		logger.Info("kcp bootstrap complete")
 
-		// Backfill default MCP objects (KubernetesMCP and LinuxMCP) in every
-		// pre-existing tenant workspace.  Best-effort safety net for
-		// static-token users (who bypass the proxy's per-login seed) and for
-		// workspaces created before either default existed.
-		if err := bootstrapper.BackfillDefaultMCPs(ctx); err != nil {
-			logger.Error(err, "Backfill default MCPs failed (non-fatal)")
-		}
+		// The legacy per-tenant BackfillDefaultMCPs walk (which iterated
+		// root:kedge:tenants) was removed when the new multi-org model
+		// retired tenant workspaces. The organization bootstrap controller
+		// now seeds the "default" MCPServer inside each personal Org's
+		// default child Workspace and re-runs idempotently on every
+		// reconcile.
 
 		// Create user client targeting root:kedge:users workspace.
 		userDynamic, err := dynamic.NewForConfig(bootstrapper.UsersConfig())

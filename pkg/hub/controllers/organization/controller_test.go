@@ -37,17 +37,41 @@ import (
 // each method succeeds and records its call; tests can override the
 // matching err field to simulate failure paths.
 type fakeProvisioner struct {
-	mu       sync.Mutex
-	wsCalls  []string
-	memCalls []membershipCall
-	wsErr    error
-	memErr   error
+	mu             sync.Mutex
+	wsCalls        []string
+	memCalls       []membershipCall
+	childCalls     []childWorkspaceCall
+	kedgeBindCalls []childWorkspaceCall
+	adminCalls     []workspaceAdminCall
+	mcpCalls       []childWorkspaceCall
+	clusterCalls   []childWorkspaceCall
+	wsErr          error
+	memErr         error
+	childErr       error
+	kedgeBindErr   error
+	adminErr       error
+	mcpErr         error
+	clusterErr     error
+	// clusterHash is the value returned by GetChildWorkspaceClusterName.
+	// Defaults to a fixed test hash; tests can override.
+	clusterHash string
 }
 
 type membershipCall struct {
 	OrgUUID  string
 	UserName string
 	Role     string
+}
+
+type childWorkspaceCall struct {
+	OrgUUID string
+	WSUUID  string
+}
+
+type workspaceAdminCall struct {
+	OrgUUID      string
+	WSUUID       string
+	RBACIdentity string
 }
 
 func (f *fakeProvisioner) EnsureOrgWorkspace(_ context.Context, orgUUID string) error {
@@ -62,6 +86,47 @@ func (f *fakeProvisioner) EnsureOrgMembership(_ context.Context, orgUUID, userNa
 	defer f.mu.Unlock()
 	f.memCalls = append(f.memCalls, membershipCall{OrgUUID: orgUUID, UserName: userName, Role: role})
 	return f.memErr
+}
+
+func (f *fakeProvisioner) EnsureChildWorkspace(_ context.Context, orgUUID, wsUUID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.childCalls = append(f.childCalls, childWorkspaceCall{OrgUUID: orgUUID, WSUUID: wsUUID})
+	return f.childErr
+}
+
+func (f *fakeProvisioner) EnsureChildWorkspaceKedgeBinding(_ context.Context, orgUUID, wsUUID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.kedgeBindCalls = append(f.kedgeBindCalls, childWorkspaceCall{OrgUUID: orgUUID, WSUUID: wsUUID})
+	return f.kedgeBindErr
+}
+
+func (f *fakeProvisioner) EnsureChildWorkspaceAdmin(_ context.Context, orgUUID, wsUUID, rbacIdentity string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adminCalls = append(f.adminCalls, workspaceAdminCall{OrgUUID: orgUUID, WSUUID: wsUUID, RBACIdentity: rbacIdentity})
+	return f.adminErr
+}
+
+func (f *fakeProvisioner) EnsureChildWorkspaceDefaultMCPServer(_ context.Context, orgUUID, wsUUID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mcpCalls = append(f.mcpCalls, childWorkspaceCall{OrgUUID: orgUUID, WSUUID: wsUUID})
+	return f.mcpErr
+}
+
+func (f *fakeProvisioner) GetChildWorkspaceClusterName(_ context.Context, orgUUID, wsUUID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clusterCalls = append(f.clusterCalls, childWorkspaceCall{OrgUUID: orgUUID, WSUUID: wsUUID})
+	if f.clusterErr != nil {
+		return "", f.clusterErr
+	}
+	if f.clusterHash == "" {
+		return "test-cluster-hash", nil
+	}
+	return f.clusterHash, nil
 }
 
 func (f *fakeProvisioner) WorkspaceCalls() []string {
@@ -80,6 +145,38 @@ func (f *fakeProvisioner) MembershipCalls() []membershipCall {
 	return out
 }
 
+func (f *fakeProvisioner) ChildWorkspaceCalls() []childWorkspaceCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]childWorkspaceCall, len(f.childCalls))
+	copy(out, f.childCalls)
+	return out
+}
+
+func (f *fakeProvisioner) KedgeBindCalls() []childWorkspaceCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]childWorkspaceCall, len(f.kedgeBindCalls))
+	copy(out, f.kedgeBindCalls)
+	return out
+}
+
+func (f *fakeProvisioner) AdminCalls() []workspaceAdminCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]workspaceAdminCall, len(f.adminCalls))
+	copy(out, f.adminCalls)
+	return out
+}
+
+func (f *fakeProvisioner) MCPCalls() []childWorkspaceCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]childWorkspaceCall, len(f.mcpCalls))
+	copy(out, f.mcpCalls)
+	return out
+}
+
 func newTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -93,8 +190,9 @@ func newUser(name, displayName string) *tenancyv1alpha1.User {
 	return &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: tenancyv1alpha1.UserSpec{
-			Email: name + "@example.com",
-			Name:  displayName,
+			Email:        name + "@example.com",
+			Name:         displayName,
+			RBACIdentity: "rbac-" + name,
 		},
 	}
 }
@@ -147,12 +245,27 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionMembershipReady, metav1.ConditionTrue, reasonMembershipReady) {
 		t.Errorf("expected MembershipReady=True/MembershipWritten condition, got %#v", org.Status.Conditions)
 	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady, metav1.ConditionTrue, reasonDefaultWorkspaceProvisioned) {
+		t.Errorf("expected DefaultWorkspaceReady=True/DefaultWorkspaceProvisioned condition, got %#v", org.Status.Conditions)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceKedgeBound, metav1.ConditionTrue, reasonKedgeBindingReady) {
+		t.Errorf("expected DefaultWorkspaceKedgeBound=True/KedgeBindingWritten condition, got %#v", org.Status.Conditions)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady, metav1.ConditionTrue, reasonWorkspaceAdminReady) {
+		t.Errorf("expected DefaultWorkspaceAdminReady=True/WorkspaceAdminGranted condition, got %#v", org.Status.Conditions)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceMCPServerReady, metav1.ConditionTrue, reasonMCPServerReady) {
+		t.Errorf("expected DefaultWorkspaceMCPServerReady=True/DefaultMCPServerCreated condition, got %#v", org.Status.Conditions)
+	}
 	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionIndexSynced, metav1.ConditionTrue, reasonIndexSynced) {
 		t.Errorf("expected IndexSynced=True/IndexEntryWritten condition, got %#v", org.Status.Conditions)
 	}
 	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady, metav1.ConditionTrue, reasonAllStepsReady) {
 		t.Errorf("expected Ready=True/OrganizationReady condition, got %#v", org.Status.Conditions)
 	}
+
+	// Verify all four provisioner methods were called exactly once with
+	// the expected arguments.
 	if calls := prov.WorkspaceCalls(); len(calls) != 1 || calls[0] != org.Name {
 		t.Errorf("expected exactly one EnsureOrgWorkspace call for %q, got %v", org.Name, calls)
 	}
@@ -160,30 +273,68 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 	if len(memCalls) != 1 || memCalls[0].OrgUUID != org.Name || memCalls[0].UserName != "alice" || memCalls[0].Role != tenancyv1alpha1.MembershipRoleAdmin {
 		t.Errorf("expected exactly one admin EnsureOrgMembership call for alice in %q, got %v", org.Name, memCalls)
 	}
+	if got.Status.DefaultWorkspace == "" {
+		t.Fatal("expected User.status.defaultWorkspace to be set after reconcile")
+	}
+	wsUUID := got.Status.DefaultWorkspace
+	childCalls := prov.ChildWorkspaceCalls()
+	if len(childCalls) != 1 || childCalls[0].OrgUUID != org.Name || childCalls[0].WSUUID != wsUUID {
+		t.Errorf("expected exactly one EnsureChildWorkspace call for %s/%s, got %v", org.Name, wsUUID, childCalls)
+	}
+	kedgeCalls := prov.KedgeBindCalls()
+	if len(kedgeCalls) != 1 || kedgeCalls[0].OrgUUID != org.Name || kedgeCalls[0].WSUUID != wsUUID {
+		t.Errorf("expected exactly one EnsureChildWorkspaceKedgeBinding call for %s/%s, got %v", org.Name, wsUUID, kedgeCalls)
+	}
+	adminCalls := prov.AdminCalls()
+	if len(adminCalls) != 1 || adminCalls[0].OrgUUID != org.Name || adminCalls[0].WSUUID != wsUUID || adminCalls[0].RBACIdentity != "rbac-alice" {
+		t.Errorf("expected exactly one EnsureChildWorkspaceAdmin call for %s/%s with rbac-alice, got %v", org.Name, wsUUID, adminCalls)
+	}
+	mcpCalls := prov.MCPCalls()
+	if len(mcpCalls) != 1 || mcpCalls[0].OrgUUID != org.Name || mcpCalls[0].WSUUID != wsUUID {
+		t.Errorf("expected exactly one EnsureChildWorkspaceDefaultMCPServer call for %s/%s, got %v", org.Name, wsUUID, mcpCalls)
+	}
 
-	// Verify UserMembershipIndex was created with one personal-Org entry.
+	// Step J: the controller patches User.spec.DefaultCluster to the
+	// kcp logical-cluster short hash returned by
+	// GetChildWorkspaceClusterName once Step E succeeds.
+	if want := "test-cluster-hash"; got.Spec.DefaultCluster != want {
+		t.Errorf("User.spec.DefaultCluster: got %q, want %q", got.Spec.DefaultCluster, want)
+	}
+
+	// Verify UserMembershipIndex was created with one org-scope + one
+	// workspace-scope entry, both for this Org.
 	var index tenancyv1alpha1.UserMembershipIndex
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "alice"}, &index); err != nil {
 		t.Fatalf("get UserMembershipIndex: %v", err)
 	}
-	if got, want := len(index.Spec.Entries), 1; got != want {
-		t.Fatalf("UserMembershipIndex entries: got %d, want %d", got, want)
+	if got, want := len(index.Spec.Entries), 2; got != want {
+		t.Fatalf("UserMembershipIndex entries: got %d, want %d (one org-scope + one workspace-scope)", got, want)
 	}
-	entry := index.Spec.Entries[0]
-	if entry.OrgUUID != org.Name {
-		t.Errorf("entry.OrgUUID: got %q, want %q", entry.OrgUUID, org.Name)
+
+	// Org-scope entry has WorkspaceUUID="".
+	orgEntryIdx := indexOfEntry(index.Spec.Entries, org.Name, "")
+	if orgEntryIdx < 0 {
+		t.Fatalf("org-scope entry missing; entries: %#v", index.Spec.Entries)
 	}
-	if entry.OrgDisplayName != "Alice's personal" {
-		t.Errorf("entry.OrgDisplayName: got %q, want %q", entry.OrgDisplayName, "Alice's personal")
+	orgEntry := index.Spec.Entries[orgEntryIdx]
+	if orgEntry.OrgDisplayName != "Alice's personal" {
+		t.Errorf("org entry displayName: got %q, want %q", orgEntry.OrgDisplayName, "Alice's personal")
 	}
-	if entry.OrgFirstAdmin != "alice" {
-		t.Errorf("entry.OrgFirstAdmin: got %q, want alice", entry.OrgFirstAdmin)
+	if orgEntry.OrgFirstAdmin != "alice" || orgEntry.Role != tenancyv1alpha1.MembershipRoleAdmin || !orgEntry.Personal {
+		t.Errorf("org entry meta: %#v", orgEntry)
 	}
-	if entry.Role != tenancyv1alpha1.MembershipRoleAdmin {
-		t.Errorf("entry.Role: got %q, want admin", entry.Role)
+
+	// Workspace-scope entry has WorkspaceUUID=wsUUID + displayName="default".
+	wsEntryIdx := indexOfEntry(index.Spec.Entries, org.Name, wsUUID)
+	if wsEntryIdx < 0 {
+		t.Fatalf("workspace-scope entry missing; entries: %#v", index.Spec.Entries)
 	}
-	if !entry.Personal {
-		t.Errorf("entry.Personal: got false, want true")
+	wsEntry := index.Spec.Entries[wsEntryIdx]
+	if wsEntry.WorkspaceDisplayName != defaultWorkspaceDisplayName {
+		t.Errorf("workspace entry displayName: got %q, want %q", wsEntry.WorkspaceDisplayName, defaultWorkspaceDisplayName)
+	}
+	if wsEntry.Role != tenancyv1alpha1.MembershipRoleAdmin {
+		t.Errorf("workspace entry role: got %q, want admin", wsEntry.Role)
 	}
 }
 
@@ -271,6 +422,67 @@ func TestReconciler_MembershipFailureSurfacesInStatus(t *testing.T) {
 	// Heal the provisioner; next reconcile should make everything True.
 	prov.memErr = nil
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "erin"}}); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: org.Name}, &org); err != nil {
+		t.Fatalf("re-get organization: %v", err)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady, metav1.ConditionTrue, reasonAllStepsReady) {
+		t.Errorf("expected Ready=True/OrganizationReady after recovery; got %#v", org.Status.Conditions)
+	}
+}
+
+// TestReconciler_ChildWorkspaceFailureSurfacesInStatus verifies the step E
+// failure path: workspace OK, org Membership OK, but EnsureChildWorkspace
+// returns an error. DefaultWorkspaceReady goes False/DefaultWorkspaceProvisioningFailed;
+// downstream steps (workspace Membership + index sync) defer with
+// AwaitingDefaultWorkspace / AwaitingMembership; aggregate Ready stays
+// False. A subsequent reconcile with the failure cleared converges to
+// Ready=True.
+func TestReconciler_ChildWorkspaceFailureSurfacesInStatus(t *testing.T) {
+	scheme := newTestScheme(t)
+	user := newUser("frank", "Frank")
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(user).
+		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).
+		Build()
+
+	prov := &fakeProvisioner{childErr: errors.New("child WT bind denied")}
+	r := &Reconciler{client: c, provisioner: prov}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "frank"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got tenancyv1alpha1.User
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "frank"}, &got); err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	var org tenancyv1alpha1.Organization
+	if err := c.Get(context.Background(), types.NamespacedName{Name: got.Status.PersonalOrg}, &org); err != nil {
+		t.Fatalf("get organization: %v", err)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionWorkspaceReady, metav1.ConditionTrue, reasonWorkspaceProvisioned) {
+		t.Errorf("WorkspaceReady should still be True; got %#v", org.Status.Conditions)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionMembershipReady, metav1.ConditionTrue, reasonMembershipReady) {
+		t.Errorf("MembershipReady should still be True; got %#v", org.Status.Conditions)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady, metav1.ConditionFalse, reasonDefaultWorkspaceProvisioningFailed) {
+		t.Errorf("expected DefaultWorkspaceReady=False/DefaultWorkspaceProvisioningFailed; got %#v", org.Status.Conditions)
+	}
+	// Step D (UMI sync) is gated only on Step C now; the org-scope entry
+	// is written even when Step E (default workspace) has failed.
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionIndexSynced, metav1.ConditionTrue, reasonIndexSynced) {
+		t.Errorf("expected IndexSynced=True/IndexEntryWritten (org-scope only); got %#v", org.Status.Conditions)
+	}
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionReady, metav1.ConditionFalse, reasonAllStepsNotReady) {
+		t.Errorf("expected Ready=False/BootstrapInProgress; got %#v", org.Status.Conditions)
+	}
+
+	// Heal and re-reconcile.
+	prov.childErr = nil
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "frank"}}); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: org.Name}, &org); err != nil {

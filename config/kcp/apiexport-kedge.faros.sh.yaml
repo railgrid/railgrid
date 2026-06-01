@@ -79,11 +79,6 @@ spec:
     storage:
       crd: {}
   - group: kedge.faros.sh
-    name: users
-    schema: v260217-7570c9b.users.kedge.faros.sh
-    storage:
-      crd: {}
-  - group: kedge.faros.sh
     name: virtualworkloads
     schema: v260515-2974e60.virtualworkloads.kedge.faros.sh
     storage:
