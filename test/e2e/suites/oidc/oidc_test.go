@@ -209,6 +209,25 @@ func TestMultiOrgIsolation(t *testing.T) {
 	testenv.Test(t, cases.MultiOrgIsolation())
 }
 
+// Tenancy CRUD + invariants — single-user lifecycles that exercise every
+// REST verb on Org/Workspace/ServiceAccount, plus the negative checks
+// for tenant headers and personal-org guardrails.
+func TestTenancyOrgCRUD(t *testing.T)             { testenv.Test(t, cases.TenancyOrgCRUD()) }
+func TestTenancyWorkspaceCRUD(t *testing.T)       { testenv.Test(t, cases.TenancyWorkspaceCRUD()) }
+func TestTenancyServiceAccountCRUD(t *testing.T)  { testenv.Test(t, cases.TenancySACRUD()) }
+func TestTenancyServiceAccountToken(t *testing.T) { testenv.Test(t, cases.TenancySATokenAccess()) }
+func TestTenancyTenantHeaders(t *testing.T)       { testenv.Test(t, cases.TenancyTenantHeaders()) }
+func TestTenancyPersonalOrgSoftDelete(t *testing.T) {
+	testenv.Test(t, cases.TenancyPersonalOrgSoftDelete())
+}
+func TestTenancySoftDeleteHidesOrg(t *testing.T) { testenv.Test(t, cases.TenancySoftDeleteHidesOrg()) }
+
+// Two-user cross-workspace SA-token isolation. OIDC-only (needs second
+// identity).
+func TestTenancySATokenCrossWorkspace(t *testing.T) {
+	testenv.Test(t, cases.TenancySATokenCrossWorkspace())
+}
+
 // TestOIDCTokenIssuerMatchesDiscovery verifies that the hub's OIDC issuer URL
 // matches what Dex advertises in its discovery document.
 func TestOIDCTokenIssuerMatchesDiscovery(t *testing.T) {

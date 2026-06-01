@@ -24,12 +24,9 @@ limitations under the License.
 package cases
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -55,63 +52,6 @@ type tenantIsolationData struct {
 
 	// User B: separate OIDC identity. No access to User A's org.
 	userBToken string
-}
-
-// restClient is a tiny test-side wrapper around http.Client that targets
-// the hub's self-signed cert and gives the tests one place to set the
-// tenant headers + bearer.
-var restClient = &http.Client{
-	Timeout: 15 * time.Second,
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test only
-	},
-}
-
-// doRESTRequest performs a JSON request against the hub REST surface and
-// returns the status code + body. body may be nil for GET/DELETE.
-func doRESTRequest(
-	ctx context.Context,
-	method, url, bearer string,
-	tenantHeaders map[string]string,
-	body any,
-) (int, []byte, error) {
-	var reqBody io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return 0, nil, fmt.Errorf("marshal body: %w", err)
-		}
-		reqBody = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
-	if err != nil {
-		return 0, nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+bearer)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	for k, v := range tenantHeaders {
-		req.Header.Set(k, v)
-	}
-	resp, err := restClient.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close() //nolint:errcheck
-	respBody, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, respBody, nil
-}
-
-// isolationStatusReject is true for any status code the REST surface is
-// allowed to return when an identity is denied access. The hub may pick
-// 401 (no/invalid auth), 403 (auth ok, not a member), or 404 (refuse to
-// confirm existence) depending on which check fires first. All three
-// are acceptable; 200/2xx is the bug we're testing for.
-func isolationStatusReject(code int) bool {
-	return code == http.StatusUnauthorized ||
-		code == http.StatusForbidden ||
-		code == http.StatusNotFound
 }
 
 // MultiOrgIsolation is a comprehensive isolation test for the hub REST
@@ -146,7 +86,7 @@ func MultiOrgIsolation() features.Feature {
 			// ── User A: create a non-personal Organization ──────────────
 			orgName := fmt.Sprintf("e2e-isolation-%d", time.Now().UnixNano())
 			createBody := map[string]string{"displayName": orgName}
-			code, body, err := doRESTRequest(
+			code, body, err := framework.DoRESTRequest(
 				ctx, http.MethodPost, clusterEnv.HubURL+"/api/orgs",
 				resultA.IDToken, nil, createBody,
 			)
@@ -171,7 +111,7 @@ func MultiOrgIsolation() features.Feature {
 			// explicitly so the service-account isolation checks below have
 			// a target workspace to address.
 			wsBody := map[string]string{"displayName": "isolation-ws"}
-			code, body, err = doRESTRequest(
+			code, body, err = framework.DoRESTRequest(
 				ctx, http.MethodPost,
 				clusterEnv.HubURL+"/api/orgs/"+createdOrg.UUID+"/workspaces",
 				resultA.IDToken,
@@ -216,7 +156,7 @@ func MultiOrgIsolation() features.Feature {
 		}).
 		Assess("user_b_org_list_excludes_user_a_org", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			data := ctxIsolation(ctx, t)
-			code, body, err := doRESTRequest(
+			code, body, err := framework.DoRESTRequest(
 				ctx, http.MethodGet, data.hubURL+"/api/orgs",
 				data.userBToken, nil, nil,
 			)
@@ -244,7 +184,7 @@ func MultiOrgIsolation() features.Feature {
 		}).
 		Assess("user_b_cannot_read_user_a_org", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			data := ctxIsolation(ctx, t)
-			code, _, err := doRESTRequest(
+			code, _, err := framework.DoRESTRequest(
 				ctx, http.MethodGet,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID,
 				data.userBToken,
@@ -254,7 +194,7 @@ func MultiOrgIsolation() features.Feature {
 			if err != nil {
 				t.Fatalf("User B GET org: %v", err)
 			}
-			if !isolationStatusReject(code) {
+			if !framework.IsAuthRejectStatus(code) {
 				t.Fatalf("User B GET /api/orgs/{A-org}: expected 401/403/404, got %d", code)
 			}
 			t.Logf("User B GET org rejected with %d (correct)", code)
@@ -262,7 +202,7 @@ func MultiOrgIsolation() features.Feature {
 		}).
 		Assess("user_b_cannot_patch_user_a_org", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			data := ctxIsolation(ctx, t)
-			code, _, err := doRESTRequest(
+			code, _, err := framework.DoRESTRequest(
 				ctx, http.MethodPatch,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID,
 				data.userBToken,
@@ -272,7 +212,7 @@ func MultiOrgIsolation() features.Feature {
 			if err != nil {
 				t.Fatalf("User B PATCH org: %v", err)
 			}
-			if !isolationStatusReject(code) {
+			if !framework.IsAuthRejectStatus(code) {
 				t.Fatalf("User B PATCH /api/orgs/{A-org}: expected 401/403/404, got %d", code)
 			}
 			t.Logf("User B PATCH org rejected with %d (correct)", code)
@@ -280,7 +220,7 @@ func MultiOrgIsolation() features.Feature {
 		}).
 		Assess("user_b_cannot_delete_user_a_org", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			data := ctxIsolation(ctx, t)
-			code, _, err := doRESTRequest(
+			code, _, err := framework.DoRESTRequest(
 				ctx, http.MethodDelete,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID,
 				data.userBToken,
@@ -290,7 +230,7 @@ func MultiOrgIsolation() features.Feature {
 			if err != nil {
 				t.Fatalf("User B DELETE org: %v", err)
 			}
-			if !isolationStatusReject(code) {
+			if !framework.IsAuthRejectStatus(code) {
 				t.Fatalf("User B DELETE /api/orgs/{A-org}: expected 401/403/404, got %d", code)
 			}
 			t.Logf("User B DELETE org rejected with %d (correct)", code)
@@ -298,7 +238,7 @@ func MultiOrgIsolation() features.Feature {
 		}).
 		Assess("user_b_cannot_list_user_a_workspaces", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			data := ctxIsolation(ctx, t)
-			code, _, err := doRESTRequest(
+			code, _, err := framework.DoRESTRequest(
 				ctx, http.MethodGet,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/workspaces",
 				data.userBToken,
@@ -308,7 +248,7 @@ func MultiOrgIsolation() features.Feature {
 			if err != nil {
 				t.Fatalf("User B GET workspaces: %v", err)
 			}
-			if !isolationStatusReject(code) {
+			if !framework.IsAuthRejectStatus(code) {
 				t.Fatalf("User B GET /api/orgs/{A-org}/workspaces: expected 401/403/404, got %d", code)
 			}
 			t.Logf("User B list workspaces rejected with %d (correct)", code)
@@ -316,7 +256,7 @@ func MultiOrgIsolation() features.Feature {
 		}).
 		Assess("user_b_cannot_create_workspace_in_user_a_org", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			data := ctxIsolation(ctx, t)
-			code, _, err := doRESTRequest(
+			code, _, err := framework.DoRESTRequest(
 				ctx, http.MethodPost,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/workspaces",
 				data.userBToken,
@@ -326,7 +266,7 @@ func MultiOrgIsolation() features.Feature {
 			if err != nil {
 				t.Fatalf("User B POST workspace: %v", err)
 			}
-			if !isolationStatusReject(code) {
+			if !framework.IsAuthRejectStatus(code) {
 				t.Fatalf("User B POST workspace: expected 401/403/404, got %d", code)
 			}
 			t.Logf("User B create workspace rejected with %d (correct)", code)
@@ -334,7 +274,7 @@ func MultiOrgIsolation() features.Feature {
 		}).
 		Assess("user_b_cannot_delete_user_a_workspace", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			data := ctxIsolation(ctx, t)
-			code, _, err := doRESTRequest(
+			code, _, err := framework.DoRESTRequest(
 				ctx, http.MethodDelete,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/workspaces/"+data.userAWSUUID,
 				data.userBToken,
@@ -347,7 +287,7 @@ func MultiOrgIsolation() features.Feature {
 			if err != nil {
 				t.Fatalf("User B DELETE workspace: %v", err)
 			}
-			if !isolationStatusReject(code) {
+			if !framework.IsAuthRejectStatus(code) {
 				t.Fatalf("User B DELETE workspace: expected 401/403/404, got %d", code)
 			}
 			t.Logf("User B delete workspace rejected with %d (correct)", code)
@@ -355,7 +295,7 @@ func MultiOrgIsolation() features.Feature {
 		}).
 		Assess("user_b_cannot_list_user_a_memberships", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			data := ctxIsolation(ctx, t)
-			code, _, err := doRESTRequest(
+			code, _, err := framework.DoRESTRequest(
 				ctx, http.MethodGet,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/memberships",
 				data.userBToken,
@@ -365,7 +305,7 @@ func MultiOrgIsolation() features.Feature {
 			if err != nil {
 				t.Fatalf("User B GET memberships: %v", err)
 			}
-			if !isolationStatusReject(code) {
+			if !framework.IsAuthRejectStatus(code) {
 				t.Fatalf("User B GET memberships: expected 401/403/404, got %d", code)
 			}
 			t.Logf("User B list memberships rejected with %d (correct)", code)
@@ -376,7 +316,7 @@ func MultiOrgIsolation() features.Feature {
 			// The most attractive bypass: User B tries to add themselves
 			// (or anybody) as an admin of User A's org by hitting the
 			// member-add endpoint directly. Must be rejected.
-			code, _, err := doRESTRequest(
+			code, _, err := framework.DoRESTRequest(
 				ctx, http.MethodPost,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/memberships",
 				data.userBToken,
@@ -386,7 +326,7 @@ func MultiOrgIsolation() features.Feature {
 			if err != nil {
 				t.Fatalf("User B POST membership: %v", err)
 			}
-			if !isolationStatusReject(code) {
+			if !framework.IsAuthRejectStatus(code) {
 				t.Fatalf("User B POST membership (privilege escalation attempt): expected 401/403/404, got %d", code)
 			}
 			t.Logf("User B membership-add rejected with %d (correct)", code)
@@ -394,7 +334,7 @@ func MultiOrgIsolation() features.Feature {
 		}).
 		Assess("user_b_cannot_list_user_a_service_accounts", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			data := ctxIsolation(ctx, t)
-			code, _, err := doRESTRequest(
+			code, _, err := framework.DoRESTRequest(
 				ctx, http.MethodGet,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/workspaces/"+data.userAWSUUID+"/serviceaccounts",
 				data.userBToken,
@@ -407,7 +347,7 @@ func MultiOrgIsolation() features.Feature {
 			if err != nil {
 				t.Fatalf("User B GET SAs: %v", err)
 			}
-			if !isolationStatusReject(code) {
+			if !framework.IsAuthRejectStatus(code) {
 				t.Fatalf("User B GET service accounts: expected 401/403/404, got %d", code)
 			}
 			t.Logf("User B list SAs rejected with %d (correct)", code)
@@ -415,7 +355,7 @@ func MultiOrgIsolation() features.Feature {
 		}).
 		Assess("user_b_cannot_create_service_account_in_user_a_workspace", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			data := ctxIsolation(ctx, t)
-			code, _, err := doRESTRequest(
+			code, _, err := framework.DoRESTRequest(
 				ctx, http.MethodPost,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/workspaces/"+data.userAWSUUID+"/serviceaccounts",
 				data.userBToken,
@@ -428,7 +368,7 @@ func MultiOrgIsolation() features.Feature {
 			if err != nil {
 				t.Fatalf("User B POST SA: %v", err)
 			}
-			if !isolationStatusReject(code) {
+			if !framework.IsAuthRejectStatus(code) {
 				t.Fatalf("User B POST service account: expected 401/403/404, got %d", code)
 			}
 			t.Logf("User B create SA rejected with %d (correct)", code)
@@ -439,7 +379,7 @@ func MultiOrgIsolation() features.Feature {
 			// the "all rejections" outcomes above become uninformative — the
 			// hub could be rejecting everyone, not just User B.
 			data := ctxIsolation(ctx, t)
-			code, body, err := doRESTRequest(
+			code, body, err := framework.DoRESTRequest(
 				ctx, http.MethodGet,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID,
 				data.userAToken,
@@ -465,7 +405,7 @@ func MultiOrgIsolation() features.Feature {
 			}
 			// Best-effort soft-delete of the org User A created. Real cleanup
 			// happens during the soft-delete reconciler's grace window.
-			code, _, err := doRESTRequest(
+			code, _, err := framework.DoRESTRequest(
 				ctx, http.MethodDelete,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID,
 				data.userAToken,

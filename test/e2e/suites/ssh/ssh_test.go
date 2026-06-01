@@ -49,3 +49,16 @@ func TestSSHUserMappingIdentity(t *testing.T) {
 // TestJoinTokenSSHCredentialsStoredAfterConnect is intentionally not included
 // in this hub-only suite because it requires the join-token controller which
 // only runs when kcp is configured.  The test lives in the standalone suite.
+
+// Tenancy CRUD + invariants — the SSH suite runs the same single-user
+// cases against the hub-only cluster so a regression in the tenant
+// REST surface shows up here too.
+func TestTenancyOrgCRUD(t *testing.T)             { testenv.Test(t, cases.TenancyOrgCRUD()) }
+func TestTenancyWorkspaceCRUD(t *testing.T)       { testenv.Test(t, cases.TenancyWorkspaceCRUD()) }
+func TestTenancyServiceAccountCRUD(t *testing.T)  { testenv.Test(t, cases.TenancySACRUD()) }
+func TestTenancyServiceAccountToken(t *testing.T) { testenv.Test(t, cases.TenancySATokenAccess()) }
+func TestTenancyTenantHeaders(t *testing.T)       { testenv.Test(t, cases.TenancyTenantHeaders()) }
+func TestTenancyPersonalOrgSoftDelete(t *testing.T) {
+	testenv.Test(t, cases.TenancyPersonalOrgSoftDelete())
+}
+func TestTenancySoftDeleteHidesOrg(t *testing.T) { testenv.Test(t, cases.TenancySoftDeleteHidesOrg()) }

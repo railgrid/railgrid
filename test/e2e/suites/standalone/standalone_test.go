@@ -100,3 +100,16 @@ func TestJoinTokenSSHCredentialsStoredAfterConnect(t *testing.T) {
 // TestAgentCLIFlow exercises the full user-facing CLI journey:
 // login → edge create → join-command → agent run → edge Ready → kubeconfig → kubectl.
 func TestAgentCLIFlow(t *testing.T) { testenv.Test(t, cases.AgentCLIFlow()) }
+
+// Tenancy CRUD + invariants — single-user lifecycles that don't need a
+// second identity. The TenancySATokenCrossWorkspace case is OIDC-only
+// and stays out of this suite.
+func TestTenancyOrgCRUD(t *testing.T)             { testenv.Test(t, cases.TenancyOrgCRUD()) }
+func TestTenancyWorkspaceCRUD(t *testing.T)       { testenv.Test(t, cases.TenancyWorkspaceCRUD()) }
+func TestTenancyServiceAccountCRUD(t *testing.T)  { testenv.Test(t, cases.TenancySACRUD()) }
+func TestTenancyServiceAccountToken(t *testing.T) { testenv.Test(t, cases.TenancySATokenAccess()) }
+func TestTenancyTenantHeaders(t *testing.T)       { testenv.Test(t, cases.TenancyTenantHeaders()) }
+func TestTenancyPersonalOrgSoftDelete(t *testing.T) {
+	testenv.Test(t, cases.TenancyPersonalOrgSoftDelete())
+}
+func TestTenancySoftDeleteHidesOrg(t *testing.T) { testenv.Test(t, cases.TenancySoftDeleteHidesOrg()) }

@@ -60,6 +60,18 @@ func TestK8sProxyAccess(t *testing.T) {
 	testenv.Test(t, cases.K8sProxyAccess())
 }
 
+// Tenancy CRUD + invariants — single-user lifecycles. Two-user
+// SA-token isolation requires OIDC and stays out of this suite.
+func TestTenancyOrgCRUD(t *testing.T)             { testenv.Test(t, cases.TenancyOrgCRUD()) }
+func TestTenancyWorkspaceCRUD(t *testing.T)       { testenv.Test(t, cases.TenancyWorkspaceCRUD()) }
+func TestTenancyServiceAccountCRUD(t *testing.T)  { testenv.Test(t, cases.TenancySACRUD()) }
+func TestTenancyServiceAccountToken(t *testing.T) { testenv.Test(t, cases.TenancySATokenAccess()) }
+func TestTenancyTenantHeaders(t *testing.T)       { testenv.Test(t, cases.TenancyTenantHeaders()) }
+func TestTenancyPersonalOrgSoftDelete(t *testing.T) {
+	testenv.Test(t, cases.TenancyPersonalOrgSoftDelete())
+}
+func TestTenancySoftDeleteHidesOrg(t *testing.T) { testenv.Test(t, cases.TenancySoftDeleteHidesOrg()) }
+
 // Multi-edge tests — require 2 agent clusters (DefaultAgentCount=2).
 func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }
 func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedScheduling()) }
