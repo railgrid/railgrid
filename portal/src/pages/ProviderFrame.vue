@@ -60,6 +60,41 @@ watch(
   () => pushContext(),
 )
 
+// Workspace/org switch: AppLayout keys its slot wrapper on auth.clusterName,
+// so the <div ref="mountRef" /> below is torn down and a new empty div is
+// mounted. The custom element that lived in the old div detaches from
+// DOM, its disconnectedCallback fires, and its Vue app + Pinia tear down
+// cleanly — but ProviderFrame itself stays mounted (it's the route
+// component above the slot), so elementRef still points at the orphan
+// and loadAndMount is never re-invoked. Symptom: switch workspace,
+// provider page reads as a blank panel instead of the new context's
+// list.
+//
+// flush: 'post' runs the effect after AppLayout's slot has finished
+// re-rendering, so mountRef.value already points at the new (empty) div
+// when we append the fresh element.
+watch(
+  () => auth.clusterName,
+  async () => {
+    if (!entry.value?.ready) return
+    await mountElement(entry.value.name)
+  },
+  { flush: 'post' },
+)
+
+// mountElement creates a fresh custom-element instance and appends it
+// into the current mountRef div. Split out from loadAndMount so the
+// workspace-switch watch above can re-mount without re-fetching the
+// provider's main.js script.
+async function mountElement(name: string) {
+  if (!mountRef.value) return
+  mountRef.value.replaceChildren()
+  const el = document.createElement(tagFor(name)) as HTMLElement
+  mountRef.value.appendChild(el)
+  elementRef.value = el
+  pushContext()
+}
+
 async function loadAndMount(name: string, version: string | undefined) {
   loadState.value = 'loading'
   loadError.value = null
@@ -106,12 +141,7 @@ async function loadAndMount(name: string, version: string | undefined) {
 
   // DOM is ready; create + mount the element.
   await nextTick()
-  if (!mountRef.value) return
-  mountRef.value.replaceChildren()
-  const el = document.createElement(tag) as HTMLElement
-  mountRef.value.appendChild(el)
-  elementRef.value = el
-  pushContext()
+  await mountElement(name)
   loadState.value = 'ready'
 }
 

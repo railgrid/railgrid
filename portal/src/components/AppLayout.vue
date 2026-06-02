@@ -3,10 +3,12 @@ import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
+import { useTenantStore } from '@/stores/tenant'
 import TerminalDock from '@/components/TerminalDock.vue'
 import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
 import TenantContextChip from '@/components/TenantContextChip.vue'
 import ThemeSwitch from '@/components/ThemeSwitch.vue'
+import FirstWorkspaceWizard from '@/components/FirstWorkspaceWizard.vue'
 import { Hexagon, LayoutDashboard, LogOut, Zap, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot, Settings } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -14,6 +16,33 @@ import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 const auth = useAuthStore()
 const terminalStore = useTerminalSessionsStore()
 const providersStore = useProvidersStore()
+const tenantStore = useTenantStore()
+
+const route = useRoute()
+const router = useRouter()
+
+// Empty-org guard: when the active org has zero workspaces (after fetch
+// completes), every workspace-scoped page would try to query a cluster
+// that doesn't exist. Replace the slot with the create-workspace wizard
+// instead. Pages that don't need a workspace — the tenant settings page
+// and the providers catalog — render normally so the user keeps a
+// non-blocked path to manage orgs/workspaces.
+//
+// workspacesByOrg[uuid] is undefined while the initial fetch is in
+// flight; we only show the wizard once it lands as an empty array, so
+// the UI doesn't flash the wizard between an org switch and the fetch
+// resolving.
+const showWorkspaceWizard = computed(() => {
+  if (!auth.isAuthenticated) return false
+  const orgUUID = tenantStore.orgUUID
+  if (!orgUUID) return false
+  const list = tenantStore.workspacesByOrg[orgUUID]
+  if (!list || list.length > 0) return false
+  const path = route.path
+  if (path === '/tenant' || path.startsWith('/tenant/')) return false
+  if (path === '/providers') return false
+  return true
+})
 
 const mainPaddingBottom = computed(() => {
   if (!terminalStore.isVisible || terminalStore.sessions.length === 0) return undefined
@@ -21,9 +50,6 @@ const mainPaddingBottom = computed(() => {
   const h = terminalStore.panelState.isMinimized ? 40 : terminalStore.panelState.height
   return `${h + 16}px`
 })
-
-const route = useRoute()
-const router = useRouter()
 
 const now = ref(new Date())
 let timer: ReturnType<typeof setInterval>
@@ -627,15 +653,23 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         right shard, but pages keep displaying the previous workspace's
         payload until the next poll fires (10s+ for MCP/edges), and
         provider micro-frontends carry their own Pinia/URQL caches the
-        URL change never invalidates. Unmounting here propagates through
-        ProviderFrame: its onBeforeUnmount removes the custom element,
-        the element's disconnectedCallback tears down the inner Vue app,
-        and the next render boots a fresh provider with empty state.
-        The chrome above (sidebar, TenantContextChip, popover) stays
-        mounted because the key is on the slot wrapper, not the layout.
+        URL change never invalidates. Unmounting here resets every host
+        page's useGraphQLQuery state; ProviderFrame's own watch on
+        auth.clusterName re-creates its custom element post-flush so
+        the new mountRef div doesn't render empty after the slot
+        wrapper rebuilds. The chrome above (sidebar, TenantContextChip,
+        popover) stays mounted because the key sits on the slot
+        wrapper, not the layout shell.
+
+        When the active org has no workspaces we never get a clusterName,
+        so swap the slot out for the create-workspace wizard. The wizard
+        triggers tenant.createWorkspace, which selects the new workspace,
+        which sets auth.clusterName, which re-keys this wrapper and
+        restores the original page.
       -->
       <div :key="auth.clusterName ?? 'unauth'" class="relative z-10">
-        <slot />
+        <FirstWorkspaceWizard v-if="showWorkspaceWizard" />
+        <slot v-else />
       </div>
     </main>
 
