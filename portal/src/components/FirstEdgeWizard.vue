@@ -492,7 +492,7 @@ function finish() {
       <button
         type="button"
         class="font-medium text-text-muted transition-colors hover:text-text-secondary"
-        @click="router.push('/edges')"
+        @click="router.push('/providers/kubernetes-edges')"
       >
         Already have an edge? Go to Edges →
       </button>
