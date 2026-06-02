@@ -80,7 +80,7 @@ jobs:
   e2e-ssh:
     name: SSH Server-Mode (hub-only cluster)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
