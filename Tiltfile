@@ -1,4 +1,4 @@
-# Tiltfile — local dev for kedge hub + portal
+# Tiltfile — local dev for kedge hub + portal + edges
 # Replaces: make run-hub-embedded-static (terminal 1) + make dev-portal (terminal 2)
 # Usage: tilt up
 
@@ -20,6 +20,7 @@ local_resource(
         'providers/kubernetesedges/portal/src',
         'providers/serveredges/portal/src',
     ],
+    labels=['hub'],
 )
 
 # ---------------------------------------------------------------------------
@@ -59,4 +60,62 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
         'providers/serveredges',
     ],
     resource_deps=['portal'],
+    labels=['hub'],
+)
+
+# ---------------------------------------------------------------------------
+# edges — kubernetes & server agents. All manual triggers (click ▶ in Tilt UI).
+#
+# Workflow:
+#   1. Click ▶ on `edge-{kube,server}-create` to log in via static token,
+#      register the Edge with the hub, and write .env.edge.<type>.
+#   2. Click ▶ on `edge-{kube,server}-agent` to run the agent.
+#        - kubernetes: also spins up a `kedge-agent` kind cluster on first run.
+#        - server: also click ▶ on `ssh-server` so the agent has an SSH target.
+# ---------------------------------------------------------------------------
+local_resource(
+    'edge-kube-create',
+    cmd='make dev-login-static && make dev-edge-create TYPE=kubernetes',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['edges'],
+)
+
+local_resource(
+    'edge-kube-agent',
+    serve_cmd='make dev-run-edge TYPE=kubernetes',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['edges'],
+)
+
+local_resource(
+    'edge-server-create',
+    cmd='make dev-login-static && make dev-edge-create TYPE=server',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['edges'],
+)
+
+local_resource(
+    'edge-server-agent',
+    serve_cmd='make dev-run-edge TYPE=server',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['edges'],
+)
+
+# openssh-server container — target for the server-edge agent.
+# Pre-step removes any stale container left from a previous run so the
+# named --name=openssh-server doesn't collide.
+local_resource(
+    'ssh-server',
+    serve_cmd='docker rm -f openssh-server >/dev/null 2>&1; make dev-run-ssh-server',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['edges'],
 )
