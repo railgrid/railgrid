@@ -53,6 +53,7 @@ type fakeOps struct {
 	wsDeletionAnnos   map[wsKey]time.Time          // (org,ws) → timestamp
 	mcpServerCalls    map[wsKey]int                // (org,ws) → count
 	kedgeBindingCalls map[wsKey]int                // (org,ws) → count
+	workspaceAdmins   map[wsKey]map[string]bool    // (org,ws) → rbacIdentity set
 }
 
 type wsKey struct{ Org, WS string }
@@ -66,6 +67,7 @@ func newFakeOps() *fakeOps {
 		wsDeletionAnnos:   map[wsKey]time.Time{},
 		mcpServerCalls:    map[wsKey]int{},
 		kedgeBindingCalls: map[wsKey]int{},
+		workspaceAdmins:   map[wsKey]map[string]bool{},
 	}
 }
 
@@ -210,6 +212,23 @@ func (f *fakeOps) GetChildWorkspaceClusterName(_ context.Context, orgUUID, wsUUI
 	// Deterministic fake cluster name; the kubeconfig handler only needs a
 	// non-empty value to build a valid /clusters/<name> URL in tests.
 	return "fake-" + wsUUID, nil
+}
+
+func (f *fakeOps) EnsureChildWorkspaceAdmin(_ context.Context, orgUUID, wsUUID, rbacIdentity string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.childWorkspaces[orgUUID][wsUUID]; !ok {
+		return fmt.Errorf("workspace not found")
+	}
+	if f.workspaceAdmins == nil {
+		f.workspaceAdmins = map[wsKey]map[string]bool{}
+	}
+	key := wsKey{orgUUID, wsUUID}
+	if f.workspaceAdmins[key] == nil {
+		f.workspaceAdmins[key] = map[string]bool{}
+	}
+	f.workspaceAdmins[key][rbacIdentity] = true
+	return nil
 }
 
 // ===== test fixtures =====
@@ -453,7 +472,11 @@ func TestCreateWorkspace_HappyPath(t *testing.T) {
 			WorkspaceCreation: tenancyv1alpha1.WorkspaceCreationMembers,
 		},
 	}
-	mgr, ops, _ := newTestManager(t, org)
+	alice := &tenancyv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "kedge:alice@example.com"},
+	}
+	mgr, ops, _ := newTestManager(t, org, alice)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
 	defer srv.Close()
 
@@ -481,6 +504,14 @@ func TestCreateWorkspace_HappyPath(t *testing.T) {
 	}
 	if ops.wsDisplayNames[wsKey{"org-a", view.UUID}] != "platform" {
 		t.Errorf("display name not set: %v", ops.wsDisplayNames)
+	}
+	// Regression guard for the v0.0.63 workspace-switch 403: createWorkspace
+	// must seed the caller's cluster-admin CRB; without it the freshly-
+	// minted workspace 403s from the GraphQL gateway the moment the user
+	// switches into it.
+	if !ops.workspaceAdmins[wsKey{"org-a", view.UUID}]["kedge:alice@example.com"] {
+		t.Errorf("EnsureChildWorkspaceAdmin not called for caller; admins=%v",
+			ops.workspaceAdmins[wsKey{"org-a", view.UUID}])
 	}
 }
 

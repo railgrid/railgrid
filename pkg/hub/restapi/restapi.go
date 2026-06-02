@@ -73,6 +73,13 @@ type WorkspaceOps interface {
 	EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error
 	EnsureChildWorkspaceKedgeBinding(ctx context.Context, orgUUID, wsUUID string) error
 	EnsureChildWorkspaceDefaultMCPServer(ctx context.Context, orgUUID, wsUUID string) error
+	// EnsureChildWorkspaceAdmin grants cluster-admin in the child team
+	// Workspace to the given rbacIdentity. Idempotent. Used at workspace
+	// create time and when adding a member, since the kcp-side CRB is
+	// otherwise only seeded by the org bootstrap controller for the
+	// user's default workspace — every other workspace would 403 from
+	// the GraphQL gateway without this call.
+	EnsureChildWorkspaceAdmin(ctx context.Context, orgUUID, wsUUID, rbacIdentity string) error
 	ListChildWorkspaces(ctx context.Context, orgUUID string) ([]string, error)
 	GetWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID string) (string, error)
 	SetWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID, displayName string) error

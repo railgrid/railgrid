@@ -275,6 +275,24 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	dn, _ := h.mgr.bootstrapper.GetWorkspaceDisplayName(r.Context(), tc.OrgUUID, tc.WorkspaceUUID)
+	// Grant the new member RBAC in the workspace's kcp cluster. The UMI
+	// row alone is portal metadata — without a matching kcp CRB the
+	// GraphQL gateway 403s the moment the member tries to switch to
+	// this workspace. SAs currently map both admin+member to
+	// cluster-admin (see serviceaccounts.buildCRB); we follow the same
+	// posture until the kedge:workspace:admin/member ClusterRoles are
+	// bootstrapped.
+	target, err := h.mgr.client.Users().Get(r.Context(), req.User, metav1.GetOptions{})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if target.Spec.RBACIdentity != "" {
+		if err := h.mgr.bootstrapper.EnsureChildWorkspaceAdmin(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, target.Spec.RBACIdentity); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	if err := h.mgr.upsertUMIEntry(r.Context(), req.User, tenancyv1alpha1.MembershipIndexEntry{
 		OrgUUID:              tc.OrgUUID,
 		OrgDisplayName:       org.Spec.DisplayName,

@@ -576,6 +576,22 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 		changed = true
 	}
 
+	// Step H-backfill: ensure cluster-admin in every other workspace the
+	// user belongs to in this Org. The original H step above only handled
+	// user.Status.DefaultWorkspace; workspaces created via the REST
+	// surface (POST /api/orgs/{org}/workspaces) historically skipped the
+	// RBAC grant, so a portal switch into one of them 403s from the
+	// GraphQL gateway. Walking the UMI is the canonical source of "what
+	// workspaces should this user have access to" — the REST handler now
+	// grants RBAC inline, but this reconciler step self-heals legacy
+	// state and survives any future drift. Best-effort: per-workspace
+	// failures log + continue rather than fail the whole reconcile.
+	if workspaceAdminOK && user.Spec.RBACIdentity != "" {
+		if err := r.backfillWorkspaceAdmins(ctx, user, org.Name, wsUUID, logger); err != nil {
+			logger.Error(err, "UMI workspace-admin backfill failed; will retry on next reconcile")
+		}
+	}
+
 	// Step I: default MCPServer (only after H succeeded — needs admin
 	// claims accepted via the kedge APIBinding).
 	var mcpCond metav1.Condition
@@ -787,6 +803,44 @@ func (r *Reconciler) reconcileWorkspace(ctx context.Context, org *tenancyv1alpha
 		Reason:  reasonWorkspaceProvisioned,
 		Message: "kcp Workspace " + desiredPath + " is Ready.",
 	}, true
+}
+
+// backfillWorkspaceAdmins walks the User's UMI workspace-scope entries
+// for the given org and ensures cluster-admin RBAC for the user's
+// rbacIdentity in each (excluding skipWsUUID, which the caller already
+// reconciled as Step H). Pre-PR fix the REST createWorkspace path
+// skipped EnsureChildWorkspaceAdmin entirely, leaving every
+// portal-created workspace without a kedge-cluster-admin
+// ClusterRoleBinding — switching to one of them surfaced as a GraphQL
+// 403 once the workspace switcher actually retargeted /graphql/{cluster}
+// in v0.0.63. This reconciler step self-heals that legacy state.
+//
+// Errors on individual workspaces are logged and skipped; one bad
+// workspace must not stall the whole Org reconcile. Idempotent —
+// EnsureChildWorkspaceAdmin handles the AlreadyExists / subject-rewrite
+// cases internally.
+func (r *Reconciler) backfillWorkspaceAdmins(ctx context.Context, user *tenancyv1alpha1.User, orgUUID, skipWsUUID string, logger logr.Logger) error {
+	var index tenancyv1alpha1.UserMembershipIndex
+	if err := r.client.Get(ctx, types.NamespacedName{Name: user.Name}, &index); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("loading UMI for workspace-admin backfill: %w", err)
+	}
+	for _, e := range index.Spec.Entries {
+		if e.OrgUUID != orgUUID || e.WorkspaceUUID == "" || e.WorkspaceUUID == skipWsUUID {
+			continue
+		}
+		if e.SoftDeletedAt != nil {
+			continue
+		}
+		if err := r.provisioner.EnsureChildWorkspaceAdmin(ctx, orgUUID, e.WorkspaceUUID, user.Spec.RBACIdentity); err != nil {
+			logger.Error(err, "Granting workspace-admin failed; will retry on next reconcile",
+				"workspaceUUID", e.WorkspaceUUID)
+			continue
+		}
+	}
+	return nil
 }
 
 // aggregateReady combines the seven step outcomes (workspace,

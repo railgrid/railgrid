@@ -143,6 +143,23 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	// Grant cluster-admin to the caller in the freshly-minted workspace.
+	// Without this the workspace is unreachable from the portal (the
+	// GraphQL gateway calls into kcp on the caller's bearer token and
+	// kcp 403s without a matching ClusterRoleBinding). The org bootstrap
+	// controller only ever seeded the binding for the user's default
+	// workspace — any portal-created workspace stayed RBAC-less.
+	callerUser, err := h.mgr.client.Users().Get(r.Context(), tc.User, metav1.GetOptions{})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if callerUser.Spec.RBACIdentity != "" {
+		if err := h.mgr.bootstrapper.EnsureChildWorkspaceAdmin(r.Context(), orgUUID, wsUUID, callerUser.Spec.RBACIdentity); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	if err := h.mgr.bootstrapper.EnsureChildWorkspaceDefaultMCPServer(r.Context(), orgUUID, wsUUID); err != nil {
 		writeError(w, err)
 		return
