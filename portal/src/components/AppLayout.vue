@@ -620,7 +620,21 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
       :style="mainPaddingBottom ? { paddingBottom: mainPaddingBottom } : undefined"
     >
       <div class="dot-grid pointer-events-none absolute inset-0 opacity-40" />
-      <div class="relative z-10">
+      <!--
+        Keying the slot on auth.clusterName forces the active page to
+        unmount + remount when the user switches workspace or org. The
+        v0.0.63 fix retargets /graphql/{cluster} so new queries hit the
+        right shard, but pages keep displaying the previous workspace's
+        payload until the next poll fires (10s+ for MCP/edges), and
+        provider micro-frontends carry their own Pinia/URQL caches the
+        URL change never invalidates. Unmounting here propagates through
+        ProviderFrame: its onBeforeUnmount removes the custom element,
+        the element's disconnectedCallback tears down the inner Vue app,
+        and the next render boots a fresh provider with empty state.
+        The chrome above (sidebar, TenantContextChip, popover) stays
+        mounted because the key is on the slot wrapper, not the layout.
+      -->
+      <div :key="auth.clusterName ?? 'unauth'" class="relative z-10">
         <slot />
       </div>
     </main>
