@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import type { AuthMode, HealthzResponse, StoredAuth } from '@/auth/types'
 import { loadAuth, saveAuth, clearAuth, isExpired, refreshToken, parseClusterName } from '@/auth/token'
 import { fetchHealthz, loginWithToken } from '@/lib/api'
+import { STORAGE_KEYS } from '@/lib/constants'
 
 export const useAuthStore = defineStore('auth', () => {
   const stored = loadAuth()
@@ -91,6 +92,35 @@ export const useAuthStore = defineStore('auth', () => {
     clusterName.value = null
   }
 
+  // setClusterName retargets every `/graphql/{clusterName}` query to a
+  // different kcp logical cluster. Called from the tenant→auth sync in
+  // App.vue when the user picks a different workspace in the sidebar
+  // switcher (without this, MCP/edges/workload pages keep showing data
+  // from the login-time DefaultCluster regardless of the selection).
+  //
+  // Persists to StoredAuth so a hard refresh restores the same target
+  // instead of snapping back to DefaultCluster. The tenant store also
+  // persists the workspaceUUID; on reload App.vue re-syncs from
+  // workspace → clusterName once fetchWorkspaces resolves, keeping
+  // both sides consistent.
+  function setClusterName(name: string | null) {
+    if (clusterName.value === name) return
+    clusterName.value = name
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.auth)
+      // Best-effort persist: skip when no StoredAuth exists yet (the
+      // setter can fire before login completes on a stale localStorage).
+      if (!raw) return
+      const parsed = JSON.parse(raw) as { clusterName?: string }
+      if (parsed && parsed.clusterName !== name) {
+        parsed.clusterName = name ?? ''
+        localStorage.setItem(STORAGE_KEYS.auth, JSON.stringify(parsed))
+      }
+    } catch {
+      /* ignore quota / parse errors — in-memory update is what matters */
+    }
+  }
+
   return {
     token,
     user,
@@ -105,5 +135,6 @@ export const useAuthStore = defineStore('auth', () => {
     loginFromOIDCResponse,
     getValidToken,
     logout,
+    setClusterName,
   }
 })

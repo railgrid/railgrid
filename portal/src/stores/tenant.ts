@@ -52,6 +52,10 @@ export interface WorkspaceRow {
   // which has no display-name annotation yet. Callers must guard with
   // `?? ''` or `w.displayName || w.uuid` before reading.
   displayName?: string
+  // kcp logical-cluster short hash backing the workspace. Used to
+  // retarget `/graphql/{clusterName}` when the user switches workspace
+  // in the sidebar; omitted by the hub until the workspace reports Ready.
+  clusterName?: string
   deletionRequestedAt?: string | null
 }
 

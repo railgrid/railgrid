@@ -161,9 +161,16 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, WorkspaceView{
-		UUID: wsUUID, OrgUUID: orgUUID, DisplayName: req.DisplayName,
-	})
+	// Project the freshly-created workspace through workspaceView so the
+	// response carries clusterName (EnsureChildWorkspace blocks on Ready,
+	// so spec.cluster is populated by now). Fall back to the partial
+	// view if the projection unexpectedly fails — the row still renders
+	// in the switcher and the user can retry the switch once it settles.
+	view, ok := h.workspaceView(r, orgUUID, wsUUID)
+	if !ok {
+		view = WorkspaceView{UUID: wsUUID, OrgUUID: orgUUID, DisplayName: req.DisplayName}
+	}
+	writeJSON(w, http.StatusCreated, view)
 }
 
 // getWorkspace returns one Workspace projection.
@@ -243,6 +250,14 @@ func (h *Handler) workspaceView(r *http.Request, orgUUID, wsUUID string) (Worksp
 		return WorkspaceView{}, false
 	}
 	view := WorkspaceView{UUID: wsUUID, OrgUUID: orgUUID, DisplayName: dn}
+	// Best-effort cluster-name lookup: omit when the workspace has not
+	// reached Ready (no spec.cluster yet) so the portal can show the row
+	// but skip retargeting GraphQL until it settles. The error case is
+	// indistinguishable from "not Ready" here and the row is still useful
+	// for display, so swallow it.
+	if cluster, err := h.mgr.bootstrapper.GetChildWorkspaceClusterName(r.Context(), orgUUID, wsUUID); err == nil && cluster != "" {
+		view.ClusterName = cluster
+	}
 	if t, found, err := h.mgr.bootstrapper.GetWorkspaceDeletionRequestedAt(r.Context(), orgUUID, wsUUID); err == nil && found && t != nil {
 		tt := *t
 		view.DeletionRequestedAt = &tt

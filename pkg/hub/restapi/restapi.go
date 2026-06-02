@@ -445,10 +445,20 @@ func projectOrg(o *tenancyv1alpha1.Organization) OrgView {
 }
 
 // WorkspaceView is the REST projection of a child Workspace.
+//
+// ClusterName is the kcp logical-cluster short hash backing this
+// workspace (Workspace.spec.cluster). The portal uses it to address
+// the GraphQL endpoint `/graphql/{clusterName}` for the active
+// workspace; without it, a workspace switch in the UI cannot retarget
+// per-workspace queries (MCP, edges, …) to the new cluster. May be
+// empty when the workspace has not yet reached Ready and kcp has not
+// assigned a cluster hash — callers should treat it as "not switchable
+// yet" rather than an error.
 type WorkspaceView struct {
 	UUID                string     `json:"uuid"`
 	OrgUUID             string     `json:"orgUUID"`
 	DisplayName         string     `json:"displayName,omitempty"`
+	ClusterName         string     `json:"clusterName,omitempty"`
 	DeletionRequestedAt *time.Time `json:"deletionRequestedAt,omitempty"`
 }
 
