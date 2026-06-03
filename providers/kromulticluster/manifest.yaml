@@ -31,6 +31,16 @@ spec:
   ui:
     url: "http://localhost:8082"
     indexPath: "/"
+    # Sub-nav entries shown indented under "Application Templates" in
+    # the portal side menu. The portal composes each child URL as
+    # /providers/kro-multicluster/{builtinRoute}; the kro micro-frontend
+    # reads the trailing segment off kedgeContext.subPath and routes
+    # to the matching internal page. Mirrors kubernetes-edges → Workloads.
+    children:
+      - displayName: Templates
+        builtinRoute: templates
+      - displayName: Instances
+        builtinRoute: instances
   backend:
     url: "http://localhost:8082"
     healthPath: "/healthz"

@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
@@ -1374,6 +1375,46 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 		return fmt.Errorf("creating APIBinding %q in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
 	}
 	return nil
+}
+
+// ListProviderAPIBindings returns the set of provider APIBindings
+// present in the child workspace root:kedge:orgs:{orgUUID}:{wsUUID},
+// keyed by provider name. Used by the GET /api/orgs/{org}/workspaces/{ws}/
+// providers/enabled handler so the portal can render the
+// per-workspace "enabled providers" set on every workspace switch —
+// without going through the kcp user-proxy, which 403s any
+// non-default workspace path even when commit #220's per-workspace
+// RBAC would have allowed the read.
+//
+// Filtering rule: a binding counts as a "provider binding" iff its
+// spec.reference.export.path starts with "root:kedge:providers:".
+// The trailing segment is the provider name; the binding's own
+// metadata.name is the value (existing convention is binding.name ==
+// provider.name).
+func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]string, error) {
+	if orgUUID == "" || wsUUID == "" {
+		return nil, fmt.Errorf("ListProviderAPIBindings: orgUUID and wsUUID are required")
+	}
+	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
+	wsClient, err := dynamic.NewForConfig(wsConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating child workspace client: %w", err)
+	}
+	list, err := wsClient.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing APIBindings in %s/%s: %w", orgUUID, wsUUID, err)
+	}
+	out := make(map[string]string, len(list.Items))
+	for _, item := range list.Items {
+		path, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "path")
+		const prefix = "root:kedge:providers:"
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		providerName := path[len(prefix):]
+		out[providerName] = item.GetName()
+	}
+	return out, nil
 }
 
 func acceptedClaim(group, resource, identityHash string, verbs []string) apisv1alpha2.AcceptablePermissionClaim {

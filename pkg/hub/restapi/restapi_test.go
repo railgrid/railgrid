@@ -161,6 +161,13 @@ func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, _, _, _, _, _ stri
 	return nil
 }
 
+// ListProviderAPIBindings is the test stub for the read-side
+// provider-enable handler. Returns empty so existing tests treat the
+// workspace as having no enabled providers.
+func (f *fakeOps) ListProviderAPIBindings(_ context.Context, _, _ string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+
 func (f *fakeOps) ListChildWorkspaces(_ context.Context, orgUUID string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

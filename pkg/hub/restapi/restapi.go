@@ -101,6 +101,14 @@ type WorkspaceOps interface {
 	// defaultCluster pre-check would 403 any user attempt against a
 	// non-default workspace, even with valid RBAC).
 	EnsureProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, claims []kcp.ProviderClaim) error
+
+	// ListProviderAPIBindings returns the set of provider APIBindings
+	// (those referencing root:kedge:providers:*) in the target
+	// workspace, keyed by provider name. Used by the
+	// GET .../providers/enabled handler so the portal can refresh the
+	// "enabled providers" sidebar set on every workspace switch
+	// without 403'ing through the kcp user-proxy.
+	ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]string, error)
 }
 
 // KubeconfigConfig configures the workspace-scoped kubeconfig download
@@ -253,6 +261,11 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// via kcp-admin so the kcp user-proxy's defaultCluster pre-check
 	// doesn't block sibling-workspace operations). See providers_enable.go.
 	r.HandleFunc("/{org}/workspaces/{ws}/providers/{name}/enable", h.enableProvider).Methods(http.MethodPost)
+
+	// Read-side counterpart: list the provider APIBindings in this
+	// workspace. Same proxy-avoidance rationale. Portal calls this
+	// on every workspace switch to refresh the sidebar's enabled-set.
+	r.HandleFunc("/{org}/workspaces/{ws}/providers/enabled", h.listEnabledProviders).Methods(http.MethodGet)
 }
 
 // ===== shared helpers =====

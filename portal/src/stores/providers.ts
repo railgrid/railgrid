@@ -66,22 +66,6 @@ interface ProvidersResponse {
   categories?: CategoryDTO[]
 }
 
-// APIBindingDTO is a slim mirror of the bits we need from kcp's APIBinding
-// list response (apis.kcp.io/v1alpha2). We only consume two fields, so we
-// keep this minimal.
-interface APIBindingDTO {
-  metadata: { name: string; resourceVersion?: string }
-  spec: {
-    reference: {
-      export: { path: string; name: string }
-    }
-  }
-}
-
-interface APIBindingListResponse {
-  items: APIBindingDTO[]
-}
-
 export const useProvidersStore = defineStore('providers', () => {
   const items = ref<ProviderDTO[]>([])
   const categories = ref<CategoryDTO[]>([])
@@ -230,27 +214,29 @@ export const useProvidersStore = defineStore('providers', () => {
     }
   }
 
-  // refreshBindings lists APIBindings in the user's tenant workspace and
-  // builds the bindingNamesByProvider map. A binding's `reference.export.path`
-  // is of the form root:kedge:providers:{provider-name}, so we derive the
-  // provider name from the trailing segment.
+  // refreshBindings hits the server-side endpoint
+  // GET /api/orgs/{org}/workspaces/{ws}/providers/enabled
+  // which lists APIBindings via the hub's kcp-admin client and returns
+  // the provider-name → binding-name map directly.
+  //
+  // Previously this POST'd to /clusters/{cluster}/apis/.../apibindings,
+  // but the kcp user-proxy enforces User.Spec.DefaultCluster BEFORE
+  // forwarding — sibling workspaces 403'd silently and the sidebar's
+  // enabled-set stayed stuck on the boot-time snapshot. Going through
+  // the REST endpoint lets the bootstrapper read as kcp-admin in the
+  // target workspace, with tenant.Middleware verifying the caller's
+  // Membership upstream.
   async function refreshBindings() {
-    const cluster = currentTenantWorkspace()
-    if (!cluster) return
-    const res = await fetch(
-      `/clusters/${cluster}/apis/apis.kcp.io/v1alpha2/apibindings`,
-      { headers: authHeaders(), credentials: 'same-origin' },
-    )
-    if (!res.ok) throw new Error(`list APIBindings: ${res.status}`)
-    const body = (await res.json()) as APIBindingListResponse
-    const next: Record<string, string> = {}
-    for (const b of body.items ?? []) {
-      const path = b.spec?.reference?.export?.path ?? ''
-      if (!path.startsWith('root:kedge:providers:')) continue
-      const providerName = path.substring('root:kedge:providers:'.length)
-      next[providerName] = b.metadata.name
-    }
-    bindingNamesByProvider.value = next
+    const t = readTenantSelection()
+    if (!t.orgUUID || !t.workspaceUUID) return
+    const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/enabled`
+    const res = await fetch(url, {
+      headers: authHeaders(),
+      credentials: 'same-origin',
+    })
+    if (!res.ok) throw new Error(`list enabled providers: ${res.status}`)
+    const body = (await res.json()) as { bindingNamesByProvider?: Record<string, string> }
+    bindingNamesByProvider.value = body.bindingNamesByProvider ?? {}
   }
 
   // enable hits the server-side endpoint

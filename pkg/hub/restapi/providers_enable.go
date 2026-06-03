@@ -140,3 +140,39 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(EnableProviderResponse{BindingName: providerName})
 }
+
+// ListEnabledProvidersResponse is the body of GET .../providers/enabled.
+// Items are keyed by provider name (the binding's metadata.name matches
+// the provider name by existing convention), value is the binding name —
+// kept as a map so the portal can do "is provider X enabled" lookups in
+// O(1) without indexing client-side.
+type ListEnabledProvidersResponse struct {
+	BindingNamesByProvider map[string]string `json:"bindingNamesByProvider"`
+}
+
+// listEnabledProviders handles GET /api/orgs/{org}/workspaces/{ws}/providers/enabled.
+// Returns the set of provider APIBindings present in the target
+// workspace (those referencing root:kedge:providers:*), keyed by
+// provider name. Counterpart to enableProvider — same proxy-avoidance
+// rationale: going through the REST endpoint lets the bootstrapper
+// list as kcp-admin in the target workspace path, sidestepping the
+// user-proxy's defaultCluster 403 that blocks direct /clusters/{ws}/
+// apis/.../apibindings calls for non-default workspaces.
+//
+// The portal calls this on every workspace switch so the sidebar's
+// enabled-set reflects the current workspace's bindings, not a
+// stale snapshot from boot-time.
+func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
+	tc, ok := h.requireTenantContext(w, r, true /* workspace */, false /* admin not required */)
+	if !ok {
+		return
+	}
+	bindings, err := h.mgr.bootstrapper.ListProviderAPIBindings(r.Context(), tc.OrgUUID, tc.WorkspaceUUID)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "list APIBindings: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(ListEnabledProvidersResponse{BindingNamesByProvider: bindings})
+}

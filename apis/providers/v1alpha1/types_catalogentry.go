@@ -147,13 +147,18 @@ type ProviderUI struct {
 	// +kubebuilder:validation:MaxLength=128
 	BuiltinRoute string `json:"builtinRoute,omitempty"`
 
-	// Children declares additional in-tree navigation items the portal
-	// renders nested under the provider's main entry. Used by providers
-	// that span multiple SPA pages — e.g. kubernetes-edges exposes both
-	// its main "Kubernetes" page and a "Workloads" sub-page.
+	// Children declares additional navigation items the portal renders
+	// nested under the provider's main entry. Used by providers that
+	// span multiple pages — e.g. kubernetes-edges exposes its main
+	// "Kubernetes" page and a "Workloads" sub-page; kro-multicluster
+	// exposes "Templates" and "Instances".
 	//
-	// Only meaningful when BuiltinRoute is set (third-party custom-element
-	// providers manage their own internal routing).
+	// URL semantics depend on the parent's mode:
+	//   - BuiltinRoute providers   — children land at /{child.builtinRoute}
+	//   - URL (third-party) providers — children land at
+	//     /providers/{name}/{child.builtinRoute}, and the child
+	//     micro-frontend reads the trailing segment off
+	//     kedgeContext.subPath to render the right internal page.
 	// +optional
 	Children []ProviderNavChild `json:"children,omitempty"`
 }

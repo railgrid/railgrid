@@ -26,6 +26,17 @@ spec:
   ui:
     url: "http://{{ include "kro-mc.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
     indexPath: "/"
+    # Sub-nav entries surfaced indented under "Application Templates"
+    # in the portal side menu. The portal composes each child URL as
+    # /providers/kro-multicluster/{builtinRoute}; the kro micro-frontend
+    # picks up the trailing segment via kedgeContext.subPath and routes
+    # to the matching page (see providers/kromulticluster/portal/src/App.vue).
+    # Mirrors how kubernetes-edges exposes "Workloads".
+    children:
+      - displayName: Templates
+        builtinRoute: templates
+      - displayName: Instances
+        builtinRoute: instances
   backend:
     url: "http://{{ include "kro-mc.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
     healthPath: "/healthz"
