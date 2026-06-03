@@ -409,7 +409,7 @@ func (s *Server) Run(ctx context.Context) error {
 				continue
 			}
 			// The provider's MCP transport is mounted at /mcp under
-			// its backend URL — see e.g. providers/kromulticluster/
+			// its backend URL — see e.g. providers/infrastructure/
 			// server/server.go. We compose the absolute URL here once
 			// per List() pass; per-request the aggregator just POSTs
 			// to it.
@@ -527,7 +527,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// Wire the backend-proxy tenant resolver. With this in place
 			// every authenticated request to /services/providers/{name}/*
 			// arrives at the provider with X-Kedge-User and X-Kedge-Tenant
-			// populated, so providers (e.g. kro-multicluster) can scope
+			// populated, so providers (e.g. infrastructure) can scope
 			// per-tenant work without re-parsing the bearer token.
 			// Anonymous requests pass through with the headers stripped.
 			// See pkg/hub/provider_tenant_resolver.go for the concrete

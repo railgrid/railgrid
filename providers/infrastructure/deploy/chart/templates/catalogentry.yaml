@@ -1,0 +1,49 @@
+{{- if .Values.catalogEntry.enabled -}}
+# CatalogEntry registers this provider with the kedge hub. The hub's
+# catalog controller picks it up, materializes
+# root:kedge:providers:infrastructure, mints
+# kedge-provider-kubeconfig into our serviceAccountNamespace, and
+# applies the (empty in v1) APIResourceSchema set.
+#
+# Phase 1 ships schemas: []. Tenants APIBind the resulting APIExport
+# purely to grant this provider the `secrets get/list/watch`
+# permission claim — there's no kedge-side CRD for tenants to use
+# yet (the broker model puts the UI in front of the work).
+apiVersion: providers.kedge.faros.sh/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: infrastructure
+  labels:
+    {{- include "infrastructure.labels" . | nindent 4 }}
+spec:
+  displayName: "Application Templates"
+  description: "Provision applications and infrastructure from curated templates."
+  vendor: "kedge"
+  version: {{ .Chart.AppVersion | quote }}
+  category: "Workloads"
+  iconURL: "/ui/providers/infrastructure/icon.svg"
+  serviceAccountNamespace: {{ .Release.Namespace }}
+  ui:
+    url: "http://{{ include "infrastructure.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+    indexPath: "/"
+    # Sub-nav entries shown indented under "Application Templates" in
+    # the portal side menu. The portal composes each child URL as
+    # /providers/infrastructure/{builtinRoute}; the micro-frontend
+    # reads the trailing segment off kedgeContext.subPath and routes
+    # to the matching internal page. Mirrors kubernetes-edges → Workloads.
+    children:
+      - displayName: Templates
+        builtinRoute: templates
+      - displayName: Instances
+        builtinRoute: instances
+  backend:
+    url: "http://{{ include "infrastructure.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+    healthPath: "/healthz"
+  apiExport:
+    name: "infrastructure.providers.kedge.faros.sh"
+    permissionClaims:
+      - resource: secrets
+        verbs: [get, list, watch]
+        tenantScoped: true
+    schemas: []
+{{- end }}

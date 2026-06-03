@@ -175,7 +175,7 @@ type Config struct {
 	// providers exposing an MCP endpoint. newServer() federates each
 	// provider's tools/list into the aggregate as
 	// "<provider-slug>__<tool-name>" so MCP clients can invoke
-	// provider tools (e.g. kro-multicluster's kro_provision) over the
+	// provider tools (e.g. infrastructure's kro_provision) over the
 	// same connection they use for edges. nil = disabled. See
 	// provider_proxy.go.
 	Providers ProviderEnumerator

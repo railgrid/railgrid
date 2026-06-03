@@ -35,9 +35,21 @@ onMounted(() => {
   if (!providers.loaded) providers.load()
 })
 
+// Tiles must match the side-nav "enabled" predicate exactly: built-in
+// providers (kubernetes-edges, server-edges, mcp, …) always appear
+// because they ship with the hub and need no per-workspace consent,
+// but third-party providers (infrastructure, quickstart, anything
+// custom) only show up when the current workspace has an APIBinding
+// for them. Without this gate the dashboard kept rendering a tile
+// for a disabled third-party provider — clicking it landed on a 403
+// "this provider is not enabled in your workspace" wall.
 const tiles = computed(() =>
   providers.items
-    .filter((p) => p.ready && p.hasUI)
+    .filter((p) => {
+      if (!p.ready || !p.hasUI) return false
+      if (p.builtinRoute || p.builtin) return true
+      return providers.isEnabled(p.name)
+    })
     .sort((a, b) => a.displayName.localeCompare(b.displayName)),
 )
 
@@ -81,9 +93,10 @@ function onWizardConnected() {
       <div v-if="tiles.length === 0" class="flex items-start gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-[13px] text-text-muted">
         <Puzzle class="mt-0.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
         <div>
-          <div class="font-medium text-text-secondary">No providers ready</div>
+          <div class="font-medium text-text-secondary">No providers enabled in this workspace</div>
           <div class="mt-1 text-xs">
             Enable a provider from the <router-link to="/providers" class="text-accent hover:text-accent-hover">catalog</router-link> to see a dashboard summary.
+            Built-in providers (Kubernetes, Linux, MCP) appear here automatically; third-party providers need a per-workspace Enable.
           </div>
         </div>
       </div>

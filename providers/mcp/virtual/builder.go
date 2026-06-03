@@ -210,7 +210,7 @@ func Build(deps *builder.Deps) http.Handler {
 			},
 			Enumerate: enumerator(deps, cluster, dynClient, edgeSelector),
 			// Providers federates each Ready provider's MCP endpoint
-			// into the aggregate so e.g. `kro-multicluster__kro_provision`
+			// into the aggregate so e.g. `infrastructure__provision`
 			// shows up alongside the per-edge tool families. nil when
 			// the hub didn't wire deps.ProviderEnumerator (tests /
 			// older configs); in that case the aggregator runs in

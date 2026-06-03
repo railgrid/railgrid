@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-kromulticluster-provider build-kromulticluster-provider-portal run-provider-kromulticluster install-provider-kromulticluster uninstall-provider-kromulticluster dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-kromulticluster portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal run-provider-infrastructure install-provider-infrastructure uninstall-provider-infrastructure dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -116,11 +116,11 @@ build-quickstart-provider-portal: ## Build the quickstart provider's micro-front
 build-quickstart-provider: build-quickstart-provider-portal ## Build the quickstart reference provider binary (portal embedded)
 	cd providers/quickstart && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/quickstart-provider .
 
-build-kromulticluster-provider-portal: ## Build the kromulticluster provider's micro-frontend (Vite + Vue → portal/dist)
-	cd providers/kromulticluster/portal && npm install --no-audit --no-fund && npm run build
+build-infrastructure-provider-portal: ## Build the infrastructure provider's micro-frontend (Vite + Vue → portal/dist)
+	cd providers/infrastructure/portal && npm install --no-audit --no-fund && npm run build
 
-build-kromulticluster-provider: build-kromulticluster-provider-portal ## Build the kromulticluster provider binary (portal embedded)
-	cd providers/kromulticluster && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/kromulticluster-provider .
+build-infrastructure-provider: build-infrastructure-provider-portal ## Build the infrastructure provider binary (portal embedded)
+	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/infrastructure-provider .
 
 test:
 	go test $(shell go list ./... | grep -v '/test/e2e')
@@ -476,18 +476,18 @@ e2e-provider-flags: build-hub ## Run --providers flag mechanics suite
 ## Run both provider suites back-to-back (sequential — they share port 2380).
 e2e-provider-all: e2e-provider e2e-provider-flags ## Run provider + provider-flags suites sequentially
 
-## Provider-specific isolation suite for kro-multicluster. Spawns only
-## the kromulticluster-provider binary on :18082 in stub mode (no kro
+## Provider-specific isolation suite for infrastructure. Spawns only
+## the infrastructure-provider binary on :18082 in stub mode (no kro
 ## cluster, no hub, no kcp) and asserts cross-tenant reads / writes /
 ## deletes are properly scoped. Independent of e2e-provider — they
 ## don't share ports, so they could in principle run in parallel.
 E2E_KROMC_TIMEOUT ?= 5m
-e2e-kromulticluster: build-kromulticluster-provider ## Run kro-multicluster tenant-isolation e2e
+e2e-infrastructure: build-infrastructure-provider ## Run infrastructure tenant-isolation e2e
 	@test -z "$$(lsof -ti :18082 2>/dev/null)" || { \
-		echo "port 18082 is in use; pkill kromulticluster-provider and retry"; \
+		echo "port 18082 is in use; pkill infrastructure-provider and retry"; \
 		exit 1; \
 	}
-	go test ./test/e2e/suites/kromulticluster/... -v -timeout $(E2E_KROMC_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	go test ./test/e2e/suites/infrastructure/... -v -timeout $(E2E_KROMC_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Delete the quickstart CatalogEntry. Useful while iterating on the manifest.
 uninstall-provider-quickstart: ## Delete quickstart CatalogEntry
@@ -496,28 +496,28 @@ uninstall-provider-quickstart: ## Delete quickstart CatalogEntry
 		--insecure-skip-tls-verify \
 		delete -f $(QUICKSTART_MANIFEST)
 
-# --- Provider kro-multicluster (local dev) ---
+# --- Provider infrastructure (local dev) ---
 # Mirror of the quickstart pattern above. Distinct port (8082) so both
 # providers can run side-by-side under Tilt. Iteration loop:
 #
 #   Terminal 1: make run-hub-embedded-static
-#   Terminal 2: make install-provider-kromulticluster    # admin: register entry
-#   Terminal 3: make run-provider-kromulticluster        # tenant: run binary
+#   Terminal 2: make install-provider-infrastructure    # admin: register entry
+#   Terminal 3: make run-provider-infrastructure        # tenant: run binary
 #
 KROMC_PORT ?= 8082
 KROMC_HUB_URL ?= https://localhost:9443
 KROMC_TOKEN ?= $(STATIC_AUTH_TOKEN)
 KROMC_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
-KROMC_MANIFEST ?= providers/kromulticluster/manifest.yaml
+KROMC_MANIFEST ?= providers/infrastructure/manifest.yaml
 
-## Run the kromulticluster provider binary locally. Heartbeats to the hub on
+## Run the infrastructure provider binary locally. Heartbeats to the hub on
 ## $(KROMC_HUB_URL); TLS verification skipped (dev cert is self-signed).
 ## KRO_KUBECONFIG is left unset by default → provider serves the baked-in
 ## stub catalog so the UI is demoable without standing up a real central
 ## kro cluster. Point KRO_KUBECONFIG at a real kubeconfig to use the
 ## real client + your own ResourceGraphDefinitions.
-run-provider-kromulticluster: build-kromulticluster-provider ## Run the kromulticluster provider (requires: make run-hub-embedded-static + make install-provider-kromulticluster)
-	@echo "Starting kromulticluster provider on :$(KROMC_PORT)"
+run-provider-infrastructure: build-infrastructure-provider ## Run the infrastructure provider (requires: make run-hub-embedded-static + make install-provider-infrastructure)
+	@echo "Starting infrastructure provider on :$(KROMC_PORT)"
 	@echo "  hub:   $(KROMC_HUB_URL)"
 	@echo "  token: $(KROMC_TOKEN)"
 	@# Prefer an explicit KRO_KUBECONFIG from the caller's env, then
@@ -534,14 +534,14 @@ run-provider-kromulticluster: build-kromulticluster-provider ## Run the kromulti
 	KEDGE_HUB_URL=$(KROMC_HUB_URL) \
 	KEDGE_HUB_TOKEN=$(KROMC_TOKEN) \
 	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=kro-multicluster \
+	KEDGE_PROVIDER_NAME=infrastructure \
 	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
-		$(BINDIR)/kromulticluster-provider
+		$(BINDIR)/infrastructure-provider
 
-## Apply the kromulticluster CatalogEntry into root:kedge:providers. Idempotent.
+## Apply the infrastructure CatalogEntry into root:kedge:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.
-install-provider-kromulticluster: ## Apply kromulticluster CatalogEntry into root:kedge:providers
+install-provider-infrastructure: ## Apply infrastructure CatalogEntry into root:kedge:providers
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
@@ -552,16 +552,16 @@ install-provider-kromulticluster: ## Apply kromulticluster CatalogEntry into roo
 		--insecure-skip-tls-verify \
 		apply -f $(KROMC_MANIFEST)
 
-## Delete the kromulticluster CatalogEntry. Useful while iterating on the manifest.
-uninstall-provider-kromulticluster: ## Delete kromulticluster CatalogEntry
+## Delete the infrastructure CatalogEntry. Useful while iterating on the manifest.
+uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry
 	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
 		--server=https://localhost:6443/clusters/root:kedge:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(KROMC_MANIFEST)
 
-# --- Management kro cluster (backend for the kromulticluster provider) ---
-# Brings up a dedicated kind cluster running the faroshq/kro-multicluster
-# fork (image + chart published to ghcr.io/faroshq/kro-multicluster/*),
+# --- Management kro cluster (backend for the infrastructure provider) ---
+# Brings up a dedicated kind cluster running the faroshq/infrastructure
+# fork (image + chart published to ghcr.io/faroshq/infrastructure/*),
 # configured for multicluster mode per the fork's docs/multicluster-setup.md:
 #
 #   - --enable-multicluster flag turns on the discovery loop
@@ -572,19 +572,19 @@ uninstall-provider-kromulticluster: ## Delete kromulticluster CatalogEntry
 #     multicluster — turnkey for dev without standing up two clusters)
 #
 # Seeds the cluster with the sample ResourceGraphDefinitions under
-# providers/kromulticluster/examples/rgds/. The kedge kro-multicluster
+# providers/infrastructure/examples/rgds/. The kedge infrastructure
 # provider points at this cluster via KRO_KUBECONFIG so the catalog UI
 # shows real templates and provision materializes real Deployments /
 # Services.
 #
 KRO_KIND_NAME ?= kedge-kro
 KRO_KIND_KUBECONFIG ?= $(CURDIR)/.kedge-kro.kubeconfig
-KRO_CHART ?= oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro
+KRO_CHART ?= oci://ghcr.io/faroshq/infrastructure/charts/kro/kro
 KRO_CHART_VERSION ?= v0.0.1-mc.1
-KRO_IMAGE_REPO ?= ghcr.io/faroshq/kro-multicluster/kro
+KRO_IMAGE_REPO ?= ghcr.io/faroshq/infrastructure/kro
 KRO_IMAGE_TAG ?= v0.0.1-mc.1
 KRO_NAMESPACE ?= kro-system
-KRO_SEED_DIR ?= providers/kromulticluster/examples/rgds
+KRO_SEED_DIR ?= providers/infrastructure/examples/rgds
 
 ## Bring up the management kro cluster + install kro (fork w/ multicluster) +
 ## register the cluster as a self-member + seed RGDs. Idempotent: re-running
@@ -648,7 +648,7 @@ dev-kro-register-self: ## Create the self-member Secret (labeled kro.run/cluster
 ## Apply / re-apply the sample RGDs under $(KRO_SEED_DIR) to the
 ## management cluster. Useful while iterating on RGD authoring without
 ## restarting the full stack.
-dev-kro-seed: ## Apply seed RGDs (providers/kromulticluster/examples/rgds/) into the kro cluster
+dev-kro-seed: ## Apply seed RGDs (providers/infrastructure/examples/rgds/) into the kro cluster
 	@test -f $(KRO_KIND_KUBECONFIG) || { \
 		echo "no kubeconfig at $(KRO_KIND_KUBECONFIG); run 'make dev-kro-up' first"; \
 		exit 1; \

@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "infrastructure.fullname" . }}
+  labels:
+    {{- include "infrastructure.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "infrastructure.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "infrastructure.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "infrastructure.serviceAccountName" . }}
+      containers:
+        - name: provider
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          env:
+            - name: PORT
+              value: "8081"
+            - name: KEDGE_HUB_URL
+              value: {{ .Values.hub.url | quote }}
+            - name: KEDGE_PROVIDER_NAME
+              value: "infrastructure"
+            {{- if .Values.hub.insecure }}
+            - name: KEDGE_HUB_INSECURE
+              value: "true"
+            {{- end }}
+            {{- if .Values.hub.tokenSecretRef.name }}
+            - name: KEDGE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.tokenSecretRef.name }}
+                  key: {{ .Values.hub.tokenSecretRef.key }}
+            {{- end }}
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            {{- $centralName := (include "infrastructure.centralKroSecretName" .) }}
+            {{- if $centralName }}
+            - name: KRO_KUBECONFIG
+              value: /var/run/secrets/kro/kubeconfig
+            {{- end }}
+          volumeMounts:
+            - name: kedge-provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
+            {{- if $centralName }}
+            - name: kro-kubeconfig
+              mountPath: /var/run/secrets/kro
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: kedge-provider-kubeconfig
+          secret:
+            # Optional so the pod stays schedulable while the hub
+            # catalog controller is still minting the Secret. The
+            # provider will log a warning and serve catalog reads;
+            # broker writes will 502 until the Secret appears.
+            secretName: {{ .Values.providerKubeconfig.secretName }}
+            optional: true
+            items:
+              - key: kubeconfig
+                path: kedge-provider-kubeconfig
+        {{- if $centralName }}
+        - name: kro-kubeconfig
+          secret:
+            secretName: {{ $centralName }}
+            items:
+              - key: {{ include "infrastructure.centralKroSecretKey" . }}
+                path: kubeconfig
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

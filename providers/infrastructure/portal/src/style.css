@@ -1,0 +1,331 @@
+/*
+ * infrastructure provider element styles.
+ *
+ * Imported as a string by main.ts and injected as one <style> tag
+ * in the host document. The element renders in LIGHT DOM (no Shadow
+ * DOM) so the portal's :root CSS custom properties cascade in. Every
+ * selector is namespaced under kedge-provider-infrastructure so
+ * these styles cannot leak into the portal.
+ */
+
+kedge-provider-infrastructure {
+  display: block;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: var(--color-text-primary, inherit);
+}
+
+kedge-provider-infrastructure .app {
+  padding: 8px 0;
+}
+
+kedge-provider-infrastructure .page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+kedge-provider-infrastructure .page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+kedge-provider-infrastructure .page-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+kedge-provider-infrastructure .page-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted, #888);
+}
+
+kedge-provider-infrastructure .grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 720px) {
+  kedge-provider-infrastructure .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (min-width: 1080px) {
+  kedge-provider-infrastructure .grid {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+}
+
+kedge-provider-infrastructure .filters {
+  display: flex;
+  gap: 8px;
+}
+
+kedge-provider-infrastructure .filters select,
+kedge-provider-infrastructure .dynform-row select,
+kedge-provider-infrastructure .dynform-row input,
+kedge-provider-infrastructure .form input {
+  background: var(--color-surface-overlay, #14141f);
+  color: var(--color-text-primary, inherit);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.06));
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+kedge-provider-infrastructure .filters select {
+  width: auto;
+}
+
+kedge-provider-infrastructure .template-card {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--color-surface-raised, #0d0d14);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.04));
+  color: var(--color-text-primary, inherit);
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.12s ease;
+}
+
+kedge-provider-infrastructure .template-card:hover {
+  border-color: var(--color-accent, #3aa3ff);
+}
+
+kedge-provider-infrastructure .template-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+kedge-provider-infrastructure .template-card-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+kedge-provider-infrastructure .template-card-desc {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary, #aaa);
+  line-height: 1.5;
+}
+
+kedge-provider-infrastructure .template-card-foot {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--color-text-muted, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+kedge-provider-infrastructure .cloud-pill {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--color-surface-overlay, rgba(255, 255, 255, 0.04));
+  color: var(--color-text-muted, currentColor);
+}
+
+kedge-provider-infrastructure .form,
+kedge-provider-infrastructure .dynform {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+kedge-provider-infrastructure .dynform-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+kedge-provider-infrastructure .dynform-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+kedge-provider-infrastructure .dynform-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary, currentColor);
+}
+
+kedge-provider-infrastructure .dynform-label .required {
+  color: var(--color-warning, #f5a524);
+  margin-left: 2px;
+}
+
+kedge-provider-infrastructure .dynform-desc {
+  font-size: 11px;
+  color: var(--color-text-muted, #888);
+}
+
+kedge-provider-infrastructure .actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+kedge-provider-infrastructure button.primary {
+  background: var(--color-accent, #3aa3ff);
+  color: var(--color-on-accent, #000);
+  border: 1px solid var(--color-accent, #3aa3ff);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+kedge-provider-infrastructure button.primary:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+kedge-provider-infrastructure button.danger {
+  background: transparent;
+  color: var(--color-danger, #ff6363);
+  border: 1px solid var(--color-danger, #ff6363);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+kedge-provider-infrastructure button.link {
+  background: transparent;
+  border: none;
+  color: var(--color-accent, #3aa3ff);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+kedge-provider-infrastructure button.link.back {
+  margin-bottom: 4px;
+}
+
+kedge-provider-infrastructure .table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+kedge-provider-infrastructure .table th,
+kedge-provider-infrastructure .table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.04));
+}
+
+kedge-provider-infrastructure .table th {
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #888);
+}
+
+kedge-provider-infrastructure .panel {
+  background: var(--color-surface-raised, #0d0d14);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.04));
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+kedge-provider-infrastructure .panel-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary, currentColor);
+}
+
+kedge-provider-infrastructure pre {
+  margin: 0;
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+  color: var(--color-text-primary, inherit);
+  border: 1px solid var(--color-border-subtle, transparent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+kedge-provider-infrastructure code {
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+  color: var(--color-text-secondary, currentColor);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+}
+
+kedge-provider-infrastructure .muted {
+  color: var(--color-text-muted, #888);
+  font-size: 12px;
+}
+
+kedge-provider-infrastructure .error {
+  color: var(--color-danger, #ff6363);
+  font-size: 12px;
+}
+
+kedge-provider-infrastructure .status-message {
+  font-size: 12px;
+  color: var(--color-text-muted, #888);
+  margin: 0;
+}
+
+kedge-provider-infrastructure .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-default, transparent);
+  background: var(--color-surface-overlay, transparent);
+  color: var(--color-text-muted, inherit);
+}
+
+kedge-provider-infrastructure .badge.ok {
+  border-color: var(--color-success, #4ade80);
+  color: var(--color-success, #4ade80);
+}
+
+kedge-provider-infrastructure .badge.warn {
+  border-color: var(--color-warning, #f5a524);
+  color: var(--color-warning, #f5a524);
+}
+
+kedge-provider-infrastructure .badge.fail {
+  border-color: var(--color-danger, #ff6363);
+  color: var(--color-danger, #ff6363);
+}

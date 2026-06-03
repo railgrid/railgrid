@@ -64,7 +64,7 @@ type Deps struct {
 	// MCPServer handler (providers/mcp/virtual/builder.go) passes this
 	// to the aggregator, which fetches each provider's tools/list and
 	// re-exposes them as `<provider-slug>__<tool>` so MCP clients can
-	// drive providers (e.g. kro-multicluster) through the same
+	// drive providers (e.g. infrastructure) through the same
 	// connection they use for edges. nil = no provider proxying — the
 	// aggregator falls back to edge-only behavior. Wired in pkg/hub/
 	// server.go from the providers.Registry; kept as an opaque function

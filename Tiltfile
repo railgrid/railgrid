@@ -69,7 +69,7 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
 # port. Resources are split by provider for clarity in the Tilt UI:
 #
 #   providers-quickstart   — the reference example (port :8081)
-#   providers-kro          — kro-multicluster broker (port :8082) +
+#   providers-kro          — infrastructure broker (port :8082) +
 #                            management kind cluster that kro runs in
 #
 # Each provider has three resources:
@@ -79,11 +79,11 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
 #
 # The kro group adds two more for the backing infrastructure:
 #   kro-mgmt-up    builds the kind cluster + helm-installs kro +
-#                  applies seed RGDs (see providers/kromulticluster/
+#                  applies seed RGDs (see providers/infrastructure/
 #                  examples/rgds/). Auto-runs at `tilt up`.
 #   kro-mgmt-down  manual ▶ to tear down (kind delete cluster).
 #
-# Wiring: the `kromulticluster` provider resource_deps on `kro-mgmt-up`
+# Wiring: the `infrastructure` provider resource_deps on `kro-mgmt-up`
 # so the provider starts AFTER the kro management cluster is reachable
 # and the seed RGDs are applied. The provider's `make run-...` target
 # auto-detects the .kedge-kro.kubeconfig file and passes it as
@@ -131,14 +131,14 @@ local_resource(
 # --- providers-kro ---
 # Management kro cluster: a kind cluster running upstream kro from
 # oci://ghcr.io/kro-run/kro/kro plus the sample RGDs under
-# providers/kromulticluster/examples/rgds/. The first run pulls
+# providers/infrastructure/examples/rgds/. The first run pulls
 # images and bootstraps the cluster (~30–60s on a clean machine);
 # subsequent runs short-circuit when `kind get clusters` matches.
 local_resource(
     'kro-mgmt-up',
     cmd='make dev-kro-up',
     deps=[
-        'providers/kromulticluster/examples/rgds',
+        'providers/infrastructure/examples/rgds',
     ],
     labels=['providers-kro'],
 )
@@ -152,20 +152,20 @@ local_resource(
 )
 
 local_resource(
-    'kromulticluster',
-    cmd='make build-kromulticluster-provider',
-    serve_cmd='make run-provider-kromulticluster',
+    'infrastructure',
+    cmd='make build-infrastructure-provider',
+    serve_cmd='make run-provider-infrastructure',
     deps=[
-        'providers/kromulticluster/main.go',
-        'providers/kromulticluster/heartbeat.go',
-        'providers/kromulticluster/assets.go',
-        'providers/kromulticluster/server',
-        'providers/kromulticluster/kro',
-        'providers/kromulticluster/tenant',
-        'providers/kromulticluster/mcpserver',
-        'providers/kromulticluster/portal/src',
-        'providers/kromulticluster/portal/package.json',
-        'providers/kromulticluster/go.mod',
+        'providers/infrastructure/main.go',
+        'providers/infrastructure/heartbeat.go',
+        'providers/infrastructure/assets.go',
+        'providers/infrastructure/server',
+        'providers/infrastructure/kro',
+        'providers/infrastructure/tenant',
+        'providers/infrastructure/mcpserver',
+        'providers/infrastructure/portal/src',
+        'providers/infrastructure/portal/package.json',
+        'providers/infrastructure/go.mod',
     ],
     # hub for CatalogEntry registration target, kro-mgmt-up for the
     # backend cluster the catalog reads from. Both must be green
@@ -180,8 +180,8 @@ local_resource(
 )
 
 local_resource(
-    'kromulticluster-register',
-    cmd='make install-provider-kromulticluster',
+    'infrastructure-register',
+    cmd='make install-provider-infrastructure',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -189,8 +189,8 @@ local_resource(
 )
 
 local_resource(
-    'kromulticluster-unregister',
-    cmd='make uninstall-provider-kromulticluster',
+    'infrastructure-unregister',
+    cmd='make uninstall-provider-infrastructure',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],

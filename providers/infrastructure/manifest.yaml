@@ -1,0 +1,60 @@
+# infrastructure provider — register with the kedge hub.
+#
+# Apply to the kcp workspace where the kedge.faros.sh APIExport is bound
+# (typically root:kedge:providers when running embedded kcp for
+# development):
+#
+#   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
+#
+# Phase 1 ships the skeleton only — schemas: [] keeps tenant workspaces
+# free of provider CRDs while still creating the APIExport tenants
+# APIBind to. Adding a TemplateInstance CRD here later is a non-breaking
+# change.
+---
+apiVersion: providers.kedge.faros.sh/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: infrastructure
+spec:
+  displayName: "Application Templates"
+  description: "Provision applications and infrastructure from curated templates."
+  vendor: "kedge"
+  version: "0.1.0"
+  category: "Workloads"
+  iconURL: "/ui/providers/infrastructure/icon.svg"
+  serviceAccountNamespace: "infrastructure"
+  # Local dev (Tilt / Makefile): the provider binary runs on the host
+  # at PORT=8082 — distinct from the quickstart provider's :8081 so
+  # both can run side-by-side. For in-cluster deployment, change to
+  # the Service DNS, e.g.
+  # http://infrastructure.infrastructure.svc.cluster.local:8081.
+  ui:
+    url: "http://localhost:8082"
+    indexPath: "/"
+    # Sub-nav entries shown indented under "Application Templates" in
+    # the portal side menu. The portal composes each child URL as
+    # /providers/infrastructure/{builtinRoute}; the micro-frontend
+    # reads the trailing segment off kedgeContext.subPath and routes
+    # to the matching internal page. Mirrors kubernetes-edges → Workloads.
+    children:
+      - displayName: Templates
+        builtinRoute: templates
+      - displayName: Instances
+        builtinRoute: instances
+  backend:
+    url: "http://localhost:8082"
+    healthPath: "/healthz"
+  apiExport:
+    name: "infrastructure.providers.kedge.faros.sh"
+    # secrets get/list/watch with tenantScoped: true is what lets the
+    # provider read the per-tenant `cloud-credentials` Secret when
+    # brokering a template (phase 3). tenantScoped: true triggers
+    # auto-accept per docs/providers.md decision #9.
+    permissionClaims:
+      - resource: secrets
+        verbs: [get, list, watch]
+        tenantScoped: true
+    # Phase 1 ships no CRDs. The APIExport still gets created (kcp
+    # requires apiExport.name) so tenants can APIBind to it; the
+    # binding is the consent signal for the secrets permission claim.
+    schemas: []

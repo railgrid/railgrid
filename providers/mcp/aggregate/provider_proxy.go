@@ -11,7 +11,7 @@ You may obtain a copy of the License at
 package aggregatemcp
 
 // External providers (Helm-installed binaries that register with the
-// hub via a CatalogEntry, like providers/kromulticluster/) can NOT
+// hub via a CatalogEntry, like providers/infrastructure/) can NOT
 // participate in the in-tree ToolFamily registry — that's init()-only
 // and tied to specific edge types. This file gives them a second seam:
 // each Ready provider's own MCP endpoint is FEDERATED into the
