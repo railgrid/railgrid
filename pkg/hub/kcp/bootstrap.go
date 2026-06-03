@@ -1282,7 +1282,100 @@ func waitForWorkspaceReady(ctx context.Context, client dynamic.Interface, name s
 	})
 }
 
-// acceptedClaim builds an AcceptablePermissionClaim with matchAll selector.
+// ProviderClaim is the wire shape the REST handler hands
+// EnsureProviderAPIBinding — one entry per permission claim the
+// provider DECLARED in its CatalogEntry, plus a flag whether the
+// user accepted or rejected it in the Enable confirmation dialog.
+// Mirrors providers.PermissionClaim but lives here so the bootstrap
+// package stays free of an import on pkg/hub/providers.
+type ProviderClaim struct {
+	Group    string
+	Resource string
+	Verbs    []string
+	Accepted bool
+}
+
+// EnsureProviderAPIBinding creates (or no-ops on AlreadyExists) an
+// APIBinding named `bindingName` in the child workspace
+// root:kedge:orgs:{orgUUID}:{wsUUID}, pointing at exportPath/exportName.
+//
+// Used by the server-side POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
+// handler so the portal doesn't have to talk to /clusters/{cluster}/apis/...
+// directly — the hub's user-facing kcp proxy pins every user to their
+// User.Spec.DefaultCluster and would 403 any non-default workspace
+// even when commit #220's per-workspace RBAC grants are in place. The
+// proxy's defaultCluster check happens BEFORE forwarding to kcp, so
+// even valid RBAC can't get through. Routing the enable action server-
+// side via the kcp-admin client sidesteps that pre-check.
+//
+// PermissionClaims state: Accepted iff the user ticked the claim in
+// the confirmation dialog, Rejected otherwise. kcp refuses to mark
+// the binding Bound when any provider-required claim is Rejected, so
+// the response surfaces the mismatch to the user automatically.
+func (b *Bootstrapper) EnsureProviderAPIBinding(
+	ctx context.Context,
+	orgUUID, wsUUID, bindingName, exportPath, exportName string,
+	claims []ProviderClaim,
+) error {
+	if orgUUID == "" || wsUUID == "" {
+		return fmt.Errorf("EnsureProviderAPIBinding: orgUUID and wsUUID are required")
+	}
+	if bindingName == "" || exportPath == "" || exportName == "" {
+		return fmt.Errorf("EnsureProviderAPIBinding: bindingName, exportPath, exportName are required")
+	}
+	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
+	wsClient, err := dynamic.NewForConfig(wsConfig)
+	if err != nil {
+		return fmt.Errorf("creating child workspace client: %w", err)
+	}
+
+	specClaims := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
+	for _, c := range claims {
+		state := apisv1alpha2.ClaimRejected
+		if c.Accepted {
+			state = apisv1alpha2.ClaimAccepted
+		}
+		specClaims = append(specClaims, apisv1alpha2.AcceptablePermissionClaim{
+			ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{
+				PermissionClaim: apisv1alpha2.PermissionClaim{
+					GroupResource: apisv1alpha2.GroupResource{
+						Group:    c.Group,
+						Resource: c.Resource,
+					},
+					Verbs: c.Verbs,
+				},
+				Selector: apisv1alpha2.PermissionClaimSelector{MatchAll: true},
+			},
+			State: state,
+		})
+	}
+
+	binding := &apisv1alpha2.APIBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
+			Kind:       "APIBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName},
+		Spec: apisv1alpha2.APIBindingSpec{
+			Reference: apisv1alpha2.BindingReference{
+				Export: &apisv1alpha2.ExportBindingReference{
+					Path: exportPath,
+					Name: exportName,
+				},
+			},
+			PermissionClaims: specClaims,
+		},
+	}
+	u, err := toUnstructured(binding)
+	if err != nil {
+		return fmt.Errorf("converting APIBinding to unstructured: %w", err)
+	}
+	if _, err := wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating APIBinding %q in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
+	}
+	return nil
+}
+
 func acceptedClaim(group, resource, identityHash string, verbs []string) apisv1alpha2.AcceptablePermissionClaim {
 	return apisv1alpha2.AcceptablePermissionClaim{
 		ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{

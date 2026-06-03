@@ -44,6 +44,12 @@ type virtualWorkspaces struct {
 	staticTokens    map[string]struct{}  // static tokens that bypass JWT SA requirement
 	hubExternalURL  string               // external URL of the hub (used for kubeconfig generation)
 	hubInternalURL  string               // internal URL of the hub (used for MCP→edges-proxy calls to avoid CDN loops)
+	// providerEnumerator lets the aggregate MCP handler federate
+	// external providers' tools. Wired post-construction via
+	// SetProviderEnumerator from pkg/hub/server.go because
+	// providers.Registry is built AFTER NewVirtualWorkspaces; nil
+	// means edges-only MCP, which is the legacy/test default.
+	providerEnumerator func(context.Context) []ProviderTarget
 	// authorizeFn performs delegated authentication and authorization against kcp.
 	// Defaults to the package-level authorize function; injectable for testing.
 	authorizeFn authorizeFnType

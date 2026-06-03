@@ -37,6 +37,7 @@ import (
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
 )
 
@@ -149,6 +150,14 @@ func (f *fakeOps) EnsureChildWorkspaceDefaultMCPServer(_ context.Context, orgUUI
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.mcpServerCalls[wsKey{orgUUID, wsUUID}]++
+	return nil
+}
+
+// EnsureProviderAPIBinding is the test stub for the server-side
+// provider-enable handler. The handler is exercised via its own
+// dedicated tests; for the existing org/workspace flows it just needs
+// to not error.
+func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, _, _, _, _, _ string, _ []kcp.ProviderClaim) error {
 	return nil
 }
 

@@ -65,22 +65,102 @@ func NewUIProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 	}
 }
 
+// TenantResolver resolves the caller's identity (User CR name) and
+// tenant workspace path (e.g. root:kedge:orgs:{orgUUID}) from an HTTP
+// request's bearer token. Implementations typically wrap
+// proxy.KCPProxy.IdentifyUser plus a User → Organization → WorkspacePath
+// lookup; see pkg/hub/server.go for the canonical wiring. Returns an
+// error when the caller can't be resolved — the proxy treats that as
+// "no headers to inject" (best effort), it does NOT 401, so anonymous
+// reads of provider /healthz keep working.
+type TenantResolver interface {
+	Resolve(r *http.Request) (user, tenantPath string, err error)
+}
+
+// TenantResolverFunc adapts a plain function to the TenantResolver
+// interface. Lets callers compose the lookup inline without declaring a
+// type.
+type TenantResolverFunc func(r *http.Request) (string, string, error)
+
+// Resolve satisfies TenantResolver.
+func (f TenantResolverFunc) Resolve(r *http.Request) (string, string, error) {
+	return f(r)
+}
+
 // NewBackendProxy returns an http.Handler serving /services/providers/{name}/*
 // by reverse proxying to the provider's spec.backend.url. The user's
-// Authorization header (already validated by upstream middleware on this
-// route) is forwarded; we inject X-Kedge-User / X-Kedge-Tenant for the
-// provider's convenience (best-effort, may be empty during Phase 1A).
+// Authorization header is forwarded as-is. If a TenantResolver is
+// installed via SetTenantResolver, the proxy resolves the caller's
+// identity and injects X-Kedge-User + X-Kedge-Tenant so the provider can
+// scope work without re-parsing the bearer token. Incoming
+// X-Kedge-User / X-Kedge-Tenant headers are ALWAYS stripped before the
+// request is forwarded — a third-party caller can't forge identity by
+// setting those headers directly.
 func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
-	return &ProviderProxy{
+	p := &ProviderProxy{
 		reg:        reg,
 		log:        log.WithName("backend-proxy"),
 		pathPrefix: apiurl.PathPrefixProvidersProxy,
 		pick:       func(p Provider) *url.URL { return p.BackendURL },
-		setHeaders: func(req *http.Request, _, _ string) {
-			// Auth header is preserved by ReverseProxy's default Director
-			// composition. Phase 1A: nothing else to inject here.
-		},
 	}
+	// setHeaders runs after the Director's URL rewrite. Always strip
+	// inbound X-Kedge-* identity headers (defense in depth — a client
+	// must not be able to spoof identity by setting them at the front
+	// door); if a TenantResolver is installed, populate them from the
+	// resolver. Reading p.tenantResolver via the closure is safe
+	// because SetTenantResolver writes it before the first proxied
+	// request lands in practice; if the wiring ever needs hot-swap,
+	// switch the field to atomic.Pointer[TenantResolver].
+	p.setHeaders = func(req *http.Request, name, _ string) {
+		req.Header.Del("X-Kedge-User")
+		req.Header.Del("X-Kedge-Tenant")
+		if p.tenantResolver == nil {
+			// V(2) so tests / non-bootstrapper hubs don't spam, but
+			// devs can flip on verbosity to see the dropped path.
+			p.log.V(2).Info("no tenant resolver wired; forwarding without X-Kedge-* headers", "provider", name)
+			return
+		}
+		user, tenantPath, err := p.tenantResolver.Resolve(req)
+		if err != nil {
+			// Anonymous (no bearer) is common on /healthz probes
+			// and isn't worth screaming about — keep at V(2). Real
+			// resolve failures (auth verify error, kcp lookup
+			// failure) come through at default verbosity so a
+			// TenantMissing error in a provider has a corresponding
+			// hub log line a dev can grep for.
+			if err.Error() == "anonymous caller" {
+				p.log.V(2).Info("anonymous caller — forwarding without X-Kedge-* headers", "provider", name, "path", req.URL.Path)
+			} else {
+				p.log.Info("tenant resolve failed — forwarding without X-Kedge-* headers", "provider", name, "path", req.URL.Path, "err", err.Error())
+			}
+			// Still inject user when the resolver returned a name
+			// but errored later in the chain. Lets the provider at
+			// least attribute the call even when tenant scoping
+			// isn't available.
+			if user != "" {
+				req.Header.Set("X-Kedge-User", user)
+			}
+			return
+		}
+		if user != "" {
+			req.Header.Set("X-Kedge-User", user)
+		}
+		if tenantPath != "" {
+			req.Header.Set("X-Kedge-Tenant", tenantPath)
+		} else {
+			p.log.Info("tenant resolved but tenantPath empty — forwarding without X-Kedge-Tenant", "provider", name, "user", user, "hint", "user may not have a personal Organization workspace bootstrapped yet")
+		}
+	}
+	return p
+}
+
+// SetTenantResolver installs the resolver used to populate
+// X-Kedge-User and X-Kedge-Tenant on proxied requests. Wire after the
+// kcpProxy and kedgeClient are built (see pkg/hub/server.go around the
+// providerRegistry setup). Calling with nil disables injection but the
+// inbound-header stripping below still runs.
+func (p *ProviderProxy) SetTenantResolver(r TenantResolver) {
+	p.tenantResolver = r
 }
 
 // ProviderProxy is the shared implementation backing both proxies. Exported
@@ -102,6 +182,12 @@ type ProviderProxy struct {
 	// fallback is invoked for portal-SPA-shaped paths when fallbackForSPA
 	// is true. Nil until SetFallback is called; while nil, those paths 404.
 	fallback http.Handler
+
+	// tenantResolver, when set, populates X-Kedge-User / X-Kedge-Tenant
+	// on backend-proxied requests. Used only by the backend proxy; the
+	// UI proxy serves static assets and has no use for caller identity.
+	// See SetTenantResolver.
+	tenantResolver TenantResolver
 }
 
 // SetFallback installs the portal SPA handler invoked for non-asset paths

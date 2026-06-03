@@ -149,6 +149,14 @@ function pushContext() {
   const el = elementRef.value as HTMLElement & { kedgeContext?: unknown } | null
   if (!el || !entry.value) return
   el.kedgeContext = {
+    // subPath is what the shell's vue-router parsed from
+    // /providers/{name}/<rest> — empty for the bare provider URL,
+    // 'instances' for /providers/{name}/instances, etc. Providers
+    // use this to drive their own page-routing without taking a
+    // dependency on the shell's router. Watch on props.subPath
+    // upstream guarantees this object is re-pushed when the URL
+    // changes (browser back / forward / refresh).
+    subPath: props.subPath,
     token: auth.token,
     user: auth.user,
     tenant: auth.clusterName,

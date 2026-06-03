@@ -1,0 +1,76 @@
+# A second seed template so the catalog isn't a one-card show. Exposes
+# Redis as a single-replica StatefulSet + ClusterIP Service.
+#
+# Demonstrates: enum inputs, boolean toggles, integer ranges — every
+# control type the portal's DynamicForm renders. Useful as a smoke
+# test fixture while iterating on the form.
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: redis-cache
+  labels:
+    kedge.faros.sh/expose: "true"
+    kedge.faros.sh/template-name: redis-cache
+    kedge.faros.sh/template-version: 0.1.0
+    kedge.faros.sh/category: Databases
+    kedge.faros.sh/cloud: k8s
+  annotations:
+    kedge.faros.sh/display-name: "Redis cache"
+    kedge.faros.sh/description: "A Redis instance for caching workloads. StatefulSet + Service; size knob picks the memory limit."
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: RedisCache
+    spec:
+      name: string | required=true
+      size: string | enum="small,medium,large" default="small" description="Memory bucket (64Mi/256Mi/1Gi)"
+      version: string | enum="6,7" default="7"
+      persistent: boolean | default=false
+    status:
+      readyReplicas: ${statefulset.status.readyReplicas}
+      serviceEndpoint: ${service.spec.clusterIP}
+
+  resources:
+    - id: statefulset
+      template:
+        apiVersion: apps/v1
+        kind: StatefulSet
+        metadata:
+          name: ${schema.spec.name}
+        spec:
+          serviceName: ${schema.spec.name}
+          replicas: 1
+          selector:
+            matchLabels:
+              app: ${schema.spec.name}
+          template:
+            metadata:
+              labels:
+                app: ${schema.spec.name}
+            spec:
+              containers:
+                - name: redis
+                  image: redis:${schema.spec.version}
+                  ports:
+                    - containerPort: 6379
+                  resources:
+                    requests:
+                      cpu: "50m"
+                      memory: "64Mi"
+                    limits:
+                      cpu: "200m"
+                      memory: "256Mi"
+
+    - id: service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: ${schema.spec.name}
+        spec:
+          type: ClusterIP
+          selector:
+            app: ${schema.spec.name}
+          ports:
+            - port: 6379
+              targetPort: 6379

@@ -64,6 +64,140 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
 )
 
 # ---------------------------------------------------------------------------
+# providers — external (Helm-style) provider binaries that register with
+# the hub via a CatalogEntry and serve their UI + HTTP API on a host
+# port. Resources are split by provider for clarity in the Tilt UI:
+#
+#   providers-quickstart   — the reference example (port :8081)
+#   providers-kro          — kro-multicluster broker (port :8082) +
+#                            management kind cluster that kro runs in
+#
+# Each provider has three resources:
+#   <name>            build + serve; auto-restarts on src change
+#   <name>-register   manual ▶ to kubectl apply the CatalogEntry
+#   <name>-unregister manual ▶ to kubectl delete it
+#
+# The kro group adds two more for the backing infrastructure:
+#   kro-mgmt-up    builds the kind cluster + helm-installs kro +
+#                  applies seed RGDs (see providers/kromulticluster/
+#                  examples/rgds/). Auto-runs at `tilt up`.
+#   kro-mgmt-down  manual ▶ to tear down (kind delete cluster).
+#
+# Wiring: the `kromulticluster` provider resource_deps on `kro-mgmt-up`
+# so the provider starts AFTER the kro management cluster is reachable
+# and the seed RGDs are applied. The provider's `make run-...` target
+# auto-detects the .kedge-kro.kubeconfig file and passes it as
+# KRO_KUBECONFIG, so the catalog UI shows the real seeded RGDs.
+# ---------------------------------------------------------------------------
+
+# --- providers-quickstart ---
+local_resource(
+    'quickstart',
+    cmd='make build-quickstart-provider',
+    serve_cmd='make run-provider-quickstart',
+    deps=[
+        'providers/quickstart/main.go',
+        'providers/quickstart/assets.go',
+        'providers/quickstart/portal/src',
+        'providers/quickstart/portal/package.json',
+        'providers/quickstart/go.mod',
+    ],
+    resource_deps=['hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8081, path='/healthz'),
+    ),
+    labels=['providers-quickstart'],
+)
+
+local_resource(
+    'quickstart-register',
+    cmd='make install-provider-quickstart',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-quickstart'],
+)
+
+local_resource(
+    'quickstart-unregister',
+    cmd='make uninstall-provider-quickstart',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-quickstart'],
+)
+
+# --- providers-kro ---
+# Management kro cluster: a kind cluster running upstream kro from
+# oci://ghcr.io/kro-run/kro/kro plus the sample RGDs under
+# providers/kromulticluster/examples/rgds/. The first run pulls
+# images and bootstraps the cluster (~30–60s on a clean machine);
+# subsequent runs short-circuit when `kind get clusters` matches.
+local_resource(
+    'kro-mgmt-up',
+    cmd='make dev-kro-up',
+    deps=[
+        'providers/kromulticluster/examples/rgds',
+    ],
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'kro-mgmt-down',
+    cmd='make dev-kro-down',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'kromulticluster',
+    cmd='make build-kromulticluster-provider',
+    serve_cmd='make run-provider-kromulticluster',
+    deps=[
+        'providers/kromulticluster/main.go',
+        'providers/kromulticluster/heartbeat.go',
+        'providers/kromulticluster/assets.go',
+        'providers/kromulticluster/server',
+        'providers/kromulticluster/kro',
+        'providers/kromulticluster/tenant',
+        'providers/kromulticluster/mcpserver',
+        'providers/kromulticluster/portal/src',
+        'providers/kromulticluster/portal/package.json',
+        'providers/kromulticluster/go.mod',
+    ],
+    # hub for CatalogEntry registration target, kro-mgmt-up for the
+    # backend cluster the catalog reads from. Both must be green
+    # before the provider starts; otherwise it boots in stub mode
+    # which is fine but confusing for the dev who just ran `tilt up`.
+    resource_deps=['hub', 'kro-mgmt-up'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8082, path='/healthz'),
+    ),
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'kromulticluster-register',
+    cmd='make install-provider-kromulticluster',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'kromulticluster-unregister',
+    cmd='make uninstall-provider-kromulticluster',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-kro'],
+)
+
+# ---------------------------------------------------------------------------
 # edges — kubernetes & server agents. All manual triggers (click ▶ in Tilt UI).
 #
 # Workflow:

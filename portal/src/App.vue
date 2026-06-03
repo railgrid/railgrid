@@ -51,6 +51,25 @@ watch(
     if (cluster) auth.setClusterName(cluster)
   },
 )
+
+// Side-menu enabled set is per-workspace (it's derived from the
+// APIBindings in the active workspace's kcp cluster). Without this
+// watcher, refreshBindings only runs once at app boot — so switching
+// to a workspace where a provider isn't enabled keeps showing the
+// previous workspace's enabled chips in the sidebar, and switching
+// to a workspace where MORE providers are enabled hides the new
+// ones. Refresh whenever the active cluster flips. Best-effort: a
+// 403 (workspace not bootstrapped yet) doesn't break the rest of
+// the layout, refreshBindings swallows it via load()'s catch path.
+watch(
+  () => auth.clusterName,
+  (c) => {
+    if (!c || !providers.loaded) return
+    providers.refreshBindings().catch(() => {
+      /* failures already surface via missing Disable button / enable dialog */
+    })
+  },
+)
 </script>
 
 <template>

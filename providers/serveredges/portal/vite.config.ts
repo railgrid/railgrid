@@ -32,12 +32,20 @@ export default defineConfig({
     __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false',
   },
   resolve: {
-    alias: {
-      '@': resolve(__dirname, '..', '..', '..', 'portal', 'src'),
-      '@/stores/auth': resolve(__dirname, 'src', 'auth-adapter.ts'),
-      '@/stores/terminalSessions': resolve(__dirname, 'src', 'terminal-adapter.ts'),
-      '@kedge-edges': resolve(__dirname, '..', '..', 'kubernetesedges', 'portal', 'src'),
-    },
+    // Array form + specific-before-general order: @rollup/plugin-alias
+    // returns on the first matching entry, and `@` matches anything
+    // starting with `@/`. With `@` listed first (object form), the
+    // store overrides below never fire — the terminal-adapter is only
+    // reachable via this alias (no direct import), so the wrong shadow
+    // means EdgeDetailPage's "open terminal" button mutates a dead
+    // Pinia store and the portal's TerminalDock never sees the
+    // kedge-terminal-open event.
+    alias: [
+      { find: '@/stores/auth', replacement: resolve(__dirname, 'src', 'auth-adapter.ts') },
+      { find: '@/stores/terminalSessions', replacement: resolve(__dirname, 'src', 'terminal-adapter.ts') },
+      { find: '@kedge-edges', replacement: resolve(__dirname, '..', '..', 'kubernetesedges', 'portal', 'src') },
+      { find: '@', replacement: resolve(__dirname, '..', '..', '..', 'portal', 'src') },
+    ],
   },
   build: {
     outDir: 'dist',

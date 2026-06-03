@@ -171,6 +171,15 @@ type Config struct {
 	// Enumerate is invoked on every list_targets call.  Must not be nil.
 	Enumerate TargetEnumerator
 
+	// Providers, when set, returns the live set of Ready external
+	// providers exposing an MCP endpoint. newServer() federates each
+	// provider's tools/list into the aggregate as
+	// "<provider-slug>__<tool-name>" so MCP clients can invoke
+	// provider tools (e.g. kro-multicluster's kro_provision) over the
+	// same connection they use for edges. nil = disabled. See
+	// provider_proxy.go.
+	Providers ProviderEnumerator
+
 	// Metadata controls the MCP serverInfo + Instructions returned on
 	// `initialize`.  Hosts forward Instructions to the LLM as ambient
 	// context, so this is the primary place to explain what the endpoint
@@ -274,6 +283,15 @@ func newServer(cfg Config) *mcp.Server {
 	}
 	registerListTargets(srv, cfg)
 	registerAboutResource(srv, cfg)
+	// Federate external-provider MCP endpoints. Runs after the in-tree
+	// families so collisions (a provider that ships a tool named
+	// "list_targets") would manifest as an aggregate-side AddTool
+	// duplicate-name error, NOT silently overwrite the platform tool.
+	// Background context: stateless mode means each request gets a
+	// fresh server; passing context.Background() here lets the proxy
+	// outlive the per-request scope for tools/list fetching (handlers
+	// receive the per-call ctx independently).
+	registerProviderTools(context.Background(), srv, cfg)
 	return srv
 }
 

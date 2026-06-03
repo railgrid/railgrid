@@ -1,0 +1,32 @@
+<!doctype html>
+<!--
+  Standalone fallback shown when a user visits the provider's URL directly
+  (outside the kedge portal). The real entry point is /main.js; this page
+  exists so debugging the provider's HTTP server in a browser shows
+  something readable instead of a 404.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>kro-multicluster provider · kedge</title>
+<style>
+  body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 540px; margin: 4em auto; padding: 0 1em; line-height: 1.6; color: #0f172a; background: #f5f7fa; }
+  @media (prefers-color-scheme: dark) { body { color: #eeeef3; background: #06060b; } code { background: #14141f; } a { color: #3aa3ff; } }
+  h1 { font-size: 16px; }
+  code, a { color: #1f6fc0; }
+  code { padding: 1px 5px; border-radius: 4px; background: #eef1f6; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>kedge kro-multicluster provider</h1>
+<p>This binary is a kedge <em>provider</em> that brokers application templates
+from a central kro (Kube Resource Orchestrator) cluster. It is designed to
+mount inside the kedge portal as a custom element
+(<code>&lt;kedge-provider-kro-multicluster&gt;</code>), loaded from
+<code>/main.js</code>. You're seeing this fallback page because you opened
+the provider URL directly.</p>
+<p>Visit the portal at <a href="/ui/providers">/ui/providers</a> to see it
+mounted natively, or fetch <a href="/main.js">/main.js</a> to inspect the
+custom-element bundle.</p>
+</body>
+</html>

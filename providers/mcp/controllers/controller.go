@@ -27,7 +27,9 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,6 +41,16 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
+
+// pathAnnotationKey is kcp's well-known annotation on the LogicalCluster
+// CR holding the human-readable workspace path (e.g.
+// root:kedge:orgs:<orgUUID>:<wsUUID>). Used to publish path-form
+// MCPServer URLs so the path becomes the canonical tenant identifier
+// across UI + MCP (otherwise the controller would write the short
+// kcp-internal cluster ID and tenant scoping would diverge between
+// the two ingress paths). Lifted from
+// github.com/kcp-dev/kcp/sdk/apis/core "kcp.io/path".
+const pathAnnotationKey = "kcp.io/path"
 
 // ConnManager is the minimal contract from the hub connection manager.
 type ConnManager interface {
@@ -93,7 +105,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	endpoint := apiurl.MCPServerURL(r.hubExternalURL, string(req.ClusterName), srv.Name)
+	// Resolve the human-readable workspace path for this logical
+	// cluster so the published URL uses the path form
+	// (root:kedge:orgs:<orgUUID>:<wsUUID>/...) instead of the short
+	// kcp ID. The path is the SAME identifier the hub's tenant
+	// resolver injects on UI proxy calls, so writing it here makes
+	// MCP federation and UI provisioning land in the SAME
+	// kedge-tenants-<hash> namespace. Falls back to the short ID if
+	// the LogicalCluster CR / annotation isn't available — that's
+	// the legacy behavior and at worst keeps MCP-vs-UI divergence
+	// rather than failing the reconcile.
+	clusterRef := string(req.ClusterName)
+	if path := lookupClusterPath(ctx, c); path != "" {
+		clusterRef = path
+	}
+	endpoint := apiurl.MCPServerURL(r.hubExternalURL, clusterRef, srv.Name)
 
 	var edgeList kedgev1alpha1.EdgeList
 	if err := c.List(ctx, &edgeList); err != nil {
@@ -165,6 +191,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		"kubeEdges", kubeConnected, "linuxEdges", linuxConnected)
 
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// lookupClusterPath returns the human-readable workspace path for the
+// current kcp logical cluster by reading the `kcp.io/path` annotation
+// off its singleton LogicalCluster CR (name "cluster"). Returns "" on
+// any failure — the caller treats that as "fall back to the short
+// cluster ID", so a missing annotation degrades gracefully instead of
+// breaking reconcile. We use an unstructured Get rather than importing
+// kcp's typed scheme to keep this controller's dependency footprint
+// minimal (kcp's SDK pulls a large chunk of api machinery).
+func lookupClusterPath(ctx context.Context, c client.Client) string {
+	gvk := schema.GroupVersionKind{Group: "core.kcp.io", Version: "v1alpha1", Kind: "LogicalCluster"}
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(gvk)
+	if err := c.Get(ctx, client.ObjectKey{Name: "cluster"}, u); err != nil {
+		return ""
+	}
+	return u.GetAnnotations()[pathAnnotationKey]
 }
 
 func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {

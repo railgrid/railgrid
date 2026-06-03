@@ -59,7 +59,34 @@ type Deps struct {
 	HubInternalURL  string
 	Logger          klog.Logger
 
+	// ProviderEnumerator, when set, returns the live set of Ready
+	// external providers that expose an MCP endpoint. The aggregate
+	// MCPServer handler (providers/mcp/virtual/builder.go) passes this
+	// to the aggregator, which fetches each provider's tools/list and
+	// re-exposes them as `<provider-slug>__<tool>` so MCP clients can
+	// drive providers (e.g. kro-multicluster) through the same
+	// connection they use for edges. nil = no provider proxying — the
+	// aggregator falls back to edge-only behavior. Wired in pkg/hub/
+	// server.go from the providers.Registry; kept as an opaque function
+	// here to avoid pulling pkg/hub/providers into the virtual layer.
+	ProviderEnumerator func(context.Context) []ProviderTarget
+
 	vws *virtualWorkspaces
+}
+
+// ProviderTarget is one entry returned by ProviderEnumerator. Mirrors
+// the subset of pkg/hub/providers.Provider the aggregator needs;
+// kept here rather than imported to avoid an import cycle between
+// pkg/virtual/builder (used by providers/mcp/aggregate) and
+// pkg/hub/providers (which depends on the aggregator's bootstrap).
+type ProviderTarget struct {
+	Name        string
+	DisplayName string
+	Description string
+	Vendor      string
+	Version     string
+	MCPURL      string // full URL including scheme + host + /mcp suffix
+	Ready       bool
 }
 
 // HubBaseURL returns the URL providers should use as the base for
@@ -116,8 +143,16 @@ func (d *Deps) OpenSSHSession(ctx context.Context, cluster, edgeName, callerIden
 }
 
 // Deps returns the dependency bundle providers use to construct their
-// virtual-workspace handlers. Returns nil-able fields untouched — providers
-// validate what they actually need.
+// virtual-workspace handlers. Returns nil-able fields untouched —
+// providers validate what they actually need.
+//
+// ProviderEnumerator is always set to a lazy wrapper rather than a
+// snapshot of h.vws.providerEnumerator. The provider-MCP virtual
+// builder captures *Deps once at route-mount time; if we copied the
+// underlying field, a later SetProviderEnumerator (called AFTER the
+// providers.Registry is built in pkg/hub/server.go) would not be
+// visible. The wrapper indirects through h.vws on every call so the
+// real enumerator becomes visible as soon as it's installed.
 func (h *VirtualWorkspaceHandlers) Deps() *Deps {
 	return &Deps{
 		KCPConfig:       h.vws.kcpConfig,
@@ -127,8 +162,26 @@ func (h *VirtualWorkspaceHandlers) Deps() *Deps {
 		HubExternalURL:  h.vws.hubExternalURL,
 		HubInternalURL:  h.vws.hubInternalURL,
 		Logger:          h.vws.logger,
-		vws:             h.vws,
+		ProviderEnumerator: func(ctx context.Context) []ProviderTarget {
+			if h.vws.providerEnumerator == nil {
+				return nil
+			}
+			return h.vws.providerEnumerator(ctx)
+		},
+		vws: h.vws,
 	}
+}
+
+// SetProviderEnumerator installs the provider-discovery callback the
+// aggregate MCP handler uses to federate external providers' tools.
+// Called once at hub startup AFTER providers.Registry is constructed
+// (which happens after NewVirtualWorkspaces — hence the two-step
+// wiring). Calling with nil disables provider federation; subsequent
+// MCP requests then return only edge-family tools. Goroutine-safe in
+// the trivial sense that hub init is single-threaded and no MCP
+// requests land before this call returns.
+func (h *VirtualWorkspaceHandlers) SetProviderEnumerator(fn func(context.Context) []ProviderTarget) {
+	h.vws.providerEnumerator = fn
 }
 
 // EdgeGVRForMCPSelector is the GVR providers use when listing Edge

@@ -1,0 +1,22 @@
+apiVersion: v2
+name: kedge-kro-multicluster-provider
+description: |
+  kedge provider that brokers application templates from a central kro
+  (Kube Resource Orchestrator) cluster into kedge tenant workspaces.
+  Ships the provider Deployment, ClusterIP Service, the
+  central-kro-cluster kubeconfig Secret (optional, dev convenience),
+  and the CatalogEntry that registers the provider with the kedge hub.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+icon: https://example.com/kro-icon.png
+keywords:
+  - kedge
+  - kro
+  - multicluster
+  - templates
+home: https://github.com/faroshq/kedge
+sources:
+  - https://github.com/faroshq/kedge/tree/main/providers/kromulticluster
+maintainers:
+  - name: kedge maintainers

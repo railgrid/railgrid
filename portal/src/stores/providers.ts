@@ -253,59 +253,67 @@ export const useProvidersStore = defineStore('providers', () => {
     bindingNamesByProvider.value = next
   }
 
-  // enable POSTs an APIBinding to the user's tenant workspace referencing
-  // the provider's APIExport. `accept` is the list of permission claims the
-  // user explicitly accepted in the confirmation dialog; each gets state
-  // "Accepted" with a matchAll selector. Claims the provider declared but
-  // the user did not accept are sent as state "Rejected" — kcp will refuse
-  // to mark the binding Bound if any required claim is rejected, which
-  // surfaces the mismatch cleanly to the user.
+  // enable hits the server-side endpoint
+  // POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
+  // which creates the APIBinding via the hub's kcp-admin client.
+  //
+  // The old implementation POST'd directly to
+  // /clusters/{cluster}/apis/apis.kcp.io/v1alpha2/apibindings, but the
+  // hub's user-facing kcp proxy enforces User.Spec.DefaultCluster
+  // BEFORE forwarding to kcp — every sibling workspace (anything that
+  // isn't the user's default) 403'd with "cluster access denied"
+  // regardless of the per-workspace RBAC commit #220 grants. Going
+  // through the REST endpoint lets the bootstrapper write the binding
+  // as kcp-admin on the user's behalf, with the membership check
+  // happening at the tenant.Middleware layer.
+  //
+  // `accept` is the list of permission claims the user explicitly
+  // accepted in the confirmation dialog. The server merges this with
+  // the provider's declared claims — anything the user didn't accept
+  // is sent to kcp as state=Rejected (which prevents the binding from
+  // going Bound and surfaces the mismatch cleanly).
   async function enable(p: ProviderDTO, accept: PermissionClaim[]): Promise<void> {
     if (!p.apiExportPath || !p.apiExportName) {
       throw new Error(`${p.name}: provider declares no APIExport to bind`)
     }
-    const cluster = currentTenantWorkspace()
-    if (!cluster) throw new Error('no tenant workspace in session')
 
-    const acceptedKey = (c: PermissionClaim) => `${c.group ?? ''}/${c.resource}`
-    const acceptedSet = new Set(accept.map(acceptedKey))
-    const claimEntries = (p.permissionClaims ?? []).map((c) => {
-      const entry: Record<string, unknown> = {
-        resource: c.resource,
-        verbs: c.verbs ?? [],
-        selector: { matchAll: true },
-        state: acceptedSet.has(acceptedKey(c)) ? 'Accepted' : 'Rejected',
-      }
-      if (c.group) entry.group = c.group
-      return entry
-    })
-
-    const bindingName = p.name
-    const body = {
-      apiVersion: 'apis.kcp.io/v1alpha2',
-      kind: 'APIBinding',
-      metadata: { name: bindingName },
-      spec: {
-        reference: {
-          export: { path: p.apiExportPath, name: p.apiExportName },
-        },
-        permissionClaims: claimEntries,
-      },
+    // Pull the sidebar selection straight from localStorage so we don't
+    // take a dependency on @/stores/tenant (existing import-cycle
+    // avoidance pattern in this file).
+    const t = readTenantSelection()
+    if (!t.orgUUID || !t.workspaceUUID) {
+      throw new Error('select an organization and workspace before enabling a provider')
     }
-    const res = await fetch(
-      `/clusters/${cluster}/apis/apis.kcp.io/v1alpha2/apibindings`,
-      {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify(body),
-      },
-    )
+
+    const body = {
+      acceptedClaims: accept.map((c) => ({ group: c.group ?? '', resource: c.resource })),
+    }
+    const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/enable`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body),
+    })
     if (!res.ok && res.status !== 409) {
       const detail = await res.text().catch(() => '')
       throw new Error(`enable ${p.name} failed: ${res.status} ${res.statusText} ${detail}`)
     }
-    bindingNamesByProvider.value = { ...bindingNamesByProvider.value, [p.name]: bindingName }
+    bindingNamesByProvider.value = { ...bindingNamesByProvider.value, [p.name]: p.name }
+  }
+
+  // readTenantSelection mirrors the storage shape written by
+  // tenant.ts's savePersisted — kept inline to avoid an import cycle
+  // with @/stores/tenant (same pattern as authHeaders above).
+  function readTenantSelection(): { orgUUID: string | null; workspaceUUID: string | null } {
+    try {
+      const raw = localStorage.getItem('kedge:portal:tenant')
+      if (!raw) return { orgUUID: null, workspaceUUID: null }
+      const parsed = JSON.parse(raw) as { orgUUID?: string | null; workspaceUUID?: string | null }
+      return { orgUUID: parsed.orgUUID ?? null, workspaceUUID: parsed.workspaceUUID ?? null }
+    } catch {
+      return { orgUUID: null, workspaceUUID: null }
+    }
   }
 
   async function disable(p: ProviderDTO): Promise<void> {
@@ -352,19 +360,44 @@ export const useProvidersStore = defineStore('providers', () => {
   }
 })
 
-// authHeaders reads the same localStorage slot the rest of the portal uses.
-// Kept private to this module so the store doesn't take a hard dep on the
-// auth store (which would create an import cycle).
+// authHeaders reads the same localStorage slots the rest of the portal
+// uses — kept inline (not imported from @/stores/auth or @/stores/tenant)
+// to avoid an import cycle with stores that themselves import providers.
+//
+// Returns:
+//   Authorization      — OIDC bearer the hub authenticates
+//   X-Kedge-Org        — sidebar-selected org (so /services/providers/*
+//                        scopes operations to the workspace the user is
+//                        viewing instead of always landing in the
+//                        personal-org default)
+//   X-Kedge-Workspace  — sidebar-selected child workspace (optional;
+//                        omitted = org-scope)
+//
+// Hub resolver verifies the org/workspace headers against the
+// authenticated user's UserMembershipIndex before honoring them, so a
+// client can't spoof workspace access just by setting these.
 function authHeaders(): Record<string, string> {
+  const h: Record<string, string> = {}
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.auth)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as { idToken?: string }
-    if (parsed.idToken) return { Authorization: `Bearer ${parsed.idToken}` }
+    if (raw) {
+      const parsed = JSON.parse(raw) as { idToken?: string }
+      if (parsed.idToken) h['Authorization'] = `Bearer ${parsed.idToken}`
+    }
   } catch {
     /* ignore */
   }
-  return {}
+  try {
+    const raw = localStorage.getItem('kedge:portal:tenant')
+    if (raw) {
+      const t = JSON.parse(raw) as { orgUUID?: string | null; workspaceUUID?: string | null }
+      if (t.orgUUID) h['X-Kedge-Org'] = t.orgUUID
+      if (t.workspaceUUID) h['X-Kedge-Workspace'] = t.workspaceUUID
+    }
+  } catch {
+    /* ignore */
+  }
+  return h
 }
 
 // currentTenantWorkspace reads auth state directly from localStorage to

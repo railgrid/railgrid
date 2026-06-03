@@ -381,13 +381,49 @@ func (s *Server) Run(ctx context.Context) error {
 	// chrome (nav, header, etc.).
 	uiProxy := providers.NewUIProxy(providerRegistry, logger)
 	router.PathPrefix(apiurl.PathPrefixProvidersUI + "/").Handler(uiProxy)
-	router.PathPrefix(apiurl.PathPrefixProvidersProxy + "/").Handler(providers.NewBackendProxy(providerRegistry, logger))
+	// backendProxy is held so we can install the TenantResolver below
+	// once kcpProxy + userClient are wired. Until then the proxy still
+	// works — it just forwards without injecting X-Kedge-User /
+	// X-Kedge-Tenant, which is the Phase 1A behaviour.
+	backendProxy := providers.NewBackendProxy(providerRegistry, logger)
+	router.PathPrefix(apiurl.PathPrefixProvidersProxy + "/").Handler(backendProxy)
 	router.Handle(providers.PathListProviders, providers.NewListHandler(providerRegistry)).Methods("GET")
 	// Heartbeat endpoint matches /api/providers/{name}/heartbeat. The
 	// parsing happens inside the handler; gorilla/mux just needs the prefix.
 	router.PathPrefix(providers.PathProviderHeartbeat + "/").Handler(providers.NewHeartbeatHandler(providerRegistry, logger)).Methods("POST")
 	// Background sweeper marks providers stale when heartbeats stop.
 	go providers.RunSweeper(ctx, providerRegistry, logger)
+
+	// Federate Ready providers' MCP endpoints into the aggregate
+	// MCPServer handler. Each provider that exposes
+	// /services/providers/{name}/mcp shows up in the aggregate
+	// tools/list as `<name>__<tool>`. The vws was built earlier (line
+	// ~347) before providerRegistry existed, so we install the
+	// enumerator via the setter — Deps() reads it lazily on each
+	// per-request handler build.
+	vws.SetProviderEnumerator(func(ctx context.Context) []builder.ProviderTarget {
+		all := providerRegistry.List()
+		out := make([]builder.ProviderTarget, 0, len(all))
+		for _, p := range all {
+			if !p.Ready() || p.BackendURL == nil {
+				continue
+			}
+			// The provider's MCP transport is mounted at /mcp under
+			// its backend URL — see e.g. providers/kromulticluster/
+			// server/server.go. We compose the absolute URL here once
+			// per List() pass; per-request the aggregator just POSTs
+			// to it.
+			mcpURL := strings.TrimRight(p.BackendURL.String(), "/") + "/mcp"
+			out = append(out, builder.ProviderTarget{
+				Name:        p.Name,
+				DisplayName: p.DisplayName,
+				Version:     p.Version,
+				MCPURL:      mcpURL,
+				Ready:       true,
+			})
+		}
+		return out
+	})
 
 	// GraphQL: either embedded (in-process) or external reverse proxy.
 	// graphqlGroup is non-nil when embedded mode is active; we wait on it after
@@ -488,8 +524,22 @@ func (s *Server) Run(ctx context.Context) error {
 				return userClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
 			})
 
+			// Wire the backend-proxy tenant resolver. With this in place
+			// every authenticated request to /services/providers/{name}/*
+			// arrives at the provider with X-Kedge-User and X-Kedge-Tenant
+			// populated, so providers (e.g. kro-multicluster) can scope
+			// per-tenant work without re-parsing the bearer token.
+			// Anonymous requests pass through with the headers stripped.
+			// See pkg/hub/provider_tenant_resolver.go for the concrete
+			// resolver (lives here to avoid a providers→proxy→kcp→providers
+			// import cycle).
+			backendProxy.SetTenantResolver(newKCPTenantResolver(kcpProxy, userClient))
+
 			// Step 10: Org / Workspace / Membership / User REST
 			apiMgr := restapi.NewManager(userClient, bootstrapper)
+			// Provider registry powers POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
+			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
+			apiMgr.WithProviderRegistry(providerRegistry)
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
 			// credential plugin entry (kedge get-token), static-token mode
 			// embeds the caller's bearer token. Either way the cluster URL

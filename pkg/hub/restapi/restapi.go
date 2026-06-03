@@ -49,6 +49,8 @@ import (
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	"github.com/faroshq/faros-kedge/pkg/hub/providers"
 	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
 )
 
@@ -91,6 +93,14 @@ type WorkspaceOps interface {
 	// (the /clusters/<name> hash) for a child workspace. Used to build
 	// per-workspace kubeconfigs for the download endpoint.
 	GetChildWorkspaceClusterName(ctx context.Context, orgUUID, wsUUID string) (string, error)
+
+	// EnsureProviderAPIBinding creates an APIBinding in the target
+	// child workspace, owned by the hub's kcp-admin identity. Used by
+	// the POST .../providers/{name}/enable handler — see
+	// pkg/hub/kcp/bootstrap.go for the rationale (proxy's
+	// defaultCluster pre-check would 403 any user attempt against a
+	// non-default workspace, even with valid RBAC).
+	EnsureProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, claims []kcp.ProviderClaim) error
 }
 
 // KubeconfigConfig configures the workspace-scoped kubeconfig download
@@ -110,6 +120,14 @@ type KubeconfigConfig struct {
 	OIDCClientID   string
 }
 
+// ProviderLookup is the slice of pkg/hub/providers.Registry the
+// enableProvider handler needs — just a name-keyed Get. Pulled out as
+// an interface so tests can swap in a fake without depending on the
+// in-memory registry package.
+type ProviderLookup interface {
+	Get(name string) (providers.Provider, bool)
+}
+
 // Manager holds the dependencies every handler needs: the kedge
 // typed client (for Org / User / UMI CR access in root:kedge:users)
 // and the WorkspaceOps (kcp Bootstrapper in production; fake in tests).
@@ -117,6 +135,7 @@ type Manager struct {
 	client       *kedgeclient.Client
 	bootstrapper WorkspaceOps
 	kubeconfig   KubeconfigConfig
+	providers    ProviderLookup // optional; nil = enableProvider returns 501
 }
 
 // NewManager builds a Manager from the userClient (typed kedge client
@@ -131,6 +150,16 @@ func NewManager(client *kedgeclient.Client, bootstrapper WorkspaceOps) *Manager 
 // route registration stays independent of OIDC wiring.
 func (m *Manager) WithKubeconfig(cfg KubeconfigConfig) *Manager {
 	m.kubeconfig = cfg
+	return m
+}
+
+// WithProviderRegistry installs the lookup used by the
+// enableProvider handler. Wired from the hub's in-memory
+// providers.Registry. When unset, POST .../providers/{name}/enable
+// returns 501 — keeping the route registration independent of
+// provider wiring for tests / minimal hubs.
+func (m *Manager) WithProviderRegistry(p ProviderLookup) *Manager {
+	m.providers = p
 	return m
 }
 
@@ -219,6 +248,11 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	r.HandleFunc("/{org}/workspaces/{ws}/memberships/{user}", h.deleteWorkspaceMembership).Methods(http.MethodDelete)
 
 	r.HandleFunc("/{org}/workspaces/{ws}/kubeconfig", h.downloadKubeconfig).Methods(http.MethodGet)
+
+	// Server-side provider enable (creates APIBinding in target ws
+	// via kcp-admin so the kcp user-proxy's defaultCluster pre-check
+	// doesn't block sibling-workspace operations). See providers_enable.go.
+	r.HandleFunc("/{org}/workspaces/{ws}/providers/{name}/enable", h.enableProvider).Methods(http.MethodPost)
 }
 
 // ===== shared helpers =====
