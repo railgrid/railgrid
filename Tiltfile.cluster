@@ -1,0 +1,330 @@
+# Tiltfile.cluster — full-fledged kcp running in a local kind cluster.
+#
+# Unlike the default ./Tiltfile (which runs the kedge hub with an *embedded*
+# kcp as a local process), this one stands up a complete multi-shard kcp the
+# way upstream does: deployed into a kind cluster via the kcp-operator, with
+# cert-manager, an Envoy gateway, etcd and the observability stack. The kedge
+# hub then runs IN-CLUSTER as a container pointed at that external kcp, with
+# Tilt live_update syncing the rebuilt binary into the pod — so editing hub
+# code reloads the process in seconds and leaves kcp running (small hot-reload
+# footprint), the whole point of this file vs. the embedded-kcp ./Tiltfile.
+#
+# It reuses the upstream kcp Tilt setup (kcp/contrib/tilt/Tiltfile) verbatim by
+# importing it as an external Tiltfile:
+#   https://docs.tilt.dev/multiple_repos.html
+# Tilt resolves the included Tiltfile's relative paths and local_resource
+# command working directories against ITS OWN directory (kcp/contrib/tilt), so
+# the upstream `../../cmd/kcp` builds, `./etcd` kustomize, etc. all still work.
+#
+# ---------------------------------------------------------------------------
+# kcp source location
+# ---------------------------------------------------------------------------
+# Point this at a local kcp checkout to iterate against your own kcp tree:
+#
+#   tilt up -f Tiltfile.cluster -- --kcp-dir=/path/to/kcp
+#   KCP_DIR=/path/to/kcp tilt up -f Tiltfile.cluster
+#
+# If unset, it defaults to /tmp/kcp and shallow-clones kcp there on first run.
+# ---------------------------------------------------------------------------
+
+config.define_string('kcp-dir')
+config.define_string('kcp-image-tag')
+cfg = config.parse()
+
+kcp_dir = cfg.get('kcp-dir', os.getenv('KCP_DIR', '/tmp/kcp'))
+kcp_repo = 'https://github.com/kcp-dev/kcp'
+cluster_name = 'kcp-tilt'
+
+# Optional: pin every kcp component (RootShard, Shard, FrontProxy + proxy) to a
+# specific image tag, keeping the kcp-operator's default repositories. The
+# included Tiltfile.static reads KCP_IMAGE_TAG and injects spec.image.tag into
+# the operator CRs. Unset → operator's version-matched defaults.
+# Defaults to "main" (latest kcp build); override to pin a release:
+#   tilt up -f Tiltfile.cluster -- --kcp-image-tag=v0.27.0
+#   KCP_IMAGE_TAG=v0.27.0 tilt up -f Tiltfile.cluster
+kcp_image_tag = cfg.get('kcp-image-tag', os.getenv('KCP_IMAGE_TAG', 'main'))
+if kcp_image_tag:
+    os.putenv('KCP_IMAGE_TAG', kcp_image_tag)
+
+# Clone kcp into the default location if it isn't there yet. A shallow clone is
+# enough — the upstream Tiltfile only needs the source tree to build from.
+if not os.path.exists(kcp_dir):
+    print('kcp source not found at %s — cloning %s (shallow)' % (kcp_dir, kcp_repo))
+    local('git clone --depth=1 %s %s' % (kcp_repo, kcp_dir), quiet=False)
+
+kcp_tilt = os.path.join(kcp_dir, 'contrib', 'tilt', 'Tiltfile.static')
+if not os.path.exists(kcp_tilt):
+    fail('expected upstream kcp Tiltfile at %s — is --kcp-dir pointing at a kcp checkout?' % kcp_tilt)
+
+# NOTE: no global GOOS override. Tiltfile.static deploys upstream prebuilt kcp
+# images (no in-cluster `go build`). The hub binary IS cross-compiled for linux,
+# but that's set inline in the hub-compile resource below — not process-wide, so
+# it can't leak into other host builds.
+
+# Create the kind cluster up front (parse-time) so the cluster context exists
+# before Tilt applies any of the upstream kcp manifests.
+existing = str(local('kind get clusters', quiet=True, echo_off=True)).split('\n')
+if cluster_name not in existing:
+    print('creating kind cluster %s' % cluster_name)
+    local('kind create cluster --name %s' % cluster_name, quiet=False)
+local('kind export kubeconfig --name %s' % cluster_name, quiet=False)
+
+allow_k8s_contexts('kind-%s' % cluster_name)
+
+print('')
+print('Deploying upstream kcp into kind cluster %s' % cluster_name)
+print('  kcp source:     %s' % kcp_dir)
+print('  kcp image tag:  %s' % (kcp_image_tag if kcp_image_tag else '(operator default)'))
+print('  front-proxy:    https://kcp.localhost:8443')
+print('  root shard:     https://root.kcp.localhost:8443')
+print('  theseus shard:  https://theseus.kcp.localhost:8443')
+print('  grafana:        http://localhost:3333/')
+print('  prometheus:     http://localhost:9091')
+print('  admin kubeconfigs (tilt-*.kubeconfig) are written into this project dir once kcp is ready')
+print('')
+
+# By default the upstream `kcp-admin extract` script writes tilt-*.kubeconfig to
+# the kcp repo root. It honors KCP_KUBECONFIG_DIR as an override, so we point it
+# at this project's directory and the kubeconfigs land here instead of the kcp
+# tree. os.getcwd() resolves to this (root) Tiltfile's directory.
+os.putenv('KCP_KUBECONFIG_DIR', os.getcwd())
+
+# Pull in the entire upstream kcp Tilt setup.
+include(kcp_tilt)
+
+# ---------------------------------------------------------------------------
+# hub — kedge-hub running IN-CLUSTER as a container, against the external kcp.
+#
+# Everything runs inside the kind cluster (kcp + hub). To keep the hot-reload
+# footprint small we DON'T rebuild the multi-stage production image on every
+# change; instead:
+#   * hub-compile builds just the Linux binary on the host (fast incremental
+#     Go builds),
+#   * docker_build_with_restart bakes it into a tiny image, and its live_update
+#     syncs the rebuilt binary into the running pod and restarts the process —
+#     no image rebuild, no pod re-create, kcp untouched.
+#
+# The hub connects to the in-cluster kcp via the operator-issued admin
+# kubeconfigs. Those point at kcp.localhost / root.kcp.localhost :8443, which
+# the kcp pods resolve to the Envoy gateway ClusterIP (10.96.2.2) via
+# hostAliases. We inject the SAME hostAliases into the hub pod (chart value)
+# so it can reuse those kubeconfigs unchanged from inside the cluster.
+# ---------------------------------------------------------------------------
+
+load('ext://restart_process', 'docker_build_with_restart')
+
+hub_namespace = 'kedge-system'
+hub_image = 'ghcr.io/faroshq/kedge-hub'
+
+# Envoy gateway ClusterIP that *.kcp.localhost resolves to (see kcp's
+# gateway.yaml addresses + the hostAliases in its shard/front-proxy manifests).
+gateway_ip = '10.96.2.2'
+
+# --- portal: build the SPA + provider micro-frontends into dist dirs ---
+# These dist dirs are embedded into the hub binary below (-tags portal_embed)
+# and thus shipped inside the same hub image. Kept as its own resource (watching
+# only portal sources) so editing Go code doesn't trigger a slow npm/vite build,
+# and editing portal code doesn't rebuild Go until the dist actually changes.
+local_resource(
+    'portal-build',
+    cmd='make build-portal && rm -rf pkg/hub/portal/dist && cp -r portal/dist pkg/hub/portal/',
+    deps=[
+        'portal/src',
+        'portal/package.json',
+        'portal/index.html',
+        'portal/vite.config.ts',
+        'providers/mcp/portal/src',
+        'providers/kubernetesedges/portal/src',
+        'providers/serveredges/portal/src',
+    ],
+    labels=['hub'],
+)
+
+# --- build: host-side Linux binary (portal embedded), then a thin image ---
+# `ignore` keeps portal *sources* from triggering this resource directly (they
+# flow through portal-build → dist); the dist dirs ARE deps, so a finished
+# portal build rebuilds the binary and live_update re-syncs it.
+local_resource(
+    'hub-compile',
+    cmd='CGO_ENABLED=0 GOOS=linux go build -tags portal_embed -o bin/kedge-hub-linux ./cmd/kedge-hub',
+    deps=[
+        'cmd/kedge-hub',
+        'pkg',
+        'apis',
+        'go.mod',
+        'go.sum',
+        'providers/mcp',
+        'providers/kubernetesedges',
+        'providers/serveredges',
+        'pkg/hub/portal/dist',
+        'providers/mcp/portal/dist',
+        'providers/kubernetesedges/portal/dist',
+        'providers/serveredges/portal/dist',
+    ],
+    ignore=[
+        'portal',
+        '**/portal/src',
+    ],
+    resource_deps=['portal-build'],
+    labels=['hub'],
+)
+
+docker_build_with_restart(
+    hub_image,
+    context='.',
+    dockerfile_contents='''FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+COPY bin/kedge-hub-linux /kedge-hub
+''',
+    # The restart wrapper runs the entrypoint as `sh -c <entrypoint>` and the
+    # chart's container args get appended AFTER it. With a bare `/kedge-hub`
+    # those args become sh's positional params ($0, $1, …) and never reach the
+    # binary. `exec /kedge-hub "$0" "$@"` forwards them all: the first appended
+    # arg lands in $0, the rest in $@.
+    entrypoint='exec /kedge-hub "$0" "$@"',
+    only=['bin/kedge-hub-linux'],
+    live_update=[
+        sync('bin/kedge-hub-linux', '/kedge-hub'),
+    ],
+)
+
+# --- kcp kubeconfig → in-cluster Secret the chart mounts ---
+# We use ONLY the front-proxy kubeconfig, for both the primary connection AND
+# the GraphQL listener. The listener locates the APIExportEndpointSlice by
+# workspace PATH (root:kedge:providers); only the front-proxy resolves paths to
+# cluster-IDs — shards serve cluster-IDs directly and 404 on a path. So we do
+# NOT set --kcp-shard-kubeconfig (the hub then uses front-proxy for both).
+local_resource(
+    'hub-kcp-secrets',
+    cmd='''
+kubectl create namespace %s --dry-run=client -o yaml | kubectl apply -f - && \
+kubectl create secret generic kcp-frontproxy-admin -n %s \
+  --from-file=admin.kubeconfig=tilt-frontproxy.kubeconfig \
+  --dry-run=client -o yaml | kubectl apply -f -
+''' % (hub_namespace, hub_namespace),
+    deps=['tilt-frontproxy.kubeconfig'],
+    resource_deps=['kcp-admin extract'],
+    labels=['hub'],
+)
+
+# --- RBAC: let the hub manage CRDs etc. in the kind (hub) cluster ---
+# The hub installs the kedge CRDs into its own "hub cluster" (here, the kind
+# cluster) using its in-cluster client. The chart ships no ServiceAccount/RBAC,
+# so the pod runs as kedge-system:default with no permissions. Grant it
+# cluster-admin — dev-only; a real deploy should scope this down (and the chart
+# arguably should template a ServiceAccount + Role).
+k8s_yaml(blob('''
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kedge-hub-dev-cluster-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: %s
+'''.strip() % hub_namespace))
+
+k8s_resource(
+    new_name='hub-rbac',
+    objects=['kedge-hub-dev-cluster-admin:clusterrolebinding'],
+    resource_deps=['hub-kcp-secrets'],
+    labels=['hub'],
+)
+
+# --- deploy the kedge-hub chart in external-kcp mode ---
+k8s_yaml(helm(
+    'deploy/charts/kedge-hub',
+    name='kedge-hub',
+    namespace=hub_namespace,
+    set=[
+        'image.hub.tag=dev',
+        'kcp.embedded.enabled=false',
+        'kcp.external.enabled=true',
+        'kcp.external.existingSecret=kcp-frontproxy-admin',
+        'hub.hubExternalURL=https://localhost:9443',
+        'hub.devMode=true',
+        'hub.embeddedGraphQL=true',
+        'hub.staticAuthTokens={dev-token}',
+        # Make *.kcp.localhost resolve to the Envoy gateway from the hub pod,
+        # so the operator-issued kubeconfigs work in-cluster unchanged.
+        'hostAliases[0].ip=%s' % gateway_ip,
+        'hostAliases[0].hostnames[0]=kcp.localhost',
+        'hostAliases[0].hostnames[1]=root.kcp.localhost',
+        'hostAliases[0].hostnames[2]=theseus.kcp.localhost',
+    ],
+))
+
+k8s_resource(
+    'kedge-hub',
+    port_forwards=['9443:9443'],
+    resource_deps=['hub-compile', 'hub-kcp-secrets', 'hub-rbac'],
+    labels=['hub'],
+)
+
+# ---------------------------------------------------------------------------
+# HACK (temporary): static token auth on the front-proxy.
+#
+# The hub/GraphQL gateway forwards the user's bearer token (dev-token) to kcp,
+# but the operator-deployed kcp doesn't trust it → GraphQL "Unauthorized" when
+# listing Edge/VirtualWorkload. The proper fix is kcp-operator PR #240
+# (auth.tokenAuthFile), which needs an operator release. Until then we patch the
+# running front-proxy Deployment directly:
+#   1. create a token CSV Secret. CRITICAL: the token must map to the SAME kcp
+#      identity the hub provisions RBAC for, or you authenticate but get
+#      "access denied". The hub derives a deterministic user from the token
+#      (see pkg/hub/kcp/embedded.go): user = kedge:static:<first16 hex of
+#      sha256("static-token/"+token)>, group system:authenticated. The hub's
+#      proxy then creates that user's tenant workspace and grants it admin
+#      there. We compute the same identity below so the existing RBAC applies.
+#   2. PAUSE the kcp-operator (scale to 0) so it can't revert the Deployment
+#      patch on its next reconcile.
+#   3. JSON-patch frontproxy-front-proxy to mount the CSV + add --token-auth-file
+#      (same mount path/arg PR #240 uses), idempotently.
+#
+# Undo with the 'frontproxy-token-unhack' resource (un-pauses the operator,
+# which then reconciles the patch away).
+# ---------------------------------------------------------------------------
+local_resource(
+    'frontproxy-token-hack',
+    cmd='''
+set -e
+# Derive the hub's static-token identity: kedge:static:<first16 of
+# sha256("static-token/"+token)>, group system:authenticated (see embedded.go).
+TOKEN=dev-token
+HASH=$(printf 'static-token/%s' "$TOKEN" | openssl dgst -sha256 | awk '{print $NF}' | cut -c1-16)
+kubectl create secret generic kcp-static-tokens -n default \
+  --from-literal=token.csv="$TOKEN,kedge:static:$HASH,$HASH,system:authenticated" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Pause the operator so it doesn't revert the Deployment patch below.
+kubectl -n kcp-operator-system scale deploy/kcp-operator-controller-manager --replicas=0
+
+if kubectl -n default get deploy frontproxy-front-proxy \
+     -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q -- '--token-auth-file'; then
+  echo "front-proxy already patched"
+else
+  kubectl -n default patch deploy frontproxy-front-proxy --type=json -p '[
+    {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"token-auth-file","secret":{"secretName":"kcp-static-tokens"}}},
+    {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"token-auth-file","readOnly":true,"mountPath":"/etc/kcp/authentication/token"}},
+    {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--token-auth-file=/etc/kcp/authentication/token/token.csv"}
+  ]'
+fi
+kubectl -n default rollout status deploy/frontproxy-front-proxy --timeout=180s
+''',
+    resource_deps=['kcp-admin extract'],
+    labels=['kcp'],
+)
+
+local_resource(
+    'frontproxy-token-unhack',
+    cmd='kubectl -n kcp-operator-system scale deploy/kcp-operator-controller-manager --replicas=1',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['kcp'],
+)
+
+print('  kedge-hub:      https://localhost:9443 (in-cluster, static token: dev-token)')
