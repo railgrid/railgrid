@@ -378,12 +378,24 @@ func buildPerTemplateCRD(tmpl *infrav1alpha1.Template) (*apiextensionsv1.CustomR
 	return crd, nil
 }
 
-// templateInstanceStatusSchema is the fixed status shape every
-// per-template CRD gets. Lets backends report a consistent
-// {phase, message, conditions} set regardless of backend.
+// templateInstanceStatusSchema is the status shape every per-template CRD
+// gets: a platform-guaranteed {phase, message, conditions} baseline PLUS
+// whatever the backend projects.
+//
+// Backends own their instance status: the kro backend's RGD maps runtime
+// fields onto the instance (endpoints, readiness, a connection-Secret
+// reference — see install/templates/redis-cache.yaml). Those fields aren't
+// known to the platform, so the status object preserves unknown fields;
+// without that the apiserver's structural pruning would strip every
+// backend-projected field on the status subresource write, and the user
+// would only ever see the baseline. Sensitive values are never projected —
+// the backend exposes a Secret *reference*, and the Secret itself stays on
+// the runtime cluster.
 func templateInstanceStatusSchema() apiextensionsv1.JSONSchemaProps {
+	preserveUnknown := true
 	return apiextensionsv1.JSONSchemaProps{
-		Type: "object",
+		Type:                   "object",
+		XPreserveUnknownFields: &preserveUnknown,
 		Properties: map[string]apiextensionsv1.JSONSchemaProps{
 			"phase":   {Type: "string"},
 			"message": {Type: "string"},

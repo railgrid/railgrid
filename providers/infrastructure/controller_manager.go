@@ -33,6 +33,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/faroshq/faros-kedge/providers/infrastructure/backend"
+	krobackend "github.com/faroshq/faros-kedge/providers/infrastructure/backend/kro"
 	"github.com/faroshq/faros-kedge/providers/infrastructure/backend/stub"
 	"github.com/faroshq/faros-kedge/providers/infrastructure/controller/template"
 	"github.com/faroshq/faros-kedge/providers/infrastructure/install"
@@ -93,7 +94,28 @@ func startControllerManager(ctx context.Context) error {
 	if err := registry.Register(stub.New()); err != nil {
 		return fmt.Errorf("register stub backend: %w", err)
 	}
-	// PR C: registry.Register(kro.New())
+
+	// kro backend: authors RGDs on the runtime cluster (where the kro
+	// controller watches RGDs — a kind cluster in dev), NOT this provider's
+	// kcp workspace. It needs a separate client; KRO_KUBECONFIG points at
+	// that cluster (the same kubeconfig the legacy kro broker reads). When
+	// unset we run stub-only so dev/REST-only flows still boot.
+	if p := os.Getenv("KRO_KUBECONFIG"); p != "" {
+		kroCfg, err := clientcmd.BuildConfigFromFlags("", p)
+		if err != nil {
+			return fmt.Errorf("loading KRO_KUBECONFIG for kro backend: %w", err)
+		}
+		kroDyn, err := dynamic.NewForConfig(kroCfg)
+		if err != nil {
+			return fmt.Errorf("kro backend dynamic client: %w", err)
+		}
+		if err := registry.Register(krobackend.New(kroDyn)); err != nil {
+			return fmt.Errorf("register kro backend: %w", err)
+		}
+		log.Printf("controller manager: kro backend registered (RGD runtime cluster from KRO_KUBECONFIG=%s)", p)
+	} else {
+		log.Printf("controller manager: KRO_KUBECONFIG unset — kro backend not registered (stub-only)")
+	}
 
 	dyn, err := dynamic.NewForConfig(config)
 	if err != nil {

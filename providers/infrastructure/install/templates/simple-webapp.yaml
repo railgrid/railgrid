@@ -7,7 +7,7 @@ spec:
   description: "A web application — Deployment + Service, nginx by default. Scales via the replicas input."
   category: Workloads
   version: 0.1.0
-  backend: stub
+  backend: kro
   instanceCRD:
     group: infrastructure.kedge.faros.sh
     version: v1alpha1

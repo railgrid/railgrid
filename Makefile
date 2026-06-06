@@ -434,6 +434,14 @@ TILT_KCP_DIR ?= /Users/mjudeikis/go/src/github.com/kcp-dev/kcp
 
 ## Full multi-shard kcp in a kind cluster + kedge-hub in-cluster, against a local kcp checkout
 tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with KCP_DIR=...)
+	@# Create the kind cluster + context BEFORE `tilt up`. If the cluster is
+	@# created from inside the Tiltfile, Tilt initializes its deploy client
+	@# before the kind-kcp-tilt context exists and caches an empty config,
+	@# leaving every native k8s_yaml resource stuck on "could not set up
+	@# kubernetes client: no configuration has been provided". Guaranteeing the
+	@# cluster+context up front avoids that race.
+	@kind get clusters 2>/dev/null | grep -qx kcp-tilt || kind create cluster --name kcp-tilt
+	@kind export kubeconfig --name kcp-tilt
 	tilt up -f Tiltfile.cluster -- --kcp-dir=$(TILT_KCP_DIR)
 
 # --- Provider quickstart (local dev) ---

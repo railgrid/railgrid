@@ -189,14 +189,23 @@ func (r *Reconciler) removeAPIExportEntry(ctx context.Context, resource, group s
 // changes (annotations, labels) are intentionally excluded.
 func schemaPrefix(crd *apiextensionsv1.CustomResourceDefinition) string {
 	h := sha256.New()
-	fmt.Fprintln(h, crd.Spec.Group, crd.Spec.Names.Kind)
+	_, _ = fmt.Fprintln(h, crd.Spec.Group, crd.Spec.Names.Kind)
 	for _, v := range crd.Spec.Versions {
-		fmt.Fprintln(h, v.Name)
+		_, _ = fmt.Fprintln(h, v.Name)
 		if v.Schema != nil && v.Schema.OpenAPIV3Schema != nil {
-			// Stringify via fmt to avoid pulling encoding/json + a
-			// stable serializer here — the SHA over the format output
-			// is good enough for a content fingerprint.
-			fmt.Fprintf(h, "%v\n", v.Schema.OpenAPIV3Schema)
+			// Hash a deterministic JSON serialization. JSON sorts object
+			// keys and renders pointer fields (e.g.
+			// x-kubernetes-preserve-unknown-fields, a *bool) by value, so
+			// the digest is stable across processes — unlike fmt %v, which
+			// prints pointer addresses for the schema's *bool fields and
+			// would make the prefix (and thus the APIResourceSchema name)
+			// non-deterministic.
+			data, err := crdsJSONMarshal(v.Schema.OpenAPIV3Schema)
+			if err != nil {
+				_, _ = fmt.Fprintf(h, "%v\n", v.Schema.OpenAPIV3Schema)
+				continue
+			}
+			_, _ = h.Write(data)
 		}
 	}
 	digest := hex.EncodeToString(h.Sum(nil))
@@ -327,8 +336,8 @@ func resourcesEqual(a, b []apisv1alpha2.ResourceSchema) bool {
 // accessors. Kept tiny so the package's behavior stays auditable in
 // one file.
 
-func jsonMarshal(v any) ([]byte, error)       { return jsonMarshalImpl(v) }
-func jsonUnmarshal(b []byte, v any) error      { return jsonUnmarshalImpl(b, v) }
+func jsonMarshal(v any) ([]byte, error)   { return jsonMarshalImpl(v) }
+func jsonUnmarshal(b []byte, v any) error { return jsonUnmarshalImpl(b, v) }
 func unstructuredNested(obj map[string]any, fields ...string) (any, bool, error) {
 	return unstructured.NestedFieldNoCopy(obj, fields...)
 }
@@ -346,8 +355,8 @@ var (
 
 // Forward-decl-style anchors; the actual implementations live in
 // crds_json.go so the controller.go + apiexport.go split stays clean.
-func jsonMarshalRef(v any) ([]byte, error)    { return crdsJSONMarshal(v) }
-func jsonUnmarshalRef(b []byte, v any) error  { return crdsJSONUnmarshal(b, v) }
+func jsonMarshalRef(v any) ([]byte, error)   { return crdsJSONMarshal(v) }
+func jsonUnmarshalRef(b []byte, v any) error { return crdsJSONUnmarshal(b, v) }
 
 // _ keeps the infra package's reference live in the import section
 // even when ensureAPIResourceSchema is the only consumer; PR B's

@@ -7,7 +7,7 @@ spec:
   description: "A Redis instance for caching workloads. StatefulSet + Service; size knob picks the memory limit."
   category: Databases
   version: 0.1.0
-  backend: stub
+  backend: kro
   instanceCRD:
     group: infrastructure.kedge.faros.sh
     version: v1alpha1
@@ -33,14 +33,104 @@ spec:
         default: false
     required:
       - name
+  # backendConfig is interpreted by the kro backend. Every resource sets
+  # namespace: default — the control-plane/data-plane split materializes
+  # these on the runtime cluster and remaps that to a per-tenant namespace
+  # (<logicalcluster>-default), so a tenant's whole stack (redis + the apps
+  # that consume it) lands together and is isolated from other tenants.
   backendConfig:
     resources:
+      # The connection Secret. kro creates it with the non-sensitive
+      # connection details; the generator Job below fills in a random
+      # password + full URI. Lives on the runtime cluster next to the
+      # workload — its values never reach the control plane.
+      - id: credentials
+        template:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ${schema.spec.name}-credentials
+            namespace: default
+          stringData:
+            host: ${schema.spec.name}
+            port: "6379"
+      # Password generation, in-graph (no external operator). A one-shot
+      # Job mints a random password and patches it (plus a complete
+      # redis://:<pw>@host:port URI) into the credentials Secret — once;
+      # it no-ops if the password key already exists, so re-reconciles
+      # don't rotate it. kro never sees the value (the Job runs the shell);
+      # status only ever references the Secret.
+      - id: pwgenAccount
+        template:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: ${schema.spec.name}-pwgen
+            namespace: default
+      - id: pwgenRole
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: ${schema.spec.name}-pwgen
+            namespace: default
+          rules:
+            - apiGroups: [""]
+              resources: ["secrets"]
+              verbs: ["get", "patch"]
+      - id: pwgenBinding
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: ${schema.spec.name}-pwgen
+            namespace: default
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: ${pwgenRole.metadata.name}
+          subjects:
+            - kind: ServiceAccount
+              name: ${pwgenAccount.metadata.name}
+              namespace: default
+      - id: pwgen
+        template:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${schema.spec.name}-pwgen
+            namespace: default
+          spec:
+            backoffLimit: 5
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                serviceAccountName: ${pwgenAccount.metadata.name}
+                restartPolicy: OnFailure
+                containers:
+                  - name: pwgen
+                    image: bitnami/kubectl
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -eu
+                        SECRET="${credentials.metadata.name}"
+                        if [ -z "$(kubectl get secret "$SECRET" -o jsonpath='{.data.password}' 2>/dev/null)" ]; then
+                          PW="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 24)"
+                          kubectl patch secret "$SECRET" --type merge \
+                            -p "{\"stringData\":{\"password\":\"$PW\",\"uri\":\"redis://:$PW@${schema.spec.name}:6379\"}}"
+                          echo "generated credentials for $SECRET"
+                        else
+                          echo "credentials already present for $SECRET"
+                        fi
       - id: statefulset
         template:
           apiVersion: apps/v1
           kind: StatefulSet
           metadata:
             name: ${schema.spec.name}
+            namespace: default
           spec:
             serviceName: ${schema.spec.name}
             replicas: 1
@@ -55,6 +145,13 @@ spec:
                 containers:
                   - name: redis
                     image: redis:${schema.spec.version}
+                    command: ["redis-server", "--requirepass", "$(REDIS_PASSWORD)"]
+                    env:
+                      - name: REDIS_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${credentials.metadata.name}
+                            key: password
                     ports:
                       - containerPort: 6379
       - id: service
@@ -63,6 +160,7 @@ spec:
           kind: Service
           metadata:
             name: ${schema.spec.name}
+            namespace: default
           spec:
             type: ClusterIP
             selector:
@@ -70,3 +168,14 @@ spec:
             ports:
               - port: 6379
                 targetPort: 6379
+    # status is projected onto the instance in the tenant's kcp workspace
+    # (via the split's instance client). Non-sensitive connection details +
+    # a reference to the credentials Secret — no credentials are ever
+    # surfaced to the user or an LLM.
+    status:
+      ready: ${statefulset.status.readyReplicas}
+      host: ${service.metadata.name}
+      port: ${service.spec.ports[0].port}
+      connectionSecretRef:
+        name: ${credentials.metadata.name}
+        namespace: ${credentials.metadata.namespace}
