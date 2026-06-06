@@ -1,7 +1,7 @@
 # infrastructure provider
 
 A kedge provider that brokers application templates from a central
-[kro](https://github.com/faroshq/infrastructure) (Kube Resource
+[kro](https://github.com/faroshq/kro-multicluster) (Kube Resource
 Orchestrator) cluster into kedge tenant workspaces. A tenant picks a
 template in the kedge portal — or asks an MCP-driven LLM — supplies
 inputs, and this provider creates the kro instance CR on their behalf

@@ -13,7 +13,7 @@
 // owns when a tenant provisions a template.
 //
 // kro upstream: https://github.com/kro-run/kro (and the multicluster
-// fork at github.com/faroshq/infrastructure). The RGD's spec.schema
+// fork at github.com/faroshq/kro-multicluster). The RGD's spec.schema
 // uses kro's "SimpleSchema" DSL — a flat `field: type` map with
 // optional `| required=true | default=…` qualifiers — NOT JSON-schema.
 // schema.go converts SimpleSchema to a JSON-schema-shaped object so

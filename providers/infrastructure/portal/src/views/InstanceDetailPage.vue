@@ -50,7 +50,7 @@ async function del() {
       <header class="page-head">
         <div>
           <h2 class="page-title">{{ inst.name }}</h2>
-          <p class="page-meta">{{ inst.template }} · namespace <code>{{ inst.namespace }}</code></p>
+          <p class="page-meta">{{ inst.template }}</p>
         </div>
         <StatusBadge :phase="inst.phase" />
       </header>

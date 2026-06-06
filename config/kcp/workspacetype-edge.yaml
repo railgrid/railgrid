@@ -1,0 +1,25 @@
+apiVersion: tenancy.kcp.io/v1alpha1
+kind: WorkspaceType
+metadata:
+  name: edge
+  annotations:
+    bootstrap.kcp.io/create-only: "true"
+spec:
+  # An `edge` workspace is a pure mount point: its content is proxied to the
+  # remote edge cluster through the Edge's mount reference (see
+  # pkg/hub/controllers/edge/mount_reconciler.go). It holds no local kcp API
+  # surface of its own, which is why it deliberately omits BOTH:
+  #   * extend: universal  — no `default` namespace, no tenancy.kcp.io /
+  #     topology.kcp.io. There is nothing local to namespace; everything the
+  #     user sees comes from the mount target.
+  #   * defaultAPIBindings  — the edge proxy serves the remote kube API, so no
+  #     kedge APIBinding is bound here.
+  limitAllowedChildren:
+    none: true
+  # An edge workspace only makes sense as a leaf under a team `workspace`. The
+  # mount reconciler creates it as a child of the workspace that owns the Edge
+  # CR; kcp WorkspaceType admission rejects creation at any other path.
+  limitAllowedParents:
+    types:
+    - name: workspace
+      path: root:kedge

@@ -1,0 +1,74 @@
+apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: simple-webapp
+spec:
+  displayName: "Simple webapp"
+  description: "A web application — Deployment + Service, nginx by default. Scales via the replicas input."
+  category: Workloads
+  version: 0.1.0
+  backend: stub
+  instanceCRD:
+    group: infrastructure.kedge.faros.sh
+    version: v1alpha1
+    resource: simplewebapps
+    kind: SimpleWebApp
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        description: "Logical name; used as Deployment + Service name in the tenant namespace."
+      replicas:
+        type: integer
+        default: 1
+        minimum: 1
+        maximum: 10
+      image:
+        type: string
+        default: "nginx:latest"
+      port:
+        type: integer
+        default: 80
+      serviceType:
+        type: string
+        enum: ["ClusterIP", "NodePort", "LoadBalancer"]
+        default: "ClusterIP"
+    required:
+      - name
+  backendConfig:
+    resources:
+      - id: deployment
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${schema.spec.name}
+          spec:
+            replicas: ${schema.spec.replicas}
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}
+              spec:
+                containers:
+                  - name: app
+                    image: ${schema.spec.image}
+                    ports:
+                      - containerPort: ${schema.spec.port}
+      - id: service
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}
+          spec:
+            type: ${schema.spec.serviceType}
+            selector:
+              app: ${schema.spec.name}
+            ports:
+              - port: ${schema.spec.port}
+                targetPort: ${schema.spec.port}

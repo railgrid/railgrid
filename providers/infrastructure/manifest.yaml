@@ -54,7 +54,11 @@ spec:
       - resource: secrets
         verbs: [get, list, watch]
         tenantScoped: true
-    # Phase 1 ships no CRDs. The APIExport still gets created (kcp
-    # requires apiExport.name) so tenants can APIBind to it; the
-    # binding is the consent signal for the secrets permission claim.
+    # No static schemas. The hub catalog controller materializes an
+    # APIExport with empty spec.resources; the provider binary's
+    # startup adds the Template CRD entry itself (so it doesn't have
+    # to ship its CRD body in this manifest), and the Template
+    # controller adds per-template entries as operators apply
+    # Templates. Both paths reuse the same APIResourceSchema mint +
+    # APIExport upsert logic.
     schemas: []

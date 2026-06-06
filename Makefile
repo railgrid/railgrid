@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal run-provider-infrastructure install-provider-infrastructure uninstall-provider-infrastructure dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -121,6 +121,19 @@ build-infrastructure-provider-portal: ## Build the infrastructure provider's mic
 
 build-infrastructure-provider: build-infrastructure-provider-portal ## Build the infrastructure provider binary (portal embedded)
 	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/infrastructure-provider .
+
+## Generate deepcopy methods + CRD YAML for the infrastructure provider's
+## own API types (providers/infrastructure/apis/v1alpha1/...). The CRDs land
+## under providers/infrastructure/config/crds/ and are embedded into the
+## binary via go:embed — the hub does not install them, the provider does
+## (one of the deliberate self-contained-system properties).
+codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastructure provider's local API
+	@mkdir -p providers/infrastructure/config/crds
+	cd providers/infrastructure && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/infrastructure/config/crds
+	./hack/ensure-boilerplate.sh
 
 test:
 	go test $(shell go list ./... | grep -v '/test/e2e')
@@ -274,7 +287,7 @@ dev-run-kcp: $(KCP) ## Run external kcp server
 	@source $(SERVICE_HOOKS) && cleanup_stale_hooks
 	@echo "Starting kcp..."
 	@source $(SERVICE_HOOKS) && \
-		($(KCP) start --root-directory=$(KCP_DATA_DIR) --feature-gates=WorkspaceMounts=true & \
+		($(KCP) start --root-directory=$(KCP_DATA_DIR) --feature-gates=WorkspaceMounts=true,CacheAPIs=true & \
 		KCP_PID=$$!; \
 		service_start kcp $$KCP_PID; \
 		wait $$KCP_PID)
@@ -342,10 +355,21 @@ HUB_FLAGS_KCP_EXTERNAL := \
 	--external-kcp-kubeconfig=.kcp/admin.kubeconfig
 
 # KCP: Embedded (runs kcp in-process)
+# --kcp-shard-external-url / --kcp-shard-virtual-workspace-url ARE NOT set
+# by default — kcp defaults them to localhost which works for in-process
+# consumers (hub's GraphQL listener, controllers, kcp proxy). Overriding
+# them globally to host.docker.internal breaks anything running on the
+# host (DNS doesn't resolve unless you're on Docker Desktop with the
+# magic enabled). If you need EndpointSlice URLs that are reachable from
+# inside a kind pod (e.g. kro pod talking to kcp), set KCP_SHARD_EXTERNAL_URL
+# explicitly AND make sure host.docker.internal resolves on your host
+# (or use your LAN IP).
+KCP_SHARD_EXTERNAL_URL ?=
 HUB_FLAGS_KCP_EMBEDDED := \
 	--embedded-kcp \
 	--kcp-root-dir=.kcp \
-	--kcp-secure-port=6443
+	--kcp-secure-port=6443 \
+	$(if $(KCP_SHARD_EXTERNAL_URL),--kcp-shard-external-url=$(KCP_SHARD_EXTERNAL_URL) --kcp-shard-virtual-workspace-url=$(KCP_SHARD_EXTERNAL_URL),)
 
 # GraphQL: Embedded (runs listener+gateway in-process alongside hub)
 GRAPHQL_APIEXPORT_SLICE ?= core.faros.sh
@@ -404,6 +428,14 @@ run-hub-embedded-graphql: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
 	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
 
+# Local kcp checkout to iterate against. Override on the CLI or via env:
+#   make tilt-cluster KCP_DIR=/path/to/kcp
+TILT_KCP_DIR ?= /Users/mjudeikis/go/src/github.com/kcp-dev/kcp
+
+## Full multi-shard kcp in a kind cluster + kedge-hub in-cluster, against a local kcp checkout
+tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with KCP_DIR=...)
+	tilt up -f Tiltfile.cluster -- --kcp-dir=$(TILT_KCP_DIR)
+
 # --- Provider quickstart (local dev) ---
 # The quickstart provider is a small standalone HTTP server that registers
 # itself with the hub via a CatalogEntry. To exercise the full provider
@@ -422,6 +454,10 @@ QUICKSTART_HUB_URL ?= https://localhost:9443
 QUICKSTART_TOKEN ?= $(STATIC_AUTH_TOKEN)
 # kcp admin kubeconfig produced by embedded-kcp mode (see HUB_FLAGS_KCP_EMBEDDED).
 QUICKSTART_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
+# kcp apiserver URL for `kubectl apply` of the CatalogEntry. Embedded-kcp
+# binds to :6443; Tiltfile.cluster (operator-deployed kcp) uses the envoy
+# gateway at kcp.localhost:8443 and overrides this from the Tilt resource.
+QUICKSTART_KCP_SERVER ?= https://localhost:6443
 QUICKSTART_MANIFEST ?= providers/quickstart/manifest.yaml
 
 ## Run the quickstart provider binary locally. Heartbeats to the hub on
@@ -446,7 +482,7 @@ install-provider-quickstart: ## Apply quickstart CatalogEntry into root:kedge:pr
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
-		--server=https://localhost:6443/clusters/root:kedge:providers \
+		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:kedge:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(QUICKSTART_MANIFEST)
 
@@ -492,7 +528,7 @@ e2e-infrastructure: build-infrastructure-provider ## Run infrastructure tenant-i
 ## Delete the quickstart CatalogEntry. Useful while iterating on the manifest.
 uninstall-provider-quickstart: ## Delete quickstart CatalogEntry
 	-kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
-		--server=https://localhost:6443/clusters/root:kedge:providers \
+		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:kedge:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(QUICKSTART_MANIFEST)
 
@@ -508,6 +544,9 @@ KROMC_PORT ?= 8082
 KROMC_HUB_URL ?= https://localhost:9443
 KROMC_TOKEN ?= $(STATIC_AUTH_TOKEN)
 KROMC_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
+# Same override story as QUICKSTART_KCP_SERVER above — Tiltfile.cluster
+# repoints this at the envoy gateway.
+KROMC_KCP_SERVER ?= https://localhost:6443
 KROMC_MANIFEST ?= providers/infrastructure/manifest.yaml
 
 ## Run the infrastructure provider binary locally. Heartbeats to the hub on
@@ -537,6 +576,7 @@ run-provider-infrastructure: build-infrastructure-provider ## Run the infrastruc
 	KEDGE_PROVIDER_NAME=infrastructure \
 	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
+	INFRASTRUCTURE_KUBECONFIG=$${INFRASTRUCTURE_KUBECONFIG:-$$( [ -f "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" ] && echo "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" )} \
 		$(BINDIR)/infrastructure-provider
 
 ## Apply the infrastructure CatalogEntry into root:kedge:providers. Idempotent.
@@ -548,20 +588,45 @@ install-provider-infrastructure: ## Apply infrastructure CatalogEntry into root:
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=https://localhost:6443/clusters/root:kedge:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(KROMC_MANIFEST)
 
 ## Delete the infrastructure CatalogEntry. Useful while iterating on the manifest.
 uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry
 	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=https://localhost:6443/clusters/root:kedge:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(KROMC_MANIFEST)
 
+## One-shot bootstrap for the infrastructure provider's workspace.
+## Uses the hub's admin kubeconfig to install CRDs, register APIExport
+## schemas, apply the Templates CachedResource, mint a low-privilege
+## ServiceAccount + token, and write a runtime kubeconfig that
+## run-provider-infrastructure picks up via INFRASTRUCTURE_KUBECONFIG.
+##
+## When KRO_KUBECONFIG is set, also seeds the kro cluster with a
+## kro.run/cluster=true Secret pointing at this workspace's VW.
+INFRASTRUCTURE_WORKSPACE_PATH ?= root:kedge:providers:infrastructure
+INFRASTRUCTURE_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/infrastructure-runtime.kubeconfig
+init-provider-infrastructure: build-infrastructure-provider ## Bootstrap infrastructure provider workspace (CRDs, APIExport, SA, kubeconfig)
+	@test -f $(KROMC_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	@echo "Bootstrapping infrastructure provider workspace $(INFRASTRUCTURE_WORKSPACE_PATH)"
+	@echo "  admin:   $(KROMC_KCP_KUBECONFIG)"
+	@echo "  runtime: $(INFRASTRUCTURE_RUNTIME_KUBECONFIG)"
+	INFRASTRUCTURE_ADMIN_KUBECONFIG=$(KROMC_KCP_KUBECONFIG) \
+	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
+	INFRASTRUCTURE_KUBECONFIG=$(INFRASTRUCTURE_RUNTIME_KUBECONFIG) \
+	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
+		$(BINDIR)/infrastructure-provider init
+
 # --- Management kro cluster (backend for the infrastructure provider) ---
-# Brings up a dedicated kind cluster running the faroshq/infrastructure
-# fork (image + chart published to ghcr.io/faroshq/infrastructure/*),
+# Brings up a dedicated kind cluster running the faroshq/kro-multicluster
+# fork (image + chart published to ghcr.io/faroshq/kro-multicluster/*),
 # configured for multicluster mode per the fork's docs/multicluster-setup.md:
 #
 #   - --enable-multicluster flag turns on the discovery loop
@@ -579,10 +644,10 @@ uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry
 #
 KRO_KIND_NAME ?= kedge-kro
 KRO_KIND_KUBECONFIG ?= $(CURDIR)/.kedge-kro.kubeconfig
-KRO_CHART ?= oci://ghcr.io/faroshq/infrastructure/charts/kro/kro
-KRO_CHART_VERSION ?= v0.0.1-mc.1
-KRO_IMAGE_REPO ?= ghcr.io/faroshq/infrastructure/kro
-KRO_IMAGE_TAG ?= v0.0.1-mc.1
+KRO_CHART ?= oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro
+KRO_CHART_VERSION ?= v0.0.1-mc.6
+KRO_IMAGE_REPO ?= ghcr.io/faroshq/kro-multicluster/kro
+KRO_IMAGE_TAG ?= v0.0.1-mc.6
 KRO_NAMESPACE ?= kro-system
 KRO_SEED_DIR ?= providers/infrastructure/examples/rgds
 
@@ -599,30 +664,59 @@ dev-kro-up: ## Bring up the kedge-kro kind cluster + install kro (multicluster) 
 		echo ">>> kind cluster $(KRO_KIND_NAME) already exists"; \
 		kind get kubeconfig --name $(KRO_KIND_NAME) > $(KRO_KIND_KUBECONFIG); \
 	fi
-	@echo ">>> installing kro (fork, multicluster mode) into $(KRO_NAMESPACE)"
-	@# args[] override comes from docs/multicluster-setup.md:
-	@#   --enable-multicluster              turn on the discovery loop
-	@#   --cluster-secrets-namespace=...    where to look for kubeconfig Secrets
-	@#   --cluster-secrets-label=...        label used to identify those Secrets
-	@#   --cluster-secrets-key=...          key in Secret.data holding the YAML
-	@# image.repository/tag pin the fork's controller image (the chart's
+	@# Pre-create the namespace + placeholder kcp-kubeconfig Secret BEFORE
+	@# helm install. The chart's kro Deployment mounts this Secret at
+	@# /etc/kro/kcp/kubeconfig — without it, the pod gets stuck in
+	@# ContainerCreating ("secret kcp-kubeconfig not found") and the
+	@# `helm upgrade --wait` times out. The Secret's content is a stub;
+	@# `make init-provider-infrastructure` later overwrites it with the
+	@# real minted kubeconfig and bounces the kro pod to pick it up.
+	@echo ">>> ensuring $(KRO_NAMESPACE) namespace + placeholder kcp-kubeconfig Secret"
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl create namespace $(KRO_NAMESPACE) \
+		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
+	@# --from-literal needs a value; "pending-init" is human-readable
+	@# enough that anyone inspecting the Secret pre-init knows it's not
+	@# the real thing.
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) create secret generic kcp-kubeconfig \
+		--from-literal=kubeconfig=pending-init \
+		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
+	@echo ">>> installing kro (fork, kcp-apiexport mode) into $(KRO_NAMESPACE)"
+	@# image.repository/tag pin the fork's controller image; the chart's
 	@# default ${VERSION} placeholder doesn't resolve outside the release
-	@# pipeline).
+	@# pipeline. We use the kcp-apiexport provider (mc.3+) so kro reads
+	@# the APIExportEndpointSlice in the provider workspace directly
+	@# instead of watching labeled Secrets — that's the cleaner kcp-aware
+	@# topology. Wiring:
+	@#   multicluster.kcp.kubeconfigSecret = kcp-kubeconfig (written by
+	@#     install.SeedKroCluster in init mode; mounted at /etc/kro/kcp/kubeconfig)
+	@#   multicluster.kcp.apiExportEndpointSlice = infrastructure (created by
+	@#     install.PlatformAPIExportEndpointSlice in init mode; matches
+	@#     install.APIExportEndpointSliceName)
+	@# Drop --wait because the kro pod won't become Ready until init has
+	@# replaced the placeholder kubeconfig and bounced it — but helm
+	@# install itself only needs to succeed (resources applied).
 	KUBECONFIG=$(KRO_KIND_KUBECONFIG) helm upgrade --install kro $(KRO_CHART) \
 		--version $(KRO_CHART_VERSION) \
 		--namespace $(KRO_NAMESPACE) --create-namespace \
 		--set image.repository=$(KRO_IMAGE_REPO) \
 		--set image.tag=$(KRO_IMAGE_TAG) \
-		--set 'controller.args[0]=--enable-multicluster' \
-		--set 'controller.args[1]=--cluster-secrets-namespace=$(KRO_NAMESPACE)' \
-		--set 'controller.args[2]=--cluster-secrets-label=kro.run/cluster' \
-		--set 'controller.args[3]=--cluster-secrets-key=kubeconfig' \
-		--wait --timeout 5m
-	@echo ">>> waiting for kro controller to become Ready"
-	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) wait \
-		--for=condition=Available --timeout=120s deployment/kro
+		--set multicluster.enabled=true \
+		--set multicluster.provider=kcp-apiexport \
+		--set multicluster.kcp.kubeconfigSecret=kcp-kubeconfig \
+		--set multicluster.kcp.apiExportEndpointSlice=infrastructure \
+		--set controller.deployToLocalRuntime=true \
+		--timeout 5m
+	@echo ">>> kro Deployment created; pod will become Ready after \`make init-provider-infrastructure\` writes the real kcp-kubeconfig Secret"
 	@$(MAKE) dev-kro-register-self
-	@$(MAKE) dev-kro-seed
+	@# dev-kro-seed intentionally NOT run here. The legacy RGDs under
+	@# providers/infrastructure/examples/rgds/ use group "kro.run" (the
+	@# pre-Template prototype) and get watched by kro on every engaged
+	@# cluster including the kcp tenant VW — which doesn't expose
+	@# kro.run resources, so the watches 403 in a loop. Catalog content
+	@# is now driven by Templates seeded by `init-provider-infrastructure`
+	@# (see providers/infrastructure/install/templates/). Run dev-kro-seed
+	@# by hand only if you need the legacy fixtures for some specific
+	@# diagnostic.
 	@echo ">>> kro management cluster ready"
 	@echo "    kubeconfig: $(KRO_KIND_KUBECONFIG)"
 	@echo "    point the provider at it: export KRO_KUBECONFIG=$(KRO_KIND_KUBECONFIG)"
@@ -662,6 +756,62 @@ dev-kro-seed: ## Apply seed RGDs (providers/infrastructure/examples/rgds/) into 
 dev-kro-down: ## Delete the kedge-kro kind cluster + kubeconfig file
 	-kind delete cluster --name $(KRO_KIND_NAME)
 	-rm -f $(KRO_KIND_KUBECONFIG)
+
+# --- In-cluster variants (no separate kind cluster) ---
+# Used by Tiltfile.cluster, which already manages a kind cluster for kcp.
+# Installing kro INTO that same cluster lets kro reach kcp via in-cluster
+# Service DNS (front-proxy-front-proxy.default.svc.cluster.local) — no
+# cross-kind networking gymnastics. The infrastructure provider on the
+# host still reaches kro via the host-published apiserver of the same cluster.
+#
+# Args (must be set by caller — Tiltfile.cluster injects these):
+#   KRO_TARGET_KUBECONFIG   host-accessible kubeconfig of the target cluster
+#                           (e.g. `kind get kubeconfig --name kcp-tilt`)
+#   KRO_TARGET_KIND_NAME    kind cluster name; used for the --internal
+#                           kubeconfig that kro writes into self-cluster Secret
+dev-kro-up-into: ## Install kro into an existing cluster ($KRO_TARGET_KUBECONFIG)
+	@command -v helm >/dev/null || { echo "helm not found; install: brew install helm"; exit 1; }
+	@test -n "$(KRO_TARGET_KUBECONFIG)" || { echo "KRO_TARGET_KUBECONFIG not set"; exit 1; }
+	@test -n "$(KRO_TARGET_KIND_NAME)" || { echo "KRO_TARGET_KIND_NAME not set"; exit 1; }
+	@test -f "$(KRO_TARGET_KUBECONFIG)" || { echo "no kubeconfig at $(KRO_TARGET_KUBECONFIG)"; exit 1; }
+	@echo ">>> ensuring $(KRO_NAMESPACE) + placeholder kcp-kubeconfig Secret in $(KRO_TARGET_KIND_NAME)"
+	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl create namespace $(KRO_NAMESPACE) \
+		--dry-run=client -o yaml | KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl apply -f -
+	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) create secret generic kcp-kubeconfig \
+		--from-literal=kubeconfig=pending-init \
+		--dry-run=client -o yaml | KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl apply -f -
+	@echo ">>> installing kro into $(KRO_NAMESPACE) (in-cluster mode, no --wait)"
+	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) helm upgrade --install kro $(KRO_CHART) \
+		--version $(KRO_CHART_VERSION) \
+		--namespace $(KRO_NAMESPACE) --create-namespace \
+		--set image.repository=$(KRO_IMAGE_REPO) \
+		--set image.tag=$(KRO_IMAGE_TAG) \
+		--set multicluster.enabled=true \
+		--set multicluster.provider=kcp-apiexport \
+		--set multicluster.kcp.kubeconfigSecret=kcp-kubeconfig \
+		--set multicluster.kcp.apiExportEndpointSlice=infrastructure \
+		--timeout 5m
+	@# kro pods need to resolve kcp.localhost/root.kcp.localhost/theseus.kcp.localhost
+	@# (which the operator-issued kubeconfigs bake in) to the envoy gateway
+	@# ClusterIP 10.96.2.2 — same trick the hub uses. The chart doesn't expose
+	@# hostAliases as a value, so we patch the Deployment in place. Idempotent:
+	@# strategic merge replaces the list, so re-runs just re-write the same map.
+	@echo ">>> patching kro Deployment with hostAliases (kcp.localhost → envoy 10.96.2.2)"
+	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) patch deploy kro --type=strategic -p '{"spec":{"template":{"spec":{"hostAliases":[{"ip":"10.96.2.2","hostnames":["kcp.localhost","root.kcp.localhost","theseus.kcp.localhost"]}]}}}}'
+	@echo ">>> registering $(KRO_TARGET_KIND_NAME) as self-member (using --internal kubeconfig)"
+	@INTERNAL_KUBECONFIG=$$(kind get kubeconfig --internal --name $(KRO_TARGET_KIND_NAME)); \
+	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) create secret generic self-cluster \
+		--from-literal=kubeconfig="$$INTERNAL_KUBECONFIG" \
+		--dry-run=client -o yaml | KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl apply -f -
+	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) \
+		label secret self-cluster kro.run/cluster=true --overwrite
+	@echo ">>> kro ready in $(KRO_TARGET_KIND_NAME):$(KRO_NAMESPACE); becomes Ready after init-provider-infrastructure writes the real kcp-kubeconfig"
+	@echo "    point the provider: export KRO_KUBECONFIG=$(KRO_TARGET_KUBECONFIG)"
+
+dev-kro-down-into: ## Helm-uninstall kro from $KRO_TARGET_KUBECONFIG cluster
+	@test -n "$(KRO_TARGET_KUBECONFIG)" || { echo "KRO_TARGET_KUBECONFIG not set"; exit 1; }
+	-KUBECONFIG=$(KRO_TARGET_KUBECONFIG) helm uninstall kro -n $(KRO_NAMESPACE)
+	-KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl delete namespace $(KRO_NAMESPACE) --wait=false
 
 dev-status: ## Show status of dev services (dex, kcp)
 	@source $(SERVICE_HOOKS) && list_services

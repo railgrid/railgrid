@@ -526,9 +526,21 @@ func (b *Bootstrapper) GetChildWorkspaceClusterName(ctx context.Context, orgUUID
 // retires that flow; the bootstrap controller now drives this method
 // for every personal-Org default Workspace.
 //
-// tenancy.kcp.io is intentionally NOT in the accepted claims: tenants
-// must not be able to create child kcp workspaces from inside their
-// own Workspace.
+// The tenancy.kcp.io `workspaces` claim IS accepted here. It does not
+// widen the tenant user's own RBAC — a permission claim grants the
+// APIExport's controllers (kedge, running over the core.faros.sh virtual
+// workspace) access to Workspace objects inside this child Workspace.
+// The edge mount reconciler needs it: it creates an `edge`-typed mount
+// Workspace per kubernetes Edge and watches it via Owns(&Workspace{})
+// (pkg/hub/controllers/edge/mount_reconciler.go). The core.faros.sh
+// APIExport already declares this claim (config/kcp/apiexport-core.faros.sh.yaml);
+// leaving it unaccepted is what produced the "exported but not specified"
+// reconcile warnings on the binding.
+//
+// Preventing tenants from creating arbitrary child workspaces is a
+// SEPARATE control, enforced by the `workspace` WorkspaceType
+// (limitAllowedChildren caps children to the leaf `edge` type — see
+// config/kcp/workspacetype-workspace.yaml), not by withholding this claim.
 func (b *Bootstrapper) EnsureChildWorkspaceKedgeBinding(ctx context.Context, orgUUID, wsUUID string) error {
 	if orgUUID == "" || wsUUID == "" {
 		return fmt.Errorf("EnsureChildWorkspaceKedgeBinding: orgUUID and wsUUID are required")
@@ -560,6 +572,12 @@ func (b *Bootstrapper) EnsureChildWorkspaceKedgeBinding(ctx context.Context, org
 				acceptedClaim("", "serviceaccounts", "", allVerbs),
 				acceptedClaim("rbac.authorization.k8s.io", "clusterroles", "", allVerbs),
 				acceptedClaim("rbac.authorization.k8s.io", "clusterrolebindings", "", allVerbs),
+				// tenancy.kcp.io/workspaces, scoped by the tenancy APIExport's
+				// identity hash, must match the claim the core.faros.sh export
+				// declares. The edge mount reconciler creates/deletes and
+				// Owns(&Workspace{}) the per-edge mount workspaces, so it needs
+				// the full verb set the export offers.
+				acceptedClaim("tenancy.kcp.io", "workspaces", b.workspaceIdentityHash, allVerbs),
 			},
 		},
 	}

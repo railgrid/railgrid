@@ -1,0 +1,72 @@
+apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: redis-cache
+spec:
+  displayName: "Redis cache"
+  description: "A Redis instance for caching workloads. StatefulSet + Service; size knob picks the memory limit."
+  category: Databases
+  version: 0.1.0
+  backend: stub
+  instanceCRD:
+    group: infrastructure.kedge.faros.sh
+    version: v1alpha1
+    resource: rediscaches
+    kind: RedisCache
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        description: "Logical name; used as Deployment + Service name in the tenant namespace."
+      size:
+        type: string
+        enum: ["small", "medium", "large"]
+        default: "small"
+        description: "Memory bucket (64Mi / 256Mi / 1Gi)."
+      version:
+        type: string
+        enum: ["6", "7"]
+        default: "7"
+      persistent:
+        type: boolean
+        default: false
+    required:
+      - name
+  backendConfig:
+    resources:
+      - id: statefulset
+        template:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ${schema.spec.name}
+          spec:
+            serviceName: ${schema.spec.name}
+            replicas: 1
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}
+              spec:
+                containers:
+                  - name: redis
+                    image: redis:${schema.spec.version}
+                    ports:
+                      - containerPort: 6379
+      - id: service
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}
+          spec:
+            type: ClusterIP
+            selector:
+              app: ${schema.spec.name}
+            ports:
+              - port: 6379
+                targetPort: 6379

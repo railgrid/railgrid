@@ -29,6 +29,7 @@
 
 config.define_string('kcp-dir')
 config.define_string('kcp-image-tag')
+config.define_string('kcp-image-repo')
 cfg = config.parse()
 
 kcp_dir = cfg.get('kcp-dir', os.getenv('KCP_DIR', '/tmp/kcp'))
@@ -39,12 +40,23 @@ cluster_name = 'kcp-tilt'
 # specific image tag, keeping the kcp-operator's default repositories. The
 # included Tiltfile.static reads KCP_IMAGE_TAG and injects spec.image.tag into
 # the operator CRs. Unset → operator's version-matched defaults.
-# Defaults to "main" (latest kcp build); override to pin a release:
-#   tilt up -f Tiltfile.cluster -- --kcp-image-tag=v0.27.0
-#   KCP_IMAGE_TAG=v0.27.0 tilt up -f Tiltfile.cluster
-kcp_image_tag = cfg.get('kcp-image-tag', os.getenv('KCP_IMAGE_TAG', 'main'))
-if kcp_image_tag:
-    os.putenv('KCP_IMAGE_TAG', kcp_image_tag)
+# Defaults to upstream ghcr.io/kcp-dev/kcp:main — empty repo lets the operator
+# fill its default repository (ghcr.io/kcp-dev/kcp). The PR #4190 CachedResource
+# virtual-storage discovery fix is now merged to main. To pin a PR build from
+# the kcp-prs repo again:
+#   tilt up -f Tiltfile.cluster -- --kcp-image-repo=ghcr.io/kcp-dev/kcp-prs --kcp-image-tag=pr-XXXX-<sha>
+#
+# NOTE: the override comes ONLY from the --kcp-image-* flags (or the literal
+# defaults below) — deliberately NOT os.getenv(). Tilt re-executes this file in
+# one long-lived process, and the os.putenv() below persists across re-parses;
+# reading the same var back via os.getenv() would make the FIRST tag sticky and
+# silently shadow any later edit to the default here. The putenv is one-way:
+# parent (this file) → child (the included Tiltfile.static, which reads the env).
+kcp_image_repo = cfg.get('kcp-image-repo', '')
+kcp_image_tag = cfg.get('kcp-image-tag', 'fb8629abb')
+# Always export (even empty) so an explicit '' override clears any inherited env.
+os.putenv('KCP_IMAGE_REPO', kcp_image_repo)
+os.putenv('KCP_IMAGE_TAG', kcp_image_tag)
 
 # Clone kcp into the default location if it isn't there yet. A shallow clone is
 # enough — the upstream Tiltfile only needs the source tree to build from.
@@ -67,6 +79,15 @@ existing = str(local('kind get clusters', quiet=True, echo_off=True)).split('\n'
 if cluster_name not in existing:
     print('creating kind cluster %s' % cluster_name)
     local('kind create cluster --name %s' % cluster_name, quiet=False)
+
+# Host-accessible kubeconfig for the kind cluster (uses 127.0.0.1:<random>).
+# Used by `make dev-kro-up-into` so it knows which cluster to helm-install
+# kro into, and by the infrastructure provider so it can list/create RGD
+# instances over the same host port. We write a dedicated file in the project
+# dir so we don't depend on whatever ~/.kube/config holds.
+KIND_HOST_KUBECONFIG = os.path.abspath('.kedge-cluster.kubeconfig')
+local('kind get kubeconfig --name %s > %s' % (cluster_name, KIND_HOST_KUBECONFIG),
+      quiet=True, echo_off=True)
 local('kind export kubeconfig --name %s' % cluster_name, quiet=False)
 
 allow_k8s_contexts('kind-%s' % cluster_name)
@@ -74,6 +95,7 @@ allow_k8s_contexts('kind-%s' % cluster_name)
 print('')
 print('Deploying upstream kcp into kind cluster %s' % cluster_name)
 print('  kcp source:     %s' % kcp_dir)
+print('  kcp image repo: %s' % (kcp_image_repo if kcp_image_repo else '(operator default)'))
 print('  kcp image tag:  %s' % (kcp_image_tag if kcp_image_tag else '(operator default)'))
 print('  front-proxy:    https://kcp.localhost:8443')
 print('  root shard:     https://root.kcp.localhost:8443')
@@ -285,46 +307,363 @@ k8s_resource(
 #   3. JSON-patch frontproxy-front-proxy to mount the CSV + add --token-auth-file
 #      (same mount path/arg PR #240 uses), idempotently.
 #
-# Undo with the 'frontproxy-token-unhack' resource (un-pauses the operator,
-# which then reconciles the patch away).
+# WATCHDOG: this runs as a serve_cmd (long-lived), not a one-shot. Every 30s it
+# rechecks the Deployment's args + the operator's replica count and re-asserts
+# both if anything drifted. So `helm upgrade` of the operator, an accidental
+# trigger of `frontproxy-token-unhack`, or `tilt down`/`up` recovers on its own
+# within a tick instead of needing manual re-trigger.
+#
+# Undo with the 'frontproxy-token-unhack' resource (un-pauses the operator AND
+# stops the watchdog by toggling its trigger_mode — leave the unhack to teardown
+# only).
 # ---------------------------------------------------------------------------
 local_resource(
     'frontproxy-token-hack',
-    cmd='''
-set -e
-# Derive the hub's static-token identity: kedge:static:<first16 of
+    serve_cmd='''
+set -u
+# Derive the hub's static-token identity once: kedge:static:<first16 of
 # sha256("static-token/"+token)>, group system:authenticated (see embedded.go).
 TOKEN=dev-token
 HASH=$(printf 'static-token/%s' "$TOKEN" | openssl dgst -sha256 | awk '{print $NF}' | cut -c1-16)
-kubectl create secret generic kcp-static-tokens -n default \
-  --from-literal=token.csv="$TOKEN,kedge:static:$HASH,$HASH,system:authenticated" \
-  --dry-run=client -o yaml | kubectl apply -f -
+CSV="$TOKEN,kedge:static:$HASH,$HASH,system:authenticated"
 
-# Pause the operator so it doesn't revert the Deployment patch below.
-kubectl -n kcp-operator-system scale deploy/kcp-operator-controller-manager --replicas=0
+apply_secret() {
+  kubectl create secret generic kcp-static-tokens -n default \
+    --from-literal=token.csv="$CSV" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+}
 
-if kubectl -n default get deploy frontproxy-front-proxy \
-     -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q -- '--token-auth-file'; then
-  echo "front-proxy already patched"
-else
+has_token_arg() {
+  kubectl -n default get deploy frontproxy-front-proxy \
+    -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null \
+    | grep -q -- '--token-auth-file'
+}
+
+reassert_patch() {
+  # Pause the operator just for the patch window — leaving it paused
+  # permanently blocks shard reconciles (e.g. RootShard.spec.extraArgs).
+  echo "[$(date +%H:%M:%S)] front-proxy missing --token-auth-file → pausing operator + re-patching"
+  kubectl -n kcp-operator-system scale deploy/kcp-operator-controller-manager --replicas=0 >/dev/null
   kubectl -n default patch deploy frontproxy-front-proxy --type=json -p '[
     {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"token-auth-file","secret":{"secretName":"kcp-static-tokens"}}},
     {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"token-auth-file","readOnly":true,"mountPath":"/etc/kcp/authentication/token"}},
     {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--token-auth-file=/etc/kcp/authentication/token/token.csv"}
-  ]'
-fi
-kubectl -n default rollout status deploy/frontproxy-front-proxy --timeout=180s
+  ]' >/dev/null
+  kubectl -n default rollout status deploy/frontproxy-front-proxy --timeout=180s
+  # Un-pause so the operator can keep doing its job (reconciling shards,
+  # virtualworkspaces, certs, etc.). Next tick re-checks drift.
+  echo "[$(date +%H:%M:%S)] patch applied; unpausing operator"
+  kubectl -n kcp-operator-system scale deploy/kcp-operator-controller-manager --replicas=1 >/dev/null
+}
+
+# Initial converge. If the front-proxy Deployment isn't there yet (operator
+# hasn't reconciled), we just loop until it is — don't fail the resource.
+apply_secret
+echo "frontproxy-token-hack watchdog starting (tick every 30s; only pauses operator while re-patching)"
+while true; do
+  if kubectl -n default get deploy frontproxy-front-proxy >/dev/null 2>&1; then
+    if has_token_arg; then
+      :  # steady state — operator stays up, can reconcile other things
+    else
+      reassert_patch || echo "[$(date +%H:%M:%S)] patch attempt failed; will retry"
+    fi
+  else
+    echo "[$(date +%H:%M:%S)] frontproxy-front-proxy not present yet; waiting"
+  fi
+  sleep 30
+done
 ''',
     resource_deps=['kcp-admin extract'],
     labels=['kcp'],
+    allow_parallel=True,
 )
 
 local_resource(
     'frontproxy-token-unhack',
+    # Tilt's UI stops the hack's serve_cmd when you press "Disable" on that
+    # resource. This button is just for un-pausing the operator if you want
+    # to walk the cluster back to vanilla kcp-operator state.
     cmd='kubectl -n kcp-operator-system scale deploy/kcp-operator-controller-manager --replicas=1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     labels=['kcp'],
+)
+
+# ---------------------------------------------------------------------------
+# providers — external (Helm-style) provider binaries that register with
+# the hub via a CatalogEntry and serve their UI + HTTP API on a host port.
+# Same shape as the embedded-kcp ./Tiltfile (lines ~66-222). Resource_deps
+# point at `kedge-hub` here (vs `hub` in that file) since this Tiltfile's
+# hub workload is named kedge-hub.
+#
+#   providers-quickstart   — reference example (port :8081)
+#   providers-kro          — infrastructure broker (port :8082) +
+#                            management kind cluster that kro runs in
+#
+# Each provider has three resources:
+#   <name>            build + serve; auto-restarts on src change
+#   <name>-register   manual ▶ to kubectl apply the CatalogEntry
+#   <name>-unregister manual ▶ to kubectl delete it
+#
+# The kro group adds two more for the backing infrastructure:
+#   kro-mgmt-up    builds the kind cluster + helm-installs kro + applies
+#                  seed RGDs (see providers/infrastructure/examples/rgds/).
+#                  Auto-runs at `tilt up`.
+#   kro-mgmt-down  manual ▶ to tear down (kind delete cluster).
+#
+# The make targets the providers call (install-provider-*, run-provider-*)
+# hit the hub at https://localhost:9443 with the `dev-token` static token,
+# which the watchdog above keeps wired up to kcp.
+#
+# CatalogEntry install/uninstall talks DIRECTLY to kcp (not via the hub) — it
+# needs cluster-admin to write into root:kedge:providers. The embedded-kcp
+# Tiltfile gets that for free via .kcp/admin.kubeconfig on :6443; here we
+# repoint at the operator-issued admin kubeconfig (tilt-frontproxy.kubeconfig,
+# written by `kcp-admin extract` into the project root) and the envoy gateway
+# at kcp.localhost:8443. Both Makefile knobs (*_KCP_KUBECONFIG, *_KCP_SERVER)
+# are `?=` defaults so this just overrides them via env per-resource.
+# ---------------------------------------------------------------------------
+KCP_ADMIN_KUBECONFIG = os.path.abspath('tilt-frontproxy.kubeconfig')
+KCP_ADMIN_SERVER = 'https://kcp.localhost:8443'
+
+# Provider binaries run on the HOST (via `make run-provider-*`); the hub runs
+# IN-CLUSTER, so the CatalogEntry's ui.url / backend.url can't be localhost —
+# that resolves to the hub pod's own loopback. host.docker.internal resolves
+# to the host's network from inside kind/Docker Desktop/OrbStack pods.
+#
+# Manifest files commit to localhost so the embedded-kcp Tiltfile (everything
+# on the host) works out-of-the-box. We rewrite at install time here instead
+# of templating the manifest, so neither flow needs the other's URLs.
+def rewrite_manifest_cmd(src):
+    out = '/tmp/kedge-{}.yaml'.format(src.replace('/', '_'))
+    return ("sed 's|http://localhost:|http://host.docker.internal:|g' " +
+            "{src} > {out}").format(src=src, out=out), out
+
+QUICKSTART_REWRITE_CMD, QUICKSTART_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/quickstart/manifest.yaml')
+INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/infrastructure/manifest.yaml')
+
+# --- providers-quickstart ---
+local_resource(
+    'quickstart',
+    cmd='make build-quickstart-provider',
+    serve_cmd='make run-provider-quickstart',
+    deps=[
+        'providers/quickstart/main.go',
+        'providers/quickstart/assets.go',
+        'providers/quickstart/portal/src',
+        'providers/quickstart/portal/package.json',
+        'providers/quickstart/go.mod',
+    ],
+    resource_deps=['kedge-hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8081, path='/healthz'),
+    ),
+    labels=['providers-quickstart'],
+)
+
+local_resource(
+    'quickstart-register',
+    cmd=('{rewrite} && QUICKSTART_KCP_KUBECONFIG={kc} ' +
+         'QUICKSTART_KCP_SERVER={sv} QUICKSTART_MANIFEST={mf} ' +
+         'make install-provider-quickstart').format(
+             rewrite=QUICKSTART_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=QUICKSTART_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-quickstart'],
+)
+
+local_resource(
+    'quickstart-unregister',
+    cmd=('{rewrite} && QUICKSTART_KCP_KUBECONFIG={kc} ' +
+         'QUICKSTART_KCP_SERVER={sv} QUICKSTART_MANIFEST={mf} ' +
+         'make uninstall-provider-quickstart').format(
+             rewrite=QUICKSTART_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=QUICKSTART_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-quickstart'],
+)
+
+# --- providers-kro ---
+# Management kro: installed INTO the same kind cluster kcp lives in (no
+# separate kedge-kro cluster like the embedded Tiltfile uses). That way
+# kro reaches kcp via in-cluster Service DNS — no cross-kind networking.
+# The infrastructure provider on the host still reaches kro via the kind
+# cluster's host-published apiserver (KIND_HOST_KUBECONFIG).
+local_resource(
+    'kro-mgmt-up',
+    cmd=('KRO_TARGET_KUBECONFIG={kc} KRO_TARGET_KIND_NAME={name} ' +
+         'make dev-kro-up-into').format(
+             kc=KIND_HOST_KUBECONFIG, name=cluster_name),
+    deps=[
+        'providers/infrastructure/examples/rgds',
+    ],
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'kro-mgmt-down',
+    cmd=('KRO_TARGET_KUBECONFIG={kc} make dev-kro-down-into').format(
+        kc=KIND_HOST_KUBECONFIG),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'infrastructure',
+    cmd='make build-infrastructure-provider',
+    # Point KRO_KUBECONFIG at the same kind cluster's host kubeconfig (where
+    # kro is now installed). The provider's make target already falls back to
+    # this when KRO_KUBECONFIG is set in the env, so the default kedge-kro
+    # path remains untouched for the embedded-kcp Tiltfile.
+    serve_cmd='KRO_KUBECONFIG={kc} make run-provider-infrastructure'.format(
+        kc=KIND_HOST_KUBECONFIG),
+    deps=[
+        'providers/infrastructure/main.go',
+        'providers/infrastructure/heartbeat.go',
+        'providers/infrastructure/assets.go',
+        'providers/infrastructure/server',
+        'providers/infrastructure/kro',
+        'providers/infrastructure/tenant',
+        'providers/infrastructure/mcpserver',
+        'providers/infrastructure/portal/src',
+        'providers/infrastructure/portal/package.json',
+        'providers/infrastructure/go.mod',
+        # Restart whenever init writes/updates the runtime kubeconfig:
+        # the controller manager only starts when INFRASTRUCTURE_KUBECONFIG
+        # resolves to a real file (see the Makefile target). Without this
+        # watch, the provider that booted before `infrastructure-init`
+        # keeps running with controllers disabled, and per-template
+        # APIResourceSchemas never get added to the APIExport.
+        '.kcp/infrastructure-runtime.kubeconfig',
+    ],
+    # kedge-hub for CatalogEntry registration target, kro-mgmt-up for the
+    # backend cluster the catalog reads from. Both must be green before
+    # the provider starts; otherwise it boots in stub mode which is fine
+    # but confusing for the dev who just ran `tilt up`.
+    resource_deps=['kedge-hub', 'kro-mgmt-up'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8082, path='/healthz'),
+    ),
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'infrastructure-register',
+    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'KROMC_MANIFEST={mf} make install-provider-infrastructure').format(
+             rewrite=INFRA_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=INFRA_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-kro'],
+)
+
+# One-shot bootstrap: installs CRDs, registers APIExport schemas, applies
+# the Templates CachedResource, mints the runtime SA + token, writes the
+# kubeconfig run-provider-infrastructure reads. Order:
+#   infrastructure-register  → creates the workspace
+#   infrastructure-init      → seeds the workspace + writes kubeconfig
+#   infrastructure (long-lived) → picks up INFRASTRUCTURE_KUBECONFIG
+# Manual so devs control when re-bootstrap happens (it overwrites the
+# runtime kubeconfig and rotates the token).
+local_resource(
+    'infrastructure-init',
+    # init reads kcp server URL from the kubeconfig — only the path needs
+    # overriding. KRO_KUBECONFIG is also forwarded so init writes the seed
+    # kro.run/cluster=true Secret into the same in-cluster kro install
+    # (not the legacy kedge-kro cluster).
+    cmd=('KROMC_KCP_KUBECONFIG={kc} KRO_KUBECONFIG={kro} ' +
+         'make init-provider-infrastructure').format(
+             kc=KCP_ADMIN_KUBECONFIG, kro=KIND_HOST_KUBECONFIG),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub', 'infrastructure-register'],
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'infrastructure-unregister',
+    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'KROMC_MANIFEST={mf} make uninstall-provider-infrastructure').format(
+             rewrite=INFRA_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=INFRA_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-kro'],
+)
+
+# ---------------------------------------------------------------------------
+# edges — kubernetes & server agents. All manual triggers (click ▶ in Tilt UI).
+#
+# Same flow as the embedded-kcp ./Tiltfile (lines ~224-279). Both Tiltfiles
+# surface the hub at https://localhost:9443 with the `dev-token` static token,
+# so the agent make targets (dev-login-static, dev-edge-create, dev-run-edge,
+# dev-run-ssh-server) work unchanged here.
+#
+# Workflow:
+#   1. Click ▶ on `edge-{kube,server}-create` to log in via static token,
+#      register the Edge with the hub, and write .env.edge.<type>.
+#   2. Click ▶ on `edge-{kube,server}-agent` to run the agent.
+#        - kubernetes: also spins up a `kedge-agent` kind cluster on first run.
+#        - server: also click ▶ on `ssh-server` so the agent has an SSH target.
+#
+# `resource_deps=['kedge-hub']` because the hub workload here is named
+# kedge-hub (it's `hub` in the embedded-kcp Tiltfile).
+# ---------------------------------------------------------------------------
+local_resource(
+    'edge-kube-create',
+    cmd='make dev-login-static && make dev-edge-create TYPE=kubernetes',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['edges'],
+)
+
+local_resource(
+    'edge-kube-agent',
+    serve_cmd='make dev-run-edge TYPE=kubernetes',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['edges'],
+)
+
+local_resource(
+    'edge-server-create',
+    cmd='make dev-login-static && make dev-edge-create TYPE=server',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['edges'],
+)
+
+local_resource(
+    'edge-server-agent',
+    serve_cmd='make dev-run-edge TYPE=server',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['edges'],
+)
+
+# openssh-server container — target for the server-edge agent.
+# Pre-step removes any stale container left from a previous run so the
+# named --name=openssh-server doesn't collide.
+local_resource(
+    'ssh-server',
+    serve_cmd='docker rm -f openssh-server >/dev/null 2>&1; make dev-run-ssh-server',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['edges'],
 )
 
 print('  kedge-hub:      https://localhost:9443 (in-cluster, static token: dev-token)')

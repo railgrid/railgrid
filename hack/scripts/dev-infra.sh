@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> Starting kcp..."
-"${KCP_BIN}" start --root-directory=.kcp --feature-gates=WorkspaceMounts=true &
+"${KCP_BIN}" start --root-directory=.kcp --feature-gates=WorkspaceMounts=true,CacheAPIs=true &
 KCP_PID=$!
 sleep 3
 

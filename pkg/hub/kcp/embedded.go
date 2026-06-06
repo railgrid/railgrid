@@ -51,6 +51,26 @@ type EmbeddedKCPOptions struct {
 	TLSCertFile string
 	TLSKeyFile  string
 
+	// ShardExternalURL maps to kcp's --shard-external-url flag. It's the URL
+	// kcp publishes into APIExportEndpointSlice.status.endpoints[].url and
+	// CachedResourceEndpointSlice.status.endpoints[].url for outside consumers
+	// to dial. Empty defaults to the auto-detected external address (for an
+	// embedded kcp bound to 127.0.0.1 that's "https://127.0.0.1:6443") which
+	// is unreachable from inside a kind pod — set this to
+	// "https://host.docker.internal:6443" or similar when other workloads
+	// (e.g. the kro multicluster controller) need to dial back.
+	ShardExternalURL string
+
+	// ShardVirtualWorkspaceURL maps to kcp's --shard-virtual-workspace-url flag.
+	// This is the URL embedded into APIExportEndpointSlice endpoints —
+	// `--shard-external-url` only updates Shard.spec.externalURL, but the
+	// endpoint URLs are derived from Shard.spec.virtualWorkspaceURL (kcp
+	// keeps these split so the VW server can run on a separate host).
+	// Same default-and-override semantics as ShardExternalURL — in
+	// practice both want the same value for a single-shard embedded
+	// dev setup.
+	ShardVirtualWorkspaceURL string
+
 	// StaticAuthTokens are bearer tokens that kcp should accept directly
 	// via its token-auth-file mechanism. This allows static token users
 	// to be authenticated natively by kcp (needed for workspace mounts).
@@ -113,6 +133,14 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	if err := utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=true", kcpfeatures.WorkspaceMounts)); err != nil {
 		return fmt.Errorf("enabling WorkspaceMounts feature gate: %w", err)
 	}
+	// Enable CacheAPIs so CachedResource + CachedResourceEndpointSlice
+	// are served and reconciled. The infrastructure provider relies on
+	// it for the Templates virtual-storage projection: without this
+	// gate the resources 404 and the APIExport silently falls back to
+	// CRD storage, breaking tenant-side `kubectl get templates`.
+	if err := utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=true", kcpfeatures.CacheAPIs)); err != nil {
+		return fmt.Errorf("enabling CacheAPIs feature gate: %w", err)
+	}
 
 	// Create kcp server options.
 	kcpOpts := serveroptions.NewOptions(e.opts.RootDir)
@@ -127,6 +155,18 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	if e.opts.TLSCertFile != "" && e.opts.TLSKeyFile != "" {
 		kcpOpts.GenericControlPlane.SecureServing.ServerCert.CertKey.CertFile = e.opts.TLSCertFile
 		kcpOpts.GenericControlPlane.SecureServing.ServerCert.CertKey.KeyFile = e.opts.TLSKeyFile
+	}
+
+	// Set the shard external URL kcp publishes into EndpointSlice
+	// statuses. See ShardExternalURL doc comment for the kind-pod case.
+	// The virtual-workspace URL is set in lockstep because the
+	// APIExport / CachedResource EndpointSlice endpoint URLs are
+	// derived from Shard.spec.virtualWorkspaceURL, not externalURL.
+	if e.opts.ShardExternalURL != "" {
+		kcpOpts.Extra.ShardExternalURL = e.opts.ShardExternalURL
+	}
+	if e.opts.ShardVirtualWorkspaceURL != "" {
+		kcpOpts.Extra.ShardVirtualWorkspaceURL = e.opts.ShardVirtualWorkspaceURL
 	}
 
 	// Write static token auth file for kcp if static tokens are configured.
@@ -259,16 +299,25 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 			e.adminConfig = adminConfig
 		}
 
-		// When external TLS certs are provided, the admin kubeconfig's CA
-		// won't match (it references KCP's auto-generated CA, not the
-		// cert-manager CA). Since KCP is in-process, connect via localhost
-		// and skip server cert verification.
-		if e.opts.TLSCertFile != "" {
-			e.adminConfig.Host = AppendClusterPath(fmt.Sprintf("https://localhost:%d", e.opts.SecurePort), "root")
-			e.adminConfig.CAData = nil
-			e.adminConfig.CAFile = ""
-			e.adminConfig.Insecure = true
-		}
+		// kcp writes its admin.kubeconfig using whichever URL it
+		// considers external — when --shard-external-url is set (e.g.
+		// https://host.docker.internal:6443 for kind-pod consumers),
+		// that's the URL baked into the file. But the hub process is
+		// in-process with kcp; routing in-process clients out through
+		// host.docker.internal is wrong (extra hop, possible DNS
+		// resolution failure for non-Docker hosts) and TLS-broken
+		// (the apiserver's cert SAN list doesn't include the rewritten
+		// hostname). Always force the in-process admin client back to
+		// loopback regardless of TLS cert config.
+		//
+		// We tell client-go to skip server cert verification because
+		// kcp's auto-generated cert may not chain through whatever CA
+		// the operator passed via --kcp-tls-cert-file. The connection
+		// stays trustworthy because it's localhost-only.
+		e.adminConfig.Host = AppendClusterPath(fmt.Sprintf("https://localhost:%d", e.opts.SecurePort), "root")
+		e.adminConfig.CAData = nil
+		e.adminConfig.CAFile = ""
+		e.adminConfig.Insecure = true
 
 		logger.Info("kcp server is ready")
 		close(e.readyCh)

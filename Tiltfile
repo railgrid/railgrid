@@ -166,6 +166,13 @@ local_resource(
         'providers/infrastructure/portal/src',
         'providers/infrastructure/portal/package.json',
         'providers/infrastructure/go.mod',
+        # Restart whenever init writes/updates the runtime kubeconfig:
+        # the controller manager only starts when INFRASTRUCTURE_KUBECONFIG
+        # resolves to a real file (see the Makefile target). Without this
+        # watch, the provider that booted before `infrastructure-init`
+        # keeps running with controllers disabled, and per-template
+        # APIResourceSchemas never get added to the APIExport.
+        '.kcp/infrastructure-runtime.kubeconfig',
     ],
     # hub for CatalogEntry registration target, kro-mgmt-up for the
     # backend cluster the catalog reads from. Both must be green
@@ -185,6 +192,23 @@ local_resource(
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
+    labels=['providers-kro'],
+)
+
+# One-shot bootstrap: installs CRDs, registers APIExport schemas,
+# applies the Templates CachedResource, mints the runtime SA + token,
+# writes the kubeconfig run-provider-infrastructure reads. Order is:
+#   infrastructure-register  → creates the workspace
+#   infrastructure-init      → seeds the workspace + writes kubeconfig
+#   infrastructure (long-lived) → picks up INFRASTRUCTURE_KUBECONFIG
+# Manual so devs control when re-bootstrap happens (it overwrites
+# the runtime kubeconfig and rotates the token).
+local_resource(
+    'infrastructure-init',
+    cmd='make init-provider-infrastructure',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub', 'infrastructure-register'],
     labels=['providers-kro'],
 )
 

@@ -44,13 +44,15 @@ var ProvidersFS embed.FS
 
 // PostProvidersFS contains workspace-scoped objects that must be applied in
 // root:kedge AFTER ProvidersFS has populated root:kedge:providers with the
-// APIExports they reference. Ships the `organization` + `workspace`
-// WorkspaceTypes, both of which carry a defaultAPIBinding to
-// root:kedge:providers.tenancy.kedge.faros.sh. kcp's WorkspaceType admission
-// validates bind permission on every APIExport in defaultAPIBindings; the
+// APIExports they reference. Ships the `organization` + `workspace` + `edge`
+// WorkspaceTypes. The first two carry a defaultAPIBinding to
+// root:kedge:providers.tenancy.kedge.faros.sh; kcp's WorkspaceType admission
+// validates bind permission on every APIExport in defaultAPIBindings, so the
 // referenced export has to exist by the time the WT is applied, otherwise
 // the LogicalCluster lookup fails and admission returns 403 forbidden (see
-// PR #205 / commit 3d2d277 for the failure shape).
+// PR #205 / commit 3d2d277 for the failure shape). The `edge` WorkspaceType
+// has no defaultAPIBindings (it is a pure mount point) but ships here too so
+// the `workspace` type's limitAllowedChildren reference to it resolves.
 //
-//go:embed workspacetype-organization.yaml workspacetype-workspace.yaml
+//go:embed workspacetype-organization.yaml workspacetype-workspace.yaml workspacetype-edge.yaml
 var PostProvidersFS embed.FS

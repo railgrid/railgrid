@@ -5,13 +5,22 @@ metadata:
   annotations:
     bootstrap.kcp.io/create-only: "true"
 spec:
-  # Workspaces ("team" workspaces) are leaves in v1; they hold APIBindings,
-  # edges, mcp instances, and any other tenant work. Nested child
-  # workspaces are deferred to v2 per docs/organizations.md §Open questions.
-  # Without this constraint a tenant kubectl-apply could create arbitrary
-  # children inside their workspace.
+  # Workspaces ("team" workspaces) hold APIBindings, edges, mcp instances,
+  # and any other tenant work. The ONLY child type they may host is `edge`:
+  # the edge mount reconciler creates an `edge` workspace per kubernetes Edge
+  # so users can navigate into the remote cluster through kcp. Arbitrary
+  # nested team workspaces are still deferred to v2 per
+  # docs/organizations.md §Open questions — capping the allowed child type to
+  # `edge` keeps a tenant kubectl-apply from creating anything else, while an
+  # `edge` workspace itself is an empty, leaf-only mount point (see
+  # workspacetype-edge.yaml). A tenant with cluster-admin in their team
+  # workspace can create an `edge` workspace by hand, but it carries no local
+  # API surface, so the blast radius is a dangling mount, not a usable
+  # workspace tree.
   limitAllowedChildren:
-    none: true
+    types:
+    - name: edge
+      path: root:kedge
   # workspace workspaces must be children of an `organization` workspace —
   # they only make sense as a team inside an Org. The kcp WorkspaceType
   # admission rejects an attempt to create one at any other path.

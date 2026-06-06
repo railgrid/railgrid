@@ -16,6 +16,7 @@
 // nothing), we just render an empty state instead of bubbling errors.
 
 import { computed, onMounted, onUnmounted, ref, watch, h } from 'vue'
+import { api, setTenant, setToken } from './api'
 
 // Inline icon components — the provider's portal bundle is
 // intentionally self-contained (no parent node_modules symlink) so we
@@ -120,6 +121,9 @@ const AlertCircle = (props: { class?: string }) =>
 
 interface KedgeContext {
   token?: string | null
+  // tenant is the kcp cluster name (auth.clusterName in the shell).
+  // Used as the /clusters/<x>/ prefix on every kcp REST call.
+  tenant?: string | null
   basePath?: string
 }
 
@@ -155,64 +159,41 @@ const recent = computed(() =>
     .slice(0, 4),
 )
 
-function authHeaders(ctx: KedgeContext | null): Record<string, string> {
-  const h: Record<string, string> = {}
-  if (ctx?.token) h['Authorization'] = `Bearer ${ctx.token}`
-  // Workspace context mirrors api.ts's readTenantSelection — kept inline
-  // to avoid coupling the tile to the main app's setBasePath/setToken
-  // module state (the tile and the full element can be mounted
-  // simultaneously, and module-scoped state would race).
-  try {
-    const raw = localStorage.getItem('kedge:portal:tenant')
-    if (raw) {
-      const t = JSON.parse(raw) as { orgUUID?: string | null; workspaceUUID?: string | null }
-      if (t.orgUUID) h['X-Kedge-Org'] = t.orgUUID
-      if (t.workspaceUUID) h['X-Kedge-Workspace'] = t.workspaceUUID
-    }
-  } catch {
-    /* ignore */
-  }
-  return h
-}
-
+// Refresh delegates to the shared kcp client in api.ts. The shell
+// pushes the same token + tenant (auth.clusterName) to every mounted
+// element, so even when the tile and the full provider page are open
+// at the same time both end up with the same module state.
 async function refresh() {
   const ctx = props.context
-  if (!ctx?.basePath) {
-    // Context hasn't arrived yet — the host pushes it after the
-    // element appends. The watcher will re-call us once it does.
+  if (!ctx?.tenant) {
+    // No workspace selected yet — render the empty state rather than
+    // hitting kcp without a /clusters/ prefix.
+    instances.value = []
+    error.value = null
+    loading.value = false
     return
   }
-  // basePath comes in as /ui/providers/infrastructure (the shell prefix).
-  // The REST surface lives at the matching /services prefix.
-  const apiBase = ctx.basePath.replace(/^\/ui\/providers\//, '/services/providers/')
-  const url = apiBase + '/api/instances'
+  setToken(ctx.token ?? null)
+  setTenant(ctx.tenant ?? null)
   try {
-    const res = await fetch(url, {
-      headers: authHeaders(ctx),
-      credentials: 'same-origin',
-    })
-    if (res.ok) {
-      const body = (await res.json()) as { items?: Instance[] }
-      instances.value = body.items ?? []
+    const r = await api.listInstances()
+    instances.value = r.items
+    error.value = null
+  } catch (e) {
+    const err = e as { reason?: string; message?: string } | Error
+    const reason = (err as { reason?: string }).reason
+    const message = (err as { message?: string }).message ?? String(err)
+    if (reason === 'APIBindingMissing' || reason === 'TenantMissing') {
+      // Tenant has no binding yet (or never selected a workspace) —
+      // empty tile is the right state, not an error banner.
+      instances.value = []
       error.value = null
     } else {
-      // Show the failure on the tile rather than silently zero-ing
-      // counts — a tile that reports "0 / 0 / 0" when there are
-      // instances is worse than no tile at all. The status code + a
-      // short message body is enough for a developer (or motivated
-      // user) to diagnose without opening devtools.
-      const bodyText = await res.text().catch(() => '')
-      const snippet = bodyText.length > 160 ? bodyText.slice(0, 160) + '…' : bodyText
-      error.value = `${res.status} ${res.statusText}${snippet ? ' — ' + snippet : ''}`
+      error.value = `${reason ?? 'Error'} — ${message}`
       instances.value = []
       // eslint-disable-next-line no-console
-      console.warn('infrastructure tile fetch failed', { url, status: res.status, body: bodyText })
+      console.warn('infrastructure tile listInstances failed', err)
     }
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
-    instances.value = []
-    // eslint-disable-next-line no-console
-    console.warn('infrastructure tile fetch threw', { url, err: e })
   } finally {
     loading.value = false
   }

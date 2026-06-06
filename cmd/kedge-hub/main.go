@@ -91,6 +91,8 @@ func main() {
 	cmd.Flags().StringVar(&opts.KCPRootDir, "kcp-root-dir", "", "Root directory for embedded kcp data (default: <data-dir>/kcp)")
 	cmd.Flags().IntVar(&opts.KCPSecurePort, "kcp-secure-port", opts.KCPSecurePort, "Secure port for embedded kcp API server")
 	cmd.Flags().StringVar(&opts.KCPBindAddress, "kcp-bind-address", opts.KCPBindAddress, "Bind address for embedded kcp API server (default: 127.0.0.1, use 0.0.0.0 for all interfaces)")
+	cmd.Flags().StringVar(&opts.KCPShardExternalURL, "kcp-shard-external-url", opts.KCPShardExternalURL, "URL embedded kcp writes to Shard.spec.externalURL for outside consumers to dial. Defaults to kcp's auto-detected address; override for kind-pod consumers (e.g. https://host.docker.internal:6443).")
+	cmd.Flags().StringVar(&opts.KCPShardVirtualWorkspaceURL, "kcp-shard-virtual-workspace-url", opts.KCPShardVirtualWorkspaceURL, "URL embedded kcp writes to Shard.spec.virtualWorkspaceURL, which feeds APIExportEndpointSlice / CachedResourceEndpointSlice endpoint URLs. Usually set to the same value as --kcp-shard-external-url for a single-shard dev setup.")
 	cmd.Flags().StringVar(&opts.KCPBatteriesInclude, "kcp-batteries-include", opts.KCPBatteriesInclude, "Comma-separated list of kcp batteries to include")
 	cmd.Flags().StringVar(&opts.KCPTLSCertFile, "kcp-tls-cert-file", "", "TLS certificate file for embedded kcp API server")
 	cmd.Flags().StringVar(&opts.KCPTLSKeyFile, "kcp-tls-key-file", "", "TLS key file for embedded kcp API server")

@@ -82,6 +82,21 @@ type Options struct {
 	KCPBatteriesInclude string // Comma-separated list of batteries to include (default: "admin,user")
 	KCPTLSCertFile      string // TLS certificate file for kcp API server
 	KCPTLSKeyFile       string // TLS key file for kcp API server
+	// KCPShardExternalURL is the URL kcp publishes into APIExportEndpointSlice
+	// and CachedResourceEndpointSlice statuses for outside consumers to dial.
+	// Empty defaults to kcp's auto-detected external address, which for an
+	// embedded kcp bound to 127.0.0.1 is "https://127.0.0.1:6443" — fine for
+	// host-side clients, broken for clients running in a kind pod (they
+	// resolve 127.0.0.1 to the pod itself). Override with e.g.
+	// "https://host.docker.internal:6443" for kind-based dev setups.
+	KCPShardExternalURL string
+	// KCPShardVirtualWorkspaceURL must be set alongside KCPShardExternalURL.
+	// The two URLs cover different slots in Shard.spec — externalURL feeds
+	// generic outside-clients discovery, virtualWorkspaceURL is what
+	// APIExportEndpointSlice / CachedResourceEndpointSlice publish in their
+	// status.endpoints[]. For a single-shard embedded dev setup both want
+	// the same value.
+	KCPShardVirtualWorkspaceURL string
 }
 
 // NewOptions returns default Options.

@@ -44,7 +44,7 @@ onUnmounted(() => {
     <header class="page-head">
       <div>
         <h2 class="page-title">My instances</h2>
-        <p class="page-meta">Polling /api/instances every 10s.</p>
+        <p class="page-meta">Updates automatically.</p>
       </div>
       <button class="link" @click="emit('navigate', 'catalog')">← Browse templates</button>
     </header>

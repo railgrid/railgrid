@@ -214,6 +214,16 @@ func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.
 			OwnerReferences: []metav1.OwnerReference{edgeOwnerRef(edge)},
 		},
 		Spec: kcptenancyv1alpha1.WorkspaceSpec{
+			// The team `workspace` WorkspaceType only permits children of type
+			// `edge` (config/kcp/workspacetype-workspace.yaml); `edge` is a
+			// leaf, mount-only type with no local API surface
+			// (workspacetype-edge.yaml). The type must be set explicitly: the
+			// `workspace` type declares no defaultChildWorkspaceType, so
+			// without this admission would reject the create.
+			Type: &kcptenancyv1alpha1.WorkspaceTypeReference{
+				Name: "edge",
+				Path: "root:kedge",
+			},
 			Mount: &kcptenancyv1alpha1.Mount{
 				Reference: kcptenancyv1alpha1.ObjectReference{
 					APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),

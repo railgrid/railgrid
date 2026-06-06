@@ -5,7 +5,7 @@ import ProvisionPage from './views/ProvisionPage.vue'
 import InstanceListPage from './views/InstanceListPage.vue'
 import InstanceDetailPage from './views/InstanceDetailPage.vue'
 import MissingCredentialsPage from './views/MissingCredentialsPage.vue'
-import { setBasePath, setToken } from './api'
+import { setBasePath, setTenant, setToken } from './api'
 import type { KedgeContext } from './types'
 
 // Two top-level pages: 'templates' and 'instances'. Sub-routes:
@@ -53,6 +53,9 @@ const tenantPath = computed(() => props.ctx?.tenant ?? null)
 // re-pushes context (e.g. token rotation, workspace switch).
 watch(() => props.ctx?.basePath, (v) => setBasePath(v), { immediate: true })
 watch(() => props.ctx?.token, (v) => setToken(v), { immediate: true })
+// ctx.tenant is the kcp cluster name auth.clusterName, which forms
+// the /clusters/<x>/apis/... prefix every kcp REST call below uses.
+watch(() => props.ctx?.tenant, (v) => setTenant(v), { immediate: true })
 
 // navigate dispatches a kedge-navigate CustomEvent (bubbles) so the
 // shell updates the browser URL. Children call this through the
@@ -103,7 +106,31 @@ function provisioned(name: string) {
 
 <template>
   <div ref="rootRef" class="app">
-    <template v-if="route.page === 'templates' && !route.id">
+    <!--
+      Every routed page calls into api.ts on mount, which builds a
+      /clusters/<tenant>/apis/... URL. Without a tenant the call
+      throws "no workspace selected" — accurate, but ugly. Gate page
+      render on a non-empty tenantPath so the page only mounts when
+      api.ts is ready. The host pushes ctx.tenant immediately after
+      append; the wait is usually a single frame. When the user has
+      genuinely no workspace selected, the friendly message below
+      stays put until they pick one in the shell's sidebar chip.
+    -->
+    <template v-if="!tenantPath">
+      <section class="page">
+        <header class="page-head">
+          <div>
+            <h2 class="page-title">Templates</h2>
+            <p class="page-meta">Pick a template to provision into your tenant scope.</p>
+          </div>
+        </header>
+        <div class="muted">
+          Select a workspace from the org/workspace chip in the
+          sidebar to view the catalog.
+        </div>
+      </section>
+    </template>
+    <template v-else-if="route.page === 'templates' && !route.id">
       <CatalogPage @select="selectTemplate" @navigate="legacyNavigate" />
     </template>
     <template v-else-if="route.page === 'templates' && route.id">

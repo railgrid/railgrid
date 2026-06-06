@@ -247,7 +247,7 @@ kind delete cluster --name kedge
 |:----|:------------|:--------|
 | `persistence.size` | kcp data PVC size | `10Gi` |
 | `persistence.storageClass` | Storage class | `""` |
-| `kcp.featureGates` | kcp feature gates | `"WorkspaceMounts=true"` |
+| `kcp.featureGates` | kcp feature gates | `"WorkspaceMounts=true,CacheAPIs=true"` |
 | `kcp.extraArgs` | Additional kcp CLI arguments | `[]` |
 
 ### Networking

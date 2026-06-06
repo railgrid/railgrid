@@ -1,0 +1,313 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: templates.infrastructure.kedge.faros.sh
+spec:
+  group: infrastructure.kedge.faros.sh
+  names:
+    categories:
+    - kedge
+    kind: Template
+    listKind: TemplateList
+    plural: templates
+    shortNames:
+    - tmpl
+    singular: template
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.displayName
+      name: Display
+      type: string
+    - jsonPath: .spec.backend
+      name: Backend
+      type: string
+    - jsonPath: .spec.instanceCRD.kind
+      name: Kind
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Template is the platform-owned catalog entry for one provisionable
+          thing — a Redis cache, a Postgres database, a packaged application.
+          Operators apply Templates to the provider workspace
+          (root:kedge:providers:infrastructure). The Template controller
+          reacts by:
+
+           1. Materializing the per-template CRD declared in spec.instanceCRD
+              (e.g. redis.infrastructure.kedge.faros.sh) into the cluster's
+              CRD set, with OpenAPI validation derived from spec.schema.
+           2. Adding that CRD to APIExport.spec.schemas so tenants who
+              APIBind to the infrastructure provider can see and create
+              instances.
+           3. Calling Backend.SetupTemplate on the backend named in
+              spec.backend. The backend does whatever backend-specific
+              bookkeeping it needs (the kro backend authors an RGD; future
+              terraform / cloud backends stage modules / validate credentials).
+
+          Tenants discover Templates read-only via a CachedResource (PR B);
+          instances are CRs of the per-template CRD (PR C). The Template CR
+          itself is never tenant-facing as authorable input — it's the
+          platform's source of truth.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TemplateSpec is the desired state.
+            properties:
+              backend:
+                description: |-
+                  Backend names the registered backend implementation that
+                  reconciles instances of this template. The Template controller
+                  validates the backend is registered at admission time
+                  (PR A scope: validation lives in the controller; future PR
+                  moves it to a webhook). Today only "kro" and "stub" are
+                  expected; the seam supports terraform, cloud, etc.
+                maxLength: 64
+                pattern: ^[a-z][a-z0-9-]*$
+                type: string
+              backendConfig:
+                description: |-
+                  BackendConfig is opaque to the platform; only the named
+                  backend interprets it. For "kro" it's a resource graph
+                  (equivalent to an RGD's resources + statusMapping); for a
+                  hypothetical "terraform" backend it would be a module ref and
+                  variable mapping. Stored as raw JSON to keep the API surface
+                  stable as backends evolve.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              category:
+                description: |-
+                  Category groups templates in the catalog (e.g. "Databases",
+                  "Workloads", "Storage"). Empty puts the template under an
+                  "Other" bucket.
+                maxLength: 64
+                type: string
+              description:
+                description: |-
+                  Description is one to three sentences shown beneath the
+                  display name in catalog cards.
+                maxLength: 2048
+                type: string
+              displayName:
+                description: |-
+                  DisplayName is the human-readable name surfaced in the portal
+                  catalog. Empty falls back to metadata.name.
+                maxLength: 128
+                type: string
+              iconURL:
+                description: |-
+                  IconURL is an optional asset URL the portal shows on catalog
+                  cards. Falls back to a generic icon when empty.
+                maxLength: 2048
+                type: string
+              instanceCRD:
+                description: |-
+                  InstanceCRD declares the per-template CRD the platform
+                  publishes for tenants to author instances against. Must be in
+                  group infrastructure.kedge.faros.sh; the resource (lowercase
+                  plural) and kind (CamelCase singular) are operator-chosen but
+                  must be unique across all Templates.
+                properties:
+                  group:
+                    description: |-
+                      Group MUST be infrastructure.kedge.faros.sh. Pinned here so
+                      every per-template CRD lives under the same namespace and the
+                      portal can render them uniformly.
+                    pattern: ^infrastructure\.kedge\.faros\.sh$
+                    type: string
+                  kind:
+                    description: Kind is the CamelCase singular tenants use in apiVersion
+                      + kind.
+                    maxLength: 64
+                    pattern: ^[A-Z][A-Za-z0-9]*$
+                    type: string
+                  resource:
+                    description: |-
+                      Resource is the lowercase plural the apiserver routes on
+                      (kubectl get <resource>). Must be unique across all Templates
+                      in the provider workspace.
+                    maxLength: 64
+                    pattern: ^[a-z][a-z0-9]*$
+                    type: string
+                  version:
+                    description: |-
+                      Version of the per-template CRD's served + storage schema.
+                      Templates can ship multiple Versions (a future Template can
+                      extend a previous one's set); the controller updates the CRD's
+                      spec.versions list rather than overwriting on conflict.
+                    pattern: ^v[0-9]+((alpha|beta)[0-9]+)?$
+                    type: string
+                required:
+                - group
+                - kind
+                - resource
+                - version
+                type: object
+              schema:
+                description: |-
+                  Schema is the JSON Schema applied to the per-template CRD's
+                  spec field. Stored as raw JSON because importing
+                  apiextensions/v1.JSONSchemaProps directly trips controller-gen
+                  on the upstream type's recursive shape; the Template controller
+                  parses this back into JSONSchemaProps when it builds the CRD's
+                  spec.versions[].schema.openAPIV3Schema.properties.spec.
+
+                  Expected content is the standard subset of OpenAPI v3 (type,
+                  properties, required, enum, default, description, minimum,
+                  maximum, pattern). The controller rejects Templates whose
+                  Schema fails to parse.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              version:
+                description: |-
+                  Version pins the Template definition's revision. Required by
+                  the per-template CRD's served version selection and by
+                  instance-create-time consistency checks.
+                maxLength: 64
+                pattern: ^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$
+                type: string
+            required:
+            - backend
+            - instanceCRD
+            - schema
+            - version
+            type: object
+          status:
+            description: TemplateStatus is the observed state.
+            properties:
+              backend:
+                description: |-
+                  Backend reflects what the backend reported from its
+                  SetupTemplate call. Empty until first reconcile.
+                properties:
+                  message:
+                    description: Message carries human-readable detail when Ready
+                      is false.
+                    maxLength: 2048
+                    type: string
+                  name:
+                    description: |-
+                      Name echoes spec.backend so consumers don't have to cross-
+                      reference. Helpful if a Template's backend changes mid-life.
+                    type: string
+                  ready:
+                    description: |-
+                      Ready is the backend's headline status; matches BackendTemplateStatus.Ready
+                      from the Go interface.
+                    type: boolean
+                type: object
+              conditions:
+                description: |-
+                  Conditions follows the standard Kubernetes conditions pattern.
+                  The aggregate Ready condition is True iff Registered and
+                  Backend both succeed.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  ObservedGeneration mirrors metadata.generation last reconciled.
+                  Drives the standard "is the status fresh?" check.
+                format: int64
+                type: integer
+              registered:
+                description: |-
+                  Registered reflects the platform-side wiring the controller
+                  owns. CRDEstablished flips to true once the per-template CRD
+                  has the Established condition; SchemaInAPIExport flips once
+                  the schema is listed in APIExport.spec.schemas.
+                properties:
+                  crdEstablished:
+                    type: boolean
+                  schemaInAPIExport:
+                    type: boolean
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

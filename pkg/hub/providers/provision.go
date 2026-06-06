@@ -324,12 +324,68 @@ func (p *provisioner) ApplyAPIExport(ctx context.Context, providerName, exportNa
 	if err != nil {
 		return fmt.Errorf("getting existing APIExport %s: %w", exportName, err)
 	}
+
+	// Merge, don't clobber. spec.resources has multiple writers: this hub
+	// controller (the catalog-declared schemas), the provider's one-shot
+	// install step (e.g. templates.infrastructure.kedge.faros.sh with
+	// storage.virtual), and the provider's Template controller (per-template
+	// entries minted at runtime). A full replace here drops every entry not
+	// derived from the CatalogEntry's schemas — which is exactly what silently
+	// deletes the templates virtual-storage resource on a reconcile. So we
+	// upsert only the entries we own (keyed by group+name) and preserve the rest.
+	existingResources, _, err := unstructured.NestedSlice(existing.Object, "spec", "resources")
+	if err != nil {
+		return fmt.Errorf("reading existing spec.resources on APIExport %s: %w", exportName, err)
+	}
+	if err := unstructured.SetNestedSlice(desired.Object, mergeAPIExportResources(existingResources, resources), "spec", "resources"); err != nil {
+		return fmt.Errorf("merging spec.resources for APIExport %s: %w", exportName, err)
+	}
+
 	// Patch spec to converge, preserving resourceVersion.
 	desired.SetResourceVersion(existing.GetResourceVersion())
 	if _, err := cl.Resource(apiExportGVR).Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("updating APIExport %s: %w", exportName, err)
 	}
 	return nil
+}
+
+// mergeAPIExportResources upserts the hub-owned entries (owned, derived from
+// the CatalogEntry's schemas) into the existing spec.resources list, keyed by
+// (group, name), while preserving every existing entry the hub does not own.
+// Owned entries win (schema/storage refreshed from the catalog) and come first
+// in the given order so the result stays deterministic; foreign entries — e.g.
+// the provider's templates virtual-storage resource or runtime per-template
+// entries — are kept verbatim.
+func mergeAPIExportResources(existing, owned []any) []any {
+	key := func(r any) (string, bool) {
+		m, ok := r.(map[string]any)
+		if !ok {
+			return "", false
+		}
+		group, _ := m["group"].(string)
+		name, _ := m["name"].(string)
+		return group + "/" + name, true
+	}
+	ownedKeys := make(map[string]struct{}, len(owned))
+	for _, r := range owned {
+		if k, ok := key(r); ok {
+			ownedKeys[k] = struct{}{}
+		}
+	}
+	out := make([]any, 0, len(owned)+len(existing))
+	out = append(out, owned...)
+	for _, r := range existing {
+		k, ok := key(r)
+		if !ok {
+			out = append(out, r) // unparseable — keep rather than risk dropping data
+			continue
+		}
+		if _, isOwned := ownedKeys[k]; isOwned {
+			continue // replaced by the owned version above
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // ApplyBindGrant creates / updates the ClusterRole + ClusterRoleBinding in
