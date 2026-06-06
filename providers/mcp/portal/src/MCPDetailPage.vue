@@ -5,18 +5,17 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useEscapeKey } from '@/composables/useEscapeKey'
-import { useAuthStore } from '@/stores/auth'
 import { GET_MCP_SERVER, type GetMCPResult } from '@/graphql/queries/mcp'
 import { UPDATE_AGGREGATE_MCP, DELETE_AGGREGATE_MCP } from '@/graphql/mutations'
 import { formatDateTimeWithAge } from '@/utils/time'
+import MCPSetupPanel from './MCPSetupPanel.vue'
 import {
-  ArrowLeft, Wifi, WifiOff, Server, Hash, Clock, Copy, Check,
+  ArrowLeft, Wifi, WifiOff, Server, Hash, Clock,
   FileCode, ChevronDown, ChevronUp, Pencil, Trash2, Shield, Layers,
 } from 'lucide-vue-next'
 
 const props = defineProps<{ name: string }>()
 const router = useRouter()
-const auth = useAuthStore()
 
 // MCPServer is now the only MCP CRD; KubernetesMCP / LinuxMCP were
 // removed. Their tools live behind this aggregate via the in-binary
@@ -44,7 +43,6 @@ const editDisplayName = ref('')
 const editInstructions = ref('')
 const saving = ref(false)
 const saveError = ref<string | null>(null)
-const copiedField = ref<string | null>(null)
 
 useEscapeKey(() => {
   if (!saving.value) editing.value = false
@@ -103,37 +101,9 @@ const yamlContent = computed(() => {
   return JSON.stringify(mcp.value, null, 2)
 })
 
-// --- Config snippets ---
-const maskedToken = '••••••••••••••••'
-
-// claudeServerName mirrors the CLI's mcpServerName / portal MCPPage.serverNameFor.
-// MCPServer is now the only kind — prefix is always "kedge-<name>".
-const claudeServerName = computed(() => `kedge-${props.name}`)
-
-function buildClaudeCodeSnippet(token: string) {
-  const url = mcp.value?.status?.URL ?? '<MCP_URL>'
-  return `claude mcp add --transport http ${claudeServerName.value} "${url}" \\
-  -H "Authorization: Bearer ${token}"`
-}
-
-function buildClaudeDesktopSnippet(token: string) {
-  const url = mcp.value?.status?.URL ?? '<MCP_URL>'
-  return JSON.stringify(
-    {
-      mcpServers: {
-        [claudeServerName.value]: {
-          url,
-          headers: { Authorization: `Bearer ${token}` },
-        },
-      },
-    },
-    null,
-    2,
-  )
-}
-
-const claudeCodeSnippet = computed(() => buildClaudeCodeSnippet(maskedToken))
-const claudeDesktopSnippet = computed(() => buildClaudeDesktopSnippet(maskedToken))
+// mcpClientServerName mirrors the CLI's mcpServerName / portal MCPPage.serverNameFor.
+// MCPServer is now the only kind, so names keep the stable kedge-<name> prefix.
+const mcpClientServerName = computed(() => `kedge-${props.name}`)
 
 function startEdit() {
   if (!mcp.value) return
@@ -208,15 +178,6 @@ async function handleDelete() {
   } finally {
     deleteBusy.value = false
   }
-}
-
-async function copySnippet(builder: (token: string) => string, field: string) {
-  try {
-    const token = await auth.getValidToken()
-    await navigator.clipboard.writeText(builder(token))
-    copiedField.value = field
-    setTimeout(() => (copiedField.value = null), 2000)
-  } catch {}
 }
 
 </script>
@@ -364,38 +325,12 @@ async function copySnippet(builder: (token: string) => string, field: string) {
         </div>
       </div>
 
-      <!-- Config snippets -->
-      <div
-        class="stagger-item mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2"
+      <MCPSetupPanel
+        class="stagger-item mt-5"
         style="animation-delay: 160ms"
-      >
-        <div class="rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur">
-          <div class="flex items-center justify-between mb-3">
-            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Claude Code</span>
-            <button
-              class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
-              @click="copySnippet(buildClaudeCodeSnippet, 'code')"
-            >
-              <component :is="copiedField === 'code' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
-              {{ copiedField === 'code' ? 'Copied' : 'Copy' }}
-            </button>
-          </div>
-          <pre class="overflow-x-auto rounded-lg bg-surface-overlay/60 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ claudeCodeSnippet }}</pre>
-        </div>
-        <div class="rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur">
-          <div class="flex items-center justify-between mb-3">
-            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Claude Desktop</span>
-            <button
-              class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
-              @click="copySnippet(buildClaudeDesktopSnippet, 'desktop')"
-            >
-              <component :is="copiedField === 'desktop' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
-              {{ copiedField === 'desktop' ? 'Copied' : 'Copy' }}
-            </button>
-          </div>
-          <pre class="overflow-x-auto rounded-lg bg-surface-overlay/60 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ claudeDesktopSnippet }}</pre>
-        </div>
-      </div>
+        :server-name="mcpClientServerName"
+        :url="mcp.status?.URL ?? '<MCP_URL>'"
+      />
 
       <!-- YAML section -->
       <div class="stagger-item mt-5" style="animation-delay: 200ms">

@@ -10,15 +10,14 @@ import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import MCPCreateModal from './MCPCreateModal.vue'
 import MCPHelpModal from './MCPHelpModal.vue'
+import MCPSetupPanel from './MCPSetupPanel.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
-import { useAuthStore } from '@/stores/auth'
 import { LIST_MCP_SERVERS, type ListMCPResult, type MCPItem } from '@/graphql/queries/mcp'
 import { DELETE_AGGREGATE_MCP } from '@/graphql/mutations'
-import { Bot, Plus, Server, Wifi, Copy, Check, Trash2, ClipboardCopy, Layers, ChevronDown, ChevronUp, HelpCircle } from 'lucide-vue-next'
+import { Bot, Plus, Server, Wifi, Check, Trash2, ClipboardCopy, Layers, ChevronDown, ChevronUp, HelpCircle } from 'lucide-vue-next'
 
 const router = useRouter()
-const auth = useAuthStore()
 const { data, loading, error, refetch } = useGraphQLQuery<ListMCPResult>(LIST_MCP_SERVERS, undefined, 10000)
 const showCreate = ref(false)
 const showHelp = ref(false)
@@ -131,9 +130,6 @@ function handleCreated() {
   refetch()
 }
 
-// --- Config snippet generation ---
-const maskedToken = '••••••••••••••••'
-
 function urlForDefault(): string {
   return defaultMCP.value?.status?.URL ?? '<MCP_URL>'
 }
@@ -142,40 +138,6 @@ function urlForDefault(): string {
 // shaped names just take a `kedge-<n>` prefix.
 function serverNameFor(name = 'default'): string {
   return `kedge-${name}`
-}
-
-function buildClaudeCodeSnippet(token: string) {
-  return `claude mcp add --transport http ${serverNameFor()} "${urlForDefault()}" \\
-  -H "Authorization: Bearer ${token}"`
-}
-
-function buildClaudeDesktopSnippet(token: string) {
-  return JSON.stringify(
-    {
-      mcpServers: {
-        [serverNameFor()]: {
-          url: urlForDefault(),
-          headers: { Authorization: `Bearer ${token}` },
-        },
-      },
-    },
-    null,
-    2,
-  )
-}
-
-const claudeCodeSnippet = computed(() => buildClaudeCodeSnippet(maskedToken))
-const claudeDesktopSnippet = computed(() => buildClaudeDesktopSnippet(maskedToken))
-
-async function copySnippet(builder: (token: string) => string, field: string) {
-  try {
-    const token = await auth.getValidToken()
-    await navigator.clipboard.writeText(builder(token))
-    copiedField.value = field
-    setTimeout(() => (copiedField.value = null), 2000)
-  } catch {
-    // fallback
-  }
 }
 
 async function copyToClipboard(text: string, field: string) {
@@ -228,7 +190,7 @@ async function copyToClipboard(text: string, field: string) {
       </div>
     </div>
 
-    <!-- Default MCP card with collapsible Claude Code / Desktop snippets. -->
+    <!-- Default MCP card with collapsible client setup snippets. -->
     <div
       v-if="defaultMCP"
       class="border-beam stagger-item mb-5 rounded-2xl border border-accent/30 bg-surface-raised/80 p-4 backdrop-blur"
@@ -279,35 +241,11 @@ async function copyToClipboard(text: string, field: string) {
           tool the AI can call to discover what's available.
         </p>
 
-        <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          <div class="rounded-xl border border-border-subtle bg-surface-overlay/60 p-4 min-w-0">
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Claude Code</span>
-              <button
-                class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
-                @click="copySnippet(buildClaudeCodeSnippet, 'claude-code')"
-              >
-                <component :is="copiedField === 'claude-code' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
-                {{ copiedField === 'claude-code' ? 'Copied' : 'Copy' }}
-              </button>
-            </div>
-            <pre class="overflow-x-auto rounded-lg bg-surface/80 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ claudeCodeSnippet }}</pre>
-          </div>
-
-          <div class="rounded-xl border border-border-subtle bg-surface-overlay/60 p-4 min-w-0">
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Claude Desktop / claude_desktop_config.json</span>
-              <button
-                class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
-                @click="copySnippet(buildClaudeDesktopSnippet, 'claude-desktop')"
-              >
-                <component :is="copiedField === 'claude-desktop' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
-                {{ copiedField === 'claude-desktop' ? 'Copied' : 'Copy' }}
-              </button>
-            </div>
-            <pre class="overflow-x-auto rounded-lg bg-surface/80 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ claudeDesktopSnippet }}</pre>
-          </div>
-        </div>
+        <MCPSetupPanel
+          embedded
+          :server-name="serverNameFor()"
+          :url="urlForDefault()"
+        />
       </div>
     </div>
 

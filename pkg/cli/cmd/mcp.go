@@ -19,6 +19,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -180,7 +181,21 @@ func runMCPURL(_ *cobra.Command, edgeName, mcpserverName string) error {
 	fmt.Println("      }")
 	fmt.Println("    }")
 	fmt.Println("  }")
+	fmt.Println()
+	fmt.Println("To add to Codex:")
+	if token != "" {
+		fmt.Printf("  export KEDGE_MCP_TOKEN=%s\n", shellSingleQuote(token))
+	} else {
+		fmt.Println("  export KEDGE_MCP_TOKEN='<your-token>'")
+	}
+	fmt.Printf("  codex mcp add %s \\\n", mcpName)
+	fmt.Printf("    --url %s \\\n", shellSingleQuote(mcpURL))
+	fmt.Println("    --bearer-token-env-var KEDGE_MCP_TOKEN")
 	return nil
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 // mcpServerName chooses a friendly identifier for the `claude mcp add`
