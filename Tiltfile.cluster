@@ -24,7 +24,7 @@
 #   tilt up -f Tiltfile.cluster -- --kcp-dir=/path/to/kcp
 #   KCP_DIR=/path/to/kcp tilt up -f Tiltfile.cluster
 #
-# If unset, it defaults to /tmp/kcp and shallow-clones kcp there on first run.
+# If unset, it defaults to $HOME/go/src/github.com/kcp-dev/kcp.
 # ---------------------------------------------------------------------------
 
 config.define_string('kcp-dir')
@@ -32,8 +32,8 @@ config.define_string('kcp-image-tag')
 config.define_string('kcp-image-repo')
 cfg = config.parse()
 
-kcp_dir = cfg.get('kcp-dir', os.getenv('KCP_DIR', '/tmp/kcp'))
-kcp_repo = 'https://github.com/kcp-dev/kcp'
+default_kcp_dir = os.path.join(os.getenv('HOME', ''), 'go', 'src', 'github.com', 'kcp-dev', 'kcp')
+kcp_dir = cfg.get('kcp-dir', os.getenv('KCP_DIR', default_kcp_dir))
 cluster_name = 'kcp-tilt'
 
 # Optional: pin every kcp component (RootShard, Shard, FrontProxy + proxy) to a
@@ -57,12 +57,6 @@ kcp_image_tag = cfg.get('kcp-image-tag', 'fb8629abb')
 # Always export (even empty) so an explicit '' override clears any inherited env.
 os.putenv('KCP_IMAGE_REPO', kcp_image_repo)
 os.putenv('KCP_IMAGE_TAG', kcp_image_tag)
-
-# Clone kcp into the default location if it isn't there yet. A shallow clone is
-# enough — the upstream Tiltfile only needs the source tree to build from.
-if not os.path.exists(kcp_dir):
-    print('kcp source not found at %s — cloning %s (shallow)' % (kcp_dir, kcp_repo))
-    local('git clone --depth=1 %s %s' % (kcp_repo, kcp_dir), quiet=False)
 
 kcp_tilt = os.path.join(kcp_dir, 'contrib', 'tilt', 'Tiltfile.static')
 if not os.path.exists(kcp_tilt):
@@ -553,6 +547,7 @@ local_resource(
         'providers/infrastructure/portal/src',
         'providers/infrastructure/portal/package.json',
         'providers/infrastructure/go.mod',
+        'providers/infrastructure/go.sum',
         # Restart whenever init writes/updates the runtime kubeconfig:
         # the controller manager only starts when INFRASTRUCTURE_KUBECONFIG
         # resolves to a real file (see the Makefile target). Without this

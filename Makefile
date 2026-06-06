@@ -428,12 +428,14 @@ run-hub-embedded-graphql: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
 	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
 
-# Local kcp checkout to iterate against. Override on the CLI or via env:
+# Local kcp checkout to iterate against. Defaults to the standard per-user Go
+# workspace path. Override on the CLI or via env:
+#   make tilt-cluster TILT_KCP_DIR=/path/to/kcp
 #   make tilt-cluster KCP_DIR=/path/to/kcp
-TILT_KCP_DIR ?= /Users/mjudeikis/go/src/github.com/kcp-dev/kcp
+TILT_KCP_DIR ?= $(or $(KCP_DIR),$(HOME)/go/src/github.com/kcp-dev/kcp)
 
 ## Full multi-shard kcp in a kind cluster + kedge-hub in-cluster, against a local kcp checkout
-tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with KCP_DIR=...)
+tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TILT_KCP_DIR=... or KCP_DIR=...)
 	@# Create the kind cluster + context BEFORE `tilt up`. If the cluster is
 	@# created from inside the Tiltfile, Tilt initializes its deploy client
 	@# before the kind-kcp-tilt context exists and caches an empty config,
@@ -442,7 +444,7 @@ tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with KC
 	@# cluster+context up front avoids that race.
 	@kind get clusters 2>/dev/null | grep -qx kcp-tilt || kind create cluster --name kcp-tilt
 	@kind export kubeconfig --name kcp-tilt
-	tilt up -f Tiltfile.cluster -- --kcp-dir=$(TILT_KCP_DIR)
+	tilt up -f Tiltfile.cluster -- --kcp-dir="$(TILT_KCP_DIR)"
 
 # --- Provider quickstart (local dev) ---
 # The quickstart provider is a small standalone HTTP server that registers

@@ -166,6 +166,7 @@ local_resource(
         'providers/infrastructure/portal/src',
         'providers/infrastructure/portal/package.json',
         'providers/infrastructure/go.mod',
+        'providers/infrastructure/go.sum',
         # Restart whenever init writes/updates the runtime kubeconfig:
         # the controller manager only starts when INFRASTRUCTURE_KUBECONFIG
         # resolves to a real file (see the Makefile target). Without this
