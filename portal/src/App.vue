@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useRouter } from 'vue-router'
 import { registerProviderRoutes } from '@/router/providers'
+import ControlPlaneProvisioning from '@/components/ControlPlaneProvisioning.vue'
 
 const auth = useAuthStore()
 const providers = useProvidersStore()
@@ -15,19 +16,31 @@ const router = useRouter()
 // any deep link like /providers/foo can be resolved.
 registerProviderRoutes(router)
 
+// First-login takeover: while the hub is still provisioning the user's
+// personal org + first workspace, tenant.bootstrap() keeps bootstrapState
+// at 'provisioning' and we cover the whole app with the "creating control
+// plane" screen. Returning users (cached selection) flip straight to
+// 'ready' inside bootstrap(), so this never flashes for them.
+const showProvisioning = computed(
+  () => auth.isAuthenticated && tenant.bootstrapState === 'provisioning',
+)
+
 onMounted(async () => {
   await auth.detectAuthMode()
   if (auth.isAuthenticated) {
     providers.load()
+    tenant.bootstrap()
   }
 })
 
 // Authentication can arrive after onMounted (token login form). Watch and
-// fetch the provider list as soon as credentials are available.
+// kick off provider load + tenant bootstrap as soon as credentials land.
 watch(
   () => auth.isAuthenticated,
   (ok) => {
-    if (ok && !providers.loaded) providers.load()
+    if (!ok) return
+    if (!providers.loaded) providers.load()
+    tenant.bootstrap()
   },
 )
 
@@ -74,4 +87,5 @@ watch(
 
 <template>
   <router-view />
+  <ControlPlaneProvisioning v-if="showProvisioning" :attempts="tenant.bootstrapAttempts" />
 </template>
