@@ -237,25 +237,27 @@ function styleFor(phase: string) {
     <div v-else-if="error" class="text-[11px] text-danger">Failed to load: {{ error }}</div>
 
     <template v-else>
-      <!-- Totals + per-phase chips. Mirrors kubernetes-edges' "cluster
-           trio" so the dashboard reads consistently across providers. -->
-      <div class="grid grid-cols-4 gap-2">
-        <div class="rounded-lg border border-border-subtle bg-surface-overlay/60 p-2">
+      <!-- Totals + per-phase counts, all in a single card so the four
+           numbers read as one summary block (Total | Ready | Pending |
+           Failed) rather than four detached boxes. Dividers separate the
+           columns inside the shared border. -->
+      <div class="grid grid-cols-4 divide-x divide-border-subtle rounded-lg border border-border-subtle bg-surface-overlay/60">
+        <div class="px-2 py-2">
           <div class="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-text-muted">
             <Layers class="h-3 w-3" :stroke-width="2" />
             Total
           </div>
           <div class="mt-1 text-[18px] font-bold tabular-nums text-text-primary">{{ stats.total }}</div>
         </div>
-        <div class="rounded-lg border border-border-subtle bg-surface-overlay/60 p-2">
+        <div class="px-2 py-2">
           <div class="text-[10px] font-medium uppercase tracking-wider text-success">Ready</div>
           <div class="mt-1 text-[18px] font-bold tabular-nums text-text-primary">{{ stats.ready }}</div>
         </div>
-        <div class="rounded-lg border border-border-subtle bg-surface-overlay/60 p-2">
+        <div class="px-2 py-2">
           <div class="text-[10px] font-medium uppercase tracking-wider text-text-muted">Pending</div>
           <div class="mt-1 text-[18px] font-bold tabular-nums text-text-primary">{{ stats.pending }}</div>
         </div>
-        <div class="rounded-lg border border-border-subtle bg-surface-overlay/60 p-2">
+        <div class="px-2 py-2">
           <div class="text-[10px] font-medium uppercase tracking-wider text-danger">Failed</div>
           <div class="mt-1 text-[18px] font-bold tabular-nums text-text-primary">{{ stats.failed }}</div>
         </div>
@@ -274,23 +276,26 @@ function styleFor(phase: string) {
       </div>
 
       <!-- Recent instances. Click anywhere on the row → instance detail
-           page. Bubbles via kedge-navigate so the portal owns the URL. -->
-      <div v-if="recent.length > 0" class="space-y-1">
-        <div class="text-[10px] font-medium uppercase tracking-wider text-text-muted">Recent</div>
-        <button
-          v-for="i in recent"
-          :key="i.name"
-          type="button"
-          class="flex w-full items-center gap-2 rounded-lg border border-border-subtle bg-surface-overlay/60 p-2 text-left transition-colors hover:border-border-strong hover:bg-surface-overlay"
-          @click="dispatchNavigate('instances/' + encodeURIComponent(i.name))"
-        >
-          <component :is="styleFor(i.phase).icon" :class="styleFor(i.phase).cls + ' h-3.5 w-3.5 flex-shrink-0'" :stroke-width="2" />
-          <div class="min-w-0 flex-1">
-            <div class="truncate text-[11px] font-medium text-text-primary">{{ i.name }}</div>
-            <div class="truncate text-[10px] text-text-muted">{{ i.template }}</div>
-          </div>
-          <ChevronRight class="h-3 w-3 flex-shrink-0 text-text-muted" :stroke-width="2" />
-        </button>
+           page. Bubbles via kedge-navigate so the portal owns the URL.
+           Row style matches the kubernetes-edges "Recent" list: a single
+           compact line per item (phase icon · name · template · animated
+           chevron) so the dashboard reads consistently across providers. -->
+      <div v-if="recent.length > 0">
+        <div class="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Recent</div>
+        <ul class="space-y-1">
+          <li v-for="i in recent" :key="i.name">
+            <button
+              type="button"
+              class="group flex w-full items-center gap-2 rounded-lg border border-border-subtle bg-surface-overlay/40 px-2.5 py-1.5 text-left transition-colors hover:bg-accent/[0.04]"
+              @click="dispatchNavigate('instances/' + encodeURIComponent(i.name))"
+            >
+              <component :is="styleFor(i.phase).icon" :class="styleFor(i.phase).cls + ' h-3 w-3 shrink-0'" :stroke-width="1.75" />
+              <span class="min-w-0 flex-1 truncate text-[12px] text-text-primary">{{ i.name }}</span>
+              <span class="shrink-0 truncate text-[10px] text-text-muted/70">{{ i.template }}</span>
+              <ChevronRight class="h-3 w-3 shrink-0 text-text-muted/30 transition-all group-hover:translate-x-0.5 group-hover:text-accent/60" :stroke-width="1.75" />
+            </button>
+          </li>
+        </ul>
       </div>
 
       <!-- Explicit empty state. The "scope hint" line covers a real

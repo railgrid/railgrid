@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import type { ProviderDTO } from '@/stores/providers'
-import { Puzzle, ChevronRight } from 'lucide-vue-next'
+import { Puzzle, ChevronRight, X } from 'lucide-vue-next'
 
 // DashboardTile is the portal-side mount point for one provider's
 // dashboard summary. Mirrors ProviderFrame.vue's lifecycle but for the
@@ -13,10 +13,19 @@ import { Puzzle, ChevronRight } from 'lucide-vue-next'
 // <kedge-dashboard-tile-{name}>; if it does we mount that here, push
 // the same kedgeContext shape, and proxy kedge-navigate events to the
 // portal router. If the provider has no tile (the tag never registers
-// within the timeout), we fall back to a static card linking to the
-// provider's page — so adding a tile is opt-in per provider.
+// within the timeout), it emits `no-tile` so the dashboard can drop it
+// from the grid — exposing a tile is opt-in per provider.
+//
+// In `edit-mode` the tile is a draggable/resizable grid cell: it shows a
+// remove affordance and disables its own interactive surfaces (the Open
+// link and the provider's mounted element) so a drag started anywhere on
+// the card isn't swallowed by a click target inside it.
 
-const props = defineProps<{ provider: ProviderDTO }>()
+const props = defineProps<{ provider: ProviderDTO; editMode?: boolean }>()
+const emit = defineEmits<{
+  (e: 'no-tile', name: string): void
+  (e: 'remove', name: string): void
+}>()
 
 const auth = useAuthStore()
 const theme = useThemeStore()
@@ -82,6 +91,7 @@ async function loadAndMount(name: string, version: string | undefined) {
 
   if (!defined) {
     loadState.value = 'no-tile'
+    emit('no-tile', name)
     return
   }
 
@@ -125,7 +135,28 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur">
+  <!-- A provider with no dashboard tile contributes nothing to the grid:
+       skip the whole card (rather than showing an empty "no summary"
+       placeholder). The `no-tile` emit also tells the dashboard to drop
+       this cell so it leaves no gap in the layout. -->
+  <div
+    v-if="loadState !== 'no-tile'"
+    class="relative flex h-full flex-col overflow-hidden rounded-2xl border bg-surface-raised/80 p-5 backdrop-blur"
+    :class="editMode ? 'cursor-move border-accent/40 ring-1 ring-accent/30' : 'border-border-subtle'"
+  >
+    <!-- Remove affordance — only in edit mode. `tile-no-drag` keeps the
+         click from starting a grid drag (see DashboardPage's GridItem
+         drag-ignore-from). -->
+    <button
+      v-if="editMode"
+      type="button"
+      class="tile-no-drag absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-border-subtle bg-surface-overlay text-text-muted transition-colors hover:border-danger/40 hover:text-danger"
+      title="Remove tile"
+      @click.stop="emit('remove', provider.name)"
+    >
+      <X class="h-3.5 w-3.5" :stroke-width="2" />
+    </button>
+
     <!-- Tile header is portal chrome (icon, name, status) so a provider's
          tile body never has to repeat the catalog metadata. -->
     <div class="mb-4 flex items-center gap-3">
@@ -144,6 +175,7 @@ onBeforeUnmount(() => {
         <div class="truncate font-mono text-[10px] text-text-muted">{{ provider.name }}</div>
       </div>
       <router-link
+        v-if="!editMode"
         :to="`/providers/${provider.name}`"
         class="flex items-center gap-0.5 text-[11px] font-medium text-accent transition-colors hover:text-accent-hover"
       >
@@ -155,12 +187,15 @@ onBeforeUnmount(() => {
     <div v-else-if="loadState === 'error'" class="text-[11px] text-danger">
       Failed to load tile: <span class="font-mono">{{ loadError }}</span>
     </div>
-    <div v-else-if="loadState === 'no-tile'" class="text-[11px] text-text-muted">
-      This provider doesn't expose a dashboard summary.
-    </div>
     <!-- The provider's tile element mounts here. Always render the mount
          node so the watch can attach to it before the script finishes
-         loading; visibility flips via the v-show above through loadState. -->
-    <div ref="mountRef" :class="loadState === 'ready' ? '' : 'hidden'" />
+         loading; visibility flips through loadState. In edit mode its
+         pointer events are disabled so a drag isn't captured by the
+         provider's own interactive content. -->
+    <div
+      ref="mountRef"
+      class="min-h-0 flex-1 overflow-auto"
+      :class="[loadState === 'ready' ? '' : 'hidden', editMode ? 'pointer-events-none select-none' : '']"
+    />
   </div>
 </template>
