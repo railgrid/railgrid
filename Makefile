@@ -535,6 +535,28 @@ e2e-infrastructure: build-infrastructure-provider ## Run infrastructure tenant-i
 	}
 	go test ./test/e2e/suites/infrastructure/... -v -timeout $(E2E_KROMC_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
+## Tilt-cluster suite: runs against an ALREADY-RUNNING operator-deployed,
+## multi-shard Tilt stack (start it in another terminal with `make tilt-cluster`).
+## Unlike the other e2e suites it does NOT spawn its own processes — it connects
+## to the live stack (kcp front-proxy via tilt-frontproxy.kubeconfig, the
+## in-cluster hub, the host-run providers) and verifies the providers end-to-end:
+## provider registration, the templates catalog/projection, MCP tool federation,
+## and the per-tenant identity gate. Endpoints override via KEDGE_E2E_* env.
+E2E_TILT_TIMEOUT ?= 10m
+E2E_TILT_HUB_URL ?= https://localhost:9443
+E2E_TILT_INFRA_URL ?= http://localhost:8082
+.PHONY: e2e-tilt-cluster
+e2e-tilt-cluster: ## Run Tilt-cluster provider e2e (requires `make tilt-cluster` running)
+	@curl -sk --max-time 5 -o /dev/null "$(E2E_TILT_HUB_URL)/healthz" || { \
+		echo "hub not reachable at $(E2E_TILT_HUB_URL); bring the stack up first in another terminal: make tilt-cluster"; \
+		exit 1; \
+	}
+	@curl -s --max-time 5 -o /dev/null "$(E2E_TILT_INFRA_URL)/healthz" || { \
+		echo "infrastructure provider not reachable at $(E2E_TILT_INFRA_URL); is 'make tilt-cluster' fully up?"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/tiltcluster/... -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
 ## Delete the quickstart CatalogEntry. Useful while iterating on the manifest.
 uninstall-provider-quickstart: ## Delete quickstart CatalogEntry
 	-kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
