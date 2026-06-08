@@ -269,7 +269,12 @@ local_resource(
 # ---------------------------------------------------------------------------
 local_resource(
     'edge-kube-create',
-    cmd='make dev-login-static && make dev-edge-create TYPE=kubernetes',
+    # Drop any saved agent kubeconfig from a previous hub/kcp incarnation
+    # before re-creating. A stale ~/.kedge/agent-<edge>.kubeconfig points at
+    # an old workspace + revoked SA token; the agent would load it, skip
+    # re-registration, and fail every call with "workspace access not
+    # permitted" (User ""). Clearing it forces a fresh join-token exchange.
+    cmd='rm -f ~/.kedge/agent-dev-edge-kube-1.kubeconfig ~/.kedge/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -287,7 +292,8 @@ local_resource(
 
 local_resource(
     'edge-server-create',
-    cmd='make dev-login-static && make dev-edge-create TYPE=server',
+    # Same stale-kubeconfig cleanup as edge-kube-create (see note there).
+    cmd='rm -f ~/.kedge/agent-dev-edge-server-1.kubeconfig ~/.kedge/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],

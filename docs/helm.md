@@ -21,7 +21,7 @@ Deploy kedge-hub into a Kubernetes cluster using Helm.
 
 ## Overview
 
-The kedge-hub Helm chart deploys **kcp + kedge-hub** as a single StatefulSet. This guide covers deploying to both local clusters (kind) and production environments.
+The kedge-hub Helm chart deploys **kcp + kedge-hub**. In the default embedded-kcp mode it runs as a StatefulSet (kcp's embedded etcd is persisted to a PVC). When `kcp.external.enabled=true`, the hub is stateless and runs as a Deployment instead. This guide covers deploying to both local clusters (kind) and production environments.
 
 For authentication configuration, see [Security]({% link security.md %}).
 

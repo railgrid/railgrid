@@ -1,14 +1,30 @@
+{{- /*
+Workload kind depends on the kcp mode:
+  - Embedded kcp (default): StatefulSet. kcp's embedded etcd lives on a
+    per-replica PVC (volumeClaimTemplates) and needs a stable network identity
+    (headless serviceName) so the embedded kcp TLS cert stays valid across
+    restarts.
+  - External kcp: Deployment. The hub is stateless (no embedded etcd, no
+    persistent data-dir), so it needs no PVC and no stable identity. Uses the
+    Recreate strategy because the hub runs controllers without leader election;
+    a rolling update would briefly run two active instances.
+*/ -}}
 apiVersion: apps/v1
+{{- if .Values.kcp.external.enabled }}
+kind: Deployment
+{{- else }}
 kind: StatefulSet
+{{- end }}
 metadata:
   name: {{ include "kedge-hub.fullname" . }}
   labels:
     {{- include "kedge-hub.labels" . | nindent 4 }}
 spec:
-  {{- if not .Values.kcp.external.enabled }}
-  serviceName: {{ include "kedge-hub.fullname" . }}-kcp
+  {{- if .Values.kcp.external.enabled }}
+  strategy:
+    type: Recreate
   {{- else }}
-  serviceName: {{ include "kedge-hub.fullname" . }}
+  serviceName: {{ include "kedge-hub.fullname" . }}-kcp
   {{- end }}
   replicas: 1
   selector:
@@ -135,6 +151,12 @@ spec:
             {{- end }}
 
       volumes:
+        {{- if .Values.kcp.external.enabled }}
+        # External kcp mode is stateless; /data is scratch only (the hub keeps
+        # no persistent state here), so an emptyDir replaces the PVC.
+        - name: kcp-data
+          emptyDir: {}
+        {{- end }}
         {{- if include "kedge-hub.tlsEnabled" . }}
         - name: tls
           secret:
@@ -174,6 +196,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
 
+  {{- if not .Values.kcp.external.enabled }}
   volumeClaimTemplates:
     - metadata:
         name: kcp-data
@@ -186,3 +209,4 @@ spec:
         resources:
           requests:
             storage: {{ .Values.persistence.size }}
+  {{- end }}

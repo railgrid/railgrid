@@ -2,8 +2,20 @@ import { ref, watchEffect, onUnmounted, type Ref } from 'vue'
 import { createGraphQLClient } from '@/graphql/client'
 import { useAuthStore } from '@/stores/auth'
 import { useTenantStore } from '@/stores/tenant'
-import { router } from '@/router'
 import type { CombinedError } from '@urql/vue'
+
+// Window event the shell listens for to drop a dead session and bounce
+// to /login (see portal/src/App.vue). Decoupled from a direct
+// `@/router` import on purpose: this composable is reused by provider
+// micro-frontends via the `@kedge-edges` alias, and a static
+// `import { router } from '@/router'` dragged the ENTIRE portal SPA
+// (every route page → AppLayout → TerminalDock) into each provider's
+// IIFE bundle. That bundled TerminalDock's terminal-session store got
+// shadowed by the provider's dispatch-only terminal-adapter, killing
+// the SSH-terminal bridge in production builds. A window event keeps the
+// shell's redirect behaviour while staying a no-op inside providers
+// (they register no listener).
+export const SESSION_EXPIRED_EVENT = 'kedge-session-expired'
 
 interface UseQueryResult<T> {
   data: Ref<T | null>
@@ -36,11 +48,11 @@ function handleSessionFailure(err: CombinedError | undefined): boolean {
   const tenant = useTenantStore()
   if (tenant.bootstrapState === 'provisioning') return false
 
-  const auth = useAuthStore()
-  auth.logout()
-  // replace, not push, so the browser Back button doesn't return to the
-  // broken page that just failed to authenticate.
-  void router.replace({ name: 'login' })
+  // Hand the actual logout + redirect to the shell (App.vue) so this
+  // composable never has to touch `@/router` or assume a portal-shaped
+  // auth store — see SESSION_EXPIRED_EVENT above. No-op inside provider
+  // micro-frontends, where a dead query shouldn't tear down the host.
+  window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT))
   return true
 }
 
