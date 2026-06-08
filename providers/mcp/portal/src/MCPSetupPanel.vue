@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useAuthStore } from '@/stores/auth'
 import { Bot, Check, Copy, Monitor, Terminal } from 'lucide-vue-next'
 
 const props = defineProps<{
   serverName: string
   url: string
+  // token is the MCPServer's long-lived (legacy) ServiceAccount token,
+  // resolved by the parent from status.tokenSecretRef. We deliberately do
+  // NOT use the portal user's OIDC token here: that expires (~24h), which
+  // would silently break a long-lived MCP client connection. Undefined
+  // while the token Secret is still being provisioned/populated.
+  token?: string
   embedded?: boolean
 }>()
-
-const auth = useAuthStore()
 
 type SetupClient = 'claude-code' | 'claude-desktop' | 'codex'
 
@@ -93,10 +96,15 @@ function buildSnippet(client: SetupClient, token: string) {
 
 const displaySnippet = computed(() => buildSnippet(selectedClient.value, displayToken))
 
+const tokenReady = computed(() => !!props.token)
+
 async function copySelectedSnippet() {
+  // Copy the real (legacy SA) token, masked in the on-screen snippet.
+  // Until the token Secret is populated the bearer credential isn't
+  // available, so there's nothing to copy yet.
+  if (!props.token) return
   try {
-    const token = await auth.getValidToken()
-    await navigator.clipboard.writeText(buildSnippet(selectedClient.value, token))
+    await navigator.clipboard.writeText(buildSnippet(selectedClient.value, props.token))
     copied.value = true
     setTimeout(() => (copied.value = false), 2000)
   } catch {
@@ -119,11 +127,12 @@ async function copySelectedSnippet() {
       </span>
       <button
         type="button"
-        class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+        class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+        :disabled="!tokenReady"
         @click="copySelectedSnippet"
       >
         <component :is="copied ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
-        {{ copied ? 'Copied' : 'Copy' }}
+        {{ copied ? 'Copied' : tokenReady ? 'Copy' : 'Provisioning…' }}
       </button>
     </div>
 

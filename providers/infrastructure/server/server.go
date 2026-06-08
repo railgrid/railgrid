@@ -6,10 +6,12 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package server wires the provider's HTTP routes. The Server struct
-// holds the kro client, the per-tenant kcp client factory, the MCP
-// handler, and the embedded portal — all composed at main() and
-// passed in via Deps so unit tests can swap any one.
+// Package server wires the provider's HTTP routes: /healthz, the MCP
+// handler, and the embedded portal. Template + instance traffic is NOT
+// served here — the portal and tenants drive those as CRDs directly
+// against kcp (templates.infrastructure.kedge.faros.sh and the
+// per-template instance kinds), projected to tenant workspaces via the
+// CachedResource + APIExport. See providers/infrastructure/portal/src/api.ts.
 package server
 
 import (
@@ -17,9 +19,6 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
-
-	"github.com/faroshq/faros-kedge/providers/infrastructure/kro"
-	"github.com/faroshq/faros-kedge/providers/infrastructure/tenant"
 )
 
 // AssetServer writes the asset at name from distFS to w. Returns
@@ -28,13 +27,10 @@ import (
 // assets.go's servePortalAsset.
 type AssetServer func(w http.ResponseWriter, r *http.Request, distFS fs.FS, name string) bool
 
-// Deps bundles everything Server needs. Held narrow so tests can pass
-// fakes for kro / tenant; portal fields are exercised in the smoke test
-// only.
+// Deps bundles everything Server needs. The portal fields are exercised
+// in the smoke test only.
 type Deps struct {
-	Kro              kro.Client
-	Tenant           *tenant.ClientFactory // may be nil in dev mode
-	MCP              http.Handler          // /mcp + /mcp/sse handler; may be nil
+	MCP              http.Handler // /mcp + /mcp/sse handler; may be nil
 	PortalFileServer http.Handler
 	PortalFS         fs.FS
 	ServePortalAsset AssetServer
@@ -43,9 +39,6 @@ type Deps struct {
 // Server is the wired-up HTTP server. Implements http.Handler so
 // main() can install it under a net/http.Server directly.
 type Server struct {
-	kro    kro.Client
-	tenant *tenant.ClientFactory
-
 	mux *http.ServeMux
 }
 
@@ -56,23 +49,14 @@ type Server struct {
 // is illustrative — not load-bearing.
 func New(d Deps) *Server {
 	s := &Server{
-		kro:    d.Kro,
-		tenant: d.Tenant,
-		mux:    http.NewServeMux(),
+		mux: http.NewServeMux(),
 	}
 
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 
-	// Templates: list + detail. The trailing slash on "/api/templates/"
-	// matches the sub-resource path; bare "/api/templates" is
-	// registered separately to avoid a 301 redirect on the bare URL.
-	s.mux.HandleFunc("/api/templates", s.handleListTemplates)
-	s.mux.HandleFunc("/api/templates/", s.handleGetTemplate)
-
-	// Instances: collection + item.
-	s.mux.HandleFunc("/api/instances", s.handleInstances)
-	s.mux.HandleFunc("/api/instances/", s.handleInstanceItem)
-
+	// Templates + instances are NOT served here: the portal and tenants
+	// read/write them as CRDs directly against kcp (projected via the
+	// CachedResource + APIExport). MCP keeps its own kro.Client.
 	if d.MCP != nil {
 		// One handler covers both /mcp (JSON-RPC POST) and /mcp/sse
 		// (streamable transport server-sent events) — the SDK's

@@ -98,6 +98,24 @@ Update `manifest.yaml`:
 Then apply the manifest plus a Deployment + Service of your own. A Helm
 chart for this provider arrives in Phase 4 (see `docs/providers.md`).
 
+### Two ways a provider's kcp credentials get bootstrapped
+
+quickstart uses the **hub-provisioned** model: you apply the
+`CatalogEntry` and the hub catalog controller creates the provider
+workspace, mints the runtime `kedge-provider-kubeconfig` Secret, and
+applies the APIExport. quickstart doesn't read kcp itself, so it just
+needs the routing — no kubeconfig.
+
+A provider that *does* talk to kcp can also **self-bootstrap** with an
+init container that holds a kcp admin kubeconfig and mints its own
+runtime kubeconfig — no hub provisioning step. The infrastructure
+provider demonstrates this end-to-end; see
+[providers/infrastructure](../infrastructure/README.md#b-self-bootstrap-with-an-init-container-bootstrapenabledtrue)
+and the "Alternative: self-bootstrap via an init container" section of
+[docs/providers.md](../../docs/providers.md). When you graduate this
+quickstart to a real Helm chart, copy that pattern if your provider
+needs kcp access.
+
 ## What's *not* in this iteration (Phase 1A)
 
 The platform pieces these depend on land in later phases:

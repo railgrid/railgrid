@@ -12,6 +12,45 @@
 #
 # For in-cluster deployment, change the URLs to the Service DNS, e.g.
 #   url: http://quickstart.providers.svc.cluster.local:8081
+#
+# ════════════════════════════════════════════════════════════════════════
+# Provider object reference — kind: CatalogEntry (providers.kedge.faros.sh)
+#
+# A CatalogEntry registers one provider ("plugin") with the kedge hub. The
+# hub's catalog controller reconciles it into the provider sub-workspace
+# root:kedge:providers:<name>, a ServiceAccount + runtime kubeconfig, the
+# APIExport tenants APIBind to, and a routing entry backing
+# /ui/providers/<name>/* and /services/providers/<name>/*.
+#
+# spec:
+#   displayName              Title on the portal catalog card + side nav. [required]
+#   description              Short blurb on the catalog card.
+#   vendor                   Provider author.
+#   version                  Provider/chart version (informational).
+#   category                 Groups the entry under a portal nav heading.
+#   iconURL                  Portal-relative icon path (served via the UI proxy).
+#   serviceAccountNamespace  Host namespace the provider Deployment runs in;
+#                            the hub writes kedge-provider-kubeconfig here.
+#   ui:                      Micro-frontend (omit for a UI-less provider).
+#     url                      Address the hub reverse-proxies for
+#                              /ui/providers/<name>/* (exclusive with builtinRoute).
+#     indexPath                Default landing path within the UI (default "/").
+#     builtinRoute             Portal renders an in-tree route by this name
+#                              instead of loading a bundle (first-party providers).
+#     children[]               Sub-nav entries: {displayName, builtinRoute}.
+#   backend:                 Custom HTTP backend (omit for CR-only providers).
+#     url                      Address proxied at /services/providers/<name>/*
+#                              (NOT for CRD traffic — CRs flow through kcp).
+#     healthPath               GET path that gates the BackendHealthy status.
+#   virtualWorkspace:        Advanced opt-in for custom non-CRD verbs (Phase 5).
+#   apiExport:               The provider's kcp APIExport.
+#     name                     Fully-qualified APIExport name tenants APIBind to.
+#     permissionClaims[]       Access the provider needs in tenant workspaces:
+#                              {resource, group, verbs, tenantScoped}. tenantScoped:
+#                              true auto-accepts on Enable.
+#     schemas[]                Inline APIResourceSchemas to install ({groupResource,
+#                              body}); [] = pure broker, no CRDs leak to tenants.
+# ════════════════════════════════════════════════════════════════════════
 ---
 apiVersion: providers.kedge.faros.sh/v1alpha1
 kind: CatalogEntry

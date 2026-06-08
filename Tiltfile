@@ -47,7 +47,9 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
   --graphql-apiexport-logical-cluster=root:kedge:providers \
   --graphql-grpc-addr=localhost:50051 \
   --graphql-playground \
-  --portal-dev-url=http://localhost:3000
+  --portal-dev-url=http://localhost:3000 \
+  --kubeconfig=.kedge-kro.kubeconfig \
+  --provider-internal-url=https://host.docker.internal:9443
 ''',
     deps=[
         'cmd/kedge-hub',
@@ -58,6 +60,11 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
         'providers/mcp',
         'providers/kubernetesedges',
         'providers/serveredges',
+        # Restart the hub once the kedge-kro kubeconfig appears so the
+        # HostSecretWriter (which delivers kedge-provider-kubeconfig into
+        # that cluster) activates. The wiring is tolerant of the file being
+        # absent at first boot — see pkg/hub/server.go.
+        '.kedge-kro.kubeconfig',
     ],
     resource_deps=['portal'],
     labels=['hub'],
@@ -219,6 +226,34 @@ local_resource(
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
+    labels=['providers-kro'],
+)
+
+# --- EXPERIMENTAL: run the infrastructure provider as a POD (init-container
+#     bootstrap) instead of the host binary above. Exercises the full
+#     hub-minted flow end to end: the hub mints + delivers
+#     kedge-provider-kubeconfig (HostSecretWriter, enabled by the hub's
+#     --kubeconfig + --provider-internal-url flags above), the init container
+#     bootstraps the workspace with it, then serve runs — all inside the
+#     kedge-kro kind cluster.
+#
+#     Manual (click ▶). Order: kro-mgmt-up → infrastructure-register →
+#     infrastructure-pod. Stop the host-binary `infrastructure` resource
+#     first so two providers don't both serve as "infrastructure".
+local_resource(
+    'infrastructure-pod',
+    cmd='make helm-deploy-provider-infrastructure',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub', 'kro-mgmt-up', 'infrastructure-register'],
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'infrastructure-pod-down',
+    cmd='make helm-undeploy-provider-infrastructure',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
     labels=['providers-kro'],
 )
 

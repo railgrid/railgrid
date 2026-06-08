@@ -739,6 +739,62 @@ provider-cost-insights/
 5. Provider starts heartbeating; `status.ready=true`.
 6. Users see it in `/providers`, click Enable, get an `APIBinding`.
 
+### Alternative: self-bootstrap via an init container
+
+The flow above is **hub-provisioned** — the hub catalog controller owns
+all kcp interactions and mints `kedge-provider-kubeconfig`. A provider
+may instead **self-bootstrap** with an init container that holds a kcp
+workspace-admin kubeconfig, which lets it be installed into any cluster
+with no hub provisioning step. The infrastructure provider supports this
+via `bootstrap.enabled=true` (see
+[providers/infrastructure](../providers/infrastructure/README.md#b-self-bootstrap-with-an-init-container-bootstrapenabledtrue)).
+
+The key simplification: **one kubeconfig, shared by init and serve.** Two
+sources, set by `bootstrap.kubeconfigSource`:
+
+**`hubMinted` (default)** — clean division of responsibility:
+
+```
+Platform admin                         Provider owner
+─────────────                          ─────────────
+applies CatalogEntry                   helm install … --set bootstrap.enabled=true
+   │                                       │
+   ▼  hub catalog controller               ▼  pod scheduled, waits for the Secret
+creates root:kedge:providers:<name>    init container (`<provider> init`)
+mints kubeconfig (cluster-admin          uses kedge-provider-kubeconfig to install
+  in the workspace)                       CRDs / CachedResource / APIExport
+HostSecretWriter writes it as            │
+  kedge-provider-kubeconfig              ▼  serve container, SAME Secret, runs
+```
+
+The minted `provider` SA is **cluster-admin within the provider
+workspace** (`EnsureProviderSA`), so it's powerful enough to do init's
+installs *and* run serve. The init/serve volume is **not** `optional` —
+the pod blocks until the hub delivers the Secret, giving natural ordering.
+Requires the hub to run with `--kubeconfig` so its `HostSecretWriter`
+([pkg/hub/providers/secretwriter.go](../pkg/hub/providers/secretwriter.go))
+can write into the provider's cluster.
+
+**`supplied`** — fully standalone, no hub: you provide a
+workspace-admin kubeconfig (`bootstrap.kcpKubeconfig` /
+`kcpKubeconfigSecretRef`) and own the prerequisites (workspace exists,
+kubeconfig targets it).
+
+Trade-offs vs. hub-provisioned (model A):
+
+- **hubMinted needs no separate credential** — the platform already minted
+  one; the provider owner never handles a kcp admin kubeconfig.
+- **Simpler than the old mint-to-Secret approach**: no second token, no
+  mid-pod Secret write, no extra RBAC.
+- **Privilege**: serve runs with cluster-admin-in-workspace rather than a
+  narrow scoped SA. For strict least-privilege, prefer model A with a
+  manual init.
+
+All models converge on the same runtime contract: the serve container
+mounts a kubeconfig at `/var/run/secrets/kedge/kedge-provider-kubeconfig`
+and talks to kcp with it. Only *which identity* and *who supplies the
+Secret* differ.
+
 ### Minimal provider backend contract
 
 A provider's backend (if it declares one) MUST:

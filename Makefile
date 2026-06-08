@@ -634,6 +634,53 @@ init-provider-infrastructure: build-infrastructure-provider ## Bootstrap infrast
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 		$(BINDIR)/infrastructure-provider init
 
+# --- Experimental: run the infrastructure provider as a POD (init-container
+#     bootstrap) instead of a host binary. Exercises the full hub-minted
+#     flow: CatalogEntry -> hub mints + delivers kedge-provider-kubeconfig
+#     (HostSecretWriter) -> init container bootstraps with it -> serve runs.
+#     Reuses the kedge-kro kind cluster as the host cluster. Requires the hub
+#     to run with --kubeconfig=$(KRO_KIND_KUBECONFIG) and
+#     --provider-internal-url=$(PROVIDER_INTERNAL_HUB_URL) (the Tiltfile sets
+#     both). Apply the CatalogEntry first: make install-provider-infrastructure
+INFRASTRUCTURE_NAMESPACE ?= infrastructure
+INFRASTRUCTURE_IMAGE ?= kedge-infrastructure-provider:dev
+INFRASTRUCTURE_CHART ?= providers/infrastructure/deploy/chart
+# Address provider pods in the kind cluster use to reach the hub front-proxy
+# (browsers use https://localhost:9443; host.docker.internal resolves to the
+# host from inside kind on Docker Desktop / Colima / OrbStack).
+PROVIDER_INTERNAL_HUB_URL ?= https://host.docker.internal:9443
+helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm install the provider as a pod into kedge-kro (hub-minted bootstrap)
+	@command -v kind >/dev/null || { echo "kind not found; brew install kind"; exit 1; }
+	@test -f $(KRO_KIND_KUBECONFIG) || { echo "kedge-kro cluster missing; run 'make dev-kro-up' first"; exit 1; }
+	@echo ">>> building $(INFRASTRUCTURE_IMAGE)"
+	docker build -t $(INFRASTRUCTURE_IMAGE) providers/infrastructure
+	@echo ">>> loading image into kind cluster $(KRO_KIND_NAME)"
+	kind load docker-image $(INFRASTRUCTURE_IMAGE) --name $(KRO_KIND_NAME)
+	@echo ">>> ensuring namespace + heartbeat token Secret in $(INFRASTRUCTURE_NAMESPACE)"
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl create namespace $(INFRASTRUCTURE_NAMESPACE) \
+		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(INFRASTRUCTURE_NAMESPACE) create secret generic kedge-infrastructure-hub-token \
+		--from-literal=token=$(STATIC_AUTH_TOKEN) \
+		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
+	@echo ">>> helm install (bootstrap.enabled=true, kubeconfigSource=hubMinted)"
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) helm upgrade --install infrastructure $(INFRASTRUCTURE_CHART) \
+		--namespace $(INFRASTRUCTURE_NAMESPACE) \
+		--set image.repository=kedge-infrastructure-provider \
+		--set image.tag=dev \
+		--set image.pullPolicy=Never \
+		--set replicaCount=1 \
+		--set bootstrap.enabled=true \
+		--set hub.url=$(PROVIDER_INTERNAL_HUB_URL) \
+		--set hub.insecure=true \
+		--set catalogEntry.enabled=false
+	@echo ">>> deployed. The pod stays in ContainerCreating until the hub delivers"
+	@echo "    the kedge-provider-kubeconfig Secret (apply the CatalogEntry first:"
+	@echo "    make install-provider-infrastructure). Watch:"
+	@echo "    KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(INFRASTRUCTURE_NAMESPACE) get pods -w"
+
+helm-undeploy-provider-infrastructure: ## (experimental) helm uninstall the infrastructure provider pod
+	-KUBECONFIG=$(KRO_KIND_KUBECONFIG) helm uninstall infrastructure -n $(INFRASTRUCTURE_NAMESPACE)
+
 # --- Management kro cluster (backend for the infrastructure provider) ---
 # Brings up a dedicated kind cluster running the faroshq/kro-multicluster
 # fork (image + chart published to ghcr.io/faroshq/kro-multicluster/*),
@@ -800,6 +847,7 @@ dev-kro-up-into: ## Install kro into an existing cluster ($KRO_TARGET_KUBECONFIG
 		--set multicluster.provider=kcp-apiexport \
 		--set multicluster.kcp.kubeconfigSecret=kcp-kubeconfig \
 		--set multicluster.kcp.apiExportEndpointSlice=infrastructure \
+		--set controller.deployToLocalRuntime=true \
 		--timeout 5m
 	@# kro pods need to resolve kcp.localhost/root.kcp.localhost/theseus.kcp.localhost
 	@# (which the operator-issued kubeconfigs bake in) to the envoy gateway

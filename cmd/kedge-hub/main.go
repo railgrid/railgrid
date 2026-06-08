@@ -71,6 +71,7 @@ func main() {
 	cmd.Flags().StringVar(&opts.ServingKeyFile, "serving-key-file", "", "TLS key file for HTTPS serving")
 	cmd.Flags().StringVar(&opts.HubExternalURL, "hub-external-url", opts.HubExternalURL, "External URL of this hub (for kubeconfig generation)")
 	cmd.Flags().StringVar(&opts.HubInternalURL, "hub-internal-url", "", "Internal URL for kcp mount resolution (default: derived from listen-addr; avoids CDN loops)")
+	cmd.Flags().StringVar(&opts.ProviderInternalURL, "provider-internal-url", "", "Server URL baked into the minted provider kubeconfig (default: --hub-external-url). Override for in-cluster provider pods, e.g. https://host.docker.internal:9443.")
 	cmd.Flags().BoolVar(&opts.DevMode, "dev-mode", false, "Enable dev mode (skip TLS verification for OIDC)")
 	cmd.Flags().StringSliceVar(&opts.StaticAuthTokens, "static-auth-token", nil, "Static bearer tokens for access (can be specified multiple times)")
 	cmd.Flags().StringSliceVar(&opts.Providers, "providers", providers.BuiltinNames(),

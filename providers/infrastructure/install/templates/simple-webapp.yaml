@@ -44,6 +44,11 @@ spec:
           kind: Deployment
           metadata:
             name: ${schema.spec.name}
+            # Required: the instance CRD is cluster-scoped, so kro demands an
+            # explicit namespace on every namespaced child (it has no instance
+            # namespace to inherit). "default" is remapped to the per-tenant
+            # namespace on the runtime cluster — same convention as redis-cache.
+            namespace: default
           spec:
             replicas: ${schema.spec.replicas}
             selector:
@@ -65,6 +70,7 @@ spec:
           kind: Service
           metadata:
             name: ${schema.spec.name}
+            namespace: default
           spec:
             type: ${schema.spec.serviceType}
             selector:

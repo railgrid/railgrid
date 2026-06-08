@@ -29,6 +29,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -42,12 +44,11 @@ import (
 // startControllerManager builds a controller-runtime manager pointed
 // at the provider's own kcp workspace, installs the platform CRDs,
 // registers the stub backend, and starts the Template controller.
-// Returns errControllerDisabled when no kubeconfig is available — the
-// caller treats that as "skip the manager, run REST-only".
-func startControllerManager(ctx context.Context) error {
-	config, err := loadControllerConfig()
-	if err != nil {
-		return err
+// The caller loads the kcp config (shared with the tenant client) and
+// passes it in; a nil config means "skip the manager, run REST-only".
+func startControllerManager(ctx context.Context, config *rest.Config) error {
+	if config == nil {
+		return errControllerDisabled
 	}
 
 	// In the init/serve split (INFRASTRUCTURE_KUBECONFIG set), init has
@@ -79,6 +80,12 @@ func startControllerManager(ctx context.Context) error {
 			return fmt.Errorf("register platform schemas on APIExport: %w", err)
 		}
 	}
+
+	// Register controller-runtime's logger once before building the
+	// manager. Without this, the first internal log call (e.g. the
+	// priorityqueue depth report) prints a "log.SetLogger(...) was never
+	// called" stack trace and swallows all controller-runtime logs.
+	ctrl.SetLogger(klog.NewKlogr())
 
 	mgr, err := manager.New(config, manager.Options{
 		// Disable the metrics server in PR A; the bind on :8080 would

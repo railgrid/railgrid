@@ -11,14 +11,18 @@ package mcpserver
 import (
 	"net/http"
 	"os"
+	"strings"
 )
 
-// identity is what each tool handler closes over so it can broker on
-// the caller's behalf. Populated from the headers the hub backend
-// proxy injects after auth — see pkg/hub/providers/proxy.go.
+// identity is what each tool handler closes over so it can act on the
+// caller's behalf. tenantPath/user come from the headers the hub backend
+// proxy injects after auth (see pkg/hub/providers/proxy.go); token is the
+// caller's own bearer token (forwarded as-is by that proxy). Every kcp
+// action runs as this token — there is no provider-wide identity.
 type identity struct {
 	tenantPath string
 	user       string
+	token      string
 }
 
 // identityFromRequest mirrors server/context.go's tenantFromRequest /
@@ -30,6 +34,7 @@ func identityFromRequest(r *http.Request) identity {
 	id := identity{
 		tenantPath: r.Header.Get("X-Kedge-Tenant"),
 		user:       r.Header.Get("X-Kedge-User"),
+		token:      bearerToken(r),
 	}
 	if os.Getenv("KEDGE_DEV_ALLOW_TENANT_QUERY") == "true" {
 		if id.tenantPath == "" {
@@ -38,6 +43,19 @@ func identityFromRequest(r *http.Request) identity {
 		if id.user == "" {
 			id.user = r.URL.Query().Get("user")
 		}
+		if id.token == "" {
+			id.token = r.URL.Query().Get("token")
+		}
 	}
 	return id
+}
+
+// bearerToken extracts the caller's token from the Authorization header.
+// The hub backend proxy forwards Authorization as-is, so this is the same
+// token the user/agent authenticated the MCP request with.
+func bearerToken(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	return ""
 }

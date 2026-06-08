@@ -28,14 +28,13 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/faros-kedge/providers/infrastructure/kro"
 	"github.com/faroshq/faros-kedge/providers/infrastructure/tenant"
 )
 
-// Deps mirrors server.Deps minus the portal handler — the MCP transport
-// has no UI concerns.
+// Deps is what the MCP transport needs. Templates + instances are CRD-based
+// against the tenant workspace (see catalog.go), so the per-tenant kcp client
+// factory is the only dependency — no RGD/kro-cluster client.
 type Deps struct {
-	Kro    kro.Client
 	Tenant *tenant.ClientFactory
 }
 

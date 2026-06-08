@@ -38,13 +38,19 @@ type Options struct {
 	// IDPCAFile is a path to a PEM-encoded CA bundle used to verify the IdP's
 	// TLS certificate. Required when IDPIssuerURL is https and uses a cert
 	// not signed by a system trust anchor (e.g. the dev Dex deployment).
-	IDPCAFile        string
-	ServingCertFile  string
-	ServingKeyFile   string
-	HubExternalURL   string
-	HubInternalURL   string // Internal URL for kcp mount resolution (avoids CDN/proxy loops)
-	DevMode          bool
-	StaticAuthTokens []string
+	IDPCAFile       string
+	ServingCertFile string
+	ServingKeyFile  string
+	HubExternalURL  string
+	HubInternalURL  string // Internal URL for kcp mount resolution (avoids CDN/proxy loops)
+	// ProviderInternalURL, when set, is the server URL baked into the minted
+	// provider kubeconfig instead of HubExternalURL. Use it when provider pods
+	// reach the hub front-proxy at a different address than browsers do — e.g.
+	// a kind pod dialing https://host.docker.internal:9443 while browsers use
+	// https://localhost:9443.
+	ProviderInternalURL string
+	DevMode             bool
+	StaticAuthTokens    []string
 
 	// Providers is the list of first-party builtin providers to materialize
 	// into root:kedge:providers at bootstrap. The flag accepts a comma-

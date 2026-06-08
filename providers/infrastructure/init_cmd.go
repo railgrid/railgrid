@@ -71,8 +71,12 @@ func runInitCmd(ctx context.Context) error {
 		return fmt.Errorf("install EndpointSlice: %w", err)
 	}
 
-	log.Printf("init: applying APIExportEndpointSlice for kro kcp-apiexport provider")
-	if err := install.PlatformAPIExportEndpointSlice(ctx, adminConfig); err != nil {
+	// The slice MUST carry the provider workspace path so kcp can resolve the
+	// export's logical cluster and publish endpoint URLs — otherwise kro never
+	// discovers the VW and tenant instances go unreconciled.
+	workspacePath := os.Getenv("INFRASTRUCTURE_WORKSPACE_PATH")
+	log.Printf("init: applying APIExportEndpointSlice (path=%q) for kro kcp-apiexport provider", workspacePath)
+	if err := install.PlatformAPIExportEndpointSlice(ctx, adminConfig, workspacePath); err != nil {
 		return fmt.Errorf("install APIExportEndpointSlice: %w", err)
 	}
 
@@ -119,6 +123,29 @@ func runInitCmd(ctx context.Context) error {
 	log.Printf("init: writing minted kubeconfig to %s", kubeconfigPath)
 	if err := install.WriteKubeconfig(kubeconfigPath, mint); err != nil {
 		return fmt.Errorf("write kubeconfig: %w", err)
+	}
+
+	// When INFRASTRUCTURE_RUNTIME_KUBECONFIG_SECRET is set (the Helm init
+	// container path), also write the minted runtime kubeconfig into a Secret
+	// in the host cluster so the long-lived serve container can mount it. The
+	// host cluster is the pod's own cluster (in-cluster config), which is
+	// distinct from the admin kcp config used for the bootstrap above.
+	if secretName := os.Getenv("INFRASTRUCTURE_RUNTIME_KUBECONFIG_SECRET"); secretName != "" {
+		ns := os.Getenv("INFRASTRUCTURE_RUNTIME_KUBECONFIG_NAMESPACE")
+		if ns == "" {
+			ns = os.Getenv("POD_NAMESPACE")
+		}
+		if ns == "" {
+			ns = "default"
+		}
+		hostConfig, herr := loadHostConfig()
+		if herr != nil {
+			return fmt.Errorf("load host kubeconfig for runtime Secret: %w", herr)
+		}
+		log.Printf("init: writing runtime kubeconfig to Secret %s/%s", ns, secretName)
+		if err := install.WriteKubeconfigToSecret(ctx, hostConfig, ns, secretName, mint); err != nil {
+			return fmt.Errorf("write runtime kubeconfig Secret: %w", err)
+		}
 	}
 
 	// kro seeding is best-effort during PR C bring-up: if no
@@ -174,6 +201,19 @@ func loadAdminConfig() (*rest.Config, error) {
 		cfg.Host = host
 	}
 	return cfg, nil
+}
+
+// loadHostConfig resolves the client for the host cluster — the cluster the
+// provider Deployment runs in, where the runtime kubeconfig Secret is written.
+// This is deliberately separate from loadAdminConfig (which targets kcp): the
+// init container writes the Secret into its own pod's cluster via the pod
+// ServiceAccount (in-cluster), with HOST_KUBECONFIG as an out-of-cluster dev
+// override.
+func loadHostConfig() (*rest.Config, error) {
+	if p := os.Getenv("HOST_KUBECONFIG"); p != "" {
+		return clientcmd.BuildConfigFromFlags("", p)
+	}
+	return rest.InClusterConfig()
 }
 
 // storageLabel renders the templates storage kind for a startup log

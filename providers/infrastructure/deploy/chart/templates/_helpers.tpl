@@ -61,3 +61,49 @@ demos.
 {{- define "infrastructure.centralKroSecretKey" -}}
 {{- default "kubeconfig" .Values.centralKro.kubeconfigSecretRef.key -}}
 {{- end -}}
+
+{{/*
+kcpKubeconfigSecretName resolves the Secret the bootstrap init container reads
+the kcp admin kubeconfig from: either the user-supplied existing Secret
+(bootstrap.kcpKubeconfigSecretRef.name) or the chart-rendered
+"<release>-kcp-kubeconfig" Secret when bootstrap.kcpKubeconfig is set inline.
+Empty when bootstrap is disabled / no kubeconfig configured.
+*/}}
+{{- define "infrastructure.kcpKubeconfigSecretName" -}}
+{{- if .Values.bootstrap.kcpKubeconfigSecretRef.name -}}
+{{- .Values.bootstrap.kcpKubeconfigSecretRef.name -}}
+{{- else if .Values.bootstrap.kcpKubeconfig -}}
+{{- printf "%s-kcp-kubeconfig" (include "infrastructure.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "infrastructure.kcpKubeconfigSecretKey" -}}
+{{- default "kubeconfig" .Values.bootstrap.kcpKubeconfigSecretRef.key -}}
+{{- end -}}
+
+{{/*
+bootstrapSecretName / bootstrapSecretKey resolve the SINGLE kubeconfig Secret
+that BOTH the init (bootstrap) and serve (runtime) containers mount when
+bootstrap.enabled=true. Two sources:
+  - kubeconfigSource=hubMinted (default): the hub-delivered runtime kubeconfig
+    Secret (providerKubeconfig.secretName, key "kubeconfig"). The platform
+    admin's CatalogEntry triggers the hub to mint it (cluster-admin in the
+    provider workspace) and write it via HostSecretWriter.
+  - kubeconfigSource=supplied: a kcp kubeconfig you provide
+    (bootstrap.kcpKubeconfig inline or kcpKubeconfigSecretRef).
+*/}}
+{{- define "infrastructure.bootstrapSecretName" -}}
+{{- if eq .Values.bootstrap.kubeconfigSource "supplied" -}}
+{{- include "infrastructure.kcpKubeconfigSecretName" . -}}
+{{- else -}}
+{{- .Values.providerKubeconfig.secretName -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "infrastructure.bootstrapSecretKey" -}}
+{{- if eq .Values.bootstrap.kubeconfigSource "supplied" -}}
+{{- include "infrastructure.kcpKubeconfigSecretKey" . -}}
+{{- else -}}
+kubeconfig
+{{- end -}}
+{{- end -}}

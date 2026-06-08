@@ -10,14 +10,17 @@ RUN npm install --no-audit --no-fund
 COPY portal/ ./
 RUN npm run build
 
-# 2. Build the Go binary. assets.go embeds portal/dist via //go:embed, so
-#    the dist/ output from the previous stage has to land at the right
-#    relative path before `go build` runs.
+# 2. Build the Go binary. The binary serves two subcommands — `init`
+#    (bootstrap) and `serve` (runtime) — so the WHOLE module source has to be
+#    present, not just main.go: init_cmd.go, install/ (which //go:embeds its
+#    crds/ + templates/), controller/, backend/, kro/, tenant/, mcpserver/,
+#    server/, apis/. assets.go //go:embeds portal/dist, which is overlaid from
+#    the node stage below so the bundle is fresh.
 FROM golang:1.24-alpine AS build
 WORKDIR /src
-COPY go.mod ./
-COPY main.go heartbeat.go assets.go ./
-COPY server/ ./server/
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . ./
 COPY --from=portal /portal/dist ./portal/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/infrastructure-provider .
 

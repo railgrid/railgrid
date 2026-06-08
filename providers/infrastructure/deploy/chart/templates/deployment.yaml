@@ -22,6 +22,49 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "infrastructure.serviceAccountName" . }}
+      {{- $centralName := (include "infrastructure.centralKroSecretName" .) }}
+      {{- if .Values.bootstrap.enabled }}
+      {{- if not (include "infrastructure.bootstrapSecretName" .) }}
+        {{- fail "bootstrap.enabled=true with kubeconfigSource=supplied requires bootstrap.kcpKubeconfig (inline) or bootstrap.kcpKubeconfigSecretRef.name" }}
+      {{- end }}
+      initContainers:
+        - name: bootstrap
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["init"]
+          env:
+            # init bootstraps the provider workspace using the SAME kubeconfig
+            # the serve container runs with (mounted at the kedge path below).
+            # hubMinted: the hub-delivered kedge-provider-kubeconfig, which is
+            # cluster-admin in the provider workspace — enough to install CRDs,
+            # the CachedResource, and the APIExport. supplied: your kcp config.
+            - name: INFRASTRUCTURE_ADMIN_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            {{- if eq .Values.bootstrap.kubeconfigSource "supplied" }}
+            # A supplied kubeconfig may be root-scoped, so retarget init at the
+            # provider workspace. The hub-minted kubeconfig already targets it.
+            - name: INFRASTRUCTURE_WORKSPACE_PATH
+              value: {{ .Values.bootstrap.workspacePath | quote }}
+            {{- end }}
+            # init writes a throwaway file copy; keep it off the read-only root.
+            - name: INFRASTRUCTURE_KUBECONFIG
+              value: /tmp/infrastructure.kubeconfig
+            {{- if $centralName }}
+            - name: KRO_KUBECONFIG
+              value: /var/run/secrets/kro/kubeconfig
+            {{- end }}
+          volumeMounts:
+            - name: kedge-provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if $centralName }}
+            - name: kro-kubeconfig
+              mountPath: /var/run/secrets/kro
+              readOnly: true
+            {{- end }}
+      {{- end }}
       containers:
         - name: provider
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
@@ -57,7 +100,6 @@ spec:
             {{- end }}
             - name: KEDGE_PROVIDER_KUBECONFIG
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
-            {{- $centralName := (include "infrastructure.centralKroSecretName" .) }}
             {{- if $centralName }}
             - name: KRO_KUBECONFIG
               value: /var/run/secrets/kro/kubeconfig
@@ -74,17 +116,33 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
+        {{- if .Values.bootstrap.enabled }}
+        - name: tmp
+          emptyDir: {}
+        {{- end }}
         - name: kedge-provider-kubeconfig
           secret:
-            # Optional so the pod stays schedulable while the hub
-            # catalog controller is still minting the Secret. The
-            # provider will log a warning and serve catalog reads;
-            # broker writes will 502 until the Secret appears.
+            {{- if .Values.bootstrap.enabled }}
+            # init + serve share ONE kubeconfig (resolved by kubeconfigSource).
+            # NOT optional: the pod waits for the Secret to exist — in hubMinted
+            # mode that's the hub delivering kedge-provider-kubeconfig after it
+            # reconciles the CatalogEntry, which is exactly the bootstrap
+            # ordering we want.
+            secretName: {{ include "infrastructure.bootstrapSecretName" . }}
+            items:
+              - key: {{ include "infrastructure.bootstrapSecretKey" . }}
+                path: kedge-provider-kubeconfig
+            {{- else }}
+            # Hub-provisioned, no init container: optional so the pod stays
+            # schedulable while the hub catalog controller mints the Secret.
+            # The provider logs a warning and serves catalog reads; broker
+            # writes 502 until the Secret appears.
             secretName: {{ .Values.providerKubeconfig.secretName }}
             optional: true
             items:
               - key: kubeconfig
                 path: kedge-provider-kubeconfig
+            {{- end }}
         {{- if $centralName }}
         - name: kro-kubeconfig
           secret:

@@ -544,6 +544,11 @@ local_resource(
         'providers/infrastructure/kro',
         'providers/infrastructure/tenant',
         'providers/infrastructure/mcpserver',
+        # The Template controller + kro backend author the RGDs the catalog
+        # reads; without watching these, a change to RGD authoring (e.g. the
+        # catalog labels) silently won't hot-reload.
+        'providers/infrastructure/backend',
+        'providers/infrastructure/controller',
         'providers/infrastructure/portal/src',
         'providers/infrastructure/portal/package.json',
         'providers/infrastructure/go.mod',

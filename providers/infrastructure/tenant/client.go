@@ -9,78 +9,89 @@
 package tenant
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
-// ClientFactory builds per-tenant dynamic clients on demand from the
-// base kedge-provider-kubeconfig. Caches one *dynamic.Interface per
-// tenant path; the warm path is a single sync.Map load.
+// ClientFactory builds per-(tenant, caller) dynamic clients. There is NO
+// provider-wide identity: every MCP request carries its own bearer token
+// (the per-MCPServer ServiceAccount token, or the end user's token), and
+// the factory uses THAT token as the credential, scoped to the tenant's
+// workspace. Every action is therefore performed as the caller and
+// authorized by the caller's RBAC in the tenant workspace.
 //
-// The base kubeconfig (env KEDGE_PROVIDER_KUBECONFIG, default
-// /var/run/secrets/kedge/kedge-provider-kubeconfig) is minted by the
-// hub catalog controller (pkg/hub/providers/provision.go ~line 132)
-// and targets root:kedge:providers:infrastructure. To read a tenant's
-// resources via the APIExport's virtual workspace, we copy the rest
-// config and swap the /clusters/<path> segment in cfg.Host for the
-// tenant's path. The bearer token and TLS settings carry over.
+// The base kubeconfig (INFRASTRUCTURE_KUBECONFIG — the provider's own kcp
+// connection) supplies only the front-proxy host + TLS settings; its
+// credentials are intentionally dropped so the factory cannot act as the
+// provider. Per request we build a config with that host (cluster segment
+// swapped for the tenant's path) and the caller's bearer token.
 type ClientFactory struct {
-	base     *rest.Config
 	baseHost string
+	baseTLS  rest.TLSClientConfig
 
-	mu    sync.RWMutex
-	hot   map[string]dynamic.Interface
+	mu  sync.RWMutex
+	hot map[string]dynamic.Interface
 }
 
-// NewClientFactory loads the mounted kubeconfig and prepares a factory.
-// Returns an error only if the kubeconfig is unreadable or malformed —
-// missing/empty env var is treated as a hard failure (the provider
-// CANNOT broker without it; degrading silently would mask config
-// problems in deployments).
-func NewClientFactory() (*ClientFactory, error) {
-	path := os.Getenv("KEDGE_PROVIDER_KUBECONFIG")
-	if path == "" {
-		path = "/var/run/secrets/kedge/kedge-provider-kubeconfig"
+// NewClientFactory reuses the provider's existing kcp connection (base) for
+// the front-proxy host + TLS only — the bearer token (and any client-cert
+// credential) is dropped, so the factory can never authenticate as the
+// provider. Returns nil when base is nil (serve mode without a kcp config),
+// which the MCP tools surface as a clear "tenant client unavailable" error.
+func NewClientFactory(base *rest.Config) *ClientFactory {
+	if base == nil {
+		return nil
 	}
-	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("kedge-provider-kubeconfig at %q: %w", path, err)
-	}
-	cfg, err := clientcmd.BuildConfigFromFlags("", path)
+	// stripClusterSuffix only fails on an unparseable URL, which a loaded
+	// rest.Config won't have; fall back to the raw host if it ever does.
+	baseHost, err := stripClusterSuffix(base.Host)
 	if err != nil {
-		return nil, fmt.Errorf("loading kedge-provider-kubeconfig: %w", err)
+		baseHost = strings.TrimRight(base.Host, "/")
 	}
-	baseHost, err := stripClusterSuffix(cfg.Host)
-	if err != nil {
-		return nil, err
-	}
+	// Keep only the server-verification side of TLS (CA / insecure). Drop
+	// any client certificate so the only credential is the per-request
+	// bearer token set in For().
+	tls := base.TLSClientConfig
+	tls.CertData = nil
+	tls.CertFile = ""
+	tls.KeyData = nil
+	tls.KeyFile = ""
 	return &ClientFactory{
-		base:     cfg,
 		baseHost: baseHost,
+		baseTLS:  tls,
 		hot:      make(map[string]dynamic.Interface),
-	}, nil
+	}
 }
 
-// For returns a dynamic client scoped to the given tenant's workspace.
-// Cached per tenantPath; the warm path is a single map lookup. The
-// returned client honours the APIExport's permissionClaims — reads
-// outside the granted resources will get 403 from kcp.
-func (f *ClientFactory) For(tenantPath string) (dynamic.Interface, error) {
+// For returns a dynamic client scoped to tenantPath, authenticating as the
+// caller via token. Cached per (tenant, token) so a stable per-MCPServer SA
+// token reuses one client/transport. An empty token is an error — actions
+// must always carry the caller's identity.
+func (f *ClientFactory) For(tenantPath, token string) (dynamic.Interface, error) {
+	if token == "" {
+		return nil, fmt.Errorf("no bearer token on request — cannot act on the tenant's behalf")
+	}
+	key := tenantPath + ":" + hashToken(token)
+
 	f.mu.RLock()
-	dyn, ok := f.hot[tenantPath]
+	dyn, ok := f.hot[key]
 	f.mu.RUnlock()
 	if ok {
 		return dyn, nil
 	}
 
-	cfg := rest.CopyConfig(f.base)
-	cfg.Host = f.baseHost + "/clusters/" + tenantPath
+	cfg := &rest.Config{
+		Host:            f.baseHost + "/clusters/" + tenantPath,
+		BearerToken:     token,
+		TLSClientConfig: f.baseTLS,
+	}
 	d, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("dynamic client for tenant %q: %w", tenantPath, err)
@@ -88,12 +99,18 @@ func (f *ClientFactory) For(tenantPath string) (dynamic.Interface, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	// Double-check under write lock to avoid two competing fills.
-	if existing, ok := f.hot[tenantPath]; ok {
+	if existing, ok := f.hot[key]; ok {
 		return existing, nil
 	}
-	f.hot[tenantPath] = d
+	f.hot[key] = d
 	return d, nil
+}
+
+// hashToken returns a short, non-reversible cache key for a bearer token so
+// raw credentials never sit in map keys.
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:8])
 }
 
 // stripClusterSuffix turns "https://hub:9443/clusters/root:foo:bar"

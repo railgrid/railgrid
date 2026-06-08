@@ -121,3 +121,27 @@ export async function graphqlMutate<T = unknown>(
 
   return result.data as T
 }
+
+// graphqlQuery runs a one-off query (as opposed to the reactive
+// useGraphQLQuery composable). Use it when the variables aren't known at
+// setup time — e.g. fetching a Secret whose name comes from another
+// resource's status.
+export async function graphqlQuery<T = unknown>(
+  query: string,
+  variables: Record<string, unknown>,
+): Promise<T> {
+  const auth = useAuthStore()
+  if (!auth.clusterName) throw new Error('No cluster selected')
+
+  const client = createGraphQLClient(auth.clusterName, () => auth.getValidToken())
+  const result = await client.query(query, variables).toPromise()
+
+  if (result.error) {
+    if (handleSessionFailure(result.error)) {
+      throw new Error('Session expired')
+    }
+    throw new Error(result.error.message)
+  }
+
+  return result.data as T
+}

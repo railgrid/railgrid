@@ -118,6 +118,14 @@ docker build -t kedge-infrastructure-provider:dev .
 
 ## Deploy with Helm
 
+There are two ways the provider gets its runtime kubeconfig (the
+`kedge-provider-kubeconfig` Secret it mounts to reach kcp).
+
+### A. Hub-provisioned (default)
+
+The hub catalog controller mints the runtime kubeconfig when it
+reconciles the `CatalogEntry`. The chart just deploys the workload:
+
 ```sh
 helm install infrastructure deploy/chart \
   -n infrastructure --create-namespace \
@@ -126,10 +134,64 @@ helm install infrastructure deploy/chart \
   --set centralKro.kubeconfigSecretRef.name=central-kro-kubeconfig
 ```
 
+### B. Self-bootstrap with an init container (`bootstrap.enabled=true`)
+
+An init container runs `infrastructure init` before the serve container,
+installing the CRDs / CachedResource / APIExport into the provider
+workspace. **Both containers share one kubeconfig** — no separately
+minted runtime token. Where that kubeconfig comes from is set by
+`bootstrap.kubeconfigSource`:
+
+#### `hubMinted` (default) — the platform mints, the provider consumes
+
+This is the recommended split. A **platform admin** applies the
+`CatalogEntry`; the hub creates the provider workspace, mints a
+kubeconfig that is **cluster-admin within that workspace**, and writes it
+as the `kedge-provider-kubeconfig` Secret (the hub must run with
+`--kubeconfig` so its `HostSecretWriter` can write into this cluster).
+The **provider owner** just deploys the chart:
+
+```sh
+helm install infrastructure deploy/chart \
+  -n infrastructure --create-namespace \
+  --set hub.url=https://kedge-hub.kedge.svc.cluster.local:9443 \
+  --set hub.tokenSecretRef.name=kedge-infrastructure-hub-token \
+  --set bootstrap.enabled=true            # kubeconfigSource=hubMinted is the default
+```
+
+The init/serve volume is **not** `optional` — the pod waits in
+`ContainerCreating` until the hub delivers `kedge-provider-kubeconfig`,
+which is exactly the bootstrap ordering we want. No `kubectl ws create`,
+no separate admin kubeconfig: the hub already created the workspace when
+it reconciled the CatalogEntry.
+
+#### `supplied` — fully standalone, no hub
+
+Install into any cluster with only a kcp kubeconfig (no hub provisioning):
+
+```sh
+helm install infrastructure deploy/chart -n infrastructure --create-namespace \
+  --set bootstrap.enabled=true \
+  --set bootstrap.kubeconfigSource=supplied \
+  --set bootstrap.workspacePath=root:kedge:providers:infrastructure \
+  --set-file bootstrap.kcpKubeconfig=./provider-workspace-admin.kubeconfig
+```
+
+Here you own the prerequisites: the kubeconfig must be admin of
+`bootstrap.workspacePath`, and that workspace must already exist
+(`kubectl ws create`). Prefer `bootstrap.kcpKubeconfigSecretRef` to an
+inline kubeconfig in production.
+
+Trade-off (both sources): the serve container runs with
+cluster-admin-in-workspace rather than a narrow scoped SA. For
+least-privilege, use the hub-provisioned model (A) with a manual init.
+The init container re-runs on every pod (re)start; every step is
+idempotent, so that's safe.
+
 `values.yaml` has the full configuration surface — image, replicas,
-hub URL, the two Secret references (central kro + hub-minted
-kedge-provider-kubeconfig), and the toggle for whether the chart
-should also render the `CatalogEntry`.
+hub URL, the Secret references (central kro + runtime
+kedge-provider-kubeconfig), the `bootstrap.*` block, and the toggle for
+whether the chart should also render the `CatalogEntry`.
 
 ## MCP integration
 
@@ -173,3 +235,15 @@ central one.
 | `KEDGE_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=` replace `X-Kedge-Tenant` (dev only) |
 | `KRO_KUBECONFIG` | (unset → stub mode) | Central kro cluster kubeconfig |
 | `KRO_NAMESPACE_PREFIX` | `kedge-tenants-` | Per-tenant namespace prefix |
+
+### `init` subcommand (bootstrap) env vars
+
+| Var | Default | Purpose |
+|---|---|---|
+| `INFRASTRUCTURE_ADMIN_KUBECONFIG` | (falls back to `KUBECONFIG`, then in-cluster) | kcp **admin** kubeconfig for the bootstrap |
+| `INFRASTRUCTURE_WORKSPACE_PATH` | (unset) | Retarget the admin kubeconfig at `/clusters/<path>` (the provider workspace) |
+| `INFRASTRUCTURE_KUBECONFIG` | `./infrastructure.kubeconfig` | Path the minted runtime kubeconfig is written to (file) |
+| `INFRASTRUCTURE_RUNTIME_KUBECONFIG_SECRET` | (unset) | When set, also write the runtime kubeconfig into this host-cluster Secret |
+| `INFRASTRUCTURE_RUNTIME_KUBECONFIG_NAMESPACE` | (`POD_NAMESPACE`, then `default`) | Namespace for the runtime Secret |
+| `POD_NAMESPACE` | (unset) | Downward-API pod namespace; used when the namespace var above is unset |
+| `HOST_KUBECONFIG` | (unset → in-cluster) | Out-of-cluster override for the host client that writes the runtime Secret |
