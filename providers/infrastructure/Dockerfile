@@ -16,7 +16,7 @@ RUN npm run build
 #    crds/ + templates/), controller/, backend/, kro/, tenant/, mcpserver/,
 #    server/, apis/. assets.go //go:embeds portal/dist, which is overlaid from
 #    the node stage below so the bundle is fresh.
-FROM golang:1.24-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
