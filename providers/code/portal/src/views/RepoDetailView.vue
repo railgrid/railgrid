@@ -110,81 +110,107 @@ onUnmounted(() => window.clearInterval(timer))
 </script>
 
 <template>
-  <section class="code-panel">
-    <header class="code-row code-head">
+  <section class="page">
+    <button class="link back" @click="emit('back')">← Repositories</button>
+
+    <header class="page-head">
       <div>
-        <button class="code-link" @click="emit('back')">← Repositories</button>
-        <h2>{{ repo?.repo || name }}</h2>
-        <p class="code-muted">
+        <h2 class="page-title">{{ repo?.repo || name }}</h2>
+        <p class="page-meta">
           <a v-if="repo?.htmlURL" :href="repo.htmlURL" target="_blank" rel="noopener">{{ repo.htmlURL }}</a>
-          <span v-else>not created yet</span>
+          <span v-else class="muted">not created yet</span>
         </p>
-        <p v-if="repo?.sshURL" class="code-muted small">SSH: <code>{{ repo.sshURL }}</code></p>
       </div>
+      <span v-if="repo" :class="['badge', repo.ready ? 'ok' : 'warn']" :title="repo.message">{{ repo.ready ? 'ready' : 'pending' }}</span>
     </header>
 
-    <p v-if="error" class="code-error">{{ error }}</p>
+    <p v-if="error" class="error">{{ error }}</p>
 
-    <div class="code-cols">
+    <!-- Overview -->
+    <div v-if="repo" class="panel">
+      <h3 class="panel-title">Overview</h3>
+      <dl class="props">
+        <dt>Connection</dt><dd>{{ repo.connectionRef }}</dd>
+        <dt>Visibility</dt><dd>{{ repo.visibility }}</dd>
+        <dt v-if="repo.cloneURL">Clone URL</dt><dd v-if="repo.cloneURL"><code>{{ repo.cloneURL }}</code></dd>
+        <dt v-if="repo.sshURL">SSH URL</dt><dd v-if="repo.sshURL"><code>{{ repo.sshURL }}</code></dd>
+      </dl>
+    </div>
+
+    <div class="grid-2">
       <!-- Deploy keys -->
-      <div class="code-col">
-        <h3>Deploy keys</h3>
-        <form class="code-form" @submit.prevent="addKey">
-          <label>Title <input v-model="keyTitle" placeholder="ci-deploy" autocomplete="off" /></label>
-          <label>Public key (leave empty to generate)
+      <div class="panel">
+        <div class="panel-head">
+          <h3 class="panel-title">Deploy keys</h3>
+          <span class="muted">{{ keys.length }}</span>
+        </div>
+        <form class="form" @submit.prevent="addKey">
+          <div class="field"><span class="field-label">Title</span><input v-model="keyTitle" placeholder="ci-deploy" autocomplete="off" /></div>
+          <div class="field">
+            <span class="field-label">Public key (leave empty to generate)</span>
             <textarea v-model="keyPublic" rows="2" placeholder="ssh-ed25519 AAAA…" />
-          </label>
-          <label class="code-check"><input v-model="keyReadOnly" type="checkbox" /> read-only</label>
-          <div class="code-form-actions">
-            <button class="code-btn primary" type="submit" :disabled="keySubmitting">{{ keySubmitting ? 'Adding…' : 'Add deploy key' }}</button>
-            <span v-if="keyError" class="code-error">{{ keyError }}</span>
           </div>
-          <p class="code-muted small">A generated key's private half is written to a Secret in your workspace.</p>
+          <label class="field field-check"><input v-model="keyReadOnly" type="checkbox" /> read-only</label>
+          <div class="actions">
+            <button class="primary" type="submit" :disabled="keySubmitting">{{ keySubmitting ? 'Adding…' : 'Add deploy key' }}</button>
+            <span v-if="keyError" class="error">{{ keyError }}</span>
+          </div>
+          <p class="muted">A generated key's private half is written to a Secret in your workspace.</p>
         </form>
-        <p v-if="!keys.length" class="code-muted">No deploy keys.</p>
-        <ul v-else class="code-list">
-          <li v-for="k in keys" :key="k.name">
-            <span>
-              <strong>{{ k.title || k.name }}</strong>
-              <span class="code-badge" :class="k.readOnly ? 'muted' : 'warn'">{{ k.readOnly ? 'read-only' : 'read-write' }}</span>
-              <span v-if="k.generated && k.secretName" class="code-badge muted" :title="k.secretName">secret: {{ k.secretName }}</span>
-              <span v-if="k.ready" class="code-badge ok">ready</span>
-              <span v-else class="code-badge warn" :title="k.message">pending</span>
-            </span>
-            <button class="code-btn ghost" @click="removeKey(k)">Delete</button>
-          </li>
-        </ul>
+        <p v-if="!keys.length" class="empty">No deploy keys.</p>
+        <table v-else class="table">
+          <tbody>
+            <tr v-for="k in keys" :key="k.name">
+              <td>
+                <strong>{{ k.title || k.name }}</strong>
+                <div v-if="k.generated && k.secretName" class="muted">secret: <code>{{ k.secretName }}</code></div>
+              </td>
+              <td><span class="badge muted">{{ k.readOnly ? 'read-only' : 'read-write' }}</span></td>
+              <td>
+                <span v-if="k.ready" class="badge ok">ready</span>
+                <span v-else class="badge warn" :title="k.message">pending</span>
+              </td>
+              <td class="right"><button class="danger" @click="removeKey(k)">Delete</button></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       <!-- Collaborators -->
-      <div class="code-col">
-        <h3>Collaborators</h3>
-        <form class="code-form" @submit.prevent="addCollab">
-          <label>Username <input v-model="collabUser" placeholder="octocat" autocomplete="off" /></label>
-          <label>Permission
+      <div class="panel">
+        <div class="panel-head">
+          <h3 class="panel-title">Collaborators</h3>
+          <span class="muted">{{ collabs.length }}</span>
+        </div>
+        <form class="form" @submit.prevent="addCollab">
+          <div class="field"><span class="field-label">Username</span><input v-model="collabUser" placeholder="octocat" autocomplete="off" /></div>
+          <div class="field">
+            <span class="field-label">Permission</span>
             <select v-model="collabPerm">
               <option value="pull">pull</option>
               <option value="push">push</option>
               <option value="admin">admin</option>
             </select>
-          </label>
-          <div class="code-form-actions">
-            <button class="code-btn primary" type="submit" :disabled="collabSubmitting">{{ collabSubmitting ? 'Adding…' : 'Add collaborator' }}</button>
-            <span v-if="collabError" class="code-error">{{ collabError }}</span>
+          </div>
+          <div class="actions">
+            <button class="primary" type="submit" :disabled="collabSubmitting">{{ collabSubmitting ? 'Adding…' : 'Add collaborator' }}</button>
+            <span v-if="collabError" class="error">{{ collabError }}</span>
           </div>
         </form>
-        <p v-if="!collabs.length" class="code-muted">No collaborators.</p>
-        <ul v-else class="code-list">
-          <li v-for="c in collabs" :key="c.name">
-            <span>
-              <strong>{{ c.username }}</strong>
-              <span class="code-badge muted">{{ c.permission }}</span>
-              <span v-if="c.invitationPending" class="code-badge warn">invited</span>
-              <span v-else-if="c.ready" class="code-badge ok">active</span>
-            </span>
-            <button class="code-btn ghost" @click="removeCollab(c)">Remove</button>
-          </li>
-        </ul>
+        <p v-if="!collabs.length" class="empty">No collaborators.</p>
+        <table v-else class="table">
+          <tbody>
+            <tr v-for="c in collabs" :key="c.name">
+              <td><strong>{{ c.username }}</strong></td>
+              <td><span class="badge muted">{{ c.permission }}</span></td>
+              <td>
+                <span v-if="c.invitationPending" class="badge warn">invited</span>
+                <span v-else-if="c.ready" class="badge ok">active</span>
+              </td>
+              <td class="right"><button class="danger" @click="removeCollab(c)">Remove</button></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </section>

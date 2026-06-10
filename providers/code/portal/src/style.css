@@ -1,8 +1,10 @@
 /*
- * code provider element styles. Imported as a string by main.ts and injected
- * as one <style> tag in the host document. The element renders in LIGHT DOM so
- * the portal's CSS custom properties cascade in; every selector is namespaced
- * under kedge-provider-code so these styles cannot leak into the portal.
+ * code provider element styles. Imported as a string by main.ts and injected as
+ * one <style> tag in the host document. The element renders in LIGHT DOM so the
+ * portal's CSS custom properties (--color-*) cascade in; every selector is
+ * namespaced under kedge-provider-code so these styles cannot leak into the
+ * portal. Structure + tokens mirror the infrastructure provider so the two look
+ * like one product.
  */
 
 kedge-provider-code {
@@ -11,207 +13,350 @@ kedge-provider-code {
   color: var(--color-text-primary, inherit);
 }
 
-kedge-provider-code .code-tabs {
+kedge-provider-code .app {
+  padding: 8px 0;
   display: flex;
-  gap: 0.5rem;
-  border-bottom: 1px solid var(--color-border, #2a2a2a);
-  margin-bottom: 1rem;
+  flex-direction: column;
+  gap: 16px;
 }
 
-kedge-provider-code .code-tabs button {
+/* Tabs (segmented sub-nav) */
+kedge-provider-code .tabs {
+  display: flex;
+  gap: 4px;
+}
+kedge-provider-code .tabs button {
   background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  padding: 0.5rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 5px 12px;
   cursor: pointer;
-  color: var(--color-text-secondary, #999);
+  color: var(--color-text-secondary, #7e7e96);
   font: inherit;
+  font-size: 12px;
+  font-weight: 500;
 }
-
-kedge-provider-code .code-tabs button.active {
+kedge-provider-code .tabs button:hover {
   color: var(--color-text-primary, inherit);
-  border-bottom-color: var(--color-accent, #4f8cff);
+  background: var(--color-surface-hover, rgba(255, 255, 255, 0.04));
+}
+kedge-provider-code .tabs button.active {
+  color: var(--color-accent, #7c5bf5);
+  background: var(--color-accent-subtle, rgba(124, 91, 245, 0.1));
+  border-color: var(--color-accent, #7c5bf5);
 }
 
-kedge-provider-code .code-panel h2 {
-  margin: 0 0 0.5rem;
-  font-size: 1.25rem;
+/* Page scaffold */
+kedge-provider-code .page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
-
-kedge-provider-code .code-muted {
-  color: var(--color-text-secondary, #999);
-  max-width: 60ch;
-}
-
-kedge-provider-code .code-muted.small {
-  font-size: 0.85em;
-}
-
-kedge-provider-code .code-empty {
-  color: var(--color-text-secondary, #999);
-  padding: 2rem 0;
-}
-
-kedge-provider-code .code-row {
+kedge-provider-code .page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 16px;
 }
-kedge-provider-code .code-head {
-  margin-bottom: 1rem;
-}
-
-kedge-provider-code .code-error {
-  color: var(--color-danger, #e5534b);
-}
-
-/* Buttons */
-kedge-provider-code .code-btn {
-  font: inherit;
-  border-radius: 6px;
-  padding: 0.4rem 0.75rem;
-  cursor: pointer;
-  border: 1px solid var(--color-border, #2a2a2a);
-  background: var(--color-surface, #1b1b1b);
-  color: var(--color-text-primary, inherit);
-}
-kedge-provider-code .code-btn.primary {
-  background: var(--color-accent, #4f8cff);
-  border-color: var(--color-accent, #4f8cff);
-  color: #fff;
-}
-kedge-provider-code .code-btn.ghost {
-  background: transparent;
-  color: var(--color-text-secondary, #999);
-}
-kedge-provider-code .code-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-kedge-provider-code .code-link {
-  background: none;
-  border: none;
-  padding: 0;
-  font: inherit;
-  color: var(--color-accent, #4f8cff);
-  cursor: pointer;
-}
-
-/* Forms */
-kedge-provider-code .code-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  max-width: 32rem;
-  margin: 0.5rem 0 1.25rem;
-  padding: 1rem;
-  border: 1px solid var(--color-border, #2a2a2a);
-  border-radius: 8px;
-}
-kedge-provider-code .code-form label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.9em;
-  color: var(--color-text-secondary, #999);
-}
-kedge-provider-code .code-form input,
-kedge-provider-code .code-form select,
-kedge-provider-code .code-form textarea {
-  font: inherit;
-  padding: 0.4rem 0.5rem;
-  border-radius: 6px;
-  border: 1px solid var(--color-border, #2a2a2a);
-  background: var(--color-bg, #111);
-  color: var(--color-text-primary, inherit);
-}
-kedge-provider-code .code-form .code-check {
-  flex-direction: row;
-  align-items: center;
-  gap: 0.4rem;
-}
-kedge-provider-code .code-form-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-/* Tables + lists */
-kedge-provider-code .code-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.92em;
-}
-kedge-provider-code .code-table th,
-kedge-provider-code .code-table td {
-  text-align: left;
-  padding: 0.45rem 0.6rem;
-  border-bottom: 1px solid var(--color-border, #2a2a2a);
-}
-kedge-provider-code .code-table th {
-  color: var(--color-text-secondary, #999);
+kedge-provider-code .page-title {
+  margin: 0 0 4px;
+  font-size: 15px;
   font-weight: 600;
 }
-kedge-provider-code .code-right {
-  text-align: right;
+kedge-provider-code .page-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary, #7e7e96);
+  max-width: 70ch;
+  line-height: 1.5;
 }
 
-kedge-provider-code .code-list {
-  list-style: none;
-  margin: 0.5rem 0 0;
-  padding: 0;
+/* Panels (cards) */
+kedge-provider-code .panel {
+  background: var(--color-surface-raised, #0d0d14);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.04));
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
-kedge-provider-code .code-list li {
+kedge-provider-code .panel-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary, currentColor);
+}
+kedge-provider-code .panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.45rem 0;
-  border-bottom: 1px solid var(--color-border, #2a2a2a);
+  gap: 8px;
 }
 
-/* Two-column layout for the repo detail page */
-kedge-provider-code .code-cols {
+/* Two-column grid for the detail page */
+kedge-provider-code .grid-2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.5rem;
+  gap: 12px;
+  grid-template-columns: 1fr;
 }
-@media (max-width: 720px) {
-  kedge-provider-code .code-cols {
-    grid-template-columns: 1fr;
+@media (min-width: 860px) {
+  kedge-provider-code .grid-2 {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
   }
 }
-kedge-provider-code .code-col h3 {
-  margin: 0 0 0.5rem;
-  font-size: 1.05rem;
+
+/* Definition list for key/value rows on the detail page */
+kedge-provider-code .props {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 12px;
+}
+kedge-provider-code .props dt {
+  color: var(--color-text-muted, #44445a);
+}
+kedge-provider-code .props dd {
+  margin: 0;
+  color: var(--color-text-secondary, #7e7e96);
+  word-break: break-all;
 }
 
-/* Badges */
-kedge-provider-code .code-badge {
-  display: inline-block;
-  margin-left: 0.4rem;
-  padding: 0.05rem 0.4rem;
+/* Tables */
+kedge-provider-code .table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+kedge-provider-code .table th,
+kedge-provider-code .table td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.04));
+}
+kedge-provider-code .table tbody tr:last-child td {
+  border-bottom: none;
+}
+kedge-provider-code .table tbody tr {
+  transition: background-color 0.1s ease;
+}
+kedge-provider-code .table tbody tr:hover {
+  background: var(--color-accent-subtle, rgba(124, 91, 245, 0.05));
+}
+kedge-provider-code .table th {
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #44445a);
+}
+kedge-provider-code .table td.right,
+kedge-provider-code .table th.right {
+  text-align: right;
+}
+
+/* Buttons */
+kedge-provider-code button.primary {
+  background: var(--color-accent, #7c5bf5);
+  color: #fff;
+  border: 1px solid var(--color-accent, #7c5bf5);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+kedge-provider-code button.primary:hover {
+  background: var(--color-accent-hover, #9b85f7);
+}
+kedge-provider-code button.primary:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+kedge-provider-code button.secondary {
+  background: var(--color-surface-overlay, #14141f);
+  color: var(--color-text-primary, inherit);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+kedge-provider-code button.secondary:hover {
+  background: var(--color-surface-hover, #1a1a28);
+}
+kedge-provider-code button.danger {
+  background: transparent;
+  color: var(--color-danger, #f87171);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+kedge-provider-code button.danger:hover {
+  border-color: var(--color-danger, #f87171);
+  background: var(--color-danger-subtle, rgba(248, 113, 113, 0.1));
+}
+kedge-provider-code button.link {
+  background: transparent;
+  border: none;
+  color: var(--color-accent, #7c5bf5);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+kedge-provider-code button.link:hover {
+  color: var(--color-accent-hover, #9b85f7);
+}
+kedge-provider-code button.link.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-muted, #44445a);
+  margin-bottom: 4px;
+}
+kedge-provider-code button.link.back:hover {
+  color: var(--color-accent, #7c5bf5);
+}
+
+kedge-provider-code .actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Forms */
+kedge-provider-code .form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 36rem;
+}
+kedge-provider-code .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+kedge-provider-code .field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary, currentColor);
+}
+kedge-provider-code .field input,
+kedge-provider-code .field select,
+kedge-provider-code .field textarea,
+kedge-provider-code .inline-form input,
+kedge-provider-code .inline-form select {
+  background: var(--color-surface-overlay, #14141f);
+  color: var(--color-text-primary, inherit);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.08));
+  border-radius: 6px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  width: 100%;
+  box-sizing: border-box;
+}
+kedge-provider-code .field input::placeholder,
+kedge-provider-code .field textarea::placeholder {
+  color: var(--color-text-muted, #44445a);
+}
+kedge-provider-code .field input:focus,
+kedge-provider-code .field select:focus,
+kedge-provider-code .field textarea:focus {
+  outline: none;
+  border-color: var(--color-accent, #7c5bf5);
+}
+kedge-provider-code .field-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary, #7e7e96);
+}
+kedge-provider-code .field-check input {
+  width: auto;
+}
+
+/* Status badges (pills) */
+kedge-provider-code .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 9px;
   border-radius: 999px;
-  font-size: 0.75em;
-  border: 1px solid var(--color-border, #2a2a2a);
-  color: var(--color-text-secondary, #999);
+  border: 1px solid var(--color-border-default, transparent);
+  background: var(--color-surface-overlay, transparent);
+  color: var(--color-text-muted, inherit);
+  white-space: nowrap;
 }
-kedge-provider-code .code-badge.ok {
-  color: #3fb950;
-  border-color: #2ea04326;
-  background: #2ea04318;
+kedge-provider-code .badge::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
 }
-kedge-provider-code .code-badge.warn {
-  color: #d29922;
-  border-color: #bb800926;
-  background: #bb800918;
+kedge-provider-code .badge.ok {
+  border-color: var(--color-success-subtle, rgba(52, 211, 153, 0.3));
+  background: var(--color-success-subtle, rgba(52, 211, 153, 0.1));
+  color: var(--color-success, #34d399);
 }
-kedge-provider-code .code-badge.muted {
-  color: var(--color-text-secondary, #999);
+kedge-provider-code .badge.warn {
+  border-color: var(--color-warning-subtle, rgba(251, 191, 36, 0.3));
+  background: var(--color-warning-subtle, rgba(251, 191, 36, 0.1));
+  color: var(--color-warning, #fbbf24);
+}
+kedge-provider-code .badge.fail {
+  border-color: var(--color-danger-subtle, rgba(248, 113, 113, 0.3));
+  background: var(--color-danger-subtle, rgba(248, 113, 113, 0.1));
+  color: var(--color-danger, #f87171);
+}
+kedge-provider-code .badge.muted::before {
+  display: none;
 }
 
+/* Misc text */
+kedge-provider-code .muted {
+  color: var(--color-text-muted, #44445a);
+  font-size: 12px;
+}
+kedge-provider-code .error {
+  color: var(--color-danger, #f87171);
+  font-size: 12px;
+}
+kedge-provider-code .empty {
+  color: var(--color-text-secondary, #7e7e96);
+  font-size: 12px;
+  padding: 8px 0;
+}
+kedge-provider-code a {
+  color: var(--color-accent, #7c5bf5);
+  text-decoration: none;
+}
+kedge-provider-code a:hover {
+  text-decoration: underline;
+}
 kedge-provider-code code {
-  font-family: ui-monospace, monospace;
-  font-size: 0.85em;
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+  color: var(--color-text-secondary, currentColor);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
 }

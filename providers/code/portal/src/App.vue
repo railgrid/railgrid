@@ -42,13 +42,13 @@ function navigate(sub: string) {
 </script>
 
 <template>
-  <div class="code-shell">
-    <nav class="code-tabs">
+  <div class="app">
+    <nav class="tabs">
       <button :class="{ active: route.page === 'connections' }" @click="navigate('connections')">Connections</button>
       <button :class="{ active: route.page === 'repositories' }" @click="navigate('repositories')">Repositories</button>
     </nav>
 
-    <p v-if="!hasTenant" class="code-empty">Select a workspace to manage code.</p>
+    <p v-if="!hasTenant" class="empty">Select a workspace to manage code.</p>
 
     <template v-else>
       <ConnectionsView v-if="route.page === 'connections'" />

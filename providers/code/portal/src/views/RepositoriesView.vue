@@ -84,63 +84,70 @@ onUnmounted(() => window.clearInterval(timer))
 </script>
 
 <template>
-  <section class="code-panel">
-    <header class="code-row code-head">
+  <section class="page">
+    <header class="page-head">
       <div>
-        <h2>Repositories</h2>
-        <p class="code-muted">Repositories the provider manages on the git host. Click one to manage deploy keys and collaborators.</p>
+        <h2 class="page-title">Repositories</h2>
+        <p class="page-meta">Repositories the provider manages on the git host. Click one to manage deploy keys and collaborators.</p>
       </div>
-      <button class="code-btn primary" :disabled="!connections.length" @click="showForm = !showForm">
+      <button class="primary" :disabled="!connections.length" @click="showForm = !showForm">
         {{ showForm ? 'Cancel' : 'New repository' }}
       </button>
     </header>
 
-    <p v-if="!connections.length" class="code-muted">Add a connection first, then create repositories under it.</p>
+    <p v-if="!connections.length" class="empty">Add a connection first, then create repositories under it.</p>
 
-    <form v-if="showForm" class="code-form" @submit.prevent="submit">
-      <label>Connection
-        <select v-model="connectionRef">
-          <option v-for="c in connections" :key="c.name" :value="c.name">{{ c.name }} ({{ c.owner }})</option>
-        </select>
-      </label>
-      <label>Object name <input v-model="name" placeholder="my-service" autocomplete="off" /></label>
-      <label>Repo name (defaults to object name) <input v-model="repo" placeholder="my-service" autocomplete="off" /></label>
-      <label>Visibility
-        <select v-model="visibility">
-          <option value="private">private</option>
-          <option value="public">public</option>
-          <option value="internal">internal</option>
-        </select>
-      </label>
-      <label>Description <input v-model="description" autocomplete="off" /></label>
-      <label class="code-check"><input v-model="autoInit" type="checkbox" /> Initialize with a README</label>
-      <div class="code-form-actions">
-        <button class="code-btn primary" type="submit" :disabled="submitting">{{ submitting ? 'Creating…' : 'Create' }}</button>
-        <span v-if="formError" class="code-error">{{ formError }}</span>
-      </div>
-    </form>
+    <div v-if="showForm" class="panel">
+      <h3 class="panel-title">New repository</h3>
+      <form class="form" @submit.prevent="submit">
+        <div class="field">
+          <span class="field-label">Connection</span>
+          <select v-model="connectionRef">
+            <option v-for="c in connections" :key="c.name" :value="c.name">{{ c.name }} ({{ c.owner }})</option>
+          </select>
+        </div>
+        <div class="field"><span class="field-label">Object name</span><input v-model="name" placeholder="my-service" autocomplete="off" /></div>
+        <div class="field"><span class="field-label">Repo name (defaults to object name)</span><input v-model="repo" placeholder="my-service" autocomplete="off" /></div>
+        <div class="field">
+          <span class="field-label">Visibility</span>
+          <select v-model="visibility">
+            <option value="private">private</option>
+            <option value="public">public</option>
+            <option value="internal">internal</option>
+          </select>
+        </div>
+        <div class="field"><span class="field-label">Description</span><input v-model="description" autocomplete="off" /></div>
+        <label class="field field-check"><input v-model="autoInit" type="checkbox" /> Initialize with a README</label>
+        <div class="actions">
+          <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Creating…' : 'Create' }}</button>
+          <span v-if="formError" class="error">{{ formError }}</span>
+        </div>
+      </form>
+    </div>
 
-    <p v-if="error" class="code-error">{{ error }}</p>
-    <p v-else-if="loading && !repos.length" class="code-muted">Loading…</p>
-    <p v-else-if="!repos.length" class="code-muted">No repositories yet.</p>
+    <p v-if="error" class="error">{{ error }}</p>
+    <p v-else-if="loading && !repos.length" class="muted">Loading…</p>
+    <p v-else-if="!repos.length" class="empty">No repositories yet.</p>
 
-    <table v-else class="code-table">
-      <thead>
-        <tr><th>Name</th><th>Connection</th><th>Visibility</th><th>URL</th><th>Status</th><th></th></tr>
-      </thead>
-      <tbody>
-        <tr v-for="r in repos" :key="r.name">
-          <td><button class="code-link" @click="emit('open', r.name)">{{ r.repo }}</button></td>
-          <td>{{ r.connectionRef }}</td>
-          <td>{{ r.visibility }}</td>
-          <td><a v-if="r.htmlURL" :href="r.htmlURL" target="_blank" rel="noopener">open ↗</a><span v-else>—</span></td>
-          <td>
-            <span v-if="r.ready" class="code-badge ok">ready</span>
-            <span v-else class="code-badge warn" :title="r.message">pending</span>
-          </td>
-          <td class="code-right"><button class="code-btn ghost" @click="remove(r)">Delete</button></td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else class="panel">
+      <table class="table">
+        <thead>
+          <tr><th>Name</th><th>Connection</th><th>Visibility</th><th>URL</th><th>Status</th><th class="right"></th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in repos" :key="r.name">
+            <td><button class="link" @click="emit('open', r.name)">{{ r.repo }}</button></td>
+            <td>{{ r.connectionRef }}</td>
+            <td>{{ r.visibility }}</td>
+            <td><a v-if="r.htmlURL" :href="r.htmlURL" target="_blank" rel="noopener">open ↗</a><span v-else class="muted">—</span></td>
+            <td>
+              <span v-if="r.ready" class="badge ok">ready</span>
+              <span v-else class="badge warn" :title="r.message">pending</span>
+            </td>
+            <td class="right"><button class="danger" @click="remove(r)">Delete</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 </template>

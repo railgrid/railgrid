@@ -70,47 +70,52 @@ onUnmounted(() => window.clearInterval(timer))
 </script>
 
 <template>
-  <section class="code-panel">
-    <header class="code-row code-head">
+  <section class="page">
+    <header class="page-head">
       <div>
-        <h2>Connections</h2>
-        <p class="code-muted">A connection binds your workspace to a git account via a token. Repositories are created under it.</p>
+        <h2 class="page-title">Connections</h2>
+        <p class="page-meta">A connection binds your workspace to a git account via a token. Repositories are created under it.</p>
       </div>
-      <button class="code-btn primary" @click="showForm = !showForm">{{ showForm ? 'Cancel' : 'Connect GitHub' }}</button>
+      <button class="primary" @click="showForm = !showForm">{{ showForm ? 'Cancel' : 'Connect GitHub' }}</button>
     </header>
 
-    <form v-if="showForm" class="code-form" @submit.prevent="submit">
-      <label>Name <input v-model="name" placeholder="my-github" autocomplete="off" /></label>
-      <label>Owner (org or user) <input v-model="owner" placeholder="acme" autocomplete="off" /></label>
-      <label>Personal access token <input v-model="token" type="password" placeholder="ghp_…" autocomplete="off" /></label>
-      <label>Base URL (GHES, optional) <input v-model="baseURL" placeholder="https://github.example.com/api/v3" autocomplete="off" /></label>
-      <div class="code-form-actions">
-        <button class="code-btn primary" type="submit" :disabled="submitting">{{ submitting ? 'Connecting…' : 'Create' }}</button>
-        <span v-if="formError" class="code-error">{{ formError }}</span>
-      </div>
-      <p class="code-muted small">The token is stored as a Secret in your workspace; the provider validates it and shows the login below.</p>
-    </form>
+    <div v-if="showForm" class="panel">
+      <h3 class="panel-title">Connect GitHub</h3>
+      <form class="form" @submit.prevent="submit">
+        <div class="field"><span class="field-label">Name</span><input v-model="name" placeholder="my-github" autocomplete="off" /></div>
+        <div class="field"><span class="field-label">Owner (org or user)</span><input v-model="owner" placeholder="acme" autocomplete="off" /></div>
+        <div class="field"><span class="field-label">Personal access token</span><input v-model="token" type="password" placeholder="ghp_…" autocomplete="off" /></div>
+        <div class="field"><span class="field-label">Base URL (GHES, optional)</span><input v-model="baseURL" placeholder="https://github.example.com/api/v3" autocomplete="off" /></div>
+        <div class="actions">
+          <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Connecting…' : 'Create' }}</button>
+          <span v-if="formError" class="error">{{ formError }}</span>
+        </div>
+        <p class="muted">The token is stored as a Secret in your workspace; the provider validates it and shows the login below.</p>
+      </form>
+    </div>
 
-    <p v-if="error" class="code-error">{{ error }}</p>
-    <p v-else-if="loading && !connections.length" class="code-muted">Loading…</p>
-    <p v-else-if="!connections.length" class="code-muted">No connections yet.</p>
+    <p v-if="error" class="error">{{ error }}</p>
+    <p v-else-if="loading && !connections.length" class="muted">Loading…</p>
+    <p v-else-if="!connections.length" class="empty">No connections yet.</p>
 
-    <table v-else class="code-table">
-      <thead>
-        <tr><th>Name</th><th>Owner</th><th>Login</th><th>Status</th><th></th></tr>
-      </thead>
-      <tbody>
-        <tr v-for="c in connections" :key="c.name">
-          <td>{{ c.name }}</td>
-          <td>{{ c.owner }}</td>
-          <td>{{ c.login || '—' }}</td>
-          <td>
-            <span v-if="c.validated" class="code-badge ok">validated</span>
-            <span v-else class="code-badge warn" :title="c.message">pending</span>
-          </td>
-          <td class="code-right"><button class="code-btn ghost" @click="remove(c)">Delete</button></td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else class="panel">
+      <table class="table">
+        <thead>
+          <tr><th>Name</th><th>Owner</th><th>Login</th><th>Status</th><th class="right"></th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="c in connections" :key="c.name">
+            <td>{{ c.name }}</td>
+            <td>{{ c.owner }}</td>
+            <td>{{ c.login || '—' }}</td>
+            <td>
+              <span v-if="c.validated" class="badge ok">validated</span>
+              <span v-else class="badge warn" :title="c.message">pending</span>
+            </td>
+            <td class="right"><button class="danger" @click="remove(c)">Delete</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 </template>
