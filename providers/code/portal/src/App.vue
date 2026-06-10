@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { KedgeContext } from './types'
 import { setBasePath, setTenant, setToken } from './api'
 import ConnectionsView from './views/ConnectionsView.vue'
@@ -36,13 +36,20 @@ watch(() => props.ctx?.tenant, v => setTenant(v), { immediate: true })
 
 const hasTenant = computed(() => !!props.ctx?.tenant)
 
-function navigate(sub: string) {
-  document.dispatchEvent(new CustomEvent('kedge-navigate', { bubbles: true, detail: { subPath: sub } }))
+// navigate dispatches a kedge-navigate CustomEvent from the component root so it
+// bubbles up to the <kedge-provider-code> element, where ProviderFrame listens
+// and pushes the shell's vue-router. detail.path is the trailing segment the
+// shell appends to /providers/code/.
+const rootRef = ref<HTMLElement | null>(null)
+function navigate(path: string) {
+  const el = rootRef.value
+  if (!el) return
+  el.dispatchEvent(new CustomEvent('kedge-navigate', { detail: { path }, bubbles: true }))
 }
 </script>
 
 <template>
-  <div class="app">
+  <div ref="rootRef" class="app">
     <nav class="tabs">
       <button :class="{ active: route.page === 'connections' }" @click="navigate('connections')">Connections</button>
       <button :class="{ active: route.page === 'repositories' }" @click="navigate('repositories')">Repositories</button>
