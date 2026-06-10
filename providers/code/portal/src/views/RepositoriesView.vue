@@ -29,7 +29,12 @@ async function load() {
     const [r, c] = await Promise.all([api.listRepositories(), api.listConnections()])
     repos.value = r
     connections.value = c
-    if (!connectionRef.value && c.length) connectionRef.value = c[0].name
+    // Default to (and recover to) a connection that actually exists — otherwise
+    // a stale ref (e.g. a since-deleted connection) silently sticks and the
+    // Repository fails to reconcile with "connection not found".
+    if (c.length && !c.some(x => x.name === connectionRef.value)) {
+      connectionRef.value = c[0].name
+    }
   } catch (e) {
     const err = e as ErrorResponse
     error.value = err.reason === 'TenantMissing' ? null : `${err.reason}: ${err.message}`

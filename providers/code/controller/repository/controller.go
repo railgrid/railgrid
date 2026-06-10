@@ -64,7 +64,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	b, conn, cred, ready := r.resolve(ctx, c, &repo)
+	b, conn, cred, notReady := r.resolve(ctx, c, &repo)
+	ready := notReady == ""
 
 	// Deletion path.
 	if !repo.DeletionTimestamp.IsZero() {
@@ -92,9 +93,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	if !ready {
-		// resolve() already recorded the reason on status via fail-less path;
-		// surface a generic not-ready and requeue when the Connection appears.
-		return r.fail(ctx, c, &repo, "ConnectionNotReady", "referenced connection or credential is not available yet")
+		// notReady names exactly which piece is missing (wrong connectionRef,
+		// unknown provider, or unreadable credential) so the status is actionable.
+		return r.fail(ctx, c, &repo, "ConnectionNotReady", notReady)
 	}
 
 	res, err := b.EnsureRepository(ctx, conn, cred, &repo)
@@ -115,23 +116,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	return ctrl.Result{}, nil
 }
 
-// resolve loads the backend, Connection, and credential for repo. ready is
-// false (with no error) when any piece is missing — the caller decides whether
-// that's fatal (create) or tolerable (delete).
-func (r *Reconciler) resolve(ctx context.Context, c client.Client, repo *codev1alpha1.Repository) (backend.GitBackend, *codev1alpha1.Connection, backend.Credential, bool) {
+// resolve loads the backend, Connection, and credential for repo. The returned
+// string is empty on success, otherwise a specific human-readable reason naming
+// the missing piece (used for the NotReady status; the caller decides whether
+// that's fatal for create or tolerable for delete).
+func (r *Reconciler) resolve(ctx context.Context, c client.Client, repo *codev1alpha1.Repository) (backend.GitBackend, *codev1alpha1.Connection, backend.Credential, string) {
 	conn, err := shared.ResolveConnection(ctx, c, repo.Spec.ConnectionRef)
 	if err != nil {
-		return nil, nil, backend.Credential{}, false
+		return nil, nil, backend.Credential{}, err.Error()
 	}
 	b, ok := r.Backends.Get(string(conn.Spec.Provider))
 	if !ok {
-		return nil, conn, backend.Credential{}, false
+		return nil, conn, backend.Credential{}, fmt.Sprintf("no backend registered for provider %q (connection %q)", conn.Spec.Provider, conn.Name)
 	}
 	cred, err := shared.ResolveCredential(ctx, c, conn)
 	if err != nil {
-		return b, conn, backend.Credential{}, false
+		return b, conn, backend.Credential{}, fmt.Sprintf("credential for connection %q unavailable: %v", conn.Name, err)
 	}
-	return b, conn, cred, true
+	return b, conn, cred, ""
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, repo *codev1alpha1.Repository, reason, msg string) (ctrl.Result, error) {
