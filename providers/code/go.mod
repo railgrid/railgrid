@@ -3,9 +3,11 @@ module github.com/faroshq/faros-kedge/providers/code
 go 1.26.3
 
 require (
+	github.com/google/go-github/v66 v66.0.0
 	github.com/kcp-dev/multicluster-provider v0.7.1-0.20260515112510-8f4137891edf
 	github.com/kcp-dev/sdk v0.31.1
 	github.com/modelcontextprotocol/go-sdk v1.3.1
+	golang.org/x/oauth2 v0.36.0
 	k8s.io/api v0.36.1
 	k8s.io/apimachinery v0.36.1
 	k8s.io/client-go v0.36.1
@@ -39,6 +41,7 @@ require (
 	github.com/go-openapi/swag/yamlutils v0.26.0 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -61,7 +64,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.53.0 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/term v0.42.0 // indirect

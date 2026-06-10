@@ -124,15 +124,21 @@ Manifest specifics (the corrections vs infra):
   `GitBackend` interface + stub backend; multicluster controller-manager wiring with no-op
   reconciler skeletons; manifest (4 inline schemas, widened secrets claim); Helm chart; portal
   shell. Builds and registers against the hub; the stub flips a Connection to `Validated=true`.
-- **PR B — GitHub backend:** `backend/github` (validate, ensure/delete repository) + Connection
-  and Repository controllers + PAT resolution. Resolve the APIExportEndpointSlice open item.
-- **PR C — access + MCP + portal:** deploy keys + collaborators (controllers + backend
-  methods), real MCP tools, portal views.
+- **PR B — GitHub backend (done):** `backend/github` using `go-github` + a PAT token source —
+  `ValidateConnection` (login + `X-OAuth-Scopes`) and `EnsureRepository`/`DeleteRepository`. The
+  backend is registered in place of the stub, and the provider now ensures its
+  `APIExportEndpointSlice` at startup (section 8). The Connection + Repository controllers were
+  already functional against the registry, so they pick up the real backend unchanged.
+- **PR C — access + MCP + portal:** deploy keys + collaborators (controllers + the github
+  backend's remaining methods), real MCP tools, portal views.
 - **Later:** GitLab backend; `github-app`/`oauth` credential types (per-user UI onboarding).
 
-## 8. Open item
+## 8. Resolved: APIExportEndpointSlice
 
-Confirm whether the hub provisioner auto-creates an `APIExportEndpointSlice` for provider
-APIExports, or whether `code`'s `init` must create one for its multicluster manager to discover
-tenant clusters (infra created one explicitly). If auto-created, `code` may not need an `init`
-subcommand at all.
+The hub provisioner does **not** create an `APIExportEndpointSlice` for provider APIExports —
+the slice's name and export path are consumer-chosen, so it's the provider's job. The code
+provider creates one (`code.providers.kedge.faros.sh`, referencing its APIExport at
+`root:kedge:providers:code`) idempotently: `serve` ensures it at controller-manager startup and
+the `init` subcommand does the same for parity / out-of-band bootstrap. See
+`providers/code/install/endpointslice.go` (modeled on the infrastructure provider's
+`PlatformAPIExportEndpointSlice`).

@@ -10,24 +10,35 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"os"
+
+	"github.com/faroshq/faros-kedge/providers/code/install"
 )
 
-// runInitCmd is the one-shot bootstrap. For the code provider this is
-// deliberately thin: the hub provisioner already materializes everything the
-// CatalogEntry declares (sub-workspace, the four APIResourceSchemas, the
-// APIExport, the provider ServiceAccount + minted kubeconfig). The only thing
-// the provider's own multicluster manager additionally needs is an
-// APIExportEndpointSlice for code.providers.kedge.faros.sh so apiexport.New can
-// discover tenant workspaces.
+// runInitCmd is the one-shot bootstrap. The hub provisioner already
+// materializes everything the CatalogEntry declares (sub-workspace, the four
+// APIResourceSchemas, the APIExport, the provider ServiceAccount + minted
+// kubeconfig). The one thing it does NOT create is an APIExportEndpointSlice
+// for code.providers.kedge.faros.sh — without it the multicluster manager has
+// no endpoints to watch. init creates it.
 //
-// OPEN ITEM (resolve in PR B): confirm whether the hub provisioner already
-// creates that APIExportEndpointSlice for provider APIExports. If it does,
-// `init` can be dropped entirely and `serve` suffices. Until confirmed this
-// stays a no-op skeleton so the binary keeps the init/serve shape its Helm
-// chart and Makefile target expect.
-func runInitCmd(_ context.Context) error {
-	log.Printf("code-provider init: no-op (hub provisioner handles sub-workspace, schemas, APIExport, SA, kubeconfig). " +
-		"See init_cmd.go OPEN ITEM re: APIExportEndpointSlice.")
+// serve also ensures the slice idempotently at startup, so running init
+// separately is optional; it exists for parity with the infrastructure
+// provider's init/serve split and for environments that bootstrap out-of-band.
+func runInitCmd(ctx context.Context) error {
+	config, err := loadControllerConfig()
+	if err != nil {
+		return fmt.Errorf("init needs a kubeconfig (set CODE_KUBECONFIG): %w", err)
+	}
+	workspacePath := os.Getenv("CODE_WORKSPACE_PATH")
+	if workspacePath == "" {
+		workspacePath = defaultWorkspacePath
+	}
+	if err := install.EnsureAPIExportEndpointSlice(ctx, config, workspacePath); err != nil {
+		return fmt.Errorf("ensure APIExportEndpointSlice: %w", err)
+	}
+	log.Printf("code-provider init: APIExportEndpointSlice ensured for %s (path %s)", install.APIExportName, workspacePath)
 	return nil
 }

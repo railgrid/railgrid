@@ -40,18 +40,23 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"github.com/faroshq/faros-kedge/providers/code/backend"
-	"github.com/faroshq/faros-kedge/providers/code/backend/stub"
+	githubbackend "github.com/faroshq/faros-kedge/providers/code/backend/github"
 	"github.com/faroshq/faros-kedge/providers/code/controller/collaborator"
 	"github.com/faroshq/faros-kedge/providers/code/controller/connection"
 	"github.com/faroshq/faros-kedge/providers/code/controller/deploykey"
 	"github.com/faroshq/faros-kedge/providers/code/controller/repository"
+	"github.com/faroshq/faros-kedge/providers/code/install"
 	codescheme "github.com/faroshq/faros-kedge/providers/code/scheme"
 )
 
 // endpointSliceName is the APIExportEndpointSlice the multicluster provider
 // watches to discover tenant workspaces. By convention it matches the
 // provider's APIExport name (manifest.yaml spec.apiExport.name).
-const endpointSliceName = "code.providers.kedge.faros.sh"
+const endpointSliceName = install.APIExportEndpointSliceName
+
+// defaultWorkspacePath is the kcp logical-cluster path the provider's APIExport
+// lives in (root:kedge:providers:<name>). Overridable via CODE_WORKSPACE_PATH.
+const defaultWorkspacePath = "root:kedge:providers:code"
 
 // startControllerManager builds the multicluster manager, registers the git
 // backends, and starts the four reconcilers. A nil config means "skip the
@@ -63,6 +68,19 @@ func startControllerManager(ctx context.Context, config *rest.Config) error {
 
 	ctrl.SetLogger(klog.NewKlogr())
 	scheme := codescheme.NewScheme()
+
+	// The hub provisioner does NOT create an APIExportEndpointSlice for the
+	// provider's APIExport, so the multicluster provider would have nothing to
+	// watch. Ensure it here (idempotent) before building the provider. Best
+	// effort: log and continue if it fails — serve still offers MCP/portal, and
+	// the manager simply engages no clusters until the slice lands.
+	workspacePath := os.Getenv("CODE_WORKSPACE_PATH")
+	if workspacePath == "" {
+		workspacePath = defaultWorkspacePath
+	}
+	if err := install.EnsureAPIExportEndpointSlice(ctx, config, workspacePath); err != nil {
+		log.Printf("controller manager: WARNING could not ensure APIExportEndpointSlice: %v", err)
+	}
 
 	provider, err := apiexport.New(config, endpointSliceName, apiexport.Options{Scheme: scheme})
 	if err != nil {
@@ -78,10 +96,11 @@ func startControllerManager(ctx context.Context, config *rest.Config) error {
 	}
 
 	registry := backend.NewRegistry()
-	// PR A: the stub stands in for the real github backend (PR B). It returns
-	// canned success so the reconcilers can be smoke-tested without network.
-	if err := registry.Register(stub.New()); err != nil {
-		return fmt.Errorf("register stub backend: %w", err)
+	// The real GitHub backend. It holds no global credential — every Connection
+	// authenticates as its own PAT account — so it needs no config here. The
+	// stub backend remains available for tests (backend/stub).
+	if err := registry.Register(githubbackend.New()); err != nil {
+		return fmt.Errorf("register github backend: %w", err)
 	}
 
 	if err := (&connection.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
