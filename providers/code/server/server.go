@@ -25,12 +25,20 @@ import (
 // absent so the caller can fall through to index.html.
 type AssetServer func(w http.ResponseWriter, r *http.Request, distFS fs.FS, name string) bool
 
+// OAuthMounter registers its routes on the provided mux (e.g. the GitHub OAuth
+// connect endpoints under /oauth/github/). Kept as an interface so the server
+// package takes no dependency on the oauth implementation.
+type OAuthMounter interface {
+	Mount(mux *http.ServeMux)
+}
+
 // Deps bundles everything Server needs.
 type Deps struct {
 	MCP              http.Handler // /mcp + /mcp/sse handler; may be nil
 	PortalFileServer http.Handler
 	PortalFS         fs.FS
 	ServePortalAsset AssetServer
+	OAuth            OAuthMounter // /oauth/github/* connect flow; may be nil
 }
 
 // Server is the wired-up HTTP server.
@@ -47,6 +55,10 @@ func New(d Deps) *Server {
 	if d.MCP != nil {
 		s.mux.Handle("/mcp", d.MCP)
 		s.mux.Handle("/mcp/sse", d.MCP)
+	}
+
+	if d.OAuth != nil {
+		d.OAuth.Mount(s.mux)
 	}
 
 	// Portal fallback — last so explicit routes win. Tries the embedded FS

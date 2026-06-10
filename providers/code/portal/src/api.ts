@@ -180,11 +180,13 @@ export const api = {
     return (l.items ?? []).map(connFromCR)
   },
 
-  // connect creates the PAT Secret then the Connection that references it.
-  async connect(input: { name: string; owner: string; token: string; baseURL?: string }): Promise<Connection> {
+  // connect creates the token Secret then the Connection that references it.
+  // type is 'pat' for a pasted token or 'oauth' for one obtained via the GitHub
+  // connect flow — same storage, the credential's origin just differs.
+  async connect(input: { name: string; owner: string; token: string; baseURL?: string; type?: 'pat' | 'oauth' }): Promise<Connection> {
     const name = dns1123(input.name)
     const secretName = name + '-token'
-    // 1) Secret holding the PAT.
+    // 1) Secret holding the token.
     await kcpFetch<unknown>(
       'POST',
       clusterBase() + `/api/v1/namespaces/${CRED_NAMESPACE}/secrets`,
@@ -199,7 +201,7 @@ export const api = {
     // 2) Connection referencing it.
     const spec: Record<string, unknown> = {
       provider: 'github',
-      type: 'pat',
+      type: input.type ?? 'pat',
       owner: input.owner,
       secretRef: { name: secretName, namespace: CRED_NAMESPACE, key: TOKEN_KEY },
     }
@@ -215,6 +217,21 @@ export const api = {
 
   async deleteConnection(name: string): Promise<void> {
     await kcpFetch<unknown>('DELETE', apisBase() + '/connections/' + encodeURIComponent(name))
+  },
+
+  // oauthConfig probes the provider backend (via the hub /services proxy) for
+  // whether the "Connect with GitHub" flow is configured. Returns enabled:false
+  // (never throws) so the view can silently fall back to the PAT form.
+  async oauthConfig(): Promise<{ enabled: boolean; startURL?: string; scopes?: string }> {
+    try {
+      const headers: Record<string, string> = { Accept: 'application/json' }
+      if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
+      const res = await fetch('/services/providers/code/oauth/github/config', { headers, credentials: 'same-origin' })
+      if (!res.ok) return { enabled: false }
+      return (await res.json()) as { enabled: boolean; startURL?: string; scopes?: string }
+    } catch {
+      return { enabled: false }
+    }
   },
 
   // ── Repositories ─────────────────────────────────────────────────────────

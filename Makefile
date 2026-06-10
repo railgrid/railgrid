@@ -692,6 +692,9 @@ CODE_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/code-runtime.kubeconfig
 
 run-provider-code: build-code-provider ## Run the code provider (requires: make run-hub-embedded-static + make install-provider-code)
 	@echo "Starting code provider on :$(CODE_PORT) (hub $(KROMC_HUB_URL))"
+	@# Auto-source providers/code/.env (gitignored) so GitHub OAuth + other dev
+	@# env reach the provider without a manual export. See .env.example.
+	set -a; [ -f providers/code/.env ] && . ./providers/code/.env || true; set +a; \
 	PORT=$(CODE_PORT) \
 	KEDGE_HUB_URL=$(KROMC_HUB_URL) \
 	KEDGE_HUB_TOKEN=$(KROMC_TOKEN) \
@@ -699,6 +702,10 @@ run-provider-code: build-code-provider ## Run the code provider (requires: make 
 	KEDGE_PROVIDER_NAME=code \
 	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
 	CODE_KUBECONFIG=$${CODE_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
+	GITHUB_OAUTH_CLIENT_ID=$${GITHUB_OAUTH_CLIENT_ID:-} \
+	GITHUB_OAUTH_CLIENT_SECRET=$${GITHUB_OAUTH_CLIENT_SECRET:-} \
+	GITHUB_OAUTH_REDIRECT_URL=$${GITHUB_OAUTH_REDIRECT_URL:-http://localhost:$(CODE_PORT)/oauth/github/callback} \
+	GITHUB_OAUTH_PORTAL_ORIGIN=$${GITHUB_OAUTH_PORTAL_ORIGIN:-$(KROMC_HUB_URL)} \
 		$(BINDIR)/code-provider serve
 
 install-provider-code: ## Apply the code CatalogEntry into root:kedge:providers

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/faroshq/faros-kedge/providers/code/mcpserver"
+	"github.com/faroshq/faros-kedge/providers/code/oauthgithub"
 	"github.com/faroshq/faros-kedge/providers/code/server"
 	"github.com/faroshq/faros-kedge/providers/code/tenant"
 )
@@ -101,11 +102,23 @@ func runServe() {
 		log.Fatalf("portal embed: %v", err)
 	}
 
+	// GitHub "Connect" OAuth flow. Disabled (PAT-only) unless GITHUB_OAUTH_*
+	// env is set; the portal probes /oauth/github/config and only shows the
+	// button when enabled.
+	oauthCfg, oauthEnabled, oauthErr := oauthgithub.FromEnv()
+	if oauthErr != nil {
+		log.Printf("github oauth config invalid (%v); connect-with-github disabled", oauthErr)
+	} else if oauthEnabled {
+		log.Printf("github oauth connect enabled (callback=%s)", oauthCfg.RedirectURL)
+	}
+	oauthHandler := oauthgithub.NewHandler(oauthCfg, oauthEnabled && oauthErr == nil)
+
 	srv := server.New(server.Deps{
 		MCP:              mcpHandler,
 		PortalFileServer: fileServer,
 		PortalFS:         distFS,
 		ServePortalAsset: servePortalAsset,
+		OAuth:            oauthHandler,
 	})
 
 	httpSrv := &http.Server{
