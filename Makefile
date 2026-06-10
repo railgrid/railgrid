@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -717,6 +717,28 @@ uninstall-provider-code: ## Delete the code CatalogEntry
 		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(CODE_MANIFEST)
+
+CODE_WORKSPACE_PATH ?= root:kedge:providers:code
+## Dev bootstrap for the code provider. The hub mints a real provider
+## kubeconfig only when it runs with a host cluster (--kubeconfig); the
+## in-process dev hub does not, so we synthesize a static-token kubeconfig
+## pointed at the provider workspace and ensure the APIExportEndpointSlice the
+## controller manager needs. run-provider-code reads it via CODE_KUBECONFIG.
+## Order: install-provider-code (creates the workspace) → init-provider-code →
+## run-provider-code. Re-runnable.
+init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the code APIExportEndpointSlice
+	@test -f $(KROMC_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	@mkdir -p $(KCP_DATA_DIR)
+	@echo "Writing dev kubeconfig $(CODE_RUNTIME_KUBECONFIG) (workspace $(CODE_WORKSPACE_PATH))"
+	@printf 'apiVersion: v1\nkind: Config\ncurrent-context: code\nclusters:\n- name: code\n  cluster:\n    server: %s/clusters/%s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: code\n  context:\n    cluster: code\n    user: code\nusers:\n- name: code\n  user:\n    token: %s\n' \
+		"$(KROMC_KCP_SERVER)" "$(CODE_WORKSPACE_PATH)" "$(KROMC_TOKEN)" > $(CODE_RUNTIME_KUBECONFIG)
+	CODE_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
+	CODE_WORKSPACE_PATH=$(CODE_WORKSPACE_PATH) \
+		$(BINDIR)/code-provider init
 
 # --- Experimental: run the infrastructure provider as a POD (init-container
 #     bootstrap) instead of a host binary. Exercises the full hub-minted

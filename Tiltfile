@@ -19,6 +19,7 @@ local_resource(
         'providers/mcp/portal/src',
         'providers/kubernetesedges/portal/src',
         'providers/serveredges/portal/src',
+        'providers/code/portal/src',
     ],
     labels=['hub'],
 )
@@ -30,7 +31,7 @@ local_resource(
     'hub',
     cmd='''
 make certs && \
-mkdir -p providers/mcp/portal/dist providers/kubernetesedges/portal/dist providers/serveredges/portal/dist portal/dist && \
+mkdir -p providers/mcp/portal/dist providers/kubernetesedges/portal/dist providers/serveredges/portal/dist providers/code/portal/dist portal/dist && \
 go build -o bin/kedge-hub ./cmd/kedge-hub
 ''',
     serve_cmd='''./bin/kedge-hub \
@@ -133,6 +134,75 @@ local_resource(
     auto_init=False,
     resource_deps=['hub'],
     labels=['providers-quickstart'],
+)
+
+# --- providers-code (git repository management) ---
+# Long-lived provider: serves the portal + MCP on :8083 and, once a kubeconfig
+# is present, runs the multicluster controller manager. run-provider-code reads
+# CODE_KUBECONFIG from .kcp/code-runtime.kubeconfig (written by code-init), and
+# falls back to portal/MCP-only when it's absent — so this can start before the
+# workspace exists.
+local_resource(
+    'code',
+    cmd='make build-code-provider',
+    serve_cmd='make run-provider-code',
+    deps=[
+        'providers/code/main.go',
+        'providers/code/heartbeat.go',
+        'providers/code/assets.go',
+        'providers/code/controller_manager.go',
+        'providers/code/init_cmd.go',
+        'providers/code/server',
+        'providers/code/tenant',
+        'providers/code/mcpserver',
+        'providers/code/controller',
+        'providers/code/backend',
+        'providers/code/install',
+        'providers/code/scheme',
+        'providers/code/portal/src',
+        'providers/code/portal/package.json',
+        'providers/code/go.mod',
+        'providers/code/go.sum',
+        '.kcp/code-runtime.kubeconfig',
+    ],
+    resource_deps=['hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8083, path='/healthz'),
+    ),
+    labels=['providers-code'],
+)
+
+local_resource(
+    'code-register',
+    cmd='make install-provider-code',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-code'],
+)
+
+# Writes the dev kubeconfig (.kcp/code-runtime.kubeconfig) and ensures the
+# APIExportEndpointSlice the controller manager watches. Order:
+#   code-register  → creates root:kedge:providers:code
+#   code-init      → writes kubeconfig + endpoint slice
+#   code (serve)   → Tilt restarts it when the kubeconfig dep appears
+local_resource(
+    'code-init',
+    cmd='make init-provider-code',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub', 'code-register'],
+    labels=['providers-code'],
+)
+
+local_resource(
+    'code-unregister',
+    cmd='make uninstall-provider-code',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-code'],
 )
 
 # --- providers-kro ---

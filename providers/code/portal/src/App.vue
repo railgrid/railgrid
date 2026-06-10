@@ -1,25 +1,42 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import type { KedgeContext } from './types'
+import { setBasePath, setTenant, setToken } from './api'
+import ConnectionsView from './views/ConnectionsView.vue'
+import RepositoriesView from './views/RepositoriesView.vue'
+import RepoDetailView from './views/RepoDetailView.vue'
 
-// PR A ships a placeholder shell that routes on subPath. The real Connections
-// (connect GitHub, paste PAT, validation status) and Repositories
-// (list/create/delete + deploy keys + collaborators) views land in PR C.
-//
-//   ''  | 'connections'  → Connections
-//   'repositories'       → Repositories
+// Sub-path routing (the shell pushes the trailing /providers/code/<sub> segment):
+//   ''  | 'connections'        → Connections
+//   'repositories'             → Repositories
+//   'repositories/<name>'      → RepoDetail
 const props = defineProps<{ ctx: KedgeContext | null }>()
 
-type Page = 'connections' | 'repositories'
+interface Route {
+  page: 'connections' | 'repositories'
+  repo?: string
+}
 
-const page = computed<Page>(() => {
-  const s = (props.ctx?.subPath ?? '').replace(/^\/+|\/+$/g, '').split('/')[0]
-  return s === 'repositories' ? 'repositories' : 'connections'
-})
+function parse(sub: string | null | undefined): Route {
+  const s = (sub ?? '').replace(/^\/+|\/+$/g, '')
+  if (s === '' || s === 'connections') return { page: 'connections' }
+  const parts = s.split('/')
+  if (parts[0] === 'repositories') {
+    return parts.length > 1 ? { page: 'repositories', repo: decodeURIComponent(parts[1]) } : { page: 'repositories' }
+  }
+  return { page: 'connections' }
+}
 
-function navigate(sub: Page) {
-  // Mirror the infra provider: dispatch a bubbling kedge-navigate CustomEvent
-  // so the shell's ProviderFrame router keeps the browser URL in sync.
+const route = computed(() => parse(props.ctx?.subPath))
+
+// Feed identity into the api client whenever the shell re-pushes context.
+watch(() => props.ctx?.basePath, v => setBasePath(v), { immediate: true })
+watch(() => props.ctx?.token, v => setToken(v), { immediate: true })
+watch(() => props.ctx?.tenant, v => setTenant(v), { immediate: true })
+
+const hasTenant = computed(() => !!props.ctx?.tenant)
+
+function navigate(sub: string) {
   document.dispatchEvent(new CustomEvent('kedge-navigate', { bubbles: true, detail: { subPath: sub } }))
 }
 </script>
@@ -27,26 +44,16 @@ function navigate(sub: Page) {
 <template>
   <div class="code-shell">
     <nav class="code-tabs">
-      <button :class="{ active: page === 'connections' }" @click="navigate('connections')">Connections</button>
-      <button :class="{ active: page === 'repositories' }" @click="navigate('repositories')">Repositories</button>
+      <button :class="{ active: route.page === 'connections' }" @click="navigate('connections')">Connections</button>
+      <button :class="{ active: route.page === 'repositories' }" @click="navigate('repositories')">Repositories</button>
     </nav>
 
-    <section v-if="page === 'connections'" class="code-panel">
-      <h2>Connections</h2>
-      <p class="code-muted">
-        Connect a git account (GitHub) by pasting a personal access token. The
-        provider validates it and shows the authenticated login here.
-      </p>
-      <p class="code-todo">Connection management UI arrives in PR C.</p>
-    </section>
+    <p v-if="!hasTenant" class="code-empty">Select a workspace to manage code.</p>
 
-    <section v-else class="code-panel">
-      <h2>Repositories</h2>
-      <p class="code-muted">
-        Create and manage repositories under a connected account, plus deploy
-        keys and collaborators.
-      </p>
-      <p class="code-todo">Repository management UI arrives in PR C.</p>
-    </section>
+    <template v-else>
+      <ConnectionsView v-if="route.page === 'connections'" />
+      <RepoDetailView v-else-if="route.repo" :name="route.repo" @back="navigate('repositories')" />
+      <RepositoriesView v-else @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
+    </template>
   </div>
 </template>

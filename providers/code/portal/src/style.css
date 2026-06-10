@@ -43,8 +43,175 @@ kedge-provider-code .code-muted {
   max-width: 60ch;
 }
 
-kedge-provider-code .code-todo {
-  margin-top: 1rem;
-  font-style: italic;
-  color: var(--color-text-secondary, #777);
+kedge-provider-code .code-muted.small {
+  font-size: 0.85em;
+}
+
+kedge-provider-code .code-empty {
+  color: var(--color-text-secondary, #999);
+  padding: 2rem 0;
+}
+
+kedge-provider-code .code-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+kedge-provider-code .code-head {
+  margin-bottom: 1rem;
+}
+
+kedge-provider-code .code-error {
+  color: var(--color-danger, #e5534b);
+}
+
+/* Buttons */
+kedge-provider-code .code-btn {
+  font: inherit;
+  border-radius: 6px;
+  padding: 0.4rem 0.75rem;
+  cursor: pointer;
+  border: 1px solid var(--color-border, #2a2a2a);
+  background: var(--color-surface, #1b1b1b);
+  color: var(--color-text-primary, inherit);
+}
+kedge-provider-code .code-btn.primary {
+  background: var(--color-accent, #4f8cff);
+  border-color: var(--color-accent, #4f8cff);
+  color: #fff;
+}
+kedge-provider-code .code-btn.ghost {
+  background: transparent;
+  color: var(--color-text-secondary, #999);
+}
+kedge-provider-code .code-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+kedge-provider-code .code-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-accent, #4f8cff);
+  cursor: pointer;
+}
+
+/* Forms */
+kedge-provider-code .code-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-width: 32rem;
+  margin: 0.5rem 0 1.25rem;
+  padding: 1rem;
+  border: 1px solid var(--color-border, #2a2a2a);
+  border-radius: 8px;
+}
+kedge-provider-code .code-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9em;
+  color: var(--color-text-secondary, #999);
+}
+kedge-provider-code .code-form input,
+kedge-provider-code .code-form select,
+kedge-provider-code .code-form textarea {
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border, #2a2a2a);
+  background: var(--color-bg, #111);
+  color: var(--color-text-primary, inherit);
+}
+kedge-provider-code .code-form .code-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+}
+kedge-provider-code .code-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* Tables + lists */
+kedge-provider-code .code-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92em;
+}
+kedge-provider-code .code-table th,
+kedge-provider-code .code-table td {
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--color-border, #2a2a2a);
+}
+kedge-provider-code .code-table th {
+  color: var(--color-text-secondary, #999);
+  font-weight: 600;
+}
+kedge-provider-code .code-right {
+  text-align: right;
+}
+
+kedge-provider-code .code-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+kedge-provider-code .code-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--color-border, #2a2a2a);
+}
+
+/* Two-column layout for the repo detail page */
+kedge-provider-code .code-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+@media (max-width: 720px) {
+  kedge-provider-code .code-cols {
+    grid-template-columns: 1fr;
+  }
+}
+kedge-provider-code .code-col h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+/* Badges */
+kedge-provider-code .code-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.75em;
+  border: 1px solid var(--color-border, #2a2a2a);
+  color: var(--color-text-secondary, #999);
+}
+kedge-provider-code .code-badge.ok {
+  color: #3fb950;
+  border-color: #2ea04326;
+  background: #2ea04318;
+}
+kedge-provider-code .code-badge.warn {
+  color: #d29922;
+  border-color: #bb800926;
+  background: #bb800918;
+}
+kedge-provider-code .code-badge.muted {
+  color: var(--color-text-secondary, #999);
+}
+
+kedge-provider-code code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
 }
