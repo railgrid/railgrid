@@ -178,6 +178,7 @@ local_resource(
         'providers/mcp/portal/src',
         'providers/kubernetesedges/portal/src',
         'providers/serveredges/portal/src',
+        'providers/code/portal/src',
     ],
     labels=['hub'],
 )
@@ -398,6 +399,7 @@ def rewrite_manifest_cmd(src):
 
 QUICKSTART_REWRITE_CMD, QUICKSTART_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/quickstart/manifest.yaml')
 INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/infrastructure/manifest.yaml')
+CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code/manifest.yaml')
 
 # --- providers-quickstart ---
 local_resource(
@@ -562,6 +564,83 @@ local_resource(
     auto_init=False,
     resource_deps=['kedge-hub'],
     labels=['providers-kro'],
+)
+
+# --- providers-code (git repository management) ---
+# Host binary on :8083, same shape as quickstart/infrastructure. register/init/
+# unregister override KROMC_KCP_KUBECONFIG / KROMC_KCP_SERVER to the in-cluster
+# kcp front-proxy (the embedded-kcp defaults are localhost). init-provider-code
+# derives the runtime kubeconfig from that admin kubeconfig, so it reuses the
+# front-proxy credential in cluster mode without a separate token.
+local_resource(
+    'code',
+    cmd='make build-code-provider',
+    serve_cmd='make run-provider-code',
+    deps=[
+        'providers/code/main.go',
+        'providers/code/heartbeat.go',
+        'providers/code/assets.go',
+        'providers/code/controller_manager.go',
+        'providers/code/init_cmd.go',
+        'providers/code/server',
+        'providers/code/tenant',
+        'providers/code/mcpserver',
+        'providers/code/controller',
+        'providers/code/backend',
+        'providers/code/install',
+        'providers/code/scheme',
+        'providers/code/portal/src',
+        'providers/code/portal/package.json',
+        'providers/code/go.mod',
+        'providers/code/go.sum',
+        '.kcp/code-runtime.kubeconfig',
+    ],
+    resource_deps=['kedge-hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8083, path='/healthz'),
+    ),
+    labels=['providers-code'],
+)
+
+local_resource(
+    'code-register',
+    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'CODE_MANIFEST={mf} make install-provider-code').format(
+             rewrite=CODE_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=CODE_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-code'],
+)
+
+# Writes the runtime kubeconfig (derived from the front-proxy admin kubeconfig)
+# and ensures the APIExportEndpointSlice. Order:
+#   code-register → creates root:kedge:providers:code
+#   code-init     → writes kubeconfig + endpoint slice
+#   code (serve)  → restarts when the kubeconfig dep appears
+local_resource(
+    'code-init',
+    cmd=('KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'make init-provider-code').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub', 'code-register'],
+    labels=['providers-code'],
+)
+
+local_resource(
+    'code-unregister',
+    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'CODE_MANIFEST={mf} make uninstall-provider-code').format(
+             rewrite=CODE_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=CODE_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-code'],
 )
 
 # ---------------------------------------------------------------------------

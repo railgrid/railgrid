@@ -720,12 +720,15 @@ uninstall-provider-code: ## Delete the code CatalogEntry
 
 CODE_WORKSPACE_PATH ?= root:kedge:providers:code
 ## Dev bootstrap for the code provider. The hub mints a real provider
-## kubeconfig only when it runs with a host cluster (--kubeconfig); the
-## in-process dev hub does not, so we synthesize a static-token kubeconfig
-## pointed at the provider workspace and ensure the APIExportEndpointSlice the
+## kubeconfig only when it runs with a host cluster (--kubeconfig); the dev hubs
+## (embedded + Tiltfile.cluster) do not, so we derive a runtime kubeconfig from
+## the admin kubeconfig — reusing its working credential (a static token in
+## embedded mode, a client cert in cluster mode) and retargeting only the server
+## URL to the provider workspace — and ensure the APIExportEndpointSlice the
 ## controller manager needs. run-provider-code reads it via CODE_KUBECONFIG.
 ## Order: install-provider-code (creates the workspace) → init-provider-code →
-## run-provider-code. Re-runnable.
+## run-provider-code. Re-runnable. The Tiltfile.cluster flow reuses this target
+## verbatim, overriding KROMC_KCP_KUBECONFIG / KROMC_KCP_SERVER.
 init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the code APIExportEndpointSlice
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
@@ -733,9 +736,12 @@ init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the
 		exit 1; \
 	}
 	@mkdir -p $(KCP_DATA_DIR)
-	@echo "Writing dev kubeconfig $(CODE_RUNTIME_KUBECONFIG) (workspace $(CODE_WORKSPACE_PATH))"
-	@printf 'apiVersion: v1\nkind: Config\ncurrent-context: code\nclusters:\n- name: code\n  cluster:\n    server: %s/clusters/%s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: code\n  context:\n    cluster: code\n    user: code\nusers:\n- name: code\n  user:\n    token: %s\n' \
-		"$(KROMC_KCP_SERVER)" "$(CODE_WORKSPACE_PATH)" "$(KROMC_TOKEN)" > $(CODE_RUNTIME_KUBECONFIG)
+	@echo "Writing dev kubeconfig $(CODE_RUNTIME_KUBECONFIG) (workspace $(CODE_WORKSPACE_PATH), server $(KROMC_KCP_SERVER))"
+	@kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) config view --minify --flatten > $(CODE_RUNTIME_KUBECONFIG)
+	@CL=$$(kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config view -o jsonpath='{.clusters[0].name}'); \
+		kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config set-cluster "$$CL" \
+			--server=$(KROMC_KCP_SERVER)/clusters/$(CODE_WORKSPACE_PATH) \
+			--insecure-skip-tls-verify=true >/dev/null
 	CODE_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
 	CODE_WORKSPACE_PATH=$(CODE_WORKSPACE_PATH) \
 		$(BINDIR)/code-provider init
