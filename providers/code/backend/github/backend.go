@@ -153,25 +153,136 @@ func (b *Backend) DeleteRepository(ctx context.Context, conn *codev1alpha1.Conne
 	return nil
 }
 
-// errNotImplemented is returned by the deploy-key/collaborator methods until
-// PR C wires them; the controllers for those kinds are skeletons in PR A/B, so
-// these are never called on the hot path yet.
-var errNotImplemented = errors.New("github: not implemented until PR C")
+// EnsureDeployKey registers publicKey on the repo and returns its host id.
+// Idempotent on the key material: an already-registered identical key returns
+// its existing id rather than 422-ing.
+func (b *Backend) EnsureDeployKey(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, key *codev1alpha1.DeployKey, publicKey string) (backend.DeployKeyResult, error) {
+	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
+	if err != nil {
+		return backend.DeployKeyResult{}, err
+	}
+	org := owner(conn, repo)
 
-func (b *Backend) EnsureDeployKey(_ context.Context, _ *codev1alpha1.Connection, _ backend.Credential, _ *codev1alpha1.Repository, _ *codev1alpha1.DeployKey, _ string) (backend.DeployKeyResult, error) {
-	return backend.DeployKeyResult{}, errNotImplemented
+	// Idempotency: a re-reconcile must not create a duplicate. GitHub rejects
+	// duplicate key material with a 422, so match an existing key first.
+	keys, resp, err := c.Repositories.ListKeys(ctx, org, repo.Spec.Name, &gogithub.ListOptions{PerPage: 100})
+	if err != nil {
+		return backend.DeployKeyResult{}, classify(resp, err)
+	}
+	for _, k := range keys {
+		if sameKeyMaterial(k.GetKey(), publicKey) {
+			return backend.DeployKeyResult{KeyID: strconv.FormatInt(k.GetID(), 10)}, nil
+		}
+	}
+
+	title := key.Spec.Title
+	if title == "" {
+		title = key.Name
+	}
+	created, resp, err := c.Repositories.CreateKey(ctx, org, repo.Spec.Name, &gogithub.Key{
+		Title:    gogithub.String(title),
+		Key:      gogithub.String(publicKey),
+		ReadOnly: gogithub.Bool(key.Spec.ReadOnly),
+	})
+	if err != nil {
+		return backend.DeployKeyResult{}, classify(resp, err)
+	}
+	return backend.DeployKeyResult{KeyID: strconv.FormatInt(created.GetID(), 10)}, nil
 }
 
-func (b *Backend) DeleteDeployKey(_ context.Context, _ *codev1alpha1.Connection, _ backend.Credential, _ *codev1alpha1.Repository, _ string) error {
-	return errNotImplemented
+// DeleteDeployKey removes the key identified by keyID. Idempotent: an empty or
+// missing key is success.
+func (b *Backend) DeleteDeployKey(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, keyID string) error {
+	if keyID == "" {
+		return nil
+	}
+	id, err := strconv.ParseInt(keyID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("github: invalid deploy key id %q: %w", keyID, err)
+	}
+	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
+	if err != nil {
+		return err
+	}
+	resp, err := c.Repositories.DeleteKey(ctx, owner(conn, repo), repo.Spec.Name, id)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return nil
+		}
+		return classify(resp, err)
+	}
+	return nil
 }
 
-func (b *Backend) EnsureCollaborator(_ context.Context, _ *codev1alpha1.Connection, _ backend.Credential, _ *codev1alpha1.Repository, _ *codev1alpha1.Collaborator) (backend.CollaboratorResult, error) {
-	return backend.CollaboratorResult{}, errNotImplemented
+// EnsureCollaborator grants the user the requested permission. Idempotent.
+// Pending is true when GitHub created an invitation the user must still accept
+// (the usual case for someone who is not already a member/collaborator).
+func (b *Backend) EnsureCollaborator(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, collab *codev1alpha1.Collaborator) (backend.CollaboratorResult, error) {
+	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
+	if err != nil {
+		return backend.CollaboratorResult{}, err
+	}
+	perm := string(collab.Spec.Permission)
+	if perm == "" {
+		perm = string(codev1alpha1.PermissionPull)
+	}
+	inv, resp, err := c.Repositories.AddCollaborator(ctx, owner(conn, repo), repo.Spec.Name, collab.Spec.Username, &gogithub.RepositoryAddCollaboratorOptions{Permission: perm})
+	if err != nil {
+		return backend.CollaboratorResult{}, classify(resp, err)
+	}
+	// 204 No Content => the user was already a collaborator (no invitation).
+	if resp != nil && resp.StatusCode == http.StatusNoContent {
+		return backend.CollaboratorResult{Pending: false}, nil
+	}
+	if inv != nil && inv.GetID() != 0 {
+		return backend.CollaboratorResult{Pending: true, InvitationID: strconv.FormatInt(inv.GetID(), 10)}, nil
+	}
+	return backend.CollaboratorResult{Pending: false}, nil
 }
 
-func (b *Backend) RemoveCollaborator(_ context.Context, _ *codev1alpha1.Connection, _ backend.Credential, _ *codev1alpha1.Repository, _ *codev1alpha1.Collaborator) error {
-	return errNotImplemented
+// RemoveCollaborator revokes the grant and cancels any pending invitation.
+// Idempotent.
+func (b *Backend) RemoveCollaborator(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, collab *codev1alpha1.Collaborator) error {
+	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
+	if err != nil {
+		return err
+	}
+	org := owner(conn, repo)
+
+	// Cancel a still-pending invitation (RemoveCollaborator only affects
+	// accepted collaborators, so an outstanding invite would otherwise linger).
+	invites, resp, err := c.Repositories.ListInvitations(ctx, org, repo.Spec.Name, &gogithub.ListOptions{PerPage: 100})
+	if err == nil {
+		for _, inv := range invites {
+			if inv.GetInvitee() != nil && strings.EqualFold(inv.GetInvitee().GetLogin(), collab.Spec.Username) {
+				if _, derr := c.Repositories.DeleteInvitation(ctx, org, repo.Spec.Name, inv.GetID()); derr != nil {
+					return fmt.Errorf("github: cancel invitation for %q: %w", collab.Spec.Username, derr)
+				}
+			}
+		}
+	} else if resp == nil || resp.StatusCode != http.StatusNotFound {
+		return classify(resp, err)
+	}
+
+	resp, err = c.Repositories.RemoveCollaborator(ctx, org, repo.Spec.Name, collab.Spec.Username)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return nil
+		}
+		return classify(resp, err)
+	}
+	return nil
+}
+
+// sameKeyMaterial compares two OpenSSH public keys by type + base64 body,
+// ignoring the trailing comment GitHub may add or strip.
+func sameKeyMaterial(a, b string) bool {
+	fa := strings.Fields(a)
+	fb := strings.Fields(b)
+	if len(fa) < 2 || len(fb) < 2 {
+		return false
+	}
+	return fa[0] == fb[0] && fa[1] == fb[1]
 }
 
 // repoResult maps a go-github Repository to the backend result shape.

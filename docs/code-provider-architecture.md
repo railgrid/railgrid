@@ -129,8 +129,13 @@ Manifest specifics (the corrections vs infra):
   backend is registered in place of the stub, and the provider now ensures its
   `APIExportEndpointSlice` at startup (section 8). The Connection + Repository controllers were
   already functional against the registry, so they pick up the real backend unchanged.
-- **PR C — access + MCP + portal:** deploy keys + collaborators (controllers + the github
-  backend's remaining methods), real MCP tools, portal views.
+- **PR C — access + MCP (done):** the github backend's deploy-key + collaborator methods
+  (idempotent), the DeployKey controller (ed25519 keygen when no BYO key → private-key Secret
+  owned by the CR) and Collaborator controller (grant/revoke + InvitationPending), and CRD-native
+  MCP write tools (`create_connection`, `create`/`delete_repository`, `add_deploy_key`,
+  `add`/`remove_collaborator`).
+- **PR D — portal:** Connections (paste PAT → Secret + Connection, show validation), Repositories
+  (list/create/delete), RepoDetail (deploy keys + collaborators).
 - **Later:** GitLab backend; `github-app`/`oauth` credential types (per-user UI onboarding).
 
 ## 8. Resolved: APIExportEndpointSlice

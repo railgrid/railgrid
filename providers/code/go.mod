@@ -7,6 +7,7 @@ require (
 	github.com/kcp-dev/multicluster-provider v0.7.1-0.20260515112510-8f4137891edf
 	github.com/kcp-dev/sdk v0.31.1
 	github.com/modelcontextprotocol/go-sdk v1.3.1
+	golang.org/x/crypto v0.50.0
 	golang.org/x/oauth2 v0.36.0
 	k8s.io/api v0.36.1
 	k8s.io/apimachinery v0.36.1
