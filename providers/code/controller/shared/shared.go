@@ -19,6 +19,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,29 +41,18 @@ func ClusterClient(ctx context.Context, mgr mcmanager.Manager, clusterName multi
 	return cl.GetClient(), nil
 }
 
-// SetCondition upserts a condition keyed by type, stamping ObservedGeneration.
+// SetCondition upserts a condition keyed by type. It delegates to apimachinery's
+// meta.SetStatusCondition, which manages LastTransitionTime (set to now when the
+// status changes, preserved otherwise) — a required field the API server does
+// NOT default, so it must be stamped client-side.
 func SetCondition(conds *[]metav1.Condition, condType string, status metav1.ConditionStatus, reason, msg string, observedGen int64) {
-	meta := metav1.Condition{
+	apimeta.SetStatusCondition(conds, metav1.Condition{
 		Type:               condType,
 		Status:             status,
 		Reason:             reason,
 		Message:            msg,
 		ObservedGeneration: observedGen,
-	}
-	for i := range *conds {
-		if (*conds)[i].Type == condType {
-			// Preserve LastTransitionTime only when status is unchanged;
-			// apimachinery's meta.SetStatusCondition would do this for us,
-			// but we avoid the dep here and let the API server default the
-			// timestamp on write when it is zero.
-			(*conds)[i].Status = meta.Status
-			(*conds)[i].Reason = meta.Reason
-			(*conds)[i].Message = meta.Message
-			(*conds)[i].ObservedGeneration = meta.ObservedGeneration
-			return
-		}
-	}
-	*conds = append(*conds, meta)
+	})
 }
 
 // ResolveConnection fetches the Connection named ref in the same (cluster-scoped)
