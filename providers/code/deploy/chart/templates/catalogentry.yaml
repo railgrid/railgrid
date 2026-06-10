@@ -1,0 +1,47 @@
+{{- if .Values.catalogEntry.enabled -}}
+# CatalogEntry registers this provider with the kedge hub. The hub's catalog
+# controller materializes root:kedge:providers:code, mints
+# kedge-provider-kubeconfig into serviceAccountNamespace, applies the four
+# APIResourceSchemas below, and creates the APIExport tenants APIBind to.
+#
+# The schemas[] bodies are loaded from files/schemas/*.yaml (the apigen output,
+# kept in sync via `make codegen-code-provider`). The filename (minus .yaml) is
+# the groupResource. This is the same content as providers/code/manifest.yaml.
+apiVersion: providers.kedge.faros.sh/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: code
+  labels:
+    {{- include "code.labels" . | nindent 4 }}
+spec:
+  displayName: "Code"
+  description: "Manage source-code repositories and access across git providers (GitHub)."
+  vendor: "kedge"
+  version: {{ .Chart.AppVersion | quote }}
+  category: "Developer"
+  iconURL: "/ui/providers/code/icon.svg"
+  serviceAccountNamespace: {{ .Release.Namespace }}
+  ui:
+    url: "http://{{ include "code.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+    indexPath: "/"
+    children:
+      - displayName: Connections
+        builtinRoute: connections
+      - displayName: Repositories
+        builtinRoute: repositories
+  backend:
+    url: "http://{{ include "code.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+    healthPath: "/healthz"
+  apiExport:
+    name: "code.providers.kedge.faros.sh"
+    permissionClaims:
+      - resource: secrets
+        verbs: [get, list, watch, create, update, patch, delete]
+        tenantScoped: true
+    schemas:
+    {{- range $path, $_ := .Files.Glob "files/schemas/*.yaml" }}
+      - groupResource: {{ base $path | trimSuffix ".yaml" }}
+        body: |
+{{ $.Files.Get $path | indent 10 }}
+    {{- end }}
+{{- end }}

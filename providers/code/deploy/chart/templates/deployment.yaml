@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "code.fullname" . }}
+  labels:
+    {{- include "code.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "code.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "code.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "code.serviceAccountName" . }}
+      containers:
+        - name: provider
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: 8083
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          env:
+            - name: PORT
+              value: "8083"
+            - name: KEDGE_HUB_URL
+              value: {{ .Values.hub.url | quote }}
+            - name: KEDGE_PROVIDER_NAME
+              value: "code"
+            {{- if .Values.hub.insecure }}
+            - name: KEDGE_HUB_INSECURE
+              value: "true"
+            {{- end }}
+            {{- if .Values.hub.tokenSecretRef.name }}
+            - name: KEDGE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.tokenSecretRef.name }}
+                  key: {{ .Values.hub.tokenSecretRef.key }}
+            {{- end }}
+            # Points the multicluster controller manager at the hub-minted
+            # provider kubeconfig (mounted below).
+            - name: CODE_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+          volumeMounts:
+            - name: kedge-provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: kedge-provider-kubeconfig
+          secret:
+            # Hub-provisioned: optional so the pod stays schedulable while the
+            # hub catalog controller mints the Secret. The provider serves
+            # MCP/portal reads meanwhile; the controller manager starts once the
+            # kubeconfig appears (pod restart on Secret mount).
+            secretName: {{ .Values.providerKubeconfig.secretName }}
+            optional: true
+            items:
+              - key: kubeconfig
+                path: kedge-provider-kubeconfig
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

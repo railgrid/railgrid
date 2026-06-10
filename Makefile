@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -122,6 +122,12 @@ build-infrastructure-provider-portal: ## Build the infrastructure provider's mic
 build-infrastructure-provider: build-infrastructure-provider-portal ## Build the infrastructure provider binary (portal embedded)
 	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/infrastructure-provider .
 
+build-code-provider-portal: ## Build the code provider's micro-frontend (Vite + Vue → portal/dist)
+	cd providers/code/portal && npm install --no-audit --no-fund && npm run build
+
+build-code-provider: build-code-provider-portal ## Build the code provider binary (portal embedded)
+	cd providers/code && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/code-provider .
+
 ## Generate deepcopy methods + CRD YAML for the infrastructure provider's
 ## own API types (providers/infrastructure/apis/v1alpha1/...). The CRDs land
 ## under providers/infrastructure/config/crds/ and are embedded into the
@@ -133,6 +139,25 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/infrastructure/config/crds
+	./hack/ensure-boilerplate.sh
+
+## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the code
+## provider's own API types, then re-assemble manifest.yaml (inline schemas)
+## and sync the schema bodies into the Helm chart's files/schemas/. Unlike
+## infrastructure (schemas: []), the code provider ships its four CRDs as
+## static schemas the hub applies, so they must be regenerated here.
+codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the code provider's local API (+ manifest + chart schemas)
+	@mkdir -p providers/code/config/crds providers/code/config/kcp providers/code/deploy/chart/files/schemas
+	cd providers/code && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
+	./$(KCP_APIGEN_GEN) --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
+	python3 providers/code/hack/gen-manifest.py
+	@for r in connections repositories deploykeys collaborators; do \
+		cp providers/code/config/kcp/apiresourceschema-$$r.code.kedge.faros.sh.yaml \
+		   providers/code/deploy/chart/files/schemas/$$r.code.kedge.faros.sh.yaml; \
+	done
 	./hack/ensure-boilerplate.sh
 
 test:
@@ -655,6 +680,43 @@ init-provider-infrastructure: build-infrastructure-provider ## Bootstrap infrast
 	INFRASTRUCTURE_KUBECONFIG=$(INFRASTRUCTURE_RUNTIME_KUBECONFIG) \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 		$(BINDIR)/infrastructure-provider init
+
+# ── code provider (git repository management) ──────────────────────────────
+# Local-dev flow mirrors the infrastructure provider:
+#   Terminal 1: make run-hub-embedded-static          # hub + embedded kcp
+#   Terminal 2: make install-provider-code            # admin: register entry
+#   Terminal 3: make run-provider-code                # tenant: run binary
+CODE_PORT ?= 8083
+CODE_MANIFEST ?= providers/code/manifest.yaml
+CODE_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/code-runtime.kubeconfig
+
+run-provider-code: build-code-provider ## Run the code provider (requires: make run-hub-embedded-static + make install-provider-code)
+	@echo "Starting code provider on :$(CODE_PORT) (hub $(KROMC_HUB_URL))"
+	PORT=$(CODE_PORT) \
+	KEDGE_HUB_URL=$(KROMC_HUB_URL) \
+	KEDGE_HUB_TOKEN=$(KROMC_TOKEN) \
+	KEDGE_HUB_INSECURE=true \
+	KEDGE_PROVIDER_NAME=code \
+	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+	CODE_KUBECONFIG=$${CODE_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
+		$(BINDIR)/code-provider serve
+
+install-provider-code: ## Apply the code CatalogEntry into root:kedge:providers
+	@test -f $(KROMC_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		apply -f $(CODE_MANIFEST)
+
+uninstall-provider-code: ## Delete the code CatalogEntry
+	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		delete -f $(CODE_MANIFEST)
 
 # --- Experimental: run the infrastructure provider as a POD (init-container
 #     bootstrap) instead of a host binary. Exercises the full hub-minted

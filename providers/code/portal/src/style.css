@@ -1,0 +1,50 @@
+/*
+ * code provider element styles. Imported as a string by main.ts and injected
+ * as one <style> tag in the host document. The element renders in LIGHT DOM so
+ * the portal's CSS custom properties cascade in; every selector is namespaced
+ * under kedge-provider-code so these styles cannot leak into the portal.
+ */
+
+kedge-provider-code {
+  display: block;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: var(--color-text-primary, inherit);
+}
+
+kedge-provider-code .code-tabs {
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--color-border, #2a2a2a);
+  margin-bottom: 1rem;
+}
+
+kedge-provider-code .code-tabs button {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  color: var(--color-text-secondary, #999);
+  font: inherit;
+}
+
+kedge-provider-code .code-tabs button.active {
+  color: var(--color-text-primary, inherit);
+  border-bottom-color: var(--color-accent, #4f8cff);
+}
+
+kedge-provider-code .code-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.25rem;
+}
+
+kedge-provider-code .code-muted {
+  color: var(--color-text-secondary, #999);
+  max-width: 60ch;
+}
+
+kedge-provider-code .code-todo {
+  margin-top: 1rem;
+  font-style: italic;
+  color: var(--color-text-secondary, #777);
+}
