@@ -1,5 +1,18 @@
 # Quickstart provider
 
+> [!IMPORTANT]
+> **Read-only mirror — do not push or open PRs here.**
+> The standalone [`faroshq/provider-quickstart`](https://github.com/faroshq/provider-quickstart)
+> repository is **automatically synced** from the kedge monorepo
+> [`faroshq/kedge`](https://github.com/faroshq/kedge) (path `providers/quickstart/`)
+> via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
+> the mirror, so any direct change here is overwritten. File issues and PRs
+> against [`faroshq/kedge`](https://github.com/faroshq/kedge) instead.
+>
+> This is also the canonical "copy me" template for a standalone provider repo:
+> it ships its own `Dockerfile`, Helm chart (`deploy/chart/`), and release
+> workflows that build the image + chart on every sync/tag.
+
 A minimal reference provider proving the kedge plugin surface end-to-end.
 See [docs/providers.md](../../docs/providers.md) for the architecture this
 example demonstrates.

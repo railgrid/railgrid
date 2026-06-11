@@ -5,9 +5,16 @@ name: Split quickstart provider
 #
 # Uses splitsh-lite (https://github.com/splitsh/lite) which is deterministic:
 # the same source always splits to the same commit sha1s, so pushes normally
-# fast-forward. Runs on every push to main (mirrors the branch) and on v* tags
-# (mirrors the tag). workflow_dispatch is provided for the initial seed / manual
-# re-sync.
+# fast-forward. Runs on every push to main (mirrors the branch) and on
+# per-provider release tags (see below). workflow_dispatch is provided for the
+# initial seed / manual re-sync. It also runs on PRs that touch the split
+# surface, but those only validate (install + split) — the deploy-key and push
+# steps are gated to non-PR events, so a PR never writes to the mirror.
+#
+# Releases are tagged per-provider in the monorepo as
+# `providers/quickstart/vX.Y.Z`; the prefix is stripped on the way out, so the
+# mirror receives a plain `vX.Y.Z` tag (which then triggers its own image/chart
+# release workflows). A repo-wide `vX.Y.Z` tag does NOT release the mirror.
 #
 # Required secret: QUICKSTART_DEPLOY_KEY
 #   An SSH private key whose public half is added as a *write* deploy key on
@@ -16,7 +23,12 @@ name: Split quickstart provider
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['providers/quickstart/v*']
+  pull_request:
+    branches: [main]
+    paths:
+      - 'providers/quickstart/**'
+      - '.github/workflows/split-quickstart.yaml'
   workflow_dispatch:
 
 permissions:
@@ -49,12 +61,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
+          # The v1.0.1 tarball stores the binary as ./splitsh-lite (leading
+          # ./), so GNU tar won't match a bare `splitsh-lite` member name.
           curl -fsSL "https://github.com/splitsh/lite/releases/download/${SPLITSH_VERSION}/lite_linux_amd64.tar.gz" \
-            | tar -xz -C "$HOME/.local/bin" splitsh-lite
+            | tar -xz -C "$HOME/.local/bin" ./splitsh-lite
           chmod +x "$HOME/.local/bin/splitsh-lite"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Set up SSH deploy key
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
@@ -71,21 +86,40 @@ jobs:
           EOF
           chmod 600 ~/.ssh/config
 
-      - name: Split and push to mirror
+      - name: Compute split
         run: |
           set -euo pipefail
 
           # Deterministic split of the provider subtree. The resulting commit
           # objects are written into the local object store, so they can be
-          # pushed directly by sha.
-          SHA="$(splitsh-lite --prefix="${PREFIX}" --origin="${GITHUB_SHA}")"
+          # pushed directly by sha. Runs on every event (incl. PRs) so it
+          # validates the install + split end-to-end without publishing.
+          #
+          # --origin takes a git REF, not a raw commit hash; HEAD is the
+          # checked-out commit (the pushed tip, or the PR merge commit) and
+          # resolves cleanly where a bare ${GITHUB_SHA} does not. Capture via a
+          # file so splitsh-lite's own output isn't swallowed by $(...) on error.
+          splitsh-lite --prefix="${PREFIX}" --origin=HEAD | tee /tmp/split-sha
+          SHA="$(tail -n1 /tmp/split-sha)"
+          [ -n "${SHA}" ] || { echo "split produced no sha"; exit 1; }
           echo "Split sha: ${SHA}"
+          echo "SPLIT_SHA=${SHA}" >> "$GITHUB_ENV"
+
+      - name: Push to mirror
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          SHA="${SPLIT_SHA}"
 
           git remote add mirror "${TARGET_REPO}"
 
           if [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            echo "Publishing tag ${TAG} -> ${TARGET_REPO}"
+            # Per-provider tag: refs/tags/providers/quickstart/vX.Y.Z. Strip the
+            # path prefix (everything up to the last '/') so the mirror gets a
+            # plain vX.Y.Z tag.
+            FULL_TAG="${GITHUB_REF#refs/tags/}"
+            TAG="${FULL_TAG##*/}"
+            echo "Publishing tag ${FULL_TAG} -> ${TARGET_REPO} as ${TAG}"
             # Tags are immutable; push without force so an accidental re-tag fails loudly.
             git push mirror "${SHA}:refs/tags/${TAG}"
           else
