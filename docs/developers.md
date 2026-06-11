@@ -246,6 +246,17 @@ kedge dev delete
 
 ## Troubleshooting
 
+### Tilt-cluster E2E: a resource never becomes Ready
+
+The `Tilt E2E` workflow waits for each Tilt resource (e.g. `kedge-hub`) to reach
+`update=ok runtime=ok`. When one times out, the wait helper now prints a
+collapsible **`diagnostics for stuck resource '<name>'`** group in the job log
+containing: the resource's own Tilt logs (e.g. the hub's klog stdout, which
+shows where bootstrap stalled), a cluster-wide `kubectl get pods -A`, a
+describe + log tail for every non-Running pod, and the recent cluster events.
+Open that group first when a run times out — it usually points straight at the
+stuck step (slow kcp bootstrap, a crashlooping pod, an image pull, …).
+
 ### Hub chart not found
 
 If you see:
