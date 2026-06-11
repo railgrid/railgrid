@@ -54,6 +54,9 @@ build: build-kedge build-hub build-graphql
 build-kedge:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge ./cmd/kedge/
 
+build-kedge-release: ## Build the release-tagging helper (kedge-release <component|all>)
+	go build $(GOFLAGS) -o $(BINDIR)/kedge-release ./cmd/kedge-release/
+
 build-hub: build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
