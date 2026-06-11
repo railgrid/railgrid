@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
-import type { Collaborator, DeployKey, ErrorResponse, Repository } from '../types'
+import type { Collaborator, Connection, DeployKey, ErrorResponse, Package, Repository } from '../types'
 
 const props = defineProps<{ name: string }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
@@ -10,6 +10,32 @@ const repo = ref<Repository | null>(null)
 const keys = ref<DeployKey[]>([])
 const collabs = ref<Collaborator[]>([])
 const error = ref<string | null>(null)
+
+// connection switching
+const connections = ref<Connection[]>([])
+const selectedConn = ref('')
+const changingConn = ref(false)
+const connError = ref<string | null>(null)
+
+// packages (read-only; crawled into Package CRs, read via GraphQL, best-effort)
+const packages = ref<Package[]>([])
+const packagesError = ref<string | null>(null)
+
+const currentConn = computed(() => connections.value.find(c => c.name === repo.value?.connectionRef))
+const newConn = computed(() => connections.value.find(c => c.name === selectedConn.value))
+// Effective owner = the repo's per-repo override, else the connection's owner.
+const currentOwner = computed(() => repo.value?.owner || currentConn.value?.owner || '')
+const newOwner = computed(() => repo.value?.owner || newConn.value?.owner || '')
+// Swapping only re-targets the host account when there is no spec.owner override
+// and the two connections' owners differ.
+const ownerWillChange = computed(() =>
+  !!repo.value &&
+  selectedConn.value !== repo.value.connectionRef &&
+  !repo.value.owner &&
+  !!newConn.value &&
+  !!currentConn.value &&
+  newConn.value.owner !== currentConn.value.owner,
+)
 
 // deploy key form
 const keyTitle = ref('')
@@ -29,17 +55,56 @@ let timer: number | undefined
 async function load() {
   error.value = null
   try {
-    const [r, k, c] = await Promise.all([
+    const [r, k, c, conns] = await Promise.all([
       api.getRepository(props.name),
       api.listDeployKeys(props.name),
       api.listCollaborators(props.name),
+      api.listConnections(),
     ])
     repo.value = r
     keys.value = k
     collabs.value = c
+    connections.value = conns
+    // Seed the selector once; don't clobber an in-progress user choice on the poll.
+    if (selectedConn.value === '') selectedConn.value = r.connectionRef
   } catch (e) {
     const err = e as ErrorResponse
     if (err.reason !== 'TenantMissing') error.value = `${err.reason}: ${err.message}`
+  }
+  // Packages are best-effort: a failure here (gateway unreachable, not yet
+  // crawled) must not blank the rest of the page.
+  await loadPackages()
+}
+
+async function loadPackages() {
+  packagesError.value = null
+  try {
+    packages.value = await api.listPackages(props.name)
+  } catch (e) {
+    const err = e as ErrorResponse
+    if (err.reason !== 'TenantMissing') packagesError.value = `${err.reason}: ${err.message}`
+  }
+}
+
+async function changeConnection() {
+  if (!repo.value || selectedConn.value === repo.value.connectionRef) return
+  const msg = ownerWillChange.value
+    ? `Change connection to "${selectedConn.value}"?\n\n` +
+      `Its owner (${newOwner.value}) differs from the current (${currentOwner.value}). ` +
+      `The repository will be re-targeted to that account — a new repo may be created there, ` +
+      `and the existing repo on ${currentOwner.value} is left untouched.`
+    : `Change connection to "${selectedConn.value}"?`
+  if (!confirm(msg)) return
+  changingConn.value = true
+  connError.value = null
+  try {
+    await api.updateRepositoryConnection(repo.value.name, selectedConn.value)
+    await load()
+  } catch (e) {
+    const err = e as ErrorResponse
+    connError.value = `${err.reason}: ${err.message}`
+  } finally {
+    changingConn.value = false
   }
 }
 
@@ -130,7 +195,25 @@ onUnmounted(() => window.clearInterval(timer))
     <div v-if="repo" class="panel">
       <h3 class="panel-title">Overview</h3>
       <dl class="props">
-        <dt>Connection</dt><dd>{{ repo.connectionRef }}</dd>
+        <dt>Connection</dt>
+        <dd>
+          <div class="conn-edit">
+            <select v-model="selectedConn" :disabled="changingConn">
+              <option v-for="c in connections" :key="c.name" :value="c.name">{{ c.name }} ({{ c.owner }})</option>
+            </select>
+            <button
+              class="primary"
+              :disabled="changingConn || selectedConn === repo.connectionRef"
+              @click="changeConnection"
+            >{{ changingConn ? 'Changing…' : 'Change' }}</button>
+          </div>
+          <p v-if="ownerWillChange" class="conn-warn">
+            ⚠ Owner <code>{{ newOwner }}</code> differs from current <code>{{ currentOwner }}</code> —
+            this re-targets the repo to a different account and may create a new repo there.
+          </p>
+          <p v-else-if="selectedConn !== repo.connectionRef" class="muted">Same owner — only the managing credential changes.</p>
+          <span v-if="connError" class="error">{{ connError }}</span>
+        </dd>
         <dt>Visibility</dt><dd>{{ repo.visibility }}</dd>
         <dt v-if="repo.cloneURL">Clone URL</dt><dd v-if="repo.cloneURL"><code>{{ repo.cloneURL }}</code></dd>
         <dt v-if="repo.sshURL">SSH URL</dt><dd v-if="repo.sshURL"><code>{{ repo.sshURL }}</code></dd>
@@ -212,6 +295,36 @@ onUnmounted(() => window.clearInterval(timer))
           </tbody>
         </table>
       </div>
+    </div>
+
+    <!-- Packages (read-only) -->
+    <div class="panel">
+      <div class="panel-head">
+        <h3 class="panel-title">Packages</h3>
+        <span class="muted">{{ packages.length }}</span>
+      </div>
+      <p v-if="packagesError" class="error">{{ packagesError }}</p>
+      <p v-else-if="!packages.length" class="empty">No packages published to this repository yet.</p>
+      <table v-else class="table">
+        <thead>
+          <tr><th>Package</th><th>Type</th><th>Visibility</th><th>Versions</th><th></th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="p in packages" :key="p.type + '/' + p.name">
+            <td>
+              <strong v-if="p.htmlURL"><a :href="p.htmlURL" target="_blank" rel="noopener">{{ p.name }}</a></strong>
+              <strong v-else>{{ p.name }}</strong>
+            </td>
+            <td><span class="badge muted">{{ p.type }}</span></td>
+            <td><span class="muted">{{ p.visibility || '—' }}</span></td>
+            <td><span class="muted">{{ p.versionCount || 0 }}</span></td>
+            <td class="right">
+              <a v-if="p.htmlURL" class="link" :href="p.htmlURL" target="_blank" rel="noopener">View ↗</a>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="muted">Packages appear automatically when artifacts are pushed (e.g. <code>docker push</code>, <code>npm publish</code>).</p>
     </div>
   </section>
 </template>

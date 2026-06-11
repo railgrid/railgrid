@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	gogithub "github.com/google/go-github/v66/github"
 	"golang.org/x/oauth2"
@@ -272,6 +273,91 @@ func (b *Backend) RemoveCollaborator(ctx context.Context, conn *codev1alpha1.Con
 		return classify(resp, err)
 	}
 	return nil
+}
+
+// packageTypes are GitHub's package ecosystems. The list-packages API REQUIRES
+// a package_type filter, so we query each ecosystem and merge the results.
+var packageTypes = []string{"container", "docker", "npm", "maven", "rubygems", "nuget"}
+
+// ListPackages returns the packages published under repo's owner that are linked
+// to repo. GitHub has no per-repository packages endpoint, so we list the
+// owner's packages per ecosystem (org endpoint, falling back to the user
+// endpoint when the owner is a user account) and filter by repository. Read-only
+// — packages are created by pushing artifacts, not through this call.
+func (b *Backend) ListPackages(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository) ([]backend.PackageInfo, error) {
+	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	org := owner(conn, repo)
+
+	var out []backend.PackageInfo
+	for _, pt := range packageTypes {
+		pkgs, err := listPackagesOfType(ctx, c, org, pt)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range pkgs {
+			if p.GetRepository() == nil || !strings.EqualFold(p.GetRepository().GetName(), repo.Spec.Name) {
+				continue
+			}
+			out = append(out, packageInfo(p))
+		}
+	}
+	return out, nil
+}
+
+// listPackagesOfType pages through one ecosystem's packages for org. It tries
+// the organization endpoint first and falls back to the user endpoint on the
+// "owner is a user, not an org" 404 (same signal EnsureRepository handles).
+func listPackagesOfType(ctx context.Context, c *gogithub.Client, org, pkgType string) ([]*gogithub.Package, error) {
+	opt := &gogithub.PackageListOptions{
+		PackageType: gogithub.String(pkgType),
+		ListOptions: gogithub.ListOptions{PerPage: 100},
+	}
+	var all []*gogithub.Package
+	asUser := false
+	for {
+		var (
+			page []*gogithub.Package
+			resp *gogithub.Response
+			err  error
+		)
+		if asUser {
+			page, resp, err = c.Users.ListPackages(ctx, org, opt)
+		} else {
+			page, resp, err = c.Organizations.ListPackages(ctx, org, opt)
+			if err != nil && isNotOrg(resp) {
+				asUser = true
+				continue // re-issue the same page against the user endpoint
+			}
+		}
+		if err != nil {
+			return nil, classify(resp, err)
+		}
+		all = append(all, page...)
+		if resp == nil || resp.NextPage == 0 {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+	return all, nil
+}
+
+// packageInfo maps a go-github Package to the backend result shape.
+func packageInfo(p *gogithub.Package) backend.PackageInfo {
+	updated := ""
+	if t := p.GetUpdatedAt(); !t.IsZero() {
+		updated = t.UTC().Format(time.RFC3339)
+	}
+	return backend.PackageInfo{
+		Name:         p.GetName(),
+		Type:         p.GetPackageType(),
+		Visibility:   p.GetVisibility(),
+		HTMLURL:      p.GetHTMLURL(),
+		VersionCount: p.GetVersionCount(),
+		UpdatedAt:    updated,
+	}
 }
 
 // sameKeyMaterial compares two OpenSSH public keys by type + base64 body,

@@ -126,6 +126,20 @@ kedge-provider-code .props dd {
   word-break: break-all;
 }
 
+/* Inline connection switcher on the detail page */
+kedge-provider-code .conn-edit {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+kedge-provider-code .conn-edit select {
+  flex: 1;
+  min-width: 0;
+}
+kedge-provider-code .conn-warn {
+  margin: 6px 0 0;
+  color: var(--color-warning, #fbbf24);
+}
 /* Tables */
 kedge-provider-code .table {
   width: 100%;
@@ -257,7 +271,8 @@ kedge-provider-code .field input,
 kedge-provider-code .field select,
 kedge-provider-code .field textarea,
 kedge-provider-code .inline-form input,
-kedge-provider-code .inline-form select {
+kedge-provider-code .inline-form select,
+kedge-provider-code .conn-edit select {
   background: var(--color-surface-overlay, #14141f);
   color: var(--color-text-primary, inherit);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.08));

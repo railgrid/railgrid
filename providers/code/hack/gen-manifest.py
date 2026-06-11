@@ -21,6 +21,7 @@ SCHEMAS = [
     ("repositories.code.kedge.faros.sh", "apiresourceschema-repositories.code.kedge.faros.sh.yaml"),
     ("deploykeys.code.kedge.faros.sh", "apiresourceschema-deploykeys.code.kedge.faros.sh.yaml"),
     ("collaborators.code.kedge.faros.sh", "apiresourceschema-collaborators.code.kedge.faros.sh.yaml"),
+    ("packages.code.kedge.faros.sh", "apiresourceschema-packages.code.kedge.faros.sh.yaml"),
 ]
 
 HEADER = """\
@@ -65,6 +66,8 @@ spec:
         builtinRoute: connections
       - displayName: Repositories
         builtinRoute: repositories
+      - displayName: Packages
+        builtinRoute: packages
   backend:
     url: "http://localhost:8083"
     healthPath: "/healthz"

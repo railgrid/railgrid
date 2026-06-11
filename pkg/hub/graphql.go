@@ -79,7 +79,7 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	listenerOpts := listeneroptions.NewOptions()
 	listenerOpts.Provider = "kcp"
 	listenerOpts.SchemaHandler = "grpc"
-	listenerOpts.KubeConfig = kubeconfigPath
+	listenerOpts.Common.Kubeconfig = kubeconfigPath
 	listenerOpts.GRPCListenAddr = grpcAddr
 	// The default anchor (`namespaces.v1` / name=='default') doesn't work
 	// against a kcp APIExport virtual workspace — the VW doesn't surface the
@@ -101,32 +101,44 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 		cleanup()
 		return fmt.Errorf("completing listener options: %w", err)
 	}
-	// The kcp provider's Complete() installs a ClusterURLResolverFunc that
-	// rewrites the APIExport VW URL emitted by the multicluster provider to a
-	// workspace URL (<shard>/clusters/<id>). Only the VW URL surfaces the bound
-	// CRD schemas in OpenAPI v3, so use identity here to keep schema discovery
-	// pointed at the VW.
-	listenerCompleted.ClusterURLResolverFunc = gatewayv1alpha1.DefaultClusterURLResolverFunc
-
-	// The kcp provider also defaults ClusterMetadataFunc to the shard kubeconfig
-	// host (which may be a different shard than the one hosting the workspace).
-	// In a multi-shard topology that yields empty discovery responses for the
-	// cross-shard workspaces — the gateway resolver then trips
-	// `no matches for kind` even though the schema is correct. Route gateway
-	// runtime traffic through the front-proxy so kcp picks the right shard per
-	// workspace.
+	// Both schema discovery (ClusterURLResolverFunc) and runtime data resolution
+	// (ClusterMetadataFunc) target the full workspace via the front-proxy
+	// (<frontproxy>/clusters/<id>) — NOT the per-APIExport virtual workspace the
+	// multicluster provider emits.
+	//
+	// Pointing schema discovery at the workspace endpoint means its aggregated
+	// /openapi/v3 surfaces every bound API group (all APIBindings in the
+	// workspace), so the generated GraphQL schema covers the whole workspace
+	// rather than just the single APIExport behind GraphQLAPIExportSliceName.
+	// (This relies on kcp surfacing bound CRD schemas in the workspace's
+	// aggregated /openapi/v3.)
+	//
+	// The front-proxy (rather than a shard-direct host) lets kcp route to the
+	// shard actually hosting each workspace: in a multi-shard topology a
+	// shard-direct host yields empty discovery for cross-shard workspaces and
+	// the gateway resolver then trips `no matches for kind`.
 	frontProxyHost := kcpFrontProxyConfig.Host
+	workspaceURL := func(clusterName string) (string, error) {
+		parsed, err := url.Parse(frontProxyHost)
+		if err != nil {
+			return "", fmt.Errorf("parsing front-proxy host %q: %w", frontProxyHost, err)
+		}
+		parsed.Path = path.Join("/clusters", clusterName)
+		return parsed.String(), nil
+	}
+	listenerCompleted.ClusterURLResolverFunc = func(_ string, clusterName string) (string, error) {
+		return workspaceURL(clusterName)
+	}
 	listenerCompleted.ClusterMetadataFunc = func(clusterName string) (*gatewayv1alpha1.ClusterMetadata, error) {
 		metadata, err := gatewayv1alpha1.BuildClusterMetadataFromConfig(kcpFrontProxyConfig)
 		if err != nil {
 			return nil, fmt.Errorf("building front-proxy cluster metadata: %w", err)
 		}
-		parsed, err := url.Parse(frontProxyHost)
+		host, err := workspaceURL(clusterName)
 		if err != nil {
-			return nil, fmt.Errorf("parsing front-proxy host %q: %w", frontProxyHost, err)
+			return nil, err
 		}
-		parsed.Path = path.Join("/clusters", clusterName)
-		metadata.Host = parsed.String()
+		metadata.Host = host
 		return metadata, nil
 	}
 	if err := listenerCompleted.Validate(); err != nil {

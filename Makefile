@@ -154,7 +154,7 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
 	python3 providers/code/hack/gen-manifest.py
-	@for r in connections repositories deploykeys collaborators; do \
+	@for r in connections repositories deploykeys collaborators packages; do \
 		cp providers/code/config/kcp/apiresourceschema-$$r.code.kedge.faros.sh.yaml \
 		   providers/code/deploy/chart/files/schemas/$$r.code.kedge.faros.sh.yaml; \
 	done

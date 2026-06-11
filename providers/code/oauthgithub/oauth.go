@@ -83,7 +83,8 @@ func FromEnv() (cfg Config, enabled bool, err error) {
 	}
 	scopes := os.Getenv("GITHUB_OAUTH_SCOPES")
 	if scopes == "" {
-		scopes = "repo,read:org,admin:public_key"
+		// read:packages lets the portal list the packages published under a repo.
+		scopes = "repo,read:org,admin:public_key,read:packages"
 	}
 	for _, s := range strings.Split(scopes, ",") {
 		if s = strings.TrimSpace(s); s != "" {

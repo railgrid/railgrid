@@ -1,0 +1,97 @@
+## kedge-code-provider values
+## See providers/code/README.md for the deploy guide and the credential /
+## GitHub OAuth conventions the portal expects.
+
+# Container image. Build with: docker build -t IMAGE providers/code/
+image:
+  repository: ghcr.io/faroshq/kedge-code-provider
+  tag: ""  # empty → defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# Number of Deployment replicas. The provider is stateless apart from an
+# in-process per-tenant client cache, so >1 replica is safe.
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8083
+
+# Hub the provider POSTs heartbeats to. Must be reachable from the provider pod
+# (in-cluster Service DNS works).
+hub:
+  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  # Bearer token used in the heartbeat POST. Provided as a Secret because it
+  # MUST NOT land in values.yaml in plaintext for prod.
+  tokenSecretRef:
+    name: kedge-code-hub-token
+    key: token
+  # Skip TLS verification on heartbeat — dev only, defaults off.
+  insecure: false
+
+# Secret the provider mounts read-only at
+# /var/run/secrets/kedge/kedge-provider-kubeconfig to reach kcp (CODE_KUBECONFIG).
+# The hub catalog controller mints it when it reconciles the CatalogEntry; the
+# volume is `optional`, so the pod stays schedulable and serves portal/MCP reads
+# until the Secret appears — the multicluster controller manager engages once it
+# does (pod restart on Secret mount).
+providerKubeconfig:
+  secretName: kedge-provider-kubeconfig
+
+# GitHub "Connect with GitHub" OAuth App (optional). When enabled, the portal
+# shows a "Connect with GitHub" button and mints OAuth tokens (with read:packages
+# so the repository Packages panel works). Leave disabled to use pasted Personal
+# Access Tokens only — repositories, deploy keys, collaborators all work with a
+# PAT; OAuth just removes the copy-paste step.
+githubOAuth:
+  enabled: false
+  # GitHub OAuth App client ID.
+  clientId: ""
+  # The client secret is read from a Secret you create — never put it in
+  # values.yaml in plaintext for prod.
+  clientSecretRef:
+    name: ""
+    key: clientSecret
+  # Absolute callback URL registered on the GitHub OAuth App. The callback is a
+  # top-level redirect from GitHub (no kedge auth), so this must point at the
+  # provider's OWN externally-reachable URL, not the hub /services proxy —
+  # e.g. https://code.example.com/oauth/github/callback.
+  redirectURL: ""
+  # postMessage target origin the popup returns the token to (the hub/portal
+  # origin). Empty broadcasts to "*" — set this in production.
+  portalOrigin: ""
+  # Comma-separated scopes. Empty → provider default
+  # (repo,read:org,admin:public_key,read:packages).
+  scopes: ""
+
+# Tenant credential resolution. Empty → the provider default ("default"), the
+# namespace the portal writes Connection token Secrets into. Override only if an
+# admin pushes credential Secrets into a namespace tenants cannot write to.
+tenant:
+  credentialsNamespace: ""
+
+# When true, the chart also renders the CatalogEntry that registers the provider
+# (with its four APIResourceSchemas) with the hub. Set to false to manage the
+# CatalogEntry separately (e.g. GitOps with a different rollout cadence).
+catalogEntry:
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: ""   # empty → release-name
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# Optional name overrides + pod-level scheduling controls.
+nameOverride: ""
+fullnameOverride: ""
+podLabels: {}
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

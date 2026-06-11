@@ -60,6 +60,33 @@ spec:
             # provider kubeconfig (mounted below).
             - name: CODE_KUBECONFIG
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            {{- if .Values.tenant.credentialsNamespace }}
+            - name: KEDGE_TENANT_CREDENTIALS_NAMESPACE
+              value: {{ .Values.tenant.credentialsNamespace | quote }}
+            {{- end }}
+            {{- if .Values.githubOAuth.enabled }}
+            # GitHub "Connect with GitHub" OAuth flow. When disabled the portal
+            # falls back to the pasted-PAT form (see README).
+            - name: GITHUB_OAUTH_CLIENT_ID
+              value: {{ .Values.githubOAuth.clientId | quote }}
+            {{- if .Values.githubOAuth.clientSecretRef.name }}
+            - name: GITHUB_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.githubOAuth.clientSecretRef.name }}
+                  key: {{ .Values.githubOAuth.clientSecretRef.key }}
+            {{- end }}
+            - name: GITHUB_OAUTH_REDIRECT_URL
+              value: {{ .Values.githubOAuth.redirectURL | quote }}
+            {{- if .Values.githubOAuth.portalOrigin }}
+            - name: GITHUB_OAUTH_PORTAL_ORIGIN
+              value: {{ .Values.githubOAuth.portalOrigin | quote }}
+            {{- end }}
+            {{- if .Values.githubOAuth.scopes }}
+            - name: GITHUB_OAUTH_SCOPES
+              value: {{ .Values.githubOAuth.scopes | quote }}
+            {{- end }}
+            {{- end }}
           volumeMounts:
             - name: kedge-provider-kubeconfig
               mountPath: /var/run/secrets/kedge

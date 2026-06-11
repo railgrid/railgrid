@@ -29,6 +29,8 @@ spec:
         builtinRoute: connections
       - displayName: Repositories
         builtinRoute: repositories
+      - displayName: Packages
+        builtinRoute: packages
   backend:
     url: "http://{{ include "code.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
     healthPath: "/healthz"

@@ -68,3 +68,5 @@ edge-kubeconfig
 .env.edge.server
 .env.edge.kubernetes
 values.yaml
+# …but Helm chart defaults MUST be committed or the chart can't render.
+!providers/code/deploy/chart/values.yaml

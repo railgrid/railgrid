@@ -64,3 +64,22 @@ export interface Collaborator {
   ready: boolean
   message?: string
 }
+
+// Package is a read-only view of an artifact published under a repository on the
+// host (container image, npm/maven package, …). The code provider's crawler
+// mirrors each into a Package CR (status subresource); the portal reads them via
+// the GraphQL gateway. Observed state only — no readiness/conditions.
+export interface Package {
+  name: string
+  type: string
+  visibility?: string
+  htmlURL?: string
+  versionCount?: number
+  updatedAt?: string
+}
+
+// PackageRow is a Package plus its owning repository, for the workspace-wide
+// Packages tab that lists artifacts across every repository.
+export interface PackageRow extends Package {
+  repositoryRef: string
+}

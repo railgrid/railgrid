@@ -5,21 +5,24 @@ import { setBasePath, setTenant, setToken } from './api'
 import ConnectionsView from './views/ConnectionsView.vue'
 import RepositoriesView from './views/RepositoriesView.vue'
 import RepoDetailView from './views/RepoDetailView.vue'
+import PackagesView from './views/PackagesView.vue'
 
 // Sub-path routing (the shell pushes the trailing /providers/code/<sub> segment):
 //   ''  | 'connections'        → Connections
 //   'repositories'             → Repositories
 //   'repositories/<name>'      → RepoDetail
+//   'packages'                 → Packages (workspace-wide)
 const props = defineProps<{ ctx: KedgeContext | null }>()
 
 interface Route {
-  page: 'connections' | 'repositories'
+  page: 'connections' | 'repositories' | 'packages'
   repo?: string
 }
 
 function parse(sub: string | null | undefined): Route {
   const s = (sub ?? '').replace(/^\/+|\/+$/g, '')
   if (s === '' || s === 'connections') return { page: 'connections' }
+  if (s === 'packages') return { page: 'packages' }
   const parts = s.split('/')
   if (parts[0] === 'repositories') {
     return parts.length > 1 ? { page: 'repositories', repo: decodeURIComponent(parts[1]) } : { page: 'repositories' }
@@ -53,12 +56,14 @@ function navigate(path: string) {
     <nav class="tabs">
       <button :class="{ active: route.page === 'connections' }" @click="navigate('connections')">Connections</button>
       <button :class="{ active: route.page === 'repositories' }" @click="navigate('repositories')">Repositories</button>
+      <button :class="{ active: route.page === 'packages' }" @click="navigate('packages')">Packages</button>
     </nav>
 
     <p v-if="!hasTenant" class="empty">Select a workspace to manage code.</p>
 
     <template v-else>
       <ConnectionsView v-if="route.page === 'connections'" />
+      <PackagesView v-else-if="route.page === 'packages'" @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
       <RepoDetailView v-else-if="route.repo" :name="route.repo" @back="navigate('repositories')" />
       <RepositoriesView v-else @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
     </template>

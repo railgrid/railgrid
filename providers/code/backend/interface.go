@@ -64,6 +64,35 @@ type CollaboratorResult struct {
 	InvitationID string
 }
 
+// PackageInfo describes one package (artifact) published under a repository on
+// the host — e.g. a container image, npm or maven package. It is read-only
+// OBSERVED state: packages appear when artifacts are pushed (docker push, npm
+// publish, …), never via an API "create", so there is no Ensure/Delete here.
+type PackageInfo struct {
+	// Name is the package's name on the host.
+	Name string
+	// Type is the ecosystem: container | docker | npm | maven | rubygems | nuget.
+	Type string
+	// Visibility is "public", "internal", or "private" (host-reported, may be empty).
+	Visibility string
+	// HTMLURL links to the package's browser page.
+	HTMLURL string
+	// VersionCount is how many versions the host reports (0 when unknown).
+	VersionCount int64
+	// UpdatedAt is the last-updated time in RFC3339, or "" when unknown.
+	UpdatedAt string
+}
+
+// PackageLister is an OPTIONAL capability a backend may implement to expose the
+// packages published under a repository. It is intentionally NOT part of
+// GitBackend: it is read-only and consumed only by the portal's packages view,
+// not by the reconcilers. Callers type-assert for it and report "unsupported"
+// for backends (e.g. the test stub) that don't implement it.
+type PackageLister interface {
+	// ListPackages returns the packages linked to repo. Idempotent, read-only.
+	ListPackages(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository) ([]PackageInfo, error)
+}
+
 // GitBackend is the seam between the controllers and a concrete git host.
 // Every method is idempotent: the reconciler calls it on every pass for a
 // given generation, so a backend MUST treat "already in the desired state"

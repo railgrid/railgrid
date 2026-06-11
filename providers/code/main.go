@@ -33,6 +33,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/faroshq/faros-kedge/providers/code/backend"
+	githubbackend "github.com/faroshq/faros-kedge/providers/code/backend/github"
 	"github.com/faroshq/faros-kedge/providers/code/mcpserver"
 	"github.com/faroshq/faros-kedge/providers/code/oauthgithub"
 	"github.com/faroshq/faros-kedge/providers/code/server"
@@ -93,8 +95,21 @@ func runServe() {
 		log.Printf("kcp config unavailable (%v); tenant MCP tools + controller manager disabled", kcpErr)
 	}
 
+	// Git backends, registered once and used by the controller manager, which
+	// reconciles CRs as the provider SA (including the packages crawler that
+	// mirrors host packages into Package CRs). The GitHub backend holds no
+	// global credential — every Connection authenticates as its own account.
+	backends := backend.NewRegistry()
+	if err := backends.Register(githubbackend.New()); err != nil {
+		log.Fatalf("register github backend: %v", err)
+	}
+
+	// Caller-token client factory for the MCP tools: they act on the caller's
+	// behalf, never as the provider.
+	tenantFactory := tenant.NewClientFactory(kcpConfig)
+
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
-		Tenant: tenant.NewClientFactory(kcpConfig),
+		Tenant: tenantFactory,
 	})
 
 	fileServer, distFS, err := portalHandler()
@@ -137,7 +152,7 @@ func runServe() {
 		}
 	}()
 
-	if err := startControllerManager(ctx, kcpConfig); err != nil {
+	if err := startControllerManager(ctx, kcpConfig, backends); err != nil {
 		if errors.Is(err, errControllerDisabled) {
 			log.Printf("controller manager: disabled (no kubeconfig); set CODE_KUBECONFIG to enable")
 		} else {
