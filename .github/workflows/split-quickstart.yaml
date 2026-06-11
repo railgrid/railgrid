@@ -1,0 +1,97 @@
+name: Split quickstart provider
+
+# Publishes providers/quickstart from this monorepo to the standalone,
+# read-only mirror at faroshq/provider-quickstart, preserving git history.
+#
+# Uses splitsh-lite (https://github.com/splitsh/lite) which is deterministic:
+# the same source always splits to the same commit sha1s, so pushes normally
+# fast-forward. Runs on every push to main (mirrors the branch) and on v* tags
+# (mirrors the tag). workflow_dispatch is provided for the initial seed / manual
+# re-sync.
+#
+# Required secret: QUICKSTART_DEPLOY_KEY
+#   An SSH private key whose public half is added as a *write* deploy key on
+#   faroshq/provider-quickstart.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize splits per ref so two runs never race on the same push to the
+# mirror. Do not cancel in-progress runs: a half-completed push is worse than
+# waiting.
+concurrency:
+  group: split-quickstart-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PREFIX: providers/quickstart
+  TARGET_REPO: git@github.com:faroshq/provider-quickstart.git
+  TARGET_BRANCH: main
+  SPLITSH_VERSION: v1.0.1
+
+jobs:
+  split:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          # splitsh-lite needs the complete history to compute the split.
+          fetch-depth: 0
+
+      - name: Install splitsh-lite
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/splitsh/lite/releases/download/${SPLITSH_VERSION}/lite_linux_amd64.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin" splitsh-lite
+          chmod +x "$HOME/.local/bin/splitsh-lite"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Set up SSH deploy key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          install -m 600 /dev/null ~/.ssh/id_split
+          echo "${{ secrets.QUICKSTART_DEPLOY_KEY }}" > ~/.ssh/id_split
+          ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          cat > ~/.ssh/config <<'EOF'
+          Host github.com
+            HostName github.com
+            User git
+            IdentityFile ~/.ssh/id_split
+            IdentitiesOnly yes
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Split and push to mirror
+        run: |
+          set -euo pipefail
+
+          # Deterministic split of the provider subtree. The resulting commit
+          # objects are written into the local object store, so they can be
+          # pushed directly by sha.
+          SHA="$(splitsh-lite --prefix="${PREFIX}" --origin="${GITHUB_SHA}")"
+          echo "Split sha: ${SHA}"
+
+          git remote add mirror "${TARGET_REPO}"
+
+          if [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "Publishing tag ${TAG} -> ${TARGET_REPO}"
+            # Tags are immutable; push without force so an accidental re-tag fails loudly.
+            git push mirror "${SHA}:refs/tags/${TAG}"
+          else
+            echo "Publishing branch ${TARGET_BRANCH} -> ${TARGET_REPO}"
+            # --force keeps the mirror a faithful reflection even if monorepo
+            # history is ever rewritten. The mirror is read-only, so there are
+            # no downstream commits to clobber.
+            git push --force mirror "${SHA}:refs/heads/${TARGET_BRANCH}"
+          fi
