@@ -26,9 +26,9 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	codev1alpha1 "github.com/faroshq/faros-kedge/providers/code/apis/v1alpha1"
-	"github.com/faroshq/faros-kedge/providers/code/backend"
-	"github.com/faroshq/faros-kedge/providers/code/tenant"
+	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
+	"github.com/faroshq/provider-code/backend"
+	"github.com/faroshq/provider-code/tenant"
 )
 
 // ClusterClient resolves the controller-runtime client scoped to the tenant

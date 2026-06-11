@@ -34,11 +34,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/faroshq/faros-kedge/providers/infrastructure/backend"
-	krobackend "github.com/faroshq/faros-kedge/providers/infrastructure/backend/kro"
-	"github.com/faroshq/faros-kedge/providers/infrastructure/backend/stub"
-	"github.com/faroshq/faros-kedge/providers/infrastructure/controller/template"
-	"github.com/faroshq/faros-kedge/providers/infrastructure/install"
+	"github.com/faroshq/provider-infrastructure/backend"
+	krobackend "github.com/faroshq/provider-infrastructure/backend/kro"
+	"github.com/faroshq/provider-infrastructure/backend/stub"
+	"github.com/faroshq/provider-infrastructure/controller/template"
+	"github.com/faroshq/provider-infrastructure/install"
 )
 
 // startControllerManager builds a controller-runtime manager pointed

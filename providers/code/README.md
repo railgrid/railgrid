@@ -1,5 +1,16 @@
 # code provider
 
+> [!IMPORTANT]
+> **Read-only mirror — do not push or open PRs here.**
+> The standalone [`faroshq/provider-code`](https://github.com/faroshq/provider-code)
+> repository is **automatically synced** from the kedge monorepo
+> [`faroshq/kedge`](https://github.com/faroshq/kedge) (path `providers/code/`)
+> via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
+> the mirror, so any direct change here is overwritten. File issues and PRs
+> against [`faroshq/kedge`](https://github.com/faroshq/kedge) instead.
+> See [docs/provider-publishing.md](../../docs/provider-publishing.md) for how
+> the mirror is published.
+
 A kedge provider that manages source-code repositories and their access —
 deploy keys, collaborators, and (read-only) published packages — across git
 hosting providers (**GitHub** today) on behalf of kedge tenants. A tenant adds a

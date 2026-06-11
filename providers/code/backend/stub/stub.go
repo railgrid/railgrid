@@ -18,8 +18,8 @@ import (
 	"context"
 	"fmt"
 
-	codev1alpha1 "github.com/faroshq/faros-kedge/providers/code/apis/v1alpha1"
-	"github.com/faroshq/faros-kedge/providers/code/backend"
+	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
+	"github.com/faroshq/provider-code/backend"
 )
 
 // Backend is the canned-success stub. The Seen* fields let tests assert which

@@ -1,4 +1,4 @@
-module github.com/faroshq/faros-kedge/providers/code
+module github.com/faroshq/provider-code
 
 go 1.26.3
 

@@ -18,7 +18,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/faros-kedge/providers/infrastructure/kro"
+	"github.com/faroshq/provider-infrastructure/kro"
 )
 
 // tenantClient resolves a tenant-scoped kcp dynamic client that acts AS THE

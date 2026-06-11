@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/faroshq/faros-kedge/providers/infrastructure/kro"
+	"github.com/faroshq/provider-infrastructure/kro"
 )
 
 // templateGroup is the fixed group every Template + per-template instance

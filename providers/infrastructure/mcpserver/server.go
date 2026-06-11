@@ -28,7 +28,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/faros-kedge/providers/infrastructure/tenant"
+	"github.com/faroshq/provider-infrastructure/tenant"
 )
 
 // Deps is what the MCP transport needs. Templates + instances are CRD-based

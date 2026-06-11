@@ -35,9 +35,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/faroshq/faros-kedge/providers/infrastructure/mcpserver"
-	"github.com/faroshq/faros-kedge/providers/infrastructure/server"
-	"github.com/faroshq/faros-kedge/providers/infrastructure/tenant"
+	"github.com/faroshq/provider-infrastructure/mcpserver"
+	"github.com/faroshq/provider-infrastructure/server"
+	"github.com/faroshq/provider-infrastructure/tenant"
 )
 
 // Subcommands:

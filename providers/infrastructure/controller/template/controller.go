@@ -39,8 +39,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	infrav1alpha1 "github.com/faroshq/faros-kedge/providers/infrastructure/apis/v1alpha1"
-	"github.com/faroshq/faros-kedge/providers/infrastructure/backend"
+	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	"github.com/faroshq/provider-infrastructure/backend"
 )
 
 // crdGVR is what the Reconciler's dynamic client targets when

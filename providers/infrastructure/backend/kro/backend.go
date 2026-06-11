@@ -37,8 +37,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	infrav1alpha1 "github.com/faroshq/faros-kedge/providers/infrastructure/apis/v1alpha1"
-	"github.com/faroshq/faros-kedge/providers/infrastructure/backend"
+	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	"github.com/faroshq/provider-infrastructure/backend"
 )
 
 // Name is the backend identifier operators put in Template.spec.backend.
