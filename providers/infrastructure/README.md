@@ -1,5 +1,16 @@
 # infrastructure provider
 
+> [!IMPORTANT]
+> **Read-only mirror — do not push or open PRs here.**
+> The standalone [`faroshq/provider-infrastructure`](https://github.com/faroshq/provider-infrastructure)
+> repository is **automatically synced** from the kedge monorepo
+> [`faroshq/kedge`](https://github.com/faroshq/kedge) (path `providers/infrastructure/`)
+> via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
+> the mirror, so any direct change here is overwritten. File issues and PRs
+> against [`faroshq/kedge`](https://github.com/faroshq/kedge) instead.
+> See [docs/provider-publishing.md](../../docs/provider-publishing.md) for how
+> the mirror is published.
+
 A kedge provider that brokers application templates from a central
 [kro](https://github.com/faroshq/kro-multicluster) (Kube Resource
 Orchestrator) cluster into kedge tenant workspaces. A tenant picks a

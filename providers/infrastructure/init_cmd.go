@@ -38,7 +38,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/faroshq/faros-kedge/providers/infrastructure/install"
+	"github.com/faroshq/provider-infrastructure/install"
 )
 
 // runInitCmd drives the bootstrap chain. Reads admin credentials from

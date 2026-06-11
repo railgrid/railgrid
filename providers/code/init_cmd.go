@@ -14,7 +14,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/faroshq/faros-kedge/providers/code/install"
+	"github.com/faroshq/provider-code/install"
 )
 
 // runInitCmd is the one-shot bootstrap. The hub provisioner already

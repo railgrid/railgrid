@@ -30,8 +30,8 @@ import (
 	gogithub "github.com/google/go-github/v66/github"
 	"golang.org/x/oauth2"
 
-	codev1alpha1 "github.com/faroshq/faros-kedge/providers/code/apis/v1alpha1"
-	"github.com/faroshq/faros-kedge/providers/code/backend"
+	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
+	"github.com/faroshq/provider-code/backend"
 )
 
 // Backend is the GitHub implementation of backend.GitBackend.

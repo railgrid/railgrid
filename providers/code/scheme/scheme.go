@@ -23,7 +23,7 @@ import (
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	corev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
 
-	codev1alpha1 "github.com/faroshq/faros-kedge/providers/code/apis/v1alpha1"
+	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
 )
 
 // NewScheme returns a fully-populated scheme. Panics on registration error

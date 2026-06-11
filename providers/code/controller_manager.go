@@ -39,14 +39,14 @@ import (
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
-	"github.com/faroshq/faros-kedge/providers/code/backend"
-	"github.com/faroshq/faros-kedge/providers/code/controller/collaborator"
-	"github.com/faroshq/faros-kedge/providers/code/controller/connection"
-	"github.com/faroshq/faros-kedge/providers/code/controller/deploykey"
-	"github.com/faroshq/faros-kedge/providers/code/controller/packages"
-	"github.com/faroshq/faros-kedge/providers/code/controller/repository"
-	"github.com/faroshq/faros-kedge/providers/code/install"
-	codescheme "github.com/faroshq/faros-kedge/providers/code/scheme"
+	"github.com/faroshq/provider-code/backend"
+	"github.com/faroshq/provider-code/controller/collaborator"
+	"github.com/faroshq/provider-code/controller/connection"
+	"github.com/faroshq/provider-code/controller/deploykey"
+	"github.com/faroshq/provider-code/controller/packages"
+	"github.com/faroshq/provider-code/controller/repository"
+	"github.com/faroshq/provider-code/install"
+	codescheme "github.com/faroshq/provider-code/scheme"
 )
 
 // endpointSliceName is the APIExportEndpointSlice the multicluster provider

@@ -23,7 +23,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/faros-kedge/providers/code/tenant"
+	"github.com/faroshq/provider-code/tenant"
 )
 
 // Deps is what the MCP transport needs: the per-tenant caller-token client

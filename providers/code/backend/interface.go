@@ -30,7 +30,7 @@ import (
 	"sort"
 	"sync"
 
-	codev1alpha1 "github.com/faroshq/faros-kedge/providers/code/apis/v1alpha1"
+	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
 )
 
 // Credential is the resolved secret material a GitBackend authenticates with.

@@ -28,9 +28,9 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	codev1alpha1 "github.com/faroshq/faros-kedge/providers/code/apis/v1alpha1"
-	"github.com/faroshq/faros-kedge/providers/code/backend"
-	"github.com/faroshq/faros-kedge/providers/code/controller/shared"
+	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
+	"github.com/faroshq/provider-code/backend"
+	"github.com/faroshq/provider-code/controller/shared"
 )
 
 // Reconciler manages Collaborator CRs.

@@ -33,12 +33,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/faroshq/faros-kedge/providers/code/backend"
-	githubbackend "github.com/faroshq/faros-kedge/providers/code/backend/github"
-	"github.com/faroshq/faros-kedge/providers/code/mcpserver"
-	"github.com/faroshq/faros-kedge/providers/code/oauthgithub"
-	"github.com/faroshq/faros-kedge/providers/code/server"
-	"github.com/faroshq/faros-kedge/providers/code/tenant"
+	"github.com/faroshq/provider-code/backend"
+	githubbackend "github.com/faroshq/provider-code/backend/github"
+	"github.com/faroshq/provider-code/mcpserver"
+	"github.com/faroshq/provider-code/oauthgithub"
+	"github.com/faroshq/provider-code/server"
+	"github.com/faroshq/provider-code/tenant"
 )
 
 // Subcommands:

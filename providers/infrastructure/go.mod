@@ -1,4 +1,4 @@
-module github.com/faroshq/faros-kedge/providers/infrastructure
+module github.com/faroshq/provider-infrastructure
 
 go 1.26.0
 

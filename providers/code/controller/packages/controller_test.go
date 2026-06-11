@@ -20,9 +20,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	codev1alpha1 "github.com/faroshq/faros-kedge/providers/code/apis/v1alpha1"
-	"github.com/faroshq/faros-kedge/providers/code/backend"
-	codescheme "github.com/faroshq/faros-kedge/providers/code/scheme"
+	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
+	"github.com/faroshq/provider-code/backend"
+	codescheme "github.com/faroshq/provider-code/scheme"
 )
 
 func testRepo() *codev1alpha1.Repository {

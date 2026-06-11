@@ -50,9 +50,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	infrav1alpha1 "github.com/faroshq/faros-kedge/providers/infrastructure/apis/v1alpha1"
-	"github.com/faroshq/faros-kedge/providers/infrastructure/backend"
-	"github.com/faroshq/faros-kedge/providers/infrastructure/backend/stub"
+	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	"github.com/faroshq/provider-infrastructure/backend"
+	"github.com/faroshq/provider-infrastructure/backend/stub"
 )
 
 // newTestReconciler wires up the two fakes + a backend registry
