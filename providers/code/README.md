@@ -52,12 +52,13 @@ this provider pod
    └  MCP (AS THE CALLER, caller's own bearer token)
 ```
 
-Reads do **not** go through this pod's HTTP surface: the portal reads every CR —
+CRUD does **not** go through this pod's HTTP surface: the portal drives every CR —
 Connections, Repositories, DeployKeys, Collaborators, and the crawled Packages —
-through the hub's GraphQL gateway at `/graphql/<workspace>` (`code_kedge_faros_sh
-{ v1alpha1 { … } }`). Writes still use the kcp REST proxy with the user's token
-(create/patch/delete + the credential Secret). The pod's HTTP surface is only for
-the MCP tools and the GitHub OAuth callback.
+through the hub's GraphQL gateway at `/graphql/<workspace>`. Reads are
+`code_kedge_faros_sh { v1alpha1 { … } }` queries; writes are create/update/delete
+mutations (plus `applyYaml` for create-or-update, which also writes the credential
+Secret). The pod's HTTP surface is only for the MCP tools and the GitHub OAuth
+callback.
 
 ## Run locally
 

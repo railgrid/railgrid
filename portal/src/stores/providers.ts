@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { STORAGE_KEYS } from '@/lib/constants'
+import { graphqlMutate } from '@/composables/useGraphQL'
 
 // ProviderDTO is the wire shape returned by the hub's GET /api/providers.
 // Keep it aligned with pkg/hub/providers/api.go:providerDTO.
@@ -303,21 +304,18 @@ export const useProvidersStore = defineStore('providers', () => {
   }
 
   async function disable(p: ProviderDTO): Promise<void> {
-    const cluster = currentTenantWorkspace()
-    if (!cluster) throw new Error('no tenant workspace in session')
     const bindingName = bindingNamesByProvider.value[p.name]
     if (!bindingName) return
-    const res = await fetch(
-      `/clusters/${cluster}/apis/apis.kcp.io/v1alpha2/apibindings/${bindingName}`,
-      {
-        method: 'DELETE',
-        headers: authHeaders(),
-        credentials: 'same-origin',
-      },
-    )
-    if (!res.ok && res.status !== 404) {
-      const detail = await res.text().catch(() => '')
-      throw new Error(`disable ${p.name} failed: ${res.status} ${res.statusText} ${detail}`)
+    // Disable = remove the tenant's APIBinding, via the GraphQL gateway (like
+    // every other kcp call). Idempotent: an already-gone binding is fine.
+    try {
+      await graphqlMutate(
+        'mutation($n: String!) { apis_kcp_io { v1alpha2 { deleteAPIBinding(name: $n) } } }',
+        { n: bindingName },
+      )
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (!/not\s*found/i.test(msg)) throw new Error(`disable ${p.name} failed: ${msg}`)
     }
     const next = { ...bindingNamesByProvider.value }
     delete next[p.name]
@@ -384,17 +382,4 @@ function authHeaders(): Record<string, string> {
     /* ignore */
   }
   return h
-}
-
-// currentTenantWorkspace reads auth state directly from localStorage to
-// avoid an import cycle with @/stores/auth.
-function currentTenantWorkspace(): string | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.auth)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as { clusterName?: string }
-    return parsed.clusterName ?? null
-  } catch {
-    return null
-  }
 }

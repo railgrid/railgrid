@@ -1,48 +1,36 @@
-// kcp-native client for the infrastructure provider's portal.
+// GraphQL client for the infrastructure provider's portal.
 //
-// Talks to kcp directly through the hub's kcp REST proxy at
-// /clusters/<tenant>/apis/infrastructure.kedge.faros.sh/v1alpha1/...
-// — no more provider-side REST broker. The shell pushes:
+// Every read and write goes through the hub's embedded GraphQL gateway at
+// /graphql/<cluster> — the same workspace-scoped, caller-authenticated path the
+// rest of the platform uses. The shell pushes kedgeContext.tenant (kcp cluster
+// name, used as the /graphql path segment) and kedgeContext.token (bearer).
 //
-//   kedgeContext.tenant  → kcp cluster name (auth.clusterName)
-//   kedgeContext.token   → bearer for the kcp APIServer
-//   kedgeContext.basePath → /ui/providers/infrastructure (kept only
-//                           for legacy fallback callers that haven't
-//                           been migrated; not used for kcp paths)
-//
-// The hub forwards anything under /clusters/<x>/{apis,api}/... to kcp
-// after attaching the OIDC identity (see pkg/hub/server.go's kcpProxy
-// mount point). The browser is authenticated with the same bearer
-// that the kcp proxy validates.
+// Templates and per-template instance CRDs live in the infrastructure group, so
+// they surface under the GraphQL field `infrastructure_kedge_faros_sh`. Instance
+// kinds are declared per Template, so their list field (`<Plural>`) is discovered
+// by introspection; reads of an instance's arbitrary spec use the gateway's raw
+// `<Kind>Yaml` escape hatch (parsed with js-yaml), and writes use `applyYaml` /
+// `delete<Kind>` mutations — no field schema needs to be known ahead of time.
 
+import { load as yamlLoad } from 'js-yaml'
 import type { ErrorResponse, Instance, JSONSchema, Template } from './types'
 
 const GROUP = 'infrastructure.kedge.faros.sh'
 const VERSION = 'v1alpha1'
-const APIS_PREFIX = `/apis/${GROUP}/${VERSION}`
-const TEMPLATES_RESOURCE = 'templates'
-// Per-template CRDs (Redis, Postgres, …) are cluster-scoped — see
-// controller/template/controller.go where Scope is ClusterScoped.
-// That means instance CRs live at <cluster>/apis/<g>/<v>/<plural>/<name>
-// without a namespace segment.
+// GraphQL field for the group (dots → underscores, per the gateway's sanitizer).
+const GROUP_FIELD = 'infrastructure_kedge_faros_sh'
 
 let bearerToken: string | null = null
 let clusterName: string | null = null
-// setBasePath is kept as a no-op so App.vue's existing watcher still
-// type-checks; the kcp path is constructed from clusterName, not the
-// provider-name basePath, so the value is intentionally discarded.
+
+// setBasePath is a no-op: the gateway path is built from the cluster name, not
+// the provider basePath. Kept so App.vue's watcher type-checks.
 export function setBasePath(_ctxBasePath?: string | null) {
   void _ctxBasePath
 }
-
 export function setToken(token?: string | null) {
   bearerToken = token || null
 }
-
-// setTenant accepts the kcp cluster name (kedgeContext.tenant from
-// the shell, equal to auth.clusterName). Without it every call below
-// throws an ErrorResponse with reason TenantMissing so views render
-// their "no workspace selected" state instead of crashing.
 export function setTenant(name?: string | null) {
   const next = name || null
   if (next !== clusterName) {
@@ -52,116 +40,103 @@ export function setTenant(name?: string | null) {
   clusterName = next
 }
 
-function clusterBase(): string {
+// ── GraphQL transport ───────────────────────────────────────────────────────
+// graphqlQuery POSTs a query/mutation to /graphql/<cluster> and returns data,
+// mapping gateway errors onto the {reason,message} contract the views branch on.
+async function graphqlQuery<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
   if (!clusterName) {
     throw <ErrorResponse>{ reason: 'TenantMissing', message: 'no workspace selected' }
   }
-  return `/clusters/${clusterName}${APIS_PREFIX}`
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
+  if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
+  const res = await fetch('/graphql/' + clusterName, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers,
+    body: JSON.stringify({ query, variables }),
+  })
+  const text = await res.text()
+  if (!res.ok) {
+    throw <ErrorResponse>{ reason: res.status === 404 ? 'NotFound' : 'HTTPError', message: text || res.statusText }
+  }
+  const body = (text ? JSON.parse(text) : {}) as { data?: T; errors?: { message: string }[] }
+  if (body.errors && body.errors.length) {
+    const message = body.errors.map(e => e.message).join('; ')
+    let reason = 'GraphQLError'
+    if (/not\s*found|notfound/i.test(message)) reason = 'NotFound'
+    else if (/apibinding|no matches for kind|forbidden/i.test(message)) reason = 'APIBindingMissing'
+    throw <ErrorResponse>{ reason, message }
+  }
+  return (body.data ?? {}) as T
 }
 
-interface KCPMetadata {
-  name: string
-  namespace?: string
-  uid?: string
-  resourceVersion?: string
-  creationTimestamp?: string
-  labels?: Record<string, string>
-  annotations?: Record<string, string>
+// applyCR applies a manifest (create-or-update) via the gateway's applyYaml and
+// returns the resulting object (applyYaml serialises it as a JSON string).
+async function applyCR(manifest: Record<string, unknown>): Promise<RawObject> {
+  const data = await graphqlQuery<{ applyYaml?: unknown }>(
+    'mutation($y: String!) { applyYaml(yaml: $y) }',
+    { y: JSON.stringify(manifest) },
+  )
+  const raw = data.applyYaml
+  return (typeof raw === 'string' ? JSON.parse(raw || '{}') : raw ?? {}) as RawObject
 }
-interface KCPList<T> {
-  items: T[]
-}
-interface KCPTemplate {
-  metadata: KCPMetadata
-  spec: {
-    displayName?: string
-    description?: string
-    category?: string
-    cloud?: string
-    version?: string
-    iconURL?: string
-    backend?: string
-    instanceCRD: { group: string; version: string; resource: string; kind: string }
-    schema?: unknown // RawExtension — already a JSON object after .json() parse
-    sampleValues?: Record<string, unknown>
-  }
-}
-interface KCPInstance {
+
+// Infra<V> shapes a gateway response nested under the infra group/version. The
+// literal keys match GROUP_FIELD / VERSION, which are literal-typed consts, so
+// `data[GROUP_FIELD]?.[VERSION]` indexes cleanly.
+type Infra<V> = { infrastructure_kedge_faros_sh?: { v1alpha1?: V } }
+
+interface RawObject {
   apiVersion?: string
   kind?: string
-  metadata: KCPMetadata
+  metadata?: {
+    name?: string
+    namespace?: string
+    creationTimestamp?: string
+    labels?: Record<string, string>
+  }
   spec?: Record<string, unknown>
   status?: {
     phase?: string
     message?: string
-    conditions?: Array<{
-      type: string
-      status: string
-      reason?: string
-      message?: string
-      lastTransitionTime?: string
-    }>
+    conditions?: Array<{ type: string; status: string; reason?: string; message?: string; lastTransitionTime?: string }>
   }
 }
 
-async function kcpFetch<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' }
-  if (body) headers['Content-Type'] = 'application/json'
-  if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
-  const res = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  })
-  const text = await res.text()
-  // kcp returns Status objects on error; map them into the
-  // {reason, message} contract the views are already coded against.
-  if (!res.ok) {
-    let reason = 'HTTPError'
-    let message = text || res.statusText
+// ── Mappers ─────────────────────────────────────────────────────────────────
+function templateFromGQL(name: string, spec: Record<string, unknown>): Template {
+  const instanceCRD = (spec.instanceCRD ?? {}) as { kind?: string }
+  // spec.schema is a preserve-unknown-fields field → the gateway returns it as a
+  // JSON string (JSONString scalar); parse it back into the JSONSchema object.
+  let inputsSchema: JSONSchema = { type: 'object', properties: {} }
+  if (typeof spec.schema === 'string' && spec.schema) {
     try {
-      const parsed = JSON.parse(text) as { reason?: string; message?: string; status?: string; code?: number }
-      if (parsed && (parsed.reason || parsed.message)) {
-        reason = parsed.reason || reason
-        message = parsed.message || message
-      }
+      inputsSchema = JSON.parse(spec.schema) as JSONSchema
     } catch {
-      // non-JSON body — keep raw text as the message
+      // leave the empty default
     }
-    if (res.status === 404 && /^templates?\b/.test(path.split(APIS_PREFIX)[1] ?? '')) {
-      reason = 'TemplateNotFound'
-    } else if (res.status === 404) {
-      reason = 'InstanceNotFound'
-    } else if (res.status === 403 && /not\s+found.*APIBinding|no APIBinding/i.test(message)) {
-      reason = 'APIBindingMissing'
-    }
-    throw <ErrorResponse>{ reason, message }
+  } else if (spec.schema && typeof spec.schema === 'object') {
+    inputsSchema = spec.schema as JSONSchema
   }
-  return (text ? JSON.parse(text) : null) as T
-}
-
-function templateFromKCP(t: KCPTemplate): Template {
   return {
-    name: t.metadata.name,
-    displayName: t.spec.displayName || t.metadata.name,
-    description: t.spec.description ?? '',
-    category: t.spec.category,
-    cloud: t.spec.cloud,
-    version: t.spec.version,
-    iconURL: t.spec.iconURL,
-    kind: t.spec.instanceCRD.kind,
-    inputsSchema: (t.spec.schema as JSONSchema) ?? { type: 'object', properties: {} },
-    sampleValues: t.spec.sampleValues,
+    name,
+    displayName: (spec.displayName as string) || name,
+    description: (spec.description as string) ?? '',
+    category: spec.category as string | undefined,
+    cloud: spec.cloud as string | undefined,
+    version: spec.version as string | undefined,
+    iconURL: spec.iconURL as string | undefined,
+    kind: instanceCRD.kind ?? '',
+    inputsSchema,
+    sampleValues: spec.sampleValues as Record<string, unknown> | undefined,
   }
 }
 
-// instanceFromKCP collapses a per-template CR into the Instance shape
-// the views read. The "template" field is the originating Template's
-// name (carried via the kedge.faros.sh/template label set by the
-// platform's CR-creation path; falls back to the CR's kind).
-function instanceFromKCP(c: KCPInstance, templateByKind: Map<string, string>): Instance {
-  const labels = c.metadata.labels ?? {}
+// instanceFromObj collapses a per-template CR (any object with metadata/spec/
+// status) into the Instance shape the views read. The originating Template is
+// taken from the kedge.faros.sh/template label, falling back to the kind.
+function instanceFromObj(c: RawObject, templateByKind: Map<string, string>): Instance {
+  const labels = c.metadata?.labels ?? {}
   const tmpl = labels['kedge.faros.sh/template'] || (c.kind ? templateByKind.get(c.kind) ?? c.kind : '')
   const conditions = (c.status?.conditions ?? []).map(cond => ({
     type: cond.type,
@@ -171,69 +146,99 @@ function instanceFromKCP(c: KCPInstance, templateByKind: Map<string, string>): I
     time: cond.lastTransitionTime,
   }))
   return {
-    name: c.metadata.name,
-    namespace: c.metadata.namespace ?? '',
+    name: c.metadata?.name ?? '',
+    namespace: c.metadata?.namespace ?? '',
     template: tmpl,
-    phase: c.status?.phase || (conditions.find(c => c.type === 'Ready')?.status === 'True' ? 'Ready' : 'Pending'),
+    phase: c.status?.phase || (conditions.find(x => x.type === 'Ready')?.status === 'True' ? 'Ready' : 'Pending'),
     message: c.status?.message,
     conditions,
     values: c.spec,
-    createdAt: c.metadata.creationTimestamp ?? '',
+    createdAt: c.metadata?.creationTimestamp ?? '',
   }
 }
 
-// Listing per-template CRs requires knowing each Template's plural.
-// templateIndex memoizes the list and is bypassed when the caller
-// asks for a fresh fetch. Templates change rarely; a 10s TTL is
-// plenty for the auto-refresh InstanceListPage does.
-interface TemplateIndex {
+// ── Template + instance-field index ─────────────────────────────────────────
+// Listing instances needs each kind's GraphQL list field (`<Plural>` =
+// Pluralize(Kind), not derivable client-side), so we discover it by introspection
+// once and cache it alongside the Templates (10s TTL — both change rarely).
+interface InfraIndex {
   fetchedAt: number
   templates: Template[]
-  // Plural ('redis') ↔ Kind ('Redis') maps — both directions because
-  // instance CRs only carry the Kind in their apiVersion+kind, but
-  // list URLs need the plural.
-  pluralByName: Map<string, string>
-  kindByPlural: Map<string, string>
   templateByKind: Map<string, string>
+  // kind → GraphQL list field name (only kinds whose CRD is actually established
+  // in the workspace, so a Template with no bound CRD is naturally skipped).
+  listFieldByKind: Map<string, string>
 }
-let cachedIndex: TemplateIndex | null = null
+let cachedIndex: InfraIndex | null = null
 const INDEX_TTL_MS = 10_000
 
-async function refreshIndex(): Promise<TemplateIndex> {
-  const list = await kcpFetch<KCPList<KCPTemplate>>('GET', clusterBase() + '/' + TEMPLATES_RESOURCE)
-  const templates = (list.items ?? []).map(templateFromKCP)
-  const pluralByName = new Map<string, string>()
-  const kindByPlural = new Map<string, string>()
+// introspectVersionFields walks Query → infrastructure_kedge_faros_sh → v1alpha1
+// in a single introspection query and returns its fields with (unwrapped) type
+// names, so we can map each instance kind to its list field.
+async function introspectVersionFields(): Promise<Array<{ name: string; typeName: string }>> {
+  const q = `{ __type(name: "Query") { fields { name type { fields { name type { name fields { name type { name kind ofType { name kind } } } } } } } } }`
+  const data = await graphqlQuery<{
+    __type?: { fields?: Array<{ name: string; type?: { fields?: Array<{ name: string; type?: { fields?: Array<{ name: string; type?: { name?: string; ofType?: { name?: string } } }> } }> } }> }
+  }>(q)
+  const group = (data.__type?.fields ?? []).find(f => f.name === GROUP_FIELD)
+  const version = (group?.type?.fields ?? []).find(f => f.name === VERSION)
+  return (version?.type?.fields ?? []).map(f => ({
+    name: f.name,
+    typeName: f.type?.ofType?.name ?? f.type?.name ?? '',
+  }))
+}
+
+async function refreshIndex(): Promise<InfraIndex> {
+  const [tmplData, versionFields] = await Promise.all([
+    graphqlQuery<Infra<{ Templates?: { items?: Array<{ metadata: { name: string }; spec: Record<string, unknown> }> } }>>(
+      `{ ${GROUP_FIELD} { ${VERSION} { Templates { items { metadata { name } spec { displayName description category version iconURL backend instanceCRD { group version resource kind } schema } } } } } }`,
+    ),
+    introspectVersionFields(),
+  ])
+
+  const items = tmplData[GROUP_FIELD]?.[VERSION]?.Templates?.items ?? []
+  const templates = items.map(t => templateFromGQL(t.metadata.name, t.spec ?? {}))
   const templateByKind = new Map<string, string>()
-  for (const t of list.items ?? []) {
-    pluralByName.set(t.metadata.name, t.spec.instanceCRD.resource)
-    kindByPlural.set(t.spec.instanceCRD.resource, t.spec.instanceCRD.kind)
-    templateByKind.set(t.spec.instanceCRD.kind, t.metadata.name)
+  for (const t of templates) if (t.kind) templateByKind.set(t.kind, t.name)
+
+  // Map kind → list field via the resource-type relationship: the list field's
+  // type is `<resourceType>List`, the single field's type is `<resourceType>`.
+  const listByResourceType = new Map<string, string>()
+  const resourceTypeByKind = new Map<string, string>()
+  for (const f of versionFields) {
+    if (!f.typeName) continue
+    if (f.typeName.endsWith('List')) listByResourceType.set(f.typeName.slice(0, -'List'.length), f.name)
+    else if (f.typeName === 'String') continue // <Kind>Yaml fields
+    else resourceTypeByKind.set(f.name, f.typeName) // single field: name === Kind
   }
-  cachedIndex = { fetchedAt: Date.now(), templates, pluralByName, kindByPlural, templateByKind }
+  // Only map kinds that are actual Template instances — the schema also exposes
+  // Template (and other) resources whose status has no phase/message, and which
+  // must not be swept into the instance list.
+  const instanceKinds = new Set(templates.map(t => t.kind).filter(Boolean))
+  const listFieldByKind = new Map<string, string>()
+  for (const [kind, resourceType] of resourceTypeByKind) {
+    if (!instanceKinds.has(kind)) continue
+    const lf = listByResourceType.get(resourceType)
+    if (lf) listFieldByKind.set(kind, lf)
+  }
+
+  cachedIndex = { fetchedAt: Date.now(), templates, templateByKind, listFieldByKind }
   return cachedIndex
 }
 
-async function getIndex(force = false): Promise<TemplateIndex> {
-  if (!force && cachedIndex && Date.now() - cachedIndex.fetchedAt < INDEX_TTL_MS) {
-    return cachedIndex
-  }
+async function getIndex(force = false): Promise<InfraIndex> {
+  if (!force && cachedIndex && Date.now() - cachedIndex.fetchedAt < INDEX_TTL_MS) return cachedIndex
   return refreshIndex()
 }
 
-// Build the Resource Graph (the wire body) for a per-template CR.
-// The instance kind/apiVersion come from the Template's spec.instanceCRD;
+// Build the wire manifest for a per-template instance CR. The kind/apiVersion
+// come from the Template's instanceCRD (all instances live in the infra group);
 // the input `values` go under .spec verbatim.
-function buildInstanceBody(tmpl: { kind: string; apiVersion: string }, name: string, values: Record<string, unknown>) {
+function buildInstanceManifest(kind: string, name: string, templateName: string, values: Record<string, unknown>) {
   return {
-    apiVersion: tmpl.apiVersion,
-    kind: tmpl.kind,
-    metadata: {
-      name,
-      labels: {
-        'kedge.faros.sh/template': name && tmpl.kind ? tmpl.kind : '',
-      },
-    },
+    apiVersion: GROUP + '/' + VERSION,
+    kind,
+    metadata: { name, labels: { 'kedge.faros.sh/template': templateName } },
     spec: values,
   }
 }
@@ -248,11 +253,13 @@ export const api = {
   },
 
   async getTemplate(name: string): Promise<{ template: Template }> {
-    const t = await kcpFetch<KCPTemplate>(
-      'GET',
-      clusterBase() + '/' + TEMPLATES_RESOURCE + '/' + encodeURIComponent(name),
+    const data = await graphqlQuery<Infra<{ Template?: { metadata: { name: string }; spec: Record<string, unknown> } }>>(
+      `query($n: String!) { ${GROUP_FIELD} { ${VERSION} { Template(name: $n) { metadata { name } spec { displayName description category version iconURL backend instanceCRD { group version resource kind } schema } } } } }`,
+      { n: name },
     )
-    return { template: templateFromKCP(t) }
+    const t = data[GROUP_FIELD]?.[VERSION]?.Template
+    if (!t) throw <ErrorResponse>{ reason: 'TemplateNotFound', message: 'template ' + name + ' not found' }
+    return { template: templateFromGQL(t.metadata.name, t.spec ?? {}) }
   },
 
   async createInstance(body: {
@@ -262,88 +269,75 @@ export const api = {
     values: Record<string, unknown>
   }): Promise<Instance> {
     const idx = await getIndex()
-    const tmplListItem = idx.templates.find(t => t.name === body.templateName)
-    const plural = idx.pluralByName.get(body.templateName)
-    if (!tmplListItem || !plural) {
+    const tmpl = idx.templates.find(t => t.name === body.templateName)
+    if (!tmpl || !tmpl.kind) {
       throw <ErrorResponse>{ reason: 'TemplateNotFound', message: 'template ' + body.templateName + ' not found' }
     }
-    const apiVersion = GROUP + '/' + VERSION
-    const cr = buildInstanceBody({ apiVersion, kind: tmplListItem.kind }, body.name, body.values)
-    // Tag with the originating template name so listInstances can
-    // attribute the CR back without a second lookup.
-    cr.metadata.labels['kedge.faros.sh/template'] = body.templateName
-    const created = await kcpFetch<KCPInstance>(
-      'POST',
-      clusterBase() + '/' + plural,
-      cr,
-    )
-    return instanceFromKCP(created, idx.templateByKind)
+    const manifest = buildInstanceManifest(tmpl.kind, body.name, body.templateName, body.values)
+    const created = await applyCR(manifest)
+    return instanceFromObj(created, idx.templateByKind)
   },
 
   async listInstances(): Promise<{ items: Instance[] }> {
     const idx = await getIndex()
-    if (idx.templates.length === 0) return { items: [] }
-    // One LIST per template. Parallel — kcp serves these from the
-    // same workspace so concurrency is cheap. We tolerate per-kind
-    // 404s (CRD not yet established) by treating them as empty.
+    const kinds = [...idx.listFieldByKind.keys()]
+    if (kinds.length === 0) return { items: [] }
+    // One LIST per established kind, in parallel. metadata + status only — the
+    // list view never needs the (arbitrary) spec, so we don't select it.
+    const SEL = 'items { metadata { name namespace creationTimestamp labels } status { phase message conditions { type status reason message lastTransitionTime } } }'
     const lists = await Promise.all(
-      idx.templates.map(async t => {
-        const plural = idx.pluralByName.get(t.name)
-        if (!plural) return [] as KCPInstance[]
+      kinds.map(async kind => {
+        const field = idx.listFieldByKind.get(kind)!
         try {
-          const r = await kcpFetch<KCPList<KCPInstance>>('GET', clusterBase() + '/' + plural)
-          return r.items ?? []
+          const data = await graphqlQuery<Infra<Record<string, { items?: RawObject[] }>>>(
+            `{ ${GROUP_FIELD} { ${VERSION} { ${field} { ${SEL} } } } }`,
+          )
+          return data[GROUP_FIELD]?.[VERSION]?.[field]?.items ?? []
         } catch (e) {
-          const err = e as ErrorResponse
-          if (err.reason === 'InstanceNotFound' || err.reason === 'TemplateNotFound') return []
+          if ((e as ErrorResponse).reason === 'NotFound') return []
           throw e
         }
       }),
     )
-    const items = lists.flat().map(c => instanceFromKCP(c, idx.templateByKind))
+    const items = lists.flat().map(c => instanceFromObj(c, idx.templateByKind))
     return { items }
   },
 
   async getInstance(name: string): Promise<Instance> {
-    // The REST API didn't carry the template name on the URL, so the
-    // only way to resolve a CR by bare name is to probe each Template's
-    // plural. listInstances is too coarse; do parallel GETs and pick
-    // the first 2xx.
+    // The CR's kind isn't on the URL, so probe each established kind's raw
+    // <Kind>Yaml in parallel and take the first hit. Yaml gives the full object
+    // (incl. the arbitrary spec) without needing its schema.
     const idx = await getIndex()
-    const probes = idx.templates.map(async t => {
-      const plural = idx.pluralByName.get(t.name)
-      if (!plural) return null
+    const kinds = [...idx.listFieldByKind.keys()]
+    const probes = kinds.map(async kind => {
       try {
-        return await kcpFetch<KCPInstance>(
-          'GET',
-          clusterBase() + '/' + plural + '/' + encodeURIComponent(name),
+        const data = await graphqlQuery<Infra<Record<string, string>>>(
+          `query($n: String!) { ${GROUP_FIELD} { ${VERSION} { ${kind}Yaml(name: $n) } } }`,
+          { n: name },
         )
+        const text = data[GROUP_FIELD]?.[VERSION]?.[kind + 'Yaml']
+        return text ? (yamlLoad(text) as RawObject) : null
       } catch (e) {
-        const err = e as ErrorResponse
-        if (err.reason === 'InstanceNotFound') return null
+        if ((e as ErrorResponse).reason === 'NotFound') return null
         throw e
       }
     })
     const found = (await Promise.all(probes)).find(Boolean)
-    if (!found) {
-      throw <ErrorResponse>{ reason: 'InstanceNotFound', message: 'instance ' + name + ' not found' }
-    }
-    return instanceFromKCP(found, idx.templateByKind)
+    if (!found) throw <ErrorResponse>{ reason: 'InstanceNotFound', message: 'instance ' + name + ' not found' }
+    return instanceFromObj(found, idx.templateByKind)
   },
 
   async deleteInstance(name: string): Promise<void> {
     const idx = await getIndex()
-    // Resolve which template the CR belongs to: cheap path is a label
-    // lookup via getInstance, since that's a small batch of parallel
-    // probes the browser is fine to pay for.
+    // Resolve which kind the CR is, then delete<Kind>.
     const inst = await this.getInstance(name)
-    const plural = idx.pluralByName.get(inst.template)
-    if (!plural) {
-      throw <ErrorResponse>{ reason: 'InstanceNotFound', message: 'cannot resolve plural for ' + name }
+    const kind = idx.templates.find(t => t.name === inst.template)?.kind
+    if (!kind) {
+      throw <ErrorResponse>{ reason: 'InstanceNotFound', message: 'cannot resolve kind for ' + name }
     }
-    await kcpFetch<unknown>(
-      'DELETE',
-      clusterBase() + '/' + plural + '/' + encodeURIComponent(name),
+    await graphqlQuery(
+      `mutation($n: String!) { ${GROUP_FIELD} { ${VERSION} { delete${kind}(name: $n) } } }`,
+      { n: name },
     )
   },
 }

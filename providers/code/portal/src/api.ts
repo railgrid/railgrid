@@ -1,12 +1,11 @@
-// kcp-native client for the code provider's portal.
+// GraphQL client for the code provider's portal.
 //
-// Talks to kcp directly through the hub's kcp REST proxy:
-//   /clusters/<tenant>/apis/code.kedge.faros.sh/v1alpha1/<resource>   (our CRDs)
-//   /clusters/<tenant>/api/v1/namespaces/default/secrets              (PAT secret)
-//
-// The shell pushes kedgeContext.tenant (kcp cluster name) and
-// kedgeContext.token (bearer). All four code CRDs are cluster-scoped, so their
-// CRs live at <cluster>/apis/<g>/<v>/<plural>/<name> with no namespace segment.
+// Every read and write goes through the hub's embedded GraphQL gateway at
+// /graphql/<cluster> — reads as `code_kedge_faros_sh { v1alpha1 { … } }`
+// queries, writes as create/update/delete mutations (and applyYaml for
+// create-or-update). The shell pushes kedgeContext.tenant (kcp cluster name,
+// used as the /graphql path segment) and kedgeContext.token (bearer). The one
+// non-gateway call is oauthConfig, which probes the provider backend directly.
 
 import type {
   Collaborator,
@@ -20,7 +19,6 @@ import type {
 
 const GROUP = 'code.kedge.faros.sh'
 const VERSION = 'v1alpha1'
-const APIS_PREFIX = `/apis/${GROUP}/${VERSION}`
 const CRED_NAMESPACE = 'default'
 const TOKEN_KEY = 'token'
 
@@ -39,16 +37,6 @@ export function setTenant(name?: string | null) {
   clusterName = name || null
 }
 
-function clusterBase(): string {
-  if (!clusterName) {
-    throw <ErrorResponse>{ reason: 'TenantMissing', message: 'no workspace selected' }
-  }
-  return `/clusters/${clusterName}`
-}
-function apisBase(): string {
-  return clusterBase() + APIS_PREFIX
-}
-
 interface KCPMetadata {
   name: string
   uid?: string
@@ -65,36 +53,6 @@ interface RawCR {
   metadata: KCPMetadata
   spec?: Record<string, unknown>
   status?: { conditions?: KCPCondition[] } & Record<string, unknown>
-}
-
-async function kcpFetch<T>(method: string, path: string, body?: unknown, contentType?: string): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' }
-  if (body) headers['Content-Type'] = contentType || 'application/json'
-  if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
-  const res = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  })
-  const text = await res.text()
-  if (!res.ok) {
-    let reason = 'HTTPError'
-    let message = text || res.statusText
-    try {
-      const parsed = JSON.parse(text) as { reason?: string; message?: string }
-      if (parsed && (parsed.reason || parsed.message)) {
-        reason = parsed.reason || reason
-        message = parsed.message || message
-      }
-    } catch {
-      // non-JSON body — keep raw text
-    }
-    if (res.status === 404) reason = 'NotFound'
-    else if (res.status === 403 && /APIBinding|not\s+found/i.test(message)) reason = 'APIBindingMissing'
-    throw <ErrorResponse>{ reason, message }
-  }
-  return (text ? JSON.parse(text) : null) as T
 }
 
 // graphqlQuery runs a query against the hub's embedded GraphQL gateway at
@@ -219,41 +177,37 @@ function dns1123(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 253) || 'x'
 }
 
-// createOrGet POSTs body to a collection and, if the object already exists,
-// fetches the existing one instead — so connecting is idempotent.
-async function createOrGet(collectionPath: string, name: string, body: unknown): Promise<RawCR> {
-  try {
-    return await kcpFetch<RawCR>('POST', collectionPath, body)
-  } catch (e) {
-    if ((e as ErrorResponse).reason === 'AlreadyExists') {
-      return await kcpFetch<RawCR>('GET', collectionPath + '/' + encodeURIComponent(name))
-    }
-    throw e
-  }
+// ── GraphQL write helpers ──────────────────────────────────────────────────
+// All writes go through the gateway's mutation API (no kcp REST proxy). applyCR
+// wraps applyYaml, whose server-side create-or-update semantics make writes
+// idempotent and handle the "adopt an existing object" case (e.g. a leftover
+// credential Secret) without client-side resourceVersion juggling.
+async function applyCR(manifest: Record<string, unknown>): Promise<RawCR> {
+  const data = await graphqlQuery<{ applyYaml?: unknown }>(
+    'mutation($y: String!) { applyYaml(yaml: $y) }',
+    { y: JSON.stringify(manifest) },
+  )
+  // applyYaml returns the applied object as a JSON string (JSONString scalar);
+  // tolerate an already-parsed object too.
+  const raw = data.applyYaml
+  return (typeof raw === 'string' ? JSON.parse(raw || '{}') : raw ?? {}) as RawCR
 }
 
-// upsertSecret writes the token Secret, adopting and overwriting a leftover one
-// from a prior connection rather than failing on AlreadyExists. owner is an
-// ownerReference to the Connection so kcp GC removes the Secret with it.
-async function upsertSecret(secretName: string, token: string, owner: Record<string, unknown>): Promise<void> {
-  const collection = clusterBase() + `/api/v1/namespaces/${CRED_NAMESPACE}/secrets`
-  const body: Record<string, unknown> = {
-    apiVersion: 'v1',
-    kind: 'Secret',
-    metadata: { name: secretName, namespace: CRED_NAMESPACE, ownerReferences: [owner] },
-    type: 'Opaque',
-    stringData: { [TOKEN_KEY]: token },
-  }
-  try {
-    await kcpFetch<unknown>('POST', collection, body)
-  } catch (e) {
-    if ((e as ErrorResponse).reason !== 'AlreadyExists') throw e
-    // Adopt the existing Secret: carry its resourceVersion into the replace so
-    // the update is accepted, and overwrite the token + ownerReferences.
-    const existing = await kcpFetch<RawCR>('GET', collection + '/' + encodeURIComponent(secretName))
-    ;(body.metadata as Record<string, unknown>).resourceVersion = existing.metadata.resourceVersion
-    await kcpFetch<unknown>('PUT', collection + '/' + encodeURIComponent(secretName), body)
-  }
+// deleteCR deletes a code-group resource by name via the delete<Kind> mutation.
+async function deleteCR(kind: string, name: string): Promise<void> {
+  await graphqlQuery(
+    `mutation($n: String!) { code_kedge_faros_sh { v1alpha1 { delete${kind}(name: $n) } } }`,
+    { n: name },
+  )
+}
+
+// deleteSecret removes a credential Secret (core/v1, namespaced) by name. Best-
+// effort: a missing Secret is not an error for the caller.
+async function deleteSecret(name: string): Promise<void> {
+  await graphqlQuery(
+    'mutation($n: String!, $ns: String!) { v1 { deleteSecret(name: $n, namespace: $ns) } }',
+    { n: name, ns: CRED_NAMESPACE },
+  )
 }
 
 // ── GraphQL read helpers ───────────────────────────────────────────────────
@@ -317,18 +271,24 @@ export const api = {
       secretRef: { name: secretName, namespace: CRED_NAMESPACE, key: TOKEN_KEY },
     }
     if (input.baseURL) spec.baseURL = input.baseURL
-    const conn = await createOrGet(apisBase() + '/connections', name, {
+    const conn = await applyCR({
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Connection',
       metadata: { name },
       spec,
     })
-    // 2) Secret holding the token, owned by the Connection.
-    await upsertSecret(secretName, input.token, {
-      apiVersion: `${GROUP}/${VERSION}`,
-      kind: 'Connection',
-      name,
-      uid: conn.metadata.uid,
+    // 2) Secret holding the token, owned by the Connection so kcp GC removes it
+    // with the Connection. applyCR's create-or-update adopts a leftover Secret.
+    await applyCR({
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: {
+        name: secretName,
+        namespace: CRED_NAMESPACE,
+        ownerReferences: [{ apiVersion: `${GROUP}/${VERSION}`, kind: 'Connection', name, uid: conn.metadata.uid }],
+      },
+      type: 'Opaque',
+      stringData: { [TOKEN_KEY]: input.token },
     })
     return connFromCR(conn)
   },
@@ -339,17 +299,18 @@ export const api = {
     // immediate and guarantees the name is free for the next connection.
     let secretName = name + '-token'
     try {
-      const conn = await kcpFetch<RawCR>('GET', apisBase() + '/connections/' + encodeURIComponent(name))
+      const conn = await gqlGet('Connection', name, F_CONNECTION)
       const ref = conn.spec?.secretRef as Record<string, unknown> | undefined
       if (ref?.name) secretName = String(ref.name)
     } catch {
       // connection already gone — fall back to the naming convention
     }
-    await kcpFetch<unknown>('DELETE', apisBase() + '/connections/' + encodeURIComponent(name))
+    await deleteCR('Connection', name)
     try {
-      await kcpFetch<unknown>('DELETE', clusterBase() + `/api/v1/namespaces/${CRED_NAMESPACE}/secrets/` + encodeURIComponent(secretName))
+      await deleteSecret(secretName)
     } catch (e) {
-      if ((e as ErrorResponse).reason !== 'NotFound') throw e
+      // best-effort: a since-deleted Secret (GC raced us) is fine
+      if (!/not\s*found/i.test((e as ErrorResponse).message ?? '')) throw e
     }
   },
 
@@ -393,7 +354,7 @@ export const api = {
     if (input.visibility) spec.visibility = input.visibility
     if (input.description) spec.description = input.description
     if (input.autoInit) spec.autoInit = true
-    const created = await kcpFetch<RawCR>('POST', apisBase() + '/repositories', {
+    const created = await applyCR({
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Repository',
       metadata: { name },
@@ -403,19 +364,24 @@ export const api = {
   },
 
   async deleteRepository(name: string): Promise<void> {
-    await kcpFetch<unknown>('DELETE', apisBase() + '/repositories/' + encodeURIComponent(name))
+    await deleteCR('Repository', name)
   },
 
   // updateRepositoryConnection repoints an existing Repository at a different
-  // Connection via a merge-patch on spec.connectionRef. The controller re-resolves
-  // the new credential/owner on the next reconcile.
+  // Connection. The update<Kind> mutation is a server-side merge-patch, so only
+  // spec.connectionRef changes; the controller re-resolves the new credential/
+  // owner on the next reconcile.
   async updateRepositoryConnection(name: string, connectionRef: string): Promise<Repository> {
-    const updated = await kcpFetch<RawCR>(
-      'PATCH',
-      apisBase() + '/repositories/' + encodeURIComponent(name),
-      { spec: { connectionRef } },
-      'application/merge-patch+json',
+    const data = await graphqlQuery<{ code_kedge_faros_sh?: { v1alpha1?: { updateRepository?: RawCR } } }>(
+      `mutation($n: String!, $ref: String!) {
+        code_kedge_faros_sh { v1alpha1 {
+          updateRepository(name: $n, object: { spec: { connectionRef: $ref } }) { ${F_REPOSITORY} }
+        } }
+      }`,
+      { n: name, ref: connectionRef },
     )
+    const updated = data.code_kedge_faros_sh?.v1alpha1?.updateRepository
+    if (!updated) throw <ErrorResponse>{ reason: 'ServerError', message: 'updateRepository returned no object' }
     return repoFromCR(updated)
   },
 
@@ -435,7 +401,7 @@ export const api = {
     if (input.title) spec.title = input.title
     if (input.publicKey) spec.publicKey = input.publicKey
     if (input.readOnly) spec.readOnly = true
-    const created = await kcpFetch<RawCR>('POST', apisBase() + '/deploykeys', {
+    const created = await applyCR({
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'DeployKey',
       metadata: { name },
@@ -445,7 +411,7 @@ export const api = {
   },
 
   async deleteDeployKey(name: string): Promise<void> {
-    await kcpFetch<unknown>('DELETE', apisBase() + '/deploykeys/' + encodeURIComponent(name))
+    await deleteCR('DeployKey', name)
   },
 
   // ── Collaborators ────────────────────────────────────────────────────────
@@ -464,7 +430,7 @@ export const api = {
       username: input.username,
     }
     if (input.permission) spec.permission = input.permission
-    const created = await kcpFetch<RawCR>('POST', apisBase() + '/collaborators', {
+    const created = await applyCR({
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Collaborator',
       metadata: { name },
@@ -474,7 +440,7 @@ export const api = {
   },
 
   async deleteCollaborator(name: string): Promise<void> {
-    await kcpFetch<unknown>('DELETE', apisBase() + '/collaborators/' + encodeURIComponent(name))
+    await deleteCR('Collaborator', name)
   },
 
   // ── Packages (read-only) ─────────────────────────────────────────────────

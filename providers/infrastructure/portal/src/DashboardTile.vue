@@ -122,7 +122,7 @@ const AlertCircle = (props: { class?: string }) =>
 interface KedgeContext {
   token?: string | null
   // tenant is the kcp cluster name (auth.clusterName in the shell).
-  // Used as the /clusters/<x>/ prefix on every kcp REST call.
+  // Used as the /graphql/<cluster> path segment for gateway calls.
   tenant?: string | null
   basePath?: string
 }
@@ -159,7 +159,7 @@ const recent = computed(() =>
     .slice(0, 4),
 )
 
-// Refresh delegates to the shared kcp client in api.ts. The shell
+// Refresh delegates to the shared GraphQL client in api.ts. The shell
 // pushes the same token + tenant (auth.clusterName) to every mounted
 // element, so even when the tile and the full provider page are open
 // at the same time both end up with the same module state.
@@ -167,7 +167,7 @@ async function refresh() {
   const ctx = props.context
   if (!ctx?.tenant) {
     // No workspace selected yet — render the empty state rather than
-    // hitting kcp without a /clusters/ prefix.
+    // querying the gateway without a cluster.
     instances.value = []
     error.value = null
     loading.value = false

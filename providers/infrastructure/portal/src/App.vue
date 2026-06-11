@@ -53,8 +53,8 @@ const tenantPath = computed(() => props.ctx?.tenant ?? null)
 // re-pushes context (e.g. token rotation, workspace switch).
 watch(() => props.ctx?.basePath, (v) => setBasePath(v), { immediate: true })
 watch(() => props.ctx?.token, (v) => setToken(v), { immediate: true })
-// ctx.tenant is the kcp cluster name auth.clusterName, which forms
-// the /clusters/<x>/apis/... prefix every kcp REST call below uses.
+// ctx.tenant is the kcp cluster name auth.clusterName, used as the
+// /graphql/<cluster> path segment for every gateway call in api.ts.
 watch(() => props.ctx?.tenant, (v) => setTenant(v), { immediate: true })
 
 // navigate dispatches a kedge-navigate CustomEvent (bubbles) so the
@@ -107,8 +107,8 @@ function provisioned(name: string) {
 <template>
   <div ref="rootRef" class="app">
     <!--
-      Every routed page calls into api.ts on mount, which builds a
-      /clusters/<tenant>/apis/... URL. Without a tenant the call
+      Every routed page calls into api.ts on mount, which queries the
+      /graphql/<tenant> gateway. Without a tenant the call
       throws "no workspace selected" — accurate, but ugly. Gate page
       render on a non-empty tenantPath so the page only mounts when
       api.ts is ready. The host pushes ctx.tenant immediately after
