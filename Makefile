@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -118,6 +118,12 @@ build-quickstart-provider-portal: ## Build the quickstart provider's micro-front
 
 build-quickstart-provider: build-quickstart-provider-portal ## Build the quickstart reference provider binary (portal embedded)
 	cd providers/quickstart && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/quickstart-provider .
+
+build-kuery-provider-portal: ## Build the kuery provider's micro-frontend (Vite + TS → portal/dist)
+	cd providers/kuery/portal && npm install --no-audit --no-fund && npm run build
+
+build-kuery-provider: build-kuery-provider-portal ## Build the kuery provider binary (portal embedded)
+	cd providers/kuery && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/kuery-provider .
 
 build-infrastructure-provider-portal: ## Build the infrastructure provider's micro-frontend (Vite + Vue → portal/dist)
 	cd providers/infrastructure/portal && npm install --no-audit --no-fund && npm run build
@@ -591,6 +597,46 @@ uninstall-provider-quickstart: ## Delete quickstart CatalogEntry
 		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:kedge:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(QUICKSTART_MANIFEST)
+
+# --- Provider kuery (local dev) ---
+# Mirror of the quickstart pattern above. Distinct port (8084) so the demo
+# providers can run side-by-side. Phase 1 skeleton — see
+# docs/kuery-provider-architecture.md for the phasing.
+
+KUERY_PORT ?= 8084
+KUERY_HUB_URL ?= https://localhost:9443
+KUERY_TOKEN ?= $(STATIC_AUTH_TOKEN)
+KUERY_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
+KUERY_KCP_SERVER ?= https://localhost:6443
+KUERY_MANIFEST ?= providers/kuery/manifest.yaml
+
+run-provider-kuery: build-kuery-provider ## Run the kuery provider (requires: make run-hub-embedded-static + make install-provider-kuery)
+	@echo "Starting kuery provider on :$(KUERY_PORT)"
+	@echo "  hub:   $(KUERY_HUB_URL)"
+	@echo "  token: $(KUERY_TOKEN)"
+	PORT=$(KUERY_PORT) \
+	KEDGE_HUB_URL=$(KUERY_HUB_URL) \
+	KEDGE_HUB_TOKEN=$(KUERY_TOKEN) \
+	KEDGE_HUB_INSECURE=true \
+	KEDGE_PROVIDER_NAME=kuery \
+		$(BINDIR)/kuery-provider
+
+install-provider-kuery: ## Apply kuery CatalogEntry into root:kedge:providers
+	@test -f $(KUERY_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(KUERY_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
+		--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		apply -f $(KUERY_MANIFEST)
+
+uninstall-provider-kuery: ## Delete kuery CatalogEntry
+	-kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
+		--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		delete -f $(KUERY_MANIFEST)
 
 # --- Provider infrastructure (local dev) ---
 # Mirror of the quickstart pattern above. Distinct port (8082) so both

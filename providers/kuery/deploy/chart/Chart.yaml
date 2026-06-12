@@ -1,0 +1,22 @@
+apiVersion: v2
+name: kedge-kuery-provider
+description: |
+  Kedge provider for fleet-wide object search, relationship traversal, and
+  impact analysis across connected edge clusters (built on faroshq/kuery).
+  Ships the provider Deployment, ClusterIP Service, and the CatalogEntry
+  that registers the provider (UI + backend + the SavedView APIExport +
+  edgeProxyAccess) with the kedge hub. Phase 1 skeleton.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+icon: https://example.com/kedge-icon.png
+keywords:
+  - kedge
+  - provider
+  - kuery
+  - observability
+home: https://github.com/faroshq/kedge
+sources:
+  - https://github.com/faroshq/kedge/tree/main/providers/kuery
+maintainers:
+  - name: kedge maintainers
