@@ -254,12 +254,12 @@ Full-object sync of every edge through the tunnels is the cost center.
   tenant-scoped `/api/query` + MCP tools (`kuery_query`, `kuery_impact`) into the
   aggregator. This is the value milestone: agents can query the fleet.
   Implementation notes vs. this design: tenant scoping rides on kuery *cluster
-  labels* (`tenant`, a bare identifier — kuery's SQLite dialect compiles label keys
-  into the `json_extract` path; the query API also REPLACES caller-supplied cluster
-  labels wholesale because those keys reach the generated SQL, which is an upstream
-  kuery hardening item). The resource *whitelist* is still pending upstream kuery
-  support — the chart exposes the blacklist for now. End-to-end suite with a real
-  connected edge is a Phase 3 work item.
+  labels* (`tenant`, a bare identifier). Both upstream kuery follow-ups are done:
+  label keys are bound SQL parameters ([kuery#4](https://github.com/faroshq/kuery/pull/4)
+  — the query API still replaces caller-supplied cluster labels wholesale, defense
+  in depth), and sync supports a whitelist ([kuery#5](https://github.com/faroshq/kuery/pull/5))
+  which the chart now defaults to the workloads/config/RBAC/networking set.
+  End-to-end suite with a real connected edge is a Phase 3 work item.
 - **Phase 3 — UI.** Portal micro-frontend: edge/object **inventory table with filters**
   first (covers most human use), then the cytoscape object graph and impact view with
   blast-radius highlighting.

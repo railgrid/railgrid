@@ -44,12 +44,29 @@ store:
     size: 5Gi
     storageClassName: ""  # empty → cluster default
 
-# Resources excluded from edge sync, comma-separated "resource.group"
-# entries (empty group = core). Empty uses kuery's defaults: secrets and
-# events. Edge links are often bandwidth-constrained — extend this rather
-# than syncing everything if your edges run chatty CRDs.
-# TODO(upstream kuery): switch to a whitelist once pkg/sync supports one.
+# Edge sync resource selection, comma-separated "resource.group" entries
+# (empty group = core).
+#
+# whitelist: ONLY these resources sync; everything else stays discoverable
+# (kind resolution works) but ships no objects. Edge links are often
+# bandwidth-constrained, so the default is the workloads/config/RBAC/
+# networking set rather than everything. Set to "" to sync everything
+# watchable.
+# blacklist: skipped entirely, on top of the whitelist. Empty uses kuery's
+# defaults: secrets and events.
 sync:
+  whitelist: >-
+    pods,services,endpoints,configmaps,namespaces,nodes,
+    persistentvolumeclaims,persistentvolumes,serviceaccounts,
+    limitranges,resourcequotas,
+    deployments.apps,replicasets.apps,statefulsets.apps,daemonsets.apps,
+    jobs.batch,cronjobs.batch,
+    ingresses.networking.k8s.io,networkpolicies.networking.k8s.io,
+    roles.rbac.authorization.k8s.io,rolebindings.rbac.authorization.k8s.io,
+    clusterroles.rbac.authorization.k8s.io,clusterrolebindings.rbac.authorization.k8s.io,
+    storageclasses.storage.k8s.io,
+    customresourcedefinitions.apiextensions.k8s.io,
+    horizontalpodautoscalers.autoscaling
   blacklist: ""
 
 # When true, the chart also renders the CatalogEntry that registers the

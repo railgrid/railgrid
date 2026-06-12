@@ -115,6 +115,7 @@ func main() {
 		Driver:    storeDriver,
 		DSN:       envOr("KUERY_STORE_DSN", "kuery.db"),
 		Blacklist: os.Getenv("KUERY_SYNC_BLACKLIST"),
+		Whitelist: os.Getenv("KUERY_SYNC_WHITELIST"),
 	})
 	if err != nil {
 		log.Fatalf("kuery core: %v", err)

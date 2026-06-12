@@ -50,6 +50,12 @@ spec:
               value: {{ .Values.store.driver | quote }}
             - name: KUERY_STORE_DSN
               value: {{ .Values.store.dsn | quote }}
+            {{- if .Values.sync.whitelist }}
+            - name: KUERY_SYNC_WHITELIST
+              # Collapse the folded-block whitespace into the clean
+              # comma-separated form the binary parses.
+              value: {{ .Values.sync.whitelist | replace " " "" | replace "\n" "" | quote }}
+            {{- end }}
             {{- if .Values.sync.blacklist }}
             - name: KUERY_SYNC_BLACKLIST
               value: {{ .Values.sync.blacklist | quote }}

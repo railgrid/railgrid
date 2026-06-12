@@ -26,7 +26,10 @@ What works today:
 
 - **Embedded kuery engine** (`core/`): SQLite (default, on the chart's
   PVC) or Postgres store, the query engine, the multi-cluster sync
-  controller, and the stale-cluster GC.
+  controller, and the stale-cluster GC. Sync is whitelist-driven — the
+  chart defaults to the workloads/config/RBAC/networking set
+  (`sync.whitelist`); non-whitelisted types stay discoverable but ship no
+  objects.
 - **Edge engagement** (`engagement/`): watches `Edge` objects across every
   tenant workspace that Enabled the provider (APIExport virtual
   workspace), and syncs each connected kubernetes edge through the hub's
