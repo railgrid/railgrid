@@ -41,6 +41,19 @@ centralKro:
     name: ""   # set to use an external Secret
     key: kubeconfig
 
+# The "application" template (3-tier app exposed on an OIDC-guarded URL).
+# The Application instance controller is OFF unless baseDomain is set AND a
+# central kro kubeconfig is configured (the controller bridges secrets onto
+# that runtime cluster). See docs/application-template-architecture.md.
+application:
+  # Zone apps are served under, e.g. "apps.example.com". Each app gets
+  # <prefix|name>-<tenantHash>.<baseDomain>. Empty → feature disabled.
+  baseDomain: ""
+  # Exposure-layer ingress class substituted into Application RGDs. Defaults
+  # to "cloudflare" (Cloudflare Tunnel) in-binary; override to swap the
+  # ingress controller without touching the template.
+  ingressClass: "cloudflare"
+
 # Secret the provider mounts read-only at
 # /var/run/secrets/kedge/kedge-provider-kubeconfig to reach kcp. How it is
 # populated depends on bootstrap.enabled:
