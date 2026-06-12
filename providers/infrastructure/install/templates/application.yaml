@@ -1,0 +1,546 @@
+apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: application
+spec:
+  displayName: "Web application"
+  description: "A 3-tier app — frontend + backend + Postgres — exposed on a URL guarded by OIDC (oauth2-proxy). Authenticated users only; the backend and database are never exposed."
+  category: Workloads
+  version: 0.1.0
+  backend: kro
+  instanceCRD:
+    group: infrastructure.kedge.faros.sh
+    version: v1alpha1
+    resource: applications
+    kind: Application
+  # ── Tenant-facing inputs ──────────────────────────────────────────────
+  # Nested objects (database/expose/oidc) are supported by the kro
+  # SimpleSchema converter (backend/kro/simpleschema.go recurses).
+  #
+  # Two fields are populated by the Application instance controller, NOT the
+  # tenant, and must NOT be set by hand:
+  #   - expose.fqdn            the public hostname, computed as
+  #                            <prefix|name>-<tenantHash>.apps.<baseDomain>
+  #   - credentialsSecretName  the runtime Secret the controller bridges the
+  #                            OIDC client secret into (key: oidc_client_secret)
+  # The RGD below references both; the controller stamps them onto spec before
+  # kro reconciles (see controller/application).
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        description: "Logical name; used as the resource-name prefix in the tenant namespace and the default hostname prefix."
+
+      # ── Frontend tier (the only tier exposed, behind oauth2-proxy) ──
+      frontendImage:
+        type: string
+        description: "Container image for the public-facing frontend."
+      frontendPort:
+        type: integer
+        default: 8080
+        description: "Port the frontend container listens on."
+      frontendReplicas:
+        type: integer
+        default: 1
+        minimum: 1
+        maximum: 10
+
+      # ── Backend tier (internal; reachable only via cluster DNS) ──
+      backendImage:
+        type: string
+        description: "Container image for the internal backend/API tier."
+      backendPort:
+        type: integer
+        default: 8080
+      backendReplicas:
+        type: integer
+        default: 1
+        minimum: 1
+        maximum: 10
+
+      # ── Database tier (Postgres; always provisioned in v1) ──
+      database:
+        type: object
+        properties:
+          size:
+            type: string
+            enum: ["small", "medium", "large"]
+            default: "small"
+            description: "Reserved for v1 (accepted but not yet wired to resources/storage), mirroring redis-cache."
+          version:
+            type: string
+            enum: ["15", "16"]
+            default: "16"
+
+      # ── Exposure ──
+      expose:
+        type: object
+        properties:
+          hostnamePrefix:
+            type: string
+            pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            maxLength: 50
+            description: "Left-most DNS label. Defaults to .name. Final host = <prefix>-<tenantHash>.<appBaseDomain>."
+          fqdn:
+            type: string
+            description: "Computed by the platform — do NOT set. The public hostname the app is served on."
+
+      # ── OIDC (the gate in front of the frontend) ──
+      oidc:
+        type: object
+        properties:
+          mode:
+            type: string
+            enum: ["platform", "byo"]
+            default: "platform"
+            description: "platform = guard with kedge SSO (a Dex client is minted for you). byo = your own IdP; set issuerURL + clientID and put the client secret in your cloud-credentials Secret under key oidc_client_secret."
+          issuerURL:
+            type: string
+            description: "BYO mode: your IdP's OIDC issuer URL. Platform mode: populated by the controller."
+          clientID:
+            type: string
+            description: "BYO mode: your OAuth2 client ID. Platform mode: populated by the controller."
+          emailDomains:
+            type: array
+            items:
+              type: string
+            description: "Reserved for v1 (accepted but not yet wired; defaults to allowing any authenticated user)."
+          scopes:
+            type: string
+            default: "openid email profile"
+
+      # Controller-injected; see the schema header comment.
+      credentialsSecretName:
+        type: string
+        description: "Computed by the platform — do NOT set."
+    required:
+      - name
+      - frontendImage
+      - backendImage
+
+  # ── backendConfig: the kro resource graph ─────────────────────────────
+  # Interpreted by the kro backend. Every resource sets namespace: default —
+  # the control-plane/data-plane split materializes these on the runtime
+  # cluster and remaps that to the per-tenant namespace (kedge-tenants-<hash>),
+  # so a tenant's whole app lands together and is isolated from other tenants.
+  #
+  # Reserved kedge token: ${kedge.ingressClass} is substituted for the
+  # platform's configured ingress class (KEDGE_INGRESS_CLASS, default
+  # "cloudflare") before the RGD is authored — kro never sees the token.
+  backendConfig:
+    resources:
+      # ───────────────────── Postgres tier ─────────────────────
+      # Connection Secret. The non-sensitive fields are set here; the
+      # pwgen Job below fills password + a full postgres:// URI, once.
+      - id: dbCredentials
+        template:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ${schema.spec.name}-db-credentials
+            namespace: default
+          stringData:
+            host: ${schema.spec.name}-db
+            port: "5432"
+            user: appuser
+            dbname: appdb
+      - id: dbPwgenAccount
+        template:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: ${schema.spec.name}-db-pwgen
+            namespace: default
+      - id: dbPwgenRole
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: ${schema.spec.name}-db-pwgen
+            namespace: default
+          rules:
+            - apiGroups: [""]
+              resources: ["secrets"]
+              verbs: ["get", "patch"]
+      - id: dbPwgenBinding
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: ${schema.spec.name}-db-pwgen
+            namespace: default
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: ${dbPwgenRole.metadata.name}
+          subjects:
+            - kind: ServiceAccount
+              name: ${dbPwgenAccount.metadata.name}
+              namespace: default
+      # Mints a random password and a complete postgres:// URI into the
+      # credentials Secret — once; no-ops if password is already set, so
+      # re-reconciles don't rotate it. kro never sees the value.
+      - id: dbPwgen
+        template:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${schema.spec.name}-db-pwgen
+            namespace: default
+          spec:
+            backoffLimit: 5
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                serviceAccountName: ${dbPwgenAccount.metadata.name}
+                restartPolicy: OnFailure
+                containers:
+                  - name: pwgen
+                    image: bitnami/kubectl
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -eu
+                        SECRET="${dbCredentials.metadata.name}"
+                        if [ -z "$(kubectl get secret "$SECRET" -o jsonpath='{.data.password}' 2>/dev/null)" ]; then
+                          PW="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 24)"
+                          kubectl patch secret "$SECRET" --type merge \
+                            -p "{\"stringData\":{\"password\":\"$PW\",\"uri\":\"postgres://appuser:$PW@${schema.spec.name}-db:5432/appdb\"}}"
+                          echo "generated db credentials for $SECRET"
+                        else
+                          echo "db credentials already present for $SECRET"
+                        fi
+      - id: dbStatefulSet
+        template:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ${schema.spec.name}-db
+            namespace: default
+          spec:
+            serviceName: ${schema.spec.name}-db
+            replicas: 1
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}-db
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}-db
+              spec:
+                containers:
+                  - name: postgres
+                    image: postgres:${schema.spec.database.version}
+                    env:
+                      - name: POSTGRES_USER
+                        value: appuser
+                      - name: POSTGRES_DB
+                        value: appdb
+                      - name: POSTGRES_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${dbCredentials.metadata.name}
+                            key: password
+                      # Keep PGDATA in a subdir so the PVC mount root (which
+                      # may contain lost+found) doesn't trip initdb.
+                      - name: PGDATA
+                        value: /var/lib/postgresql/data/pgdata
+                    ports:
+                      - containerPort: 5432
+                    volumeMounts:
+                      - name: data
+                        mountPath: /var/lib/postgresql/data
+            volumeClaimTemplates:
+              - metadata:
+                  name: data
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 1Gi
+      - id: dbService
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}-db
+            namespace: default
+          spec:
+            type: ClusterIP
+            selector:
+              app: ${schema.spec.name}-db
+            ports:
+              - port: 5432
+                targetPort: 5432
+
+      # ───────────────────── Backend tier ─────────────────────
+      - id: backendDeployment
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${schema.spec.name}-backend
+            namespace: default
+          spec:
+            replicas: ${schema.spec.backendReplicas}
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}-backend
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}-backend
+              spec:
+                containers:
+                  - name: backend
+                    image: ${schema.spec.backendImage}
+                    env:
+                      # Full connection string incl. password — sourced from
+                      # the Secret, never templated in clear.
+                      - name: DATABASE_URL
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${dbCredentials.metadata.name}
+                            key: uri
+                    ports:
+                      - containerPort: ${schema.spec.backendPort}
+      - id: backendService
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}-backend
+            namespace: default
+          spec:
+            type: ClusterIP
+            selector:
+              app: ${schema.spec.name}-backend
+            ports:
+              - port: ${schema.spec.backendPort}
+                targetPort: ${schema.spec.backendPort}
+
+      # ───────────────────── Frontend tier ─────────────────────
+      - id: frontendDeployment
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${schema.spec.name}-frontend
+            namespace: default
+          spec:
+            replicas: ${schema.spec.frontendReplicas}
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}-frontend
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}-frontend
+              spec:
+                containers:
+                  - name: frontend
+                    image: ${schema.spec.frontendImage}
+                    env:
+                      # In-cluster URL of the backend tier.
+                      - name: BACKEND_URL
+                        value: http://${schema.spec.name}-backend:${schema.spec.backendPort}
+                    ports:
+                      - containerPort: ${schema.spec.frontendPort}
+      - id: frontendService
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}-frontend
+            namespace: default
+          spec:
+            type: ClusterIP
+            selector:
+              app: ${schema.spec.name}-frontend
+            ports:
+              - port: ${schema.spec.frontendPort}
+                targetPort: ${schema.spec.frontendPort}
+
+      # ───────────────────── oauth2-proxy (the gate) ─────────────────────
+      # Cookie secret, generated in-graph (32 random bytes, base64). The
+      # pwgen Job fills it once; rotating it would invalidate live sessions,
+      # so the Job no-ops if it's already set.
+      - id: oauthCookieSecret
+        template:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ${schema.spec.name}-oauth-cookie
+            namespace: default
+      - id: oauthPwgenAccount
+        template:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: ${schema.spec.name}-oauth-pwgen
+            namespace: default
+      - id: oauthPwgenRole
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: ${schema.spec.name}-oauth-pwgen
+            namespace: default
+          rules:
+            - apiGroups: [""]
+              resources: ["secrets"]
+              verbs: ["get", "patch"]
+      - id: oauthPwgenBinding
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: ${schema.spec.name}-oauth-pwgen
+            namespace: default
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: ${oauthPwgenRole.metadata.name}
+          subjects:
+            - kind: ServiceAccount
+              name: ${oauthPwgenAccount.metadata.name}
+              namespace: default
+      - id: oauthPwgen
+        template:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${schema.spec.name}-oauth-pwgen
+            namespace: default
+          spec:
+            backoffLimit: 5
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                serviceAccountName: ${oauthPwgenAccount.metadata.name}
+                restartPolicy: OnFailure
+                containers:
+                  - name: pwgen
+                    image: bitnami/kubectl
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -eu
+                        SECRET="${oauthCookieSecret.metadata.name}"
+                        if [ -z "$(kubectl get secret "$SECRET" -o jsonpath='{.data.cookie-secret}' 2>/dev/null)" ]; then
+                          CS="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+                          kubectl patch secret "$SECRET" --type merge \
+                            -p "{\"stringData\":{\"cookie-secret\":\"$CS\"}}"
+                          echo "generated cookie secret for $SECRET"
+                        else
+                          echo "cookie secret already present for $SECRET"
+                        fi
+      - id: oauthDeployment
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${schema.spec.name}-oauth
+            namespace: default
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}-oauth
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}-oauth
+              spec:
+                containers:
+                  - name: oauth2-proxy
+                    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+                    args:
+                      - --provider=oidc
+                      - --oidc-issuer-url=${schema.spec.oidc.issuerURL}
+                      - --client-id=${schema.spec.oidc.clientID}
+                      - --redirect-url=https://${schema.spec.expose.fqdn}/oauth2/callback
+                      - --upstream=http://${schema.spec.name}-frontend:${schema.spec.frontendPort}
+                      - --http-address=0.0.0.0:4180
+                      - --scope=${schema.spec.oidc.scopes}
+                      # v1: allow any successfully-authenticated user. In
+                      # platform mode that's any kedge/Dex user; oidc.emailDomains
+                      # is reserved for finer control later.
+                      - --email-domain=*
+                      - --cookie-secure=true
+                      # Behind the ingress/Cloudflare edge — trust XFF headers.
+                      - --reverse-proxy=true
+                      - --skip-provider-button=true
+                    env:
+                      # BYO: bridged from the tenant's cloud-credentials Secret.
+                      # Platform: written by the controller after Dex CreateClient.
+                      - name: OAUTH2_PROXY_CLIENT_SECRET
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${schema.spec.credentialsSecretName}
+                            key: oidc_client_secret
+                      - name: OAUTH2_PROXY_COOKIE_SECRET
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${oauthCookieSecret.metadata.name}
+                            key: cookie-secret
+                    ports:
+                      - containerPort: 4180
+      - id: oauthService
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}-oauth
+            namespace: default
+          spec:
+            type: ClusterIP
+            selector:
+              app: ${schema.spec.name}-oauth
+            ports:
+              - port: 4180
+                targetPort: 4180
+
+      # ───────────────────── Ingress (exposure layer) ─────────────────────
+      # Plain Ingress; the controller is chosen by ${kedge.ingressClass}
+      # (substituted before the RGD is authored). No tls block — TLS
+      # terminates at the Cloudflare edge; the cloudflare ingress controller
+      # creates the DNS record + tunnel route from this host. Routes the
+      # public host to oauth2-proxy, which proxies to the frontend.
+      - id: ingress
+        template:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: ${schema.spec.name}
+            namespace: default
+          spec:
+            ingressClassName: ${kedge.ingressClass}
+            rules:
+              - host: ${schema.spec.expose.fqdn}
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: ${schema.spec.name}-oauth
+                          port:
+                            number: 4180
+    # Projected onto the instance in the tenant's kcp workspace. url/host are
+    # derived from the controller-stamped fqdn; per-tier readiness lets the
+    # portal show progress. No secret values are surfaced.
+    status:
+      url: ${"https://" + schema.spec.expose.fqdn}
+      host: ${schema.spec.expose.fqdn}
+      redirectURL: ${"https://" + schema.spec.expose.fqdn + "/oauth2/callback"}
+      frontendReady: ${frontendDeployment.status.readyReplicas}
+      backendReady: ${backendDeployment.status.readyReplicas}
+      databaseReady: ${dbStatefulSet.status.readyReplicas}
+      oauthReady: ${oauthDeployment.status.readyReplicas}
+      dbConnectionSecretRef:
+        name: ${dbCredentials.metadata.name}
+        namespace: ${dbCredentials.metadata.namespace}

@@ -345,6 +345,13 @@ func credentialsSecretName(instanceName string) string {
 	return "cloud-credentials-" + instanceName
 }
 
+// CredentialsSecretName is the public form: the per-instance Secret on the
+// runtime cluster that carries bridged credentials (cloud creds and/or the
+// OIDC client secret under key oidc_client_secret). The Application
+// controller creates it and stamps spec.credentialsSecretName with this
+// value so the RGD references the same name.
+func CredentialsSecretName(instanceName string) string { return credentialsSecretName(instanceName) }
+
 func boolPtr(b bool) *bool { return &b }
 
 // Compile-time check that realClient and stubClient implement Client.

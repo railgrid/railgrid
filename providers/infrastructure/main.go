@@ -155,6 +155,10 @@ func runServe() {
 		}
 	}
 
+	// Cross-tenant Application instance controller (fqdn stamp + OIDC
+	// client-secret bridge). Opt-in via KEDGE_APP_BASE_DOMAIN + KRO_KUBECONFIG.
+	startApplicationController(ctx, kcpConfig)
+
 	go runHeartbeat(ctx)
 
 	<-ctx.Done()

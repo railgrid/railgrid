@@ -29,6 +29,7 @@ package kro
 import (
 	"context"
 	"fmt"
+	"os"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,14 +52,33 @@ type Backend struct {
 	// the kro controller watches RGDs). In dev this is the kind cluster
 	// pointed at by KRO_KUBECONFIG.
 	runtime dynamic.Interface
+
+	// ingressClass is the value substituted for the reserved
+	// ${kedge.ingressClass} token in a Template's backendConfig before the
+	// RGD is authored. It's a platform-wide setting (the exposure-layer
+	// controller, e.g. "cloudflare"), so it belongs on the backend, not in
+	// per-tenant data. See substituteTokens in rgd.go.
+	ingressClass string
 }
 
 var _ backend.Backend = (*Backend)(nil)
 
+// DefaultIngressClass is used when KEDGE_INGRESS_CLASS is unset. Cloudflare
+// Tunnel is the exposure layer we ship with (reverse tunnels, edge TLS).
+const DefaultIngressClass = "cloudflare"
+
 // New constructs the kro backend against the runtime cluster's dynamic
 // client. The caller (controller_manager) builds it from KRO_KUBECONFIG.
+// The exposure-layer ingress class is read from KEDGE_INGRESS_CLASS
+// (defaulting to "cloudflare") and substituted into backendConfig at RGD
+// build time, so swapping ingress controllers is a config change, not a
+// template edit.
 func New(runtime dynamic.Interface) *Backend {
-	return &Backend{runtime: runtime}
+	ingressClass := os.Getenv("KEDGE_INGRESS_CLASS")
+	if ingressClass == "" {
+		ingressClass = DefaultIngressClass
+	}
+	return &Backend{runtime: runtime, ingressClass: ingressClass}
 }
 
 // Name returns "kro".
@@ -69,7 +89,7 @@ func (b *Backend) Name() string { return Name }
 // error (malformed schema/backendConfig) is returned so the Template
 // controller surfaces BackendError; a successful apply reports Ready=true.
 func (b *Backend) SetupTemplate(ctx context.Context, tmpl *infrav1alpha1.Template) (backend.TemplateStatus, error) {
-	rgd, err := buildRGD(tmpl)
+	rgd, err := buildRGD(tmpl, b.ingressClass)
 	if err != nil {
 		return backend.TemplateStatus{Ready: false, Message: err.Error()}, err
 	}
