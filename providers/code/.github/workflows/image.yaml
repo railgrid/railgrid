@@ -1,0 +1,68 @@
+name: Image
+
+# Builds and publishes the code provider container image to GHCR.
+#
+# This workflow lives in the standalone faroshq/provider-code mirror
+# (synced from the kedge monorepo at providers/code/ — see README). It is
+# inert in the monorepo: GitHub only runs workflows from the repo-root
+# .github/workflows/, and in the mirror this path IS the root.
+#
+# Pushes on every sync to main and on v* release tags; PRs build-only.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  # The image is scoped to this repo: ghcr.io/<owner>/provider-code.
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          # Mirror root holds the Dockerfile + Go module + portal/, so the
+          # build context is the repo root.
+          context: .
+          file: ./Dockerfile
+          # Multi-arch on release/push; single-arch build-only on PRs.
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
