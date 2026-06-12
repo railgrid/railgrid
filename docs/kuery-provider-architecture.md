@@ -248,10 +248,18 @@ Full-object sync of every edge through the tunnels is the cost center.
   CatalogEntry with the SavedView schema, Helm chart, Makefile targets
   (`build-kuery-provider`, `run-provider-kuery`, `install-provider-kuery`, …). Visible in
   the portal catalog.
-- **Phase 2 — data + MCP.** Engagement controller (watch Edges via permission claim
+- **Phase 2 — data + MCP.** **Implemented** (providers/kuery: `core/`, `engagement/`,
+  `queryapi/`, `mcpserver/`). Engagement controller (watch Edges via permission claim
   `edges.kedge.faros.sh` get/list/watch, tenantScoped) + embedded kuery sync +
   tenant-scoped `/api/query` + MCP tools (`kuery_query`, `kuery_impact`) into the
   aggregator. This is the value milestone: agents can query the fleet.
+  Implementation notes vs. this design: tenant scoping rides on kuery *cluster
+  labels* (`tenant`, a bare identifier — kuery's SQLite dialect compiles label keys
+  into the `json_extract` path; the query API also REPLACES caller-supplied cluster
+  labels wholesale because those keys reach the generated SQL, which is an upstream
+  kuery hardening item). The resource *whitelist* is still pending upstream kuery
+  support — the chart exposes the blacklist for now. End-to-end suite with a real
+  connected edge is a Phase 3 work item.
 - **Phase 3 — UI.** Portal micro-frontend: edge/object **inventory table with filters**
   first (covers most human use), then the cytoscape object graph and impact view with
   blast-radius highlighting.

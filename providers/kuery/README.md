@@ -20,30 +20,45 @@ The full design — architecture, tenant isolation, the Enable-time
 edges-proxy grant, value ranking, and phasing — lives in the kedge repo at
 [`docs/kuery-provider-architecture.md`](../../docs/kuery-provider-architecture.md).
 
-## Status: Phase 1 skeleton
+## Status: Phase 2 — fleet query engine
 
 What works today:
 
-- **Registration surface**: `/healthz`, hub heartbeats, the `CatalogEntry`
-  (`manifest.yaml`) with the SavedView APIResourceSchema, the
-  `edges` permission claim, and `spec.edgeProxyAccess: true`.
-- **Portal placeholder**: a custom element showing the portal handshake and
-  the backend proxy round-trip (`/api/status`).
-- **Helm chart** (`deploy/chart/`) targeting the host cluster.
+- **Embedded kuery engine** (`core/`): SQLite (default, on the chart's
+  PVC) or Postgres store, the query engine, the multi-cluster sync
+  controller, and the stale-cluster GC.
+- **Edge engagement** (`engagement/`): watches `Edge` objects across every
+  tenant workspace that Enabled the provider (APIExport virtual
+  workspace), and syncs each connected kubernetes edge through the hub's
+  edges-proxy using the provider SA credential the Enable-time grant
+  authorizes. Engaged clusters are keyed `{tenantCluster}/{edgeName}` and
+  labelled with their tenant.
+- **Tenant-scoped query API** (`queryapi/`): `POST /api/query` takes a
+  kuery `QuerySpec`; the cluster filter is force-rewritten to the caller's
+  `X-Kedge-Tenant` before it reaches the engine — the only path to the
+  store.
+- **MCP tools** (`mcpserver/`): `kuery_query` (fleet-wide spec
+  passthrough) and `kuery_impact` (declared blast radius of one object) at
+  `/mcp` + `/mcp/sse`.
+- **Registration surface** from Phase 1: heartbeats, CatalogEntry
+  (SavedView schema, `edges` claim, `edgeProxyAccess`), Helm chart.
 
-What lands next (Phase 2, see the design doc): the embedded kuery engine,
-the Edge engagement controller (informer sync through the hub's
-edges-proxy), the tenant-scoped `/api/query`, and the `kuery_query` /
-`kuery_impact` MCP tools.
+What lands next (Phase 3, see the design doc): the portal UI — inventory
+table first, then the object graph and impact view — plus an e2e suite
+asserting edge-object sync end to end.
 
 ## Layout
 
 ```
-main.go          serve loop: healthz, /api/status, portal assets, heartbeat
+main.go          serve loop: healthz, /api/query, /api/status, /mcp, portal, heartbeat
+core/            embedded kuery wiring (store, engine, sync, gc)
+engagement/      Edge watcher → Engage/Disengage via the edges-proxy
+queryapi/        tenant-scoped POST /api/query (the store's only entry point)
+mcpserver/       kuery_query + kuery_impact MCP tools
 assets.go        //go:embed of portal/dist
 manifest.yaml    CatalogEntry (SavedView schema, edges claim, edgeProxyAccess)
 portal/          Vite + TS micro-frontend (custom element)
-deploy/chart/    Helm chart (host cluster only)
+deploy/chart/    Helm chart (host cluster only; PVC for the SQLite store)
 ```
 
 ## Local development

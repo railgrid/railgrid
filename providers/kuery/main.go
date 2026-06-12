@@ -44,20 +44,108 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
+
+	"github.com/faroshq/provider-kuery/core"
+	"github.com/faroshq/provider-kuery/engagement"
+	"github.com/faroshq/provider-kuery/mcpserver"
+	"github.com/faroshq/provider-kuery/queryapi"
 )
 
+// envOr returns the env value or a default.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// loadProviderConfig loads the minted provider kubeconfig — the credential
+// whose SA token the Enable-time edges-proxy grant authorizes. Resolution
+// order matches the other providers: KEDGE_PROVIDER_KUBECONFIG, then the
+// conventional mount path, then KUBECONFIG.
+func loadProviderConfig() (*rest.Config, error) {
+	candidates := []string{
+		os.Getenv("KEDGE_PROVIDER_KUBECONFIG"),
+		"/var/run/secrets/kedge/kedge-provider-kubeconfig",
+		os.Getenv("KUBECONFIG"),
+	}
+	for _, path := range candidates {
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		cfg, err := clientcmd.BuildConfigFromFlags("", path)
+		if err != nil {
+			return nil, fmt.Errorf("loading kubeconfig %s: %w", path, err)
+		}
+		return cfg, nil
+	}
+	return nil, fmt.Errorf("no kubeconfig found (set KEDGE_PROVIDER_KUBECONFIG)")
+}
+
 type statusResponse struct {
-	Message     string    `json:"message"`
-	Provider    string    `json:"provider"`
-	ServedAt    time.Time `json:"servedAt"`
-	UserHeader  string    `json:"userHeader,omitempty"`
-	TokenLength int       `json:"tokenLength,omitempty"`
+	Message      string    `json:"message"`
+	Provider     string    `json:"provider"`
+	ServedAt     time.Time `json:"servedAt"`
+	UserHeader   string    `json:"userHeader,omitempty"`
+	TokenLength  int       `json:"tokenLength,omitempty"`
+	StoreDriver  string    `json:"storeDriver"`
+	EngagedEdges int       `json:"engagedEdges"`
 }
 
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8081"
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Embedded kuery: SQL store + query engine + sync controller + GC.
+	storeDriver := envOr("KUERY_STORE_DRIVER", "sqlite")
+	kc, err := core.New(core.Config{
+		Driver:    storeDriver,
+		DSN:       envOr("KUERY_STORE_DSN", "kuery.db"),
+		Blacklist: os.Getenv("KUERY_SYNC_BLACKLIST"),
+	})
+	if err != nil {
+		log.Fatalf("kuery core: %v", err)
+	}
+	go kc.StartGC(ctx)
+
+	// Engagement controller: watches Edge objects across bound tenant
+	// workspaces (APIExport VW) and feeds connected kubernetes edges into
+	// the sync controller via the hub's edges-proxy. Requires the minted
+	// provider kubeconfig; without one the provider serves an empty index
+	// (useful for UI dev), with a loud warning.
+	var engagementCtl *engagement.Controller
+	if providerCfg, err := loadProviderConfig(); err != nil {
+		log.Printf("WARNING edge engagement disabled (no provider kubeconfig): %v", err)
+	} else {
+		// controller-runtime requires a logger before any manager is built.
+		ctrl.SetLogger(klog.NewKlogr())
+		engagementCtl, err = engagement.New(engagement.Config{
+			ProviderConfig: providerCfg,
+			APIExportName:  envOr("KUERY_APIEXPORT_NAME", "kuery.providers.kedge.faros.sh"),
+			Sync:           kc.Sync,
+			Store:          kc.Store,
+		})
+		if err != nil {
+			log.Fatalf("engagement controller: %v", err)
+		}
+		go func() {
+			if err := engagementCtl.Start(ctx); err != nil {
+				log.Printf("engagement controller stopped: %v", err)
+			}
+		}()
 	}
 
 	mux := http.NewServeMux()
@@ -68,16 +156,28 @@ func main() {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
-	// Status endpoint the placeholder portal calls. Echoes which user header
-	// arrived (proves the hub forwarded Authorization) and how long the token
-	// was (without echoing the token itself).
+	// Tenant-scoped query API — the only path to the kuery store.
+	mux.Handle("/api/query", &queryapi.Handler{Engine: kc.Engine})
+
+	// MCP tools (kuery_query, kuery_impact); the hub proxies
+	// /services/providers/kuery/mcp{,/sse} here and the aggregate picks
+	// them up like the infrastructure provider's kro_* family.
+	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{Engine: kc.Engine})
+	mux.Handle("/mcp", mcpHandler)
+	mux.Handle("/mcp/sse", mcpHandler)
+
+	// Status endpoint the portal calls: sync surface + identity echo.
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		resp := statusResponse{
-			Message:    "kuery provider: Phase 1 skeleton — sync engine lands in Phase 2",
-			Provider:   "kuery",
-			ServedAt:   time.Now().UTC(),
-			UserHeader: r.Header.Get("X-Kedge-User"),
+			Message:     "kuery provider: fleet query engine",
+			Provider:    "kuery",
+			ServedAt:    time.Now().UTC(),
+			UserHeader:  r.Header.Get("X-Kedge-User"),
+			StoreDriver: storeDriver,
+		}
+		if engagementCtl != nil {
+			resp.EngagedEdges = engagementCtl.EngagedCount()
 		}
 		if auth := r.Header.Get("Authorization"); auth != "" {
 			resp.TokenLength = len(auth)
@@ -123,9 +223,6 @@ func main() {
 		Handler:           logMiddleware(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		log.Printf("kuery provider listening on :%s", port)

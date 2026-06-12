@@ -1,0 +1,58 @@
+## kedge-quickstart-provider values
+## The quickstart provider is a pure broker: it serves a micro-frontend and a
+## small backend HTTP API, heartbeats the hub, and owns a sample APIExport. It
+## does NOT read a kcp or kro kubeconfig at runtime, so this chart is
+## deliberately much smaller than the infrastructure provider's.
+
+# Container image. Build with: docker build -t IMAGE providers/quickstart/
+image:
+  repository: ghcr.io/faroshq/kedge-quickstart-provider
+  tag: ""  # empty → defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# Number of Deployment replicas. The provider is stateless (no kcp client
+# cache, no local storage), so any replica count is safe.
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8081
+
+# Hub the provider POSTs heartbeats to. Must be reachable from the provider
+# pod (in-cluster Service DNS works). Empty url → heartbeats disabled, which
+# is fine for a UI-only demo install.
+hub:
+  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  # Bearer token used in the heartbeat POST. Provided as a Secret because it
+  # MUST NOT land in values.yaml in plaintext for prod. Leave name empty to
+  # send unauthenticated heartbeats (dev only).
+  tokenSecretRef:
+    name: ""
+    key: token
+  # Skip TLS verification on heartbeat — dev only, defaults off.
+  insecure: false
+
+# When true, the chart also renders the CatalogEntry that registers the
+# provider with the hub. Set to false to manage the CatalogEntry separately
+# (e.g. via GitOps with a different rollout cadence than the workload).
+catalogEntry:
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: ""   # empty → release-name
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 32Mi
+
+# Optional pod-level overrides.
+podLabels: {}
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

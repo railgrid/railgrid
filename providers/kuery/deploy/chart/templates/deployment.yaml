@@ -44,6 +44,16 @@ spec:
               value: {{ .Values.hub.url | quote }}
             - name: KEDGE_PROVIDER_NAME
               value: "kuery"
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: KUERY_STORE_DRIVER
+              value: {{ .Values.store.driver | quote }}
+            - name: KUERY_STORE_DSN
+              value: {{ .Values.store.dsn | quote }}
+            {{- if .Values.sync.blacklist }}
+            - name: KUERY_SYNC_BLACKLIST
+              value: {{ .Values.sync.blacklist | quote }}
+            {{- end }}
             {{- if .Values.hub.insecure }}
             - name: KEDGE_HUB_INSECURE
               value: "true"
@@ -55,8 +65,32 @@ spec:
                   name: {{ .Values.hub.tokenSecretRef.name }}
                   key: {{ .Values.hub.tokenSecretRef.key }}
             {{- end }}
+          volumeMounts:
+            # Minted by the hub's catalog controller into this namespace;
+            # the SA token inside is what the Enable-time edges-proxy grant
+            # authorizes for background edge sync.
+            - name: kedge-provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
+            - name: store
+              mountPath: /data
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: kedge-provider-kubeconfig
+          secret:
+            secretName: kedge-provider-kubeconfig
+            # The Secret appears only after the hub reconciles the
+            # CatalogEntry; optional lets the pod start (engagement
+            # disabled with a warning) instead of wedging on scheduling.
+            optional: true
+        - name: store
+          {{- if .Values.store.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "kuery.fullname" . }}-store
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -1,0 +1,20 @@
+{{- if .Values.store.persistence.enabled -}}
+# Backing volume for the kuery SQL store. SQLite on a PVC is the default;
+# for Postgres (store.driver=postgres) disable persistence and point
+# store.dsn at the database instead.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "kuery.fullname" . }}-store
+  labels:
+    {{- include "kuery.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.store.persistence.size }}
+  {{- with .Values.store.persistence.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}
