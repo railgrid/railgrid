@@ -86,7 +86,7 @@ func newRunCmd() *cobra.Command {
 
 	fs := pflag.NewFlagSet("run", pflag.ContinueOnError)
 
-	fs.StringVar(&listenerOpts.KubeConfig, "kubeconfig", listenerOpts.KubeConfig,
+	fs.StringVar(&listenerOpts.Common.Kubeconfig, "kubeconfig", listenerOpts.Common.Kubeconfig,
 		"path to kubeconfig (only required if out-of-cluster)")
 	fs.StringVar(&grpcAddr, "grpc-addr", grpcAddr,
 		"gRPC address the listener binds to and the gateway connects to")

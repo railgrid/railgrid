@@ -73,16 +73,17 @@ const versionDist = computed(() => {
     <!-- Stat trio + health bar — same shape as kubernetes-edges' tile
          so the user reads both at a glance with the same mental model. -->
     <div>
-      <div class="mb-2 flex items-center gap-1.5">
-        <Server class="h-3 w-3 text-text-muted" :stroke-width="1.75" />
+      <div class="mb-2">
         <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Servers</span>
       </div>
-      <div class="grid grid-cols-3 gap-2">
-        <div class="rounded-lg border border-border-subtle bg-surface-overlay/40 p-2">
+      <!-- One shared card with divide-x columns so the counts read as a
+           single summary block (matches the infrastructure tile). -->
+      <div class="grid grid-cols-3 divide-x divide-border-subtle rounded-lg border border-border-subtle bg-surface-overlay/40">
+        <div class="px-2 py-2">
           <div class="text-[9px] uppercase tracking-wider text-text-muted/70">Total</div>
           <div class="mt-0.5 text-lg font-bold tabular-nums text-text-primary">{{ stats.total }}</div>
         </div>
-        <div class="rounded-lg border border-border-subtle bg-surface-overlay/40 p-2">
+        <div class="px-2 py-2">
           <div class="text-[9px] uppercase tracking-wider text-text-muted/70">Ready</div>
           <div
             class="mt-0.5 text-lg font-bold tabular-nums"
@@ -91,7 +92,7 @@ const versionDist = computed(() => {
             {{ stats.ready }}
           </div>
         </div>
-        <div class="rounded-lg border border-border-subtle bg-surface-overlay/40 p-2">
+        <div class="px-2 py-2">
           <div class="text-[9px] uppercase tracking-wider text-text-muted/70">Online</div>
           <div
             class="mt-0.5 text-lg font-bold tabular-nums"

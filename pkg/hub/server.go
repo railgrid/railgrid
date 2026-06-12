@@ -37,6 +37,7 @@ import (
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
@@ -713,11 +714,31 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("creating providers multicluster manager: %w", err)
 		}
+		// HostSecretWriter delivers the minted kedge-provider-kubeconfig into
+		// the provider's host-cluster namespace. Wired only when the hub is
+		// given a host kubeconfig (--kubeconfig); without it the kubeconfig is
+		// still minted (surfaced in CatalogEntry status) but not written as a
+		// Secret, which is the right behaviour for the in-process dev hub that
+		// has no host cluster to write to.
+		var hostSecretWriter providers.SecretWriter
+		if s.opts.Kubeconfig != "" {
+			// Tolerant on purpose: in dev the host kubeconfig (e.g. a kind
+			// cluster) may not exist when the hub first boots. Degrade to
+			// no-delivery with a visible warning rather than crash-looping;
+			// the Tiltfile re-runs the hub once the file appears.
+			if hostCfg, err := clientcmd.BuildConfigFromFlags("", s.opts.Kubeconfig); err != nil {
+				logger.Info("WARNING provider kubeconfig Secret delivery disabled: host kubeconfig not loadable", "kubeconfig", s.opts.Kubeconfig, "err", err.Error())
+			} else if hostCS, err := kubernetes.NewForConfig(hostCfg); err != nil {
+				logger.Info("WARNING provider kubeconfig Secret delivery disabled: host client error", "err", err.Error())
+			} else {
+				hostSecretWriter = providers.NewHostSecretWriter(hostCS)
+				logger.Info("Provider kubeconfig Secret delivery enabled", "from", "--kubeconfig")
+			}
+		}
 		if err := providers.SetupCatalogWithManager(providersMgr, providerRegistry, kcpConfig, providers.CatalogReconcilerOptions{
-			HubExternalURL: s.opts.HubExternalURL,
-			// HostSecretWriter intentionally left nil for now: kedge-hub
-			// doesn't yet take a host-cluster kubeconfig flag. Real
-			// deployments will wire this when --kubeconfig is provided.
+			HubExternalURL:      s.opts.HubExternalURL,
+			ProviderInternalURL: s.opts.ProviderInternalURL,
+			HostSecretWriter:    hostSecretWriter,
 		}); err != nil {
 			return fmt.Errorf("setting up provider catalog controller: %w", err)
 		}

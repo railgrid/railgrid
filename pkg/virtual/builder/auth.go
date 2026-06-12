@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/util/identity"
 )
 
 // saTokenClaims holds the claims extracted from a kcp ServiceAccount JWT.
@@ -90,18 +91,37 @@ func extractBearerToken(r *http.Request) string {
 //  2. SubjectAccessReview — checks if the authenticated user is allowed to
 //     perform the given verb on the resource in the target workspace.
 //
-// Both calls use admin credentials scoped to the target workspace.
+// Both calls use admin credentials scoped to the target workspace, with one
+// exception: kcp ServiceAccount tokens only authenticate in their home
+// logical cluster, so for SA tokens the TokenReview runs against the token's
+// clusterName claim. The home cluster is still VERIFIED — kcp checks the
+// token signature there, and a forged claim just fails the review. The
+// SubjectAccessReview always runs in the target workspace (clusterName from
+// the request URL — the #68 invariant), under a cluster-qualified synthetic
+// identity (see pkg/util/identity) with the SA's groups dropped, so a
+// foreign SA passes only when the target workspace explicitly bound that
+// exact qualified identity (e.g. the provider edges-proxy grant created on
+// tenant Enable).
 func authorize(ctx context.Context, kcpConfig *rest.Config, token, clusterName, verb, resource, name string) error {
-	cfg := rest.CopyConfig(kcpConfig)
-	cfg.Host = apiurl.KCPClusterURL(cfg.Host, clusterName)
+	reviewCluster := clusterName
+	saClaims, isForeignSA := parseServiceAccountToken(token)
+	if isForeignSA && saClaims.ClusterName == clusterName {
+		// Same-cluster SA: the plain path below already handles it.
+		isForeignSA = false
+	}
+	if isForeignSA {
+		reviewCluster = saClaims.ClusterName
+	}
 
-	client, err := kubernetes.NewForConfig(cfg)
+	trCfg := rest.CopyConfig(kcpConfig)
+	trCfg.Host = apiurl.KCPClusterURL(trCfg.Host, reviewCluster)
+	trClient, err := kubernetes.NewForConfig(trCfg)
 	if err != nil {
 		return fmt.Errorf("creating kubernetes client: %w", err)
 	}
 
 	// 1. Authenticate: TokenReview with admin creds.
-	tr, err := client.AuthenticationV1().TokenReviews().Create(ctx, &authenticationv1.TokenReview{
+	tr, err := trClient.AuthenticationV1().TokenReviews().Create(ctx, &authenticationv1.TokenReview{
 		Spec: authenticationv1.TokenReviewSpec{Token: token},
 	}, metav1.CreateOptions{})
 	if err != nil {
@@ -111,11 +131,38 @@ func authorize(ctx context.Context, kcpConfig *rest.Config, token, clusterName, 
 		return fmt.Errorf("token not authenticated")
 	}
 
-	// 2. Authorize: SubjectAccessReview with the resolved identity.
+	sarUser := tr.Status.User.Username
+	sarGroups := tr.Status.User.Groups
+	if isForeignSA {
+		qualified, ok := identity.QualifyServiceAccount(reviewCluster, tr.Status.User.Username)
+		if !ok {
+			// Token claimed to be an SA token but the home cluster resolved
+			// it to a non-SA identity — refuse rather than authorize an
+			// identity we can't encode unambiguously.
+			return fmt.Errorf("token review: expected ServiceAccount identity, got %q", tr.Status.User.Username)
+		}
+		sarUser = qualified
+		// Drop groups: system:serviceaccounts et al. would match
+		// group-targeted bindings the tenant wrote for their OWN SAs.
+		sarGroups = nil
+	}
+
+	client := trClient
+	if reviewCluster != clusterName {
+		sarCfg := rest.CopyConfig(kcpConfig)
+		sarCfg.Host = apiurl.KCPClusterURL(sarCfg.Host, clusterName)
+		client, err = kubernetes.NewForConfig(sarCfg)
+		if err != nil {
+			return fmt.Errorf("creating kubernetes client: %w", err)
+		}
+	}
+
+	// 2. Authorize: SubjectAccessReview with the resolved identity, always
+	// in the target workspace.
 	sar, err := client.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
 		Spec: authorizationv1.SubjectAccessReviewSpec{
-			User:   tr.Status.User.Username,
-			Groups: tr.Status.User.Groups,
+			User:   sarUser,
+			Groups: sarGroups,
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
 				Verb:     verb,
 				Group:    "kedge.faros.sh",

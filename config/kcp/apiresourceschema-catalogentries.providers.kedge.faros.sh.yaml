@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260603-2b37ceb.catalogentries.providers.kedge.faros.sh
+  name: v260612-5da57dc.catalogentries.providers.kedge.faros.sh
 spec:
   group: providers.kedge.faros.sh
   names:
@@ -171,6 +171,17 @@ spec:
                 catalog.
               maxLength: 128
               type: string
+            edgeProxyAccess:
+              description: |-
+                EdgeProxyAccess requests that, when a tenant enables this provider,
+                the hub grants the provider's ServiceAccount the "proxy" verb on
+                edges.kedge.faros.sh in the tenant's workspace. This lets the
+                provider open background connections to the tenant's edge clusters
+                through the hub's edges-proxy (e.g. the kuery provider's informer
+                sync). The grant is materialized as a ClusterRole/ClusterRoleBinding
+                in the tenant workspace on Enable and removed on Disable; like
+                permission claims, it is surfaced in the portal's Enable dialog.
+              type: boolean
             iconURL:
               description: |-
                 IconURL is a portal-relative path to an icon for the catalog card.

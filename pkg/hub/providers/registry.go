@@ -54,6 +54,17 @@ type Provider struct {
 	APIExportName    string     // APIExport name (e.g. cost.providers.kedge.faros.sh)
 	PermissionClaims []PermissionClaim
 
+	// EdgeProxyAccess mirrors CatalogEntry.spec.edgeProxyAccess: on tenant
+	// Enable, the hub grants the provider SA the "proxy" verb on edges in
+	// the tenant workspace (see pkg/hub/restapi/providers_enable.go).
+	EdgeProxyAccess bool
+	// WorkspaceCluster is the logical cluster ID of the provider's
+	// sub-workspace (Workspace.spec.cluster of root:kedge:providers:{name}).
+	// It anchors the qualified RBAC subject the edge-proxy grant binds —
+	// the same cluster ID kcp puts in the provider SA's token claims. Set
+	// via SetWorkspaceCluster after provisioning; empty until then.
+	WorkspaceCluster string
+
 	// LocalUIAssets, when non-nil, is an embedded fs.FS that the UI proxy
 	// serves under /ui/providers/{Name}/* instead of forwarding to UIURL.
 	// Populated for first-party providers whose Vite-built portal/dist is
@@ -163,9 +174,29 @@ func (r *Registry) Upsert(p Provider) {
 		p.ReportedVersion = existing.ReportedVersion
 		p.HeartbeatRequired = existing.HeartbeatRequired
 		p.HeartbeatStale = existing.HeartbeatStale
+		if p.WorkspaceCluster == "" {
+			// Provisioning sets this after the Upsert in the same reconcile;
+			// don't lose it on the next reconcile's fresh Provider value.
+			p.WorkspaceCluster = existing.WorkspaceCluster
+		}
 	}
 	cp := p
 	r.byName[p.Name] = &cp
+}
+
+// SetWorkspaceCluster records the logical cluster ID of the provider's
+// sub-workspace. Called by the catalog controller once provisioning has
+// resolved it (the workspace must be Ready before spec.cluster is set).
+// Returns false if the name is not in the registry.
+func (r *Registry) SetWorkspaceCluster(name, cluster string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.byName[name]
+	if !ok {
+		return false
+	}
+	p.WorkspaceCluster = cluster
+	return true
 }
 
 // Heartbeat records a heartbeat for a known provider. Returns false if the

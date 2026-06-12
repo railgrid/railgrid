@@ -6,6 +6,10 @@ on:
   push:
     tags:
       - 'v*'
+  # On PRs, the jobs below run in build-only mode (push: false, single-arch)
+  # so a broken Dockerfile or build context is caught before a release tag.
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -16,6 +20,8 @@ env:
   REGISTRY: ghcr.io
   HUB_IMAGE_NAME: ${{ github.repository }}-hub
   AGENT_IMAGE_NAME: ${{ github.repository }}-agent
+  INFRASTRUCTURE_PROVIDER_IMAGE_NAME: ${{ github.repository }}-infrastructure-provider
+  QUICKSTART_PROVIDER_IMAGE_NAME: ${{ github.repository }}-quickstart-provider
 
 jobs:
   build-and-push-hub-image:
@@ -28,6 +34,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Log in to the Container registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -48,8 +55,9 @@ jobs:
         with:
           context: .
           file: ./deploy/Dockerfile.hub
-          platforms: linux/amd64,linux/arm64
-          push: true
+          # Multi-arch on release; single-arch build-only on PRs (no QEMU emulation cost).
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -67,6 +75,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Log in to the Container registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -87,11 +96,90 @@ jobs:
         with:
           context: .
           file: ./deploy/Dockerfile.agent
-          platforms: linux/amd64,linux/arm64
-          push: true
+          # Multi-arch on release; single-arch build-only on PRs (no QEMU emulation cost).
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ github.ref_name }}
             GIT_COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.release.created_at }}
+
+  build-and-push-infrastructure-provider-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.INFRASTRUCTURE_PROVIDER_IMAGE_NAME }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          # The provider Dockerfile COPYs portal/ and the Go module relative to
+          # the provider directory, so the build context is that directory.
+          context: ./providers/infrastructure
+          file: ./providers/infrastructure/Dockerfile
+          # Multi-arch on release; single-arch build-only on PRs (no QEMU emulation cost).
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  build-and-push-quickstart-provider-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.QUICKSTART_PROVIDER_IMAGE_NAME }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          # The provider Dockerfile COPYs portal/ and the Go module relative to
+          # the provider directory, so the build context is that directory.
+          context: ./providers/quickstart
+          file: ./providers/quickstart/Dockerfile
+          # Multi-arch on release; single-arch build-only on PRs (no QEMU emulation cost).
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

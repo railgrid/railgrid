@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kuery.fullname" . }}
+  labels:
+    {{- include "kuery.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kuery.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kuery.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "kuery.serviceAccountName" . }}
+      containers:
+        - name: provider
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          env:
+            - name: PORT
+              value: "8081"
+            - name: KEDGE_HUB_URL
+              value: {{ .Values.hub.url | quote }}
+            - name: KEDGE_PROVIDER_NAME
+              value: "kuery"
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: KUERY_STORE_DRIVER
+              value: {{ .Values.store.driver | quote }}
+            - name: KUERY_STORE_DSN
+              value: {{ .Values.store.dsn | quote }}
+            {{- if .Values.sync.whitelist }}
+            - name: KUERY_SYNC_WHITELIST
+              # Collapse the folded-block whitespace into the clean
+              # comma-separated form the binary parses.
+              value: {{ .Values.sync.whitelist | replace " " "" | replace "\n" "" | quote }}
+            {{- end }}
+            {{- if .Values.sync.blacklist }}
+            - name: KUERY_SYNC_BLACKLIST
+              value: {{ .Values.sync.blacklist | quote }}
+            {{- end }}
+            {{- if .Values.hub.insecure }}
+            - name: KEDGE_HUB_INSECURE
+              value: "true"
+            {{- end }}
+            {{- if .Values.hub.tokenSecretRef.name }}
+            - name: KEDGE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.tokenSecretRef.name }}
+                  key: {{ .Values.hub.tokenSecretRef.key }}
+            {{- end }}
+          volumeMounts:
+            # Minted by the hub's catalog controller into this namespace;
+            # the SA token inside is what the Enable-time edges-proxy grant
+            # authorizes for background edge sync.
+            - name: kedge-provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
+            - name: store
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: kedge-provider-kubeconfig
+          secret:
+            secretName: kedge-provider-kubeconfig
+            # The Secret appears only after the hub reconciles the
+            # CatalogEntry; optional lets the pod start (engagement
+            # disabled with a warning) instead of wedging on scheduling.
+            optional: true
+        - name: store
+          {{- if .Values.store.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "kuery.fullname" . }}-store
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

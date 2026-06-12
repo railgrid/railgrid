@@ -1,0 +1,10 @@
+# The portal bundle is rebuilt in the node stage and overlaid into the Go
+# build stage, so the host-side copies must NOT enter the build context
+# (node_modules is large; dist would shadow the fresh build).
+portal/node_modules
+portal/dist
+
+# Docs, examples, and the Helm chart are not needed to compile the binary.
+docs
+examples
+deploy

@@ -258,7 +258,7 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Use constant-time comparison to prevent timing side-channel attacks.
 	for _, staticToken := range p.staticAuthTokens {
 		if staticToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(staticToken)) == 1 {
-			p.logger.Info("proxy auth: static token matched", "path", r.URL.Path)
+			p.logger.V(4).Info("proxy auth: static token matched", "path", r.URL.Path)
 			p.serveStaticToken(w, r, token)
 			return
 		}

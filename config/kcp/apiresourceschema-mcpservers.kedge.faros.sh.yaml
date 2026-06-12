@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260520-b6b9fee.mcpservers.kedge.faros.sh
+  name: v260608-d570146.mcpservers.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -241,6 +241,31 @@ spec:
                 LinuxEdges is the number of connected server-type edges matched by
                 the selector.
               type: integer
+            tokenSecretRef:
+              description: |-
+                TokenSecretRef references the Secret that holds the long-lived
+                (legacy) ServiceAccount token clients use as the bearer credential
+                for this MCP endpoint. The MCPServer controller provisions a
+                per-server ServiceAccount and a kubernetes.io/service-account-token
+                Secret; kcp's token controller populates it.
+
+                The token value is intentionally NOT surfaced in status — only the
+                reference is. The portal backend (which can read Secrets in this
+                workspace) dereferences it to render the setup/copy command, so the
+                credential never lands in the CR, watch streams, logs, or audit. The
+                token is stored under the Secret's "token" data key
+                (corev1.ServiceAccountTokenKey).
+              properties:
+                name:
+                  description: name is unique within a namespace to reference a secret
+                    resource.
+                  type: string
+                namespace:
+                  description: namespace defines the space within which the secret
+                    name must be unique.
+                  type: string
+              type: object
+              x-kubernetes-map-type: atomic
           type: object
       type: object
     served: true

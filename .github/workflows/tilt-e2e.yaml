@@ -1,0 +1,368 @@
+name: Tilt E2E
+
+# End-to-end test against the operator-deployed, multi-shard Tilt stack
+# (Tiltfile.cluster / `make tilt-cluster`): kcp-operator + root/theseus shards +
+# front-proxy + the in-cluster kedge hub + the host-run providers + the kro
+# runtime cluster. This is the only suite that exercises the real multi-shard
+# operator topology (cross-shard CachedResource projection, MCP federation, the
+# caller-identity gate) — the embedded-kcp suites can't.
+#
+# Unlike the other e2e jobs (which spawn their own embedded kcp), this job has
+# to STAND UP the whole stack, drive a couple of manual Tilt resources (provider
+# register + init), wait for kcp to reconcile the provider's CatalogEntry to
+# Ready, and only then run the read-only test suite — which fails fast (no
+# internal retries) if the stack isn't fully settled.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# kcp source the Tilt setup deploys. Tiltfile.cluster needs a kcp checkout for
+# its contrib/tilt/Tiltfile.static (operator manifests, kubeconfig extract,
+# static-token wiring) — it deploys upstream PREBUILT kcp images, so no kcp `go
+# build` happens here. Pin KCP_REF to a SHA if main's contrib/tilt drifts from
+# the image the operator deploys.
+env:
+  KCP_REF: main
+  # Skip the observability stack (grafana/loki/promtail/prometheus) in the
+  # kcp Tilt setup — read by contrib/tilt/Tiltfile.static via os.getenv. Those
+  # pods are pure overhead on CI and add CPU/memory pressure to the single
+  # kind node (the multi-shard job has hit "Insufficient cpu" scheduling the
+  # theseus shard); we don't assert on dashboards/metrics here.
+  KCP_OBSERVABILITY_ENABLED: "false"
+
+jobs:
+  e2e-tilt-cluster:
+    name: Tilt-cluster (operator multi-shard kcp + in-cluster hub)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Non-blocking for now: the multi-shard stack over-subscribes the single
+    # 2-vCPU runner (root-kcp won't schedule, shards/proxies crash-loop on
+    # probe timeouts), so this job flakes. continue-on-error keeps it visible
+    # (it still runs and reports) without failing the PR. Remove once the stack
+    # is trimmed to fit (shared etcd ✓, observability off ✓, replicas=1 TODO).
+    continue-on-error: true
+    steps:
+      - name: Checkout kedge
+        uses: actions/checkout@v4
+        with:
+          path: kedge
+
+      - name: Checkout kcp (for the Tilt operator setup)
+        uses: actions/checkout@v4
+        with:
+          repository: kcp-dev/kcp
+          ref: ${{ env.KCP_REF }}
+          path: kcp
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: v1.26.1
+          cache-dependency-path: kedge/go.sum
+
+      # Node + npm are needed by `make build-portal` (vite), which the Tilt
+      # `portal-build` resource runs before compiling the hub binary.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install Tilt
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
+          tilt version
+
+      # The kcp front-proxy/shards and the hub are reached on the host via Tilt
+      # port-forwards to *.kcp.localhost:8443; the `.localhost` TLD is not
+      # auto-resolved on Linux, so map the hostnames (and the hub vhost) to
+      # loopback. Matches the local-dev /etc/hosts the README documents.
+      - name: Map kcp + hub hostnames to loopback
+        run: |
+          echo "127.0.0.1 kcp.localhost root.kcp.localhost theseus.kcp.localhost kedge.localhost" \
+            | sudo tee -a /etc/hosts
+
+      # Bring the stack up. Tiltfile.cluster creates the `kcp-tilt` kind cluster
+      # at parse time, but the Makefile pre-creates it + exports the context
+      # first to avoid a Tilt deploy-client race (it caches an empty config if
+      # the context doesn't yet exist) — we replicate that here. Tilt then runs
+      # detached so we can drive it with `tilt wait` / `tilt trigger` from the
+      # following steps; the process keeps running across steps on the runner.
+      - name: Bring up the Tilt stack
+        working-directory: kedge
+        run: |
+          set -euo pipefail
+          kind get clusters 2>/dev/null | grep -qx kcp-tilt || kind create cluster --name kcp-tilt
+          kind export kubeconfig --name kcp-tilt
+
+          # The Tilt `portal-build` resource copies the built SPA with
+          # `cp -r portal/dist pkg/hub/portal/`. On a fresh checkout
+          # pkg/hub/portal/ doesn't exist (it's untracked), so cp would create
+          # it AS a copy of dist — landing files at pkg/hub/portal/* instead of
+          # pkg/hub/portal/dist/*, which breaks the hub's `//go:embed
+          # portal/dist/*` (tags portal_embed). Pre-create the dir so the cp
+          # nests correctly. (Locally this dir already exists from prior runs.)
+          mkdir -p pkg/hub/portal/dist
+
+          nohup tilt up -f Tiltfile.cluster --stream=true --port 10350 -- \
+            --kcp-dir="${GITHUB_WORKSPACE}/kcp" \
+            > "${GITHUB_WORKSPACE}/tilt-up.log" 2>&1 &
+          echo $! > "${GITHUB_WORKSPACE}/tilt.pid"
+          tilt_pid=$(cat "${GITHUB_WORKSPACE}/tilt.pid")
+
+          # `tilt up` needs a few seconds to bring up its apiserver on :10350;
+          # `tilt wait` errors with "No tilt apiserver found" until then. Poll
+          # until the apiserver answers (or the process dies), then proceed.
+          echo "Waiting for the Tilt apiserver to come up..."
+          for i in $(seq 1 90); do
+            if ! kill -0 "$tilt_pid" 2>/dev/null; then
+              echo "tilt up exited before its apiserver came up; log:"
+              cat "${GITHUB_WORKSPACE}/tilt-up.log" || true
+              exit 1
+            fi
+            if tilt get uiresources >/dev/null 2>&1; then
+              echo "Tilt apiserver is up."
+              break
+            fi
+            sleep 2
+          done
+          tilt get uiresources >/dev/null 2>&1 || {
+            echo "Tilt apiserver never came up; log:"
+            cat "${GITHUB_WORKSPACE}/tilt-up.log" || true
+            exit 1
+          }
+
+          # `tilt wait` errors "not found" if a resource isn't registered yet
+          # (the Tiltfile is still loading), so use our own poller that waits for
+          # the resource to APPEAR and reach a ready status (and bails on error
+          # or if tilt dies). Shared with the register/init step via a sourced
+          # helper file.
+          cat > "${GITHUB_WORKSPACE}/tilt-helpers.sh" <<'SH'
+          # dump_diag prints why a resource is stuck. A resource at
+          # update=pending never STARTED — it's blocked behind an upstream
+          # resource_dep (for kedge-hub: hub-kcp-secrets → 'kcp-admin extract'
+          # → the operator's rootshard/front-proxy). So `tilt logs <name>` is
+          # empty in that case; the signal lives in the OTHER resources. We
+          # therefore dump: (1) the status of EVERY tilt resource (pinpoints
+          # which upstream dep is the real blocker), (2) the full tilt-up.log
+          # tail (all resources' build output, incl. the operator/extract), and
+          # (3) the named resource's own logs + a cluster-wide pod/event
+          # snapshot. Wrapped in a collapsible ::group:: so it doesn't drown
+          # the main log.
+          dump_diag() {
+            local name="$1"
+            echo "::group::diagnostics for stuck resource '$name'"
+            echo "----- all tilt resources (which upstream dep is blocking?) -----"
+            tilt get uiresources -o json 2>/dev/null \
+              | jq -r '.items[] | "  \(.metadata.name): update=\(.status.updateStatus // "<none>") runtime=\(.status.runtimeStatus // "<none>")"' 2>/dev/null \
+              || tilt get uiresources 2>/dev/null || true
+            echo "----- tilt-up.log (last 300 lines: operator / kcp-admin extract / build output) -----"
+            tail -n 300 "${GITHUB_WORKSPACE}/tilt-up.log" 2>/dev/null || true
+            echo "----- tilt logs '$name' (last 400 lines; empty if it never started) -----"
+            tilt logs "$name" 2>/dev/null | tail -n 400 || true
+            echo "----- kubectl get pods -A -----"
+            kubectl get pods -A -o wide 2>/dev/null || true
+            echo "----- describe + logs for non-Running pods -----"
+            kubectl get pods -A --no-headers 2>/dev/null | awk '$4 != "Running" && $4 != "Completed" {print $1" "$2}' | while read -r ns pod; do
+              echo "===== $ns/$pod describe ====="; kubectl -n "$ns" describe pod "$pod" 2>/dev/null | tail -n 60 || true
+              echo "===== $ns/$pod logs (all containers, tail 200) ====="; kubectl -n "$ns" logs "$pod" --all-containers --tail=200 2>/dev/null || true
+            done
+            echo "----- recent events (all namespaces) -----"
+            kubectl get events -A --sort-by=.lastTimestamp 2>/dev/null | tail -n 60 || true
+            echo "::endgroup::"
+          }
+          wait_resource() {
+            local name="$1" timeout="$2" upd run deadline last=""
+            deadline=$(( $(date +%s) + timeout ))
+            echo "waiting for tilt resource '$name' (<= ${timeout}s)"
+            while :; do
+              if [ -f "${GITHUB_WORKSPACE}/tilt.pid" ] && ! kill -0 "$(cat "${GITHUB_WORKSPACE}/tilt.pid")" 2>/dev/null; then
+                echo "tilt process exited unexpectedly; tail of log:"; tail -n 80 "${GITHUB_WORKSPACE}/tilt-up.log" || true; dump_diag "$name"; return 1
+              fi
+              json=$(tilt get uiresource "$name" -o json 2>/dev/null || true)
+              upd=$(printf '%s' "$json" | jq -r '.status.updateStatus // empty' 2>/dev/null || true)
+              run=$(printf '%s' "$json" | jq -r '.status.runtimeStatus // empty' 2>/dev/null || true)
+              if [ "$upd $run" != "$last" ]; then echo "  $name: update=${upd:-<none>} runtime=${run:-<none>}"; last="$upd $run"; fi
+              if [ "$upd" = "error" ] || [ "$run" = "error" ]; then
+                echo "resource '$name' entered error state"; dump_diag "$name"; return 1
+              fi
+              if [ "$upd" = "ok" ] && { [ "$run" = "ok" ] || [ "$run" = "not_applicable" ] || [ "$run" = "none" ]; }; then
+                echo "resource '$name' is ready (update=$upd runtime=$run)"; return 0
+              fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "timeout waiting for '$name' (update=${upd:-<none>} runtime=${run:-<none>})"; dump_diag "$name"; return 1
+              fi
+              sleep 5
+            done
+          }
+          SH
+          source "${GITHUB_WORKSPACE}/tilt-helpers.sh"
+
+          echo "Waiting for the kcp + hub + provider stack to become Ready..."
+          # Generous: covers Tiltfile load (cert-manager/operator/kcp install) +
+          # hub image build + in-cluster deploy before kedge-hub even appears.
+          wait_resource kedge-hub 1800
+          wait_resource kro-mgmt-up 600
+          wait_resource infrastructure 600
+
+      # Host-side access to kcp goes through the envoy gateway on
+      # kcp.localhost:8443. Upstream kcp's Tilt `ingress` resource
+      # (contrib/tilt/port-forward.bash) is supposed to provide that forward,
+      # but it's racy on CI — its `kubectl wait gateway/eg --for=create` can hit
+      # "the server doesn't have a resource type gateway" before the Gateway CRD
+      # is established, leaving nothing on :8443. The host-side kubectl
+      # (register/init) AND the e2e suite both need kcp.localhost:8443, so run
+      # our own self-healing port-forward to the gateway service instead.
+      - name: Port-forward the kcp gateway to localhost:8443
+        working-directory: kedge
+        run: |
+          set -euo pipefail
+          echo "waiting for the envoy gateway service..."
+          svc=""
+          for i in $(seq 1 60); do
+            svc=$(kubectl -n envoy-gateway-system get svc \
+              -l gateway.envoyproxy.io/owning-gateway-name=eg \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+            [ -n "$svc" ] && break
+            sleep 5
+          done
+          [ -n "$svc" ] || { echo "envoy gateway service never appeared"; kubectl -n envoy-gateway-system get svc || true; exit 1; }
+          echo "envoy gateway service: $svc"
+
+          # Self-healing: kubectl port-forward can drop; the wrapper reconnects
+          # so :8443 stays up across register/init + the CatalogEntry gate + e2e.
+          nohup bash -c "while true; do kubectl -n envoy-gateway-system port-forward svc/$svc 8443:8443 --address 127.0.0.1; echo 'port-forward dropped; reconnecting'; sleep 2; done" \
+            > "${GITHUB_WORKSPACE}/port-forward-8443.log" 2>&1 &
+          echo $! > "${GITHUB_WORKSPACE}/pf8443.pid"
+
+          echo "waiting for :8443 to accept connections..."
+          for i in $(seq 1 60); do
+            if timeout 3 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8443' 2>/dev/null; then
+              echo ":8443 is reachable"; exit 0
+            fi
+            sleep 2
+          done
+          echo ":8443 never became reachable; port-forward log:"; cat "${GITHUB_WORKSPACE}/port-forward-8443.log" || true; exit 1
+
+      # The provider's CatalogEntry registration + workspace bootstrap are MANUAL
+      # Tilt resources in local dev (devs click ▶). In CI we trigger them and
+      # wait for each one-shot job to finish. init writes the runtime kubeconfig
+      # the provider watches, so the `infrastructure` resource restarts and
+      # re-enables its controllers afterwards.
+      - name: Register + initialize the infrastructure provider
+        working-directory: kedge
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/tilt-helpers.sh"
+
+          tilt trigger infrastructure-register
+          wait_resource infrastructure-register 300
+
+          tilt trigger infrastructure-init
+          wait_resource infrastructure-init 300
+
+          # Provider restarts on the runtime-kubeconfig write; wait for it back.
+          # (The CatalogEntry reconcile gate below is the real readiness check.)
+          wait_resource infrastructure 300
+
+      # The suite reads kcp state directly and fails fast (no Eventually/retry),
+      # so block until kcp has actually reconciled the provider's CatalogEntry to
+      # Ready before running it. This absorbs the controller/CachedResource
+      # settle time between init finishing and the catalog being projected.
+      - name: Wait for the CatalogEntry to reconcile Ready
+        working-directory: kedge
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 600 ))
+          while :; do
+            status=$(kubectl --kubeconfig=tilt-frontproxy.kubeconfig \
+              --server=https://kcp.localhost:8443/clusters/root:kedge:providers \
+              --insecure-skip-tls-verify \
+              get catalogentries.providers.kedge.faros.sh infrastructure \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+            if [ "$status" = "True" ]; then
+              echo "CatalogEntry infrastructure is Ready."
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "timed out waiting for CatalogEntry Ready (last status: '${status:-<none>}')"
+              kubectl --kubeconfig=tilt-frontproxy.kubeconfig \
+                --server=https://kcp.localhost:8443/clusters/root:kedge:providers \
+                --insecure-skip-tls-verify \
+                get catalogentries.providers.kedge.faros.sh infrastructure -o yaml || true
+              exit 1
+            fi
+            sleep 10
+          done
+
+      # `make e2e-tilt-cluster` prechecks hub + provider /healthz, then runs the
+      # suite against the live stack. Retry a couple of times to absorb any
+      # last-moment reconcile lag (the tests are read-only and idempotent).
+      - name: Run tilt-cluster e2e
+        working-directory: kedge
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "=== e2e-tilt-cluster attempt ${attempt} ==="
+            if make e2e-tilt-cluster E2E_TIMEOUT=15m; then
+              exit 0
+            fi
+            echo "attempt ${attempt} failed; retrying after 60s..."
+            sleep 60
+          done
+          echo "e2e-tilt-cluster failed after 3 attempts"
+          exit 1
+
+      - name: Tilt resource status on failure
+        if: failure()
+        working-directory: kedge
+        run: tilt get uiresources -o json || true
+
+      - name: Collect logs
+        if: failure()
+        working-directory: kedge
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/tilt-logs"
+          cp "${GITHUB_WORKSPACE}/tilt-up.log" "${GITHUB_WORKSPACE}/tilt-logs/" 2>/dev/null || true
+          cp *.kubeconfig "${GITHUB_WORKSPACE}/tilt-logs/" 2>/dev/null || true
+          for cluster in $(kind get clusters 2>/dev/null); do
+            kind export logs "${GITHUB_WORKSPACE}/tilt-logs/kind-$cluster" --name "$cluster" || true
+          done
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tilt-e2e-logs
+          path: tilt-logs/
+          retention-days: 3
+
+      # Always tear down: `tilt down` removes the in-cluster objects, then kill
+      # the detached Tilt process and delete the kind cluster. `|| true` so a
+      # half-up stack still cleans up.
+      - name: Tear down
+        if: always()
+        working-directory: kedge
+        run: |
+          tilt down -f Tiltfile.cluster -- --kcp-dir="${GITHUB_WORKSPACE}/kcp" || true
+          [ -f "${GITHUB_WORKSPACE}/pf8443.pid" ] && kill "$(cat "${GITHUB_WORKSPACE}/pf8443.pid")" 2>/dev/null || true
+          pkill -f "port-forward.*8443" 2>/dev/null || true
+          [ -f "${GITHUB_WORKSPACE}/tilt.pid" ] && kill "$(cat "${GITHUB_WORKSPACE}/tilt.pid")" 2>/dev/null || true
+          kind delete cluster --name kcp-tilt || true

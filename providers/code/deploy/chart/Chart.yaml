@@ -1,0 +1,22 @@
+apiVersion: v2
+name: kedge-code-provider
+description: |
+  kedge provider that manages source-code repositories and access (deploy
+  keys, collaborators) across git hosting providers (GitHub today). Ships the
+  provider Deployment, ClusterIP Service, and the CatalogEntry that registers
+  the provider — with its four tenant-authored APIResourceSchemas — with the
+  kedge hub.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kedge
+  - code
+  - git
+  - github
+  - repositories
+home: https://github.com/faroshq/kedge
+sources:
+  - https://github.com/faroshq/kedge/tree/main/providers/code
+maintainers:
+  - name: kedge maintainers

@@ -1,5 +1,18 @@
 # Quickstart provider
 
+> [!IMPORTANT]
+> **Read-only mirror — do not push or open PRs here.**
+> The standalone [`faroshq/provider-quickstart`](https://github.com/faroshq/provider-quickstart)
+> repository is **automatically synced** from the kedge monorepo
+> [`faroshq/kedge`](https://github.com/faroshq/kedge) (path `providers/quickstart/`)
+> via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
+> the mirror, so any direct change here is overwritten. File issues and PRs
+> against [`faroshq/kedge`](https://github.com/faroshq/kedge) instead.
+>
+> This is also the canonical "copy me" template for a standalone provider repo:
+> it ships its own `Dockerfile`, Helm chart (`deploy/chart/`), and release
+> workflows that build the image + chart on every sync/tag.
+
 A minimal reference provider proving the kedge plugin surface end-to-end.
 See [docs/providers.md](../../docs/providers.md) for the architecture this
 example demonstrates.
@@ -97,6 +110,24 @@ Update `manifest.yaml`:
 
 Then apply the manifest plus a Deployment + Service of your own. A Helm
 chart for this provider arrives in Phase 4 (see `docs/providers.md`).
+
+### Two ways a provider's kcp credentials get bootstrapped
+
+quickstart uses the **hub-provisioned** model: you apply the
+`CatalogEntry` and the hub catalog controller creates the provider
+workspace, mints the runtime `kedge-provider-kubeconfig` Secret, and
+applies the APIExport. quickstart doesn't read kcp itself, so it just
+needs the routing — no kubeconfig.
+
+A provider that *does* talk to kcp can also **self-bootstrap** with an
+init container that holds a kcp admin kubeconfig and mints its own
+runtime kubeconfig — no hub provisioning step. The infrastructure
+provider demonstrates this end-to-end; see
+[providers/infrastructure](../infrastructure/README.md#b-self-bootstrap-with-an-init-container-bootstrapenabledtrue)
+and the "Alternative: self-bootstrap via an init container" section of
+[docs/providers.md](../../docs/providers.md). When you graduate this
+quickstart to a real Helm chart, copy that pattern if your provider
+needs kcp access.
 
 ## What's *not* in this iteration (Phase 1A)
 

@@ -130,6 +130,29 @@ export const useTenantStore = defineStore('tenant', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
 
+  // First-login provisioning state. On a brand-new account the hub's
+  // org-bootstrap controller is still creating the personal org, the org
+  // workspace, and the default child workspace (~10-25s cold start; the
+  // REST list omits a workspace's clusterName until it reports Ready).
+  // bootstrap() polls until the org + a ready workspace land and flips
+  // this to 'ready'; App.vue shows the "creating control plane" takeover
+  // while it is 'provisioning'. 'empty' means we gave up polling and the
+  // org genuinely has no workspace — AppLayout's create-workspace wizard
+  // takes over.
+  //   idle         — not started
+  //   provisioning — polling, no usable workspace yet (show takeover)
+  //   ready        — org + workspace-with-clusterName available
+  //   empty        — polled past budget, org has no workspace
+  const bootstrapState = ref<'idle' | 'provisioning' | 'ready' | 'empty'>('idle')
+  // Poll counter, surfaced to the provisioning screen so it can advance
+  // its cosmetic step list and warn once we pass the cold-start budget.
+  const bootstrapAttempts = ref(0)
+  let bootstrapRunning = false
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
   const activeOrg = computed<OrgRow | null>(() =>
     orgUUID.value ? orgs.value.find((o) => o.uuid === orgUUID.value) ?? null : null,
   )
@@ -272,6 +295,76 @@ export const useTenantStore = defineStore('tenant', () => {
       workspaceUUID.value = created.uuid
     }
     return created
+  }
+
+  // bootstrap drives the first-login experience. It polls /api/orgs and
+  // the active org's /workspaces until the hub's org-bootstrap controller
+  // has produced a personal org and a workspace that reports a clusterName
+  // (i.e. its kcp cluster is Ready and /graphql/{cluster} will resolve).
+  // While it waits, bootstrapState stays 'provisioning' and App.vue shows
+  // the "creating control plane" takeover.
+  //
+  // Returning users — anyone with a persisted org + workspace selection —
+  // skip the takeover entirely: we mark 'ready' immediately and refresh in
+  // the background, so the loading screen only ever shows on genuine first
+  // login (or a hard-reset localStorage). Idempotent: a second call while
+  // one is in flight is a no-op.
+  async function bootstrap(): Promise<void> {
+    if (bootstrapRunning) return
+    bootstrapRunning = true
+    try {
+      // Optimistic path: a cached selection means the control plane already
+      // existed last session. Don't block the UI; just refresh quietly.
+      if (orgUUID.value && workspaceUUID.value) {
+        bootstrapState.value = 'ready'
+        try {
+          await fetchOrgs()
+          if (orgUUID.value) await fetchWorkspaces(orgUUID.value)
+        } catch {
+          /* best-effort refresh; the cached selection still drives the UI */
+        }
+        return
+      }
+
+      bootstrapState.value = 'provisioning'
+      // ~90s budget at 2s spacing, matching the hub login handler's own
+      // wait for the default cluster. Past it we fall back to the manual
+      // create-workspace wizard rather than spin forever.
+      const MAX_ATTEMPTS = 45
+      const DELAY_MS = 2000
+      for (bootstrapAttempts.value = 0; bootstrapAttempts.value < MAX_ATTEMPTS; bootstrapAttempts.value++) {
+        await fetchOrgs()
+        if (orgUUID.value) {
+          await fetchWorkspaces(orgUUID.value)
+          const list = workspacesByOrg.value[orgUUID.value] ?? []
+          // Ready == a workspace whose kcp cluster is up (clusterName set).
+          // The list can briefly carry the default workspace without a
+          // clusterName; keep polling so the app doesn't target a cluster
+          // that isn't serving yet.
+          const ready = list.find((w) => !!w.clusterName)
+          if (ready) {
+            const selected = workspaceUUID.value
+              ? list.find((w) => w.uuid === workspaceUUID.value)
+              : null
+            if (!selected || !selected.clusterName) {
+              workspaceUUID.value = ready.uuid
+            }
+            bootstrapState.value = 'ready'
+            return
+          }
+        }
+        // Org or its default workspace not up yet — keep the takeover and
+        // poll again.
+        bootstrapState.value = 'provisioning'
+        await delay(DELAY_MS)
+      }
+      // Budget exhausted. If we have an org but no workspace, hand off to
+      // the manual wizard; otherwise leave it as best-effort and let the
+      // chip's own fetches surface whatever exists.
+      bootstrapState.value = 'empty'
+    } finally {
+      bootstrapRunning = false
+    }
   }
 
   // ===== org-level CRUD =====
@@ -581,6 +674,8 @@ export const useTenantStore = defineStore('tenant', () => {
     workspacesByOrg,
     loading,
     error,
+    bootstrapState,
+    bootstrapAttempts,
     // computed
     activeOrg,
     activeWorkspace,
@@ -590,6 +685,7 @@ export const useTenantStore = defineStore('tenant', () => {
     fetchWorkspaces,
     selectOrg,
     selectWorkspace,
+    bootstrap,
     // actions: org
     createOrg,
     patchOrgDisplayName,

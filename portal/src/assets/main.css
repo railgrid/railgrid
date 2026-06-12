@@ -11,6 +11,7 @@
  */
 @source "../../../providers/mcp/portal/src/**/*.{vue,ts}";
 @source "../../../providers/kubernetesedges/portal/src/**/*.{vue,ts}";
+@source "../../../providers/infrastructure/portal/src/**/*.{vue,ts}";
 @source "../../../providers/projects/portal/src/**/*.{vue,ts}";
 @source "../../../providers/serveredges/portal/src/**/*.{vue,ts}";
 

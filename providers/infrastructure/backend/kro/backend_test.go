@@ -16,7 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	infrav1alpha1 "github.com/faroshq/faros-kedge/providers/infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 )
 
 func TestOpenAPIToSimpleSchema(t *testing.T) {
@@ -87,7 +87,7 @@ func TestBuildRGD(t *testing.T) {
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)}
 	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"statefulset","template":{"apiVersion":"apps/v1","kind":"StatefulSet"}}]}`)}
 
-	rgd, err := buildRGD(tmpl)
+	rgd, err := buildRGD(tmpl, DefaultIngressClass)
 	if err != nil {
 		t.Fatalf("buildRGD: %v", err)
 	}
@@ -123,13 +123,48 @@ func TestBuildRGD(t *testing.T) {
 	}
 }
 
+func TestBuildRGDSubstitutesIngressClass(t *testing.T) {
+	tmpl := &infrav1alpha1.Template{}
+	tmpl.Name = "application"
+	tmpl.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{
+		Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "applications", Kind: "Application",
+	}
+	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)}
+	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"ingress","template":{"apiVersion":"networking.k8s.io/v1","kind":"Ingress","spec":{"ingressClassName":"${kedge.ingressClass}"}}}]}`)}
+
+	rgd, err := buildRGD(tmpl, "cloudflare")
+	if err != nil {
+		t.Fatalf("buildRGD: %v", err)
+	}
+	resources, _, err := unstructured.NestedSlice(rgd.Object, "spec", "resources")
+	if err != nil || len(resources) != 1 {
+		t.Fatalf("spec.resources: len=%d err=%v", len(resources), err)
+	}
+	got, found, err := unstructured.NestedString(resources[0].(map[string]any), "template", "spec", "ingressClassName")
+	if err != nil || !found {
+		t.Fatalf("ingressClassName not found: err=%v", err)
+	}
+	if got != "cloudflare" {
+		t.Errorf("ingressClassName = %q, want %q (token not substituted)", got, "cloudflare")
+	}
+}
+
+func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
+	// kro's own ${...} references must survive substitution untouched.
+	in := []byte(`{"a":"${schema.spec.name}","b":"${kedge.ingressClass}","c":"${svc.metadata.name}"}`)
+	out := string(substituteTokens(in, "nginx"))
+	if want := `{"a":"${schema.spec.name}","b":"nginx","c":"${svc.metadata.name}"}`; out != want {
+		t.Errorf("substituteTokens = %s, want %s", out, want)
+	}
+}
+
 func TestBuildRGDRequiresBackendConfig(t *testing.T) {
 	tmpl := &infrav1alpha1.Template{}
 	tmpl.Name = "no-config"
 	tmpl.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{Group: "g", Version: "v1alpha1", Resource: "rs", Kind: "R"}
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}}}`)}
 	// no BackendConfig
-	if _, err := buildRGD(tmpl); err == nil {
+	if _, err := buildRGD(tmpl, DefaultIngressClass); err == nil {
 		t.Fatal("expected error when backendConfig is missing")
 	}
 }

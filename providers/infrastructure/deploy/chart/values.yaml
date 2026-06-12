@@ -1,0 +1,127 @@
+## kedge-infrastructure-provider values
+## See README.md and docs/credentials.md for the credential conventions
+## the central kro RGD templates expect.
+
+# Container image. Build with: docker build -t IMAGE providers/infrastructure/
+image:
+  repository: ghcr.io/faroshq/kedge-infrastructure-provider
+  tag: ""  # empty → defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# Number of Deployment replicas. The provider is stateless apart from
+# the in-process per-tenant client cache (sync.Map, ~256 entries cap),
+# so >1 replica is safe.
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8081
+
+# Hub the provider POSTs heartbeats to. Must be reachable from the
+# provider pod (in-cluster Service DNS works).
+hub:
+  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  # Bearer token used in the heartbeat POST. Provided as a Secret
+  # because it MUST NOT land in values.yaml in plaintext for prod.
+  tokenSecretRef:
+    name: kedge-infrastructure-hub-token
+    key: token
+  # Skip TLS verification on heartbeat — dev only, defaults off.
+  insecure: false
+
+# Central kro cluster kubeconfig.
+# Two ways to provide it:
+#   1. Inline `centralKro.kubeconfig` (rendered into a Secret by the
+#      chart; convenient for dev, NOT recommended for prod).
+#   2. `centralKro.kubeconfigSecretRef` pointing at an existing Secret
+#      this chart did NOT create. Use this in prod.
+centralKro:
+  kubeconfig: ""
+  kubeconfigSecretRef:
+    name: ""   # set to use an external Secret
+    key: kubeconfig
+
+# The "application" template (3-tier app exposed on an OIDC-guarded URL).
+# The Application instance controller is OFF unless baseDomain is set AND a
+# central kro kubeconfig is configured (the controller bridges secrets onto
+# that runtime cluster). See docs/application-template-architecture.md.
+application:
+  # Zone apps are served under, e.g. "apps.example.com". Each app gets
+  # <prefix|name>-<tenantHash>.<baseDomain>. Empty → feature disabled.
+  baseDomain: ""
+  # Exposure-layer ingress class substituted into Application RGDs. Defaults
+  # to "cloudflare" (Cloudflare Tunnel) in-binary; override to swap the
+  # ingress controller without touching the template.
+  ingressClass: "cloudflare"
+
+# Secret the provider mounts read-only at
+# /var/run/secrets/kedge/kedge-provider-kubeconfig to reach kcp. How it is
+# populated depends on bootstrap.enabled:
+#   - bootstrap.enabled=false (hub-provisioned): the hub catalog controller
+#     mints it (pkg/hub/providers/provision.go) when the CatalogEntry is
+#     reconciled; the serve volume mounts it as `optional` until it appears.
+#   - bootstrap.enabled=true (self-bootstrap): IGNORED — the serve container
+#     reuses the same kcp admin kubeconfig the init container used, so there
+#     is no separately-minted runtime Secret.
+providerKubeconfig:
+  secretName: kedge-provider-kubeconfig
+
+# Self-bootstrap via an init container. When enabled, an init container runs
+# `infrastructure init` BEFORE the serve container: it installs the CRDs,
+# CachedResource, and APIExport into the provider workspace. Both containers
+# share ONE kubeconfig (no separately-minted runtime token).
+bootstrap:
+  enabled: false
+
+  # Where the shared kubeconfig comes from:
+  #   hubMinted  - (default) the hub-delivered kedge-provider-kubeconfig
+  #                (providerKubeconfig.secretName). A platform admin applies the
+  #                CatalogEntry; the hub creates the provider workspace, mints a
+  #                cluster-admin-in-workspace kubeconfig, and writes it as that
+  #                Secret (requires the hub to run with --kubeconfig so its
+  #                HostSecretWriter can write into this cluster). The init
+  #                container's mount is non-optional, so the pod simply waits in
+  #                ContainerCreating until the hub delivers it — no `kubectl ws
+  #                create`, no separate admin kubeconfig.
+  #   supplied   - you provide a kcp kubeconfig directly (no hub needed). Use
+  #                this for a fully standalone install.
+  kubeconfigSource: hubMinted
+
+  # Only used when kubeconfigSource=supplied.
+  # kcp workspace the provider is installed into (init retargets the supplied
+  # kubeconfig at this path; the workspace must already exist).
+  workspacePath: "root:kedge:providers:infrastructure"
+  # Provide exactly ONE of:
+  #   kcpKubeconfig          - inline content, rendered into a Secret by the
+  #                            chart (convenient for dev; avoid for prod).
+  #   kcpKubeconfigSecretRef - reference to an existing Secret you manage.
+  kcpKubeconfig: ""
+  kcpKubeconfigSecretRef:
+    name: ""
+    key: kubeconfig
+
+# When true, the chart also renders the CatalogEntry that registers
+# the provider with the hub. Set to false if you want to manage the
+# CatalogEntry separately (e.g. via GitOps with different rollout
+# cadence than the workload).
+catalogEntry:
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: ""   # empty → release-name
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# Optional pod-level overrides.
+podLabels: {}
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

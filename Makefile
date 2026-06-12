@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal run-provider-app-studio install-provider-app-studio uninstall-provider-app-studio dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal run-provider-app-studio install-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -53,6 +53,9 @@ build: build-kedge build-hub build-graphql
 
 build-kedge:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge ./cmd/kedge/
+
+build-kedge-release: ## Build the release-tagging helper (kedge-release <component|all>)
+	go build $(GOFLAGS) -o $(BINDIR)/kedge-release ./cmd/kedge-release/
 
 build-hub: build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
@@ -116,6 +119,12 @@ build-quickstart-provider-portal: ## Build the quickstart provider's micro-front
 build-quickstart-provider: build-quickstart-provider-portal ## Build the quickstart reference provider binary (portal embedded)
 	cd providers/quickstart && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/quickstart-provider .
 
+build-kuery-provider-portal: ## Build the kuery provider's micro-frontend (Vite + TS → portal/dist)
+	cd providers/kuery/portal && npm install --no-audit --no-fund && npm run build
+
+build-kuery-provider: build-kuery-provider-portal ## Build the kuery provider binary (portal embedded)
+	cd providers/kuery && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/kuery-provider .
+
 build-infrastructure-provider-portal: ## Build the infrastructure provider's micro-frontend (Vite + Vue → portal/dist)
 	cd providers/infrastructure/portal && npm install --no-audit --no-fund && npm run build
 
@@ -128,6 +137,12 @@ build-app-studio-provider-portal: ## Build the App Studio provider's micro-front
 build-app-studio-provider: build-app-studio-provider-portal ## Build the App Studio provider binary (portal embedded)
 	go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/app-studio-provider ./providers/app-studio
 
+build-code-provider-portal: ## Build the code provider's micro-frontend (Vite + Vue → portal/dist)
+	cd providers/code/portal && npm install --no-audit --no-fund && npm run build
+
+build-code-provider: build-code-provider-portal ## Build the code provider binary (portal embedded)
+	cd providers/code && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/code-provider .
+
 ## Generate deepcopy methods + CRD YAML for the infrastructure provider's
 ## own API types (providers/infrastructure/apis/v1alpha1/...). The CRDs land
 ## under providers/infrastructure/config/crds/ and are embedded into the
@@ -139,6 +154,25 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/infrastructure/config/crds
+	./hack/ensure-boilerplate.sh
+
+## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the code
+## provider's own API types, then re-assemble manifest.yaml (inline schemas)
+## and sync the schema bodies into the Helm chart's files/schemas/. Unlike
+## infrastructure (schemas: []), the code provider ships its four CRDs as
+## static schemas the hub applies, so they must be regenerated here.
+codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the code provider's local API (+ manifest + chart schemas)
+	@mkdir -p providers/code/config/crds providers/code/config/kcp providers/code/deploy/chart/files/schemas
+	cd providers/code && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
+	./$(KCP_APIGEN_GEN) --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
+	python3 providers/code/hack/gen-manifest.py
+	@for r in connections repositories deploykeys collaborators packages; do \
+		cp providers/code/config/kcp/apiresourceschema-$$r.code.kedge.faros.sh.yaml \
+		   providers/code/deploy/chart/files/schemas/$$r.code.kedge.faros.sh.yaml; \
+	done
 	./hack/ensure-boilerplate.sh
 
 test:
@@ -541,12 +575,115 @@ e2e-infrastructure: build-infrastructure-provider ## Run infrastructure tenant-i
 	}
 	go test ./test/e2e/suites/infrastructure/... -v -timeout $(E2E_KROMC_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
+## Tilt-cluster suite: runs against an ALREADY-RUNNING operator-deployed,
+## multi-shard Tilt stack (start it in another terminal with `make tilt-cluster`).
+## Unlike the other e2e suites it does NOT spawn its own processes — it connects
+## to the live stack (kcp front-proxy via tilt-frontproxy.kubeconfig, the
+## in-cluster hub, the host-run providers) and verifies the providers end-to-end:
+## provider registration, the templates catalog/projection, MCP tool federation,
+## and the per-tenant identity gate. Endpoints override via KEDGE_E2E_* env.
+E2E_TILT_TIMEOUT ?= 10m
+E2E_TILT_HUB_URL ?= https://localhost:9443
+E2E_TILT_INFRA_URL ?= http://localhost:8082
+.PHONY: e2e-tilt-cluster
+e2e-tilt-cluster: ## Run Tilt-cluster provider e2e (requires `make tilt-cluster` running)
+	@curl -sk --max-time 5 -o /dev/null "$(E2E_TILT_HUB_URL)/healthz" || { \
+		echo "hub not reachable at $(E2E_TILT_HUB_URL); bring the stack up first in another terminal: make tilt-cluster"; \
+		exit 1; \
+	}
+	@curl -s --max-time 5 -o /dev/null "$(E2E_TILT_INFRA_URL)/healthz" || { \
+		echo "infrastructure provider not reachable at $(E2E_TILT_INFRA_URL); is 'make tilt-cluster' fully up?"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/tiltcluster/... -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
 ## Delete the quickstart CatalogEntry. Useful while iterating on the manifest.
 uninstall-provider-quickstart: ## Delete quickstart CatalogEntry
 	-kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
 		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:kedge:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(QUICKSTART_MANIFEST)
+
+# --- Provider kuery (local dev) ---
+# Mirror of the quickstart pattern above. Distinct port (8084) so the demo
+# providers can run side-by-side. Phase 1 skeleton — see
+# docs/kuery-provider-architecture.md for the phasing.
+
+KUERY_PORT ?= 8084
+KUERY_HUB_URL ?= https://localhost:9443
+KUERY_TOKEN ?= $(STATIC_AUTH_TOKEN)
+KUERY_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
+KUERY_KCP_SERVER ?= https://localhost:6443
+KUERY_MANIFEST ?= providers/kuery/manifest.yaml
+KUERY_WORKSPACE_PATH ?= root:kedge:providers:kuery
+# Dev runtime kubeconfig for the engagement controller, written by
+# init-provider-kuery from the provider SA token the hub mints.
+KUERY_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/kuery-runtime.kubeconfig
+
+run-provider-kuery: build-kuery-provider ## Run the kuery provider (requires: make run-hub-embedded-static + make install-provider-kuery; engagement needs init-provider-kuery)
+	@echo "Starting kuery provider on :$(KUERY_PORT)"
+	@echo "  hub:   $(KUERY_HUB_URL)"
+	@echo "  token: $(KUERY_TOKEN)"
+	@if [ -f $(KUERY_RUNTIME_KUBECONFIG) ]; then \
+		echo "  engagement: $(KUERY_RUNTIME_KUBECONFIG)"; \
+	else \
+		echo "  engagement: DISABLED (run 'make init-provider-kuery' after install-provider-kuery)"; \
+	fi
+	PORT=$(KUERY_PORT) \
+	KEDGE_HUB_URL=$(KUERY_HUB_URL) \
+	KEDGE_HUB_TOKEN=$(KUERY_TOKEN) \
+	KEDGE_HUB_INSECURE=true \
+	KEDGE_PROVIDER_NAME=kuery \
+	KEDGE_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
+	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+		$(BINDIR)/kuery-provider
+
+install-provider-kuery: ## Apply kuery CatalogEntry into root:kedge:providers
+	@test -f $(KUERY_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(KUERY_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
+		--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		apply -f $(KUERY_MANIFEST)
+
+## Dev bootstrap for the engagement controller. The hub-provisioned flow
+## delivers the minted kubeconfig as a host-cluster Secret, which doesn't
+## exist in host-binary dev — so mint the same thing from the provider SA
+## token Secret the catalog controller created, and ensure the
+## APIExportEndpointSlice the engagement watcher discovers VW URLs from.
+## Order: install-provider-kuery (CatalogEntry reconciled) → this → the
+## kuery Tilt resource restarts on the kubeconfig file appearing.
+init-provider-kuery: ## Ensure kuery APIExportEndpointSlice + write dev runtime kubeconfig
+	@test -f $(KUERY_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(KUERY_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	@echo "Ensuring APIExportEndpointSlice in $(KUERY_WORKSPACE_PATH)"
+	@printf 'apiVersion: apis.kcp.io/v1alpha1\nkind: APIExportEndpointSlice\nmetadata:\n  name: kuery.providers.kedge.faros.sh\nspec:\n  export:\n    path: $(KUERY_WORKSPACE_PATH)\n    name: kuery.providers.kedge.faros.sh\n' | \
+		kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
+			--server=$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH) \
+			--insecure-skip-tls-verify apply -f -
+	@echo "Writing $(KUERY_RUNTIME_KUBECONFIG) (server $(KUERY_HUB_URL)/clusters/$(KUERY_WORKSPACE_PATH))"
+	@TOKEN=$$(kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
+		--server=$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH) \
+		--insecure-skip-tls-verify \
+		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
+	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the catalog controller to reconcile"; exit 1; }; \
+	mkdir -p $(KCP_DATA_DIR); \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+		"$(KUERY_HUB_URL)/clusters/$(KUERY_WORKSPACE_PATH)" "$$TOKEN" \
+		> $(KUERY_RUNTIME_KUBECONFIG)
+	@echo "wrote $(KUERY_RUNTIME_KUBECONFIG)"
+
+uninstall-provider-kuery: ## Delete kuery CatalogEntry
+	-kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
+		--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		delete -f $(KUERY_MANIFEST)
 
 # --- Provider infrastructure (local dev) ---
 # Mirror of the quickstart pattern above. Distinct port (8082) so both
@@ -569,7 +706,7 @@ KROMC_MANIFEST ?= providers/infrastructure/manifest.yaml
 # Same pattern as quickstart/infrastructure, but the CatalogEntry template
 # defaults to the cluster Service DNS and the helper target below overrides
 # only the UI URL for local host access.
-APP_STUDIO_PORT ?= 8083
+APP_STUDIO_PORT ?= 8085
 APP_STUDIO_HUB_URL ?= https://localhost:9443
 APP_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
 APP_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
@@ -611,7 +748,7 @@ run-provider-infrastructure: build-infrastructure-provider ## Run the infrastruc
 		$(BINDIR)/infrastructure-provider
 
 ## Run the App Studio provider binary locally. Mirrors the other external
-## providers so the heartbeat path is consistent and the UI runs on :8083.
+## providers so the heartbeat path is consistent and the UI runs on :8085.
 run-provider-app-studio: build-app-studio-provider ## Run the App Studio provider (requires: make run-hub-embedded-static + make install-provider-app-studio)
 	@echo "Starting App Studio provider on :$(APP_STUDIO_PORT)"
 	@echo "  hub:   $(APP_STUDIO_HUB_URL)"
@@ -703,6 +840,125 @@ init-provider-infrastructure: build-infrastructure-provider ## Bootstrap infrast
 	INFRASTRUCTURE_KUBECONFIG=$(INFRASTRUCTURE_RUNTIME_KUBECONFIG) \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 		$(BINDIR)/infrastructure-provider init
+
+# ── code provider (git repository management) ──────────────────────────────
+# Local-dev flow mirrors the infrastructure provider:
+#   Terminal 1: make run-hub-embedded-static          # hub + embedded kcp
+#   Terminal 2: make install-provider-code            # admin: register entry
+#   Terminal 3: make run-provider-code                # tenant: run binary
+CODE_PORT ?= 8083
+CODE_MANIFEST ?= providers/code/manifest.yaml
+CODE_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/code-runtime.kubeconfig
+
+run-provider-code: build-code-provider ## Run the code provider (requires: make run-hub-embedded-static + make install-provider-code)
+	@echo "Starting code provider on :$(CODE_PORT) (hub $(KROMC_HUB_URL))"
+	@# Auto-source providers/code/.env (gitignored) so GitHub OAuth + other dev
+	@# env reach the provider without a manual export. See .env.example.
+	set -a; [ -f providers/code/.env ] && . ./providers/code/.env || true; set +a; \
+	PORT=$(CODE_PORT) \
+	KEDGE_HUB_URL=$(KROMC_HUB_URL) \
+	KEDGE_HUB_TOKEN=$(KROMC_TOKEN) \
+	KEDGE_HUB_INSECURE=true \
+	KEDGE_PROVIDER_NAME=code \
+	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+	CODE_KUBECONFIG=$${CODE_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
+	GITHUB_OAUTH_CLIENT_ID=$${GITHUB_OAUTH_CLIENT_ID:-} \
+	GITHUB_OAUTH_CLIENT_SECRET=$${GITHUB_OAUTH_CLIENT_SECRET:-} \
+	GITHUB_OAUTH_REDIRECT_URL=$${GITHUB_OAUTH_REDIRECT_URL:-http://localhost:$(CODE_PORT)/oauth/github/callback} \
+	GITHUB_OAUTH_PORTAL_ORIGIN=$${GITHUB_OAUTH_PORTAL_ORIGIN:-$(KROMC_HUB_URL)} \
+		$(BINDIR)/code-provider serve
+
+install-provider-code: ## Apply the code CatalogEntry into root:kedge:providers
+	@test -f $(KROMC_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		apply -f $(CODE_MANIFEST)
+
+uninstall-provider-code: ## Delete the code CatalogEntry
+	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		delete -f $(CODE_MANIFEST)
+
+CODE_WORKSPACE_PATH ?= root:kedge:providers:code
+## Dev bootstrap for the code provider. The hub mints a real provider
+## kubeconfig only when it runs with a host cluster (--kubeconfig); the dev hubs
+## (embedded + Tiltfile.cluster) do not, so we derive a runtime kubeconfig from
+## the admin kubeconfig — reusing its working credential (a static token in
+## embedded mode, a client cert in cluster mode) and retargeting only the server
+## URL to the provider workspace — and ensure the APIExportEndpointSlice the
+## controller manager needs. run-provider-code reads it via CODE_KUBECONFIG.
+## Order: install-provider-code (creates the workspace) → init-provider-code →
+## run-provider-code. Re-runnable. The Tiltfile.cluster flow reuses this target
+## verbatim, overriding KROMC_KCP_KUBECONFIG / KROMC_KCP_SERVER.
+init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the code APIExportEndpointSlice
+	@test -f $(KROMC_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	@mkdir -p $(KCP_DATA_DIR)
+	@echo "Writing dev kubeconfig $(CODE_RUNTIME_KUBECONFIG) (workspace $(CODE_WORKSPACE_PATH), server $(KROMC_KCP_SERVER))"
+	@kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) config view --minify --flatten > $(CODE_RUNTIME_KUBECONFIG)
+	@CL=$$(kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config view -o jsonpath='{.clusters[0].name}'); \
+		kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config set-cluster "$$CL" \
+			--server=$(KROMC_KCP_SERVER)/clusters/$(CODE_WORKSPACE_PATH) \
+			--insecure-skip-tls-verify=true >/dev/null
+	CODE_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
+	CODE_WORKSPACE_PATH=$(CODE_WORKSPACE_PATH) \
+		$(BINDIR)/code-provider init
+
+# --- Experimental: run the infrastructure provider as a POD (init-container
+#     bootstrap) instead of a host binary. Exercises the full hub-minted
+#     flow: CatalogEntry -> hub mints + delivers kedge-provider-kubeconfig
+#     (HostSecretWriter) -> init container bootstraps with it -> serve runs.
+#     Reuses the kedge-kro kind cluster as the host cluster. Requires the hub
+#     to run with --kubeconfig=$(KRO_KIND_KUBECONFIG) and
+#     --provider-internal-url=$(PROVIDER_INTERNAL_HUB_URL) (the Tiltfile sets
+#     both). Apply the CatalogEntry first: make install-provider-infrastructure
+INFRASTRUCTURE_NAMESPACE ?= infrastructure
+INFRASTRUCTURE_IMAGE ?= kedge-infrastructure-provider:dev
+INFRASTRUCTURE_CHART ?= providers/infrastructure/deploy/chart
+# Address provider pods in the kind cluster use to reach the hub front-proxy
+# (browsers use https://localhost:9443; host.docker.internal resolves to the
+# host from inside kind on Docker Desktop / Colima / OrbStack).
+PROVIDER_INTERNAL_HUB_URL ?= https://host.docker.internal:9443
+helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm install the provider as a pod into kedge-kro (hub-minted bootstrap)
+	@command -v kind >/dev/null || { echo "kind not found; brew install kind"; exit 1; }
+	@test -f $(KRO_KIND_KUBECONFIG) || { echo "kedge-kro cluster missing; run 'make dev-kro-up' first"; exit 1; }
+	@echo ">>> building $(INFRASTRUCTURE_IMAGE)"
+	docker build -t $(INFRASTRUCTURE_IMAGE) providers/infrastructure
+	@echo ">>> loading image into kind cluster $(KRO_KIND_NAME)"
+	kind load docker-image $(INFRASTRUCTURE_IMAGE) --name $(KRO_KIND_NAME)
+	@echo ">>> ensuring namespace + heartbeat token Secret in $(INFRASTRUCTURE_NAMESPACE)"
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl create namespace $(INFRASTRUCTURE_NAMESPACE) \
+		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(INFRASTRUCTURE_NAMESPACE) create secret generic kedge-infrastructure-hub-token \
+		--from-literal=token=$(STATIC_AUTH_TOKEN) \
+		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
+	@echo ">>> helm install (bootstrap.enabled=true, kubeconfigSource=hubMinted)"
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) helm upgrade --install infrastructure $(INFRASTRUCTURE_CHART) \
+		--namespace $(INFRASTRUCTURE_NAMESPACE) \
+		--set image.repository=kedge-infrastructure-provider \
+		--set image.tag=dev \
+		--set image.pullPolicy=Never \
+		--set replicaCount=1 \
+		--set bootstrap.enabled=true \
+		--set hub.url=$(PROVIDER_INTERNAL_HUB_URL) \
+		--set hub.insecure=true \
+		--set catalogEntry.enabled=false
+	@echo ">>> deployed. The pod stays in ContainerCreating until the hub delivers"
+	@echo "    the kedge-provider-kubeconfig Secret (apply the CatalogEntry first:"
+	@echo "    make install-provider-infrastructure). Watch:"
+	@echo "    KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(INFRASTRUCTURE_NAMESPACE) get pods -w"
+
+helm-undeploy-provider-infrastructure: ## (experimental) helm uninstall the infrastructure provider pod
+	-KUBECONFIG=$(KRO_KIND_KUBECONFIG) helm uninstall infrastructure -n $(INFRASTRUCTURE_NAMESPACE)
 
 # --- Management kro cluster (backend for the infrastructure provider) ---
 # Brings up a dedicated kind cluster running the faroshq/kro-multicluster
@@ -870,6 +1126,7 @@ dev-kro-up-into: ## Install kro into an existing cluster ($KRO_TARGET_KUBECONFIG
 		--set multicluster.provider=kcp-apiexport \
 		--set multicluster.kcp.kubeconfigSecret=kcp-kubeconfig \
 		--set multicluster.kcp.apiExportEndpointSlice=infrastructure \
+		--set controller.deployToLocalRuntime=true \
 		--timeout 5m
 	@# kro pods need to resolve kcp.localhost/root.kcp.localhost/theseus.kcp.localhost
 	@# (which the operator-issued kubeconfigs bake in) to the envoy gateway
@@ -939,7 +1196,7 @@ help-dev: ## Show development environment options
 	@echo "  KCP_DATA_DIR       - Directory for kcp data (default: .kcp)"
 	@echo "  QUICKSTART_PORT    - Port the quickstart provider listens on (default: 8081)"
 	@echo "  QUICKSTART_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
-	@echo "  APP_STUDIO_PORT    - Port the App Studio provider listens on (default: 8083)"
+	@echo "  APP_STUDIO_PORT    - Port the App Studio provider listens on (default: 8085)"
 	@echo "  APP_STUDIO_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
 	@echo ""
 

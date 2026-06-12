@@ -37,6 +37,10 @@ export const LIST_MCP_SERVERS = `
               URL
               kubernetesEdges
               linuxEdges
+              tokenSecretRef {
+                namespace
+                name
+              }
               conditions {
                 type
                 status
@@ -85,6 +89,10 @@ export const GET_MCP_SERVER = `
             URL
             kubernetesEdges
             linuxEdges
+            tokenSecretRef {
+              namespace
+              name
+            }
             conditions {
               type
               status
@@ -140,6 +148,14 @@ export interface MCPItem {
     URL?: string
     kubernetesEdges?: number
     linuxEdges?: number
+    // tokenSecretRef points at the Secret holding the long-lived (legacy)
+    // ServiceAccount token used as the MCP bearer credential. The token
+    // itself is never in the CR — read the Secret to render the setup
+    // command (see MCPDetailPage → MCPSetupPanel).
+    tokenSecretRef?: {
+      namespace?: string
+      name?: string
+    }
     conditions?: Array<{
       type: string
       status: string

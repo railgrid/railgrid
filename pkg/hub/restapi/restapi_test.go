@@ -178,6 +178,18 @@ func (f *fakeOps) ListProviderAPIBindings(_ context.Context, _, _ string) (map[s
 	return map[string]string{}, nil
 }
 
+func (f *fakeOps) DeleteProviderAPIBinding(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
+func (f *fakeOps) EnsureProviderEdgeProxyGrant(_ context.Context, _, _, _, _ string) error {
+	return nil
+}
+
+func (f *fakeOps) RemoveProviderEdgeProxyGrant(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
 func (f *fakeOps) ListChildWorkspaces(_ context.Context, orgUUID string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

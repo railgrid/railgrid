@@ -7,10 +7,12 @@ import EdgeCreateModal from './EdgeCreateModal.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useHubVersion, isAgentOutdated } from '@/composables/useHubVersion'
+import { useAuthStore } from '@/stores/auth'
+import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import { LIST_EDGES, type ListEdgesResult, type EdgeItem } from '@/graphql/queries/edges'
 import { DELETE_EDGE } from '@/graphql/mutations'
 import { formatAge } from '@/utils/time'
-import { Wifi, WifiOff, Server, CheckCircle, Plus, Trash2, ArrowUpCircle } from 'lucide-vue-next'
+import { Wifi, WifiOff, Server, CheckCircle, Plus, Trash2, ArrowUpCircle, Terminal } from 'lucide-vue-next'
 
 // kind selects which edge type this page shows. Each first-party provider
 // (kubernetes-edges, server-edges) gets its own route and passes its
@@ -20,12 +22,26 @@ import { Wifi, WifiOff, Server, CheckCircle, Plus, Trash2, ArrowUpCircle } from 
 const props = defineProps<{ kind?: 'kubernetes' | 'server' }>()
 
 const router = useRouter()
+const auth = useAuthStore()
+const terminal = useTerminalSessionsStore()
 const { data, loading, error, refetch } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
 const { hubVersion } = useHubVersion()
 const showCreate = ref(false)
 const deleteTarget = ref<string | null>(null)
 const deleteBusy = ref(false)
 const deleteError = ref<string | null>(null)
+
+// openTerminal bridges to the portal's global terminal dock via the
+// terminal-adapter's kedge-terminal-open event, so the SSH session opens
+// without navigating away from the list. Only server edges expose a
+// shell — kubernetes nodes have none — so the button is server-only (see
+// the actions cell).
+function openTerminal(name: string, event: Event) {
+  event.stopPropagation()
+  const cluster = auth.clusterName
+  if (!cluster) return
+  terminal.openSession({ edgeName: name, cluster })
+}
 
 function handleCreated() {
   refetch()
@@ -194,13 +210,23 @@ function handleRowClick(row: Record<string, unknown>) {
           <span class="font-mono text-[12px] text-text-muted">{{ value }}</span>
         </template>
         <template #actions="{ row }">
-          <button
-            class="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted/40 opacity-0 transition-all group-hover:opacity-100 hover:bg-danger-subtle hover:text-danger"
-            title="Delete edge"
-            @click.stop="requestDelete(row.name as string, $event)"
-          >
-            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
+          <div class="flex items-center justify-end gap-1 opacity-0 transition-all group-hover:opacity-100">
+            <button
+              v-if="kind === 'server'"
+              class="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted/50 transition-all hover:bg-accent/10 hover:text-accent"
+              title="Open SSH session"
+              @click.stop="openTerminal(row.name as string, $event)"
+            >
+              <Terminal class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </button>
+            <button
+              class="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted/50 transition-all hover:bg-danger-subtle hover:text-danger"
+              title="Delete edge"
+              @click.stop="requestDelete(row.name as string, $event)"
+            >
+              <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </button>
+          </div>
         </template>
       </ResourceTable>
     </div>

@@ -4,15 +4,28 @@ import AppLayout from '@/components/AppLayout.vue'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
-import { Puzzle, ExternalLink, AlertCircle, Plus, X, Loader2 } from 'lucide-vue-next'
+import { Puzzle, ExternalLink, AlertCircle, Plus, X, Loader2, Search } from 'lucide-vue-next'
 
 const providers = useProvidersStore()
 
-// Group the catalog cards by category to match the side-nav structure.
-// Categories the hub knows (registry) appear first by their declared
-// order; ad-hoc categories follow alphabetically; uncategorized providers
-// fall into the synthetic "Other" bucket at the end.
-const groupedItems = computed(() => {
+// A card is a provider plus the resolved category metadata it belongs to.
+// We carry the category on each card (rather than in a section header) so
+// the grid can stay flat: categories become a chip inside the block and a
+// filter control above it, instead of a separate section per category —
+// which produced one header per provider when a category had a single entry.
+interface ProviderCard extends ProviderDTO {
+  categoryName: string
+  categoryIcon: string | null
+}
+
+// Synthetic bucket name for providers that declare no category.
+const OTHER = 'Other'
+
+// allCards flattens providers into a single, stably-ordered list. Ordering
+// matches the side-nav: registry categories first (by declared order), then
+// ad-hoc categories alphabetically, then uncategorized ("Other") last; within
+// a category, providers sort alphabetically by display name.
+const allCards = computed<ProviderCard[]>(() => {
   const known = new Map(providers.categories.map((c) => [c.name, c]))
   const byCat = new Map<string, ProviderDTO[]>()
   const other: ProviderDTO[] = []
@@ -33,19 +46,45 @@ const groupedItems = computed(() => {
     if (ka && kb) return (ka.order ?? 0) - (kb.order ?? 0) || a.localeCompare(b)
     return a.localeCompare(b)
   })
-  const groups = names.map((n) => ({
-    name: n,
-    icon: known.get(n)?.icon ?? null,
-    items: byCat.get(n)!.slice().sort((a, b) => a.displayName.localeCompare(b.displayName)),
-  }))
-  if (other.length) {
-    groups.push({
-      name: 'Other',
-      icon: null,
-      items: other.sort((a, b) => a.displayName.localeCompare(b.displayName)),
-    })
+  const cards: ProviderCard[] = []
+  for (const n of names) {
+    const items = byCat.get(n)!.slice().sort((a, b) => a.displayName.localeCompare(b.displayName))
+    for (const p of items) cards.push({ ...p, categoryName: n, categoryIcon: known.get(n)?.icon ?? null })
   }
-  return groups
+  for (const p of other.sort((a, b) => a.displayName.localeCompare(b.displayName))) {
+    cards.push({ ...p, categoryName: OTHER, categoryIcon: null })
+  }
+  return cards
+})
+
+// categoryChips is the ordered, de-duplicated list of categories present in
+// the catalog — drives the filter row. Order follows allCards' first
+// appearance so it lines up with the (now hidden) section ordering.
+const categoryChips = computed(() => {
+  const seen = new Map<string, string | null>()
+  for (const c of allCards.value) {
+    if (!seen.has(c.categoryName)) seen.set(c.categoryName, c.categoryIcon)
+  }
+  return [...seen.entries()].map(([name, icon]) => ({ name, icon }))
+})
+
+// Active filters. selectedCategory === null means "All".
+const search = ref('')
+const selectedCategory = ref<string | null>(null)
+
+// filteredCards applies the search query (matched against display name,
+// provider name, and category) and the active category chip.
+const filteredCards = computed<ProviderCard[]>(() => {
+  const q = search.value.trim().toLowerCase()
+  return allCards.value.filter((c) => {
+    if (selectedCategory.value && c.categoryName !== selectedCategory.value) return false
+    if (!q) return true
+    return (
+      c.displayName.toLowerCase().includes(q) ||
+      c.name.toLowerCase().includes(q) ||
+      c.categoryName.toLowerCase().includes(q)
+    )
+  })
 })
 
 function categoryIcon(name: string | null): unknown {
@@ -145,18 +184,62 @@ async function onDisable(p: ProviderDTO) {
         </div>
       </div>
 
-      <div v-else class="space-y-6">
-        <section v-for="group in groupedItems" :key="group.name">
-          <h2 class="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-            <component :is="categoryIcon(group.icon)" class="h-3 w-3" :stroke-width="2" />
-            {{ group.name }}
-          </h2>
-          <ul class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <li
-              v-for="p in group.items"
-              :key="p.name"
-              class="rounded-xl border border-border-subtle bg-surface-raised/60 p-4 transition-colors hover:border-accent/30"
+      <div v-else>
+        <!-- Search + category filter. The grid stays flat (one card per
+             provider); categories are a filter here and a chip on each card
+             rather than a per-category section header. -->
+        <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div class="relative w-full sm:max-w-xs">
+            <Search class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" :stroke-width="2" />
+            <input
+              v-model="search"
+              type="search"
+              placeholder="Search providers…"
+              class="w-full rounded-lg border border-border-subtle bg-surface-raised/60 py-1.5 pl-8 pr-3 text-sm text-text-primary placeholder:text-text-muted focus:border-accent/40 focus:outline-none"
+            />
+          </div>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <button
+              class="rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors"
+              :class="
+                selectedCategory === null
+                  ? 'border-accent/40 bg-accent/10 text-accent'
+                  : 'border-border-subtle text-text-muted hover:border-accent/30'
+              "
+              @click="selectedCategory = null"
             >
+              All
+            </button>
+            <button
+              v-for="chip in categoryChips"
+              :key="chip.name"
+              class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors"
+              :class="
+                selectedCategory === chip.name
+                  ? 'border-accent/40 bg-accent/10 text-accent'
+                  : 'border-border-subtle text-text-muted hover:border-accent/30'
+              "
+              @click="selectedCategory = selectedCategory === chip.name ? null : chip.name"
+            >
+              <component :is="categoryIcon(chip.icon)" class="h-3 w-3" :stroke-width="2" />
+              {{ chip.name }}
+            </button>
+          </div>
+        </div>
+
+        <div
+          v-if="filteredCards.length === 0"
+          class="rounded-lg border border-border-subtle bg-surface-raised/60 p-6 text-center text-sm text-text-muted"
+        >
+          No providers match your search.
+        </div>
+
+        <ul v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <li
+            v-for="p in filteredCards"
+            :key="p.name"
+            class="rounded-xl border border-border-subtle bg-surface-raised/60 p-4 transition-colors hover:border-accent/30"
+          >
           <div class="flex items-start gap-3">
             <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-overlay">
               <img v-if="p.iconURL" :src="p.iconURL" alt="" class="h-6 w-6" @error="(e) => ((e.target as HTMLImageElement).style.display = 'none')" />
@@ -185,6 +268,14 @@ async function onDisable(p: ProviderDTO) {
           </div>
 
           <div class="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-md border border-border-subtle px-1.5 py-0.5 transition-colors hover:border-accent/30 hover:text-accent"
+              @click="selectedCategory = selectedCategory === p.categoryName ? null : p.categoryName"
+            >
+              <component :is="categoryIcon(p.categoryIcon)" class="h-3 w-3" :stroke-width="2" />
+              {{ p.categoryName }}
+            </button>
             <span v-if="p.hasUI" class="rounded-md border border-border-subtle px-1.5 py-0.5">UI</span>
             <span v-if="p.hasBackend" class="rounded-md border border-border-subtle px-1.5 py-0.5">Backend</span>
             <span v-if="p.apiExportName" class="rounded-md border border-border-subtle px-1.5 py-0.5">API</span>
@@ -231,9 +322,8 @@ async function onDisable(p: ProviderDTO) {
               Provider is starting&hellip;
             </span>
           </div>
-            </li>
-          </ul>
-        </section>
+          </li>
+        </ul>
       </div>
     </div>
 

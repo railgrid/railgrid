@@ -1,3 +1,3 @@
-module github.com/faroshq/faros-kedge/providers/quickstart
+module github.com/faroshq/provider-quickstart
 
 go 1.24

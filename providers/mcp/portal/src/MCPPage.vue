@@ -4,7 +4,7 @@
 // contributed in code via the providers/mcp/aggregate.RegisterToolFamily
 // registry. The portal therefore tracks just one kind of MCP resource.
 
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -12,8 +12,9 @@ import MCPCreateModal from './MCPCreateModal.vue'
 import MCPHelpModal from './MCPHelpModal.vue'
 import MCPSetupPanel from './MCPSetupPanel.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
-import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
+import { useGraphQLQuery, graphqlMutate, graphqlQuery } from '@/composables/useGraphQL'
 import { LIST_MCP_SERVERS, type ListMCPResult, type MCPItem } from '@/graphql/queries/mcp'
+import { GET_SECRET, type GetSecretResult } from '@/graphql/queries/secrets'
 import { DELETE_AGGREGATE_MCP } from '@/graphql/mutations'
 import { Bot, Plus, Server, Wifi, Check, Trash2, ClipboardCopy, Layers, ChevronDown, ChevronUp, HelpCircle } from 'lucide-vue-next'
 
@@ -28,6 +29,31 @@ const expanded = ref(false)
 
 const mcps = computed(() => data.value?.kedge_faros_sh?.v1alpha1?.MCPServers?.items ?? [])
 const defaultMCP = computed(() => mcps.value.find((m) => m.metadata.name === 'default'))
+
+// Resolve the default MCPServer's long-lived (legacy) SA token from
+// status.tokenSecretRef so the setup panel renders a working bearer
+// credential (not the portal user's short-lived OIDC token).
+const defaultToken = ref<string | undefined>(undefined)
+watch(
+  () => defaultMCP.value?.status?.tokenSecretRef,
+  async (secretRef) => {
+    if (!secretRef?.name || !secretRef?.namespace) {
+      defaultToken.value = undefined
+      return
+    }
+    try {
+      const res = await graphqlQuery<GetSecretResult>(GET_SECRET, {
+        name: secretRef.name,
+        namespace: secretRef.namespace,
+      })
+      const encoded = res.v1?.Secret?.data?.token
+      defaultToken.value = encoded ? atob(encoded) : undefined
+    } catch {
+      defaultToken.value = undefined
+    }
+  },
+  { immediate: true },
+)
 
 const columns = [
   { key: 'name', label: 'Name' },
@@ -245,6 +271,7 @@ async function copyToClipboard(text: string, field: string) {
           embedded
           :server-name="serverNameFor()"
           :url="urlForDefault()"
+          :token="defaultToken"
         />
       </div>
     </div>

@@ -1,0 +1,243 @@
+{{- /*
+Workload kind depends on the kcp mode:
+  - Embedded kcp (default): StatefulSet. kcp's embedded etcd lives on a
+    per-replica PVC (volumeClaimTemplates) and needs a stable network identity
+    (headless serviceName) so the embedded kcp TLS cert stays valid across
+    restarts.
+  - External kcp: Deployment. The hub is stateless (no embedded etcd, no
+    persistent data-dir), so it needs no PVC and no stable identity. Uses the
+    Recreate strategy because the hub runs controllers without leader election;
+    a rolling update would briefly run two active instances.
+*/ -}}
+apiVersion: apps/v1
+{{- if .Values.kcp.external.enabled }}
+kind: Deployment
+{{- else }}
+kind: StatefulSet
+{{- end }}
+metadata:
+  name: {{ include "kedge-hub.fullname" . }}
+  labels:
+    {{- include "kedge-hub.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.kcp.external.enabled }}
+  strategy:
+    type: Recreate
+  {{- else }}
+  serviceName: {{ include "kedge-hub.fullname" . }}-kcp
+  {{- end }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kedge-hub.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "kedge-hub.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        # --- kedge-hub ---
+        - name: hub
+          image: {{ include "kedge-hub.hubImage" . }}
+          imagePullPolicy: {{ .Values.image.hub.pullPolicy }}
+          args:
+            - --listen-addr={{ .Values.hub.listenAddr }}
+            {{- if .Values.kcp.external.enabled }}
+            # External kcp mode: connect to kcp running outside the cluster
+            - --external-kcp-kubeconfig=/kcp-kubeconfig/admin.kubeconfig
+            {{- if include "kedge-hub.kcpShardKubeconfigEnabled" . }}
+            # Separate kubeconfig for APIExport virtual-workspace (shard-direct) URLs
+            - --kcp-shard-kubeconfig=/kcp-shard-kubeconfig/admin.kubeconfig
+            {{- end }}
+            {{- else }}
+            # Embedded kcp mode (default): kcp runs in-process
+            - --embedded-kcp
+            - --kcp-root-dir=/data/kcp
+            - --kcp-secure-port={{ .Values.kcp.embedded.securePort }}
+            - --kcp-bind-address={{ .Values.kcp.embedded.bindAddress }}
+            - --kcp-batteries-include={{ .Values.kcp.embedded.batteriesInclude }}
+            {{- if include "kedge-hub.kcpTlsEnabled" . }}
+            - --kcp-tls-cert-file=/kcp-tls/tls.crt
+            - --kcp-tls-key-file=/kcp-tls/tls.key
+            {{- end }}
+            {{- end }}
+            {{- if include "kedge-hub.tlsEnabled" . }}
+            - --serving-cert-file=/tls/tls.crt
+            - --serving-key-file=/tls/tls.key
+            {{- end }}
+            - --hub-external-url={{ required "hub.hubExternalURL is required" .Values.hub.hubExternalURL }}
+            {{- if .Values.idp.issuerURL }}
+            - --idp-issuer-url={{ .Values.idp.issuerURL }}
+            - --idp-client-id={{ .Values.idp.clientID }}
+            {{- if .Values.idp.caSecretName }}
+            - --idp-ca-file=/idp-ca/{{ .Values.idp.caSecretKey }}
+            {{- end }}
+            {{- end }}
+            {{- range .Values.hub.staticAuthTokens }}
+            - --static-auth-token={{ . }}
+            {{- end }}
+            {{- if .Values.hub.devMode }}
+            - --dev-mode
+            {{- end }}
+            {{- if .Values.hub.embeddedGraphQL }}
+            - --embedded-graphql
+            {{- end }}
+            {{- if .Values.hub.appStudio.databaseURL }}
+            - --app-studio-database-url={{ .Values.hub.appStudio.databaseURL }}
+            {{- else if .Values.hub.appStudio.databaseURLSecretRef.name }}
+            - --app-studio-database-url=$(APP_STUDIO_DATABASE_URL)
+            {{- end }}
+            {{- if .Values.hub.appStudio.inMemoryMessageStore }}
+            - --app-studio-in-memory-message-store
+            {{- end }}
+            {{- if .Values.hub.appStudio.messageRetention }}
+            - --app-studio-message-retention={{ .Values.hub.appStudio.messageRetention }}
+            {{- end }}
+            {{- if .Values.hub.appStudio.messageEncryptionKeysSecretRef.name }}
+            - --app-studio-message-encryption-keys=$(APP_STUDIO_MESSAGE_ENCRYPTION_KEYS)
+            {{- end }}
+            - --data-dir=/data/hub
+          {{- if or .Values.hub.appStudio.databaseURLSecretRef.name .Values.hub.appStudio.messageEncryptionKeysSecretRef.name }}
+          env:
+            {{- if .Values.hub.appStudio.databaseURLSecretRef.name }}
+            - name: APP_STUDIO_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.appStudio.databaseURLSecretRef.name }}
+                  key: {{ .Values.hub.appStudio.databaseURLSecretRef.key }}
+            {{- end }}
+            {{- if .Values.hub.appStudio.messageEncryptionKeysSecretRef.name }}
+            - name: APP_STUDIO_MESSAGE_ENCRYPTION_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.appStudio.messageEncryptionKeysSecretRef.name }}
+                  key: {{ .Values.hub.appStudio.messageEncryptionKeysSecretRef.key }}
+            {{- end }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: https
+              containerPort: 9443
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9443
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9443
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.hub.resources | nindent 12 }}
+          volumeMounts:
+            - name: kcp-data
+              mountPath: /data
+            {{- if include "kedge-hub.tlsEnabled" . }}
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
+            {{- if include "kedge-hub.kcpTlsEnabled" . }}
+            - name: kcp-tls
+              mountPath: /kcp-tls
+              readOnly: true
+            {{- end }}
+            {{- if .Values.kcp.external.enabled }}
+            - name: kcp-kubeconfig
+              mountPath: /kcp-kubeconfig
+              readOnly: true
+            {{- end }}
+            {{- if include "kedge-hub.kcpShardKubeconfigEnabled" . }}
+            - name: kcp-shard-kubeconfig
+              mountPath: /kcp-shard-kubeconfig
+              readOnly: true
+            {{- end }}
+            {{- if .Values.idp.caSecretName }}
+            - name: idp-ca
+              mountPath: /idp-ca
+              readOnly: true
+            {{- end }}
+
+      volumes:
+        {{- if .Values.kcp.external.enabled }}
+        # External kcp mode is stateless; /data is scratch only (the hub keeps
+        # no persistent state here), so an emptyDir replaces the PVC.
+        - name: kcp-data
+          emptyDir: {}
+        {{- end }}
+        {{- if include "kedge-hub.tlsEnabled" . }}
+        - name: tls
+          secret:
+            secretName: {{ include "kedge-hub.tlsSecretName" . }}
+        {{- end }}
+        {{- if include "kedge-hub.kcpTlsEnabled" . }}
+        - name: kcp-tls
+          secret:
+            secretName: {{ include "kedge-hub.kcpTlsSecretName" . }}
+        {{- end }}
+        {{- if .Values.kcp.external.enabled }}
+        - name: kcp-kubeconfig
+          secret:
+            secretName: {{ include "kedge-hub.kcpKubeconfigSecretName" . }}
+        {{- end }}
+        {{- if include "kedge-hub.kcpShardKubeconfigEnabled" . }}
+        - name: kcp-shard-kubeconfig
+          secret:
+            secretName: {{ include "kedge-hub.kcpShardKubeconfigSecretName" . }}
+        {{- end }}
+        {{- if .Values.idp.caSecretName }}
+        - name: idp-ca
+          secret:
+            secretName: {{ .Values.idp.caSecretName }}
+        {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+  {{- if not .Values.kcp.external.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: kcp-data
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}

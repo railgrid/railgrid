@@ -12,6 +12,10 @@ export interface ProviderDTO {
   hasUI: boolean
   hasBackend: boolean
   iconURL?: string
+  // True when the provider requests background access to the workspace's
+  // edge clusters (verb "proxy" on edges) on Enable. Rendered in the
+  // Enable confirmation dialog alongside permission claims.
+  edgeProxyAccess?: boolean
   // When set, the portal renders this Vue Router route name in-tree
   // instead of loading /main.js. First-party providers (mcp, kubernetes-
   // edges, server-edges) use this to surface their existing SPA pages
@@ -303,18 +307,23 @@ export const useProvidersStore = defineStore('providers', () => {
   }
 
   async function disable(p: ProviderDTO): Promise<void> {
-    const cluster = currentTenantWorkspace()
-    if (!cluster) throw new Error('no tenant workspace in session')
     const bindingName = bindingNamesByProvider.value[p.name]
     if (!bindingName) return
-    const res = await fetch(
-      `/clusters/${cluster}/apis/apis.kcp.io/v1alpha2/apibindings/${bindingName}`,
-      {
-        method: 'DELETE',
-        headers: authHeaders(),
-        credentials: 'same-origin',
-      },
-    )
+    // Disable = server-side endpoint (mirror of enable). It deletes the
+    // APIBinding AND tears down the edge-proxy RBAC grant — the latter
+    // needs kcp-admin credentials the tenant doesn't hold, so a direct
+    // GraphQL deleteAPIBinding would leave the grant dangling.
+    const t = readTenantSelection()
+    if (!t.orgUUID || !t.workspaceUUID) {
+      throw new Error('select an organization and workspace before disabling a provider')
+    }
+    const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/disable`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: authHeaders(),
+      credentials: 'same-origin',
+    })
+    // Idempotent server-side; 404 means the route target is already gone.
     if (!res.ok && res.status !== 404) {
       const detail = await res.text().catch(() => '')
       throw new Error(`disable ${p.name} failed: ${res.status} ${res.statusText} ${detail}`)
@@ -384,17 +393,4 @@ function authHeaders(): Record<string, string> {
     /* ignore */
   }
   return h
-}
-
-// currentTenantWorkspace reads auth state directly from localStorage to
-// avoid an import cycle with @/stores/auth.
-function currentTenantWorkspace(): string | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.auth)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as { clusterName?: string }
-    return parsed.clusterName ?? null
-  } catch {
-    return null
-  }
 }

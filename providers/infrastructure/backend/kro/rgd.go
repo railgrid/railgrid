@@ -11,14 +11,23 @@ You may obtain a copy of the License at
 package kro
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	infrav1alpha1 "github.com/faroshq/faros-kedge/providers/infrastructure/apis/v1alpha1"
+	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 )
+
+// ingressClassToken is the reserved placeholder a Template author writes in
+// backendConfig (e.g. an Ingress's spec.ingressClassName) to defer the
+// exposure-layer controller choice to platform config. It is substituted
+// for the configured ingress class before the RGD is authored. The
+// "kedge." namespace keeps it from colliding with kro's own ${...}
+// reference syntax (${schema.spec.x}, ${someResource.metadata.name}).
+const ingressClassToken = "${kedge.ingressClass}"
 
 const (
 	rgdAPIVersion = "kro.run/v1alpha1"
@@ -48,7 +57,7 @@ var rgdGVR = schema.GroupVersionResource{
 //   - spec.schema.spec        = Template.spec.schema (OpenAPI) → kro SimpleSchema
 //   - spec.schema.status      = Template.spec.backendConfig.status (optional)
 //   - spec.resources          = Template.spec.backendConfig.resources (verbatim)
-func buildRGD(tmpl *infrav1alpha1.Template) (*unstructured.Unstructured, error) {
+func buildRGD(tmpl *infrav1alpha1.Template, ingressClass string) (*unstructured.Unstructured, error) {
 	if tmpl.Spec.Schema == nil || len(tmpl.Spec.Schema.Raw) == 0 {
 		return nil, fmt.Errorf("template %q: spec.schema is required", tmpl.Name)
 	}
@@ -57,7 +66,7 @@ func buildRGD(tmpl *infrav1alpha1.Template) (*unstructured.Unstructured, error) 
 		return nil, fmt.Errorf("template %q: %w", tmpl.Name, err)
 	}
 
-	resources, status, err := backendConfig(tmpl)
+	resources, status, err := backendConfig(tmpl, ingressClass)
 	if err != nil {
 		return nil, err
 	}
@@ -98,12 +107,13 @@ func buildRGD(tmpl *infrav1alpha1.Template) (*unstructured.Unstructured, error) 
 // backendConfig decodes Template.spec.backendConfig and extracts the kro
 // resource graph (required) and an optional status-mapping block. The
 // backendConfig is opaque to the platform; only this backend interprets it.
-func backendConfig(tmpl *infrav1alpha1.Template) (resources []any, status map[string]any, err error) {
+func backendConfig(tmpl *infrav1alpha1.Template, ingressClass string) (resources []any, status map[string]any, err error) {
 	if tmpl.Spec.BackendConfig == nil || len(tmpl.Spec.BackendConfig.Raw) == 0 {
 		return nil, nil, fmt.Errorf("template %q: spec.backendConfig is required for the kro backend", tmpl.Name)
 	}
+	raw := substituteTokens(tmpl.Spec.BackendConfig.Raw, ingressClass)
 	var bc map[string]any
-	if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &bc); err != nil {
+	if err := json.Unmarshal(raw, &bc); err != nil {
 		return nil, nil, fmt.Errorf("template %q: decode spec.backendConfig: %w", tmpl.Name, err)
 	}
 	res, ok := bc["resources"].([]any)
@@ -114,4 +124,19 @@ func backendConfig(tmpl *infrav1alpha1.Template) (resources []any, status map[st
 		status = st
 	}
 	return res, status, nil
+}
+
+// substituteTokens replaces reserved kedge ${kedge.*} placeholders in a
+// raw backendConfig with platform config values, before the JSON is parsed
+// into the RGD. Only the kedge namespace is touched; kro's own ${...}
+// references pass through untouched for kro to resolve at reconcile time.
+//
+// Today the only token is ${kedge.ingressClass}. The replacement is a plain
+// string substitution on the JSON bytes — safe because the configured value
+// is a DNS-style class name with no JSON metacharacters.
+func substituteTokens(raw []byte, ingressClass string) []byte {
+	if ingressClass == "" {
+		ingressClass = DefaultIngressClass
+	}
+	return bytes.ReplaceAll(raw, []byte(ingressClassToken), []byte(ingressClass))
 }

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import StatusBadge from '@/components/StatusBadge.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
-import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
+import { useGraphQLQuery, graphqlMutate, graphqlQuery } from '@/composables/useGraphQL'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import { GET_MCP_SERVER, type GetMCPResult } from '@/graphql/queries/mcp'
+import { GET_SECRET, type GetSecretResult } from '@/graphql/queries/secrets'
 import { UPDATE_AGGREGATE_MCP, DELETE_AGGREGATE_MCP } from '@/graphql/mutations'
 import { formatDateTimeWithAge } from '@/utils/time'
 import MCPSetupPanel from './MCPSetupPanel.vue'
@@ -28,6 +29,36 @@ const { data: rawData, loading, error, refetch } = useGraphQLQuery<GetMCPResult>
 )
 
 const mcp = computed(() => rawData.value?.kedge_faros_sh?.v1alpha1?.MCPServer ?? null)
+
+// mcpToken holds the MCPServer's long-lived (legacy) ServiceAccount
+// token, dereferenced from status.tokenSecretRef. We read the Secret
+// here (not in the panel) so the credential is resolved once and the
+// panel stays a dumb renderer. Undefined until the controller has
+// provisioned the Secret and kcp's token controller has populated it.
+const mcpToken = ref<string | undefined>(undefined)
+
+watch(
+  () => mcp.value?.status?.tokenSecretRef,
+  async (secretRef) => {
+    if (!secretRef?.name || !secretRef?.namespace) {
+      mcpToken.value = undefined
+      return
+    }
+    try {
+      const res = await graphqlQuery<GetSecretResult>(GET_SECRET, {
+        name: secretRef.name,
+        namespace: secretRef.namespace,
+      })
+      const encoded = res.v1?.Secret?.data?.token
+      // Secret.data values are base64-encoded; decode to the raw token.
+      mcpToken.value = encoded ? atob(encoded) : undefined
+    } catch {
+      // Leave the token unset — the panel shows a "Provisioning…" state.
+      mcpToken.value = undefined
+    }
+  },
+  { immediate: true },
+)
 
 const showYaml = ref(false)
 const editing = ref(false)
@@ -330,6 +361,7 @@ async function handleDelete() {
         style="animation-delay: 160ms"
         :server-name="mcpClientServerName"
         :url="mcp.status?.URL ?? '<MCP_URL>'"
+        :token="mcpToken"
       />
 
       <!-- YAML section -->

@@ -110,6 +110,19 @@ type WorkspaceOps interface {
 	// "enabled providers" sidebar set on every workspace switch
 	// without 403'ing through the kcp user-proxy.
 	ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]string, error)
+
+	// DeleteProviderAPIBinding removes a provider APIBinding from the
+	// target workspace. Used by the POST .../providers/{name}/disable
+	// handler. NotFound is a no-op.
+	DeleteProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName string) error
+
+	// EnsureProviderEdgeProxyGrant / RemoveProviderEdgeProxyGrant manage
+	// the ClusterRole/ClusterRoleBinding pair that lets a provider's SA
+	// (under its cluster-qualified identity) use the "proxy" verb on
+	// edges in the tenant workspace. Applied on Enable when the provider
+	// declares spec.edgeProxyAccess; removed on Disable.
+	EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) error
+	RemoveProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName string) error
 }
 
 // KubeconfigConfig configures the workspace-scoped kubeconfig download
@@ -301,6 +314,7 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// via kcp-admin so the kcp user-proxy's defaultCluster pre-check
 	// doesn't block sibling-workspace operations). See providers_enable.go.
 	r.HandleFunc("/{org}/workspaces/{ws}/providers/{name}/enable", h.enableProvider).Methods(http.MethodPost)
+	r.HandleFunc("/{org}/workspaces/{ws}/providers/{name}/disable", h.disableProvider).Methods(http.MethodPost)
 
 	// Read-side counterpart: list the provider APIBindings in this
 	// workspace. Same proxy-avoidance rationale. Portal calls this

@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -122,6 +123,21 @@ type MCPServerStatus struct {
 	// the selector.
 	// +optional
 	LinuxEdges int `json:"linuxEdges,omitempty"`
+
+	// TokenSecretRef references the Secret that holds the long-lived
+	// (legacy) ServiceAccount token clients use as the bearer credential
+	// for this MCP endpoint. The MCPServer controller provisions a
+	// per-server ServiceAccount and a kubernetes.io/service-account-token
+	// Secret; kcp's token controller populates it.
+	//
+	// The token value is intentionally NOT surfaced in status — only the
+	// reference is. The portal backend (which can read Secrets in this
+	// workspace) dereferences it to render the setup/copy command, so the
+	// credential never lands in the CR, watch streams, logs, or audit. The
+	// token is stored under the Secret's "token" data key
+	// (corev1.ServiceAccountTokenKey).
+	// +optional
+	TokenSecretRef *corev1.SecretReference `json:"tokenSecretRef,omitempty"`
 
 	// Conditions describe the current state of the MCPServer resource.
 	// +optional

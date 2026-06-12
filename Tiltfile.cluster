@@ -58,6 +58,13 @@ kcp_image_tag = cfg.get('kcp-image-tag', 'fb8629abb')
 os.putenv('KCP_IMAGE_REPO', kcp_image_repo)
 os.putenv('KCP_IMAGE_TAG', kcp_image_tag)
 
+# Static-token auth: tell the included Tiltfile.static to wire
+# spec.auth.tokenAuthFile (operator-native, kcp-operator PR #240) into the root
+# shard, shards and front-proxy, pointing at the Secret we create below. This
+# replaces the old front-proxy Deployment-patching watchdog: the operator now
+# owns the wiring and reconciles drift on its own.
+os.putenv('KCP_TOKEN_AUTH_SECRET', 'kcp-static-tokens')
+
 kcp_tilt = os.path.join(kcp_dir, 'contrib', 'tilt', 'Tiltfile.static')
 if not os.path.exists(kcp_tilt):
     fail('expected upstream kcp Tiltfile at %s — is --kcp-dir pointing at a kcp checkout?' % kcp_tilt)
@@ -173,6 +180,7 @@ local_resource(
         'providers/projects/portal/src',
         'providers/projects/portal/package.json',
         'providers/serveredges/portal/src',
+        'providers/code/portal/src',
     ],
     labels=['hub'],
 )
@@ -312,105 +320,42 @@ k8s_resource(
 )
 
 # ---------------------------------------------------------------------------
-# HACK (temporary): static token auth on the front-proxy.
+# Static-token auth for kcp (operator-native, via spec.auth.tokenAuthFile).
 #
-# The hub/GraphQL gateway forwards the user's bearer token (dev-token) to kcp,
-# but the operator-deployed kcp doesn't trust it → GraphQL "Unauthorized" when
-# listing Edge/VirtualWorkload. The proper fix is kcp-operator PR #240
-# (auth.tokenAuthFile), which needs an operator release. Until then we patch the
-# running front-proxy Deployment directly:
-#   1. create a token CSV Secret. CRITICAL: the token must map to the SAME kcp
-#      identity the hub provisions RBAC for, or you authenticate but get
-#      "access denied". The hub derives a deterministic user from the token
-#      (see pkg/hub/kcp/embedded.go): user = kedge:static:<first16 hex of
-#      sha256("static-token/"+token)>, group system:authenticated. The hub's
-#      proxy then creates that user's tenant workspace and grants it admin
-#      there. We compute the same identity below so the existing RBAC applies.
-#   2. PAUSE the kcp-operator (scale to 0) so it can't revert the Deployment
-#      patch on its next reconcile.
-#   3. JSON-patch frontproxy-front-proxy to mount the CSV + add --token-auth-file
-#      (same mount path/arg PR #240 uses), idempotently.
+# The hub/GraphQL gateway forwards the user's bearer token (dev-token) to kcp.
+# For kcp to trust it, the front-proxy and shards need --token-auth-file pointed
+# at a token CSV. Our kcp-operator image carries PR #240 (auth.tokenAuthFile),
+# so the operator mounts the CSV and adds the flag itself: the included
+# contrib/tilt/Tiltfile.static injects spec.auth.tokenAuthFile into the root
+# shard, shards and front-proxy whenever KCP_TOKEN_AUTH_SECRET is set (we export
+# it above). No Deployment patching, no operator pausing, no drift watchdog —
+# the operator owns the wiring and re-asserts it on every reconcile.
 #
-# WATCHDOG: this runs as a serve_cmd (long-lived), not a one-shot. Every 30s it
-# rechecks the Deployment's args + the operator's replica count and re-asserts
-# both if anything drifted. So `helm upgrade` of the operator, an accidental
-# trigger of `frontproxy-token-unhack`, or `tilt down`/`up` recovers on its own
-# within a tick instead of needing manual re-trigger.
+# Our only job is to create that Secret. CRITICAL: the token must map to the
+# SAME kcp identity the hub provisions RBAC for, or you authenticate but get
+# "access denied". The hub derives a deterministic user from the token (see
+# pkg/hub/kcp/embedded.go): user = kedge:static:<first16 hex of
+# sha256("static-token/"+token)>, group system:authenticated. The hub's proxy
+# then creates that user's tenant workspace and grants it admin there. We
+# compute the same identity below so the existing RBAC applies.
 #
-# Undo with the 'frontproxy-token-unhack' resource (un-pauses the operator AND
-# stops the watchdog by toggling its trigger_mode — leave the unhack to teardown
-# only).
+# Ordering: the operator may create the shard/front-proxy pods before this
+# Secret lands, in which case they sit in ContainerCreating until it does, then
+# start — self-healing, no manual retrigger.
 # ---------------------------------------------------------------------------
 local_resource(
-    'frontproxy-token-hack',
-    serve_cmd='''
-set -u
-# Derive the hub's static-token identity once: kedge:static:<first16 of
-# sha256("static-token/"+token)>, group system:authenticated (see embedded.go).
+    'kcp-static-tokens',
+    cmd='''
+set -eu
 TOKEN=dev-token
 HASH=$(printf 'static-token/%s' "$TOKEN" | openssl dgst -sha256 | awk '{print $NF}' | cut -c1-16)
 CSV="$TOKEN,kedge:static:$HASH,$HASH,system:authenticated"
-
-apply_secret() {
-  kubectl create secret generic kcp-static-tokens -n default \
-    --from-literal=token.csv="$CSV" \
-    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-}
-
-has_token_arg() {
-  kubectl -n default get deploy frontproxy-front-proxy \
-    -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null \
-    | grep -q -- '--token-auth-file'
-}
-
-reassert_patch() {
-  # Pause the operator just for the patch window — leaving it paused
-  # permanently blocks shard reconciles (e.g. RootShard.spec.extraArgs).
-  echo "[$(date +%H:%M:%S)] front-proxy missing --token-auth-file → pausing operator + re-patching"
-  kubectl -n kcp-operator-system scale deploy/kcp-operator-controller-manager --replicas=0 >/dev/null
-  kubectl -n default patch deploy frontproxy-front-proxy --type=json -p '[
-    {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"token-auth-file","secret":{"secretName":"kcp-static-tokens"}}},
-    {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"token-auth-file","readOnly":true,"mountPath":"/etc/kcp/authentication/token"}},
-    {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--token-auth-file=/etc/kcp/authentication/token/token.csv"}
-  ]' >/dev/null
-  kubectl -n default rollout status deploy/frontproxy-front-proxy --timeout=180s
-  # Un-pause so the operator can keep doing its job (reconciling shards,
-  # virtualworkspaces, certs, etc.). Next tick re-checks drift.
-  echo "[$(date +%H:%M:%S)] patch applied; unpausing operator"
-  kubectl -n kcp-operator-system scale deploy/kcp-operator-controller-manager --replicas=1 >/dev/null
-}
-
-# Initial converge. If the front-proxy Deployment isn't there yet (operator
-# hasn't reconciled), we just loop until it is — don't fail the resource.
-apply_secret
-echo "frontproxy-token-hack watchdog starting (tick every 30s; only pauses operator while re-patching)"
-while true; do
-  if kubectl -n default get deploy frontproxy-front-proxy >/dev/null 2>&1; then
-    if has_token_arg; then
-      :  # steady state — operator stays up, can reconcile other things
-    else
-      reassert_patch || echo "[$(date +%H:%M:%S)] patch attempt failed; will retry"
-    fi
-  else
-    echo "[$(date +%H:%M:%S)] frontproxy-front-proxy not present yet; waiting"
-  fi
-  sleep 30
-done
+kubectl create secret generic kcp-static-tokens -n default \
+  --from-literal=token.csv="$CSV" \
+  --dry-run=client -o yaml | kubectl apply -f -
 ''',
-    resource_deps=['kcp-admin extract'],
     labels=['kcp'],
     allow_parallel=True,
-)
-
-local_resource(
-    'frontproxy-token-unhack',
-    # Tilt's UI stops the hack's serve_cmd when you press "Disable" on that
-    # resource. This button is just for un-pausing the operator if you want
-    # to walk the cluster back to vanilla kcp-operator state.
-    cmd='kubectl -n kcp-operator-system scale deploy/kcp-operator-controller-manager --replicas=1',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    labels=['kcp'],
 )
 
 # ---------------------------------------------------------------------------
@@ -421,10 +366,12 @@ local_resource(
 # hub workload is named kedge-hub.
 #
 #   providers-quickstart   — reference example (port :8081)
-#   providers-app-studio   — AI workspace provider (port :8083) +
+#   providers-app-studio   — AI workspace provider (port :8085) +
 #                            host URL rewritten for the in-cluster hub
 #   providers-kro          — infrastructure broker (port :8082) +
 #                            management kind cluster that kro runs in
+#   providers-code         — git repository manager (port :8083)
+#   providers-kuery        — fleet query engine (port :8084)
 #
 # Each provider has three resources:
 #   <name>            build + serve; auto-restarts on src change
@@ -470,7 +417,9 @@ INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/in
 # App Studio runs on the host like the other external providers, but the
 # hub lives inside the kind cluster, so the rendered CatalogEntry must point
 # at host.docker.internal rather than localhost.
-APP_STUDIO_CATALOGENTRY_UI_URL = 'http://host.docker.internal:8083'
+APP_STUDIO_CATALOGENTRY_UI_URL = 'http://host.docker.internal:8085'
+CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code/manifest.yaml')
+KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/kuery/manifest.yaml')
 
 # --- providers-quickstart ---
 local_resource(
@@ -538,7 +487,7 @@ local_resource(
     resource_deps=['kedge-hub'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=8083, path='/healthz'),
+        http_get=http_get_action(port=8085, path='/healthz'),
     ),
     labels=['providers-app-studio'],
 )
@@ -563,6 +512,71 @@ local_resource(
     auto_init=False,
     resource_deps=['kedge-hub'],
     labels=['providers-app-studio'],
+)
+
+# --- providers-kuery (fleet query engine, port :8084) ---
+# Same shape as the embedded Tiltfile: serve immediately; engagement
+# needs ▶ kuery-register then ▶ kuery-init (mints the runtime kubeconfig
+# from the provider SA token + ensures the APIExportEndpointSlice).
+local_resource(
+    'kuery',
+    cmd='make build-kuery-provider',
+    serve_cmd='make run-provider-kuery',
+    deps=[
+        'providers/kuery/main.go',
+        'providers/kuery/assets.go',
+        'providers/kuery/core',
+        'providers/kuery/engagement',
+        'providers/kuery/queryapi',
+        'providers/kuery/mcpserver',
+        'providers/kuery/portal/src',
+        'providers/kuery/portal/package.json',
+        'providers/kuery/go.mod',
+        '.kcp/kuery-runtime.kubeconfig',
+    ],
+    resource_deps=['kedge-hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8084, path='/healthz'),
+    ),
+    labels=['providers-kuery'],
+)
+
+local_resource(
+    'kuery-register',
+    cmd=('{rewrite} && KUERY_KCP_KUBECONFIG={kc} ' +
+         'KUERY_KCP_SERVER={sv} KUERY_MANIFEST={mf} ' +
+         'make install-provider-kuery').format(
+             rewrite=KUERY_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=KUERY_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-kuery'],
+)
+
+local_resource(
+    'kuery-init',
+    cmd=('KUERY_KCP_KUBECONFIG={kc} KUERY_KCP_SERVER={sv} ' +
+         'make init-provider-kuery').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub', 'kuery-register'],
+    labels=['providers-kuery'],
+)
+
+local_resource(
+    'kuery-unregister',
+    cmd=('{rewrite} && KUERY_KCP_KUBECONFIG={kc} ' +
+         'KUERY_KCP_SERVER={sv} KUERY_MANIFEST={mf} ' +
+         'make uninstall-provider-kuery').format(
+             rewrite=KUERY_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=KUERY_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-kuery'],
 )
 
 # --- providers-kro ---
@@ -608,6 +622,11 @@ local_resource(
         'providers/infrastructure/kro',
         'providers/infrastructure/tenant',
         'providers/infrastructure/mcpserver',
+        # The Template controller + kro backend author the RGDs the catalog
+        # reads; without watching these, a change to RGD authoring (e.g. the
+        # catalog labels) silently won't hot-reload.
+        'providers/infrastructure/backend',
+        'providers/infrastructure/controller',
         'providers/infrastructure/portal/src',
         'providers/infrastructure/portal/package.json',
         'providers/infrastructure/go.mod',
@@ -679,6 +698,83 @@ local_resource(
     labels=['providers-kro'],
 )
 
+# --- providers-code (git repository management) ---
+# Host binary on :8083, same shape as quickstart/infrastructure. register/init/
+# unregister override KROMC_KCP_KUBECONFIG / KROMC_KCP_SERVER to the in-cluster
+# kcp front-proxy (the embedded-kcp defaults are localhost). init-provider-code
+# derives the runtime kubeconfig from that admin kubeconfig, so it reuses the
+# front-proxy credential in cluster mode without a separate token.
+local_resource(
+    'code',
+    cmd='make build-code-provider',
+    serve_cmd='make run-provider-code',
+    deps=[
+        'providers/code/main.go',
+        'providers/code/heartbeat.go',
+        'providers/code/assets.go',
+        'providers/code/controller_manager.go',
+        'providers/code/init_cmd.go',
+        'providers/code/server',
+        'providers/code/tenant',
+        'providers/code/mcpserver',
+        'providers/code/controller',
+        'providers/code/backend',
+        'providers/code/install',
+        'providers/code/scheme',
+        'providers/code/portal/src',
+        'providers/code/portal/package.json',
+        'providers/code/go.mod',
+        'providers/code/go.sum',
+        '.kcp/code-runtime.kubeconfig',
+    ],
+    resource_deps=['kedge-hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8083, path='/healthz'),
+    ),
+    labels=['providers-code'],
+)
+
+local_resource(
+    'code-register',
+    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'CODE_MANIFEST={mf} make install-provider-code').format(
+             rewrite=CODE_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=CODE_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-code'],
+)
+
+# Writes the runtime kubeconfig (derived from the front-proxy admin kubeconfig)
+# and ensures the APIExportEndpointSlice. Order:
+#   code-register → creates root:kedge:providers:code
+#   code-init     → writes kubeconfig + endpoint slice
+#   code (serve)  → restarts when the kubeconfig dep appears
+local_resource(
+    'code-init',
+    cmd=('KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'make init-provider-code').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub', 'code-register'],
+    labels=['providers-code'],
+)
+
+local_resource(
+    'code-unregister',
+    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'CODE_MANIFEST={mf} make uninstall-provider-code').format(
+             rewrite=CODE_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=CODE_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-code'],
+)
+
 # ---------------------------------------------------------------------------
 # edges — kubernetes & server agents. All manual triggers (click ▶ in Tilt UI).
 #
@@ -699,7 +795,15 @@ local_resource(
 # ---------------------------------------------------------------------------
 local_resource(
     'edge-kube-create',
-    cmd='make dev-login-static && make dev-edge-create TYPE=kubernetes',
+    # 1. Drop any saved agent kubeconfig from a previous hub/kcp incarnation.
+    #    A stale ~/.kedge/agent-<edge>.kubeconfig points at an old workspace +
+    #    revoked SA token; the agent would load it, skip re-registration, and
+    #    fail every call with "workspace access not permitted" (User "").
+    # 2. DEV_EDGE_NAME is passed explicitly (not left to the Makefile's `?=`
+    #    default) because an inherited DEV_EDGE_NAME in the env defeats the
+    #    TYPE-based default — a server create would otherwise reuse the kube
+    #    name. Command-line vars win over both env and `?=`.
+    cmd='rm -f ~/.kedge/agent-dev-edge-kube-1.kubeconfig ~/.kedge/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['kedge-hub'],
@@ -717,7 +821,10 @@ local_resource(
 
 local_resource(
     'edge-server-create',
-    cmd='make dev-login-static && make dev-edge-create TYPE=server',
+    # Same stale-kubeconfig cleanup + explicit DEV_EDGE_NAME as edge-kube-create
+    # (see note there). The explicit name is what keeps a server create from
+    # reusing the kube edge name when DEV_EDGE_NAME leaks in from the env.
+    cmd='rm -f ~/.kedge/agent-dev-edge-server-1.kubeconfig ~/.kedge/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['kedge-hub'],

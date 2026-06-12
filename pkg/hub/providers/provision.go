@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"time"
 
-	authenticationv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -76,9 +76,18 @@ var (
 // kubeconfig minted from this SA's token.
 const ProviderSAName = "provider"
 
-// ProviderKubeconfigTokenLifetime is how long a minted SA token is valid.
-// Phase 1D mints fresh on each reconcile; rotation is a follow-up.
-const ProviderKubeconfigTokenLifetime = 24 * time.Hour
+// ProviderSANamespace is the namespace ProviderSAName lives in. The
+// Enable-time edge-proxy grant derives the SA's qualified identity from
+// this tuple, so it must stay in lockstep with EnsureProviderSA.
+const ProviderSANamespace = "default"
+
+// ProviderTokenSecretSuffix is appended to the SA name to form the
+// kubernetes.io/service-account-token Secret that holds the provider's
+// long-lived bearer. kcp's token controller populates it; the token does
+// not expire (valid until the Secret or its ServiceAccount is deleted), so
+// the provider pod — and any downstream consumer such as the kro cluster —
+// never needs a rotation loop.
+const ProviderTokenSecretSuffix = "-token"
 
 // EnsureProviderSA creates the "provider" ServiceAccount in the sub-workspace
 // and grants it cluster-admin within that workspace. Idempotent. Returns the
@@ -91,10 +100,10 @@ func (p *provisioner) EnsureProviderSA(ctx context.Context, providerName string)
 	sa := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
 		"kind":       "ServiceAccount",
-		"metadata":   map[string]any{"name": ProviderSAName, "namespace": "default"},
+		"metadata":   map[string]any{"name": ProviderSAName, "namespace": ProviderSANamespace},
 	}}
-	if _, err := cl.Resource(serviceAccountGVR).Namespace("default").Create(ctx, sa, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating ServiceAccount %s/%s: %w", "default", ProviderSAName, err)
+	if _, err := cl.Resource(serviceAccountGVR).Namespace(ProviderSANamespace).Create(ctx, sa, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating ServiceAccount %s/%s: %w", ProviderSANamespace, ProviderSAName, err)
 	}
 
 	// cluster-admin in the sub-workspace only. The provider pod reaches
@@ -124,11 +133,12 @@ func (p *provisioner) EnsureProviderSA(ctx context.Context, providerName string)
 	return nil
 }
 
-// MintProviderKubeconfig requests a fresh token for the provider SA and
-// returns a base64-encoded exec-credential-less kubeconfig the provider pod
-// can mount. Returns (kubeconfigYAML, expirySecondsBeforeRotation, error).
-// The server URL is hubExternalURL + /clusters/{sub-workspace-path} so the
-// provider's typed Kubernetes clients land in its own workspace by default.
+// MintProviderKubeconfig ensures a long-lived (legacy) token for the provider
+// SA and returns a base64-encoded exec-credential-less kubeconfig the provider
+// pod can mount. The token is read from a kubernetes.io/service-account-token
+// Secret populated by kcp's token controller, so it does not expire and needs
+// no rotation. The server URL is hubExternalURL + /clusters/{sub-workspace-path}
+// so the provider's typed Kubernetes clients land in its own workspace by default.
 func (p *provisioner) MintProviderKubeconfig(ctx context.Context, providerName, hubExternalURL string) ([]byte, error) {
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, providersParentWorkspace+":"+providerName)
@@ -137,12 +147,9 @@ func (p *provisioner) MintProviderKubeconfig(ctx context.Context, providerName, 
 		return nil, fmt.Errorf("typed kube client for %s: %w", providerName, err)
 	}
 
-	exp := int64(ProviderKubeconfigTokenLifetime.Seconds())
-	tr, err := typed.CoreV1().ServiceAccounts("default").CreateToken(ctx, ProviderSAName, &authenticationv1.TokenRequest{
-		Spec: authenticationv1.TokenRequestSpec{ExpirationSeconds: &exp},
-	}, metav1.CreateOptions{})
+	token, err := ensureLegacySAToken(ctx, typed, "default", ProviderSAName, ProviderSAName+ProviderTokenSecretSuffix)
 	if err != nil {
-		return nil, fmt.Errorf("minting SA token for %s: %w", providerName, err)
+		return nil, fmt.Errorf("ensuring SA token for %s: %w", providerName, err)
 	}
 
 	server := hubExternalURL
@@ -173,8 +180,46 @@ users:
 - name: kedge
   user:
     token: %s
-`, server, tr.Status.Token)
+`, server, token)
 	return []byte(kc), nil
+}
+
+// ensureLegacySAToken creates (idempotently) a kubernetes.io/service-account-token
+// Secret bound to saName and waits for kcp's token controller to populate its
+// `token` field, then returns that token. Unlike a TokenRequest bearer this
+// token does not expire — it stays valid until the Secret or its ServiceAccount
+// is deleted — so callers need no rotation loop. Re-invoking reuses the existing
+// Secret and returns the same token, keeping the value stable across reconciles.
+func ensureLegacySAToken(ctx context.Context, cs kubernetes.Interface, namespace, saName, secretName string) (string, error) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: namespace,
+			Annotations: map[string]string{
+				corev1.ServiceAccountNameKey: saName,
+			},
+		},
+		Type: corev1.SecretTypeServiceAccountToken,
+	}
+	if _, err := cs.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return "", fmt.Errorf("creating service-account-token Secret %s/%s: %w", namespace, secretName, err)
+	}
+
+	var token string
+	if err := wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		got, err := cs.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
+		if err != nil {
+			return false, nil
+		}
+		if t := got.Data[corev1.ServiceAccountTokenKey]; len(t) > 0 {
+			token = string(t)
+			return true, nil
+		}
+		return false, nil
+	}); err != nil {
+		return "", fmt.Errorf("waiting for token controller to populate Secret %s/%s: %w", namespace, secretName, err)
+	}
+	return token, nil
 }
 
 // EncodeKubeconfig is a tiny helper for status reporting — surface the
@@ -186,11 +231,14 @@ func EncodeKubeconfig(kc []byte) string {
 }
 
 // EnsureProviderWorkspace creates root:kedge:providers/{name} if it does not
-// exist and waits for it to reach phase Ready. Idempotent.
-func (p *provisioner) EnsureProviderWorkspace(ctx context.Context, name string) error {
+// exist and waits for it to reach phase Ready. Idempotent. Returns the
+// workspace's logical cluster ID (Workspace.spec.cluster) — the cluster name
+// kcp embeds in the provider SA's token claims, which the Enable-time
+// edges-proxy grant needs to build the qualified RBAC subject.
+func (p *provisioner) EnsureProviderWorkspace(ctx context.Context, name string) (string, error) {
 	parent, err := p.clientFor(providersParentWorkspace)
 	if err != nil {
-		return err
+		return "", err
 	}
 	ws := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "tenancy.kcp.io/v1alpha1",
@@ -201,18 +249,24 @@ func (p *provisioner) EnsureProviderWorkspace(ctx context.Context, name string) 
 		},
 	}}
 	if _, err := parent.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating sub-workspace %s: %w", name, err)
+		return "", fmt.Errorf("creating sub-workspace %s: %w", name, err)
 	}
 
-	// Wait for Ready so subsequent schema/export writes target a live workspace.
-	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 60*time.Second, true, func(ctx context.Context) (bool, error) {
+	// Wait for Ready so subsequent schema/export writes target a live
+	// workspace; spec.cluster is populated by then.
+	var cluster string
+	if err := wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 60*time.Second, true, func(ctx context.Context) (bool, error) {
 		got, err := parent.Resource(workspaceGVR).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, nil
 		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+		cluster, _, _ = unstructured.NestedString(got.Object, "spec", "cluster")
 		return phase == "Ready", nil
-	})
+	}); err != nil {
+		return "", err
+	}
+	return cluster, nil
 }
 
 // ApplySchemas parses each inline APIResourceSchema body and applies it to

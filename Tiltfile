@@ -19,6 +19,9 @@ local_resource(
         'providers/mcp/portal/src',
         'providers/kubernetesedges/portal/src',
         'providers/serveredges/portal/src',
+        'providers/projects/portal/src',
+        'providers/projects/portal/package.json',
+        'providers/code/portal/src',
     ],
     labels=['hub'],
 )
@@ -30,7 +33,7 @@ local_resource(
     'hub',
     cmd='''
 make certs && \
-mkdir -p providers/mcp/portal/dist providers/kubernetesedges/portal/dist providers/serveredges/portal/dist portal/dist && \
+mkdir -p providers/mcp/portal/dist providers/kubernetesedges/portal/dist providers/serveredges/portal/dist providers/code/portal/dist portal/dist && \
 go build -o bin/kedge-hub ./cmd/kedge-hub
 ''',
     serve_cmd='''./bin/kedge-hub \
@@ -48,7 +51,9 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
   --graphql-grpc-addr=localhost:50051 \
   --graphql-playground \
   --app-studio-in-memory-message-store \
-  --portal-dev-url=http://localhost:3000
+  --portal-dev-url=http://localhost:3000 \
+  --kubeconfig=.kedge-kro.kubeconfig \
+  --provider-internal-url=https://host.docker.internal:9443
 ''',
     deps=[
         'cmd/kedge-hub',
@@ -60,6 +65,11 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
         'providers/kubernetesedges',
         'providers/projects',
         'providers/serveredges',
+        # Restart the hub once the kedge-kro kubeconfig appears so the
+        # HostSecretWriter (which delivers kedge-provider-kubeconfig into
+        # that cluster) activates. The wiring is tolerant of the file being
+        # absent at first boot — see pkg/hub/server.go.
+        '.kedge-kro.kubeconfig',
     ],
     resource_deps=['portal'],
     labels=['hub'],
@@ -71,9 +81,11 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
 # port. Resources are split by provider for clarity in the Tilt UI:
 #
 #   providers-quickstart   — the reference example (port :8081)
-#   providers-app-studio   — the AI workspace provider (port :8083)
+#   providers-app-studio   — the AI workspace provider (port :8085)
 #   providers-kro          — infrastructure broker (port :8082) +
 #                            management kind cluster that kro runs in
+#   providers-code         — git repository manager (port :8083)
+#   providers-kuery        — fleet query engine (port :8084)
 #
 # Each provider has three resources:
 #   <name>            build + serve; auto-restarts on src change
@@ -131,6 +143,77 @@ local_resource(
     labels=['providers-quickstart'],
 )
 
+# --- providers-code (git repository management) ---
+# Long-lived provider: serves the portal + MCP on :8083 and, once a kubeconfig
+# is present, runs the multicluster controller manager. run-provider-code reads
+# CODE_KUBECONFIG from .kcp/code-runtime.kubeconfig (written by code-init), and
+# falls back to portal/MCP-only when it's absent — so this can start before the
+# workspace exists.
+local_resource(
+    'code',
+    cmd='make build-code-provider',
+    serve_cmd='make run-provider-code',
+    deps=[
+        'providers/code/main.go',
+        'providers/code/heartbeat.go',
+        'providers/code/assets.go',
+        'providers/code/controller_manager.go',
+        'providers/code/init_cmd.go',
+        'providers/code/server',
+        'providers/code/tenant',
+        'providers/code/mcpserver',
+        'providers/code/controller',
+        'providers/code/backend',
+        'providers/code/install',
+        'providers/code/scheme',
+        'providers/code/oauthgithub',
+        'providers/code/portal/src',
+        'providers/code/portal/package.json',
+        'providers/code/go.mod',
+        'providers/code/go.sum',
+        'providers/code/.env',
+        '.kcp/code-runtime.kubeconfig',
+    ],
+    resource_deps=['hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8083, path='/healthz'),
+    ),
+    labels=['providers-code'],
+)
+
+local_resource(
+    'code-register',
+    cmd='make install-provider-code',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-code'],
+)
+
+# Writes the dev kubeconfig (.kcp/code-runtime.kubeconfig) and ensures the
+# APIExportEndpointSlice the controller manager watches. Order:
+#   code-register  → creates root:kedge:providers:code
+#   code-init      → writes kubeconfig + endpoint slice
+#   code (serve)   → Tilt restarts it when the kubeconfig dep appears
+local_resource(
+    'code-init',
+    cmd='make init-provider-code',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub', 'code-register'],
+    labels=['providers-code'],
+)
+
+local_resource(
+    'code-unregister',
+    cmd='make uninstall-provider-code',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-code'],
+)
+
 # --- providers-app-studio ---
 local_resource(
     'app-studio',
@@ -151,7 +234,7 @@ local_resource(
     resource_deps=['hub'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=8083, path='/healthz'),
+        http_get=http_get_action(port=8085, path='/healthz'),
     ),
     labels=['providers-app-studio'],
 )
@@ -172,6 +255,67 @@ local_resource(
     auto_init=False,
     resource_deps=['hub'],
     labels=['providers-app-studio'],
+)
+
+# --- providers-kuery (fleet query engine) ---
+# Long-lived provider embedding the kuery engine. Serves the portal +
+# /api/query + MCP on :8084 immediately; the edge engagement controller
+# additionally needs the dev runtime kubeconfig, minted by ▶ kuery-init
+# AFTER ▶ kuery-register has been applied and reconciled. Tilt restarts
+# the serve process when the kubeconfig file appears (it's in deps).
+local_resource(
+    'kuery',
+    cmd='make build-kuery-provider',
+    serve_cmd='make run-provider-kuery',
+    deps=[
+        'providers/kuery/main.go',
+        'providers/kuery/assets.go',
+        'providers/kuery/core',
+        'providers/kuery/engagement',
+        'providers/kuery/queryapi',
+        'providers/kuery/mcpserver',
+        'providers/kuery/portal/src',
+        'providers/kuery/portal/package.json',
+        'providers/kuery/go.mod',
+        'providers/kuery/go.sum',
+        '.kcp/kuery-runtime.kubeconfig',
+    ],
+    resource_deps=['hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8084, path='/healthz'),
+    ),
+    labels=['providers-kuery'],
+)
+
+local_resource(
+    'kuery-register',
+    cmd='make install-provider-kuery',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-kuery'],
+)
+
+# Mints the dev runtime kubeconfig from the provider SA token (created by
+# the catalog controller on register) and ensures the
+# APIExportEndpointSlice the engagement controller discovers VW URLs from.
+local_resource(
+    'kuery-init',
+    cmd='make init-provider-kuery',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub', 'kuery-register'],
+    labels=['providers-kuery'],
+)
+
+local_resource(
+    'kuery-unregister',
+    cmd='make uninstall-provider-kuery',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-kuery'],
 )
 
 # --- providers-kro ---
@@ -268,6 +412,34 @@ local_resource(
     labels=['providers-kro'],
 )
 
+# --- EXPERIMENTAL: run the infrastructure provider as a POD (init-container
+#     bootstrap) instead of the host binary above. Exercises the full
+#     hub-minted flow end to end: the hub mints + delivers
+#     kedge-provider-kubeconfig (HostSecretWriter, enabled by the hub's
+#     --kubeconfig + --provider-internal-url flags above), the init container
+#     bootstraps the workspace with it, then serve runs — all inside the
+#     kedge-kro kind cluster.
+#
+#     Manual (click ▶). Order: kro-mgmt-up → infrastructure-register →
+#     infrastructure-pod. Stop the host-binary `infrastructure` resource
+#     first so two providers don't both serve as "infrastructure".
+local_resource(
+    'infrastructure-pod',
+    cmd='make helm-deploy-provider-infrastructure',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub', 'kro-mgmt-up', 'infrastructure-register'],
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'infrastructure-pod-down',
+    cmd='make helm-undeploy-provider-infrastructure',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['providers-kro'],
+)
+
 # ---------------------------------------------------------------------------
 # edges — kubernetes & server agents. All manual triggers (click ▶ in Tilt UI).
 #
@@ -280,7 +452,12 @@ local_resource(
 # ---------------------------------------------------------------------------
 local_resource(
     'edge-kube-create',
-    cmd='make dev-login-static && make dev-edge-create TYPE=kubernetes',
+    # Drop any saved agent kubeconfig from a previous hub/kcp incarnation
+    # before re-creating. A stale ~/.kedge/agent-<edge>.kubeconfig points at
+    # an old workspace + revoked SA token; the agent would load it, skip
+    # re-registration, and fail every call with "workspace access not
+    # permitted" (User ""). Clearing it forces a fresh join-token exchange.
+    cmd='rm -f ~/.kedge/agent-dev-edge-kube-1.kubeconfig ~/.kedge/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -298,7 +475,8 @@ local_resource(
 
 local_resource(
     'edge-server-create',
-    cmd='make dev-login-static && make dev-edge-create TYPE=server',
+    # Same stale-kubeconfig cleanup as edge-kube-create (see note there).
+    cmd='rm -f ~/.kedge/agent-dev-edge-server-1.kubeconfig ~/.kedge/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],

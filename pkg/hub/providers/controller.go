@@ -56,7 +56,10 @@ type CatalogReconciler struct {
 	prov           *provisioner
 	noKCP          bool // true when running without kcp — skip provisioning
 	hubExternalURL string
-	secrets        SecretWriter // nil → host-cluster Secret writes skipped
+	// providerInternalURL, when set, is baked into the minted provider
+	// kubeconfig instead of hubExternalURL (for in-cluster provider pods).
+	providerInternalURL string
+	secrets             SecretWriter // nil → host-cluster Secret writes skipped
 }
 
 // CatalogReconcilerOptions threads optional extras into the reconciler
@@ -67,6 +70,10 @@ type CatalogReconcilerOptions struct {
 	// the hub front-proxy at the same URL portals use. Empty falls back to
 	// the kcp host the reconciler itself uses (works for in-process dev).
 	HubExternalURL string
+	// ProviderInternalURL, when set, is the server URL baked into the minted
+	// provider kubeconfig instead of HubExternalURL — for provider pods that
+	// reach the hub front-proxy at a different address than browsers do.
+	ProviderInternalURL string
 	// HostSecretWriter, when non-nil, writes the minted kubeconfig as a
 	// host-cluster Secret in spec.serviceAccountNamespace. Left nil in dev
 	// (no host cluster available); set in production by server.go.
@@ -87,11 +94,12 @@ type SecretWriter interface {
 // run the controller in registry-only mode (no kcp side-effects).
 func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *rest.Config, opts CatalogReconcilerOptions) error {
 	r := &CatalogReconciler{
-		mgr:            mgr,
-		reg:            reg,
-		noKCP:          kcpConfig == nil,
-		hubExternalURL: opts.HubExternalURL,
-		secrets:        opts.HostSecretWriter,
+		mgr:                 mgr,
+		reg:                 reg,
+		noKCP:               kcpConfig == nil,
+		hubExternalURL:      opts.HubExternalURL,
+		providerInternalURL: opts.ProviderInternalURL,
+		secrets:             opts.HostSecretWriter,
 	}
 	if kcpConfig != nil {
 		r.prov = &provisioner{kcpConfig: kcpConfig}
@@ -134,6 +142,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		Category:    entry.Spec.Category,
 		Version:     entry.Spec.Version,
 	}
+	prov.EdgeProxyAccess = entry.Spec.EdgeProxyAccess
 	if entry.Spec.APIExport != nil {
 		prov.APIExportName = entry.Spec.APIExport.Name
 		prov.APIExportPath = providersParentWorkspace + ":" + entry.Name
@@ -251,11 +260,15 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 // provision runs the kcp-side side-effects: sub-workspace, schemas, and
 // APIExport. Mutates entry.Status to record the resolved kcp coordinates.
 func (r *CatalogReconciler) provision(ctx context.Context, entry *providersv1alpha1.CatalogEntry) error {
-	if err := r.prov.EnsureProviderWorkspace(ctx, entry.Name); err != nil {
+	workspaceCluster, err := r.prov.EnsureProviderWorkspace(ctx, entry.Name)
+	if err != nil {
 		return fmt.Errorf("ensuring sub-workspace: %w", err)
 	}
 	workspacePath := providersParentWorkspace + ":" + entry.Name
 	entry.Status.Workspace = workspacePath
+	// Record the logical cluster ID so the Enable endpoint can build the
+	// qualified RBAC subject for the edges-proxy grant.
+	r.reg.SetWorkspaceCluster(entry.Name, workspaceCluster)
 
 	schemaNames, err := r.prov.ApplySchemas(ctx, entry.Name, entry.Spec.APIExport.Schemas)
 	if err != nil {
@@ -275,7 +288,14 @@ func (r *CatalogReconciler) provision(ctx context.Context, entry *providersv1alp
 	if err := r.prov.EnsureProviderSA(ctx, entry.Name); err != nil {
 		return fmt.Errorf("ensuring provider ServiceAccount: %w", err)
 	}
-	kc, err := r.prov.MintProviderKubeconfig(ctx, entry.Name, r.hubExternalURL)
+	// Bake the provider-internal URL into the kubeconfig when set (so an
+	// in-cluster pod dials a pod-reachable address); otherwise the external
+	// URL, which is correct for in-process dev.
+	serverURL := r.providerInternalURL
+	if serverURL == "" {
+		serverURL = r.hubExternalURL
+	}
+	kc, err := r.prov.MintProviderKubeconfig(ctx, entry.Name, serverURL)
 	if err != nil {
 		return fmt.Errorf("minting provider kubeconfig: %w", err)
 	}

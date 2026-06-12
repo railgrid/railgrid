@@ -37,9 +37,22 @@ _artifacts/
 
 # Portal build artifacts (copied from portal/dist for embed)
 pkg/hub/portal/
+# node_modules are never committed anywhere. dist/ is ignored for the hub
+# portal and the THIRD-PARTY providers (their images build it in Docker);
+# first-party providers (mcp, kubernetesedges, serveredges) COMMIT dist/
+# because it embeds into the hub binary — keep them out of this list.
+# (A slash in a pattern anchors it to the repo root, hence the explicit
+# per-provider entries.)
+**/portal/node_modules/
 portal/dist/
 portal/node_modules/
 providers/*/portal/node_modules
+providers/app-studio/portal/dist/*
+!providers/app-studio/portal/dist/.gitkeep
+providers/quickstart/portal/dist/
+providers/infrastructure/portal/dist/
+providers/code/portal/dist/
+providers/kuery/portal/dist/
 
 # Data dirs
 data/
@@ -69,3 +82,5 @@ edge-kubeconfig
 .env.edge.server
 .env.edge.kubernetes
 values.yaml
+# …but Helm chart defaults MUST be committed or the chart can't render.
+!providers/*/deploy/chart/values.yaml

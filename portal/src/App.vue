@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useRouter } from 'vue-router'
 import { registerProviderRoutes } from '@/router/providers'
+import { SESSION_EXPIRED_EVENT } from '@/composables/useGraphQL'
+import ControlPlaneProvisioning from '@/components/ControlPlaneProvisioning.vue'
 
 const auth = useAuthStore()
 const providers = useProvidersStore()
@@ -15,19 +17,44 @@ const router = useRouter()
 // any deep link like /providers/foo can be resolved.
 registerProviderRoutes(router)
 
+// First-login takeover: while the hub is still provisioning the user's
+// personal org + first workspace, tenant.bootstrap() keeps bootstrapState
+// at 'provisioning' and we cover the whole app with the "creating control
+// plane" screen. Returning users (cached selection) flip straight to
+// 'ready' inside bootstrap(), so this never flashes for them.
+const showProvisioning = computed(
+  () => auth.isAuthenticated && tenant.bootstrapState === 'provisioning',
+)
+
+// A dead gateway session (401/403/404) is detected deep inside
+// useGraphQL, which can't import `@/router` without dragging the whole
+// SPA into provider bundles. It signals here instead; the shell owns
+// the logout + redirect. `replace`, not `push`, so Back doesn't return
+// to the page that just failed to authenticate.
+function onSessionExpired() {
+  auth.logout()
+  void router.replace({ name: 'login' })
+}
+
 onMounted(async () => {
+  window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
   await auth.detectAuthMode()
   if (auth.isAuthenticated) {
     providers.load()
+    tenant.bootstrap()
   }
 })
 
+onUnmounted(() => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired))
+
 // Authentication can arrive after onMounted (token login form). Watch and
-// fetch the provider list as soon as credentials are available.
+// kick off provider load + tenant bootstrap as soon as credentials land.
 watch(
   () => auth.isAuthenticated,
   (ok) => {
-    if (ok && !providers.loaded) providers.load()
+    if (!ok) return
+    if (!providers.loaded) providers.load()
+    tenant.bootstrap()
   },
 )
 
@@ -74,4 +101,5 @@ watch(
 
 <template>
   <router-view />
+  <ControlPlaneProvisioning v-if="showProvisioning" :attempts="tenant.bootstrapAttempts" />
 </template>

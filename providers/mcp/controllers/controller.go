@@ -25,6 +25,8 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -170,10 +172,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		readyCondition.Message = "No edges matching the selector are currently connected"
 	}
 
+	// Ensure the per-MCPServer ServiceAccount + long-lived (legacy) token
+	// Secret exist, and publish a reference to the Secret on status. The
+	// token value is never read here — kcp's token controller populates the
+	// Secret asynchronously, and only the portal backend dereferences it.
+	tokenRef, err := ensureMCPIdentity(ctx, c, &srv)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring MCP identity: %w", err)
+	}
+
 	patch := client.MergeFrom(srv.DeepCopy())
 	srv.Status.URL = endpoint
 	srv.Status.KubernetesEdges = kubeConnected
 	srv.Status.LinuxEdges = linuxConnected
+	srv.Status.TokenSecretRef = tokenRef
 
 	if existing := findCondition(srv.Status.Conditions, "Ready"); existing == nil ||
 		existing.Status != readyCondition.Status || existing.Reason != readyCondition.Reason {
@@ -191,6 +203,91 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		"kubeEdges", kubeConnected, "linuxEdges", linuxConnected)
 
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// mcpTokenNamespace is the workspace namespace the per-MCPServer
+// ServiceAccount + token Secret live in. "default" mirrors where the
+// infrastructure provider's runtime identity lands
+// (install.RuntimeServiceAccountNamespace).
+const mcpTokenNamespace = "default"
+
+// ensureMCPIdentity provisions, idempotently, the per-MCPServer
+// ServiceAccount, its long-lived (legacy) kubernetes.io/service-account-token
+// Secret, and a ClusterRoleBinding granting it access, and returns a
+// reference to the token Secret. The token itself is NOT read here: kcp's
+// token controller populates the Secret's "token" data key asynchronously,
+// and only the portal backend (which can read Secrets) dereferences it to
+// render the setup command — so the credential never lands in the MCPServer CR.
+//
+// All objects are owned by the MCPServer so they're garbage-collected when
+// it's deleted. Unlike a TokenRequest bearer, a legacy token Secret does not
+// expire, which is exactly what a long-lived MCP endpoint needs.
+func ensureMCPIdentity(ctx context.Context, c client.Client, srv *kedgev1alpha1.MCPServer) (*corev1.SecretReference, error) {
+	saName := srv.Name + "-mcp"
+	secretName := srv.Name + "-mcp-token"
+
+	// Owner ref so the SA + Secret are garbage-collected when the MCPServer
+	// is deleted. No BlockOwnerDeletion: that protects the owner (the reverse
+	// of what we want) and would require update on its finalizers subresource.
+	owner := metav1.OwnerReference{
+		APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
+		Kind:       "MCPServer",
+		Name:       srv.Name,
+		UID:        srv.UID,
+	}
+
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            saName,
+			Namespace:       mcpTokenNamespace,
+			OwnerReferences: []metav1.OwnerReference{owner},
+		},
+	}
+	if err := c.Create(ctx, sa); err != nil && !apierrors.IsAlreadyExists(err) {
+		return nil, fmt.Errorf("ensuring ServiceAccount %s/%s: %w", mcpTokenNamespace, saName, err)
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            secretName,
+			Namespace:       mcpTokenNamespace,
+			OwnerReferences: []metav1.OwnerReference{owner},
+			Annotations: map[string]string{
+				corev1.ServiceAccountNameKey: saName,
+			},
+		},
+		Type: corev1.SecretTypeServiceAccountToken,
+	}
+	if err := c.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
+		return nil, fmt.Errorf("ensuring token Secret %s/%s: %w", mcpTokenNamespace, secretName, err)
+	}
+
+	// TODO(scope-down): cluster-admin is a placeholder so the MCP endpoint
+	// works end-to-end. Replace with a narrowly-scoped (Cluster)Role granting
+	// only what the MCP needs (e.g. read mcpservers/<name>, list edges, and
+	// whatever the served toolsets require) so a leaked token can't act as
+	// admin on the tenant workspace.
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            saName,
+			OwnerReferences: []metav1.OwnerReference{owner},
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      saName,
+			Namespace: mcpTokenNamespace,
+		}},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "cluster-admin",
+		},
+	}
+	if err := c.Create(ctx, crb); err != nil && !apierrors.IsAlreadyExists(err) {
+		return nil, fmt.Errorf("ensuring ClusterRoleBinding %s: %w", crb.Name, err)
+	}
+
+	return &corev1.SecretReference{Namespace: mcpTokenNamespace, Name: secretName}, nil
 }
 
 // lookupClusterPath returns the human-readable workspace path for the

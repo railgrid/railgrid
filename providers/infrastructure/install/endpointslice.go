@@ -89,7 +89,13 @@ var apiExportEndpointSliceGVR = schema.GroupVersionResource{
 //     reads this to find URLs.
 //
 // Idempotent.
-func PlatformAPIExportEndpointSlice(ctx context.Context, config *rest.Config) error {
+// PlatformAPIExportEndpointSlice ensures the slice the kcp-apiexport kro
+// provider watches. workspacePath is the logical-cluster path the APIExport
+// lives in (root:kedge:providers:<name>) — REQUIRED so kcp can resolve the
+// export's cluster and publish endpoint URLs in status. Without it the slice
+// stays endpoint-less and kro never discovers a virtual-workspace URL to
+// watch, so tenant instances are never reconciled.
+func PlatformAPIExportEndpointSlice(ctx context.Context, config *rest.Config, workspacePath string) error {
 	log := klog.FromContext(ctx).WithName("install.apiexportendpointslice")
 	dyn, err := dynamic.NewForConfig(config)
 	if err != nil {
@@ -107,6 +113,7 @@ func PlatformAPIExportEndpointSlice(ctx context.Context, config *rest.Config) er
 		Spec: apisv1alpha1.APIExportEndpointSliceSpec{
 			APIExport: apisv1alpha1.ExportBindingReference{
 				Name: APIExportName,
+				Path: workspacePath,
 			},
 		},
 	}
@@ -123,14 +130,24 @@ func PlatformAPIExportEndpointSlice(ctx context.Context, config *rest.Config) er
 		if _, err = dyn.Resource(apiExportEndpointSliceGVR).Create(ctx, obj, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create APIExportEndpointSlice: %w", err)
 		}
-		log.Info("APIExportEndpointSlice created", "name", want.Name, "apiExport", APIExportName)
+		log.Info("APIExportEndpointSlice created", "name", want.Name, "apiExport", APIExportName, "path", workspacePath)
 		return nil
 	}
-	// spec.export is immutable per the upstream CRD validation — once
-	// created we leave the existing slice alone. (If the operator
-	// re-creates the APIExport under a new name, they need to delete
-	// this slice first.)
-	log.Info("APIExportEndpointSlice already exists", "name", existing.GetName())
+	// spec.export is immutable, so a pre-existing slice with the wrong/empty
+	// path can never publish endpoints — delete + recreate it so the corrected
+	// path takes effect. Idempotent once the path already matches.
+	existingPath, _, _ := unstructured.NestedString(existing.Object, "spec", "export", "path")
+	if existingPath == workspacePath {
+		log.Info("APIExportEndpointSlice already correct", "name", existing.GetName(), "path", existingPath)
+		return nil
+	}
+	log.Info("APIExportEndpointSlice has stale export path; recreating", "name", existing.GetName(), "from", existingPath, "to", workspacePath)
+	if err := dyn.Resource(apiExportEndpointSliceGVR).Delete(ctx, want.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete stale APIExportEndpointSlice: %w", err)
+	}
+	if _, err = dyn.Resource(apiExportEndpointSliceGVR).Create(ctx, obj, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("recreate APIExportEndpointSlice: %w", err)
+	}
 	return nil
 }
 

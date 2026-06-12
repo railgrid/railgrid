@@ -1,0 +1,32 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: code.kedge.faros.sh
+spec:
+  resources:
+  - group: code.kedge.faros.sh
+    name: collaborators
+    schema: v260609-fc69fa2.collaborators.code.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: code.kedge.faros.sh
+    name: connections
+    schema: v260609-fc69fa2.connections.code.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: code.kedge.faros.sh
+    name: deploykeys
+    schema: v260609-fc69fa2.deploykeys.code.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: code.kedge.faros.sh
+    name: packages
+    schema: v260610-5e5c7f8.packages.code.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: code.kedge.faros.sh
+    name: repositories
+    schema: v260609-fc69fa2.repositories.code.kedge.faros.sh
+    storage:
+      crd: {}
+status: {}

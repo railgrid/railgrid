@@ -111,6 +111,21 @@ function onConfirm() {
           </li>
         </ul>
 
+        <div
+          v-if="provider.edgeProxyAccess"
+          class="mt-3 rounded-lg border border-border-subtle bg-surface-overlay/30 px-3 py-2"
+        >
+          <div class="flex items-center gap-2">
+            <ShieldCheck class="h-3.5 w-3.5 text-success" :stroke-width="2" />
+            <span class="text-[11px] font-medium text-text-primary">Edge cluster access</span>
+          </div>
+          <p class="mt-0.5 text-[10px] text-text-muted">
+            This provider will get proxied read access to the edge clusters
+            connected to this workspace (background connections through the
+            hub's edges-proxy). Removed when you disable the provider.
+          </p>
+        </div>
+
         <div v-if="hasUntrustedAccepted" class="mt-3 rounded-md border border-warning/30 bg-warning-subtle px-3 py-2 text-[11px] text-warning">
           You've accepted at least one claim that isn't tenant-scoped. The
           provider's controllers will be able to read or write the indicated

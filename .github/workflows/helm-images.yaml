@@ -62,11 +62,14 @@ jobs:
             APP_VERSION="${CHART_VERSION}"
           fi
 
-          # Package and push each chart in deploy/charts/
-          for chart_dir in deploy/charts/*/; do
+          # Package and push each platform chart in deploy/charts/ plus every
+          # per-provider chart in providers/*/deploy/chart/. The provider chart
+          # dirs are all named "chart", so the chart name is read from the
+          # Chart.yaml name: field rather than the directory basename.
+          for chart_dir in deploy/charts/*/ providers/*/deploy/chart/; do
             if [ -f "${chart_dir}Chart.yaml" ]; then
-              chart_name=$(basename "$chart_dir")
-              echo "Processing chart: $chart_name"
+              chart_name=$(grep -E '^name:' "${chart_dir}Chart.yaml" | head -1 | awk '{print $2}')
+              echo "Processing chart: $chart_name ($chart_dir)"
 
               # Update chart version and appVersion in Chart.yaml
               sed -i "s/^version:.*/version: ${CHART_VERSION}/" "${chart_dir}Chart.yaml"

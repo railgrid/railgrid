@@ -56,6 +56,12 @@ func tenantHash(tenantPath string) string {
 // wrote.
 func LabelTenantValue(tenantPath string) string { return tenantHash(tenantPath) }
 
+// TenantNamespace is the public form of tenantNamespaceName: the
+// per-tenant namespace on the runtime cluster a tenant's workloads land
+// in. The Application instance controller writes the bridged OIDC Secret
+// here so it sits beside the oauth2-proxy pod the kro fork materializes.
+func TenantNamespace(tenantPath string) string { return tenantNamespaceName(tenantPath) }
+
 // EnsureTenantNamespace creates the per-tenant namespace in the central
 // kro cluster if absent. Idempotent. Returns the namespace name. Caches
 // the result so the warm path skips the kcp roundtrip. Annotations
