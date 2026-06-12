@@ -160,6 +160,14 @@ func main() {
 	// Tenant-scoped query API — the only path to the kuery store.
 	mux.Handle("/api/query", &queryapi.Handler{Engine: kc.Engine})
 
+	// Engaged-edge listing for the portal's edge selector. The interface
+	// indirection keeps the nil case (engagement disabled) serving [].
+	var edgeLister queryapi.EdgeLister
+	if engagementCtl != nil {
+		edgeLister = engagementCtl
+	}
+	mux.Handle("/api/edges", &queryapi.EdgesHandler{Lister: edgeLister})
+
 	// MCP tools (kuery_query, kuery_impact); the hub proxies
 	// /services/providers/kuery/mcp{,/sse} here and the aggregate picks
 	// them up like the infrastructure provider's kro_* family.

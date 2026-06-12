@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -141,6 +142,22 @@ func (c *Controller) EngagedCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.engaged)
+}
+
+// TenantEdges lists the edge names currently engaged for one tenant —
+// the portal's edge selector. Engaged keys are "{tenantCluster}/{edge}".
+func (c *Controller) TenantEdges(tenant string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var edges []string
+	prefix := tenant + "/"
+	for key := range c.engaged {
+		if strings.HasPrefix(key, prefix) {
+			edges = append(edges, strings.TrimPrefix(key, prefix))
+		}
+	}
+	sort.Strings(edges)
+	return edges
 }
 
 // Reconcile maps one Edge's state to an Engage/Disengage of the

@@ -43,17 +43,21 @@ What works today:
 - **MCP tools** (`mcpserver/`): `kuery_query` (fleet-wide spec
   passthrough) and `kuery_impact` (declared blast radius of one object) at
   `/mcp` + `/mcp/sse`.
+- **Portal UI** (`portal/`): fleet inventory table (edge/kind/namespace/
+  name filters, click-through) and the impact view — the declared blast
+  radius of one object, grouped by relation. Edge selector fed by
+  `GET /api/edges` (engaged edges for the caller's tenant).
 - **Registration surface** from Phase 1: heartbeats, CatalogEntry
   (SavedView schema, `edges` claim, `edgeProxyAccess`), Helm chart.
 
-What lands next (Phase 3, see the design doc): the portal UI — inventory
-table first, then the object graph and impact view — plus an e2e suite
-asserting edge-object sync end to end.
+What lands next (see the design doc): an e2e suite asserting edge-object
+sync end to end with a real connected agent, SavedView reconciliation,
+and — as a later enhancement — the cytoscape object graph.
 
 ## Layout
 
 ```
-main.go          serve loop: healthz, /api/query, /api/status, /mcp, portal, heartbeat
+main.go          serve loop: healthz, /api/query, /api/edges, /api/status, /mcp, portal, heartbeat
 core/            embedded kuery wiring (store, engine, sync, gc)
 engagement/      Edge watcher → Engage/Disengage via the edges-proxy
 queryapi/        tenant-scoped POST /api/query (the store's only entry point)

@@ -8,7 +8,10 @@
 
 package engagement
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // TestEdgeProxyURL keeps the inlined URL pattern in lockstep with the kedge
 // monorepo's pkg/apiurl.EdgeProxyURL — the cases mirror its tests.
@@ -40,5 +43,20 @@ func TestTenantLabelIsBareIdentifier(t *testing.T) {
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
 			t.Fatalf("TenantLabel %q contains %q — must stay a bare identifier", TenantLabel, string(c))
 		}
+	}
+}
+
+func TestTenantEdges(t *testing.T) {
+	c := &Controller{engaged: map[string]context.CancelFunc{
+		"tenant-a/edge-2": func() {},
+		"tenant-a/edge-1": func() {},
+		"tenant-b/edge-9": func() {},
+	}}
+	got := c.TenantEdges("tenant-a")
+	if len(got) != 2 || got[0] != "edge-1" || got[1] != "edge-2" {
+		t.Fatalf("TenantEdges = %v, want sorted [edge-1 edge-2]", got)
+	}
+	if got := c.TenantEdges("tenant-c"); len(got) != 0 {
+		t.Fatalf("foreign tenant sees %v", got)
 	}
 }

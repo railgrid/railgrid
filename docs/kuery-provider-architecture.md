@@ -260,9 +260,12 @@ Full-object sync of every edge through the tunnels is the cost center.
   in depth), and sync supports a whitelist ([kuery#5](https://github.com/faroshq/kuery/pull/5))
   which the chart now defaults to the workloads/config/RBAC/networking set.
   End-to-end suite with a real connected edge is a Phase 3 work item.
-- **Phase 3 — UI.** Portal micro-frontend: edge/object **inventory table with filters**
-  first (covers most human use), then the cytoscape object graph and impact view with
-  blast-radius highlighting.
+- **Phase 3 — UI.** **Implemented** (inventory + impact list): portal micro-frontend
+  with the edge/object inventory table (edge selector via the provider's new
+  `/api/edges`, kind/namespace/name filters) and the impact drill-down (declared blast
+  radius grouped by relation). The cytoscape graph remains a later enhancement — the
+  list view covers the daily-use cases; e2e with a real connected agent is the
+  remaining Phase 3 work item.
 - **Phase 4 — polish.** SavedView reconciliation, Postgres chart option,
   `split-kuery.yaml` workflow + `faroshq/provider-kuery` mirror with deploy key (see
   `docs/provider-publishing.md`).

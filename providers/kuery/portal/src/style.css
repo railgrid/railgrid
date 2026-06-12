@@ -109,3 +109,97 @@ kedge-provider-kuery .meta {
 kedge-provider-kuery .muted {
   color: var(--color-text-muted, inherit);
 }
+
+/* ── inventory toolbar ─────────────────────────────────────────────── */
+
+kedge-provider-kuery .toolbar {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 10px;
+  flex-wrap: wrap;
+}
+
+kedge-provider-kuery .toolbar input,
+kedge-provider-kuery .toolbar select {
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+  color: var(--color-text-primary, inherit);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.15));
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 11px;
+  min-width: 120px;
+}
+
+kedge-provider-kuery button {
+  background: var(--color-accent-subtle, rgba(109, 79, 224, 0.12));
+  color: var(--color-accent, #6d4fe0);
+  border: 1px solid var(--color-accent, #6d4fe0);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+kedge-provider-kuery button:hover {
+  filter: brightness(1.1);
+}
+
+/* ── inventory table ───────────────────────────────────────────────── */
+
+kedge-provider-kuery table.objects {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+kedge-provider-kuery table.objects th {
+  text-align: left;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted, inherit);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.15));
+}
+
+kedge-provider-kuery table.objects td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.08));
+}
+
+kedge-provider-kuery tr.row {
+  cursor: pointer;
+}
+
+kedge-provider-kuery tr.row:hover td {
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+}
+
+kedge-provider-kuery .name {
+  font-weight: 600;
+  color: var(--color-text-primary, inherit);
+}
+
+kedge-provider-kuery .error {
+  color: var(--color-danger, #d33);
+  font-size: 11px;
+}
+
+/* ── impact view ───────────────────────────────────────────────────── */
+
+kedge-provider-kuery .rel-title {
+  font-size: 12px;
+  margin: 14px 0 4px;
+  color: var(--color-text-primary, inherit);
+}
+
+kedge-provider-kuery .rel-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+kedge-provider-kuery .rel-list li {
+  padding: 2px 0;
+}
