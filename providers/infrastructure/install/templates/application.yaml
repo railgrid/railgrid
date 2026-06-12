@@ -93,14 +93,14 @@ spec:
           mode:
             type: string
             enum: ["platform", "byo"]
-            default: "platform"
-            description: "platform = guard with kedge SSO (a Dex client is minted for you). byo = your own IdP; set issuerURL + clientID and put the client secret in your cloud-credentials Secret under key oidc_client_secret."
+            default: "byo"
+            description: "byo (default, supported) = your own IdP; set issuerURL + clientID and put the client secret in your cloud-credentials Secret under key oidc_client_secret. platform = guard with kedge SSO — NOT yet supported (requires the hub Dex gRPC client-management API; tracked separately)."
           issuerURL:
             type: string
-            description: "BYO mode: your IdP's OIDC issuer URL. Platform mode: populated by the controller."
+            description: "BYO mode: your IdP's OIDC issuer URL (required)."
           clientID:
             type: string
-            description: "BYO mode: your OAuth2 client ID. Platform mode: populated by the controller."
+            description: "BYO mode: your OAuth2 client ID (required)."
           emailDomains:
             type: array
             items:

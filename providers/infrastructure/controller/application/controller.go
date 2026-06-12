@@ -31,6 +31,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -228,9 +229,16 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			return ctrl.Result{}, err
 		}
 	case modePlatform:
-		// Platform SSO (Dex client minting) is wired in a follow-up. Until
-		// then the oauth2-proxy pod stays pending on the missing secret.
-		log.Info("oidc.mode=platform: Dex client minting not yet wired; skipping secret bridge")
+		// Platform SSO needs the hub Dex gRPC client-management API, which
+		// isn't provisioned yet. Surface that clearly on the instance rather
+		// than silently leaving the oauth2-proxy pod stuck on a missing
+		// secret. Tracked as a separate Dex-infra epic; use oidc.mode=byo.
+		log.Info("oidc.mode=platform is not yet supported; set oidc.mode=byo")
+		if err := c.setOIDCCondition(ctx, tenantClient, app, "False", "PlatformSSOUnsupported",
+			"oidc.mode=platform is not yet supported (needs the hub Dex gRPC API); use oidc.mode=byo"); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil // terminal: nothing to retry until BYO is chosen
 	default:
 		return ctrl.Result{}, fmt.Errorf("unknown oidc.mode %q", mode)
 	}
@@ -378,4 +386,47 @@ func (c *Controller) deleteBridgedSecret(ctx context.Context, tenant, name strin
 func nestedString(u *unstructured.Unstructured, fields ...string) string {
 	s, _, _ := unstructured.NestedString(u.Object, fields...)
 	return s
+}
+
+// oidcConditionType is the condition the controller owns on an Application to
+// report OIDC-gate readiness. Distinct from kro's own conditions (kro owns
+// Ready/ResourcesReady), so the two writers don't clash.
+const oidcConditionType = "OIDCConfigured"
+
+// setOIDCCondition upserts the OIDCConfigured condition on the instance's
+// status (by type), leaving any kro-written conditions intact. Idempotent: a
+// no-op when the condition already matches, so it doesn't churn the object.
+func (c *Controller) setOIDCCondition(ctx context.Context, tenantClient client.Client, app *unstructured.Unstructured, status, reason, message string) error {
+	conds, _, _ := unstructured.NestedSlice(app.Object, "status", "conditions")
+
+	for _, raw := range conds {
+		if m, ok := raw.(map[string]any); ok && m["type"] == oidcConditionType {
+			if m["status"] == status && m["reason"] == reason && m["message"] == message {
+				return nil // already current
+			}
+		}
+	}
+
+	next := make([]any, 0, len(conds)+1)
+	for _, raw := range conds {
+		if m, ok := raw.(map[string]any); ok && m["type"] == oidcConditionType {
+			continue // drop the stale one; re-added below
+		}
+		next = append(next, raw)
+	}
+	next = append(next, map[string]any{
+		"type":               oidcConditionType,
+		"status":             status,
+		"reason":             reason,
+		"message":            message,
+		"lastTransitionTime": metav1.Now().UTC().Format(time.RFC3339),
+		"observedGeneration": app.GetGeneration(),
+	})
+	if err := unstructured.SetNestedSlice(app.Object, next, "status", "conditions"); err != nil {
+		return fmt.Errorf("set status.conditions: %w", err)
+	}
+	if err := tenantClient.Status().Update(ctx, app); err != nil {
+		return fmt.Errorf("updating OIDC condition: %w", err)
+	}
+	return nil
 }

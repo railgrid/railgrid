@@ -84,9 +84,9 @@ provider binary
   ├─ Template controller        ← establishes the application CRD + APIExport schema entry
   ├─ kro backend                ← authors the RGD on the runtime cluster from backendConfig,
   │                               after a token-substitution pass (§5)
-  ├─ create-path handler        ← injects spec.expose.fqdn + spec.credentialsSecretName;
-  │                               (Platform SSO) mints a Dex client and bridges its secret
-  └─ Dex gRPC helper            ← CreateClient on provision / DeleteClient on teardown
+  └─ application controller     ← cross-tenant (APIExport VW); stamps spec.expose.fqdn +
+                                  spec.credentialsSecretName, bridges the BYO OIDC client
+                                  secret onto the runtime cluster (Platform SSO / Dex: §7.2)
 
 
 runtime cluster (shared kro cluster)            per-tenant namespace kedge-tenants-<hash>
@@ -149,11 +149,11 @@ spec:
     hostnamePrefix: my-app       # optional DNS label; defaults to .name
     fqdn: ""                     # SERVER-INJECTED — do not set
   oidc:
-    mode: platform               # platform (default) | byo
+    mode: byo                    # byo (default, supported) | platform (deferred — §7.2)
     emailDomains: ["*"]
     scopes: "openid email profile"
-    issuerURL: ""                # BYO: required;  platform: server-injected
-    clientID: ""                 # BYO: required;  platform: server-injected
+    issuerURL: ""                # BYO: required (platform mode is deferred — §7.2)
+    clientID: ""                 # BYO: required (platform mode is deferred — §7.2)
   credentialsSecretName: ""      # SERVER-INJECTED — name of the bridged Secret
 status:
   url: https://my-app-9f2db7ed8014.apps.example.com
@@ -248,24 +248,28 @@ issuer is **Dex**, deployed alongside (`hack/dex/`, `hack/dev/dex/dex-config-dev
 exposes full OIDC endpoints and a **gRPC client-management API**. So "platform SSO" points
 oauth2-proxy at **Dex**, not at the hub.
 
-### 7.1 Mode A — Platform SSO (default)
-The app is guarded by the same identity that guards kedge. At provision time the create-path
-handler calls Dex gRPC `CreateClient` with redirect URI `https://<fqdn>/oauth2/callback`,
-receives a `client_id` + secret, injects `spec.oidc.issuerURL`/`clientID`, and bridges the
-secret in under the `oidc_client_secret` key. On instance delete it calls Dex `DeleteClient`
-(finalizer + orphan sweeper for the failure window). The tenant supplies nothing.
+### 7.1 Mode B — BYO external IdP (default; supported)
+The supported v1 mode. The tenant registers their own OAuth2 client (Google/Entra/Okta) with
+redirect `https://<fqdn>/oauth2/callback`, supplies `oidc.issuerURL` + `oidc.clientID` in the
+CR, and puts the client secret under key `oidc_client_secret` in their workspace
+`cloud-credentials` Secret. The **Application instance controller** reads that Secret through
+the APIExport VW and writes the bridged `cloud-credentials-<name>` Secret into the runtime
+per-tenant namespace; oauth2-proxy reads it via `secretKeyRef`. No new permission claim is
+needed — the `secrets` `tenantScoped` claim in `manifest.yaml` already covers it.
 
-A per-app Dex client is required because **Dex matches redirect URIs exactly — no wildcards**
-— so one shared client can't serve many apps.
+### 7.2 Mode A — Platform SSO (deferred; NOT yet supported)
+The intended "guard with kedge's own identity" mode. Because the hub is a relying party (not
+an issuer), oauth2-proxy would target the platform **Dex**, and the controller would mint a
+per-app Dex OAuth2 client (Dex matches redirect URIs exactly — no wildcards — so one shared
+client can't serve many apps), inject `spec.oidc.issuerURL`/`clientID`, bridge the secret, and
+`DeleteClient` on teardown.
 
-### 7.2 Mode B — BYO external IdP
-The tenant registers their own OAuth2 client (Google/Entra/Okta) with redirect
-`https://<fqdn>/oauth2/callback`, supplies `oidc.issuerURL` + `oidc.clientID` in the CR, and
-puts the client secret under key `oidc_client_secret` in their workspace `cloud-credentials`
-Secret. The existing bridge (`kro/instance.go` `CreateInstance`) copies that into
-`cloud-credentials-<instance>` on the runtime cluster; oauth2-proxy reads it via
-`secretKeyRef`. No new permission claim is needed — the `secrets` `tenantScoped` claim in
-`manifest.yaml` already covers it.
+**This is not implemented.** It requires hub-wide infrastructure that doesn't exist today: the
+kedge Dex deployment has **no gRPC client-management API enabled** and uses **ephemeral
+storage** (so minted clients wouldn't survive a restart). Wiring Dex (gRPC + persistent storage
++ a Service + TLS, plus a security review of the client-admin API) is tracked as a separate
+epic. Until then `oidc.mode=platform` is rejected by the controller with an `OIDCConfigured`
+condition pointing the tenant at BYO.
 
 ### 7.3 Secret handling (no clear text through kcp)
 Both modes converge on the same bridged Secret key, so the RGD is identical; only *who writes
@@ -273,7 +277,7 @@ the value* differs. The oauth2-proxy **cookie secret** is generated in-graph by 
 (the `redis-cache` pwgen pattern) — kro only ever sees a reference, never the value.
 
 The bridged Secret is named from the instance CR's `metadata.name`, which can differ from
-`spec.name`; the create-path handler therefore injects `spec.credentialsSecretName` so the RGD
+`spec.name`; the application controller therefore injects `spec.credentialsSecretName` so the RGD
 references the right name unambiguously.
 
 ## 8. Exposure layer prerequisites (runtime cluster, admin-installed once)
@@ -293,17 +297,20 @@ ingress class for a different controller.
 
 ## 9. PR breakdown
 
+**Status:** the BYO slice landed in one PR (#270 + a config/docs follow-up): the `apps` host
+helper, the `${kedge.ingressClass}` substitution in `backend/kro`, the `application` template,
+and the cross-tenant **application controller** (fqdn stamp + BYO secret bridge), plus chart/env
+plumbing. Remaining items below are follow-ups; AP-5 (Platform SSO) is **deferred** behind the
+Dex-infra work in §7.2.
+
 | PR | Title | Acceptance criteria |
 |---|---|---|
-| **AP-1** | Exposure layer (Cloudflare Tunnel) | cloudflared + cloudflare-tunnel ingress controller on the runtime cluster against a Cloudflare zone; a test Ingress (cloudflare class) auto-creates the DNS record + tunnel route and serves `https://x.apps.<base>` with edge TLS; `providers/infrastructure/docs/runtime-ingress.md` covers setup + how to swap the class. (Ops/doc, not kedge code.) |
-| **AP-2** | Config + host computation + spec injection | `KEDGE_APP_BASE_DOMAIN`/`KEDGE_INGRESS_CLASS` plumbed; create-path injects `spec.expose.fqdn` + `spec.credentialsSecretName`; host formula + DNS-label prefix validation; token-substitution pass in `backend/kro`. Unit tests for the formula + substitution. |
-| **AP-3** | `Application` Template seed | `install/templates/application.yaml` added; applying it establishes `applications.infrastructure.kedge.faros.sh`, lists it in `APIExport.spec.schemas`, and kro accepts the RGD; `kubectl get templates` shows it. |
-| **AP-4** | E2E — BYO mode | `docs/credentials.md` gains an `oidc_client_secret` row; a tenant with `cloud-credentials` (incl. `oidc_client_secret`) applies an `Application` with `oidc.mode=byo`; all tiers Ready; `status.url`/`redirectURL` set; the URL 302s to the tenant's IdP; post-login lands on the frontend; frontend→backend→Postgres works; delete GCs everything. |
-| **AP-5** | Platform SSO mode (Dex client minting) | provider `dex/` gRPC helper; `KEDGE_OIDC_ISSUER_URL` + `KEDGE_DEX_GRPC_ADDR` plumbed; create-path mints a Dex client + injects issuer/clientID/secret; teardown deletes it; orphan sweeper for the failure window; an `oidc.mode=platform` app is reachable only after kedge/Dex login. |
-| **AP-6** | Portal/MCP surfacing (light) | instance detail renders `url` + `redirectURL` (copyable) + per-tier readiness; redirect URL shown at create time (BYO); a mode selector in the provision form. |
-
-Core: AP-1/2/3 (~1.5 weeks). AP-4 BYO e2e + docs. AP-5 platform SSO. AP-6 polish. AP-5 can
-land independently of AP-4; if Dex gRPC wiring slips, BYO mode ships first.
+| **AP-1** | Exposure layer (Cloudflare Tunnel) — *ops, follow-up* | cloudflared + cloudflare-tunnel ingress controller on the runtime cluster against a Cloudflare zone; a test Ingress (cloudflare class) auto-creates the DNS record + tunnel route and serves `https://x.apps.<base>` with edge TLS; a `runtime-ingress.md` covers setup + how to swap the class. (Ops/doc, not kedge code.) |
+| **AP-2** | Config + host computation + controller stamping — *landed* | `KEDGE_APP_BASE_DOMAIN`/`KEDGE_INGRESS_CLASS` plumbed; the controller injects `spec.expose.fqdn` + `spec.credentialsSecretName`; host formula + DNS-label prefix validation; token-substitution pass in `backend/kro`. Unit tests for the formula + substitution. |
+| **AP-3** | `Application` Template seed — *landed* | `install/templates/application.yaml` added; applying it establishes `applications.infrastructure.kedge.faros.sh`, lists it in `APIExport.spec.schemas`, and kro accepts the RGD; `kubectl get templates` shows it. |
+| **AP-4** | E2E — BYO mode — *follow-up* | `docs/credentials.md` gains an `oidc_client_secret` row; a tenant with `cloud-credentials` (incl. `oidc_client_secret`) applies an `Application` with `oidc.mode=byo`; all tiers Ready; `status.url`/`redirectURL` set; the URL 302s to the tenant's IdP; post-login lands on the frontend; frontend→backend→Postgres works; delete GCs everything. |
+| **AP-5** | Platform SSO mode (Dex client minting) — *deferred (needs Dex infra, §7.2)* | hub Dex gRPC + persistent storage + Service + TLS (separate epic); provider `dex/` gRPC helper; `KEDGE_OIDC_ISSUER_URL` + `KEDGE_DEX_GRPC_ADDR` plumbed; the controller mints a Dex client + injects issuer/clientID/secret; teardown deletes it; orphan sweeper for the failure window. |
+| **AP-6** | Portal/MCP surfacing (light) — *follow-up* | instance detail renders `url` + `redirectURL` (copyable) + per-tier readiness; redirect URL shown at create time (BYO). |
 
 ## 10. Risks and open questions
 
@@ -344,7 +351,8 @@ land independently of AP-4; if Dex gRPC wiring slips, BYO mode ships first.
 - **Target** = the existing shared kro runtime cluster, per-tenant namespace. No edge targeting.
 - **Exposure** = an abstracted plain `Ingress`; concrete impl = Cloudflare Tunnel; swappable
   via `ingressClassName` config.
-- **Auth** = per-app oauth2-proxy with two modes: Platform SSO (Dex, default) and BYO IdP.
+- **Auth** = per-app oauth2-proxy. v1 supports **BYO external IdP** (default). Platform SSO
+  (Dex-minted clients) is designed but deferred — it needs hub Dex gRPC + persistent storage.
 - **Template** = one opinionated `Application` kind, not composable blocks.
 - **Secrets** = OIDC client secret rides the existing tenant→data-plane bridge; cookie secret
   and DB password are generated in-graph. Nothing sensitive transits kcp.
