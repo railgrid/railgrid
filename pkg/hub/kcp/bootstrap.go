@@ -1435,6 +1435,148 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 	return out, nil
 }
 
+// DeleteProviderAPIBinding removes the named provider APIBinding from the
+// child workspace root:kedge:orgs:{orgUUID}:{wsUUID}. NotFound is a no-op so
+// the Disable action is idempotent. Counterpart to EnsureProviderAPIBinding.
+func (b *Bootstrapper) DeleteProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName string) error {
+	if orgUUID == "" || wsUUID == "" || bindingName == "" {
+		return fmt.Errorf("DeleteProviderAPIBinding: orgUUID, wsUUID, bindingName are required")
+	}
+	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
+	wsClient, err := dynamic.NewForConfig(wsConfig)
+	if err != nil {
+		return fmt.Errorf("creating child workspace client: %w", err)
+	}
+	if err := wsClient.Resource(apiBindingGVR).Delete(ctx, bindingName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("deleting APIBinding %q in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
+	}
+	return nil
+}
+
+var clusterRoleGVR = schema.GroupVersionResource{
+	Group:    "rbac.authorization.k8s.io",
+	Version:  "v1",
+	Resource: "clusterroles",
+}
+
+// edgeProxyGrantName is the name of both the ClusterRole and the
+// ClusterRoleBinding the Enable-time edges-proxy grant materializes in the
+// tenant workspace, parameterized by provider name so multiple providers'
+// grants coexist.
+func edgeProxyGrantName(providerName string) string {
+	return "kedge:provider:" + providerName + ":edges-proxy"
+}
+
+// EnsureProviderEdgeProxyGrant grants `subject` (the provider SA's
+// cluster-qualified identity — see pkg/util/identity) the "proxy" verb on
+// edges.kedge.faros.sh in the child workspace root:kedge:orgs:{orgUUID}:
+// {wsUUID}. The edges-proxy virtual workspace SAR-checks exactly this tuple
+// (pkg/virtual/builder/edges_proxy_builder.go), so the grant is what lets a
+// provider with CatalogEntry spec.edgeProxyAccess open background
+// connections to the tenant's edges. Idempotent; subjects are reconciled on
+// re-Enable so a provider workspace re-provision (new cluster ID → new
+// qualified subject) heals on the next Enable.
+func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) error {
+	if orgUUID == "" || wsUUID == "" || providerName == "" || subject == "" {
+		return fmt.Errorf("EnsureProviderEdgeProxyGrant: orgUUID, wsUUID, providerName, subject are required")
+	}
+	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
+	wsClient, err := dynamic.NewForConfig(wsConfig)
+	if err != nil {
+		return fmt.Errorf("creating child workspace client: %w", err)
+	}
+
+	name := edgeProxyGrantName(providerName)
+	role := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind":       "ClusterRole",
+		"metadata":   map[string]any{"name": name},
+		"rules": []any{
+			// Workspace access: kcp's workspaceContentAuthorizer requires
+			// the "access" verb on "/" before any resource RBAC is even
+			// consulted, and a foreign SA is not covered by the tenant
+			// workspace's system:authenticated grants (kedge's SAR also
+			// drops its groups). Same pairing kcp's own cross-workspace SA
+			// e2e uses (TestAPIResourceSchemaVirtualWorkspaceAuthorization).
+			map[string]any{
+				"nonResourceURLs": []any{"/"},
+				"verbs":           []any{"access"},
+			},
+			map[string]any{
+				"apiGroups": []any{"kedge.faros.sh"},
+				"resources": []any{"edges"},
+				"verbs":     []any{"proxy"},
+			},
+		},
+	}}
+	if _, err := wsClient.Resource(clusterRoleGVR).Create(ctx, role, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating ClusterRole %q: %w", name, err)
+	}
+
+	wantSubjects := []any{
+		map[string]any{
+			"apiGroup": "rbac.authorization.k8s.io",
+			"kind":     "User",
+			"name":     subject,
+		},
+	}
+	crb := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind":       "ClusterRoleBinding",
+		"metadata":   map[string]any{"name": name},
+		"roleRef": map[string]any{
+			"apiGroup": "rbac.authorization.k8s.io",
+			"kind":     "ClusterRole",
+			"name":     name,
+		},
+		"subjects": wantSubjects,
+	}}
+	_, err = wsClient.Resource(clusterRoleBindingGVR).Create(ctx, crb, metav1.CreateOptions{})
+	if err == nil {
+		return nil
+	}
+	if !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating ClusterRoleBinding %q: %w", name, err)
+	}
+	existing, getErr := wsClient.Resource(clusterRoleBindingGVR).Get(ctx, name, metav1.GetOptions{})
+	if getErr != nil {
+		return fmt.Errorf("getting ClusterRoleBinding %q: %w", name, getErr)
+	}
+	gotSubjects, _, _ := unstructured.NestedSlice(existing.Object, "subjects")
+	if reflect.DeepEqual(gotSubjects, wantSubjects) {
+		return nil
+	}
+	if err := unstructured.SetNestedSlice(existing.Object, wantSubjects, "subjects"); err != nil {
+		return fmt.Errorf("rewriting ClusterRoleBinding subjects: %w", err)
+	}
+	if _, err := wsClient.Resource(clusterRoleBindingGVR).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating ClusterRoleBinding %q: %w", name, err)
+	}
+	return nil
+}
+
+// RemoveProviderEdgeProxyGrant deletes the ClusterRole/ClusterRoleBinding
+// pair EnsureProviderEdgeProxyGrant created. NotFound is a no-op — Disable
+// must succeed for providers that never had the grant.
+func (b *Bootstrapper) RemoveProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName string) error {
+	if orgUUID == "" || wsUUID == "" || providerName == "" {
+		return fmt.Errorf("RemoveProviderEdgeProxyGrant: orgUUID, wsUUID, providerName are required")
+	}
+	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
+	wsClient, err := dynamic.NewForConfig(wsConfig)
+	if err != nil {
+		return fmt.Errorf("creating child workspace client: %w", err)
+	}
+	name := edgeProxyGrantName(providerName)
+	if err := wsClient.Resource(clusterRoleBindingGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("deleting ClusterRoleBinding %q: %w", name, err)
+	}
+	if err := wsClient.Resource(clusterRoleGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("deleting ClusterRole %q: %w", name, err)
+	}
+	return nil
+}
+
 func acceptedClaim(group, resource, identityHash string, verbs []string) apisv1alpha2.AcceptablePermissionClaim {
 	return apisv1alpha2.AcceptablePermissionClaim{
 		ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{

@@ -28,6 +28,8 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+	"github.com/faroshq/faros-kedge/pkg/util/identity"
 )
 
 // EnableProviderRequest is the body of POST .../providers/{name}/enable.
@@ -136,9 +138,61 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Providers that declared spec.edgeProxyAccess additionally get the
+	// "proxy"-on-edges grant in this workspace, bound to the provider SA's
+	// cluster-qualified identity (the Enable dialog surfaced the request —
+	// clicking Enable is the consent). WorkspaceCluster is resolved by the
+	// catalog controller during provisioning; a provider whose CatalogEntry
+	// hasn't finished provisioning can't meaningfully be enabled yet, so an
+	// empty value is an error rather than a silent skip.
+	if prov.EdgeProxyAccess {
+		if prov.WorkspaceCluster == "" {
+			writeStatus(w, http.StatusConflict, "Conflict", "provider "+providerName+" requests edge proxy access but its workspace is not provisioned yet — retry shortly")
+			return
+		}
+		subject := identity.QualifiedServiceAccount(prov.WorkspaceCluster, providers.ProviderSANamespace, providers.ProviderSAName)
+		if err := h.mgr.bootstrapper.EnsureProviderEdgeProxyGrant(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName, subject); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", "ensure edge-proxy grant: "+err.Error())
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(EnableProviderResponse{BindingName: providerName})
+}
+
+// disableProvider handles POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/disable.
+// Inverse of enableProvider: deletes the provider's APIBinding and, always,
+// the edge-proxy grant pair (also for providers that no longer declare
+// spec.edgeProxyAccess — a leftover grant from an older CatalogEntry version
+// must not survive a Disable). Idempotent: NotFound at every step is
+// success, so the portal can re-issue on retry.
+//
+// Lives server-side for the same proxy-avoidance reason as enableProvider,
+// plus a new one: the RBAC teardown must happen with kcp-admin credentials
+// the tenant doesn't hold.
+func (h *Handler) disableProvider(w http.ResponseWriter, r *http.Request) {
+	tc, ok := h.requireTenantContext(w, r, true /* workspace */, false /* admin not required */)
+	if !ok {
+		return
+	}
+	providerName := mux.Vars(r)["name"]
+	if providerName == "" {
+		writeError(w, newValidationError("provider name is required"))
+		return
+	}
+
+	if err := h.mgr.bootstrapper.DeleteProviderAPIBinding(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "delete APIBinding: "+err.Error())
+		return
+	}
+	if err := h.mgr.bootstrapper.RemoveProviderEdgeProxyGrant(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "remove edge-proxy grant: "+err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ListEnabledProvidersResponse is the body of GET .../providers/enabled.

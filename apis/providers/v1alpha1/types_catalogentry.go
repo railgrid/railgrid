@@ -115,6 +115,17 @@ type CatalogEntrySpec struct {
 	// the hub (Phase 1B will wire it up).
 	// +optional
 	APIExport *ProviderAPIExport `json:"apiExport,omitempty"`
+
+	// EdgeProxyAccess requests that, when a tenant enables this provider,
+	// the hub grants the provider's ServiceAccount the "proxy" verb on
+	// edges.kedge.faros.sh in the tenant's workspace. This lets the
+	// provider open background connections to the tenant's edge clusters
+	// through the hub's edges-proxy (e.g. the kuery provider's informer
+	// sync). The grant is materialized as a ClusterRole/ClusterRoleBinding
+	// in the tenant workspace on Enable and removed on Disable; like
+	// permission claims, it is surfaced in the portal's Enable dialog.
+	// +optional
+	EdgeProxyAccess bool `json:"edgeProxyAccess,omitempty"`
 }
 
 // ProviderUI declares a provider's micro-frontend target. Exactly one of

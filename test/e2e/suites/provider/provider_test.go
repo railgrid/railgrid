@@ -38,6 +38,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
+
+	"github.com/faroshq/faros-kedge/pkg/util/identity"
 )
 
 // providersWorkspaceClient returns a dynamic client targeting
@@ -629,16 +631,28 @@ func httpGetJSON(t *testing.T, url, token string) map[string]any {
 // returned kubeconfig.
 func loginStaticTokenAndGetCluster(t *testing.T) string {
 	t.Helper()
-	req, _ := http.NewRequest(http.MethodPost, hubURL+"/auth/token-login", nil)
-	req.Header.Set("Authorization", "Bearer "+staticToken)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("token-login: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		t.Fatalf("token-login: status %d body=%s", resp.StatusCode, string(b))
+	// The hub reports /readyz before the users APIBinding in
+	// root:kedge:users is fully usable, so the first logins after startup
+	// can 500 with "failed to create user" (the handler's user list hits
+	// "the server could not find the requested resource"). Retry until the
+	// binding settles rather than failing the suite on the race.
+	var (
+		b    []byte
+		code int
+	)
+	if !waitForCondition(t, 90*time.Second, func() (bool, string) {
+		req, _ := http.NewRequest(http.MethodPost, hubURL+"/auth/token-login", nil)
+		req.Header.Set("Authorization", "Bearer "+staticToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return false, "token-login: " + err.Error()
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ = io.ReadAll(resp.Body)
+		code = resp.StatusCode
+		return code == 200, fmt.Sprintf("token-login: status %d body=%s", code, string(b))
+	}) {
+		t.Fatalf("token-login never succeeded: last status %d body=%s", code, string(b))
 	}
 	var out struct {
 		Kubeconfig string `json:"kubeconfig"`
@@ -684,4 +698,156 @@ func waitForCondition(t *testing.T, timeout time.Duration, cond func() (bool, st
 	}
 	t.Logf("wait timeout after %s; last status: %s", timeout, lastMsg)
 	return false
+}
+
+// TestIEdgeProxyGrantAuthorizesProviderSA proves the Enable-time edges-proxy
+// grant end-to-end against REAL kcp — the parts the auth.go unit tests can
+// only mock:
+//
+//  1. The provider's minted SA token (root:kedge:providers:quickstart,
+//     default/provider) authenticates via TokenReview even though the
+//     edges-proxy request targets the TENANT workspace (kcp SA authn
+//     resolves the token in its home cluster).
+//  2. kcp RBAC in the tenant workspace matches the cross-workspace subject
+//     system:kcp:serviceaccount:{providerCluster}:default:provider that
+//     pkg/util/identity emits and the Enable grant binds.
+//  3. Removing the grant revokes access again.
+//
+// The test never needs a connected edge: a 403 means authorization failed,
+// while a 502 ("upstream unavailable") means authorization PASSED and only
+// the tunnel lookup failed — exactly the boundary under test.
+func TestIEdgeProxyGrantAuthorizesProviderSA(t *testing.T) {
+	tenantWS := loginStaticTokenAndGetCluster(t)
+
+	// Resolve the provider workspace's logical cluster ID — the value kcp
+	// embeds in the SA token claims and the grant subject must carry.
+	providersWS := providersWorkspaceClient(t)
+	workspaceGVR := schema.GroupVersionResource{Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces"}
+	ws, err := providersWS.Resource(workspaceGVR).Get(ctxWithTimeout(t, 10*time.Second), "quickstart", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get provider workspace: %v", err)
+	}
+	providerCluster, _, _ := unstructured.NestedString(ws.Object, "spec", "cluster")
+	if providerCluster == "" {
+		t.Fatal("provider workspace has no spec.cluster")
+	}
+
+	// Fetch the provider SA's minted long-lived token (the same credential
+	// the provider pod mounts via kedge-provider-kubeconfig).
+	sub := providerSubClient(t, "quickstart")
+	secretGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
+	var saToken string
+	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
+		sec, err := sub.Resource(secretGVR).Namespace("default").Get(ctxWithTimeout(t, 5*time.Second), "provider-token", metav1.GetOptions{})
+		if err != nil {
+			return false, "get provider-token Secret: " + err.Error()
+		}
+		tok, _, _ := unstructured.NestedString(sec.Object, "data", "token")
+		if tok == "" {
+			return false, "token not yet populated"
+		}
+		raw, err := base64.StdEncoding.DecodeString(tok)
+		if err != nil {
+			return false, "decode token: " + err.Error()
+		}
+		saToken = string(raw)
+		return true, ""
+	}) {
+		t.Fatal("provider SA token never appeared")
+	}
+
+	// The edge name is irrelevant: authorization runs BEFORE the tunnel
+	// lookup, and the grant has no resourceNames restriction.
+	proxyURL := hubURL + "/services/edges-proxy/clusters/" + tenantWS +
+		"/apis/kedge.faros.sh/v1alpha1/edges/e2e-no-such-edge/k8s/api"
+	probe := func() int {
+		req, _ := http.NewRequest(http.MethodGet, proxyURL, nil)
+		req.Header.Set("Authorization", "Bearer "+saToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("edges-proxy probe: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+
+	// 1. No grant → authorization must fail.
+	if code := probe(); code != http.StatusForbidden {
+		t.Fatalf("expected 403 before grant, got %d", code)
+	}
+
+	// 2. Materialize the grant in the tenant workspace exactly as the
+	// Enable endpoint does (same names, same qualified subject).
+	tenantAdmin := kcpDynamic(t, tenantWS, adminToken)
+	subject := identity.QualifiedServiceAccount(providerCluster, "default", "provider")
+	t.Logf("grant subject = %s", subject)
+
+	grantName := "kedge:provider:quickstart:edges-proxy"
+	clusterRoleGVR := schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
+	clusterRoleBindingGVR := schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
+
+	role := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind":       "ClusterRole",
+		"metadata":   map[string]any{"name": grantName},
+		"rules": []any{
+			// "access" on "/" satisfies kcp's workspaceContentAuthorizer for
+			// the foreign SA — same pairing as the Enable-endpoint grant and
+			// kcp's own cross-workspace SA e2e.
+			map[string]any{
+				"nonResourceURLs": []any{"/"},
+				"verbs":           []any{"access"},
+			},
+			map[string]any{
+				"apiGroups": []any{"kedge.faros.sh"},
+				"resources": []any{"edges"},
+				"verbs":     []any{"proxy"},
+			},
+		},
+	}}
+	if _, err := tenantAdmin.Resource(clusterRoleGVR).Create(ctxWithTimeout(t, 10*time.Second), role, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create ClusterRole: %v", err)
+	}
+	crb := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind":       "ClusterRoleBinding",
+		"metadata":   map[string]any{"name": grantName},
+		"roleRef": map[string]any{
+			"apiGroup": "rbac.authorization.k8s.io",
+			"kind":     "ClusterRole",
+			"name":     grantName,
+		},
+		"subjects": []any{map[string]any{
+			"apiGroup": "rbac.authorization.k8s.io",
+			"kind":     "User",
+			"name":     subject,
+		}},
+	}}
+	if _, err := tenantAdmin.Resource(clusterRoleBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), crb, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create ClusterRoleBinding: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = tenantAdmin.Resource(clusterRoleBindingGVR).Delete(context.Background(), grantName, metav1.DeleteOptions{})
+		_ = tenantAdmin.Resource(clusterRoleGVR).Delete(context.Background(), grantName, metav1.DeleteOptions{})
+	})
+
+	// 3. With the grant: authorization passes, tunnel lookup fails → 502.
+	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
+		code := probe()
+		return code == http.StatusBadGateway, fmt.Sprintf("status=%d (want 502)", code)
+	}) {
+		t.Fatal("edges-proxy never authorized the provider SA after grant")
+	}
+
+	// 4. Revoke → 403 again.
+	if err := tenantAdmin.Resource(clusterRoleBindingGVR).Delete(ctxWithTimeout(t, 5*time.Second), grantName, metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete ClusterRoleBinding: %v", err)
+	}
+	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
+		code := probe()
+		return code == http.StatusForbidden, fmt.Sprintf("status=%d (want 403)", code)
+	}) {
+		t.Fatal("edges-proxy still authorizes the provider SA after revocation")
+	}
 }

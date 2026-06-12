@@ -142,6 +142,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		Category:    entry.Spec.Category,
 		Version:     entry.Spec.Version,
 	}
+	prov.EdgeProxyAccess = entry.Spec.EdgeProxyAccess
 	if entry.Spec.APIExport != nil {
 		prov.APIExportName = entry.Spec.APIExport.Name
 		prov.APIExportPath = providersParentWorkspace + ":" + entry.Name
@@ -259,11 +260,15 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 // provision runs the kcp-side side-effects: sub-workspace, schemas, and
 // APIExport. Mutates entry.Status to record the resolved kcp coordinates.
 func (r *CatalogReconciler) provision(ctx context.Context, entry *providersv1alpha1.CatalogEntry) error {
-	if err := r.prov.EnsureProviderWorkspace(ctx, entry.Name); err != nil {
+	workspaceCluster, err := r.prov.EnsureProviderWorkspace(ctx, entry.Name)
+	if err != nil {
 		return fmt.Errorf("ensuring sub-workspace: %w", err)
 	}
 	workspacePath := providersParentWorkspace + ":" + entry.Name
 	entry.Status.Workspace = workspacePath
+	// Record the logical cluster ID so the Enable endpoint can build the
+	// qualified RBAC subject for the edges-proxy grant.
+	r.reg.SetWorkspaceCluster(entry.Name, workspaceCluster)
 
 	schemaNames, err := r.prov.ApplySchemas(ctx, entry.Name, entry.Spec.APIExport.Schemas)
 	if err != nil {

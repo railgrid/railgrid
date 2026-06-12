@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { STORAGE_KEYS } from '@/lib/constants'
-import { graphqlMutate } from '@/composables/useGraphQL'
 
 // ProviderDTO is the wire shape returned by the hub's GET /api/providers.
 // Keep it aligned with pkg/hub/providers/api.go:providerDTO.
@@ -13,6 +12,10 @@ export interface ProviderDTO {
   hasUI: boolean
   hasBackend: boolean
   iconURL?: string
+  // True when the provider requests background access to the workspace's
+  // edge clusters (verb "proxy" on edges) on Enable. Rendered in the
+  // Enable confirmation dialog alongside permission claims.
+  edgeProxyAccess?: boolean
   // When set, the portal renders this Vue Router route name in-tree
   // instead of loading /main.js. First-party providers (mcp, kubernetes-
   // edges, server-edges) use this to surface their existing SPA pages
@@ -306,16 +309,24 @@ export const useProvidersStore = defineStore('providers', () => {
   async function disable(p: ProviderDTO): Promise<void> {
     const bindingName = bindingNamesByProvider.value[p.name]
     if (!bindingName) return
-    // Disable = remove the tenant's APIBinding, via the GraphQL gateway (like
-    // every other kcp call). Idempotent: an already-gone binding is fine.
-    try {
-      await graphqlMutate(
-        'mutation($n: String!) { apis_kcp_io { v1alpha2 { deleteAPIBinding(name: $n) } } }',
-        { n: bindingName },
-      )
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      if (!/not\s*found/i.test(msg)) throw new Error(`disable ${p.name} failed: ${msg}`)
+    // Disable = server-side endpoint (mirror of enable). It deletes the
+    // APIBinding AND tears down the edge-proxy RBAC grant — the latter
+    // needs kcp-admin credentials the tenant doesn't hold, so a direct
+    // GraphQL deleteAPIBinding would leave the grant dangling.
+    const t = readTenantSelection()
+    if (!t.orgUUID || !t.workspaceUUID) {
+      throw new Error('select an organization and workspace before disabling a provider')
+    }
+    const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/disable`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: authHeaders(),
+      credentials: 'same-origin',
+    })
+    // Idempotent server-side; 404 means the route target is already gone.
+    if (!res.ok && res.status !== 404) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`disable ${p.name} failed: ${res.status} ${res.statusText} ${detail}`)
     }
     const next = { ...bindingNamesByProvider.value }
     delete next[p.name]

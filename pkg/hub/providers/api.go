@@ -61,6 +61,11 @@ type providerDTO struct {
 	// what the provider's controllers will be able to access in their
 	// workspace before they accept.
 	PermissionClaims []permissionClaimDTO `json:"permissionClaims,omitempty"`
+	// EdgeProxyAccess mirrors CatalogEntry.spec.edgeProxyAccess. Shown in
+	// the Enable confirmation dialog: enabling such a provider grants its
+	// ServiceAccount proxied access to the workspace's edge clusters (verb
+	// "proxy" on edges) for background connections.
+	EdgeProxyAccess bool `json:"edgeProxyAccess,omitempty"`
 	// Builtin is true for first-party providers (those that registered via
 	// providers.RegisterBuiltin) regardless of how they surface their UI
 	// (legacy BuiltinRoute or new LocalUIAssets custom element). The portal
@@ -153,6 +158,7 @@ func NewListHandler(reg *Registry) http.Handler {
 				APIExportPath:    p.APIExportPath,
 				APIExportName:    p.APIExportName,
 				PermissionClaims: claims,
+				EdgeProxyAccess:  p.EdgeProxyAccess,
 				Builtin:          isBuiltin,
 			})
 		}
