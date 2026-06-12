@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -609,16 +609,27 @@ KUERY_TOKEN ?= $(STATIC_AUTH_TOKEN)
 KUERY_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 KUERY_KCP_SERVER ?= https://localhost:6443
 KUERY_MANIFEST ?= providers/kuery/manifest.yaml
+KUERY_WORKSPACE_PATH ?= root:kedge:providers:kuery
+# Dev runtime kubeconfig for the engagement controller, written by
+# init-provider-kuery from the provider SA token the hub mints.
+KUERY_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/kuery-runtime.kubeconfig
 
-run-provider-kuery: build-kuery-provider ## Run the kuery provider (requires: make run-hub-embedded-static + make install-provider-kuery)
+run-provider-kuery: build-kuery-provider ## Run the kuery provider (requires: make run-hub-embedded-static + make install-provider-kuery; engagement needs init-provider-kuery)
 	@echo "Starting kuery provider on :$(KUERY_PORT)"
 	@echo "  hub:   $(KUERY_HUB_URL)"
 	@echo "  token: $(KUERY_TOKEN)"
+	@if [ -f $(KUERY_RUNTIME_KUBECONFIG) ]; then \
+		echo "  engagement: $(KUERY_RUNTIME_KUBECONFIG)"; \
+	else \
+		echo "  engagement: DISABLED (run 'make init-provider-kuery' after install-provider-kuery)"; \
+	fi
 	PORT=$(KUERY_PORT) \
 	KEDGE_HUB_URL=$(KUERY_HUB_URL) \
 	KEDGE_HUB_TOKEN=$(KUERY_TOKEN) \
 	KEDGE_HUB_INSECURE=true \
 	KEDGE_PROVIDER_NAME=kuery \
+	KEDGE_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
+	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
 		$(BINDIR)/kuery-provider
 
 install-provider-kuery: ## Apply kuery CatalogEntry into root:kedge:providers
@@ -631,6 +642,36 @@ install-provider-kuery: ## Apply kuery CatalogEntry into root:kedge:providers
 		--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(KUERY_MANIFEST)
+
+## Dev bootstrap for the engagement controller. The hub-provisioned flow
+## delivers the minted kubeconfig as a host-cluster Secret, which doesn't
+## exist in host-binary dev — so mint the same thing from the provider SA
+## token Secret the catalog controller created, and ensure the
+## APIExportEndpointSlice the engagement watcher discovers VW URLs from.
+## Order: install-provider-kuery (CatalogEntry reconciled) → this → the
+## kuery Tilt resource restarts on the kubeconfig file appearing.
+init-provider-kuery: ## Ensure kuery APIExportEndpointSlice + write dev runtime kubeconfig
+	@test -f $(KUERY_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(KUERY_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	@echo "Ensuring APIExportEndpointSlice in $(KUERY_WORKSPACE_PATH)"
+	@printf 'apiVersion: apis.kcp.io/v1alpha1\nkind: APIExportEndpointSlice\nmetadata:\n  name: kuery.providers.kedge.faros.sh\nspec:\n  export:\n    path: $(KUERY_WORKSPACE_PATH)\n    name: kuery.providers.kedge.faros.sh\n' | \
+		kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
+			--server=$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH) \
+			--insecure-skip-tls-verify apply -f -
+	@echo "Writing $(KUERY_RUNTIME_KUBECONFIG) (server $(KUERY_HUB_URL)/clusters/$(KUERY_WORKSPACE_PATH))"
+	@TOKEN=$$(kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
+		--server=$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH) \
+		--insecure-skip-tls-verify \
+		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
+	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the catalog controller to reconcile"; exit 1; }; \
+	mkdir -p $(KCP_DATA_DIR); \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+		"$(KUERY_HUB_URL)/clusters/$(KUERY_WORKSPACE_PATH)" "$$TOKEN" \
+		> $(KUERY_RUNTIME_KUBECONFIG)
+	@echo "wrote $(KUERY_RUNTIME_KUBECONFIG)"
 
 uninstall-provider-kuery: ## Delete kuery CatalogEntry
 	-kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \

@@ -79,6 +79,7 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
 #   providers-quickstart   — the reference example (port :8081)
 #   providers-kro          — infrastructure broker (port :8082) +
 #                            management kind cluster that kro runs in
+#   providers-kuery        — fleet query engine (port :8084)
 #
 # Each provider has three resources:
 #   <name>            build + serve; auto-restarts on src change
@@ -205,6 +206,67 @@ local_resource(
     auto_init=False,
     resource_deps=['hub'],
     labels=['providers-code'],
+)
+
+# --- providers-kuery (fleet query engine) ---
+# Long-lived provider embedding the kuery engine. Serves the portal +
+# /api/query + MCP on :8084 immediately; the edge engagement controller
+# additionally needs the dev runtime kubeconfig, minted by ▶ kuery-init
+# AFTER ▶ kuery-register has been applied and reconciled. Tilt restarts
+# the serve process when the kubeconfig file appears (it's in deps).
+local_resource(
+    'kuery',
+    cmd='make build-kuery-provider',
+    serve_cmd='make run-provider-kuery',
+    deps=[
+        'providers/kuery/main.go',
+        'providers/kuery/assets.go',
+        'providers/kuery/core',
+        'providers/kuery/engagement',
+        'providers/kuery/queryapi',
+        'providers/kuery/mcpserver',
+        'providers/kuery/portal/src',
+        'providers/kuery/portal/package.json',
+        'providers/kuery/go.mod',
+        'providers/kuery/go.sum',
+        '.kcp/kuery-runtime.kubeconfig',
+    ],
+    resource_deps=['hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8084, path='/healthz'),
+    ),
+    labels=['providers-kuery'],
+)
+
+local_resource(
+    'kuery-register',
+    cmd='make install-provider-kuery',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-kuery'],
+)
+
+# Mints the dev runtime kubeconfig from the provider SA token (created by
+# the catalog controller on register) and ensures the
+# APIExportEndpointSlice the engagement controller discovers VW URLs from.
+local_resource(
+    'kuery-init',
+    cmd='make init-provider-kuery',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub', 'kuery-register'],
+    labels=['providers-kuery'],
+)
+
+local_resource(
+    'kuery-unregister',
+    cmd='make uninstall-provider-kuery',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-kuery'],
 )
 
 # --- providers-kro ---

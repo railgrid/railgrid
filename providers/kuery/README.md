@@ -77,3 +77,17 @@ make build-kuery-provider        # portal build + go build
 make run-provider-kuery          # run against a local hub
 make install-provider-kuery      # apply manifest.yaml to embedded kcp
 ```
+
+## Tilt
+
+Both Tiltfiles (embedded-kcp `Tiltfile` and in-cluster `Tiltfile.cluster`)
+include a `providers-kuery` group:
+
+1. `kuery` — builds + serves on :8084 (auto-restarts on source change).
+2. ▶ `kuery-register` — applies the CatalogEntry; the hub provisions the
+   workspace, APIExport, SA, and token.
+3. ▶ `kuery-init` — mints `.kcp/kuery-runtime.kubeconfig` from the
+   provider SA token and ensures the APIExportEndpointSlice; Tilt then
+   restarts `kuery` with edge engagement enabled.
+4. Connect an edge and open the portal — the Kuery tab shows the fleet
+   inventory. (▶ `kuery-unregister` tears the CatalogEntry down.)
