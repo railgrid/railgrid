@@ -39,6 +39,7 @@ _artifacts/
 pkg/hub/portal/
 portal/dist/
 portal/node_modules/
+providers/*/portal/node_modules
 
 # Data dirs
 data/

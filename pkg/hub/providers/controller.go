@@ -182,7 +182,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// registered LocalUIAssets via BuiltinSpec, plumb the embedded FS into
 	// the registry record so the UI proxy serves /ui/providers/{name}/*
 	// from the hub binary instead of forwarding to an external URL.
-	if spec, ok := BuiltinByName(entry.Name); ok && spec.LocalUIAssets != nil {
+	if spec, ok := BuiltinByName(entry.Name); ok && spec.LocalUIAssets != nil && prov.UIURL == nil && prov.BuiltinRoute == "" {
 		prov.LocalUIAssets = spec.LocalUIAssets
 	}
 

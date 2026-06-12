@@ -1109,6 +1109,9 @@ func ensureBuiltinCatalogEntries(ctx context.Context, providersDynamic dynamic.I
 		if err != nil {
 			return fmt.Errorf("getting builtin CatalogEntry %s: %w", e.Name, err)
 		}
+		if existing.GetAnnotations()[builtinAnnotation] != "true" {
+			continue
+		}
 		desired.SetResourceVersion(existing.GetResourceVersion())
 		if _, err := providersDynamic.Resource(catalogEntryGVR).Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
 			return fmt.Errorf("updating builtin CatalogEntry %s: %w", e.Name, err)
@@ -1392,10 +1395,13 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 	if _, err := wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("creating APIBinding %q in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
 	}
+	if err := waitForAPIBindingBound(ctx, wsClient, bindingName); err != nil {
+		return fmt.Errorf("waiting for APIBinding %q to bind in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
+	}
 	return nil
 }
 
-// ListProviderAPIBindings returns the set of provider APIBindings
+// ListProviderAPIBindings returns the set of Bound provider APIBindings
 // present in the child workspace root:kedge:orgs:{orgUUID}:{wsUUID},
 // keyed by provider name. Used by the GET /api/orgs/{org}/workspaces/{ws}/
 // providers/enabled handler so the portal can render the
@@ -1405,8 +1411,8 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 // RBAC would have allowed the read.
 //
 // Filtering rule: a binding counts as a "provider binding" iff its
-// spec.reference.export.path starts with "root:kedge:providers:".
-// The trailing segment is the provider name; the binding's own
+// spec.reference.export.path starts with "root:kedge:providers:" and its
+// status.phase is Bound. The trailing segment is the provider name; the binding's own
 // metadata.name is the value (existing convention is binding.name ==
 // provider.name).
 func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]string, error) {
@@ -1427,6 +1433,10 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 		path, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "path")
 		const prefix = "root:kedge:providers:"
 		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
+		if phase != "Bound" {
 			continue
 		}
 		providerName := path[len(prefix):]
@@ -1475,6 +1485,9 @@ func waitForAPIBindingBound(ctx context.Context, client dynamic.Interface, name 
 	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 60*time.Second, true, func(ctx context.Context) (bool, error) {
 		obj, err := client.Resource(apiBindingGVR).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
+			if !errors.IsNotFound(err) {
+				return false, err
+			}
 			return false, nil
 		}
 		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")

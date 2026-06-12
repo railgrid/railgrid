@@ -64,6 +64,7 @@ import (
 	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
 	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
 	mcpservercontroller "github.com/faroshq/faros-kedge/providers/mcp/controllers"
+	projectstore "github.com/faroshq/faros-kedge/providers/projects/store"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
@@ -538,10 +539,65 @@ func (s *Server) Run(ctx context.Context) error {
 			backendProxy.SetTenantResolver(newKCPTenantResolver(kcpProxy, userClient))
 
 			// Step 10: Org / Workspace / Membership / User REST
+			var projectMessages projectstore.Store
+			if s.opts.AppStudioDatabaseURL != "" {
+				var storeErr error
+				projectMessages, storeErr = projectstore.OpenPostgres(ctx, s.opts.AppStudioDatabaseURL)
+				if storeErr != nil {
+					return fmt.Errorf("opening app studio message store: %w", storeErr)
+				}
+			} else if s.opts.AppStudioInMemoryMessageStore {
+				projectMessages = projectstore.NewMemoryStore()
+			}
+			if s.opts.AppStudioMessageEncryptionKeys != "" && projectMessages == nil {
+				return fmt.Errorf("app studio message encryption requires --app-studio-database-url or --app-studio-in-memory-message-store")
+			}
+			if projectMessages != nil && s.opts.AppStudioMessageEncryptionKeys != "" {
+				keys, err := projectstore.ParseEncryptionKeys(s.opts.AppStudioMessageEncryptionKeys)
+				if err != nil {
+					return fmt.Errorf("parsing app studio message encryption keys: %w", err)
+				}
+				projectMessages, err = projectstore.NewEncryptedStore(projectMessages, keys)
+				if err != nil {
+					return fmt.Errorf("configuring app studio message encryption: %w", err)
+				}
+			}
+			if closer, ok := projectMessages.(interface{ Close() error }); ok {
+				defer func() {
+					if err := closer.Close(); err != nil {
+						logger.Error(err, "closing App Studio message store")
+					}
+				}()
+			}
+			if s.opts.AppStudioMessageRetention > 0 {
+				if projectMessages == nil {
+					return fmt.Errorf("app studio message retention requires --app-studio-database-url or --app-studio-in-memory-message-store")
+				}
+				go func() {
+					ticker := time.NewTicker(max(time.Minute, s.opts.AppStudioMessageRetention/4))
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							cutoff := time.Now().Add(-s.opts.AppStudioMessageRetention)
+							if _, err := projectMessages.DeleteMessagesOlderThan(ctx, cutoff); err != nil {
+								logger.Error(err, "App Studio retention cleanup failed", "cutoff", cutoff)
+							}
+						}
+					}
+				}()
+			}
 			apiMgr := restapi.NewManager(userClient, bootstrapper)
 			// Provider registry powers POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
 			apiMgr.WithProviderRegistry(providerRegistry)
+			apiMgr.WithProjectMessageStore(projectMessages)
+			apiMgr.WithProjectMessageRetention(s.opts.AppStudioMessageRetention)
+			apiMgr.WithProjectClientFactory(func(_ context.Context, orgUUID, wsUUID string) (*kedgeclient.Client, error) {
+				return kedgeclient.NewForConfig(bootstrapper.ChildWorkspaceConfig(orgUUID, wsUUID))
+			})
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
 			// credential plugin entry (kedge get-token), static-token mode
 			// embeds the caller's bearer token. Either way the cluster URL
@@ -555,6 +611,7 @@ func (s *Server) Run(ctx context.Context) error {
 				kcCfg.OIDCClientID = s.opts.IDPClientID
 			}
 			apiMgr.WithKubeconfig(kcCfg)
+			apiMgr.WithProjectMCPInsecureSkipTLSVerify(s.opts.DevMode)
 			apiHandler := restapi.NewHandler(apiMgr)
 
 			// User-only routes (no Org context required)

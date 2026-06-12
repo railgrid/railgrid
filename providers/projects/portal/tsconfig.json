@@ -1,0 +1,10 @@
+{
+  "extends": "../../../portal/tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["../../../portal/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue", "../../../portal/env.d.ts"]
+}

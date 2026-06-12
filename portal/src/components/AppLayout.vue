@@ -17,6 +17,7 @@ const auth = useAuthStore()
 const terminalStore = useTerminalSessionsStore()
 const providersStore = useProvidersStore()
 const tenantStore = useTenantStore()
+const layoutProps = defineProps<{ fullBleed?: boolean }>()
 
 const route = useRoute()
 const router = useRouter()
@@ -50,6 +51,21 @@ const mainPaddingBottom = computed(() => {
   const h = terminalStore.panelState.isMinimized ? 40 : terminalStore.panelState.height
   return `${h + 16}px`
 })
+
+const mainClass = computed(() => [
+  'relative z-10 min-h-0 flex-1',
+  layoutProps.fullBleed ? 'overflow-hidden p-0' : 'overflow-y-auto px-8 py-5',
+])
+
+const mainStyle = computed(() => {
+  if (layoutProps.fullBleed || !mainPaddingBottom.value) return undefined
+  return { paddingBottom: mainPaddingBottom.value }
+})
+
+const slotClass = computed(() => [
+  'relative z-10',
+  layoutProps.fullBleed ? 'h-full min-h-0' : '',
+])
 
 const now = ref(new Date())
 let timer: ReturnType<typeof setInterval>
@@ -642,8 +658,8 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
     <!-- Main content -->
     <main
-      class="relative z-10 flex-1 overflow-y-auto px-8 py-5"
-      :style="mainPaddingBottom ? { paddingBottom: mainPaddingBottom } : undefined"
+      :class="mainClass"
+      :style="mainStyle"
     >
       <div class="dot-grid pointer-events-none absolute inset-0 opacity-40" />
       <!--
@@ -667,7 +683,7 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         which sets auth.clusterName, which re-keys this wrapper and
         restores the original page.
       -->
-      <div :key="auth.clusterName ?? 'unauth'" class="relative z-10">
+      <div :key="auth.clusterName ?? 'unauth'" :class="slotClass">
         <FirstWorkspaceWizard v-if="showWorkspaceWizard" />
         <slot v-else />
       </div>

@@ -47,6 +47,7 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
   --graphql-apiexport-logical-cluster=root:kedge:providers \
   --graphql-grpc-addr=localhost:50051 \
   --graphql-playground \
+  --app-studio-in-memory-message-store \
   --portal-dev-url=http://localhost:3000
 ''',
     deps=[
@@ -57,6 +58,7 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
         'go.sum',
         'providers/mcp',
         'providers/kubernetesedges',
+        'providers/projects',
         'providers/serveredges',
     ],
     resource_deps=['portal'],
@@ -69,6 +71,7 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
 # port. Resources are split by provider for clarity in the Tilt UI:
 #
 #   providers-quickstart   — the reference example (port :8081)
+#   providers-app-studio   — the AI workspace provider (port :8083)
 #   providers-kro          — infrastructure broker (port :8082) +
 #                            management kind cluster that kro runs in
 #
@@ -126,6 +129,49 @@ local_resource(
     auto_init=False,
     resource_deps=['hub'],
     labels=['providers-quickstart'],
+)
+
+# --- providers-app-studio ---
+local_resource(
+    'app-studio',
+    cmd='make build-app-studio-provider',
+    serve_cmd='make run-provider-app-studio',
+    deps=[
+        'providers/app-studio/main.go',
+        'providers/app-studio/heartbeat.go',
+        'providers/app-studio/assets.go',
+        'providers/app-studio/portal/src',
+        'providers/app-studio/portal/package.json',
+        'providers/app-studio/portal/vite.config.ts',
+        'providers/projects/portal/src',
+        'providers/projects/portal/package.json',
+        'providers/app-studio/deploy/chart/templates/catalogentry.yaml',
+        'providers/app-studio/deploy/chart/values.yaml',
+    ],
+    resource_deps=['hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8083, path='/healthz'),
+    ),
+    labels=['providers-app-studio'],
+)
+
+local_resource(
+    'app-studio-register',
+    cmd='make install-provider-app-studio',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-app-studio'],
+)
+
+local_resource(
+    'app-studio-unregister',
+    cmd='make uninstall-provider-app-studio',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-app-studio'],
 )
 
 # --- providers-kro ---

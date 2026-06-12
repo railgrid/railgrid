@@ -1,0 +1,12 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: ai.kedge.faros.sh
+spec:
+  resources:
+  - group: ai.kedge.faros.sh
+    name: projects
+    schema: v260611-549aa6b.projects.ai.kedge.faros.sh
+    storage:
+      crd: {}
+status: {}

@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal run-provider-app-studio install-provider-app-studio uninstall-provider-app-studio dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -121,6 +121,12 @@ build-infrastructure-provider-portal: ## Build the infrastructure provider's mic
 
 build-infrastructure-provider: build-infrastructure-provider-portal ## Build the infrastructure provider binary (portal embedded)
 	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/infrastructure-provider .
+
+build-app-studio-provider-portal: ## Build the App Studio provider's micro-frontend (Vite + TS → portal/dist)
+	cd providers/app-studio/portal && npm install --no-audit --no-fund && npm run build
+
+build-app-studio-provider: build-app-studio-provider-portal ## Build the App Studio provider binary (portal embedded)
+	go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/app-studio-provider ./providers/app-studio
 
 ## Generate deepcopy methods + CRD YAML for the infrastructure provider's
 ## own API types (providers/infrastructure/apis/v1alpha1/...). The CRDs land
@@ -559,6 +565,21 @@ KROMC_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 KROMC_KCP_SERVER ?= https://localhost:6443
 KROMC_MANIFEST ?= providers/infrastructure/manifest.yaml
 
+# --- App Studio provider (local dev) ---
+# Same pattern as quickstart/infrastructure, but the CatalogEntry template
+# defaults to the cluster Service DNS and the helper target below overrides
+# only the UI URL for local host access.
+APP_STUDIO_PORT ?= 8083
+APP_STUDIO_HUB_URL ?= https://localhost:9443
+APP_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
+APP_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
+APP_STUDIO_KCP_SERVER ?= https://localhost:6443
+APP_STUDIO_HELM_RELEASE ?= app-studio
+APP_STUDIO_HELM_NAMESPACE ?= app-studio
+APP_STUDIO_CHART ?= providers/app-studio/deploy/chart
+APP_STUDIO_CATALOGENTRY_UI_URL ?= http://localhost:$(APP_STUDIO_PORT)
+APP_STUDIO_CATALOGENTRY_RENDERED ?= /tmp/kedge-app-studio-catalogentry.yaml
+
 ## Run the infrastructure provider binary locally. Heartbeats to the hub on
 ## $(KROMC_HUB_URL); TLS verification skipped (dev cert is self-signed).
 ## KRO_KUBECONFIG is left unset by default → provider serves the baked-in
@@ -588,6 +609,55 @@ run-provider-infrastructure: build-infrastructure-provider ## Run the infrastruc
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 	INFRASTRUCTURE_KUBECONFIG=$${INFRASTRUCTURE_KUBECONFIG:-$$( [ -f "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" ] && echo "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" )} \
 		$(BINDIR)/infrastructure-provider
+
+## Run the App Studio provider binary locally. Mirrors the other external
+## providers so the heartbeat path is consistent and the UI runs on :8083.
+run-provider-app-studio: build-app-studio-provider ## Run the App Studio provider (requires: make run-hub-embedded-static + make install-provider-app-studio)
+	@echo "Starting App Studio provider on :$(APP_STUDIO_PORT)"
+	@echo "  hub:   $(APP_STUDIO_HUB_URL)"
+	@echo "  token: $(APP_STUDIO_TOKEN)"
+	PORT=$(APP_STUDIO_PORT) \
+	KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
+	KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
+	KEDGE_HUB_INSECURE=true \
+	KEDGE_PROVIDER_NAME=app-studio \
+		$(BINDIR)/app-studio-provider
+
+## Apply the App Studio CatalogEntry into root:kedge:providers. Idempotent.
+## Renders only the CatalogEntry from the Helm chart so host-cluster objects
+## from the full chart never touch the KCP workspace.
+install-provider-app-studio: ## Apply App Studio CatalogEntry into root:kedge:providers
+	@test -f $(APP_STUDIO_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(APP_STUDIO_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	helm template $(APP_STUDIO_HELM_RELEASE) $(APP_STUDIO_CHART) \
+		--namespace $(APP_STUDIO_HELM_NAMESPACE) \
+		--set-string catalogEntry.uiURL=$(APP_STUDIO_CATALOGENTRY_UI_URL) \
+		--show-only templates/catalogentry.yaml \
+		> $(APP_STUDIO_CATALOGENTRY_RENDERED)
+	kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		apply -f $(APP_STUDIO_CATALOGENTRY_RENDERED)
+
+## Delete the App Studio CatalogEntry. Useful while iterating on the chart.
+uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
+	@test -f $(APP_STUDIO_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(APP_STUDIO_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	helm template $(APP_STUDIO_HELM_RELEASE) $(APP_STUDIO_CHART) \
+		--namespace $(APP_STUDIO_HELM_NAMESPACE) \
+		--set-string catalogEntry.uiURL=$(APP_STUDIO_CATALOGENTRY_UI_URL) \
+		--show-only templates/catalogentry.yaml \
+		> $(APP_STUDIO_CATALOGENTRY_RENDERED)
+	-kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:providers \
+		--insecure-skip-tls-verify \
+		delete -f $(APP_STUDIO_CATALOGENTRY_RENDERED)
 
 ## Apply the infrastructure CatalogEntry into root:kedge:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.
@@ -859,11 +929,18 @@ help-dev: ## Show development environment options
 	@echo "  Terminal B: make run-provider-quickstart       - Run the provider"
 	@echo "  Then open https://localhost:9443/ui/providers (Enable the provider)"
 	@echo ""
+	@echo "APP STUDIO PROVIDER (after the hub is running):"
+	@echo "  Terminal A: make install-provider-app-studio   - Apply CatalogEntry"
+	@echo "  Terminal B: make run-provider-app-studio       - Run the provider"
+	@echo "  Then open https://localhost:9443/ui/providers (Enable the provider)"
+	@echo ""
 	@echo "ENVIRONMENT VARIABLES:"
 	@echo "  STATIC_AUTH_TOKEN  - Token for static auth (default: dev-token)"
 	@echo "  KCP_DATA_DIR       - Directory for kcp data (default: .kcp)"
 	@echo "  QUICKSTART_PORT    - Port the quickstart provider listens on (default: 8081)"
 	@echo "  QUICKSTART_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
+	@echo "  APP_STUDIO_PORT    - Port the App Studio provider listens on (default: 8083)"
+	@echo "  APP_STUDIO_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
 	@echo ""
 
 DOCKER_PLATFORM ?= linux/amd64
