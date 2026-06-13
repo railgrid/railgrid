@@ -152,7 +152,7 @@ func NewListHandler(reg *Registry) http.Handler {
 			}
 			var dependencies []dependencyDTO
 			for _, d := range p.Dependencies {
-				dependencies = append(dependencies, dependencyDTO{Name: d.Name})
+				dependencies = append(dependencies, dependencyDTO(d))
 			}
 			_, isBuiltin := BuiltinByName(p.Name)
 			items = append(items, providerDTO{
