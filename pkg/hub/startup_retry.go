@@ -104,7 +104,7 @@ func isRetriableKCPBootstrapError(err error) bool {
 
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return netErr.Timeout() || netErr.Temporary()
+		return netErr.Timeout()
 	}
 
 	return strings.Contains(lowerErr, "connection reset by peer") ||
