@@ -25,7 +25,7 @@ import (
 )
 
 func TestHealthz(t *testing.T) {
-	h, err := newHandler()
+	h, err := newHandler(nil)
 	if err != nil {
 		t.Fatalf("newHandler: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestPortalAssets(t *testing.T) {
 		t.Fatalf("stat main.js: %v", err)
 	}
 
-	h, err := newHandler()
+	h, err := newHandler(nil)
 	if err != nil {
 		t.Fatalf("newHandler: %v", err)
 	}

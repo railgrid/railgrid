@@ -44,6 +44,36 @@ spec:
               value: {{ .Values.hub.url | quote }}
             - name: KEDGE_PROVIDER_NAME
               value: "app-studio"
+            # Provider kubeconfig — used for the kcp front-proxy host + TLS
+            # only; the tenant client drops its credential and acts as the
+            # calling user via the forwarded bearer token.
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            {{- if .Values.store.databaseURL }}
+            - name: APP_STUDIO_DATABASE_URL
+              value: {{ .Values.store.databaseURL | quote }}
+            {{- else if .Values.store.databaseURLSecretRef.name }}
+            - name: APP_STUDIO_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.store.databaseURLSecretRef.name }}
+                  key: {{ .Values.store.databaseURLSecretRef.key }}
+            {{- end }}
+            {{- if .Values.store.inMemoryMessageStore }}
+            - name: APP_STUDIO_IN_MEMORY_MESSAGE_STORE
+              value: "true"
+            {{- end }}
+            {{- if .Values.store.messageRetention }}
+            - name: APP_STUDIO_MESSAGE_RETENTION
+              value: {{ .Values.store.messageRetention | quote }}
+            {{- end }}
+            {{- if .Values.store.messageEncryptionKeysSecretRef.name }}
+            - name: APP_STUDIO_MESSAGE_ENCRYPTION_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.store.messageEncryptionKeysSecretRef.name }}
+                  key: {{ .Values.store.messageEncryptionKeysSecretRef.key }}
+            {{- end }}
             {{- if .Values.hub.insecure }}
             - name: KEDGE_HUB_INSECURE
               value: "true"
@@ -55,8 +85,20 @@ spec:
                   name: {{ .Values.hub.tokenSecretRef.name }}
                   key: {{ .Values.hub.tokenSecretRef.key }}
             {{- end }}
+          volumeMounts:
+            # Minted by the hub's catalog controller into this namespace once
+            # the CatalogEntry reconciles; the SA token inside is what the
+            # tenant client presents to reach tenant workspaces.
+            - name: kedge-provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: kedge-provider-kubeconfig
+          secret:
+            secretName: kedge-provider-kubeconfig
+            optional: true
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

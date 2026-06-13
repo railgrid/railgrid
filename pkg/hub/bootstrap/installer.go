@@ -85,7 +85,6 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 	// under tenancy.kedge.faros.sh alongside Organization, Membership,
 	// and UserMembershipIndex.
 	crdNames := []string{
-		"projects.ai.kedge.faros.sh",
 		"edges.kedge.faros.sh",
 		"virtualworkloads.kedge.faros.sh",
 		"placements.kedge.faros.sh",

@@ -19,8 +19,8 @@ local_resource(
         'providers/mcp/portal/src',
         'providers/kubernetesedges/portal/src',
         'providers/serveredges/portal/src',
-        'providers/projects/portal/src',
-        'providers/projects/portal/package.json',
+        'providers/app-studio/portal/src',
+        'providers/app-studio/portal/package.json',
         'providers/code/portal/src',
     ],
     labels=['hub'],
@@ -50,7 +50,6 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
   --graphql-apiexport-logical-cluster=root:kedge:providers \
   --graphql-grpc-addr=localhost:50051 \
   --graphql-playground \
-  --app-studio-in-memory-message-store \
   --portal-dev-url=http://localhost:3000 \
   --kubeconfig=.kedge-kro.kubeconfig \
   --provider-internal-url=https://host.docker.internal:9443
@@ -63,7 +62,6 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
         'go.sum',
         'providers/mcp',
         'providers/kubernetesedges',
-        'providers/projects',
         'providers/serveredges',
         # Restart the hub once the kedge-kro kubeconfig appears so the
         # HostSecretWriter (which delivers kedge-provider-kubeconfig into
@@ -226,8 +224,6 @@ local_resource(
         'providers/app-studio/portal/src',
         'providers/app-studio/portal/package.json',
         'providers/app-studio/portal/vite.config.ts',
-        'providers/projects/portal/src',
-        'providers/projects/portal/package.json',
         'providers/app-studio/deploy/chart/templates/catalogentry.yaml',
         'providers/app-studio/deploy/chart/values.yaml',
     ],

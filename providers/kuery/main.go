@@ -135,6 +135,7 @@ func main() {
 		ctrl.SetLogger(klog.NewKlogr())
 		engagementCtl, err = engagement.New(engagement.Config{
 			ProviderConfig: providerCfg,
+			HubBaseURL:     os.Getenv("KEDGE_HUB_URL"),
 			APIExportName:  envOr("KUERY_APIEXPORT_NAME", "kuery.providers.kedge.faros.sh"),
 			Sync:           kc.Sync,
 			Store:          kc.Store,

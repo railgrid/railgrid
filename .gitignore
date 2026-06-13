@@ -65,7 +65,6 @@ dex.db
 .kcp/
 .env
 .kind-kubeconfig
-.gitignore
 .edge-kubeconfig
 .hooks/
 
@@ -84,3 +83,8 @@ edge-kubeconfig
 values.yaml
 # …but Helm chart defaults MUST be committed or the chart can't render.
 !providers/*/deploy/chart/values.yaml
+
+# kuery dev sqlite store
+kuery.db
+kuery.db-shm
+kuery.db-wal

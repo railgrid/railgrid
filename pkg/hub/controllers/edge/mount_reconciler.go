@@ -45,6 +45,14 @@ var workspaceGVR = schema.GroupVersionResource{
 	Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces",
 }
 
+var logicalClusterGVR = schema.GroupVersionResource{
+	Group: "core.kcp.io", Version: "v1alpha1", Resource: "logicalclusters",
+}
+
+// pathAnnotation is the kcp-managed annotation on the LogicalCluster object
+// holding the workspace's human-readable path (e.g. root:kedge:orgs:a:b).
+const pathAnnotation = "kcp.io/path"
+
 // MountReconciler watches Edges and creates mount Workspaces in kcp for
 // type=kubernetes edges so that users can access edge kube APIs through kcp
 // workspace navigation.
@@ -96,6 +104,27 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Stamp the workspace path once. The Edge object only carries the opaque
+	// logical-cluster name (kcp.io/cluster); tenant-scoped consumers (e.g. the
+	// kuery engagement controller) need the workspace path to match the
+	// X-Kedge-Tenant the hub injects from the user's workspace path. A provider
+	// SA can't read the tenant LogicalCluster, so we resolve it here with the
+	// admin kcpConfig and persist it. Set-once: the path is immutable for the
+	// edge's lifetime, so we skip the lookup once it's populated.
+	if edge.Status.WorkspacePath == "" {
+		path, err := r.resolveWorkspacePath(ctx, string(req.ClusterName))
+		if err != nil {
+			logger.V(4).Info("resolving workspace path failed, requeuing", "err", err.Error())
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		}
+		if path != "" {
+			edge.Status.WorkspacePath = path
+			if err := c.Status().Update(ctx, &edge); err != nil {
+				return ctrl.Result{}, fmt.Errorf("stamping edge workspacePath: %w", err)
+			}
+		}
 	}
 
 	// Only proceed if the edge is ready (agent connected).
@@ -191,6 +220,25 @@ func (r *MountReconciler) edgeAPIReadyInCluster(ctx context.Context, clusterName
 		}
 	}
 	return false, nil
+}
+
+// resolveWorkspacePath returns the workspace path (kcp.io/path annotation on
+// the tenant LogicalCluster) for the given logical-cluster name, using the
+// admin kcpConfig. Returns "" with no error if the annotation is absent yet
+// (the caller requeues only on a real error).
+func (r *MountReconciler) resolveWorkspacePath(ctx context.Context, clusterName string) (string, error) {
+	cfg := rest.CopyConfig(r.kcpConfig)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, clusterName)
+
+	client, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return "", fmt.Errorf("creating dynamic client: %w", err)
+	}
+	lc, err := client.Resource(logicalClusterGVR).Get(ctx, "cluster", metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("getting LogicalCluster in %s: %w", clusterName, err)
+	}
+	return lc.GetAnnotations()[pathAnnotation], nil
 }
 
 // ensureMountWorkspace creates a Workspace with mount.ref pointing to the Edge,

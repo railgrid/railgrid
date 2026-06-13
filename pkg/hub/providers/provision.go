@@ -335,6 +335,19 @@ func (p *provisioner) ApplyAPIExport(ctx context.Context, providerName, exportNa
 		if c.Group != "" {
 			pc["group"] = c.Group
 		}
+		// kcp rejects a permissionClaim on a non-built-in API type unless
+		// it carries the identityHash of the APIExport that serves it (the
+		// hash pins the claim to a specific provider, so a tenant can't be
+		// tricked into granting access to a look-alike resource). Resolve
+		// it from the sibling APIExport in the providers parent workspace;
+		// an empty hash means the type is built-in and needs none.
+		hash, err := p.resolveClaimIdentityHash(ctx, c.Group, c.Resource)
+		if err != nil {
+			return fmt.Errorf("resolving identityHash for claim %s.%s: %w", c.Resource, c.Group, err)
+		}
+		if hash != "" {
+			pc["identityHash"] = hash
+		}
 		if len(c.Verbs) > 0 {
 			verbs := make([]any, 0, len(c.Verbs))
 			for _, v := range c.Verbs {
@@ -401,6 +414,54 @@ func (p *provisioner) ApplyAPIExport(ctx context.Context, providerName, exportNa
 		return fmt.Errorf("updating APIExport %s: %w", exportName, err)
 	}
 	return nil
+}
+
+// resolveClaimIdentityHash returns the identityHash of the APIExport in the
+// providers parent workspace that serves (group, resource), as required on
+// any permissionClaim for a non-built-in API type. A built-in type (no
+// sibling APIExport serves it — e.g. core k8s resources) yields "" and no
+// hash is set. An empty group is always built-in.
+//
+// kedge keeps every first-party APIExport (core.faros.sh, kedge.faros.sh,
+// …) in the providers parent workspace, so a single list there covers all
+// resolvable claims; matching is by (spec.resources[].group, .name) rather
+// than the export name so it does not depend on the name==group convention.
+func (p *provisioner) resolveClaimIdentityHash(ctx context.Context, group, resource string) (string, error) {
+	if group == "" {
+		return "", nil
+	}
+	cl, err := p.clientFor(providersParentWorkspace)
+	if err != nil {
+		return "", err
+	}
+	list, err := cl.Resource(apiExportGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("listing APIExports in %s: %w", providersParentWorkspace, err)
+	}
+	for i := range list.Items {
+		ex := &list.Items[i]
+		resources, _, _ := unstructured.NestedSlice(ex.Object, "spec", "resources")
+		for _, r := range resources {
+			rm, ok := r.(map[string]any)
+			if !ok {
+				continue
+			}
+			g, _ := rm["group"].(string)
+			n, _ := rm["name"].(string)
+			if g != group || n != resource {
+				continue
+			}
+			hash, _, _ := unstructured.NestedString(ex.Object, "status", "identityHash")
+			if hash == "" {
+				// The serving APIExport exists but kcp has not minted its
+				// identity yet; requeue rather than write an empty hash.
+				return "", fmt.Errorf("APIExport %q serves %s.%s but status.identityHash is not set yet", ex.GetName(), resource, group)
+			}
+			return hash, nil
+		}
+	}
+	// No sibling APIExport serves it — treat as built-in (needs no hash).
+	return "", nil
 }
 
 // mergeAPIExportResources upserts the hub-owned entries (owned, derived from

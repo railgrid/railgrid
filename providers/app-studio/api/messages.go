@@ -1,18 +1,20 @@
-// Copyright 2026 The Faros Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+Copyright 2026 The Faros Authors.
 
-package restapi
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package api
 
 import (
 	"context"
@@ -27,28 +29,20 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	aiv1alpha1 "github.com/faroshq/faros-kedge/apis/ai/v1alpha1"
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
-	projectstore "github.com/faroshq/faros-kedge/providers/projects/store"
+	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/store"
 )
 
-func (h *Handler) requireProjectMessagesStore(w http.ResponseWriter) (projectstore.Store, bool) {
-	if h.mgr.projectMessages == nil {
-		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "project message store not wired on this hub")
-		return nil, false
-	}
-	return h.mgr.projectMessages, true
-}
-
-func projectMessageScope(orgUUID, workspaceUUID, projectName string) projectstore.Scope {
-	return projectstore.Scope{
+func projectMessageScope(orgUUID, workspaceUUID, projectName string) store.Scope {
+	return store.Scope{
 		OrgUUID:       orgUUID,
 		WorkspaceUUID: workspaceUUID,
 		ProjectName:   projectName,
 	}
 }
 
-func projectMessagesToAPI(items []projectstore.Message) []aiv1alpha1.ProjectMessage {
+func projectMessagesToAPI(items []store.Message) []aiv1alpha1.ProjectMessage {
 	if len(items) == 0 {
 		return nil
 	}
@@ -59,7 +53,7 @@ func projectMessagesToAPI(items []projectstore.Message) []aiv1alpha1.ProjectMess
 	return out
 }
 
-func projectMessageToAPI(item projectstore.Message) aiv1alpha1.ProjectMessage {
+func projectMessageToAPI(item store.Message) aiv1alpha1.ProjectMessage {
 	meta := metadataToAPI(item.Metadata)
 	if len(meta) == 0 {
 		meta = nil
@@ -122,8 +116,11 @@ func listLimitFromRequest(r *http.Request) int {
 	return limit
 }
 
-func (h *Handler) migrateLegacyProjectMessages(ctx context.Context, c *kedgeclient.Client, orgUUID, workspaceUUID string, p *aiv1alpha1.Project) error {
-	raw, err := c.Dynamic().Resource(kedgeclient.ProjectGVR).Get(ctx, p.Name, metav1.GetOptions{})
+// migrateLegacyProjectMessages moves any messages previously stored inline on
+// the Project's spec.messages into the message store, then clears them. Runs as
+// the caller against the tenant workspace.
+func (s *Server) migrateLegacyProjectMessages(ctx context.Context, c *asclient.Client, orgUUID, workspaceUUID string, p *aiv1alpha1.Project) error {
+	raw, err := c.Dynamic().Resource(asclient.ProjectGVR).Get(ctx, p.Name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
@@ -134,9 +131,8 @@ func (h *Handler) migrateLegacyProjectMessages(ctx context.Context, c *kedgeclie
 	if !found || len(messages) == 0 {
 		return nil
 	}
-	store := h.mgr.projectMessages
-	if store == nil {
-		return fmt.Errorf("project message store not wired")
+	if s.store == nil {
+		return fmt.Errorf("project message store not configured")
 	}
 	scope := projectMessageScope(orgUUID, workspaceUUID, p.Name)
 	for _, item := range messages {
@@ -161,7 +157,7 @@ func (h *Handler) migrateLegacyProjectMessages(ctx context.Context, c *kedgeclie
 		if createdAt.IsZero() {
 			createdAt = time.Now().UTC()
 		}
-		if err := store.AppendMessage(ctx, scope, projectstore.Message{
+		if err := s.store.AppendMessage(ctx, scope, store.Message{
 			ID:               msg.ID,
 			ProjectName:      p.Name,
 			Role:             msg.Role,
@@ -176,7 +172,7 @@ func (h *Handler) migrateLegacyProjectMessages(ctx context.Context, c *kedgeclie
 		}
 	}
 	unstructured.RemoveNestedField(raw.Object, "spec", "messages")
-	if _, err := c.Dynamic().Resource(kedgeclient.ProjectGVR).Update(ctx, raw, metav1.UpdateOptions{}); err != nil {
+	if _, err := c.Dynamic().Resource(asclient.ProjectGVR).Update(ctx, raw, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("clear legacy project messages: %w", err)
 	}
 	return nil

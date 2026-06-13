@@ -70,21 +70,6 @@ hub:
   devMode: false
   # Enable embedded GraphQL gateway (required for portal)
   embeddedGraphQL: false
-  appStudio:
-    # Postgres DSN for App Studio message storage. Prefer databaseURLSecretRef
-    # for production so credentials do not live in values.
-    databaseURL: ""
-    databaseURLSecretRef:
-      name: ""
-      key: database-url
-    # Non-durable storage for local development only.
-    inMemoryMessageStore: false
-    # Retention duration understood by Go's time.ParseDuration, e.g. "720h".
-    messageRetention: ""
-    # Secret value containing comma-separated key-id:base64-aes-key entries.
-    messageEncryptionKeysSecretRef:
-      name: ""
-      key: keys
   # Static bearer tokens for access (each token creates its own user/workspace. Example: openssl rand -base64 32)
   staticAuthTokens: []
   resources:

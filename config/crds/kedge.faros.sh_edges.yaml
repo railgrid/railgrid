@@ -299,6 +299,19 @@ spec:
                   time (authorized_keys format, e.g. "ssh-ed25519 AAAA...").
                   Used by the hub to verify the agent's sshd identity and prevent MITM attacks.
                 type: string
+              workspacePath:
+                description: |-
+                  WorkspacePath is the kcp workspace path (e.g.
+                  root:kedge:orgs:{org}:{ws}) of the workspace this Edge lives in. The
+                  Edge object itself only carries the opaque logical-cluster name
+                  (kcp.io/cluster), but tenant-scoped consumers (the hub injects
+                  X-Kedge-Tenant = the user's workspace path) need the human-meaningful
+                  path to correlate. Stamped by the hub's edge controller, which resolves
+                  it from the tenant LogicalCluster's kcp.io/path annotation — something a
+                  provider service account cannot read itself. Consumed by the kuery
+                  engagement controller to label engaged clusters so tenant queries scope
+                  correctly.
+                type: string
             required:
             - connected
             type: object

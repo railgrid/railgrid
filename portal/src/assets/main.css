@@ -1,18 +1,20 @@
 @import "tailwindcss";
 
 /*
- * Built-in providers ship their UI as separate Vite bundles under
- * providers/{name}/portal/, but their pages render inside this portal's
- * DOM via the <kedge-provider-{name}> custom element. Their classes
- * therefore need to live in THIS stylesheet (which is the only one the
- * host page loads). These @source directives pull provider .vue/.ts
- * files into Tailwind's scan so the utility classes they use are
- * compiled here.
+ * Some built-in providers ship their UI as separate Vite bundles under
+ * providers/{name}/portal/, but render inside this portal's DOM via the
+ * <kedge-provider-{name}> custom element and use Tailwind utilities without
+ * shipping any CSS of their own. Their classes therefore need to live in THIS
+ * stylesheet (the only one the host page loads), so these @source directives
+ * pull the provider .vue/.ts files into Tailwind's scan and compile them here.
+ *
+ * Self-contained providers are NOT listed here: code, kuery and app-studio
+ * compile and inject their own styles, so they must not be scanned (doing so
+ * would silently couple them to this build again).
  */
 @source "../../../providers/mcp/portal/src/**/*.{vue,ts}";
 @source "../../../providers/kubernetesedges/portal/src/**/*.{vue,ts}";
 @source "../../../providers/infrastructure/portal/src/**/*.{vue,ts}";
-@source "../../../providers/projects/portal/src/**/*.{vue,ts}";
 @source "../../../providers/serveredges/portal/src/**/*.{vue,ts}";
 
 @theme {

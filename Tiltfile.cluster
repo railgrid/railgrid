@@ -177,8 +177,8 @@ local_resource(
         'portal/vite.config.ts',
         'providers/mcp/portal/src',
         'providers/kubernetesedges/portal/src',
-        'providers/projects/portal/src',
-        'providers/projects/portal/package.json',
+        'providers/app-studio/portal/src',
+        'providers/app-studio/portal/package.json',
         'providers/serveredges/portal/src',
         'providers/code/portal/src',
     ],
@@ -200,12 +200,11 @@ local_resource(
         'go.sum',
         'providers/mcp',
         'providers/kubernetesedges',
-        'providers/projects',
         'providers/serveredges',
         'pkg/hub/portal/dist',
         'providers/mcp/portal/dist',
         'providers/kubernetesedges/portal/dist',
-        'providers/projects/portal/dist',
+        'providers/app-studio/portal/dist',
         'providers/serveredges/portal/dist',
     ],
     ignore=[
@@ -503,7 +502,11 @@ local_resource(
 local_resource(
     'app-studio',
     cmd='make build-app-studio-provider',
-    serve_cmd='make run-provider-app-studio',
+    # The tenant client needs the kcp front-proxy host+TLS (it drops the
+    # credential and acts as the caller). In the in-cluster hub flow the
+    # provider runs on the host, so point it at the operator-issued admin
+    # kubeconfig (kcp.localhost:8443).
+    serve_cmd='KEDGE_PROVIDER_KUBECONFIG={kc} make run-provider-app-studio'.format(kc=KCP_ADMIN_KUBECONFIG),
     deps=[
         'providers/app-studio/main.go',
         'providers/app-studio/heartbeat.go',
@@ -511,8 +514,6 @@ local_resource(
         'providers/app-studio/portal/src',
         'providers/app-studio/portal/package.json',
         'providers/app-studio/portal/vite.config.ts',
-        'providers/projects/portal/src',
-        'providers/projects/portal/package.json',
         'providers/app-studio/deploy/chart/templates/catalogentry.yaml',
         'providers/app-studio/deploy/chart/values.yaml',
     ],

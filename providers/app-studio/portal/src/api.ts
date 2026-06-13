@@ -40,12 +40,24 @@ function tenantSelection(): TenantSelection {
   }
 }
 
-function baseURL(): string {
+// providerBase resolves the hub backend-proxy prefix for this provider from the
+// micro-frontend basePath the host injects (/ui/providers/app-studio →
+// /services/providers/app-studio). The hub strips that prefix, injects the
+// verified X-Kedge-Tenant/X-Kedge-User headers, and forwards to the provider's
+// /api/* routes. Falls back to the well-known prefix if no basePath arrived yet.
+function providerBase(ctx: KedgeContext | null): string {
+  const derived = (ctx?.basePath || '').replace(/^\/ui\/providers\//, '/services/providers/')
+  return (derived || '/services/providers/app-studio').replace(/\/$/, '')
+}
+
+function baseURL(ctx: KedgeContext | null): string {
   const t = tenantSelection()
   if (!t.orgUUID || !t.workspaceUUID) {
     throw new Error('select an organization and workspace first')
   }
-  return `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/projects`
+  // org/workspace travel as X-Kedge-Org / X-Kedge-Workspace headers (see
+  // request()); the hub resolves them to the workspace the provider acts on.
+  return `${providerBase(ctx)}/api/projects`
 }
 
 async function request<T>(ctx: KedgeContext | null, method: string, path: string, body?: unknown): Promise<T> {
@@ -183,31 +195,31 @@ export const api = {
   },
 
   async listProjects(ctx: KedgeContext | null): Promise<Project[]> {
-    const body = await request<ListResponse<Project>>(ctx, 'GET', baseURL())
+    const body = await request<ListResponse<Project>>(ctx, 'GET', baseURL(ctx))
     return body.items ?? []
   },
 
   async createProject(ctx: KedgeContext | null, body: { displayName: string; description?: string }): Promise<Project> {
-    return request<Project>(ctx, 'POST', baseURL(), body)
+    return request<Project>(ctx, 'POST', baseURL(ctx), body)
   },
 
   async getLLMSettings(ctx: KedgeContext | null): Promise<ProjectLLMSettings> {
-    return request<ProjectLLMSettings>(ctx, 'GET', `${baseURL()}/llm-settings`)
+    return request<ProjectLLMSettings>(ctx, 'GET', `${baseURL(ctx)}/llm-settings`)
   },
 
   async patchLLMSettings(
     ctx: KedgeContext | null,
     body: { provider?: string; baseURL?: string; model?: string; apiKey?: string },
   ): Promise<ProjectLLMSettings> {
-    return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL()}/llm-settings`, body)
+    return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL(ctx)}/llm-settings`, body)
   },
 
   async getProject(ctx: KedgeContext | null, name: string): Promise<Project> {
-    return request<Project>(ctx, 'GET', `${baseURL()}/${encodeURIComponent(name)}`)
+    return request<Project>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
   },
 
   async deleteProject(ctx: KedgeContext | null, name: string): Promise<void> {
-    await request<null>(ctx, 'DELETE', `${baseURL()}/${encodeURIComponent(name)}`)
+    await request<null>(ctx, 'DELETE', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
   },
 
   async listMessages(ctx: KedgeContext | null, name: string, cursor?: string): Promise<ProjectMessagesPage> {
@@ -215,7 +227,7 @@ export const api = {
     const body = await request<ProjectMessagesPage>(
       ctx,
       'GET',
-      `${baseURL()}/${encodeURIComponent(name)}/messages${query}`,
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/messages${query}`,
     )
     return body
   },
@@ -228,7 +240,7 @@ export const api = {
       const page = await request<ProjectMessagesPage>(
         ctx,
         'GET',
-        `${baseURL()}/${encodeURIComponent(name)}/messages${query}`,
+        `${baseURL(ctx)}/${encodeURIComponent(name)}/messages${query}`,
       )
       items.push(...(page.items ?? []))
       if (!page.nextCursor) break
@@ -247,7 +259,7 @@ export const api = {
     return requestStream(
       ctx,
       'POST',
-      `${baseURL()}/${encodeURIComponent(name)}/messages/stream`,
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/messages/stream`,
       { role: 'user', content },
       onEvent,
       signal,
@@ -255,6 +267,6 @@ export const api = {
   },
 
   async getMemory(ctx: KedgeContext | null, name: string): Promise<ProjectMemory> {
-    return request<ProjectMemory>(ctx, 'GET', `${baseURL()}/${encodeURIComponent(name)}/memory`)
+    return request<ProjectMemory>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/memory`)
   },
 }

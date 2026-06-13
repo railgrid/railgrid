@@ -11,6 +11,12 @@ export interface KedgeContext {
   token?: string | null
   user?: { email?: string; sub?: string } | null
   tenant?: string | null
+  // Sidebar-selected org/workspace UUIDs. Forwarded as X-Kedge-Org /
+  // X-Kedge-Workspace so the hub backend proxy can resolve and inject
+  // X-Kedge-Tenant; without them the resolver falls back to the user's
+  // personal org (often unset in dev) and the backend 401s.
+  orgUUID?: string | null
+  workspaceUUID?: string | null
   theme?: 'light' | 'dark' | 'system'
   basePath?: string
 }
@@ -95,8 +101,24 @@ export class KueryElement extends HTMLElement {
     return (this._ctx?.basePath || '').replace(/^\/ui\/providers\//, '/services/providers/')
   }
 
+  // _tenantHeaders carries the identity the hub backend proxy needs to
+  // inject X-Kedge-Tenant: the bearer token (to identify the user) plus
+  // the sidebar-selected org/workspace (to pick the tenant). Mirrors what
+  // the console's own /api/orgs/* requests send.
+  private _tenantHeaders(): Record<string, string> {
+    const h: Record<string, string> = {}
+    if (this._ctx?.token) h['Authorization'] = `Bearer ${this._ctx.token}`
+    if (this._ctx?.orgUUID) h['X-Kedge-Org'] = this._ctx.orgUUID
+    if (this._ctx?.workspaceUUID) h['X-Kedge-Workspace'] = this._ctx.workspaceUUID
+    return h
+  }
+
   private async _fetchJSON(path: string, init?: RequestInit): Promise<unknown> {
-    const res = await fetch(this._apiBase() + path, { credentials: 'same-origin', ...init })
+    const res = await fetch(this._apiBase() + path, {
+      credentials: 'same-origin',
+      ...init,
+      headers: { ...this._tenantHeaders(), ...(init?.headers as Record<string, string> | undefined) },
+    })
     const body = await res.text()
     if (!res.ok) throw new Error(`${res.status} ${body.slice(0, 300)}`)
     return body ? JSON.parse(body) : {}

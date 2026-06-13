@@ -1,26 +1,29 @@
 # syntax=docker/dockerfile:1
 
-# 1. Build the App Studio portal bundle. The actual provider UI source lives
-# in providers/projects/portal/src; this wrapper package imports that source
-# and emits the bundle under /ui/providers/app-studio/ so the hub proxy can
-# strip the prefix and still load the same files.
+# Built in the standalone faroshq/provider-app-studio mirror (synced from the
+# kedge monorepo at providers/app-studio/ — see README). The build context is
+# the mirror root, i.e. the contents of providers/app-studio/, so all paths
+# below are relative to this module's root.
+
+# 1. Build the App Studio portal micro-frontend (Vite + Vue → portal/dist).
+#    portal/ is a self-contained npm project, so only its lockfile + source
+#    are needed.
 FROM node:22-alpine AS portal
 WORKDIR /portal
-COPY providers/app-studio/portal/package.json providers/app-studio/portal/package-lock.json* ./
+COPY portal/package.json portal/package-lock.json* ./
 RUN npm install --no-audit --no-fund
-COPY providers/app-studio/portal/ ./
-COPY providers/projects/portal/src /projects/portal/src
+COPY portal/ ./
 RUN npm run build
 
-# 2. Build the Go provider binary. assets.go embeds portal/dist via
-# //go:embed, so the bundle from the previous stage must land at the same
-# relative path before `go build` runs.
+# 2. Build the Go binary. assets.go //go:embeds portal/dist, overlaid from the
+#    node stage so the bundle is fresh.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-COPY providers/app-studio/ ./providers/app-studio/
-COPY --from=portal /portal/dist ./providers/app-studio/portal/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app-studio-provider ./providers/app-studio
+RUN go mod download
+COPY . ./
+COPY --from=portal /portal/dist ./portal/dist
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app-studio-provider .
 
 # 3. Minimal runtime image. The portal bundle is baked into the binary.
 FROM gcr.io/distroless/static:nonroot

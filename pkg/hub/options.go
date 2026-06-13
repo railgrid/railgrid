@@ -16,8 +16,6 @@ limitations under the License.
 
 package hub
 
-import "time"
-
 // Options holds configuration for the hub server.
 type Options struct {
 	DataDir               string
@@ -81,24 +79,6 @@ type Options struct {
 	// a Vite dev server, e.g. http://localhost:3000). Takes precedence over the
 	// embedded portal dist (if built with -tags portal_embed).
 	PortalDevURL string
-
-	// AppStudioDatabaseURL, when set, points App Studio message persistence at
-	// a Postgres database owned by the App Studio provider deployment.
-	AppStudioDatabaseURL string
-
-	// AppStudioInMemoryMessageStore enables non-durable App Studio message
-	// storage for local development and tests. Production deployments should
-	// configure AppStudioDatabaseURL instead.
-	AppStudioInMemoryMessageStore bool
-
-	// AppStudioMessageEncryptionKeys is a comma-separated list of
-	// key-id:base64-aes-key entries. The first key encrypts new messages and
-	// all keys can decrypt existing messages.
-	AppStudioMessageEncryptionKeys string
-
-	// AppStudioMessageRetention controls the background cleanup horizon for
-	// old chat messages. Zero disables periodic cleanup.
-	AppStudioMessageRetention time.Duration
 
 	// Embedded kcp options
 	EmbeddedKCP         bool   // Enable embedded kcp server

@@ -667,7 +667,7 @@ init-provider-kuery: ## Ensure kuery APIExportEndpointSlice + write dev runtime 
 		kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
 			--server=$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH) \
 			--insecure-skip-tls-verify apply -f -
-	@echo "Writing $(KUERY_RUNTIME_KUBECONFIG) (server $(KUERY_HUB_URL)/clusters/$(KUERY_WORKSPACE_PATH))"
+	@echo "Writing $(KUERY_RUNTIME_KUBECONFIG) (server $(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH))"
 	@TOKEN=$$(kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
 		--server=$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH) \
 		--insecure-skip-tls-verify \
@@ -675,7 +675,7 @@ init-provider-kuery: ## Ensure kuery APIExportEndpointSlice + write dev runtime 
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the catalog controller to reconcile"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
 	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
-		"$(KUERY_HUB_URL)/clusters/$(KUERY_WORKSPACE_PATH)" "$$TOKEN" \
+		"$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(KUERY_RUNTIME_KUBECONFIG)
 	@echo "wrote $(KUERY_RUNTIME_KUBECONFIG)"
 
@@ -715,6 +715,13 @@ APP_STUDIO_HELM_RELEASE ?= app-studio
 APP_STUDIO_HELM_NAMESPACE ?= app-studio
 APP_STUDIO_CHART ?= providers/app-studio/deploy/chart
 APP_STUDIO_CATALOGENTRY_UI_URL ?= http://localhost:$(APP_STUDIO_PORT)
+# The backend (REST/LLM API) is reverse-proxied by the hub too, to the SAME
+# host:port as the UI (one provider process serves both). It must point at the
+# running provider — loopback for the all-host flow, host.docker.internal for
+# the in-cluster hub flow — not the chart's Service DNS, or
+# /services/providers/app-studio/* returns 502. Tracking UI_URL makes both
+# Tiltfiles work without a separate override.
+APP_STUDIO_CATALOGENTRY_BACKEND_URL ?= $(APP_STUDIO_CATALOGENTRY_UI_URL)
 APP_STUDIO_CATALOGENTRY_RENDERED ?= /tmp/kedge-app-studio-catalogentry.yaml
 
 ## Run the infrastructure provider binary locally. Heartbeats to the hub on
@@ -758,6 +765,9 @@ run-provider-app-studio: build-app-studio-provider ## Run the App Studio provide
 	KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 	KEDGE_HUB_INSECURE=true \
 	KEDGE_PROVIDER_NAME=app-studio \
+	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+	APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
+	APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		$(BINDIR)/app-studio-provider
 
 ## Apply the App Studio CatalogEntry into root:kedge:providers. Idempotent.
@@ -772,6 +782,7 @@ install-provider-app-studio: ## Apply App Studio CatalogEntry into root:kedge:pr
 	helm template $(APP_STUDIO_HELM_RELEASE) $(APP_STUDIO_CHART) \
 		--namespace $(APP_STUDIO_HELM_NAMESPACE) \
 		--set-string catalogEntry.uiURL=$(APP_STUDIO_CATALOGENTRY_UI_URL) \
+		--set-string catalogEntry.backendURL=$(APP_STUDIO_CATALOGENTRY_BACKEND_URL) \
 		--show-only templates/catalogentry.yaml \
 		> $(APP_STUDIO_CATALOGENTRY_RENDERED)
 	kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
@@ -789,6 +800,7 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 	helm template $(APP_STUDIO_HELM_RELEASE) $(APP_STUDIO_CHART) \
 		--namespace $(APP_STUDIO_HELM_NAMESPACE) \
 		--set-string catalogEntry.uiURL=$(APP_STUDIO_CATALOGENTRY_UI_URL) \
+		--set-string catalogEntry.backendURL=$(APP_STUDIO_CATALOGENTRY_BACKEND_URL) \
 		--show-only templates/catalogentry.yaml \
 		> $(APP_STUDIO_CATALOGENTRY_RENDERED)
 	-kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \

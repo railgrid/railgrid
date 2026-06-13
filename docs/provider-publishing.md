@@ -22,6 +22,8 @@ fast-forward.
 | `providers/quickstart`      | `faroshq/provider-quickstart`      | `QUICKSTART_DEPLOY_KEY` | [`split-quickstart.yaml`](../.github/workflows/split-quickstart.yaml) |
 | `providers/code`            | `faroshq/provider-code`            | `CODE_DEPLOY_KEY`       | [`split-code.yaml`](../.github/workflows/split-code.yaml) |
 | `providers/infrastructure`  | `faroshq/provider-infrastructure`  | `INFRA_DEPLOY_KEY`      | [`split-infrastructure.yaml`](../.github/workflows/split-infrastructure.yaml) |
+| `providers/app-studio`      | `faroshq/provider-app-studio`      | `APP_STUDIO_DEPLOY_KEY` | [`split-app-studio.yaml`](../.github/workflows/split-app-studio.yaml) |
+| `providers/kuery`           | `faroshq/provider-kuery`           | `KUERY_DEPLOY_KEY`      | [`split-kuery.yaml`](../.github/workflows/split-kuery.yaml) |
 
 Each provider has its own workflow (identical except for the four `env:` values
 and the `secrets.*` reference) and its own deploy key — a GitHub deploy key is

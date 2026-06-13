@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package restapi
+package api
 
 import (
 	"context"
@@ -32,9 +32,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	aiv1alpha1 "github.com/faroshq/faros-kedge/apis/ai/v1alpha1"
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
-	projectstore "github.com/faroshq/faros-kedge/providers/projects/store"
+	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/store"
 )
 
 type CreateProjectRequest struct {
@@ -102,8 +102,8 @@ func isProjectAPIInitializingError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "server could not find the requested resource")
 }
 
-func (h *Handler) listProjects(w http.ResponseWriter, r *http.Request) {
-	c, ok := h.requireProjectClient(w, r)
+func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireProjectClient(w, r)
 	if !ok {
 		return
 	}
@@ -122,8 +122,8 @@ func (h *Handler) listProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ListResponse[ProjectView]{Items: out})
 }
 
-func (h *Handler) createProject(w http.ResponseWriter, r *http.Request) {
-	c, ok := h.requireProjectClient(w, r)
+func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireProjectClient(w, r)
 	if !ok {
 		return
 	}
@@ -137,7 +137,7 @@ func (h *Handler) createProject(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, newValidationError("displayName is required"))
 		return
 	}
-	name, err := h.projectName(r.Context(), c, req.Name, req.DisplayName)
+	name, err := projectName(r.Context(), c, req.Name, req.DisplayName)
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -160,7 +160,7 @@ func (h *Handler) createProject(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	updated, err := h.touchProjectStatus(r.Context(), c, created)
+	updated, err := touchProjectStatus(r.Context(), c, created)
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -168,16 +168,16 @@ func (h *Handler) createProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, projectView(updated))
 }
 
-func (h *Handler) getProject(w http.ResponseWriter, r *http.Request) {
-	p, ok := h.requireProject(w, r)
+func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.requireProject(w, r)
 	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, projectView(p))
 }
 
-func (h *Handler) patchProject(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := h.requireProjectWithClient(w, r)
+func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
+	c, _, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
@@ -208,7 +208,7 @@ func (h *Handler) patchProject(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	updated, err = h.touchProjectStatus(r.Context(), c, updated)
+	updated, err = touchProjectStatus(r.Context(), c, updated)
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -216,18 +216,14 @@ func (h *Handler) patchProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, projectView(updated))
 }
 
-func (h *Handler) deleteProject(w http.ResponseWriter, r *http.Request) {
-	c, ok := h.requireProjectClient(w, r)
+func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
+	c, id, ok := s.requireProjectClient(w, r)
 	if !ok {
 		return
 	}
 	name := mux.Vars(r)["project"]
-	if h.mgr.projectMessages != nil {
-		tc, ok := h.requireTenantContext(w, r, true, false)
-		if !ok {
-			return
-		}
-		if err := h.mgr.projectMessages.DeleteProjectMessages(r.Context(), projectMessageScope(tc.OrgUUID, tc.WorkspaceUUID, name)); err != nil {
+	if s.store != nil {
+		if err := s.store.DeleteProjectMessages(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, name)); err != nil {
 			writeStatus(w, http.StatusInternalServerError, "InternalError", "deleting project messages: "+err.Error())
 			return
 		}
@@ -239,26 +235,22 @@ func (h *Handler) deleteProject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) listProjectMessages(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := h.requireProjectWithClient(w, r)
+func (s *Server) listProjectMessages(w http.ResponseWriter, r *http.Request) {
+	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
-	store, ok := h.requireProjectMessagesStore(w)
-	if !ok {
-		return
-	}
-	tc, ok := h.requireTenantContext(w, r, true, false)
+	msgStore, ok := s.requireStore(w)
 	if !ok {
 		return
 	}
 	limit := listLimitFromRequest(r)
 	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
-	if err := h.migrateLegacyProjectMessages(r.Context(), c, tc.OrgUUID, tc.WorkspaceUUID, p); err != nil {
+	if err := s.migrateLegacyProjectMessages(r.Context(), c, id.orgUUID, id.workspaceUUID, p); err != nil {
 		writeProjectError(w, err)
 		return
 	}
-	page, err := store.ListMessages(r.Context(), projectMessageScope(tc.OrgUUID, tc.WorkspaceUUID, p.Name), limit, cursor)
+	page, err := msgStore.ListMessages(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name), limit, cursor)
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -269,8 +261,8 @@ func (h *Handler) listProjectMessages(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) createProjectMessageStream(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := h.requireProjectWithClient(w, r)
+func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Request) {
+	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
@@ -292,29 +284,25 @@ func (h *Handler) createProjectMessageStream(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	store, ok := h.requireProjectMessagesStore(w)
+	msgStore, ok := s.requireStore(w)
 	if !ok {
 		return
 	}
-	tc, ok := h.requireTenantContext(w, r, true, false)
-	if !ok {
-		return
-	}
-	if err := h.migrateLegacyProjectMessages(r.Context(), c, tc.OrgUUID, tc.WorkspaceUUID, p); err != nil {
+	if err := s.migrateLegacyProjectMessages(r.Context(), c, id.orgUUID, id.workspaceUUID, p); err != nil {
 		writeProjectError(w, err)
 		return
 	}
 
 	now := metav1.Now()
 	userID := newMessageID()
-	userMsg := projectstore.Message{
+	userMsg := store.Message{
 		ID:        userID,
 		Role:      aiv1alpha1.ProjectMessageRoleUser,
 		Content:   req.Content,
 		CreatedAt: now.UTC(),
 		UpdatedAt: now.UTC(),
 	}
-	if err := store.AppendMessage(r.Context(), projectMessageScope(tc.OrgUUID, tc.WorkspaceUUID, p.Name), userMsg); err != nil {
+	if err := msgStore.AppendMessage(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name), userMsg); err != nil {
 		writeProjectError(w, err)
 		return
 	}
@@ -332,7 +320,7 @@ func (h *Handler) createProjectMessageStream(w http.ResponseWriter, r *http.Requ
 	assistantID := newMessageID()
 	assistantContent := &strings.Builder{}
 	var streamErr error
-	scope := projectMessageScope(tc.OrgUUID, tc.WorkspaceUUID, p.Name)
+	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
 
 	streamChunk := func(chunk string) {
 		if streamErr != nil {
@@ -349,10 +337,10 @@ func (h *Handler) createProjectMessageStream(w http.ResponseWriter, r *http.Requ
 		})
 	}
 
-	reply, err := h.generateProjectAssistantStream(r, c, p, streamChunk)
+	reply, err := s.generateProjectAssistantStream(r, id, c, p, streamChunk)
 	if err != nil {
 		if shouldPersistInterruptedProjectAssistant(r.Context(), err, streamErr, assistantContent.String()) {
-			persistErr := appendInterruptedProjectAssistantMessage(r.Context(), store, scope, assistantID, assistantContent.String())
+			persistErr := appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
 			if persistErr != nil && streamErr == nil {
 				_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
 					Type:  "error",
@@ -362,7 +350,7 @@ func (h *Handler) createProjectMessageStream(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		if streamErr != nil {
-			_ = appendInterruptedProjectAssistantMessage(r.Context(), store, scope, assistantID, assistantContent.String())
+			_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
 			return
 		}
 		if errors.Is(err, errProjectLLMNotConfigured) {
@@ -380,7 +368,7 @@ func (h *Handler) createProjectMessageStream(w http.ResponseWriter, r *http.Requ
 	}
 	if streamErr != nil {
 		assistantReply := projectAssistantStoredContent(reply, assistantContent.String())
-		_ = appendInterruptedProjectAssistantMessage(r.Context(), store, scope, assistantID, assistantReply)
+		_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantReply)
 		return
 	}
 	assistantReply := projectAssistantStoredContent(reply, assistantContent.String())
@@ -392,7 +380,7 @@ func (h *Handler) createProjectMessageStream(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := appendProjectAssistantMessage(r.Context(), store, scope, assistantID, assistantReply, nil); err != nil {
+	if err := appendProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantReply, nil); err != nil {
 		_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
 			Type:  "error",
 			Error: "assistant persistence failed: " + err.Error(),
@@ -423,20 +411,20 @@ func detachedProjectPersistenceContext(ctx context.Context) (context.Context, co
 	return context.WithTimeout(context.WithoutCancel(ctx), projectMessagePersistTimeout)
 }
 
-func appendInterruptedProjectAssistantMessage(ctx context.Context, store projectstore.Store, scope projectstore.Scope, id, content string) error {
+func appendInterruptedProjectAssistantMessage(ctx context.Context, msgStore store.Store, scope store.Scope, id, content string) error {
 	if strings.TrimSpace(content) == "" {
 		return nil
 	}
 	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
 	defer cancel()
-	return appendProjectAssistantMessage(persistCtx, store, scope, id, content, map[string]any{
+	return appendProjectAssistantMessage(persistCtx, msgStore, scope, id, content, map[string]any{
 		projectMessageMetadataStatus: projectMessageStatusInterrupted,
 	})
 }
 
-func appendProjectAssistantMessage(ctx context.Context, store projectstore.Store, scope projectstore.Scope, id, content string, metadata map[string]any) error {
+func appendProjectAssistantMessage(ctx context.Context, msgStore store.Store, scope store.Scope, id, content string, metadata map[string]any) error {
 	now := time.Now().UTC()
-	return store.AppendMessage(ctx, scope, projectstore.Message{
+	return msgStore.AppendMessage(ctx, scope, store.Message{
 		ID:        id,
 		Role:      aiv1alpha1.ProjectMessageRoleAssistant,
 		Content:   content,
@@ -446,16 +434,16 @@ func appendProjectAssistantMessage(ctx context.Context, store projectstore.Store
 	})
 }
 
-func (h *Handler) getProjectMemory(w http.ResponseWriter, r *http.Request) {
-	p, ok := h.requireProject(w, r)
+func (s *Server) getProjectMemory(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.requireProject(w, r)
 	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, p.Spec.Memory)
 }
 
-func (h *Handler) patchProjectMemory(w http.ResponseWriter, r *http.Request) {
-	c, p, ok := h.requireProjectWithClient(w, r)
+func (s *Server) patchProjectMemory(w http.ResponseWriter, r *http.Request) {
+	c, _, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
@@ -485,7 +473,7 @@ func (h *Handler) patchProjectMemory(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	updated, err = h.touchProjectStatus(r.Context(), c, updated)
+	updated, err = touchProjectStatus(r.Context(), c, updated)
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -493,43 +481,7 @@ func (h *Handler) patchProjectMemory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated.Spec.Memory)
 }
 
-func (h *Handler) requireProject(w http.ResponseWriter, r *http.Request) (*aiv1alpha1.Project, bool) {
-	_, p, ok := h.requireProjectWithClient(w, r)
-	return p, ok
-}
-
-func (h *Handler) requireProjectWithClient(w http.ResponseWriter, r *http.Request) (*kedgeclient.Client, *aiv1alpha1.Project, bool) {
-	c, ok := h.requireProjectClient(w, r)
-	if !ok {
-		return nil, nil, false
-	}
-	name := mux.Vars(r)["project"]
-	p, err := c.Projects().Get(r.Context(), name, metav1.GetOptions{})
-	if err != nil {
-		writeProjectError(w, err)
-		return nil, nil, false
-	}
-	return c, p, true
-}
-
-func (h *Handler) requireProjectClient(w http.ResponseWriter, r *http.Request) (*kedgeclient.Client, bool) {
-	tc, ok := h.requireTenantContext(w, r, true, false)
-	if !ok {
-		return nil, false
-	}
-	if h.mgr.projectClients == nil {
-		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "project client factory not wired on this hub")
-		return nil, false
-	}
-	c, err := h.mgr.projectClients(r.Context(), tc.OrgUUID, tc.WorkspaceUUID)
-	if err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", "creating project client: "+err.Error())
-		return nil, false
-	}
-	return c, true
-}
-
-func (h *Handler) projectName(ctx context.Context, c *kedgeclient.Client, requested, displayName string) (string, error) {
+func projectName(ctx context.Context, c *asclient.Client, requested, displayName string) (string, error) {
 	if requested != "" {
 		name := slugifyProjectName(requested)
 		if name != requested {
@@ -558,7 +510,7 @@ func (h *Handler) projectName(ctx context.Context, c *kedgeclient.Client, reques
 	return fmt.Sprintf("%s-%s", base, uuid.NewString()[:8]), nil
 }
 
-func (h *Handler) touchProjectStatus(ctx context.Context, c *kedgeclient.Client, p *aiv1alpha1.Project) (*aiv1alpha1.Project, error) {
+func touchProjectStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) (*aiv1alpha1.Project, error) {
 	now := metav1.Now()
 	p.Status.Phase = aiv1alpha1.ProjectPhaseReady
 	p.Status.UpdatedAt = &now
@@ -617,15 +569,15 @@ func writeProjectMessageStreamEvent(w http.ResponseWriter, flusher http.Flusher,
 
 var invalidProjectNameChars = regexp.MustCompile(`[^a-z0-9-]+`)
 
-func slugifyProjectName(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	s = invalidProjectNameChars.ReplaceAllString(s, "-")
-	s = strings.Trim(s, "-")
-	for strings.Contains(s, "--") {
-		s = strings.ReplaceAll(s, "--", "-")
+func slugifyProjectName(str string) string {
+	str = strings.ToLower(strings.TrimSpace(str))
+	str = invalidProjectNameChars.ReplaceAllString(str, "-")
+	str = strings.Trim(str, "-")
+	for strings.Contains(str, "--") {
+		str = strings.ReplaceAll(str, "--", "-")
 	}
-	if len(s) > 63 {
-		s = strings.Trim(s[:63], "-")
+	if len(str) > 63 {
+		str = strings.Trim(str[:63], "-")
 	}
-	return s
+	return str
 }

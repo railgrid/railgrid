@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package restapi
+package api
 
 import (
 	"bufio"
@@ -38,12 +38,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/klog/v2"
 
-	aiv1alpha1 "github.com/faroshq/faros-kedge/apis/ai/v1alpha1"
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
-	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
-	projectstore "github.com/faroshq/faros-kedge/providers/projects/store"
+	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/store"
 )
 
 const (
@@ -55,6 +54,12 @@ const (
 	defaultProjectLLMModel         = "gpt-4o-mini"
 	projectLLMProviderGoogle       = "google-ai-studio"
 	projectLLMGoogleCloudScope     = "https://www.googleapis.com/auth/cloud-platform"
+
+	// maxAssistantToolTurns bounds how many tool-call/round-trips a single
+	// assistant generation may take before the final turn is forced to answer
+	// in text (tool_choice=none). It guards against a model that loops on
+	// failing or disallowed tool calls.
+	maxAssistantToolTurns = 8
 )
 
 var (
@@ -92,13 +97,12 @@ type googleServiceAccountCredential struct {
 }
 
 type chatCompletionRequest struct {
-	Model       string            `json:"model"`
-	Messages    []chatMessage     `json:"messages"`
-	Temperature float64           `json:"temperature,omitempty"`
-	Tools       []chatTool        `json:"tools,omitempty"`
-	ToolChoice  string            `json:"tool_choice,omitempty"`
-	Stream      bool              `json:"stream,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	Model       string        `json:"model"`
+	Messages    []chatMessage `json:"messages"`
+	Temperature float64       `json:"temperature,omitempty"`
+	Tools       []chatTool    `json:"tools,omitempty"`
+	ToolChoice  string        `json:"tool_choice,omitempty"`
+	Stream      bool          `json:"stream,omitempty"`
 }
 
 type chatMessage struct {
@@ -182,8 +186,8 @@ type projectMCPTool struct {
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
-func (h *Handler) getProjectLLMSettings(w http.ResponseWriter, r *http.Request) {
-	c, ok := h.requireProjectClient(w, r)
+func (s *Server) getProjectLLMSettings(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireProjectClient(w, r)
 	if !ok {
 		return
 	}
@@ -195,11 +199,11 @@ func (h *Handler) getProjectLLMSettings(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, settings.view())
 }
 
-func (h *Handler) patchProjectLLMSettings(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireTenantContext(w, r, true, true); !ok {
-		return
-	}
-	c, ok := h.requireProjectClient(w, r)
+func (s *Server) patchProjectLLMSettings(w http.ResponseWriter, r *http.Request) {
+	// The hub used to gate this on the kedge "admin" membership role. The
+	// provider acts as the caller, so the workspace Secret's own RBAC is the
+	// authority: a non-admin caller's Update is rejected by the apiserver.
+	c, _, ok := s.requireProjectClient(w, r)
 	if !ok {
 		return
 	}
@@ -247,16 +251,16 @@ func (h *Handler) patchProjectLLMSettings(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, settings.view())
 }
 
-func (h *Handler) generateProjectAssistantStream(
+func (s *Server) generateProjectAssistantStream(
 	r *http.Request,
-	c *kedgeclient.Client,
+	id identity,
+	c *asclient.Client,
 	p *aiv1alpha1.Project,
 	onChunk func(string),
 ) (string, error) {
 	ctx := r.Context()
-	store := h.mgr.projectMessages
-	if store == nil {
-		return "", fmt.Errorf("project message store not wired")
+	if s.store == nil {
+		return "", fmt.Errorf("project message store not configured")
 	}
 	settings, err := readProjectLLMSettings(ctx, c)
 	if err != nil {
@@ -268,16 +272,15 @@ func (h *Handler) generateProjectAssistantStream(
 	if strings.TrimSpace(settings.APIKey) == "" {
 		return "", errProjectLLMNotConfigured
 	}
-	tc, ok := tenant.FromContext(ctx)
-	if !ok || tc.OrgUUID == "" || tc.WorkspaceUUID == "" {
+	if id.orgUUID == "" || id.workspaceUUID == "" {
 		return "", errors.New("tenant context missing")
 	}
-	recent, err := store.LoadRecentMessages(ctx, projectMessageScope(tc.OrgUUID, tc.WorkspaceUUID, p.Name), 24)
+	recent, err := s.store.LoadRecentMessages(ctx, projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name), 24)
 	if err != nil {
 		return "", err
 	}
 	messages := projectPromptMessages(p, recent)
-	tools, toolsErr := h.loadProjectMCPTools(r, settings)
+	tools, toolsErr := s.loadProjectMCPTools(r, id, settings)
 	if toolsErr == nil {
 		if toolPrompt := projectMCPToolsPrompt(tools); toolPrompt != "" {
 			messages = append(messages, chatMessage{
@@ -292,7 +295,22 @@ func (h *Handler) generateProjectAssistantStream(
 		})
 	}
 
-	for i := 0; i < 5; i++ {
+	logger := klog.FromContext(ctx)
+
+	// seenToolCalls tracks each (name, args) signature the model has already
+	// requested. A model that re-issues an identical call is looping rather
+	// than making progress, so we stop offering tools and force a text answer
+	// instead of grinding through every turn and dying with a generic error.
+	seenToolCalls := map[string]int{}
+	forceTextAnswer := false
+
+	for i := 0; i < maxAssistantToolTurns; i++ {
+		// On the last allowed turn (or once we have detected a loop) set
+		// tool_choice=none so the model MUST produce a final text answer. This
+		// turns "exceeded safe turn limit" into a graceful explanation of why
+		// the assistant could not complete the request.
+		finalTurn := forceTextAnswer || i == maxAssistantToolTurns-1
+
 		reqBody := chatCompletionRequest{
 			Model:       settings.Model,
 			Messages:    messages,
@@ -301,29 +319,45 @@ func (h *Handler) generateProjectAssistantStream(
 		}
 		if len(tools) > 0 {
 			reqBody.Tools = tools
-			reqBody.ToolChoice = "auto"
-		}
-		if shouldIncludeProjectLLMMetadata(settings) {
-			reqBody.Metadata = map[string]string{
-				"project": p.Name,
+			if finalTurn {
+				reqBody.ToolChoice = "none"
+			} else {
+				reqBody.ToolChoice = "auto"
 			}
 		}
 		maybeInjectGoogleThoughtSignature(settings, reqBody.Messages)
 
-		reply, err := h.callProjectChatCompletionStream(ctx, settings, reqBody, onChunk)
+		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, onChunk)
 		if err != nil {
 			return "", err
 		}
-		if len(reply.ToolCalls) > 0 {
+		if len(reply.ToolCalls) > 0 && !finalTurn {
+			repeated := false
+			for _, tc := range reply.ToolCalls {
+				sig := tc.Function.Name + "\x00" + tc.Function.Arguments
+				seenToolCalls[sig]++
+				if seenToolCalls[sig] > 1 {
+					repeated = true
+				}
+				logger.V(2).Info("project assistant requested tool call",
+					"turn", i, "tool", tc.Function.Name, "args", tc.Function.Arguments)
+			}
+
 			messages = append(messages, chatMessage{
 				Role:      aiv1alpha1.ProjectMessageRoleAssistant,
 				ToolCalls: reply.ToolCalls,
 			})
-			nextMessages, callErr := h.resolveProjectToolCalls(ctx, reply.ToolCalls, r)
+			nextMessages, callErr := s.resolveProjectToolCalls(ctx, id, reply.ToolCalls, r)
 			if callErr != nil {
 				return "", callErr
 			}
 			messages = append(messages, nextMessages...)
+
+			if repeated {
+				logger.Info("project assistant repeated an identical tool call across turns; forcing a final text answer",
+					"turn", i, "project", p.Name)
+				forceTextAnswer = true
+			}
 			continue
 		}
 
@@ -409,7 +443,7 @@ func setGoogleThoughtSignature(tc *chatToolCall, signature string) {
 	tc.ExtraContent["google"] = google
 }
 
-func (h *Handler) callProjectChatCompletionStream(
+func callProjectChatCompletionStream(
 	ctx context.Context,
 	settings projectLLMSettings,
 	reqBody chatCompletionRequest,
@@ -456,6 +490,11 @@ func (h *Handler) callProjectChatCompletionStream(
 		if detail == "" {
 			detail = resp.Status
 		}
+		// Surfaces upstream LLM rejections (auth, model, request-shape) so a
+		// failing chat is debuggable from the provider logs without guessing
+		// whether it's the provider or the LLM endpoint.
+		klog.FromContext(ctx).Error(nil, "LLM API returned non-2xx",
+			"endpoint", endpoint, "model", reqBody.Model, "status", resp.Status, "detail", detail)
 		return projectAssistantReply{}, fmt.Errorf("LLM API returned %s: %s", resp.Status, detail)
 	}
 
@@ -569,19 +608,18 @@ func projectLLMAuthToken(ctx context.Context, settings projectLLMSettings) (stri
 	return token.AccessToken, nil
 }
 
-func (h *Handler) resolveProjectToolCalls(ctx context.Context, toolCalls []chatToolCall, r *http.Request) ([]chatMessage, error) {
+func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolCalls []chatToolCall, r *http.Request) ([]chatMessage, error) {
 	if len(toolCalls) == 0 {
 		return nil, nil
 	}
 
 	var toolMessages []chatMessage
-	mcpEndpoint, ok := projectMCPEndpointFromRequest(r)
-	if !ok {
-		return nil, errors.New("failed to resolve MCP endpoint")
-	}
+	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
+	logger := klog.FromContext(ctx)
 
 	for _, tc := range toolCalls {
 		if tc.Function.Name == "" {
+			logger.Info("project assistant tool call rejected", "reason", "missing function name")
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -590,6 +628,7 @@ func (h *Handler) resolveProjectToolCalls(ctx context.Context, toolCalls []chatT
 			continue
 		}
 		if !projectMCPToolAllowed(tc.Function.Name) {
+			logger.Info("project assistant tool call rejected", "reason", "disallowed MCP tool name", "tool", tc.Function.Name)
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
@@ -602,6 +641,7 @@ func (h *Handler) resolveProjectToolCalls(ctx context.Context, toolCalls []chatT
 			tc.Type = "function"
 		}
 		if tc.Type != "function" {
+			logger.Info("project assistant tool call rejected", "reason", "unsupported tool call type", "tool", tc.Function.Name, "type", tc.Type)
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
@@ -613,6 +653,7 @@ func (h *Handler) resolveProjectToolCalls(ctx context.Context, toolCalls []chatT
 		args := map[string]any{}
 		if strings.TrimSpace(tc.Function.Arguments) != "" {
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				logger.Info("project assistant tool call rejected", "reason", "invalid arguments", "tool", tc.Function.Name, "args", tc.Function.Arguments, "err", err.Error())
 				toolMessages = append(toolMessages, chatMessage{
 					Role:       "tool",
 					Name:       tc.Function.Name,
@@ -622,8 +663,9 @@ func (h *Handler) resolveProjectToolCalls(ctx context.Context, toolCalls []chatT
 				continue
 			}
 		}
-		resp, err := callProjectMCPTool(ctx, mcpEndpoint, r, h.mgr.projectMCPInsecureSkipTLSVerify, tc.Function.Name, args)
+		resp, err := callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, tc.Function.Name, args)
 		if err != nil {
+			logger.Error(err, "project assistant MCP tool call failed", "tool", tc.Function.Name, "endpoint", mcpEndpoint)
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
@@ -632,6 +674,7 @@ func (h *Handler) resolveProjectToolCalls(ctx context.Context, toolCalls []chatT
 			})
 			continue
 		}
+		logger.V(2).Info("project assistant MCP tool call succeeded", "tool", tc.Function.Name, "responseBytes", len(resp))
 		toolMessages = append(toolMessages, chatMessage{
 			Role:       "tool",
 			Name:       tc.Function.Name,
@@ -643,76 +686,55 @@ func (h *Handler) resolveProjectToolCalls(ctx context.Context, toolCalls []chatT
 	return toolMessages, nil
 }
 
-func (h *Handler) loadProjectMCPTools(r *http.Request, settings projectLLMSettings) ([]chatTool, error) {
-	if tenantPath, ok := projectTenantClusterPath(r.Context()); ok {
-		mcpEndpoint := apiurl.MCPServerURL(projectHubBase(r), tenantPath, "default")
-		tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, r, h.mgr.projectMCPInsecureSkipTLSVerify)
-		if err != nil {
-			return nil, err
-		}
-		if len(tools) == 0 {
-			return nil, nil
-		}
-		out := make([]chatTool, 0, len(tools))
-		for _, t := range tools {
-			if strings.TrimSpace(t.Name) == "" {
-				continue
-			}
-			if !projectMCPToolAllowed(t.Name) {
-				continue
-			}
-			out = append(out, chatTool{
-				Type: "function",
-				Function: chatToolFunction{
-					Name:        t.Name,
-					Description: t.Description,
-					Parameters:  t.InputSchema,
-				},
-			})
-		}
-		return out, nil
+func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings projectLLMSettings) ([]chatTool, error) {
+	if id.tenantPath == "" {
+		return nil, errors.New("tenant context missing")
 	}
-
-	return nil, errors.New("tenant context missing")
+	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
+	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify)
+	if err != nil {
+		return nil, err
+	}
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	out := make([]chatTool, 0, len(tools))
+	for _, t := range tools {
+		if strings.TrimSpace(t.Name) == "" {
+			continue
+		}
+		if !projectMCPToolAllowed(t.Name) {
+			continue
+		}
+		out = append(out, chatTool{
+			Type: "function",
+			Function: chatToolFunction{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.InputSchema,
+			},
+		})
+	}
+	return out, nil
 }
 
-func projectMCPEndpointFromRequest(r *http.Request) (string, bool) {
-	tenantPath, ok := projectTenantClusterPath(r.Context())
-	if !ok {
-		return "", false
-	}
-	return apiurl.MCPServerURL(projectHubBase(r), tenantPath, "default"), true
+// mcpEndpoint returns the hub's unified MCPServer virtual-workspace endpoint for
+// the given tenant cluster path. The provider always reaches MCP through the
+// hub (KEDGE_HUB_URL), not its own host.
+func (s *Server) mcpEndpoint(tenantPath string) string {
+	return mcpServerURL(s.hubBase, tenantPath, "default")
 }
 
-func projectTenantClusterPath(ctx context.Context) (string, bool) {
-	tc, ok := tenant.FromContext(ctx)
-	if !ok || tc.OrgUUID == "" {
-		return "", false
-	}
-	if tc.WorkspaceUUID != "" {
-		return "root:kedge:orgs:" + tc.OrgUUID + ":" + tc.WorkspaceUUID, true
-	}
-	return "root:kedge:orgs:" + tc.OrgUUID, true
+// mcpServerURL mirrors pkg/apiurl.MCPServerURL in the kedge monorepo:
+// {hub}/services/mcpserver/{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp
+func mcpServerURL(hubBase, cluster, mcpServerName string) string {
+	return strings.TrimRight(hubBase, "/") +
+		fmt.Sprintf("/services/mcpserver/%s/apis/kedge.faros.sh/v1alpha1/mcpservers/%s/mcp", cluster, mcpServerName)
 }
 
-func projectHubBase(r *http.Request) string {
-	proto := r.Header.Get("X-Forwarded-Proto")
-	if proto == "" {
-		if r.TLS != nil {
-			proto = "https"
-		} else {
-			proto = "http"
-		}
-	}
-	if strings.Contains(proto, ",") {
-		proto = strings.TrimSpace(strings.Split(proto, ",")[0])
-	}
-	return proto + "://" + r.Host
-}
-
-func fetchProjectMCPTools(ctx context.Context, endpoint string, r *http.Request, skipTLSVerify bool) ([]projectMCPTool, error) {
+func fetchProjectMCPTools(ctx context.Context, endpoint string, r *http.Request, tenantPath string, skipTLSVerify bool) ([]projectMCPTool, error) {
 	params := []byte(`{}`)
-	body, err := projectMCPRequest(ctx, endpoint, "tools/list", params, r, skipTLSVerify)
+	body, err := projectMCPRequest(ctx, endpoint, "tools/list", params, r, tenantPath, skipTLSVerify)
 	if err != nil {
 		return nil, err
 	}
@@ -732,7 +754,7 @@ func fetchProjectMCPTools(ctx context.Context, endpoint string, r *http.Request,
 	return envelope.Tools, nil
 }
 
-func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, skipTLSVerify bool, name string, args map[string]any) (string, error) {
+func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, tenantPath string, skipTLSVerify bool, name string, args map[string]any) (string, error) {
 	params, err := json.Marshal(map[string]any{
 		"name":      name,
 		"arguments": args,
@@ -740,7 +762,7 @@ func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, s
 	if err != nil {
 		return "", fmt.Errorf("encode tool args: %w", err)
 	}
-	body, err := projectMCPRequest(ctx, endpoint, "tools/call", params, r, skipTLSVerify)
+	body, err := projectMCPRequest(ctx, endpoint, "tools/call", params, r, tenantPath, skipTLSVerify)
 	if err != nil {
 		return "", err
 	}
@@ -775,7 +797,7 @@ func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, s
 	return string(body), nil
 }
 
-func projectMCPRequest(ctx context.Context, endpoint, method string, paramsJSON json.RawMessage, r *http.Request, skipTLSVerify bool) (json.RawMessage, error) {
+func projectMCPRequest(ctx context.Context, endpoint, method string, paramsJSON json.RawMessage, r *http.Request, tenantPath string, skipTLSVerify bool) (json.RawMessage, error) {
 	env := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -795,7 +817,7 @@ func projectMCPRequest(ctx context.Context, endpoint, method string, paramsJSON 
 	if auth := r.Header.Get("Authorization"); strings.TrimSpace(auth) != "" {
 		req.Header.Set("Authorization", auth)
 	}
-	if tenantPath, ok := projectTenantClusterPath(r.Context()); ok {
+	if tenantPath != "" {
 		req.Header.Set("X-Kedge-Tenant", tenantPath)
 	}
 
@@ -910,7 +932,7 @@ func firstSSELine(body []byte) (json.RawMessage, bool) {
 	return nil, false
 }
 
-func readProjectLLMSettings(ctx context.Context, c *kedgeclient.Client) (projectLLMSettings, error) {
+func readProjectLLMSettings(ctx context.Context, c *asclient.Client) (projectLLMSettings, error) {
 	settings := defaultProjectLLMSettings()
 	secret, err := c.Dynamic().Resource(secretGVR).Namespace(projectLLMSecretNamespace).Get(ctx, projectLLMSecretName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -932,7 +954,7 @@ func readProjectLLMSettings(ctx context.Context, c *kedgeclient.Client) (project
 	return settings, nil
 }
 
-func writeProjectLLMSettings(ctx context.Context, c *kedgeclient.Client, settings projectLLMSettings) error {
+func writeProjectLLMSettings(ctx context.Context, c *asclient.Client, settings projectLLMSettings) error {
 	secret := projectLLMSettingsSecret(settings)
 	existing, err := c.Dynamic().Resource(secretGVR).Namespace(projectLLMSecretNamespace).Get(ctx, projectLLMSecretName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -1172,7 +1194,7 @@ func normalizeLLMBasePath(path string, host string) string {
 	return path
 }
 
-func projectPromptMessages(p *aiv1alpha1.Project, history []projectstore.Message) []chatMessage {
+func projectPromptMessages(p *aiv1alpha1.Project, history []store.Message) []chatMessage {
 	messages := []chatMessage{{Role: "system", Content: projectSystemPrompt(p)}}
 	for _, m := range history {
 		if m.Role != aiv1alpha1.ProjectMessageRoleUser && m.Role != aiv1alpha1.ProjectMessageRoleAssistant {
@@ -1261,14 +1283,6 @@ func projectMCPToolBaseName(name string) string {
 		}
 	}
 	return strings.TrimSpace(name)
-}
-
-func shouldIncludeProjectLLMMetadata(settings projectLLMSettings) bool {
-	if strings.EqualFold(strings.TrimSpace(settings.Provider), projectLLMProviderGoogle) {
-		return false
-	}
-	baseURL := strings.ToLower(strings.TrimSpace(settings.BaseURL))
-	return !strings.Contains(baseURL, "generativelanguage.googleapis.com")
 }
 
 func appendMemoryList(b *strings.Builder, label string, items []string) {

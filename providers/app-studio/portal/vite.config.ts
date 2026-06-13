@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   base: '/ui/providers/app-studio/',
-  plugins: [vue()],
+  plugins: [vue(), tailwindcss()],
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
     __VUE_OPTIONS_API__: 'true',
@@ -14,6 +15,7 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     target: 'es2022',
+    cssCodeSplit: false,
     lib: {
       entry: 'src/main.ts',
       formats: ['iife'],

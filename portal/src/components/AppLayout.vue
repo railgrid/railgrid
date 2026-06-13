@@ -348,7 +348,7 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
     <aside
       v-if="isVerticalDock"
       ref="dockedRef"
-      class="relative z-50 flex h-full w-48 flex-shrink-0 flex-col border-border-subtle bg-surface-raised/80 py-3 px-2 backdrop-blur-xl"
+      class="relative z-50 flex h-full w-48 flex-shrink-0 flex-col overflow-hidden border-border-subtle bg-surface-raised/80 py-3 px-2 backdrop-blur-xl"
       :class="dockState.mode === 'left' ? 'order-first border-r' : 'order-last border-l'"
     >
       <!-- Drag handle + Logo -->
@@ -381,6 +381,12 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 
+      <!-- Scrollable nav region. With many providers this is the only
+           part of the dock that grows, so it scrolls internally instead
+           of squishing the rows and pushing the footer controls off
+           screen. min-h-0 lets it shrink below its content height inside
+           the flex column; the header above and footer below stay pinned. -->
+      <div class="-mr-1 flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
       <!-- Static nav items (Dashboard, Workloads) -->
       <router-link
         v-for="item in staticNavItems"
@@ -472,6 +478,8 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         <Puzzle class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
         <span>{{ providersHeaderItem.label }}</span>
       </router-link>
+      </div>
+      <!-- end scrollable nav region -->
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 
@@ -502,8 +510,6 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
       <div class="px-1 py-1">
         <ThemeSwitch variant="sidebar" />
       </div>
-
-      <div class="flex-1" />
 
       <!-- Status -->
       <div v-if="auth.user" class="flex items-center gap-2 px-3 py-1.5">
@@ -575,11 +581,18 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
       <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
       <!-- Nav sections: labels always visible, category chips between
-           groups so providers don't all look like Puzzle icons. -->
+           groups so providers don't all look like Puzzle icons. The
+           sections live in their own flex-1 track that scrolls
+           horizontally; items are shrink-0 so a long provider list
+           overflows into the scroll area instead of compressing every
+           link until the labels collide. This track also replaces the
+           old flex-1 spacer — it pushes the right-side controls to the
+           edge while staying scrollable. -->
+      <div class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto kedge-nav-scroll">
       <template v-for="(section, sIdx) in horizontalNavSections" :key="section.key">
         <div
           v-if="section.label"
-          class="ml-1 flex items-center gap-1 rounded-md border border-border-subtle/60 bg-surface-overlay/40 px-1.5 py-0.5"
+          class="ml-1 flex shrink-0 items-center gap-1 rounded-md border border-border-subtle/60 bg-surface-overlay/40 px-1.5 py-0.5"
           :title="section.label"
         >
           <component v-if="section.icon" :is="section.icon" class="h-3 w-3 text-text-muted/80" :stroke-width="2" />
@@ -591,22 +604,21 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
           v-for="item in section.items"
           :key="item.to"
           :to="item.to"
-          class="flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
+          class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
           :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/40 hover:text-text-secondary'"
           :title="item.label"
         >
-          <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
-          <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
-          <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 shrink-0 object-contain" />
+          <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+          <Puzzle v-else class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
           <span>{{ item.label }}</span>
         </router-link>
         <div
           v-if="sIdx < horizontalNavSections.length - 1"
-          class="mx-0.5 h-4 w-px bg-border-default/30"
+          class="mx-0.5 h-4 w-px shrink-0 bg-border-default/30"
         />
       </template>
-
-      <div class="flex-1" />
+      </div>
 
       <!-- Status -->
       <span v-if="auth.clusterName" class="px-1 font-mono text-[9px] tracking-wider text-text-muted">
@@ -700,7 +712,7 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
       }"
       :style="floatStyle"
     >
-      <div class="island flex items-center gap-1 rounded-2xl px-2 py-1.5">
+      <div class="island flex max-w-[calc(100vw-2rem)] items-center gap-1 rounded-2xl px-2 py-1.5">
         <div
           class="island-nav flex h-8 w-5 cursor-grab items-center justify-center rounded-lg text-text-muted/30 transition-colors hover:text-text-muted"
           :class="{ 'cursor-grabbing': isDragging }"
@@ -731,10 +743,11 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
+        <div class="flex min-w-0 items-center gap-1 overflow-x-auto kedge-nav-scroll">
         <template v-for="(section, sIdx) in horizontalNavSections" :key="section.key">
           <div
             v-if="section.label"
-            class="ml-1 flex items-center gap-1 rounded-md border border-border-subtle/60 bg-surface-overlay/40 px-1.5 py-0.5"
+            class="ml-1 flex shrink-0 items-center gap-1 rounded-md border border-border-subtle/60 bg-surface-overlay/40 px-1.5 py-0.5"
             :title="section.label"
           >
             <component v-if="section.icon" :is="section.icon" class="h-3 w-3 text-text-muted/80" :stroke-width="2" />
@@ -746,20 +759,21 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
             v-for="item in section.items"
             :key="item.to"
             :to="item.to"
-            class="island-nav flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
+            class="island-nav flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
             :class="isActive(item.to) ? 'active bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
             :title="item.label"
           >
-            <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
-            <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
-            <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 shrink-0 object-contain" />
+            <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+            <Puzzle v-else class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
             <span>{{ item.label }}</span>
           </router-link>
           <div
             v-if="sIdx < horizontalNavSections.length - 1"
-            class="mx-0.5 h-4 w-px bg-border-default/30"
+            class="mx-0.5 h-4 w-px shrink-0 bg-border-default/30"
           />
         </template>
+        </div>
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
@@ -820,5 +834,23 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+/* Slim, unobtrusive scrollbar for the horizontal provider-nav tracks in
+   the top/bottom and floating docks. Without this the default chunky
+   scrollbar eats vertical space in the thin bar. */
+.kedge-nav-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-text-muted) transparent;
+}
+.kedge-nav-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+.kedge-nav-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.kedge-nav-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--color-text-muted);
+  border-radius: 9999px;
 }
 </style>

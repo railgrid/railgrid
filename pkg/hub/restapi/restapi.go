@@ -52,7 +52,6 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
 	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
-	projectstore "github.com/faroshq/faros-kedge/providers/projects/store"
 )
 
 // WorkspaceOps is the slice of *kcp.Bootstrapper the REST handlers
@@ -150,25 +149,14 @@ type ProviderLookup interface {
 	Get(name string) (providers.Provider, bool)
 }
 
-// ProjectClientFactory returns a typed client targeting a child workspace.
-// Production builds it from Bootstrapper.ChildWorkspaceConfig; tests can
-// inject a fake dynamic client.
-type ProjectClientFactory func(ctx context.Context, orgUUID, wsUUID string) (*kedgeclient.Client, error)
-
 // Manager holds the dependencies every handler needs: the kedge
 // typed client (for Org / User / UMI CR access in root:kedge:users)
 // and the WorkspaceOps (kcp Bootstrapper in production; fake in tests).
 type Manager struct {
-	client                  *kedgeclient.Client
-	bootstrapper            WorkspaceOps
-	kubeconfig              KubeconfigConfig
-	providers               ProviderLookup       // optional; nil = enableProvider returns 501
-	projectClients          ProjectClientFactory // optional; nil = projects return 501
-	projectMessages         projectstore.Store
-	projectMessageRetention time.Duration
-	// projectMCPInsecureSkipTLSVerify allows MCP discovery/tool-call calls to
-	// skip certificate verification in dev/local setups.
-	projectMCPInsecureSkipTLSVerify bool
+	client       *kedgeclient.Client
+	bootstrapper WorkspaceOps
+	kubeconfig   KubeconfigConfig
+	providers    ProviderLookup // optional; nil = enableProvider returns 501
 }
 
 // NewManager builds a Manager from the userClient (typed kedge client
@@ -193,34 +181,6 @@ func (m *Manager) WithKubeconfig(cfg KubeconfigConfig) *Manager {
 // provider wiring for tests / minimal hubs.
 func (m *Manager) WithProviderRegistry(p ProviderLookup) *Manager {
 	m.providers = p
-	return m
-}
-
-// WithProjectClientFactory installs the workspace-scoped client factory used
-// by Project REST routes.
-func (m *Manager) WithProjectClientFactory(f ProjectClientFactory) *Manager {
-	m.projectClients = f
-	return m
-}
-
-// WithProjectMessageStore installs the message persistence backend used by
-// the App Studio routes. When unset, message persistence returns 501.
-func (m *Manager) WithProjectMessageStore(s projectstore.Store) *Manager {
-	m.projectMessages = s
-	return m
-}
-
-// WithProjectMessageRetention configures the background cleanup window for
-// old messages. Zero disables cleanup.
-func (m *Manager) WithProjectMessageRetention(d time.Duration) *Manager {
-	m.projectMessageRetention = d
-	return m
-}
-
-// WithProjectMCPInsecureSkipTLSVerify configures MCP calls made during
-// project message handling to skip TLS verification. Keep false in production.
-func (m *Manager) WithProjectMCPInsecureSkipTLSVerify(v bool) *Manager {
-	m.projectMCPInsecureSkipTLSVerify = v
 	return m
 }
 
@@ -320,20 +280,6 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// workspace. Same proxy-avoidance rationale. Portal calls this
 	// on every workspace switch to refresh the sidebar's enabled-set.
 	r.HandleFunc("/{org}/workspaces/{ws}/providers/enabled", h.listEnabledProviders).Methods(http.MethodGet)
-
-	// Projects: workspace-scoped AI workspace metadata, memory, and
-	// conversation history.
-	r.HandleFunc("/{org}/workspaces/{ws}/projects", h.listProjects).Methods(http.MethodGet)
-	r.HandleFunc("/{org}/workspaces/{ws}/projects", h.createProject).Methods(http.MethodPost)
-	r.HandleFunc("/{org}/workspaces/{ws}/projects/llm-settings", h.getProjectLLMSettings).Methods(http.MethodGet)
-	r.HandleFunc("/{org}/workspaces/{ws}/projects/llm-settings", h.patchProjectLLMSettings).Methods(http.MethodPatch)
-	r.HandleFunc("/{org}/workspaces/{ws}/projects/{project}", h.getProject).Methods(http.MethodGet)
-	r.HandleFunc("/{org}/workspaces/{ws}/projects/{project}", h.patchProject).Methods(http.MethodPatch)
-	r.HandleFunc("/{org}/workspaces/{ws}/projects/{project}", h.deleteProject).Methods(http.MethodDelete)
-	r.HandleFunc("/{org}/workspaces/{ws}/projects/{project}/messages", h.listProjectMessages).Methods(http.MethodGet)
-	r.HandleFunc("/{org}/workspaces/{ws}/projects/{project}/messages/stream", h.createProjectMessageStream).Methods(http.MethodPost)
-	r.HandleFunc("/{org}/workspaces/{ws}/projects/{project}/memory", h.getProjectMemory).Methods(http.MethodGet)
-	r.HandleFunc("/{org}/workspaces/{ws}/projects/{project}/memory", h.patchProjectMemory).Methods(http.MethodPatch)
 }
 
 // ===== shared helpers =====

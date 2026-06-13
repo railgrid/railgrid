@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import { useProvidersStore } from '@/stores/providers'
 import { useAuthStore } from '@/stores/auth'
+import { useTenantStore } from '@/stores/tenant'
 import { useThemeStore } from '@/stores/theme'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
 
@@ -17,6 +18,7 @@ const props = defineProps<{ providerName: string; subPath: string }>()
 
 const providers = useProvidersStore()
 const auth = useAuthStore()
+const tenant = useTenantStore()
 const theme = useThemeStore()
 const router = useRouter()
 
@@ -57,7 +59,7 @@ watch(
 // the micro-frontend. Without props.subPath in the dep list the element
 // stayed on its initial route until a hard refresh.
 watch(
-  () => [theme.mode, auth.token, auth.clusterName, props.subPath] as const,
+  () => [theme.mode, auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, props.subPath] as const,
   () => pushContext(),
 )
 
@@ -161,6 +163,13 @@ function pushContext() {
     token: auth.token,
     user: auth.user,
     tenant: auth.clusterName,
+    // Sidebar-selected org/workspace. Providers that call their backend
+    // through /services/providers/* forward these as X-Kedge-Org /
+    // X-Kedge-Workspace so the hub's tenant resolver can inject
+    // X-Kedge-Tenant (the backend proxy honours the same headers the
+    // console's own /api/orgs/* calls send).
+    orgUUID: tenant.orgUUID,
+    workspaceUUID: tenant.workspaceUUID,
     theme: theme.mode,
     basePath: `/ui/providers/${entry.value.name}`,
   }

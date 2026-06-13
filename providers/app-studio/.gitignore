@@ -1,0 +1,11 @@
+# Local-dev secrets. Never commit a real .env.
+.env
+
+# Node / Vite build output (the image build regenerates portal/dist). Keep the
+# .gitkeep so //go:embed all:portal/dist has a valid target in a clean checkout.
+node_modules/
+portal/dist/*
+!portal/dist/.gitkeep
+
+# Provider binary output
+/app-studio-provider

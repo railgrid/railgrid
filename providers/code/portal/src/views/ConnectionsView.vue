@@ -3,6 +3,8 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import type { Connection, ErrorResponse } from '../types'
 
+const emit = defineEmits<{ (e: 'open', name: string): void }>()
+
 const connections = ref<Connection[]>([])
 const error = ref<string | null>(null)
 const loading = ref(false)
@@ -190,12 +192,12 @@ onUnmounted(() => {
         </thead>
         <tbody>
           <tr v-for="c in connections" :key="c.name">
-            <td>{{ c.name }}</td>
+            <td><button class="link" @click="emit('open', c.name)">{{ c.name }}</button></td>
             <td>{{ c.owner }}</td>
             <td>{{ c.login || '—' }}</td>
             <td>
               <span v-if="c.validated" class="badge ok">validated</span>
-              <span v-else class="badge warn" :title="c.message">pending</span>
+              <button v-else class="badge warn" :title="c.message" @click="emit('open', c.name)">pending — details</button>
             </td>
             <td class="right"><button class="danger" @click="remove(c)">Delete</button></td>
           </tr>

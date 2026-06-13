@@ -19,6 +19,21 @@ service:
 catalogEntry:
   enabled: true
   uiURL: ""
+  backendURL: ""
+
+# App Studio chat-message persistence. Prefer databaseURLSecretRef in
+# production; inMemoryMessageStore is for local development only.
+store:
+  databaseURL: ""
+  databaseURLSecretRef:
+    name: ""
+    key: database-url
+  inMemoryMessageStore: false
+  # Retention window understood by Go's time.ParseDuration, e.g. "720h".
+  messageRetention: ""
+  messageEncryptionKeysSecretRef:
+    name: ""
+    key: keys
 
 hub:
   url: "http://kedge-hub.kedge.svc.cluster.local:8080"

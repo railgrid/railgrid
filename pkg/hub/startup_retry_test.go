@@ -109,7 +109,7 @@ func TestIsRetriableKCPBootstrapError(t *testing.T) {
 	}{
 		{
 			name: "connection reset",
-			err:  fmt.Errorf("getting CRD projects.ai.kedge.faros.sh: read tcp: connection reset by peer"),
+			err:  fmt.Errorf("getting CRD edges.kedge.faros.sh: read tcp: connection reset by peer"),
 			want: true,
 		},
 		{
@@ -128,7 +128,7 @@ func TestIsRetriableKCPBootstrapError(t *testing.T) {
 		},
 		{
 			name: "permanent validation",
-			err:  errors.New("creating CRD projects.ai.kedge.faros.sh: spec.validation.openAPIV3Schema is invalid"),
+			err:  errors.New("creating CRD edges.kedge.faros.sh: spec.validation.openAPIV3Schema is invalid"),
 			want: false,
 		},
 		{

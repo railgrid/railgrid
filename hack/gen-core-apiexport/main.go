@@ -91,7 +91,6 @@ func main() {
 	// own workspaces (providers in root:kedge:providers, tenancy in
 	// root:kedge:users) and writes their CRs with admin credentials.
 	excludedAPIExports := map[string]bool{
-		"apiexport-ai.kedge.faros.sh.yaml":        true,
 		"apiexport-providers.kedge.faros.sh.yaml": true,
 		"apiexport-tenancy.kedge.faros.sh.yaml":   true,
 	}

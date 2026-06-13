@@ -29,6 +29,31 @@ export interface Connection {
   message?: string
 }
 
+// ConditionInfo is a single status condition, surfaced verbatim in detail views
+// so the reason/message a controller recorded is visible (not just flattened to
+// a badge). lastTransitionTime tells "never reconciled" apart from "just failed".
+export interface ConditionInfo {
+  type: string
+  status: string
+  reason?: string
+  message?: string
+  lastTransitionTime?: string
+}
+
+// ConnectionDetail is a Connection plus the full spec/status needed to debug a
+// pending connection: every condition, the resolved login/scopes, the secret it
+// points at, and observed-vs-current generation (a lag means the controller has
+// not reconciled the latest spec yet).
+export interface ConnectionDetail extends Connection {
+  baseURL?: string
+  secretNamespace?: string
+  secretKey?: string
+  generation?: number
+  observedGeneration?: number
+  creationTimestamp?: string
+  conditions: ConditionInfo[]
+}
+
 export interface Repository {
   name: string
   connectionRef: string

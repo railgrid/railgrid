@@ -1367,6 +1367,16 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 		if c.Accepted {
 			state = apisv1alpha2.ClaimAccepted
 		}
+		// kcp marks the binding's PermissionClaimsValid=False (and refuses to
+		// surface the claimed resource through the export's virtual workspace)
+		// unless a claim on a non-built-in type carries the identityHash of the
+		// APIExport that serves it. The export side (provisioner.ApplyAPIExport)
+		// resolves the same hash; mirror it here or the bound provider sees zero
+		// claimed objects (e.g. kuery engages no edges).
+		hash, err := b.resolveClaimIdentityHash(ctx, c.Group, c.Resource)
+		if err != nil {
+			return fmt.Errorf("resolving identityHash for claim %s.%s: %w", c.Resource, c.Group, err)
+		}
 		specClaims = append(specClaims, apisv1alpha2.AcceptablePermissionClaim{
 			ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{
 				PermissionClaim: apisv1alpha2.PermissionClaim{
@@ -1374,7 +1384,8 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 						Group:    c.Group,
 						Resource: c.Resource,
 					},
-					Verbs: c.Verbs,
+					Verbs:        c.Verbs,
+					IdentityHash: hash,
 				},
 				Selector: apisv1alpha2.PermissionClaimSelector{MatchAll: true},
 			},
@@ -1409,6 +1420,56 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 		return fmt.Errorf("waiting for APIBinding %q to bind in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
 	}
 	return nil
+}
+
+// resolveClaimIdentityHash returns the identityHash of the APIExport in
+// root:kedge:providers that serves (group, resource), as required on any
+// permissionClaim for a non-built-in API type. A built-in type (no sibling
+// APIExport serves it — e.g. core k8s resources) yields "" and no hash is set;
+// an empty group is always built-in.
+//
+// kedge keeps every first-party APIExport (core.faros.sh, kedge.faros.sh, …)
+// in root:kedge:providers, so a single list there covers all resolvable
+// claims. Matching is by (spec.resources[].group, .name) rather than the
+// export name so it does not depend on the name==group convention. Mirrors
+// provisioner.resolveClaimIdentityHash on the export side.
+func (b *Bootstrapper) resolveClaimIdentityHash(ctx context.Context, group, resource string) (string, error) {
+	if group == "" {
+		return "", nil
+	}
+	providersConfig := configForPath(b.config, "root:kedge:providers")
+	providersClient, err := dynamic.NewForConfig(providersConfig)
+	if err != nil {
+		return "", fmt.Errorf("creating providers workspace client: %w", err)
+	}
+	list, err := providersClient.Resource(apiExportGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("listing APIExports in root:kedge:providers: %w", err)
+	}
+	for i := range list.Items {
+		ex := &list.Items[i]
+		resources, _, _ := unstructured.NestedSlice(ex.Object, "spec", "resources")
+		for _, r := range resources {
+			rm, ok := r.(map[string]any)
+			if !ok {
+				continue
+			}
+			g, _ := rm["group"].(string)
+			n, _ := rm["name"].(string)
+			if g != group || n != resource {
+				continue
+			}
+			hash, _, _ := unstructured.NestedString(ex.Object, "status", "identityHash")
+			if hash == "" {
+				// The serving APIExport exists but kcp has not minted its
+				// identity yet; surface an error rather than write an empty hash.
+				return "", fmt.Errorf("APIExport %q serves %s.%s but status.identityHash is not set yet", ex.GetName(), resource, group)
+			}
+			return hash, nil
+		}
+	}
+	// No sibling APIExport serves it — treat as built-in (needs no hash).
+	return "", nil
 }
 
 // ListProviderAPIBindings returns the set of Bound provider APIBindings

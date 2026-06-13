@@ -195,6 +195,19 @@ type EdgeStatus struct {
 	// +optional
 	URL string `json:"URL,omitempty"`
 
+	// WorkspacePath is the kcp workspace path (e.g.
+	// root:kedge:orgs:{org}:{ws}) of the workspace this Edge lives in. The
+	// Edge object itself only carries the opaque logical-cluster name
+	// (kcp.io/cluster), but tenant-scoped consumers (the hub injects
+	// X-Kedge-Tenant = the user's workspace path) need the human-meaningful
+	// path to correlate. Stamped by the hub's edge controller, which resolves
+	// it from the tenant LogicalCluster's kcp.io/path annotation — something a
+	// provider service account cannot read itself. Consumed by the kuery
+	// engagement controller to label engaged clusters so tenant queries scope
+	// correctly.
+	// +optional
+	WorkspacePath string `json:"workspacePath,omitempty"`
+
 	// Labels are propagated from the edge agent (e.g. region, provider tags).
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`

@@ -17,6 +17,12 @@ spec:
   ui:
     url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.uiURL | quote }}
     indexPath: "/"
+  backend:
+    # The hub backend proxy forwards /services/providers/app-studio/* here,
+    # injecting the verified X-Kedge-Tenant/X-Kedge-User headers and the
+    # caller's bearer token. The provider serves /api/projects/* + /healthz.
+    url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
+    healthPath: "/healthz"
   apiExport:
     name: "ai.kedge.faros.sh"
     permissionClaims:

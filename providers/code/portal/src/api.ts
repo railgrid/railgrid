@@ -10,6 +10,7 @@
 import type {
   Collaborator,
   Connection,
+  ConnectionDetail,
   DeployKey,
   ErrorResponse,
   Package,
@@ -41,6 +42,7 @@ interface KCPMetadata {
   name: string
   uid?: string
   resourceVersion?: string
+  generation?: number
   creationTimestamp?: string
 }
 interface KCPCondition {
@@ -103,6 +105,31 @@ function connFromCR(cr: RawCR): Connection {
     scopes: Array.isArray(status.scopes) ? (status.scopes as string[]) : [],
     validated: condTrue(cr, 'Validated'),
     message: condMsg(cr, 'Validated') ?? condMsg(cr, 'Ready'),
+  }
+}
+
+// connDetailFromCR is connFromCR plus the raw spec/status the detail view needs
+// to explain a pending connection: every condition verbatim, the secret it
+// references, and observed-vs-current generation.
+function connDetailFromCR(cr: RawCR): ConnectionDetail {
+  const spec = cr.spec ?? {}
+  const status = cr.status ?? {}
+  const secretRef = (spec.secretRef as Record<string, unknown> | undefined) ?? {}
+  return {
+    ...connFromCR(cr),
+    baseURL: spec.baseURL ? String(spec.baseURL) : undefined,
+    secretNamespace: secretRef.namespace ? String(secretRef.namespace) : undefined,
+    secretKey: secretRef.key ? String(secretRef.key) : undefined,
+    generation: typeof cr.metadata.generation === 'number' ? cr.metadata.generation : undefined,
+    observedGeneration: typeof status.observedGeneration === 'number' ? status.observedGeneration : undefined,
+    creationTimestamp: cr.metadata.creationTimestamp,
+    conditions: (status.conditions ?? []).map(c => ({
+      type: c.type,
+      status: c.status,
+      reason: c.reason,
+      message: c.message,
+      lastTransitionTime: (c as KCPCondition & { lastTransitionTime?: string }).lastTransitionTime,
+    })),
   }
 }
 
@@ -220,6 +247,9 @@ async function deleteSecret(name: string): Promise<void> {
 const GQL_META = 'metadata { name uid resourceVersion creationTimestamp }'
 const GQL_COND = 'conditions { type status reason message }'
 const F_CONNECTION = `${GQL_META} spec { provider type owner secretRef { name namespace key } baseURL } status { login scopes ${GQL_COND} }`
+// Detail fragment: adds generation/observedGeneration and per-condition
+// lastTransitionTime so the detail view can explain why a connection is pending.
+const F_CONNECTION_DETAIL = `metadata { name uid resourceVersion generation creationTimestamp } spec { provider type owner secretRef { name namespace key } baseURL } status { login scopes observedGeneration conditions { type status reason message lastTransitionTime } }`
 const F_REPOSITORY = `${GQL_META} spec { connectionRef name owner visibility description defaultBranch autoInit } status { repoID htmlURL cloneURL sshURL ${GQL_COND} }`
 const F_DEPLOYKEY = `${GQL_META} spec { repositoryRef title publicKey readOnly } status { keyID secretRef { name } ${GQL_COND} }`
 const F_COLLABORATOR = `${GQL_META} spec { repositoryRef username permission } status { invitationID ${GQL_COND} }`
@@ -252,6 +282,12 @@ export const api = {
   // ── Connections ──────────────────────────────────────────────────────────
   async listConnections(): Promise<Connection[]> {
     return (await gqlList('Connections', F_CONNECTION)).map(connFromCR)
+  },
+
+  // getConnection fetches one Connection with the full spec/status the detail
+  // view renders — used to diagnose a connection stuck in "pending".
+  async getConnection(name: string): Promise<ConnectionDetail> {
+    return connDetailFromCR(await gqlGet('Connection', name, F_CONNECTION_DETAIL))
   },
 
   // connect creates the Connection, then the token Secret it references — in

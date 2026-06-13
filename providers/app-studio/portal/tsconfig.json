@@ -20,5 +20,5 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src/**/*.ts", "../../../projects/portal/src/**/*.ts", "../../../projects/portal/src/**/*.vue", "env.d.ts"]
+  "include": ["src/**/*.ts", "src/**/*.vue", "env.d.ts"]
 }

@@ -22,8 +22,6 @@ github.com/evanphx/json-patch v5.6.0+incompatible h1:jBYDEEiFBPxA0v50tFdvOzQQTCv
 github.com/evanphx/json-patch v5.6.0+incompatible/go.mod h1:50XU6AFN0ol/bzJsmQLiYLvXMP4fmwYFNcr97nuDLSk=
 github.com/evanphx/json-patch/v5 v5.9.11 h1:/8HVnzMq13/3x9TPvjG08wUGqBTmZBsCWzjTM0wiaDU=
 github.com/evanphx/json-patch/v5 v5.9.11/go.mod h1:3j+LviiESTElxA4p3EMKAB9HXj3/XEtnUf6OZxqIQTM=
-github.com/faroshq/kuery v0.0.0-20260612040150-fee20d3fd467 h1:qV9mbZR0GGUfDr4G3Ktgm/tqqBcpQCVPumlicV1v08U=
-github.com/faroshq/kuery v0.0.0-20260612040150-fee20d3fd467/go.mod h1:xfFaDclu0sX98zyI1N9C63Hwuhvg5g2oIs93dqzl3kk=
 github.com/faroshq/kuery v0.0.0-20260612114451-4faa46315aa7 h1:3muOYkFjkBfnK4/UYC1YoSbOOT/sBNbCZyhwi5Dq86k=
 github.com/faroshq/kuery v0.0.0-20260612114451-4faa46315aa7/go.mod h1:xfFaDclu0sX98zyI1N9C63Hwuhvg5g2oIs93dqzl3kk=
 github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S9k=

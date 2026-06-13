@@ -9,7 +9,6 @@
 package engagement
 
 import (
-	"context"
 	"testing"
 )
 
@@ -47,10 +46,13 @@ func TestTenantLabelIsBareIdentifier(t *testing.T) {
 }
 
 func TestTenantEdges(t *testing.T) {
-	c := &Controller{engaged: map[string]context.CancelFunc{
-		"tenant-a/edge-2": func() {},
-		"tenant-a/edge-1": func() {},
-		"tenant-b/edge-9": func() {},
+	// The map key is cluster-based, but TenantEdges scopes by the stored
+	// workspace-path tenant — so a key whose cluster segment differs from the
+	// tenant (cl-x/edge-2) must still surface under its tenant (tenant-a).
+	c := &Controller{engaged: map[string]engagedEdge{
+		"cl-x/edge-2":     {tenant: "tenant-a", edgeName: "edge-2", cancel: func() {}},
+		"tenant-a/edge-1": {tenant: "tenant-a", edgeName: "edge-1", cancel: func() {}},
+		"tenant-b/edge-9": {tenant: "tenant-b", edgeName: "edge-9", cancel: func() {}},
 	}}
 	got := c.TenantEdges("tenant-a")
 	if len(got) != 2 || got[0] != "edge-1" || got[1] != "edge-2" {

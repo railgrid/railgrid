@@ -29,10 +29,14 @@ spec:
   iconURL: "/ui/providers/kuery/icon.svg"
   serviceAccountNamespace: "kuery"
   ui:
-    url: "http://localhost:8081"
+    # Dev loopback port (KUERY_PORT / Tiltfile run-provider-kuery). Must be
+    # 8084, not 8081 — quickstart owns 8081, and the hub reverse-proxies the
+    # portal bundle here; pointing at 8081 serves quickstart's bundle and the
+    # kedge-provider-kuery custom element never registers.
+    url: "http://localhost:8084"
     indexPath: "/"
   backend:
-    url: "http://localhost:8081"
+    url: "http://localhost:8084"
     healthPath: "/healthz"
 
   # Kuery's engagement controller opens BACKGROUND connections to the

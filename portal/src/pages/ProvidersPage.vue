@@ -282,11 +282,13 @@ async function onDisable(p: ProviderDTO) {
           </div>
 
           <div class="mt-4 flex items-center gap-2">
-            <!-- Open: only when ready and has UI. Builtin providers go
-                 to their in-tree Vue route; third-party load via
-                 /providers/{name} → ProviderFrame. -->
+            <!-- Open: only when ready and has UI. Enableable providers
+                 (those declaring an APIExport) must also be enabled for
+                 this user. Builtin providers go to their in-tree Vue
+                 route; third-party load via /providers/{name} →
+                 ProviderFrame. -->
             <router-link
-              v-if="p.hasUI && p.ready"
+              v-if="p.hasUI && p.ready && (!p.apiExportName || providers.isEnabled(p.name))"
               :to="p.builtinRoute ? `/${p.builtinRoute}` : `/providers/${p.name}`"
               class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20"
             >
