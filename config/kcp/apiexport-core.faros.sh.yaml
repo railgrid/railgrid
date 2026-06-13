@@ -6,6 +6,12 @@ metadata:
   name: core.faros.sh
 spec:
   permissionClaims:
+  - group: apis.kcp.io
+    resource: apibindings
+    verbs:
+    - get
+    - list
+    - watch
   - resource: secrets
     verbs:
     - get

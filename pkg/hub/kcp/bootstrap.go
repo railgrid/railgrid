@@ -578,6 +578,16 @@ func (b *Bootstrapper) EnsureChildWorkspaceKedgeBinding(ctx context.Context, org
 				// Owns(&Workspace{}) the per-edge mount workspaces, so it needs
 				// the full verb set the export offers.
 				acceptedClaim("tenancy.kcp.io", "workspaces", b.workspaceIdentityHash, allVerbs),
+				// apibindings (apis.kcp.io): accepted so kcp labels EVERY
+				// APIBinding in this workspace with core.faros.sh's claim label,
+				// making them visible through the core.faros.sh APIExport virtual
+				// workspace. The GraphQL listener watches apibindings over that VW
+				// to trigger a schema rebuild; without this claim the VW shows
+				// only this reflexive binding, so enabling another provider would
+				// not rebuild the schema until the next informer resync. Must
+				// stay in sync with the matching claim core.faros.sh declares
+				// (see hack/gen-core-apiexport).
+				acceptedClaim("apis.kcp.io", "apibindings", "", []string{"get", "list", "watch"}),
 			},
 		},
 	}

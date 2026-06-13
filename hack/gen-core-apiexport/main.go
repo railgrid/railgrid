@@ -65,6 +65,23 @@ func main() {
 	var mergedClaims []map[string]interface{}
 	var mergedResources []map[string]interface{}
 
+	// core.faros.sh always claims apibindings (apis.kcp.io) — not because any
+	// provider consumes the data, but so the GraphQL listener's APIExport
+	// virtual workspace surfaces EVERY APIBinding in a consumer workspace.
+	// The listener watches apibindings through this VW to know when to rebuild
+	// the GraphQL schema; without the claim the VW exposes only the consumer's
+	// own core.faros.sh binding (kcp's reflexive fallback), so enabling another
+	// provider — a new APIBinding to a different APIExport — produces no event
+	// and the schema goes stale until the next informer resync. The consumer
+	// binding must accept this claim (see EnsureChildWorkspaceKedgeBinding).
+	// Ref: kcp pkg/virtual/apiexport/controllers/apireconciler (claimsAPIBindings).
+	mergedClaims = append(mergedClaims, map[string]interface{}{
+		"group":    "apis.kcp.io",
+		"resource": "apibindings",
+		"verbs":    []interface{}{"get", "list", "watch"},
+	})
+	seenClaims[claimKey{group: "apis.kcp.io", resource: "apibindings"}] = true
+
 	// Process files alphabetically, skip the output file itself and non-apiexport files.
 	outputBase := filepath.Base(*output)
 
