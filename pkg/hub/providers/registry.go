@@ -45,6 +45,7 @@ type Provider struct {
 	DisplayName      string     // human-readable label, surfaced to the portal
 	IconURL          string     // optional, defaults to /ui/providers/{name}/icon.svg
 	Category         string     // optional grouping in the portal nav; empty = top-level
+	Dependencies     []string   // provider names that must be enabled first
 	UIURL            *url.URL   // proxy target for /ui/providers/{name}/*; nil → 404
 	BackendURL       *url.URL   // proxy target for /services/providers/{name}/*; nil → 404
 	BuiltinRoute     string     // when set, portal renders this Vue route instead of loading /main.js

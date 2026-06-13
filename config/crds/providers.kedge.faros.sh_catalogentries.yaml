@@ -166,6 +166,16 @@ spec:
                   alphabetically. Examples: "Edges", "AI", "Observability".
                 maxLength: 64
                 type: string
+              dependencies:
+                description: |-
+                  Dependencies lists provider names that must already be enabled in a
+                  tenant workspace before this provider can be enabled there. The hub
+                  and portal use this as an enable-time guard; it does not grant access
+                  to the dependency provider's resources.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               description:
                 description: Description is a short blurb shown on the catalog card.
                 maxLength: 512

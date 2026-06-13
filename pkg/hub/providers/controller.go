@@ -140,7 +140,11 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		DisplayName: entry.Spec.DisplayName,
 		IconURL:     entry.Spec.IconURL,
 		Category:    entry.Spec.Category,
-		Version:     entry.Spec.Version,
+		Dependencies: append(
+			[]string(nil),
+			entry.Spec.Dependencies...,
+		),
+		Version: entry.Spec.Version,
 	}
 	prov.EdgeProxyAccess = entry.Spec.EdgeProxyAccess
 	if entry.Spec.APIExport != nil {

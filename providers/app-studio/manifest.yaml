@@ -31,6 +31,8 @@ spec:
   category: "AI"
   iconURL: "/ui/providers/app-studio/icon.svg"
   serviceAccountNamespace: "app-studio"
+  dependencies:
+    - code
   ui:
     # Dev loopback port (PORT / Tiltfile run-provider-app-studio). 8085 to
     # avoid colliding with quickstart (8081) and kuery (8084).
@@ -51,18 +53,6 @@ spec:
     permissionClaims:
       - resource: secrets
         verbs: ["get", "list", "watch", "create", "update", "delete"]
-        tenantScoped: true
-      # App Studio projects are expected to attach to source repositories
-      # managed by the Code provider. Read-only Connection access lets App
-      # Studio offer a picker for Repository.spec.connectionRef without
-      # handling the credential Secret itself.
-      - group: code.kedge.faros.sh
-        resource: connections
-        verbs: ["get", "list", "watch"]
-        tenantScoped: true
-      - group: code.kedge.faros.sh
-        resource: repositories
-        verbs: ["get", "list", "watch", "create", "update", "patch"]
         tenantScoped: true
     schemas:
       # Project: a persistent, tenant-authored AI workspace (metadata + memory).

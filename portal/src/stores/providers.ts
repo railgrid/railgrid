@@ -29,6 +29,9 @@ export interface ProviderDTO {
   // a section header in the side nav and catalog page. Empty/missing →
   // entry appears at the top level under "Providers".
   category?: string
+  // Provider names that must be enabled in the current workspace before this
+  // provider can be enabled.
+  dependencies?: string[]
   // Populated when the provider declares spec.apiExport. The portal uses
   // these coordinates to build the APIBinding it POSTs into the tenant
   // workspace on Enable.
@@ -190,6 +193,30 @@ export const useProvidersStore = defineStore('providers', () => {
     return !!bindingNamesByProvider.value[name]
   }
 
+  function isDependencySatisfied(name: string): boolean {
+    const p = byName(name)
+    if (!p) return isEnabled(name)
+    if (!p.ready) return false
+    if (!p.apiExportName || p.builtinRoute || p.builtin) return true
+    return isEnabled(p.name)
+  }
+
+  function missingDependencies(p: ProviderDTO): string[] {
+    return (p.dependencies ?? []).filter((name) => !isDependencySatisfied(name))
+  }
+
+  function hasMissingDependencies(p: ProviderDTO): boolean {
+    return missingDependencies(p).length > 0
+  }
+
+  function dependencyLabel(name: string): string {
+    return byName(name)?.displayName ?? name
+  }
+
+  function dependencyLabels(names: string[]): string[] {
+    return names.map((name) => dependencyLabel(name))
+  }
+
   async function load() {
     if (loading.value) return
     loading.value = true
@@ -285,7 +312,7 @@ export const useProvidersStore = defineStore('providers', () => {
       credentials: 'same-origin',
       body: JSON.stringify(body),
     })
-    if (!res.ok && res.status !== 409) {
+    if (!res.ok) {
       const detail = await res.text().catch(() => '')
       throw new Error(`enable ${p.name} failed: ${res.status} ${res.statusText} ${detail}`)
     }
@@ -347,6 +374,10 @@ export const useProvidersStore = defineStore('providers', () => {
     enabledNavItems,
     categorizedNavItems,
     isEnabled,
+    missingDependencies,
+    hasMissingDependencies,
+    dependencyLabel,
+    dependencyLabels,
     load,
     refreshBindings,
     enable,

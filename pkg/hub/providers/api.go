@@ -51,6 +51,9 @@ type providerDTO struct {
 	// Empty means top-level / uncategorized. Free-form string; providers
 	// in the same category render under one heading.
 	Category string `json:"category,omitempty"`
+	// Dependencies are provider names that must be enabled in the current
+	// workspace before this provider can be enabled.
+	Dependencies []string `json:"dependencies,omitempty"`
 	// APIExport coordinates the portal needs to construct a tenant-side
 	// APIBinding when the user clicks Enable. Empty when the provider does
 	// not declare an APIExport (UI/backend-only providers).
@@ -155,6 +158,7 @@ func NewListHandler(reg *Registry) http.Handler {
 				BuiltinRoute:     p.BuiltinRoute,
 				Children:         children,
 				Category:         p.Category,
+				Dependencies:     append([]string(nil), p.Dependencies...),
 				APIExportPath:    p.APIExportPath,
 				APIExportName:    p.APIExportName,
 				PermissionClaims: claims,

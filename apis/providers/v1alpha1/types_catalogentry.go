@@ -94,6 +94,14 @@ type CatalogEntrySpec struct {
 	// +kubebuilder:validation:MaxLength=63
 	ServiceAccountNamespace string `json:"serviceAccountNamespace,omitempty"`
 
+	// Dependencies lists provider names that must already be enabled in a
+	// tenant workspace before this provider can be enabled there. The hub
+	// and portal use this as an enable-time guard; it does not grant access
+	// to the dependency provider's resources.
+	// +optional
+	// +listType=set
+	Dependencies []string `json:"dependencies,omitempty"`
+
 	// UI declares the provider's micro-frontend. Omit to ship a UI-less
 	// provider (controllers + APIExport only).
 	// +optional
