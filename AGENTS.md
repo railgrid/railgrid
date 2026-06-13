@@ -125,6 +125,9 @@ Kubernetes API-machinery conventions:
 
 Rules of thumb:
 - Change a type in `apis/` → run `make codegen` and commit the generated diff.
+- API lists that may need metadata later should use structs with a `name` field
+  (YAML shape `- name: ...`) rather than raw `[]string`; this keeps the API
+  extensible without a breaking shape change.
 - kcp treats `APIResourceSchema`s as **immutable**; schema names carry a version
   segment, so regeneration creates a new schema rather than mutating one.
 - CI runs `make verify-codegen` — an uncommitted generated diff fails the build.

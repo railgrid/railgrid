@@ -22,8 +22,11 @@ package restapi
 // would otherwise be doing implicitly.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/gorilla/mux"
 
@@ -99,6 +102,15 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "provider "+providerName+" declares no APIExport to bind")
 		return
 	}
+	missing, err := h.missingProviderDependencies(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, prov.Dependencies)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "checking provider dependencies: "+err.Error())
+		return
+	}
+	if len(missing) > 0 {
+		writeStatus(w, http.StatusConflict, "Conflict", "provider "+providerName+" requires provider(s) to be enabled first: "+strings.Join(missing, ", "))
+		return
+	}
 
 	var req EnableProviderRequest
 	if !decodeJSON(w, r, &req) {
@@ -160,6 +172,37 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(EnableProviderResponse{BindingName: providerName})
+}
+
+func (h *Handler) missingProviderDependencies(ctx context.Context, orgUUID, wsUUID string, dependencies []providers.Dependency) ([]string, error) {
+	if len(dependencies) == 0 {
+		return nil, nil
+	}
+	bindings, err := h.mgr.bootstrapper.ListProviderAPIBindings(ctx, orgUUID, wsUUID)
+	if err != nil {
+		return nil, err
+	}
+	missingSet := map[string]struct{}{}
+	for _, dep := range dependencies {
+		depName := strings.TrimSpace(dep.Name)
+		if depName == "" {
+			continue
+		}
+		if _, ok := bindings[depName]; ok {
+			continue
+		}
+		depProvider, found := h.mgr.providers.Get(depName)
+		if found && depProvider.Ready() && depProvider.APIExportName == "" {
+			continue
+		}
+		missingSet[depName] = struct{}{}
+	}
+	missing := make([]string, 0, len(missingSet))
+	for dep := range missingSet {
+		missing = append(missing, dep)
+	}
+	sort.Strings(missing)
+	return missing, nil
 }
 
 // disableProvider handles POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/disable.

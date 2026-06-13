@@ -113,6 +113,11 @@ onMounted(() => {
 
 function openEnableDialog(p: ProviderDTO) {
   actionError.value = null
+  const missing = providers.missingDependencies(p)
+  if (missing.length > 0) {
+    actionError.value = `${p.displayName} requires ${providers.dependencyLabels(missing).join(', ')} to be enabled first.`
+    return
+  }
   dialogProvider.value = p
 }
 
@@ -145,6 +150,12 @@ async function onDisable(p: ProviderDTO) {
     delete next[p.name]
     busy.value = next
   }
+}
+
+function dependencyNotice(p: ProviderDTO): string {
+  const missing = providers.missingDependencies(p)
+  if (missing.length === 0) return ''
+  return `Requires ${providers.dependencyLabels(missing).join(', ')}.`
 }
 </script>
 
@@ -257,10 +268,12 @@ async function onDisable(p: ProviderDTO) {
                         ? 'border border-border-default bg-surface-overlay text-text-secondary'
                         : providers.isEnabled(p.name)
                           ? 'border border-accent/30 bg-accent/10 text-accent'
-                          : 'border border-success/30 bg-success-subtle text-success'
+                          : providers.hasMissingDependencies(p)
+                            ? 'border border-warning/30 bg-warning-subtle text-warning'
+                            : 'border border-success/30 bg-success-subtle text-success'
                   "
                 >
-                  {{ !p.ready ? 'Pending' : p.builtinRoute ? 'Built-in' : providers.isEnabled(p.name) ? 'Enabled' : 'Available' }}
+                  {{ !p.ready ? 'Pending' : p.builtinRoute ? 'Built-in' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
                 </span>
               </div>
               <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">{{ p.name }}<span v-if="p.version"> · {{ p.version }}</span></p>
@@ -279,6 +292,13 @@ async function onDisable(p: ProviderDTO) {
             <span v-if="p.hasUI" class="rounded-md border border-border-subtle px-1.5 py-0.5">UI</span>
             <span v-if="p.hasBackend" class="rounded-md border border-border-subtle px-1.5 py-0.5">Backend</span>
             <span v-if="p.apiExportName" class="rounded-md border border-border-subtle px-1.5 py-0.5">API</span>
+          </div>
+
+          <div
+            v-if="!providers.isEnabled(p.name) && dependencyNotice(p)"
+            class="mt-3 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2 text-[11px] text-warning"
+          >
+            {{ dependencyNotice(p) }}
           </div>
 
           <div class="mt-4 flex items-center gap-2">
@@ -301,7 +321,8 @@ async function onDisable(p: ProviderDTO) {
               <button
                 v-if="!providers.isEnabled(p.name)"
                 class="inline-flex items-center gap-1 rounded-lg border border-success/30 bg-success-subtle px-2.5 py-1 text-[11px] font-medium text-success transition-colors hover:bg-success/15 disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="!!busy[p.name]"
+                :disabled="!!busy[p.name] || providers.hasMissingDependencies(p)"
+                :title="dependencyNotice(p)"
                 @click="openEnableDialog(p)"
               >
                 <Loader2 v-if="busy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />

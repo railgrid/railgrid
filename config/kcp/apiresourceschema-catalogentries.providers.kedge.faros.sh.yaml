@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260612-5da57dc.catalogentries.providers.kedge.faros.sh
+  name: v260613-9670926.catalogentries.providers.kedge.faros.sh
 spec:
   group: providers.kedge.faros.sh
   names:
@@ -162,6 +162,29 @@ spec:
                 alphabetically. Examples: "Edges", "AI", "Observability".
               maxLength: 64
               type: string
+            dependencies:
+              description: |-
+                Dependencies lists providers that must already be enabled in a
+                tenant workspace before this provider can be enabled there. The hub
+                and portal use this as an enable-time guard; it does not grant access
+                to the dependency provider's resources.
+              items:
+                description: ProviderDependency references another provider that must
+                  be enabled first.
+                properties:
+                  name:
+                    description: Name is the CatalogEntry metadata.name of the dependency
+                      provider.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              type: array
+              x-kubernetes-list-map-keys:
+              - name
+              x-kubernetes-list-type: map
             description:
               description: Description is a short blurb shown on the catalog card.
               maxLength: 512

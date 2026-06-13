@@ -38,6 +38,7 @@ import (
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	hubproviders "github.com/faroshq/faros-kedge/pkg/hub/providers"
 	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
 )
 
@@ -55,6 +56,8 @@ type fakeOps struct {
 	mcpServerCalls    map[wsKey]int                // (org,ws) → count
 	kedgeBindingCalls map[wsKey]int                // (org,ws) → count
 	workspaceAdmins   map[wsKey]map[string]bool    // (org,ws) → rbacIdentity set
+	providerBindings  map[wsKey]map[string]string  // (org,ws) → provider → binding name
+	providerBindCalls map[wsKey]int                // (org,ws) → count
 }
 
 type wsKey struct{ Org, WS string }
@@ -69,6 +72,8 @@ func newFakeOps() *fakeOps {
 		mcpServerCalls:    map[wsKey]int{},
 		kedgeBindingCalls: map[wsKey]int{},
 		workspaceAdmins:   map[wsKey]map[string]bool{},
+		providerBindings:  map[wsKey]map[string]string{},
+		providerBindCalls: map[wsKey]int{},
 	}
 }
 
@@ -157,18 +162,35 @@ func (f *fakeOps) EnsureChildWorkspaceDefaultMCPServer(_ context.Context, orgUUI
 // provider-enable handler. The handler is exercised via its own
 // dedicated tests; for the existing org/workspace flows it just needs
 // to not error.
-func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, _, _, _, _, _ string, _ []kcp.ProviderClaim) error {
+func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, orgUUID, wsUUID, bindingName, _, _ string, _ []kcp.ProviderClaim) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := wsKey{orgUUID, wsUUID}
+	if f.providerBindings[key] == nil {
+		f.providerBindings[key] = map[string]string{}
+	}
+	f.providerBindings[key][bindingName] = bindingName
+	f.providerBindCalls[key]++
 	return nil
 }
 
-// ListProviderAPIBindings is the test stub for the read-side
-// provider-enable handler. Returns empty so existing tests treat the
-// workspace as having no enabled providers.
-func (f *fakeOps) ListProviderAPIBindings(_ context.Context, _, _ string) (map[string]string, error) {
-	return map[string]string{}, nil
+// ListProviderAPIBindings is the test stub for the read-side provider-enable
+// handler. It returns a copy so handlers cannot mutate fake state by accident.
+func (f *fakeOps) ListProviderAPIBindings(_ context.Context, orgUUID, wsUUID string) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := wsKey{orgUUID, wsUUID}
+	out := make(map[string]string, len(f.providerBindings[key]))
+	for providerName, bindingName := range f.providerBindings[key] {
+		out[providerName] = bindingName
+	}
+	return out, nil
 }
 
-func (f *fakeOps) DeleteProviderAPIBinding(_ context.Context, _, _, _ string) error {
+func (f *fakeOps) DeleteProviderAPIBinding(_ context.Context, orgUUID, wsUUID, providerName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.providerBindings[wsKey{orgUUID, wsUUID}], providerName)
 	return nil
 }
 
@@ -657,6 +679,74 @@ func TestSelfLeaveOrg(t *testing.T) {
 	}
 	if _, ok := ops.orgMemberships["org-a"]["bob"]; ok {
 		t.Error("Membership CR not deleted")
+	}
+}
+
+// ===== Provider enable tests =====
+
+func TestEnableProvider_BlocksMissingDependencies(t *testing.T) {
+	mgr, ops, _ := newTestManager(t)
+	reg := hubproviders.NewRegistry()
+	reg.Upsert(hubproviders.Provider{
+		Name:          "app-studio",
+		APIExportPath: "root:providers:app-studio",
+		APIExportName: "app-studio",
+		Dependencies:  []hubproviders.Dependency{{Name: "code"}},
+	})
+	mgr.WithProviderRegistry(reg)
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	body, _ := json.Marshal(EnableProviderRequest{})
+	resp, err := http.Post(srv.URL+"/api/orgs/org-a/workspaces/ws-1/providers/app-studio/enable", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409", resp.StatusCode)
+	}
+	payload, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(payload, []byte("code")) {
+		t.Fatalf("response %q does not mention missing dependency code", payload)
+	}
+	if ops.providerBindCalls[wsKey{"org-a", "ws-1"}] != 0 {
+		t.Fatalf("EnsureProviderAPIBinding called despite missing dependency")
+	}
+}
+
+func TestEnableProvider_AllowsSatisfiedDependencies(t *testing.T) {
+	mgr, ops, _ := newTestManager(t)
+	key := wsKey{"org-a", "ws-1"}
+	ops.providerBindings[key] = map[string]string{"code": "code"}
+	reg := hubproviders.NewRegistry()
+	reg.Upsert(hubproviders.Provider{
+		Name:          "app-studio",
+		APIExportPath: "root:providers:app-studio",
+		APIExportName: "app-studio",
+		Dependencies:  []hubproviders.Dependency{{Name: "code"}},
+	})
+	mgr.WithProviderRegistry(reg)
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	body, _ := json.Marshal(EnableProviderRequest{})
+	resp, err := http.Post(srv.URL+"/api/orgs/org-a/workspaces/ws-1/providers/app-studio/enable", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, payload)
+	}
+	if ops.providerBindCalls[key] != 1 {
+		t.Fatalf("EnsureProviderAPIBinding calls = %d, want 1", ops.providerBindCalls[key])
+	}
+	if got := ops.providerBindings[key]["app-studio"]; got != "app-studio" {
+		t.Fatalf("provider binding = %q, want app-studio", got)
 	}
 }
 

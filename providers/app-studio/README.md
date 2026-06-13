@@ -36,7 +36,7 @@ service-account escalation.
 | Tenant client | `tenant/` — token-forwarding `ClientFactory` (host+TLS from the provider kubeconfig, caller token per request) |
 | Message store | `store/` — Postgres + in-memory + envelope-encryption implementations |
 | Portal | `portal/` — the Vue micro-frontend (`<kedge-provider-app-studio>`), embedded via `assets.go` |
-| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.kedge.faros.sh`) + the Project APIResourceSchema + `secrets` claim |
+| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.kedge.faros.sh`) + Code provider dependency + the Project APIResourceSchema + `secrets` claim |
 | Deploy | `deploy/chart/` — Helm chart (Deployment, Service, CatalogEntry) |
 | CI (mirror) | `.github/workflows/{image,chart}.yaml` — publish the image + chart to GHCR (run only in the mirror) |
 

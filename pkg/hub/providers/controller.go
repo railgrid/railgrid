@@ -135,12 +135,18 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
+	dependencies := make([]Dependency, 0, len(entry.Spec.Dependencies))
+	for _, dep := range entry.Spec.Dependencies {
+		dependencies = append(dependencies, Dependency{Name: dep.Name})
+	}
+
 	prov := Provider{
-		Name:        entry.Name,
-		DisplayName: entry.Spec.DisplayName,
-		IconURL:     entry.Spec.IconURL,
-		Category:    entry.Spec.Category,
-		Version:     entry.Spec.Version,
+		Name:         entry.Name,
+		DisplayName:  entry.Spec.DisplayName,
+		IconURL:      entry.Spec.IconURL,
+		Category:     entry.Spec.Category,
+		Dependencies: dependencies,
+		Version:      entry.Spec.Version,
 	}
 	prov.EdgeProxyAccess = entry.Spec.EdgeProxyAccess
 	if entry.Spec.APIExport != nil {

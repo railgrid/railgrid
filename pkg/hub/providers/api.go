@@ -51,6 +51,9 @@ type providerDTO struct {
 	// Empty means top-level / uncategorized. Free-form string; providers
 	// in the same category render under one heading.
 	Category string `json:"category,omitempty"`
+	// Dependencies are providers that must be enabled in the current
+	// workspace before this provider can be enabled.
+	Dependencies []dependencyDTO `json:"dependencies,omitempty"`
 	// APIExport coordinates the portal needs to construct a tenant-side
 	// APIBinding when the user clicks Enable. Empty when the provider does
 	// not declare an APIExport (UI/backend-only providers).
@@ -79,6 +82,10 @@ type permissionClaimDTO struct {
 	Resource     string   `json:"resource"`
 	Verbs        []string `json:"verbs,omitempty"`
 	TenantScoped bool     `json:"tenantScoped,omitempty"`
+}
+
+type dependencyDTO struct {
+	Name string `json:"name"`
 }
 
 // listResponse wraps the list to leave room for future fields (paging, etc.).
@@ -143,6 +150,10 @@ func NewListHandler(reg *Registry) http.Handler {
 			for _, c := range p.Children {
 				children = append(children, navChildDTO(c))
 			}
+			var dependencies []dependencyDTO
+			for _, d := range p.Dependencies {
+				dependencies = append(dependencies, dependencyDTO(d))
+			}
 			_, isBuiltin := BuiltinByName(p.Name)
 			items = append(items, providerDTO{
 				Name:             p.Name,
@@ -155,6 +166,7 @@ func NewListHandler(reg *Registry) http.Handler {
 				BuiltinRoute:     p.BuiltinRoute,
 				Children:         children,
 				Category:         p.Category,
+				Dependencies:     dependencies,
 				APIExportPath:    p.APIExportPath,
 				APIExportName:    p.APIExportName,
 				PermissionClaims: claims,

@@ -14,6 +14,8 @@ spec:
   version: {{ .Chart.AppVersion | quote }}
   category: "AI"
   iconURL: "/ui/providers/app-studio/icon.svg"
+  dependencies:
+    - name: code
   ui:
     url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.uiURL | quote }}
     indexPath: "/"
