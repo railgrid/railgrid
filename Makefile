@@ -135,7 +135,7 @@ build-app-studio-provider-portal: ## Build the App Studio provider's micro-front
 	cd providers/app-studio/portal && npm install --no-audit --no-fund && npm run build
 
 build-app-studio-provider: build-app-studio-provider-portal ## Build the App Studio provider binary (portal embedded)
-	go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/app-studio-provider ./providers/app-studio
+	cd providers/app-studio && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/app-studio-provider .
 
 build-code-provider-portal: ## Build the code provider's micro-frontend (Vite + Vue → portal/dist)
 	cd providers/code/portal && npm install --no-audit --no-fund && npm run build
