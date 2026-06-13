@@ -241,6 +241,38 @@ RUN chmod 0755 /tmp/kedge-hub
 )
 
 # --- kcp kubeconfig → in-cluster Secret the chart mounts ---
+#
+# The included upstream `kcp-admin extract` resource can race CRD discovery on
+# fresh CI clusters: it only waits for "some" operator.kcp.io resource, then
+# immediately calls `kubectl wait kubeconfig/...`, which fails if the
+# Kubeconfig CRD has not reached discovery yet. Keep our hub dependency on a
+# local extractor that waits for the exact CRD and objects it needs.
+local_resource(
+    'kedge-kcp-admin-extract',
+    cmd='''
+set -eu
+
+echo "waiting for Kubeconfig CRD"
+kubectl wait crd/kubeconfigs.operator.kcp.io --for=condition=Established --timeout=10m
+
+extract_kubeconfig() {
+  name="$1"
+  echo "waiting for Kubeconfig/${name}"
+  kubectl wait "kubeconfigs.operator.kcp.io/${name}" --for=create --timeout=10m
+  kubectl wait "kubeconfigs.operator.kcp.io/${name}" --for=condition=Available --timeout=10m
+  kubectl wait "secret/kcp-${name}-kubeconfig" --for=create --timeout=10m
+  kubeconfig_data="$(kubectl get "secret/kcp-${name}-kubeconfig" -o jsonpath='{.data.kubeconfig}')"
+  printf '%s' "${kubeconfig_data}" | base64 -d > "tilt-${name}.kubeconfig"
+}
+
+extract_kubeconfig frontproxy
+extract_kubeconfig root
+extract_kubeconfig theseus
+''',
+    labels=['hub'],
+    allow_parallel=True,
+)
+
 # We use ONLY the front-proxy kubeconfig, for both the primary connection AND
 # the GraphQL listener. The listener locates the APIExportEndpointSlice by
 # workspace PATH (root:kedge:providers); only the front-proxy resolves paths to
@@ -255,7 +287,7 @@ kubectl create secret generic kcp-frontproxy-admin -n %s \
   --dry-run=client -o yaml | kubectl apply -f -
 ''' % (hub_namespace, hub_namespace),
     deps=['tilt-frontproxy.kubeconfig'],
-    resource_deps=['kcp-admin extract'],
+    resource_deps=['kedge-kcp-admin-extract'],
     labels=['hub'],
 )
 
