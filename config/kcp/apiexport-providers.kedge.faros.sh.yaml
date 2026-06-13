@@ -6,7 +6,7 @@ spec:
   resources:
   - group: providers.kedge.faros.sh
     name: catalogentries
-    schema: v260613-0e319cc.catalogentries.providers.kedge.faros.sh
+    schema: v260613-9670926.catalogentries.providers.kedge.faros.sh
     storage:
       crd: {}
 status: {}

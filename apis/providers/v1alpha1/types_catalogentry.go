@@ -94,13 +94,14 @@ type CatalogEntrySpec struct {
 	// +kubebuilder:validation:MaxLength=63
 	ServiceAccountNamespace string `json:"serviceAccountNamespace,omitempty"`
 
-	// Dependencies lists provider names that must already be enabled in a
+	// Dependencies lists providers that must already be enabled in a
 	// tenant workspace before this provider can be enabled there. The hub
 	// and portal use this as an enable-time guard; it does not grant access
 	// to the dependency provider's resources.
 	// +optional
-	// +listType=set
-	Dependencies []string `json:"dependencies,omitempty"`
+	// +listType=map
+	// +listMapKey=name
+	Dependencies []ProviderDependency `json:"dependencies,omitempty"`
 
 	// UI declares the provider's micro-frontend. Omit to ship a UI-less
 	// provider (controllers + APIExport only).
@@ -134,6 +135,14 @@ type CatalogEntrySpec struct {
 	// permission claims, it is surfaced in the portal's Enable dialog.
 	// +optional
 	EdgeProxyAccess bool `json:"edgeProxyAccess,omitempty"`
+}
+
+// ProviderDependency references another provider that must be enabled first.
+type ProviderDependency struct {
+	// Name is the CatalogEntry metadata.name of the dependency provider.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
 }
 
 // ProviderUI declares a provider's micro-frontend target. Exactly one of

@@ -32,7 +32,7 @@ spec:
   iconURL: "/ui/providers/app-studio/icon.svg"
   serviceAccountNamespace: "app-studio"
   dependencies:
-    - code
+    - name: code
   ui:
     # Dev loopback port (PORT / Tiltfile run-provider-app-studio). 8085 to
     # avoid colliding with quickstart (8081) and kuery (8084).

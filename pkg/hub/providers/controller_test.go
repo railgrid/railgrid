@@ -63,8 +63,8 @@ func TestCatalogReconciler_PreservesChartOwnedUIRoutingForBuiltinName(t *testing
 		ObjectMeta: metav1.ObjectMeta{Name: "app-studio"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "App Studio from Chart",
-			Dependencies: []string{
-				"code",
+			Dependencies: []providersv1alpha1.ProviderDependency{
+				{Name: "code"},
 			},
 			UI: &providersv1alpha1.ProviderUI{
 				URL: "http://app-studio.invalid",
@@ -93,7 +93,7 @@ func TestCatalogReconciler_PreservesChartOwnedUIRoutingForBuiltinName(t *testing
 	if got.LocalUIAssets != nil {
 		t.Fatal("expected chart-owned provider to keep proxy routing, not embedded assets")
 	}
-	if len(got.Dependencies) != 1 || got.Dependencies[0] != "code" {
+	if len(got.Dependencies) != 1 || got.Dependencies[0].Name != "code" {
 		t.Fatalf("Dependencies = %#v, want [code]", got.Dependencies)
 	}
 	if !got.EndpointsValid {

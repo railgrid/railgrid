@@ -29,9 +29,9 @@ export interface ProviderDTO {
   // a section header in the side nav and catalog page. Empty/missing →
   // entry appears at the top level under "Providers".
   category?: string
-  // Provider names that must be enabled in the current workspace before this
+  // Providers that must be enabled in the current workspace before this
   // provider can be enabled.
-  dependencies?: string[]
+  dependencies?: ProviderDependencyDTO[]
   // Populated when the provider declares spec.apiExport. The portal uses
   // these coordinates to build the APIBinding it POSTs into the tenant
   // workspace on Enable.
@@ -43,6 +43,10 @@ export interface ProviderDTO {
   // new custom-element via embedded assets). Side-nav skips the
   // APIBinding-required gate for these.
   builtin?: boolean
+}
+
+export interface ProviderDependencyDTO {
+  name: string
 }
 
 // CategoryDTO mirrors pkg/hub/providers.Category — the hub publishes its
@@ -202,7 +206,9 @@ export const useProvidersStore = defineStore('providers', () => {
   }
 
   function missingDependencies(p: ProviderDTO): string[] {
-    return (p.dependencies ?? []).filter((name) => !isDependencySatisfied(name))
+    return (p.dependencies ?? [])
+      .map((dep) => dep.name.trim())
+      .filter((name) => name && !isDependencySatisfied(name))
   }
 
   function hasMissingDependencies(p: ProviderDTO): boolean {

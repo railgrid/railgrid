@@ -168,14 +168,27 @@ spec:
                 type: string
               dependencies:
                 description: |-
-                  Dependencies lists provider names that must already be enabled in a
+                  Dependencies lists providers that must already be enabled in a
                   tenant workspace before this provider can be enabled there. The hub
                   and portal use this as an enable-time guard; it does not grant access
                   to the dependency provider's resources.
                 items:
-                  type: string
+                  description: ProviderDependency references another provider that
+                    must be enabled first.
+                  properties:
+                    name:
+                      description: Name is the CatalogEntry metadata.name of the dependency
+                        provider.
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  type: object
                 type: array
-                x-kubernetes-list-type: set
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               description:
                 description: Description is a short blurb shown on the catalog card.
                 maxLength: 512

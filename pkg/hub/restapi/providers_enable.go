@@ -174,7 +174,7 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(EnableProviderResponse{BindingName: providerName})
 }
 
-func (h *Handler) missingProviderDependencies(ctx context.Context, orgUUID, wsUUID string, dependencies []string) ([]string, error) {
+func (h *Handler) missingProviderDependencies(ctx context.Context, orgUUID, wsUUID string, dependencies []providers.Dependency) ([]string, error) {
 	if len(dependencies) == 0 {
 		return nil, nil
 	}
@@ -184,18 +184,18 @@ func (h *Handler) missingProviderDependencies(ctx context.Context, orgUUID, wsUU
 	}
 	missingSet := map[string]struct{}{}
 	for _, dep := range dependencies {
-		dep = strings.TrimSpace(dep)
-		if dep == "" {
+		depName := strings.TrimSpace(dep.Name)
+		if depName == "" {
 			continue
 		}
-		if _, ok := bindings[dep]; ok {
+		if _, ok := bindings[depName]; ok {
 			continue
 		}
-		depProvider, found := h.mgr.providers.Get(dep)
+		depProvider, found := h.mgr.providers.Get(depName)
 		if found && depProvider.Ready() && depProvider.APIExportName == "" {
 			continue
 		}
-		missingSet[dep] = struct{}{}
+		missingSet[depName] = struct{}{}
 	}
 	missing := make([]string, 0, len(missingSet))
 	for dep := range missingSet {

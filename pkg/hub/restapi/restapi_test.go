@@ -691,7 +691,7 @@ func TestEnableProvider_BlocksMissingDependencies(t *testing.T) {
 		Name:          "app-studio",
 		APIExportPath: "root:providers:app-studio",
 		APIExportName: "app-studio",
-		Dependencies:  []string{"code"},
+		Dependencies:  []hubproviders.Dependency{{Name: "code"}},
 	})
 	mgr.WithProviderRegistry(reg)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
@@ -725,7 +725,7 @@ func TestEnableProvider_AllowsSatisfiedDependencies(t *testing.T) {
 		Name:          "app-studio",
 		APIExportPath: "root:providers:app-studio",
 		APIExportName: "app-studio",
-		Dependencies:  []string{"code"},
+		Dependencies:  []hubproviders.Dependency{{Name: "code"}},
 	})
 	mgr.WithProviderRegistry(reg)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
