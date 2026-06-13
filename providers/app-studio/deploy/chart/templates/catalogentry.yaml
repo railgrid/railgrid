@@ -29,6 +29,18 @@ spec:
       - resource: secrets
         verbs: ["get", "list", "watch", "create", "update", "delete"]
         tenantScoped: true
+      # App Studio projects are expected to attach to source repositories
+      # managed by the Code provider. Read-only Connection access lets App
+      # Studio offer a picker for Repository.spec.connectionRef without
+      # handling the credential Secret itself.
+      - group: code.kedge.faros.sh
+        resource: connections
+        verbs: ["get", "list", "watch"]
+        tenantScoped: true
+      - group: code.kedge.faros.sh
+        resource: repositories
+        verbs: ["get", "list", "watch", "create", "update", "patch"]
+        tenantScoped: true
     schemas:
       - groupResource: "projects.ai.kedge.faros.sh"
         body: |-
