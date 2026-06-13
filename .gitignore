@@ -45,6 +45,10 @@ pkg/hub/portal/
 # per-provider entries.)
 **/portal/node_modules/
 portal/dist/
+portal/node_modules/
+providers/*/portal/node_modules
+providers/app-studio/portal/dist/*
+!providers/app-studio/portal/dist/.gitkeep
 providers/quickstart/portal/dist/
 providers/infrastructure/portal/dist/
 providers/code/portal/dist/

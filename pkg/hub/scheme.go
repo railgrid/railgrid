@@ -25,6 +25,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
+	aiv1alpha1 "github.com/faroshq/faros-kedge/apis/ai/v1alpha1"
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	providersv1alpha1 "github.com/faroshq/faros-kedge/apis/providers/v1alpha1"
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
@@ -36,6 +37,7 @@ import (
 func NewScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
+	utilruntime.Must(aiv1alpha1.AddToScheme(s))
 	utilruntime.Must(kedgev1alpha1.AddToScheme(s))
 	utilruntime.Must(providersv1alpha1.AddToScheme(s))
 	utilruntime.Must(tenancyv1alpha1.AddToScheme(s))

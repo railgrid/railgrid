@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 
+	aiv1alpha1 "github.com/faroshq/faros-kedge/apis/ai/v1alpha1"
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 )
@@ -80,6 +81,13 @@ var (
 		Group:    "tenancy.kedge.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "organizations",
+	}
+
+	// ProjectGVR points at the workspace-scoped Project CRD.
+	ProjectGVR = schema.GroupVersionResource{
+		Group:    aiv1alpha1.GroupName,
+		Version:  aiv1alpha1.Version,
+		Resource: "projects",
 	}
 )
 
@@ -156,6 +164,15 @@ func (c *Client) Organizations() *TypedResource[tenancyv1alpha1.Organization, te
 	return &TypedResource[tenancyv1alpha1.Organization, tenancyv1alpha1.OrganizationList]{
 		client: c.dynamic.Resource(OrganizationGVR),
 		gvk:    OrganizationGVR.GroupVersion().WithKind("Organization"),
+	}
+}
+
+// Projects returns a typed interface for Project resources in the active
+// workspace.
+func (c *Client) Projects() *TypedResource[aiv1alpha1.Project, aiv1alpha1.ProjectList] {
+	return &TypedResource[aiv1alpha1.Project, aiv1alpha1.ProjectList]{
+		client: c.dynamic.Resource(ProjectGVR),
+		gvk:    ProjectGVR.GroupVersion().WithKind("Project"),
 	}
 }
 
@@ -281,7 +298,13 @@ func fromUnstructured[T any](u *unstructured.Unstructured) (*T, error) {
 }
 
 func fromUnstructuredList[L any](u *unstructured.UnstructuredList) (*L, error) {
-	data, err := json.Marshal(u)
+	content := u.UnstructuredContent()
+	items := make([]interface{}, 0, len(u.Items))
+	for i := range u.Items {
+		items = append(items, u.Items[i].UnstructuredContent())
+	}
+	content["items"] = items
+	data, err := json.Marshal(content)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling list: %w", err)
 	}

@@ -177,6 +177,8 @@ local_resource(
         'portal/vite.config.ts',
         'providers/mcp/portal/src',
         'providers/kubernetesedges/portal/src',
+        'providers/projects/portal/src',
+        'providers/projects/portal/package.json',
         'providers/serveredges/portal/src',
         'providers/code/portal/src',
     ],
@@ -198,10 +200,12 @@ local_resource(
         'go.sum',
         'providers/mcp',
         'providers/kubernetesedges',
+        'providers/projects',
         'providers/serveredges',
         'pkg/hub/portal/dist',
         'providers/mcp/portal/dist',
         'providers/kubernetesedges/portal/dist',
+        'providers/projects/portal/dist',
         'providers/serveredges/portal/dist',
     ],
     ignore=[
@@ -216,22 +220,59 @@ docker_build_with_restart(
     hub_image,
     context='.',
     dockerfile_contents='''FROM alpine:3.21
-RUN apk add --no-cache ca-certificates
-COPY bin/kedge-hub-linux /kedge-hub
+RUN apk add --no-cache ca-certificates && \
+    chown 65534:65534 /tmp && \
+    touch /tmp/.restart-proc && \
+    chown 65534:65534 /tmp/.restart-proc && \
+    chmod 0666 /tmp/.restart-proc
+COPY --chown=65534:65534 bin/kedge-hub-linux /tmp/kedge-hub
+RUN chmod 0755 /tmp/kedge-hub
 ''',
     # The restart wrapper runs the entrypoint as `sh -c <entrypoint>` and the
-    # chart's container args get appended AFTER it. With a bare `/kedge-hub`
+    # chart's container args get appended AFTER it. With a bare binary path
     # those args become sh's positional params ($0, $1, …) and never reach the
-    # binary. `exec /kedge-hub "$0" "$@"` forwards them all: the first appended
-    # arg lands in $0, the rest in $@.
-    entrypoint='exec /kedge-hub "$0" "$@"',
+    # binary. The `exec ... "$0" "$@"` form forwards them all: the first
+    # appended arg lands in $0, the rest in $@.
+    entrypoint='exec /tmp/kedge-hub "$0" "$@"',
     only=['bin/kedge-hub-linux'],
     live_update=[
-        sync('bin/kedge-hub-linux', '/kedge-hub'),
+        sync('bin/kedge-hub-linux', '/tmp/kedge-hub'),
     ],
 )
 
 # --- kcp kubeconfig → in-cluster Secret the chart mounts ---
+#
+# The included upstream `kcp-admin extract` resource can race CRD discovery on
+# fresh CI clusters: it only waits for "some" operator.kcp.io resource, then
+# immediately calls `kubectl wait kubeconfig/...`, which fails if the
+# Kubeconfig CRD has not reached discovery yet. Keep our hub dependency on a
+# local extractor that waits for the exact CRD and objects it needs.
+local_resource(
+    'kedge-kcp-admin-extract',
+    cmd='''
+set -eu
+
+echo "waiting for Kubeconfig CRD"
+kubectl wait crd/kubeconfigs.operator.kcp.io --for=condition=Established --timeout=10m
+
+extract_kubeconfig() {
+  name="$1"
+  echo "waiting for Kubeconfig/${name}"
+  kubectl wait "kubeconfigs.operator.kcp.io/${name}" --for=create --timeout=10m
+  kubectl wait "kubeconfigs.operator.kcp.io/${name}" --for=condition=Available --timeout=10m
+  kubectl wait "secret/kcp-${name}-kubeconfig" --for=create --timeout=10m
+  kubeconfig_data="$(kubectl get "secret/kcp-${name}-kubeconfig" -o jsonpath='{.data.kubeconfig}')"
+  printf '%s' "${kubeconfig_data}" | base64 -d > "tilt-${name}.kubeconfig"
+}
+
+extract_kubeconfig frontproxy
+extract_kubeconfig root
+extract_kubeconfig theseus
+''',
+    labels=['hub'],
+    allow_parallel=True,
+)
+
 # We use ONLY the front-proxy kubeconfig, for both the primary connection AND
 # the GraphQL listener. The listener locates the APIExportEndpointSlice by
 # workspace PATH (root:kedge:providers); only the front-proxy resolves paths to
@@ -246,7 +287,7 @@ kubectl create secret generic kcp-frontproxy-admin -n %s \
   --dry-run=client -o yaml | kubectl apply -f -
 ''' % (hub_namespace, hub_namespace),
     deps=['tilt-frontproxy.kubeconfig'],
-    resource_deps=['kcp-admin extract'],
+    resource_deps=['kedge-kcp-admin-extract'],
     labels=['hub'],
 )
 
@@ -291,6 +332,8 @@ k8s_yaml(helm(
         'hub.hubExternalURL=https://localhost:9443',
         'hub.devMode=true',
         'hub.embeddedGraphQL=true',
+        # Match the plain Tiltfile's App Studio in-memory message store wiring.
+        'hub.appStudio.inMemoryMessageStore=true',
         'hub.staticAuthTokens={dev-token}',
         # Make *.kcp.localhost resolve to the Envoy gateway from the hub pod,
         # so the operator-issued kubeconfigs work in-cluster unchanged.
@@ -355,8 +398,11 @@ kubectl create secret generic kcp-static-tokens -n default \
 # hub workload is named kedge-hub.
 #
 #   providers-quickstart   — reference example (port :8081)
+#   providers-app-studio   — AI workspace provider (port :8085) +
+#                            host URL rewritten for the in-cluster hub
 #   providers-kro          — infrastructure broker (port :8082) +
 #                            management kind cluster that kro runs in
+#   providers-code         — git repository manager (port :8083)
 #   providers-kuery        — fleet query engine (port :8084)
 #
 # Each provider has three resources:
@@ -400,6 +446,10 @@ def rewrite_manifest_cmd(src):
 
 QUICKSTART_REWRITE_CMD, QUICKSTART_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/quickstart/manifest.yaml')
 INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/infrastructure/manifest.yaml')
+# App Studio runs on the host like the other external providers, but the
+# hub lives inside the kind cluster, so the rendered CatalogEntry must point
+# at host.docker.internal rather than localhost.
+APP_STUDIO_CATALOGENTRY_UI_URL = 'http://host.docker.internal:8085'
 CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code/manifest.yaml')
 KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/kuery/manifest.yaml')
 
@@ -447,6 +497,53 @@ local_resource(
     auto_init=False,
     resource_deps=['kedge-hub'],
     labels=['providers-quickstart'],
+)
+
+# --- providers-app-studio ---
+local_resource(
+    'app-studio',
+    cmd='make build-app-studio-provider',
+    serve_cmd='make run-provider-app-studio',
+    deps=[
+        'providers/app-studio/main.go',
+        'providers/app-studio/heartbeat.go',
+        'providers/app-studio/assets.go',
+        'providers/app-studio/portal/src',
+        'providers/app-studio/portal/package.json',
+        'providers/app-studio/portal/vite.config.ts',
+        'providers/projects/portal/src',
+        'providers/projects/portal/package.json',
+        'providers/app-studio/deploy/chart/templates/catalogentry.yaml',
+        'providers/app-studio/deploy/chart/values.yaml',
+    ],
+    resource_deps=['kedge-hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8085, path='/healthz'),
+    ),
+    labels=['providers-app-studio'],
+)
+
+local_resource(
+    'app-studio-register',
+    cmd=('APP_STUDIO_KCP_KUBECONFIG={kc} APP_STUDIO_KCP_SERVER={sv} ' +
+         'APP_STUDIO_CATALOGENTRY_UI_URL={ui} make install-provider-app-studio').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER, ui=APP_STUDIO_CATALOGENTRY_UI_URL),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-app-studio'],
+)
+
+local_resource(
+    'app-studio-unregister',
+    cmd=('APP_STUDIO_KCP_KUBECONFIG={kc} APP_STUDIO_KCP_SERVER={sv} ' +
+         'APP_STUDIO_CATALOGENTRY_UI_URL={ui} make uninstall-provider-app-studio').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER, ui=APP_STUDIO_CATALOGENTRY_UI_URL),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-app-studio'],
 )
 
 # --- providers-kuery (fleet query engine, port :8084) ---

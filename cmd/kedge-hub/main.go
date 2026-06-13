@@ -86,6 +86,10 @@ func main() {
 	cmd.Flags().BoolVar(&opts.GraphQLPlayground, "graphql-playground", opts.GraphQLPlayground, "Enable the GraphQL playground UI")
 
 	cmd.Flags().StringVar(&opts.PortalDevURL, "portal-dev-url", "", "Reverse-proxy /ui/* to this URL (e.g. http://localhost:3000 for Vite dev server); takes precedence over embedded portal dist")
+	cmd.Flags().StringVar(&opts.AppStudioDatabaseURL, "app-studio-database-url", "", "Postgres DSN for App Studio message persistence")
+	cmd.Flags().BoolVar(&opts.AppStudioInMemoryMessageStore, "app-studio-in-memory-message-store", false, "Use non-durable in-memory App Studio message storage for local development")
+	cmd.Flags().StringVar(&opts.AppStudioMessageEncryptionKeys, "app-studio-message-encryption-keys", "", "Comma-separated App Studio message encryption keys as key-id:base64-aes-key; first key encrypts new messages")
+	cmd.Flags().DurationVar(&opts.AppStudioMessageRetention, "app-studio-message-retention", 0, "Background retention window for App Studio messages (0 disables cleanup)")
 
 	// Embedded kcp flags
 	cmd.Flags().BoolVar(&opts.EmbeddedKCP, "embedded-kcp", opts.EmbeddedKCP, "Enable embedded kcp server (runs kcp in-process)")

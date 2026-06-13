@@ -96,7 +96,38 @@ spec:
             {{- if .Values.hub.embeddedGraphQL }}
             - --embedded-graphql
             {{- end }}
+            {{- if .Values.hub.appStudio.databaseURL }}
+            - --app-studio-database-url={{ .Values.hub.appStudio.databaseURL }}
+            {{- else if .Values.hub.appStudio.databaseURLSecretRef.name }}
+            - --app-studio-database-url=$(APP_STUDIO_DATABASE_URL)
+            {{- end }}
+            {{- if .Values.hub.appStudio.inMemoryMessageStore }}
+            - --app-studio-in-memory-message-store
+            {{- end }}
+            {{- if .Values.hub.appStudio.messageRetention }}
+            - --app-studio-message-retention={{ .Values.hub.appStudio.messageRetention }}
+            {{- end }}
+            {{- if .Values.hub.appStudio.messageEncryptionKeysSecretRef.name }}
+            - --app-studio-message-encryption-keys=$(APP_STUDIO_MESSAGE_ENCRYPTION_KEYS)
+            {{- end }}
             - --data-dir=/data/hub
+          {{- if or .Values.hub.appStudio.databaseURLSecretRef.name .Values.hub.appStudio.messageEncryptionKeysSecretRef.name }}
+          env:
+            {{- if .Values.hub.appStudio.databaseURLSecretRef.name }}
+            - name: APP_STUDIO_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.appStudio.databaseURLSecretRef.name }}
+                  key: {{ .Values.hub.appStudio.databaseURLSecretRef.key }}
+            {{- end }}
+            {{- if .Values.hub.appStudio.messageEncryptionKeysSecretRef.name }}
+            - name: APP_STUDIO_MESSAGE_ENCRYPTION_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.appStudio.messageEncryptionKeysSecretRef.name }}
+                  key: {{ .Values.hub.appStudio.messageEncryptionKeysSecretRef.key }}
+            {{- end }}
+          {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:

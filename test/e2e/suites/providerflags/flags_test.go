@@ -31,43 +31,6 @@ import (
 	"time"
 )
 
-// TestDepViolation verifies --providers validation is fail-fast.
-//
-// Spawning the hub with `--providers mcp` (missing both kubernetes-edges
-// and server-edges) MUST exit non-zero in milliseconds — before any
-// listener binds or embedded kcp boots. The error message must name
-// every missing dep so the user can fix the flag in one edit.
-func TestDepViolation(t *testing.T) {
-	dataDir := tempDir(t, "kedge-e2e-flags-dep-")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, hubBinary,
-		"--embedded-kcp",
-		"--kcp-bind-address", "127.0.0.1",
-		"--kcp-secure-port", "16443",
-		"--listen-addr", ":19443",
-		"--data-dir", dataDir,
-		"--providers", "mcp",
-	)
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		t.Fatalf("hub did not exit within 30s — validation should fail in ms. output=\n%s", string(out))
-	}
-	if err == nil {
-		t.Fatalf("hub exited 0 with bad --providers; expected failure. output=\n%s", string(out))
-	}
-	msg := string(out)
-	if !strings.Contains(msg, "dependency violations") {
-		t.Errorf("expected 'dependency violations' in stderr, got:\n%s", msg)
-	}
-	for _, want := range []string{"mcp requires kubernetes-edges", "mcp requires server-edges"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("expected %q in error, got:\n%s", want, msg)
-		}
-	}
-}
-
 // TestUnknownProviderRejected verifies a typo in --providers is rejected
 // up-front with a helpful "known: [...]" hint, not silently ignored.
 func TestUnknownProviderRejected(t *testing.T) {

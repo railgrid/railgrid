@@ -38,6 +38,7 @@ onMounted(() => {
 })
 
 const entry = computed(() => providers.byName(props.providerName))
+const isFullBleedProvider = computed(() => props.providerName === 'app-studio')
 
 // On entry resolve OR provider switch, (re)load the script and mount.
 watch(
@@ -186,11 +187,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <AppLayout>
-    <div class="flex h-full flex-col">
+  <AppLayout :full-bleed="isFullBleedProvider">
+    <div class="flex h-full min-h-0 flex-col">
       <!-- Portal chrome. Lives outside the provider's own element so the
            name/version/status come from the catalog, not the provider. -->
-      <header v-if="entry" class="mb-4 flex flex-wrap items-center gap-3">
+      <header v-if="entry && !isFullBleedProvider" class="mb-4 flex flex-wrap items-center gap-3">
         <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-raised">
           <img
             v-if="entry.iconURL"
@@ -251,7 +252,7 @@ onBeforeUnmount(() => {
            no scrollbars; it's just DOM in the portal's tree. -->
       <div
         ref="mountRef"
-        class="flex-1 min-h-0"
+        class="min-h-0 flex-1"
       />
     </div>
   </AppLayout>
