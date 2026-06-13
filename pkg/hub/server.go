@@ -200,30 +200,10 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 
-	// 2. Bootstrap CRDs
-	logger.Info("Installing CRDs")
-	if err := bootstrap.InstallCRDs(ctx, config); err != nil {
-		return fmt.Errorf("installing CRDs: %w", err)
-	}
-
-	// 3. Create dynamic client (used by controllers for kedge resources)
-	dynamicClient, err := dynamic.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("creating dynamic client: %w", err)
-	}
-
-	// Default KubernetesMCP/LinuxMCP objects used to be created here; both
-	// CRDs have been removed in favor of the aggregate MCPServer endpoint.
-	// kcp bootstrap creates the per-tenant default MCPServer instead (see
-	// pkg/hub/kcp/bootstrap.go EnsureDefaultMCPServer).
-
-	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
-
-	// 4a. Start the HTTP server early so that the liveness probe (/healthz) can
-	// succeed during the kcp bootstrap phase (which can take up to 60 s).
-	// We use a delegating handler that initially serves only the health
-	// endpoints; once full initialisation is complete the handler is swapped
-	// to the real router + optional kcp proxy.
+	// Start the HTTP server early so that the liveness probe (/healthz) can
+	// succeed during CRD and kcp bootstrap. We use a delegating handler that
+	// initially serves only the health endpoints; once full initialization is
+	// complete the handler is swapped to the real router + optional kcp proxy.
 	delegate := &delegatingHandler{}
 	earlyMux := http.NewServeMux()
 	earlyMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +260,32 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		close(httpErrCh)
 	}()
+
+	// 2. Bootstrap CRDs
+	logger.Info("Installing CRDs")
+	if err := runStartupStepWithRetry(ctx, startupRetryPolicy{
+		Name:      "install CRDs",
+		Interval:  5 * time.Second,
+		Timeout:   10 * time.Minute,
+		Retryable: isRetriableKCPBootstrapError,
+	}, func(ctx context.Context) error {
+		return bootstrap.InstallCRDs(ctx, config)
+	}); err != nil {
+		return fmt.Errorf("installing CRDs: %w", err)
+	}
+
+	// 3. Create dynamic client (used by controllers for kedge resources)
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("creating dynamic client: %w", err)
+	}
+
+	// Default KubernetesMCP/LinuxMCP objects used to be created here; both
+	// CRDs have been removed in favor of the aggregate MCPServer endpoint.
+	// kcp bootstrap creates the per-tenant default MCPServer instead (see
+	// pkg/hub/kcp/bootstrap.go EnsureDefaultMCPServer).
+
+	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
 
 	// 4. kcp bootstrap (if kcp is configured - either embedded or external)
 	// userClient is a kedge client targeting the workspace where User CRDs live.
