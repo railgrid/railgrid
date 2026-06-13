@@ -7,6 +7,8 @@
 // Plain custom element in light DOM (the portal's CSS variables cascade
 // in); see main.ts for registration and style.css for the rules.
 
+import { buildElements, themeStyle, mountGraph, RELATION_COLORS, RELATION_LABELS, type GraphHandle } from './graph'
+
 export interface KedgeContext {
   token?: string | null
   user?: { email?: string; sub?: string } | null
@@ -22,7 +24,8 @@ export interface KedgeContext {
 }
 
 // Minimal mirror of kuery's ObjectResult — only what the UI renders.
-interface ObjectResult {
+// Exported so graph.ts can type its node index against the same shape.
+export interface ObjectResult {
   id?: string
   cluster?: string
   object?: {
@@ -67,6 +70,14 @@ export class KueryElement extends HTMLElement {
   private _impactOf: ObjectResult | null = null
   private _impact: ObjectResult | null = null
   private _impactError = ''
+  private _impactView: 'graph' | 'list' = 'graph'
+
+  // Live Cytoscape instance + a generation counter. _render() rewrites
+  // innerHTML wholesale (destroying the canvas), so every render tears the
+  // graph down first and a fresh async mount tags itself with _graphGen to
+  // detect — and discard — itself if a newer render superseded it.
+  private _cy: GraphHandle | null = null
+  private _graphGen = 0
 
   // Filter state survives re-renders.
   private _fEdge = ''
@@ -86,6 +97,10 @@ export class KueryElement extends HTMLElement {
   connectedCallback(): void {
     this._render()
     this._boot()
+  }
+
+  disconnectedCallback(): void {
+    this._destroyGraph()
   }
 
   // _boot waits for basePath (it can arrive on a later context push), then
@@ -209,6 +224,9 @@ export class KueryElement extends HTMLElement {
   // ── rendering ────────────────────────────────────────────────────────
 
   private _render(): void {
+    // Tear down any live graph before its container is replaced by innerHTML.
+    this._destroyGraph()
+
     if (this._impactOf) {
       this.innerHTML = this._renderImpact()
       this.querySelector('#impact-back')?.addEventListener('click', () => {
@@ -216,10 +234,64 @@ export class KueryElement extends HTMLElement {
         this._impact = null
         this._render()
       })
+      this._bindImpactToggle()
+      if (this._impactView === 'graph' && this._impact && !this._impactError) void this._mountGraph()
       return
     }
     this.innerHTML = this._renderInventory()
     this._bindInventory()
+  }
+
+  private _destroyGraph(): void {
+    this._graphGen++ // invalidate any in-flight async mount
+    if (this._cy) {
+      this._cy.destroy()
+      this._cy = null
+    }
+  }
+
+  // _mountGraph draws the current impact result into #kuery-graph. mountGraph
+  // lazy-loads Cytoscape, so this is async; _graphGen lets a mount that loses
+  // the race to a newer render discard itself.
+  private async _mountGraph(): Promise<void> {
+    const container = this.querySelector('#kuery-graph') as HTMLElement | null
+    if (!container || !this._impact) return
+    const gen = this._graphGen
+    try {
+      const { elements, nodeIndex } = buildElements(this._impact)
+      // Vendored UMD bundle, served from this provider's own dist/ root
+      // (basePath is /ui/providers/kuery/). Injected on demand by graph.ts.
+      const libUrl = `${this._ctx?.basePath || ''}cytoscape.min.js`
+      const handle = await mountGraph(
+        container,
+        elements,
+        themeStyle(this),
+        (id) => {
+          const obj = nodeIndex[id]
+          if (obj) void this._runImpact(obj)
+        },
+        libUrl,
+      )
+      if (gen !== this._graphGen) {
+        handle.destroy() // superseded while Cytoscape was loading
+        return
+      }
+      this._cy = handle
+    } catch (e) {
+      container.innerHTML = `<p class="error">graph failed to load: ${esc(e instanceof Error ? e.message : String(e))}</p>`
+    }
+  }
+
+  private _bindImpactToggle(): void {
+    this.querySelectorAll('.seg-btn').forEach((b) =>
+      b.addEventListener('click', () => {
+        const v = (b as HTMLElement).dataset.view as 'graph' | 'list' | undefined
+        if (v && v !== this._impactView) {
+          this._impactView = v
+          this._render()
+        }
+      }),
+    )
   }
 
   private _renderInventory(): string {
@@ -304,36 +376,72 @@ export class KueryElement extends HTMLElement {
     const m = o.metadata ?? {}
     const title = `${o.kind || '?'} ${m.namespace ? m.namespace + '/' : ''}${m.name || '?'}`
 
+    const hasData = !!this._impact && !this._impactError
+    const empty = hasData && !IMPACT_RELATIONS.some((r) => (this._impact!.relations?.[r] ?? []).length > 0)
+
     let body: string
     if (this._impactError) {
       body = `<p class="error">${esc(this._impactError)}</p>`
     } else if (!this._impact) {
       body = `<p class="muted">expanding declared coupling…</p>`
+    } else if (empty) {
+      body = '<p class="muted">no declared coupling found — nothing references, selects, or descends from this object (network-level dependencies are not visible to kuery)</p>'
+    } else if (this._impactView === 'graph') {
+      // The graph mounts into this container after render (see _mountGraph).
+      body = `${this._renderLegend()}<div id="kuery-graph" class="kuery-graph"></div>`
     } else {
-      const rels = this._impact.relations ?? {}
-      const sections = IMPACT_RELATIONS.filter((r) => (rels[r] ?? []).length > 0).map((r) => {
-        const items = (rels[r] ?? []).map((rr) => {
-          const ro = rr.object ?? {}
-          const rm = ro.metadata ?? {}
-          return `<li><code>${esc(edgeOf(rr.cluster))}</code> ${esc(ro.kind || '?')} <span class="name">${esc(rm.namespace ? rm.namespace + '/' : '')}${esc(rm.name || '?')}</span></li>`
-        }).join('')
-        return `<h3 class="rel-title">${esc(RELATION_TITLES[r] ?? r)} <span class="muted">(${(rels[r] ?? []).length})</span></h3><ul class="rel-list">${items}</ul>`
-      })
-      body = sections.length > 0
-        ? sections.join('')
-        : '<p class="muted">no declared coupling found — nothing references, selects, or descends from this object (network-level dependencies are not visible to kuery)</p>'
+      body = this._renderImpactList()
     }
+
+    // Only offer the view toggle when there is a graph worth drawing.
+    const toggle = hasData && !empty
+      ? `<div class="seg">
+           <button class="seg-btn${this._impactView === 'graph' ? ' on' : ''}" data-view="graph">Graph</button>
+           <button class="seg-btn${this._impactView === 'list' ? ' on' : ''}" data-view="list">List</button>
+         </div>`
+      : ''
+
+    const hint = this._impactView === 'graph' && hasData && !empty ? ' Click a node to re-center on it.' : ''
 
     return `
       <div class="panel">
         <div class="panel-head">
           <h2 class="panel-title">Impact: ${esc(title)}</h2>
-          <button id="impact-back">← inventory</button>
+          <div class="head-actions">
+            ${toggle}
+            <button id="impact-back">← inventory</button>
+          </div>
         </div>
-        <p class="meta">Declared blast radius on <code>${esc(edgeOf(this._impactOf?.cluster))}</code> — owners, descendants, spec references, selector matches, and cross-edge links. Not a network dependency map.</p>
+        <p class="meta">Declared blast radius on <code>${esc(edgeOf(this._impactOf?.cluster))}</code> — owners, descendants, spec references, selector matches, and cross-edge links. Not a network dependency map.${hint}</p>
         ${body}
       </div>
     `
+  }
+
+  // _renderLegend maps each relation actually present in the result to its
+  // edge color, so the graph's colors are legible. Colors come from graph.ts
+  // (RELATION_COLORS) so legend and edges never drift.
+  private _renderLegend(): string {
+    const rels = this._impact?.relations ?? {}
+    const chips = IMPACT_RELATIONS.filter((r) => (rels[r] ?? []).length > 0).map((r) => {
+      const color = RELATION_COLORS[r] ?? '#888'
+      const label = RELATION_LABELS[r] ?? r
+      return `<span class="legend-item"><span class="legend-swatch" style="background:${color}"></span>${esc(label)} <span class="muted">(${(rels[r] ?? []).length})</span></span>`
+    })
+    return `<div class="legend">${chips.join('')}</div>`
+  }
+
+  private _renderImpactList(): string {
+    const rels = this._impact?.relations ?? {}
+    const sections = IMPACT_RELATIONS.filter((r) => (rels[r] ?? []).length > 0).map((r) => {
+      const items = (rels[r] ?? []).map((rr) => {
+        const ro = rr.object ?? {}
+        const rm = ro.metadata ?? {}
+        return `<li><code>${esc(edgeOf(rr.cluster))}</code> ${esc(ro.kind || '?')} <span class="name">${esc(rm.namespace ? rm.namespace + '/' : '')}${esc(rm.name || '?')}</span></li>`
+      }).join('')
+      return `<h3 class="rel-title">${esc(RELATION_TITLES[r] ?? r)} <span class="muted">(${(rels[r] ?? []).length})</span></h3><ul class="rel-list">${items}</ul>`
+    })
+    return sections.join('')
   }
 }
 

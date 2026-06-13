@@ -1361,21 +1361,27 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 		return fmt.Errorf("creating child workspace client: %w", err)
 	}
 
+	// kcp marks the binding's PermissionClaimsValid=False (and refuses to
+	// surface the claimed resource through the export's virtual workspace)
+	// unless a claim on a non-built-in type carries the SAME identityHash the
+	// export it binds to declares for that claim. Rather than re-derive the
+	// hash by scanning sibling APIExports — which races core.faros.sh
+	// regeneration and previously left edges claims with an empty hash, so the
+	// bound provider saw zero claimed objects (e.g. kuery engaged no edges) —
+	// read it straight from the export we're binding to. That value is the one
+	// kcp validates against, and the provisioner (ApplyAPIExport) has already
+	// resolved and stamped it; we wait for it below if provisioning is still in
+	// flight.
+	identities, err := b.exportClaimIdentities(ctx, exportPath, exportName, claims)
+	if err != nil {
+		return err
+	}
+
 	specClaims := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
 	for _, c := range claims {
 		state := apisv1alpha2.ClaimRejected
 		if c.Accepted {
 			state = apisv1alpha2.ClaimAccepted
-		}
-		// kcp marks the binding's PermissionClaimsValid=False (and refuses to
-		// surface the claimed resource through the export's virtual workspace)
-		// unless a claim on a non-built-in type carries the identityHash of the
-		// APIExport that serves it. The export side (provisioner.ApplyAPIExport)
-		// resolves the same hash; mirror it here or the bound provider sees zero
-		// claimed objects (e.g. kuery engages no edges).
-		hash, err := b.resolveClaimIdentityHash(ctx, c.Group, c.Resource)
-		if err != nil {
-			return fmt.Errorf("resolving identityHash for claim %s.%s: %w", c.Resource, c.Group, err)
 		}
 		specClaims = append(specClaims, apisv1alpha2.AcceptablePermissionClaim{
 			ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{
@@ -1385,7 +1391,7 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 						Resource: c.Resource,
 					},
 					Verbs:        c.Verbs,
-					IdentityHash: hash,
+					IdentityHash: identities[c.Group+"/"+c.Resource],
 				},
 				Selector: apisv1alpha2.PermissionClaimSelector{MatchAll: true},
 			},
@@ -1422,54 +1428,63 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 	return nil
 }
 
-// resolveClaimIdentityHash returns the identityHash of the APIExport in
-// root:kedge:providers that serves (group, resource), as required on any
-// permissionClaim for a non-built-in API type. A built-in type (no sibling
-// APIExport serves it — e.g. core k8s resources) yields "" and no hash is set;
-// an empty group is always built-in.
+// exportClaimIdentities returns, per claim, the identityHash the bound
+// APIExport (exportPath/exportName) declares for it — keyed "group/resource".
+// This is the value kcp validates the binding's claim against, so sourcing it
+// from the export (rather than re-deriving it by scanning sibling APIExports'
+// spec.resources, which races core.faros.sh regeneration and silently yielded
+// an empty hash → PermissionClaimsValid=False → the provider sees zero claimed
+// objects) keeps the two in lockstep by construction.
 //
-// kedge keeps every first-party APIExport (core.faros.sh, kedge.faros.sh, …)
-// in root:kedge:providers, so a single list there covers all resolvable
-// claims. Matching is by (spec.resources[].group, .name) rather than the
-// export name so it does not depend on the name==group convention. Mirrors
-// provisioner.resolveClaimIdentityHash on the export side.
-func (b *Bootstrapper) resolveClaimIdentityHash(ctx context.Context, group, resource string) (string, error) {
-	if group == "" {
-		return "", nil
-	}
-	providersConfig := configForPath(b.config, "root:kedge:providers")
-	providersClient, err := dynamic.NewForConfig(providersConfig)
+// The provisioner (ApplyAPIExport) resolves and stamps these identities on the
+// export. A first-party kedge claim (*.faros.sh) MUST end up with a non-empty
+// hash; if the export does not carry one yet, provisioning is still in flight
+// (it races the Enable call), so we poll rather than write an empty hash.
+// Built-in / kcp-system claims (core k8s, apis.kcp.io, empty group) legitimately
+// carry no identity, so a missing/empty entry for those is the terminal answer.
+func (b *Bootstrapper) exportClaimIdentities(ctx context.Context, exportPath, exportName string, claims []ProviderClaim) (map[string]string, error) {
+	exportConfig := configForPath(b.config, exportPath)
+	exportClient, err := dynamic.NewForConfig(exportConfig)
 	if err != nil {
-		return "", fmt.Errorf("creating providers workspace client: %w", err)
+		return nil, fmt.Errorf("creating export workspace client for %s: %w", exportPath, err)
 	}
-	list, err := providersClient.Resource(apiExportGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return "", fmt.Errorf("listing APIExports in root:kedge:providers: %w", err)
-	}
-	for i := range list.Items {
-		ex := &list.Items[i]
-		resources, _, _ := unstructured.NestedSlice(ex.Object, "spec", "resources")
-		for _, r := range resources {
-			rm, ok := r.(map[string]any)
+
+	key := func(group, resource string) string { return group + "/" + resource }
+
+	out := map[string]string{}
+	lookup := func(ctx context.Context) (bool, error) {
+		ex, err := exportClient.Resource(apiExportGVR).Get(ctx, exportName, metav1.GetOptions{})
+		if err != nil {
+			return false, fmt.Errorf("getting APIExport %q in %s: %w", exportName, exportPath, err)
+		}
+		pcs, _, _ := unstructured.NestedSlice(ex.Object, "spec", "permissionClaims")
+		got := map[string]string{}
+		for _, pc := range pcs {
+			m, ok := pc.(map[string]any)
 			if !ok {
 				continue
 			}
-			g, _ := rm["group"].(string)
-			n, _ := rm["name"].(string)
-			if g != group || n != resource {
-				continue
-			}
-			hash, _, _ := unstructured.NestedString(ex.Object, "status", "identityHash")
-			if hash == "" {
-				// The serving APIExport exists but kcp has not minted its
-				// identity yet; surface an error rather than write an empty hash.
-				return "", fmt.Errorf("APIExport %q serves %s.%s but status.identityHash is not set yet", ex.GetName(), resource, group)
-			}
-			return hash, nil
+			g, _ := m["group"].(string)
+			r, _ := m["resource"].(string)
+			h, _, _ := unstructured.NestedString(m, "identityHash")
+			got[key(g, r)] = h
 		}
+		// Wait for the provisioner to stamp every first-party claim's identity.
+		for _, c := range claims {
+			if strings.HasSuffix(c.Group, ".faros.sh") && got[key(c.Group, c.Resource)] == "" {
+				return false, nil
+			}
+		}
+		out = got
+		return true, nil
 	}
-	// No sibling APIExport serves it — treat as built-in (needs no hash).
-	return "", nil
+
+	// immediate=true returns on the first hit in the common case where the
+	// export is already fully provisioned; otherwise poll until it is.
+	if err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true, lookup); err != nil {
+		return nil, fmt.Errorf("APIExport %q (%s) permissionClaims not yet stamped with identityHashes by the provisioner: %w", exportName, exportPath, err)
+	}
+	return out, nil
 }
 
 // ListProviderAPIBindings returns the set of Bound provider APIBindings

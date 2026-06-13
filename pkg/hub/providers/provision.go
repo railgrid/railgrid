@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -434,34 +435,62 @@ func (p *provisioner) resolveClaimIdentityHash(ctx context.Context, group, resou
 	if err != nil {
 		return "", err
 	}
-	list, err := cl.Resource(apiExportGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return "", fmt.Errorf("listing APIExports in %s: %w", providersParentWorkspace, err)
-	}
-	for i := range list.Items {
-		ex := &list.Items[i]
-		resources, _, _ := unstructured.NestedSlice(ex.Object, "spec", "resources")
-		for _, r := range resources {
-			rm, ok := r.(map[string]any)
-			if !ok {
-				continue
-			}
-			g, _ := rm["group"].(string)
-			n, _ := rm["name"].(string)
-			if g != group || n != resource {
-				continue
-			}
-			hash, _, _ := unstructured.NestedString(ex.Object, "status", "identityHash")
-			if hash == "" {
-				// The serving APIExport exists but kcp has not minted its
-				// identity yet; requeue rather than write an empty hash.
-				return "", fmt.Errorf("APIExport %q serves %s.%s but status.identityHash is not set yet", ex.GetName(), resource, group)
-			}
-			return hash, nil
+
+	// First-party kedge APIs (*.faros.sh) are always served by a sibling
+	// APIExport in the providers parent workspace, so a miss can only mean the
+	// serving export — or its kcp-minted identity — has not yet synced into our
+	// view; we poll that out rather than write an empty (permanently-invalid)
+	// hash. Built-in and kcp-system groups have no sibling export, so for those
+	// a miss is the terminal, correct "" answer. Mirrors
+	// Bootstrapper.resolveClaimIdentityHash on the binding side — keep both in
+	// lockstep.
+	firstParty := strings.HasSuffix(group, ".faros.sh")
+
+	var hash string
+	lookup := func(ctx context.Context) (bool, error) {
+		list, err := cl.Resource(apiExportGVR).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return false, fmt.Errorf("listing APIExports in %s: %w", providersParentWorkspace, err)
 		}
+		for i := range list.Items {
+			ex := &list.Items[i]
+			resources, _, _ := unstructured.NestedSlice(ex.Object, "spec", "resources")
+			for _, r := range resources {
+				rm, ok := r.(map[string]any)
+				if !ok {
+					continue
+				}
+				g, _ := rm["group"].(string)
+				n, _ := rm["name"].(string)
+				if g != group || n != resource {
+					continue
+				}
+				h, _, _ := unstructured.NestedString(ex.Object, "status", "identityHash")
+				if h == "" {
+					// Serving export exists but kcp has not minted its identity
+					// yet — not resolved; the poll below waits it out.
+					return false, nil
+				}
+				hash = h
+				return true, nil
+			}
+		}
+		// No sibling APIExport serves it: terminal "" for built-ins, a
+		// not-yet-synced race for first-party APIs (keep polling).
+		return !firstParty, nil
 	}
-	// No sibling APIExport serves it — treat as built-in (needs no hash).
-	return "", nil
+
+	if !firstParty {
+		if _, err := lookup(ctx); err != nil {
+			return "", err
+		}
+		return hash, nil // "" — built-in / kcp-system, needs no identityHash
+	}
+
+	if err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true, lookup); err != nil {
+		return "", fmt.Errorf("resolving identityHash for first-party claim %s.%s: no APIExport in %s serves it with a minted status.identityHash yet: %w", resource, group, providersParentWorkspace, err)
+	}
+	return hash, nil
 }
 
 // mergeAPIExportResources upserts the hub-owned entries (owned, derived from
