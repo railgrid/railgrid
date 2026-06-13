@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -747,7 +748,9 @@ func TestDeleteWorkspace_SetsAnnotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DELETE: %v", err)
 	}
-	_ = resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close DELETE response body: %v", err)
+	}
 	if resp.StatusCode != http.StatusNoContent {
 		t.Errorf("status: got %d, want 204", resp.StatusCode)
 	}
@@ -770,7 +773,11 @@ func TestWriteProjectError_InitializingDiscoveryMiss(t *testing.T) {
 	writeProjectError(rec, err)
 
 	resp := rec.Result()
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	}()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 	}
@@ -1154,6 +1161,22 @@ func TestProjects_ShouldPersistInterruptedAssistantWithPartialContent(t *testing
 	}
 	if shouldPersistInterruptedProjectAssistant(ctx, context.Canceled, nil, "   ") {
 		t.Fatal("did not expect blank interrupted assistant content to persist")
+	}
+}
+
+func TestProjects_MessageMetadataPreservesArbitraryJSON(t *testing.T) {
+	input := map[string]any{
+		projectMessageMetadataStatus: projectMessageStatusInterrupted,
+		"retry":                      float64(2),
+		"flags": map[string]any{
+			"enabled": true,
+		},
+		"items": []any{"one", float64(2)},
+	}
+
+	output := rawExtensionMapToAny(metadataToAPI(input))
+	if !reflect.DeepEqual(output, input) {
+		t.Fatalf("metadata round trip = %#v, want %#v", output, input)
 	}
 }
 

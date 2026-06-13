@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260611-549aa6b.projects.ai.kedge.faros.sh
+  name: v260612-7fd2873.projects.ai.kedge.faros.sh
 spec:
   group: ai.kedge.faros.sh
   names:
@@ -87,8 +87,7 @@ spec:
               description: Phase is Ready for MVP-created Projects.
               type: string
             updatedAt:
-              description: |-
-                UpdatedAt reflects the latest API mutation affecting metadata
+              description: UpdatedAt reflects the latest API mutation affecting metadata
                 or memory.
               format: date-time
               type: string

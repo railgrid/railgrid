@@ -92,9 +92,8 @@ spec:
                 description: Phase is Ready for MVP-created Projects.
                 type: string
               updatedAt:
-                description: |-
-                  UpdatedAt reflects the latest API mutation affecting metadata
-                  or memory.
+                description: UpdatedAt reflects the latest API mutation affecting
+                  metadata or memory.
                 format: date-time
                 type: string
             type: object

@@ -192,7 +192,7 @@ func (s *PostgresStore) AppendMessage(ctx context.Context, scope Scope, msg Mess
 	return nil
 }
 
-func (s *PostgresStore) ListMessages(ctx context.Context, scope Scope, limit int, cursor string) (Page, error) {
+func (s *PostgresStore) ListMessages(ctx context.Context, scope Scope, limit int, cursor string) (page Page, err error) {
 	if s == nil || s.db == nil {
 		return Page{}, fmt.Errorf("postgres store is nil")
 	}
@@ -223,7 +223,11 @@ func (s *PostgresStore) ListMessages(ctx context.Context, scope Scope, limit int
 	if err != nil {
 		return Page{}, fmt.Errorf("list messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close list messages rows: %w", closeErr)
+		}
+	}()
 
 	items := make([]Message, 0, limit)
 	for rows.Next() {
@@ -237,7 +241,7 @@ func (s *PostgresStore) ListMessages(ctx context.Context, scope Scope, limit int
 		return Page{}, fmt.Errorf("list messages rows: %w", err)
 	}
 
-	page := Page{Items: items}
+	page = Page{Items: items}
 	if len(page.Items) > limit {
 		last := page.Items[limit-1]
 		page.Items = page.Items[:limit]
@@ -246,7 +250,7 @@ func (s *PostgresStore) ListMessages(ctx context.Context, scope Scope, limit int
 	return page, nil
 }
 
-func (s *PostgresStore) LoadRecentMessages(ctx context.Context, scope Scope, limit int) ([]Message, error) {
+func (s *PostgresStore) LoadRecentMessages(ctx context.Context, scope Scope, limit int) (items []Message, err error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("postgres store is nil")
 	}
@@ -265,9 +269,12 @@ func (s *PostgresStore) LoadRecentMessages(ctx context.Context, scope Scope, lim
 	if err != nil {
 		return nil, fmt.Errorf("load recent messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close recent messages rows: %w", closeErr)
+		}
+	}()
 
-	var items []Message
 	for rows.Next() {
 		msg, err := scanMessage(rows, scope.ProjectName)
 		if err != nil {

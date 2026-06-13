@@ -311,8 +311,8 @@ func (h *Handler) createProjectMessageStream(w http.ResponseWriter, r *http.Requ
 		ID:        userID,
 		Role:      aiv1alpha1.ProjectMessageRoleUser,
 		Content:   req.Content,
-		CreatedAt: now.Time.UTC(),
-		UpdatedAt: now.Time.UTC(),
+		CreatedAt: now.UTC(),
+		UpdatedAt: now.UTC(),
 	}
 	if err := store.AppendMessage(r.Context(), projectMessageScope(tc.OrgUUID, tc.WorkspaceUUID, p.Name), userMsg); err != nil {
 		writeProjectError(w, err)

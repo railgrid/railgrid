@@ -61,7 +61,11 @@ func runHeartbeat(ctx context.Context) {
 			log.Printf("heartbeat send: %v", err)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				log.Printf("heartbeat response close: %v", err)
+			}
+		}()
 		if resp.StatusCode >= 300 {
 			log.Printf("heartbeat %s: %d %s", url, resp.StatusCode, resp.Status)
 		}

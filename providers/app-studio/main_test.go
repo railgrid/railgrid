@@ -37,7 +37,11 @@ func TestHealthz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
-	defer res.Body.Close()
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			t.Errorf("close /healthz response body: %v", err)
+		}
+	}()
 	if got, want := res.StatusCode, http.StatusOK; got != want {
 		t.Fatalf("GET /healthz status = %d, want %d", got, want)
 	}
@@ -80,7 +84,11 @@ func TestPortalAssets(t *testing.T) {
 			t.Fatalf("GET %s: %v", tc.path, err)
 		}
 		func() {
-			defer res.Body.Close()
+			defer func() {
+				if err := res.Body.Close(); err != nil {
+					t.Errorf("close %s response body: %v", tc.path, err)
+				}
+			}()
 			if got, want := res.StatusCode, http.StatusOK; got != want {
 				t.Fatalf("GET %s status = %d, want %d", tc.path, got, want)
 			}

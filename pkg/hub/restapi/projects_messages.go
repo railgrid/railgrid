@@ -25,6 +25,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	aiv1alpha1 "github.com/faroshq/faros-kedge/apis/ai/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
@@ -59,7 +60,7 @@ func projectMessagesToAPI(items []projectstore.Message) []aiv1alpha1.ProjectMess
 }
 
 func projectMessageToAPI(item projectstore.Message) aiv1alpha1.ProjectMessage {
-	meta := cloneAnyMap(item.Metadata)
+	meta := metadataToAPI(item.Metadata)
 	if len(meta) == 0 {
 		meta = nil
 	}
@@ -73,6 +74,21 @@ func projectMessageToAPI(item projectstore.Message) aiv1alpha1.ProjectMessage {
 		Metadata:         meta,
 		CreatedAt:        metav1Time(item.CreatedAt),
 	}
+}
+
+func metadataToAPI(src map[string]any) map[string]runtime.RawExtension {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]runtime.RawExtension, len(src))
+	for k, v := range src {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			raw, _ = json.Marshal(fmt.Sprint(v))
+		}
+		dst[k] = runtime.RawExtension{Raw: raw}
+	}
+	return dst
 }
 
 func cloneAnyMap(src map[string]any) map[string]any {
@@ -141,7 +157,7 @@ func (h *Handler) migrateLegacyProjectMessages(ctx context.Context, c *kedgeclie
 		if strings.TrimSpace(msg.ProjectID) == "" {
 			msg.ProjectID = p.Name
 		}
-		createdAt := msg.CreatedAt.Time.UTC()
+		createdAt := msg.CreatedAt.UTC()
 		if createdAt.IsZero() {
 			createdAt = time.Now().UTC()
 		}
@@ -152,7 +168,7 @@ func (h *Handler) migrateLegacyProjectMessages(ctx context.Context, c *kedgeclie
 			Content:          msg.Content,
 			ContentEncrypted: msg.ContentEncrypted,
 			ContentKeyID:     msg.ContentKeyID,
-			Metadata:         cloneAnyMap(msg.Metadata),
+			Metadata:         rawExtensionMapToAny(msg.Metadata),
 			CreatedAt:        createdAt,
 			UpdatedAt:        createdAt,
 		}); err != nil {
@@ -164,4 +180,21 @@ func (h *Handler) migrateLegacyProjectMessages(ctx context.Context, c *kedgeclie
 		return fmt.Errorf("clear legacy project messages: %w", err)
 	}
 	return nil
+}
+
+func rawExtensionMapToAny(src map[string]runtime.RawExtension) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for k, raw := range src {
+		var v any
+		if len(raw.Raw) > 0 {
+			if err := json.Unmarshal(raw.Raw, &v); err != nil {
+				v = string(raw.Raw)
+			}
+		}
+		dst[k] = v
+	}
+	return dst
 }

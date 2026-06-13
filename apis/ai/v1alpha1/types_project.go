@@ -16,7 +16,10 @@ limitations under the License.
 
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+)
 
 const (
 	// ProjectPhaseReady marks a Project that is ready for portal use.
@@ -110,7 +113,7 @@ type ProjectMessage struct {
 	// Metadata carries additional message annotations such as retry or
 	// provider-specific envelope data.
 	// +optional
-	Metadata map[string]any `json:"metadata,omitempty"`
+	Metadata map[string]runtime.RawExtension `json:"metadata,omitempty"`
 
 	// CreatedAt is the server timestamp for this message.
 	CreatedAt metav1.Time `json:"createdAt"`

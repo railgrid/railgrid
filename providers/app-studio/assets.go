@@ -21,8 +21,8 @@ import (
 )
 
 // portalFS embeds the App Studio portal bundle. The checked-in .gitkeep keeps
-// go:embed valid in a clean checkout; `make build-app-studio-provider` builds
-// the real micro-frontend into portal/dist before compiling the provider.
+// the embed target valid in a clean checkout; `make build-app-studio-provider`
+// builds the real micro-frontend into portal/dist before compiling the provider.
 //
 //go:embed all:portal/dist
 var portalFS embed.FS
@@ -47,7 +47,11 @@ func servePortalAsset(w http.ResponseWriter, _ *http.Request, distFS fs.FS, name
 		}
 		return false
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("portal asset %s close: %v", name, err)
+		}
+	}()
 
 	ct := mime.TypeByExtension(path.Ext(name))
 	if ct == "" {
