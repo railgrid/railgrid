@@ -442,7 +442,7 @@ func (p *provisioner) resolveClaimIdentityHash(ctx context.Context, group, resou
 	// view; we poll that out rather than write an empty (permanently-invalid)
 	// hash. Built-in and kcp-system groups have no sibling export, so for those
 	// a miss is the terminal, correct "" answer. Mirrors
-	// Bootstrapper.resolveClaimIdentityHash on the binding side — keep both in
+	// Bootstrapper.exportClaimIdentities on the binding side — keep both in
 	// lockstep.
 	firstParty := strings.HasSuffix(group, ".faros.sh")
 

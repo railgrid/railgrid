@@ -161,6 +161,10 @@ func main() {
 	// Tenant-scoped query API — the only path to the kuery store.
 	mux.Handle("/api/query", &queryapi.Handler{Engine: kc.Engine})
 
+	// QuerySpec JSON Schema — powers the playground editor's autocomplete and
+	// doubles as external API docs. Unauthenticated (the schema is public).
+	mux.Handle("/api/query-schema", queryapi.SchemaHandler{})
+
 	// Engaged-edge listing for the portal's edge selector. The interface
 	// indirection keeps the nil case (engagement disabled) serving [].
 	var edgeLister queryapi.EdgeLister

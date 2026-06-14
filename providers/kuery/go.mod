@@ -5,7 +5,7 @@ go 1.26.3
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.7.1-0.20260515112510-8f4137891edf
 
 require (
-	github.com/faroshq/kuery v0.0.0-20260612114451-4faa46315aa7
+	github.com/faroshq/kuery v0.0.0-20260614065711-08329d47d344
 	github.com/kcp-dev/multicluster-provider v0.7.1
 	github.com/kcp-dev/sdk v0.31.0
 	github.com/modelcontextprotocol/go-sdk v1.3.1
