@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260613-c20e09e.repositorycommits.code.kedge.faros.sh
+  name: v260614-fbb1248.repositorycommits.code.kedge.faros.sh
 spec:
   group: code.kedge.faros.sh
   names:
@@ -97,6 +97,8 @@ spec:
                   required:
                   - name
                   type: object
+              required:
+              - bundleRef
               type: object
           required:
           - repositoryRef

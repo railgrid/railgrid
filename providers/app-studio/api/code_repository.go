@@ -32,18 +32,13 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
 )
 
 const (
-	codeProviderGroupVersion = "code.kedge.faros.sh/v1alpha1"
-
-	projectRepositoryRefAnnotation        = "app-studio.ai.kedge.faros.sh/repository-ref"
-	projectRepositoryNameAnnotation       = "app-studio.ai.kedge.faros.sh/repository-name"
-	projectRepositoryConnectionAnnotation = "app-studio.ai.kedge.faros.sh/repository-connection"
-	projectRepositoryProjectAnnotation    = "app-studio.ai.kedge.faros.sh/project"
+	projectRepositoryProjectAnnotation = "app-studio.ai.kedge.faros.sh/project"
 
 	projectRepositoryProjectLabel = "app-studio.ai.kedge.faros.sh/project"
-	codeRepositoryLabel           = "code.kedge.faros.sh/repository"
 
 	projectRepositoryStatusReady             = "Ready"
 	projectRepositoryStatusProvisioning      = "Provisioning"
@@ -53,9 +48,9 @@ const (
 )
 
 var (
-	codeConnectionsGVR       = schema.GroupVersionResource{Group: "code.kedge.faros.sh", Version: "v1alpha1", Resource: "connections"}
-	codeRepositoriesGVR      = schema.GroupVersionResource{Group: "code.kedge.faros.sh", Version: "v1alpha1", Resource: "repositories"}
-	codeRepositoryCommitsGVR = schema.GroupVersionResource{Group: "code.kedge.faros.sh", Version: "v1alpha1", Resource: "repositorycommits"}
+	codeConnectionsGVR       = codev1alpha1.SchemeGroupVersion.WithResource("connections")
+	codeRepositoriesGVR      = codev1alpha1.SchemeGroupVersion.WithResource("repositories")
+	codeRepositoryCommitsGVR = codev1alpha1.SchemeGroupVersion.WithResource("repositorycommits")
 )
 
 type projectRepositoryPlan struct {
@@ -68,11 +63,11 @@ type projectRepositoryPlan struct {
 type codeResourceGetter func(ctx context.Context, gvr schema.GroupVersionResource, name string) (*unstructured.Unstructured, error)
 type codeResourceLister func(ctx context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions) (*unstructured.UnstructuredList, error)
 
-func (p projectRepositoryPlan) projectAnnotations() map[string]string {
-	return map[string]string{
-		projectRepositoryRefAnnotation:        p.Ref,
-		projectRepositoryNameAnnotation:       p.Name,
-		projectRepositoryConnectionAnnotation: p.ConnectionRef,
+func (p projectRepositoryPlan) projectBinding() *aiv1alpha1.ProjectRepositoryBinding {
+	return &aiv1alpha1.ProjectRepositoryBinding{
+		RepositoryRef: p.Ref,
+		Name:          p.Name,
+		ConnectionRef: p.ConnectionRef,
 	}
 }
 
@@ -102,7 +97,7 @@ func selectCodeConnection(ctx context.Context, c *asclient.Client, requested str
 		if err != nil {
 			return "", codeProviderRequestError("get Code connection", err)
 		}
-		if !unstructuredConditionTrue(conn, "Validated") {
+		if !unstructuredConditionTrue(conn, codev1alpha1.ConditionValidated) {
 			return "", newValidationError(fmt.Sprintf("Code connection %q is not validated yet", requested))
 		}
 		return requested, nil
@@ -116,7 +111,7 @@ func selectCodeConnection(ctx context.Context, c *asclient.Client, requested str
 		return list.Items[i].GetName() < list.Items[j].GetName()
 	})
 	for i := range list.Items {
-		if unstructuredConditionTrue(&list.Items[i], "Validated") {
+		if unstructuredConditionTrue(&list.Items[i], codev1alpha1.ConditionValidated) {
 			return list.Items[i].GetName(), nil
 		}
 	}
@@ -150,7 +145,7 @@ func repositoryName(ctx context.Context, c *asclient.Client, requested, displayN
 
 func (s *Server) createProjectRepository(ctx context.Context, c *asclient.Client, projectName string, plan projectRepositoryPlan) error {
 	repo := &unstructured.Unstructured{}
-	repo.SetAPIVersion(codeProviderGroupVersion)
+	repo.SetAPIVersion(codev1alpha1.SchemeGroupVersion.String())
 	repo.SetKind("Repository")
 	repo.SetName(plan.Ref)
 	repo.SetLabels(map[string]string{
@@ -194,15 +189,18 @@ func projectRepositoryViewFromGetter(ctx context.Context, p *aiv1alpha1.Project,
 }
 
 func projectRepositoryViewFromResources(ctx context.Context, p *aiv1alpha1.Project, get codeResourceGetter, list codeResourceLister) *ProjectRepositoryView {
-	annotations := p.GetAnnotations()
-	ref := strings.TrimSpace(annotations[projectRepositoryRefAnnotation])
+	binding := p.Spec.Repository
+	if binding == nil {
+		return nil
+	}
+	ref := strings.TrimSpace(binding.RepositoryRef)
 	if ref == "" {
 		return nil
 	}
 	view := &ProjectRepositoryView{
 		Ref:           ref,
-		Name:          strings.TrimSpace(annotations[projectRepositoryNameAnnotation]),
-		ConnectionRef: strings.TrimSpace(annotations[projectRepositoryConnectionAnnotation]),
+		Name:          strings.TrimSpace(binding.Name),
+		ConnectionRef: strings.TrimSpace(binding.ConnectionRef),
 		Status:        projectRepositoryStatusProvisioning,
 	}
 	if get == nil {
@@ -241,7 +239,7 @@ func projectRepositoryViewFromResources(ctx context.Context, p *aiv1alpha1.Proje
 		view.Message = fmt.Sprintf("Could not read connection resource %q.", view.ConnectionRef)
 		return view
 	}
-	view.Ready = unstructuredConditionTrue(repo, "Ready")
+	view.Ready = unstructuredConditionTrue(repo, codev1alpha1.ConditionReady)
 	if view.Ready {
 		view.Status = projectRepositoryStatusReady
 	}
@@ -253,7 +251,7 @@ func projectRepositoryCommits(ctx context.Context, list codeResourceLister, repo
 	if list == nil || strings.TrimSpace(repositoryRef) == "" {
 		return nil
 	}
-	selector := labels.SelectorFromSet(labels.Set{codeRepositoryLabel: repositoryRef}).String()
+	selector := labels.SelectorFromSet(labels.Set{codev1alpha1.LabelRepository: repositoryRef}).String()
 	items, err := list(ctx, codeRepositoryCommitsGVR, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
 		return nil

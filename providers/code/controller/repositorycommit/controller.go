@@ -73,9 +73,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if r.Backends == nil {
 		return ctrl.Result{}, r.fail(ctx, c, &commit, "git backends are unavailable")
 	}
-	if commit.Spec.Source.BundleRef == nil {
-		return ctrl.Result{}, r.fail(ctx, c, &commit, "spec.source.bundleRef is required")
-	}
 
 	now := metav1.Now()
 	if commit.Status.Phase == "" {

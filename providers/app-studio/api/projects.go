@@ -199,12 +199,12 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	now := metav1.Now()
 	p := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Annotations: repoPlan.projectAnnotations(),
+			Name: name,
 		},
 		Spec: aiv1alpha1.ProjectSpec{
 			DisplayName: req.DisplayName,
 			Description: req.Description,
+			Repository:  repoPlan.projectBinding(),
 			Memory:      emptyProjectMemory(),
 		},
 		Status: aiv1alpha1.ProjectStatus{

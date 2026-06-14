@@ -64,10 +64,34 @@ type ProjectSpec struct {
 	// +kubebuilder:validation:MaxLength=2048
 	Description string `json:"description,omitempty"`
 
+	// Repository records the Code provider repository backing this Project.
+	// +optional
+	Repository *ProjectRepositoryBinding `json:"repository,omitempty"`
+
 	// Memory stores durable context the AI should consider for this
 	// project. It is edited explicitly through the API in the MVP.
 	// +optional
 	Memory ProjectMemory `json:"memory,omitempty"`
+}
+
+// ProjectRepositoryBinding identifies the Code provider Repository created for
+// a Project.
+type ProjectRepositoryBinding struct {
+	// RepositoryRef names the Repository resource in the same workspace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	RepositoryRef string `json:"repositoryRef"`
+
+	// Name is the repository name on the git host.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name,omitempty"`
+
+	// ConnectionRef names the Code provider Connection used by the Repository.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	ConnectionRef string `json:"connectionRef,omitempty"`
 }
 
 // ProjectMemory is the MVP project memory document.

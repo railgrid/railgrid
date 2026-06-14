@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260611-549aa6b.projects.ai.kedge.faros.sh
+  name: v260614-fbb1248.projects.ai.kedge.faros.sh
 spec:
   group: ai.kedge.faros.sh
   names:
@@ -77,6 +77,28 @@ spec:
                     type: string
                   type: array
               type: object
+            repository:
+              description: Repository records the Code provider repository backing
+                this Project.
+              properties:
+                connectionRef:
+                  description: ConnectionRef names the Code provider Connection used
+                    by the Repository.
+                  maxLength: 253
+                  type: string
+                name:
+                  description: Name is the repository name on the git host.
+                  maxLength: 253
+                  type: string
+                repositoryRef:
+                  description: RepositoryRef names the Repository resource in the
+                    same workspace.
+                  maxLength: 253
+                  minLength: 1
+                  type: string
+              required:
+              - repositoryRef
+              type: object
           required:
           - displayName
           type: object
@@ -87,8 +109,7 @@ spec:
               description: Phase is Ready for MVP-created Projects.
               type: string
             updatedAt:
-              description: |-
-                UpdatedAt reflects the latest API mutation affecting metadata
+              description: UpdatedAt reflects the latest API mutation affecting metadata
                 or memory.
               format: date-time
               type: string

@@ -82,8 +82,8 @@ type RepositoryCommitSpec struct {
 // RepositoryCommitSource points at the source payload for a commit operation.
 type RepositoryCommitSource struct {
 	// BundleRef points at a provider-owned, immutable bundle object.
-	// +optional
-	BundleRef *RepositoryCommitBundleReference `json:"bundleRef,omitempty"`
+	// +required
+	BundleRef RepositoryCommitBundleReference `json:"bundleRef"`
 }
 
 // RepositoryCommitBundleReference identifies a stored source bundle.

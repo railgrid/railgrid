@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
 )
 
 func TestParseProjectNamingResult(t *testing.T) {
@@ -135,12 +136,7 @@ func TestProjectStreamingTimeoutsFitLongRunningGenerations(t *testing.T) {
 }
 
 func TestProjectRepositoryViewDegradedStates(t *testing.T) {
-	project := &aiv1alpha1.Project{}
-	project.SetAnnotations(map[string]string{
-		projectRepositoryRefAnnotation:        "demo-repo",
-		projectRepositoryNameAnnotation:       "demo",
-		projectRepositoryConnectionAnnotation: "github",
-	})
+	project := projectWithRepository("demo-repo", "demo", "github")
 
 	tests := []struct {
 		name       string
@@ -187,12 +183,7 @@ func TestProjectRepositoryViewDegradedStates(t *testing.T) {
 }
 
 func TestProjectRepositoryViewIncludesCommits(t *testing.T) {
-	project := &aiv1alpha1.Project{}
-	project.SetAnnotations(map[string]string{
-		projectRepositoryRefAnnotation:        "demo-repo",
-		projectRepositoryNameAnnotation:       "demo",
-		projectRepositoryConnectionAnnotation: "github",
-	})
+	project := projectWithRepository("demo-repo", "demo", "github")
 	older := codeRepositoryCommitObject("older", "demo-repo", "Succeeded", "abc123", "Initial app", 2, time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC))
 	newer := codeRepositoryCommitObject("newer", "demo-repo", "Running", "", "Update app", 0, time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC))
 
@@ -213,6 +204,18 @@ func TestProjectRepositoryViewIncludesCommits(t *testing.T) {
 	}
 	if view.Commits[1].CommitSHA != "abc123" || view.Commits[1].FileCount != 2 || view.Commits[1].Message != "Initial app" {
 		t.Fatalf("unexpected commit view: %#v", view.Commits[1])
+	}
+}
+
+func projectWithRepository(ref, name, connectionRef string) *aiv1alpha1.Project {
+	return &aiv1alpha1.Project{
+		Spec: aiv1alpha1.ProjectSpec{
+			Repository: &aiv1alpha1.ProjectRepositoryBinding{
+				RepositoryRef: ref,
+				Name:          name,
+				ConnectionRef: connectionRef,
+			},
+		},
 	}
 }
 
@@ -281,13 +284,13 @@ func codeRepositoryObject(name, repoName, connectionRef string, ready bool) *uns
 			},
 		},
 	}
-	u.SetAPIVersion(codeProviderGroupVersion)
+	u.SetAPIVersion(codev1alpha1.SchemeGroupVersion.String())
 	u.SetKind("Repository")
 	u.SetName(name)
 	if ready {
 		u.Object["status"] = map[string]any{
 			"conditions": []any{
-				map[string]any{"type": "Ready", "status": "True"},
+				map[string]any{"type": codev1alpha1.ConditionReady, "status": "True"},
 			},
 		}
 	}
@@ -296,7 +299,7 @@ func codeRepositoryObject(name, repoName, connectionRef string, ready bool) *uns
 
 func codeConnectionObject(name string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
-	u.SetAPIVersion(codeProviderGroupVersion)
+	u.SetAPIVersion(codev1alpha1.SchemeGroupVersion.String())
 	u.SetKind("Connection")
 	u.SetName(name)
 	return u
@@ -318,10 +321,10 @@ func codeRepositoryCommitObject(name, repositoryRef, phase, sha, message string,
 			},
 		},
 	}
-	u.SetAPIVersion(codeProviderGroupVersion)
+	u.SetAPIVersion(codev1alpha1.SchemeGroupVersion.String())
 	u.SetKind("RepositoryCommit")
 	u.SetName(name)
-	u.SetLabels(map[string]string{codeRepositoryLabel: repositoryRef})
+	u.SetLabels(map[string]string{codev1alpha1.LabelRepository: repositoryRef})
 	u.SetCreationTimestamp(metav1.NewTime(created))
 	return u
 }

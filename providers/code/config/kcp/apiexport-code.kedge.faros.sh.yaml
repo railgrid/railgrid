@@ -31,7 +31,7 @@ spec:
       crd: {}
   - group: code.kedge.faros.sh
     name: repositorycommits
-    schema: v260613-c20e09e.repositorycommits.code.kedge.faros.sh
+    schema: v260614-fbb1248.repositorycommits.code.kedge.faros.sh
     storage:
       crd: {}
 status: {}

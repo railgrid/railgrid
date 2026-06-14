@@ -63,7 +63,7 @@ spec:
           apiVersion: apis.kcp.io/v1alpha1
           kind: APIResourceSchema
           metadata:
-            name: v260611-549aa6b.projects.ai.kedge.faros.sh
+            name: v260614-fbb1248.projects.ai.kedge.faros.sh
           spec:
             group: ai.kedge.faros.sh
             names:
@@ -93,8 +93,19 @@ spec:
                 description: Project is a persistent AI workspace scoped to a Kedge child workspace.
                 properties:
                   apiVersion:
+                    description: |-
+                      APIVersion defines the versioned schema of this representation of an object.
+                      Servers should convert recognized schemas to the latest internal value, and
+                      may reject unrecognized values.
+                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
                     type: string
                   kind:
+                    description: |-
+                      Kind is a string value representing the REST resource this object represents.
+                      Servers may infer this from the endpoint the client submits requests to.
+                      Cannot be updated.
+                      In CamelCase.
+                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
                     type: string
                   metadata:
                     type: object
@@ -111,9 +122,9 @@ spec:
                         minLength: 1
                         type: string
                       memory:
-                        description: >-
-                          Memory stores durable context the AI should consider for
-                          this project. It is edited explicitly through the API.
+                        description: |-
+                          Memory stores durable context the AI should consider for this
+                          project. It is edited explicitly through the API in the MVP.
                         properties:
                           constraints:
                             items:
@@ -128,6 +139,28 @@ spec:
                               type: string
                             type: array
                         type: object
+                      repository:
+                        description: Repository records the Code provider repository backing
+                          this Project.
+                        properties:
+                          connectionRef:
+                            description: ConnectionRef names the Code provider Connection used
+                              by the Repository.
+                            maxLength: 253
+                            type: string
+                          name:
+                            description: Name is the repository name on the git host.
+                            maxLength: 253
+                            type: string
+                          repositoryRef:
+                            description: RepositoryRef names the Repository resource in the
+                              same workspace.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - repositoryRef
+                        type: object
                     required:
                     - displayName
                     type: object
@@ -138,9 +171,8 @@ spec:
                         description: Phase is Ready for MVP-created Projects.
                         type: string
                       updatedAt:
-                        description: >-
-                          UpdatedAt reflects the latest API mutation affecting
-                          metadata or memory.
+                        description: UpdatedAt reflects the latest API mutation affecting metadata
+                          or memory.
                         format: date-time
                         type: string
                     type: object

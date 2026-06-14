@@ -433,9 +433,6 @@ func (s *Server) generateProjectNaming(ctx context.Context, c *asclient.Client, 
 	}
 	out.RepositoryName = dns1123Label(out.RepositoryName)
 	if out.RepositoryName == "" {
-		out.RepositoryName = dns1123Label(out.DisplayName)
-	}
-	if out.RepositoryName == "" {
 		return projectNamingResult{}, errors.New("LLM naming response did not produce a valid repositoryName")
 	}
 	return out, nil
@@ -1615,14 +1612,14 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 	if strings.TrimSpace(p.Spec.Description) != "" {
 		b.WriteString("- Description: " + p.Spec.Description + "\n")
 	}
-	annotations := p.GetAnnotations()
-	if repoRef := strings.TrimSpace(annotations[projectRepositoryRefAnnotation]); repoRef != "" {
+	if repo := p.Spec.Repository; repo != nil && strings.TrimSpace(repo.RepositoryRef) != "" {
+		repoRef := strings.TrimSpace(repo.RepositoryRef)
 		b.WriteString("\nSource repository:\n")
 		b.WriteString("- Repository resource: " + repoRef + "\n")
-		if repoName := strings.TrimSpace(annotations[projectRepositoryNameAnnotation]); repoName != "" {
+		if repoName := strings.TrimSpace(repo.Name); repoName != "" {
 			b.WriteString("- Repository name: " + repoName + "\n")
 		}
-		if connectionRef := strings.TrimSpace(annotations[projectRepositoryConnectionAnnotation]); connectionRef != "" {
+		if connectionRef := strings.TrimSpace(repo.ConnectionRef); connectionRef != "" {
 			b.WriteString("- Connection: " + connectionRef + "\n")
 		}
 		if repository != nil && repository.Status != "" && repository.Status != projectRepositoryStatusReady && repository.Status != projectRepositoryStatusProvisioning {

@@ -16,13 +16,22 @@ const config = computed(() => {
 
   switch (props.status?.toLowerCase()) {
     case 'ready':
+    case 'succeeded':
+    case 'committed':
       return { bg: 'bg-success-subtle', text: 'text-success', icon: CheckCircle, dot: 'bg-success', glow: 'text-success' }
     case 'scheduling':
     case 'pending':
+    case 'provisioning':
+    case 'running':
+    case 'status unavailable':
       return { bg: 'bg-warning-subtle', text: 'text-warning', icon: Clock, dot: 'bg-warning', glow: 'text-warning' }
     case 'active':
       return { bg: 'bg-success-subtle', text: 'text-success', icon: CheckCircle, dot: 'bg-success', glow: 'text-success' }
     case 'terminating':
+    case 'failed':
+    case 'error':
+    case 'repository missing':
+    case 'connection missing':
       return { bg: 'bg-danger-subtle', text: 'text-danger', icon: AlertTriangle, dot: 'bg-danger', glow: 'text-danger' }
     default:
       return { bg: 'bg-surface-overlay', text: 'text-text-muted', icon: Circle, dot: 'bg-text-muted', glow: 'text-text-muted' }

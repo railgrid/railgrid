@@ -27,6 +27,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import StatusBadge from '@/components/StatusBadge.vue'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import { api, isProjectAPIInitializingError } from './api'
 import type {
@@ -1493,18 +1494,6 @@ function repositoryStatusLabel(repository: Project['repository']): string {
   }
 }
 
-function repositoryStatusClass(repository: Project['repository']): string {
-  switch (repository?.status) {
-    case 'Ready':
-      return 'border-success/30 bg-success-subtle text-success'
-    case 'RepositoryMissing':
-    case 'ConnectionMissing':
-      return 'border-danger/30 bg-danger-subtle text-danger'
-    default:
-      return 'border-warning/30 bg-warning-subtle text-warning'
-  }
-}
-
 function repositoryCommitPhaseLabel(commit: ProjectRepositoryCommit): string {
   switch (commit.phase) {
     case 'Succeeded':
@@ -1517,17 +1506,6 @@ function repositoryCommitPhaseLabel(commit: ProjectRepositoryCommit): string {
       return 'Pending'
     default:
       return commit.phase || 'Unknown'
-  }
-}
-
-function repositoryCommitPhaseClass(commit: ProjectRepositoryCommit): string {
-  switch (commit.phase) {
-    case 'Succeeded':
-      return 'border-success/30 bg-success-subtle text-success'
-    case 'Failed':
-      return 'border-danger/30 bg-danger-subtle text-danger'
-    default:
-      return 'border-warning/30 bg-warning-subtle text-warning'
   }
 }
 
@@ -1674,18 +1652,12 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                   {{ project.description || project.name }}
                 </div>
                 <div class="mt-3 flex items-center gap-2 text-[12px] text-text-muted">
-                  <span class="rounded-md border border-border-subtle bg-surface px-1.5 py-0.5 text-[10px] font-semibold uppercase text-text-secondary">
-                    {{ project.phase || 'Ready' }}
-                  </span>
-                  <span
+                  <StatusBadge :status="project.phase || 'Ready'" />
+                  <StatusBadge
                     v-if="project.repository"
-                    class="inline-flex min-w-0 max-w-[130px] items-center gap-1 truncate rounded-md border px-1.5 py-0.5 text-[10px] font-medium"
-                    :class="repositoryStatusClass(project.repository)"
+                    :status="repositoryStatusLabel(project.repository)"
                     :title="project.repository.message || repositoryStatusLabel(project.repository)"
-                  >
-                    <GitBranch class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-                    <span class="truncate">{{ project.repository.name || project.repository.ref }}</span>
-                  </span>
+                  />
                   <span>{{ projectTimestamp(project) }}</span>
                 </div>
               </div>
@@ -2370,12 +2342,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 </dd>
                 <dt class="text-text-muted">Status</dt>
                 <dd>
-                  <span
-                    class="inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase"
-                    :class="repositoryStatusClass(settingsProject.repository)"
-                  >
-                    {{ repositoryStatusLabel(settingsProject.repository) }}
-                  </span>
+                  <StatusBadge :status="repositoryStatusLabel(settingsProject.repository)" />
                 </dd>
                 <template v-if="settingsProject.repository.message">
                   <dt class="text-text-muted">Notice</dt>
@@ -2408,12 +2375,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                     class="grid gap-1 rounded-md px-2 py-1.5 transition hover:bg-surface-hover"
                   >
                     <div class="flex min-w-0 items-center gap-2">
-                      <span
-                        class="inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase"
-                        :class="repositoryCommitPhaseClass(commit)"
-                      >
-                        {{ repositoryCommitPhaseLabel(commit) }}
-                      </span>
+                      <StatusBadge :status="repositoryCommitPhaseLabel(commit)" />
                       <a
                         v-if="commit.commitURL"
                         :href="commit.commitURL"
