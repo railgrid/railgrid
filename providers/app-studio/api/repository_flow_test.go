@@ -32,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
 )
 
 func TestParseProjectNamingResult(t *testing.T) {
@@ -164,6 +163,14 @@ func TestProjectRepositoryViewDegradedStates(t *testing.T) {
 			wantStatus: projectRepositoryStatusReady,
 			wantReady:  true,
 		},
+		{
+			name: "repository reconcile failed",
+			objects: []*unstructured.Unstructured{
+				codeRepositoryObjectWithReadyCondition("demo-repo", "demo", "github", "False", "Error", "credential revoked"),
+				codeConnectionObject("github"),
+			},
+			wantStatus: projectRepositoryStatusFailed,
+		},
 	}
 
 	for _, tt := range tests {
@@ -276,6 +283,14 @@ func codeObjectKey(gvr schema.GroupVersionResource, name string) string {
 }
 
 func codeRepositoryObject(name, repoName, connectionRef string, ready bool) *unstructured.Unstructured {
+	status := ""
+	if ready {
+		status = "True"
+	}
+	return codeRepositoryObjectWithReadyCondition(name, repoName, connectionRef, status, "", "")
+}
+
+func codeRepositoryObjectWithReadyCondition(name, repoName, connectionRef, status, reason, message string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{
 		Object: map[string]any{
 			"spec": map[string]any{
@@ -284,13 +299,13 @@ func codeRepositoryObject(name, repoName, connectionRef string, ready bool) *uns
 			},
 		},
 	}
-	u.SetAPIVersion(codev1alpha1.SchemeGroupVersion.String())
+	u.SetAPIVersion(codeSchemeGroupVersion.String())
 	u.SetKind("Repository")
 	u.SetName(name)
-	if ready {
+	if status != "" {
 		u.Object["status"] = map[string]any{
 			"conditions": []any{
-				map[string]any{"type": codev1alpha1.ConditionReady, "status": "True"},
+				map[string]any{"type": codeConditionReady, "status": status, "reason": reason, "message": message},
 			},
 		}
 	}
@@ -299,7 +314,7 @@ func codeRepositoryObject(name, repoName, connectionRef string, ready bool) *uns
 
 func codeConnectionObject(name string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
-	u.SetAPIVersion(codev1alpha1.SchemeGroupVersion.String())
+	u.SetAPIVersion(codeSchemeGroupVersion.String())
 	u.SetKind("Connection")
 	u.SetName(name)
 	return u
@@ -321,10 +336,10 @@ func codeRepositoryCommitObject(name, repositoryRef, phase, sha, message string,
 			},
 		},
 	}
-	u.SetAPIVersion(codev1alpha1.SchemeGroupVersion.String())
+	u.SetAPIVersion(codeSchemeGroupVersion.String())
 	u.SetKind("RepositoryCommit")
 	u.SetName(name)
-	u.SetLabels(map[string]string{codev1alpha1.LabelRepository: repositoryRef})
+	u.SetLabels(map[string]string{codeLabelRepository: repositoryRef})
 	u.SetCreationTimestamp(metav1.NewTime(created))
 	return u
 }

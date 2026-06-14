@@ -113,8 +113,11 @@ spec:
           {{- if .Values.bundleStore.existingClaim }}
           persistentVolumeClaim:
             claimName: {{ .Values.bundleStore.existingClaim | quote }}
-          {{- else }}
+          {{- else if or .Values.bundleStore.emptyDir (not .Values.bundleStore.persistence.enabled) }}
           emptyDir: {}
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: {{ include "code.fullname" . }}-commit-bundles
           {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

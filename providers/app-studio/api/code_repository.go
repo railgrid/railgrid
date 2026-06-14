@@ -32,25 +32,33 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
-	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
 )
 
 const (
+	codeAPIGroup   = "code.kedge.faros.sh"
+	codeAPIVersion = "v1alpha1"
+
+	codeConditionReady     = "Ready"
+	codeConditionValidated = "Validated"
+	codeLabelRepository    = "code.kedge.faros.sh/repository"
+
 	projectRepositoryProjectAnnotation = "app-studio.ai.kedge.faros.sh/project"
 
 	projectRepositoryProjectLabel = "app-studio.ai.kedge.faros.sh/project"
 
 	projectRepositoryStatusReady             = "Ready"
 	projectRepositoryStatusProvisioning      = "Provisioning"
+	projectRepositoryStatusFailed            = "Failed"
 	projectRepositoryStatusRepositoryMissing = "RepositoryMissing"
 	projectRepositoryStatusConnectionMissing = "ConnectionMissing"
 	projectRepositoryStatusUnavailable       = "Unavailable"
 )
 
 var (
-	codeConnectionsGVR       = codev1alpha1.SchemeGroupVersion.WithResource("connections")
-	codeRepositoriesGVR      = codev1alpha1.SchemeGroupVersion.WithResource("repositories")
-	codeRepositoryCommitsGVR = codev1alpha1.SchemeGroupVersion.WithResource("repositorycommits")
+	codeSchemeGroupVersion   = schema.GroupVersion{Group: codeAPIGroup, Version: codeAPIVersion}
+	codeConnectionsGVR       = codeSchemeGroupVersion.WithResource("connections")
+	codeRepositoriesGVR      = codeSchemeGroupVersion.WithResource("repositories")
+	codeRepositoryCommitsGVR = codeSchemeGroupVersion.WithResource("repositorycommits")
 )
 
 type projectRepositoryPlan struct {
@@ -97,7 +105,7 @@ func selectCodeConnection(ctx context.Context, c *asclient.Client, requested str
 		if err != nil {
 			return "", codeProviderRequestError("get Code connection", err)
 		}
-		if !unstructuredConditionTrue(conn, codev1alpha1.ConditionValidated) {
+		if !unstructuredConditionTrue(conn, codeConditionValidated) {
 			return "", newValidationError(fmt.Sprintf("Code connection %q is not validated yet", requested))
 		}
 		return requested, nil
@@ -111,7 +119,7 @@ func selectCodeConnection(ctx context.Context, c *asclient.Client, requested str
 		return list.Items[i].GetName() < list.Items[j].GetName()
 	})
 	for i := range list.Items {
-		if unstructuredConditionTrue(&list.Items[i], codev1alpha1.ConditionValidated) {
+		if unstructuredConditionTrue(&list.Items[i], codeConditionValidated) {
 			return list.Items[i].GetName(), nil
 		}
 	}
@@ -145,7 +153,7 @@ func repositoryName(ctx context.Context, c *asclient.Client, requested, displayN
 
 func (s *Server) createProjectRepository(ctx context.Context, c *asclient.Client, projectName string, plan projectRepositoryPlan) error {
 	repo := &unstructured.Unstructured{}
-	repo.SetAPIVersion(codev1alpha1.SchemeGroupVersion.String())
+	repo.SetAPIVersion(codeSchemeGroupVersion.String())
 	repo.SetKind("Repository")
 	repo.SetName(plan.Ref)
 	repo.SetLabels(map[string]string{
@@ -239,9 +247,16 @@ func projectRepositoryViewFromResources(ctx context.Context, p *aiv1alpha1.Proje
 		view.Message = fmt.Sprintf("Could not read connection resource %q.", view.ConnectionRef)
 		return view
 	}
-	view.Ready = unstructuredConditionTrue(repo, codev1alpha1.ConditionReady)
+	readyStatus, _, readyMessage, readyFound := unstructuredCondition(repo, codeConditionReady)
+	view.Ready = readyStatus == string(metav1.ConditionTrue)
 	if view.Ready {
 		view.Status = projectRepositoryStatusReady
+	} else if readyFound && readyStatus == string(metav1.ConditionFalse) {
+		view.Status = projectRepositoryStatusFailed
+		view.Message = strings.TrimSpace(readyMessage)
+		if view.Message == "" {
+			view.Message = fmt.Sprintf("Repository resource %q failed to reconcile.", ref)
+		}
 	}
 	view.Commits = projectRepositoryCommits(ctx, list, ref)
 	return view
@@ -251,7 +266,7 @@ func projectRepositoryCommits(ctx context.Context, list codeResourceLister, repo
 	if list == nil || strings.TrimSpace(repositoryRef) == "" {
 		return nil
 	}
-	selector := labels.SelectorFromSet(labels.Set{codev1alpha1.LabelRepository: repositoryRef}).String()
+	selector := labels.SelectorFromSet(labels.Set{codeLabelRepository: repositoryRef}).String()
 	items, err := list(ctx, codeRepositoryCommitsGVR, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
 		return nil
@@ -308,20 +323,28 @@ func codeProviderRequestError(op string, err error) error {
 }
 
 func unstructuredConditionTrue(obj *unstructured.Unstructured, condType string) bool {
+	status, _, _, found := unstructuredCondition(obj, condType)
+	return found && status == string(metav1.ConditionTrue)
+}
+
+func unstructuredCondition(obj *unstructured.Unstructured, condType string) (status, reason, message string, found bool) {
 	conds, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
 	if !found {
-		return false
+		return "", "", "", false
 	}
 	for _, raw := range conds {
 		cond, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
-		if cond["type"] == condType && cond["status"] == string(metav1.ConditionTrue) {
-			return true
+		if cond["type"] == condType {
+			status, _ := cond["status"].(string)
+			reason, _ := cond["reason"].(string)
+			message, _ := cond["message"].(string)
+			return status, reason, message, true
 		}
 	}
-	return false
+	return "", "", "", false
 }
 
 func dns1123Label(str string) string {

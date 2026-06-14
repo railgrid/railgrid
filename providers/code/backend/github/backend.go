@@ -167,6 +167,7 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 	if message == "" {
 		message = "Update generated application files"
 	}
+	message = commitMessageWithIdempotencyKey(message, input.IdempotencyKey)
 	branch := strings.TrimSpace(input.Branch)
 	if branch == "" {
 		branch = strings.TrimSpace(repo.Spec.DefaultBranch)
@@ -187,59 +188,97 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 	org := owner(conn, repo)
 	refName := "heads/" + branch
 	ref, resp, err := c.Git.GetRef(ctx, org, repo.Spec.Name, refName)
-	if err != nil {
+	if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
 		return backend.RepositoryCommitResult{}, classify(resp, err)
 	}
 	headSHA := ""
-	if ref.GetObject() != nil {
+	if ref != nil && ref.GetObject() != nil {
 		headSHA = ref.GetObject().GetSHA()
 	}
-	if headSHA == "" {
-		return backend.RepositoryCommitResult{}, fmt.Errorf("github: branch %q has no head SHA", branch)
-	}
-	parent, resp, err := c.Git.GetCommit(ctx, org, repo.Spec.Name, headSHA)
-	if err != nil {
-		return backend.RepositoryCommitResult{}, classify(resp, err)
-	}
+	var parent *gogithub.Commit
 	baseTree := ""
-	if parent.GetTree() != nil {
-		baseTree = parent.GetTree().GetSHA()
+	if headSHA != "" {
+		parent, resp, err = c.Git.GetCommit(ctx, org, repo.Spec.Name, headSHA)
+		if err != nil {
+			return backend.RepositoryCommitResult{}, classify(resp, err)
+		}
+		if parent.GetTree() != nil {
+			baseTree = parent.GetTree().GetSHA()
+		}
 	}
 	tree, resp, err := c.Git.CreateTree(ctx, org, repo.Spec.Name, baseTree, entries)
 	if err != nil {
 		return backend.RepositoryCommitResult{}, classify(resp, err)
 	}
+	if shouldReuseHeadCommit(parent, tree, baseTree) {
+		return backend.RepositoryCommitResult{
+			CommitSHA: parent.GetSHA(),
+			CommitURL: commitURL(org, repo, parent),
+			Branch:    branch,
+			Files:     files,
+		}, nil
+	}
+	parents := []*gogithub.Commit(nil)
+	if headSHA != "" {
+		parents = []*gogithub.Commit{{SHA: gogithub.String(headSHA)}}
+	}
 	commit, resp, err := c.Git.CreateCommit(ctx, org, repo.Spec.Name, &gogithub.Commit{
 		Message: gogithub.String(message),
 		Tree:    tree,
-		Parents: []*gogithub.Commit{{SHA: gogithub.String(headSHA)}},
+		Parents: parents,
 	}, nil)
 	if err != nil {
 		return backend.RepositoryCommitResult{}, classify(resp, err)
 	}
-	_, resp, err = c.Git.UpdateRef(ctx, org, repo.Spec.Name, &gogithub.Reference{
+	nextRef := &gogithub.Reference{
 		Ref: gogithub.String("refs/" + refName),
 		Object: &gogithub.GitObject{
 			SHA: commit.SHA,
 		},
-	}, false)
+	}
+	if headSHA == "" {
+		_, resp, err = c.Git.CreateRef(ctx, org, repo.Spec.Name, nextRef)
+	} else {
+		_, resp, err = c.Git.UpdateRef(ctx, org, repo.Spec.Name, nextRef, false)
+	}
 	if err != nil {
 		return backend.RepositoryCommitResult{}, classify(resp, err)
 	}
-	commitURL := commit.GetHTMLURL()
-	if commitURL == "" && commit.GetSHA() != "" {
-		repoURL := strings.TrimRight(repo.Status.HTMLURL, "/")
-		if repoURL == "" {
-			repoURL = "https://github.com/" + org + "/" + repo.Spec.Name
-		}
-		commitURL = repoURL + "/commit/" + commit.GetSHA()
-	}
 	return backend.RepositoryCommitResult{
 		CommitSHA: commit.GetSHA(),
-		CommitURL: commitURL,
+		CommitURL: commitURL(org, repo, commit),
 		Branch:    branch,
 		Files:     files,
 	}, nil
+}
+
+func shouldReuseHeadCommit(parent *gogithub.Commit, tree *gogithub.Tree, baseTree string) bool {
+	return parent != nil && tree != nil && tree.GetSHA() != "" && tree.GetSHA() == baseTree
+}
+
+func commitMessageWithIdempotencyKey(message, key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" || strings.Contains(message, "Kedge-RepositoryCommit:") {
+		return message
+	}
+	return message + "\n\nKedge-RepositoryCommit: " + key
+}
+
+func commitURL(org string, repo *codev1alpha1.Repository, commit *gogithub.Commit) string {
+	if commit == nil {
+		return ""
+	}
+	if url := commit.GetHTMLURL(); url != "" {
+		return url
+	}
+	if commit.GetSHA() == "" {
+		return ""
+	}
+	repoURL := strings.TrimRight(repo.Status.HTMLURL, "/")
+	if repoURL == "" {
+		repoURL = "https://github.com/" + org + "/" + repo.Spec.Name
+	}
+	return repoURL + "/commit/" + commit.GetSHA()
 }
 
 // EnsureDeployKey registers publicKey on the repo and returns its host id.

@@ -3,7 +3,6 @@ module github.com/faroshq/provider-app-studio
 go 1.26.3
 
 require (
-	github.com/faroshq/provider-code v0.0.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -41,7 +40,6 @@ require (
 )
 
 replace (
-	github.com/faroshq/provider-code => ../code
 	github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20260518141734-ea6103f11755
 	github.com/kcp-dev/sdk => github.com/kcp-dev/sdk v0.28.1-0.20260504075209-315ebd35273b
 	// TODO: drop this once virtual-workspace-framework is synced from kcp staging.

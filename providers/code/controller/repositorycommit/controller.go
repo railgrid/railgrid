@@ -113,7 +113,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	bundleRef := commit.Spec.Source.BundleRef
-	bundle, err := r.Bundles.Get(ctx, bundleRef.Name, bundleRef.Digest)
+	bundle, err := r.Bundles.Get(ctx, string(req.ClusterName), bundleRef.Name, bundleRef.Digest)
 	if err != nil {
 		return ctrl.Result{}, r.fail(ctx, c, &commit, err.Error())
 	}
@@ -128,9 +128,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		})
 	}
 	res, err := committer.CommitFiles(ctx, conn, cred, repo, backend.RepositoryCommitInput{
-		Message: commit.Spec.Message,
-		Branch:  commit.Spec.Branch,
-		Files:   files,
+		Message:        commit.Spec.Message,
+		Branch:         commit.Spec.Branch,
+		IdempotencyKey: repositoryCommitIdempotencyKey(&commit),
+		Files:          files,
 	})
 	if err != nil {
 		return ctrl.Result{}, r.fail(ctx, c, &commit, err.Error())
@@ -190,4 +191,14 @@ func updateStatusIfChanged(ctx context.Context, c client.Client, commit *codev1a
 
 func isTerminal(phase codev1alpha1.RepositoryCommitPhase) bool {
 	return phase == codev1alpha1.RepositoryCommitPhaseSucceeded || phase == codev1alpha1.RepositoryCommitPhaseFailed
+}
+
+func repositoryCommitIdempotencyKey(commit *codev1alpha1.RepositoryCommit) string {
+	if commit == nil {
+		return ""
+	}
+	if commit.UID != "" {
+		return string(commit.UID)
+	}
+	return commit.Name
 }

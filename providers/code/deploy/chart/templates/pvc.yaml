@@ -1,0 +1,17 @@
+{{- if and .Values.bundleStore.persistence.enabled (not .Values.bundleStore.existingClaim) (not .Values.bundleStore.emptyDir) -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "code.fullname" . }}-commit-bundles
+  labels:
+    {{- include "code.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.bundleStore.persistence.accessModes | nindent 4 }}
+  {{- with .Values.bundleStore.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.bundleStore.persistence.size | quote }}
+{{- end }}

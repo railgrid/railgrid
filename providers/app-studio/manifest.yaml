@@ -1,4 +1,4 @@
-# App Studio provider — register with the kedge hub.
+# App Studio provider - register with the kedge hub.
 #
 # App Studio gives tenants a persistent AI project workspace: project metadata,
 # durable "memory" (goals/requirements/constraints), and a chat surface backed
@@ -16,6 +16,10 @@
 # portal bundle and the /api backend to the loopback URLs below. For in-cluster
 # deployment, the Helm chart renders the Service DNS instead, e.g.
 #   url: http://app-studio.app-studio.svc.cluster.local:8081
+#
+# GENERATED FILE. The spec.apiExport.schemas[].body block is inlined from
+# providers/app-studio/config/kcp/apiresourceschema-projects.ai.kedge.faros.sh.yaml.
+# Edit the Go API types and re-run `make codegen-app-studio-provider`.
 ---
 apiVersion: providers.kedge.faros.sh/v1alpha1
 kind: CatalogEntry
@@ -55,15 +59,12 @@ spec:
         verbs: ["get", "list", "watch", "create", "update", "delete"]
         tenantScoped: true
     schemas:
-      # Project: a persistent, tenant-authored AI workspace (metadata + memory).
-      # The schema name embeds a content-version segment because kcp treats
-      # APIResourceSchemas as immutable; a body change requires a new name.
       - groupResource: "projects.ai.kedge.faros.sh"
         body: |
           apiVersion: apis.kcp.io/v1alpha1
           kind: APIResourceSchema
           metadata:
-            name: v260614-fbb1248.projects.ai.kedge.faros.sh
+            name: v260614-175fe2a.projects.ai.kedge.faros.sh
           spec:
             group: ai.kedge.faros.sh
             names:

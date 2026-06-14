@@ -74,8 +74,16 @@ tenant:
 # generated file contents live here until the controller commits them.
 bundleStore:
   path: /var/lib/kedge-code/commit-bundles
-  # Set to a ReadWriteMany PVC to safely run more than one replica.
+  # Use an existing PVC instead of rendering one.
   existingClaim: ""
+  # Explicit non-durable fallback for throwaway/dev deployments.
+  emptyDir: false
+  persistence:
+    enabled: true
+    size: 1Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: ""
 
 # When true, the chart also renders the CatalogEntry that registers the provider
 # (with its four APIResourceSchemas) with the hub. Set to false to manage the

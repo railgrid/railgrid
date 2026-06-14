@@ -27,7 +27,7 @@ func TestFileStorePutGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileStore returned error: %v", err)
 	}
-	ref, err := store.Put(context.Background(), []File{
+	ref, err := store.Put(context.Background(), "root:acme", []File{
 		{Path: "src/main.go", Content: "package main\n"},
 		{Path: "./README.md", Content: "# Demo\n"},
 	})
@@ -40,7 +40,7 @@ func TestFileStorePutGet(t *testing.T) {
 	if ref.Size == 0 || ref.FileCount != 2 || len(ref.Files) != 2 {
 		t.Fatalf("unexpected metadata: %#v", ref)
 	}
-	bundle, err := store.Get(context.Background(), ref.Name, ref.Digest)
+	bundle, err := store.Get(context.Background(), "root:acme", ref.Name, ref.Digest)
 	if err != nil {
 		t.Fatalf("Get returned error: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestFileStoreRejectsInvalidInputs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewFileStore returned error: %v", err)
 			}
-			if _, err := store.Put(context.Background(), tt.files); err == nil {
+			if _, err := store.Put(context.Background(), "root:acme", tt.files); err == nil {
 				t.Fatal("Put returned nil error")
 			}
 		})
@@ -81,11 +81,28 @@ func TestFileStoreVerifiesDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileStore returned error: %v", err)
 	}
-	ref, err := store.Put(context.Background(), []File{{Path: "a.txt", Content: "x"}})
+	ref, err := store.Put(context.Background(), "root:acme", []File{{Path: "a.txt", Content: "x"}})
 	if err != nil {
 		t.Fatalf("Put returned error: %v", err)
 	}
-	if _, err := store.Get(context.Background(), ref.Name, "sha256:bad"); err == nil {
+	if _, err := store.Get(context.Background(), "root:acme", ref.Name, "sha256:bad"); err == nil {
 		t.Fatal("Get returned nil error for digest mismatch")
+	}
+}
+
+func TestFileStoreScopesBundles(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore returned error: %v", err)
+	}
+	ref, err := store.Put(context.Background(), "root:tenant-a", []File{{Path: "a.txt", Content: "tenant-a"}})
+	if err != nil {
+		t.Fatalf("Put returned error: %v", err)
+	}
+	if _, err := store.Get(context.Background(), "root:tenant-b", ref.Name, ref.Digest); err == nil {
+		t.Fatal("Get returned nil error for another tenant scope")
+	}
+	if _, err := store.Get(context.Background(), "../tenant-a", ref.Name, ref.Digest); err == nil {
+		t.Fatal("Get returned nil error for invalid scope")
 	}
 }

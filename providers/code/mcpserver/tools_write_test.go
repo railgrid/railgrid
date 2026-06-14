@@ -48,7 +48,7 @@ func TestCommitFilesCreatesRepositoryCommitRequest(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, out, err := commitFiles(ctx, dyn, store, commitFilesInput{
+	_, out, err := commitFiles(ctx, dyn, store, "root:acme", commitFilesInput{
 		RepositoryRef: "demo-app",
 		Message:       "Initial app",
 		Files: []commitFileInput{
@@ -83,6 +83,49 @@ func TestCommitFilesCreatesRepositoryCommitRequest(t *testing.T) {
 	digest, _, _ := unstructured.NestedString(created.Object, "spec", "source", "bundleRef", "digest")
 	if name != out.BundleRef || digest != out.BundleDigest {
 		t.Fatalf("bundle ref = %s/%s, want %s/%s", name, digest, out.BundleRef, out.BundleDigest)
+	}
+}
+
+func TestRepositoryCommitObjectKeepsAuthoritativeRepositoryLabel(t *testing.T) {
+	repo := &codev1alpha1.Repository{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "demo-app",
+			Labels: map[string]string{
+				codev1alpha1.LabelRepository:           "stale-repo",
+				"app-studio.ai.kedge.faros.sh/project": "demo-project",
+			},
+		},
+	}
+	obj := repositoryCommitObject(repo, commitbundle.BundleRef{
+		Name:   "bundle-123",
+		Digest: "sha256:123",
+	}, commitFilesInput{
+		RepositoryRef: "demo-app",
+		Message:       "Initial app",
+	})
+	if got := obj.GetLabels()[codev1alpha1.LabelRepository]; got != "demo-app" {
+		t.Fatalf("repository label = %q, want demo-app", got)
+	}
+	if got := obj.GetLabels()["app-studio.ai.kedge.faros.sh/project"]; got != "demo-project" {
+		t.Fatalf("project label = %q, want demo-project", got)
+	}
+}
+
+func TestRepositorySpecDefaultsAutoInit(t *testing.T) {
+	spec := repositorySpec(createRepositoryInput{
+		ConnectionRef: "github",
+	}, "demo-app")
+	if got := spec["autoInit"]; got != true {
+		t.Fatalf("autoInit = %#v, want true", got)
+	}
+
+	no := false
+	spec = repositorySpec(createRepositoryInput{
+		ConnectionRef: "github",
+		AutoInit:      &no,
+	}, "demo-app")
+	if _, ok := spec["autoInit"]; ok {
+		t.Fatalf("autoInit present for explicit false: %#v", spec)
 	}
 }
 

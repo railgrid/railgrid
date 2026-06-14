@@ -57,7 +57,7 @@ type createRepositoryInput struct {
 	Visibility    string `json:"visibility,omitempty" jsonschema:"private|public|internal; defaults to private"`
 	Description   string `json:"description,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
-	AutoInit      bool   `json:"autoInit,omitempty" jsonschema:"Create an initial commit so the default branch exists"`
+	AutoInit      *bool  `json:"autoInit,omitempty" jsonschema:"Create an initial commit so the default branch exists; defaults to true"`
 }
 
 type commitFileInput struct {
@@ -166,18 +166,7 @@ func registerWriteTools(srv *mcp.Server, deps Deps, ident identity) {
 		if repoName == "" {
 			repoName = in.Name
 		}
-		spec := map[string]any{
-			"connectionRef": in.ConnectionRef,
-			"name":          repoName,
-		}
-		putIf(spec, "owner", in.Owner)
-		putIf(spec, "visibility", in.Visibility)
-		putIf(spec, "description", in.Description)
-		putIf(spec, "defaultBranch", in.DefaultBranch)
-		if in.AutoInit {
-			spec["autoInit"] = true
-		}
-		return createCR(ctx, dyn, repositoriesGVR, "Repository", in.Name, spec)
+		return createCR(ctx, dyn, repositoriesGVR, "Repository", in.Name, repositorySpec(in, repoName))
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -203,7 +192,7 @@ func registerWriteTools(srv *mcp.Server, deps Deps, ident identity) {
 		if err != nil {
 			return nil, commitFilesOutput{}, err
 		}
-		return commitFiles(ctx, dyn, deps.Bundles, in)
+		return commitFiles(ctx, dyn, deps.Bundles, ident.tenantPath, in)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -289,9 +278,13 @@ func deleteCR(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersio
 	return nil, deleteOutput{Deleted: true}, nil
 }
 
-func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundle.Store, in commitFilesInput) (*mcp.CallToolResult, commitFilesOutput, error) {
+func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundle.Store, tenantScope string, in commitFilesInput) (*mcp.CallToolResult, commitFilesOutput, error) {
 	if bundles == nil {
 		return nil, commitFilesOutput{}, fmt.Errorf("commit bundle store is unavailable")
+	}
+	tenantScope = strings.TrimSpace(tenantScope)
+	if tenantScope == "" {
+		return nil, commitFilesOutput{}, fmt.Errorf("tenant identity is required")
 	}
 	in.RepositoryRef = strings.TrimSpace(in.RepositoryRef)
 	if in.RepositoryRef == "" {
@@ -308,7 +301,7 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 	for _, f := range in.Files {
 		files = append(files, commitbundle.File{Path: f.Path, Content: f.Content})
 	}
-	bundle, err := bundles.Put(ctx, files)
+	bundle, err := bundles.Put(ctx, tenantScope, files)
 	if err != nil {
 		return nil, commitFilesOutput{}, err
 	}
@@ -342,12 +335,11 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 }
 
 func repositoryCommitObject(repo *codev1alpha1.Repository, bundle commitbundle.BundleRef, in commitFilesInput) *unstructured.Unstructured {
-	labels := map[string]string{
-		codev1alpha1.LabelRepository: in.RepositoryRef,
-	}
+	labels := map[string]string{}
 	for k, v := range repo.Labels {
 		labels[k] = v
 	}
+	labels[codev1alpha1.LabelRepository] = in.RepositoryRef
 	labelValues := make(map[string]any, len(labels))
 	for k, v := range labels {
 		labelValues[k] = v
@@ -383,6 +375,21 @@ func repositoryCommitObject(repo *codev1alpha1.Repository, bundle commitbundle.B
 		"metadata":   metadata,
 		"spec":       spec,
 	}}
+}
+
+func repositorySpec(in createRepositoryInput, repoName string) map[string]any {
+	spec := map[string]any{
+		"connectionRef": in.ConnectionRef,
+		"name":          repoName,
+	}
+	putIf(spec, "owner", in.Owner)
+	putIf(spec, "visibility", in.Visibility)
+	putIf(spec, "description", in.Description)
+	putIf(spec, "defaultBranch", in.DefaultBranch)
+	if in.AutoInit == nil || *in.AutoInit {
+		spec["autoInit"] = true
+	}
+	return spec
 }
 
 func waitRepositoryCommit(ctx context.Context, dyn dynamic.Interface, name string, timeout time.Duration) (*unstructured.Unstructured, error) {

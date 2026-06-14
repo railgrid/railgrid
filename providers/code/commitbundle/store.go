@@ -70,6 +70,7 @@ type BundleRef struct {
 type Bundle struct {
 	Name   string       `json:"name"`
 	Digest string       `json:"digest"`
+	Scope  string       `json:"scope"`
 	Size   int64        `json:"size"`
 	Files  []BundleFile `json:"files"`
 }
@@ -84,8 +85,8 @@ type BundleFile struct {
 
 // Store persists and fetches immutable commit bundles.
 type Store interface {
-	Put(ctx context.Context, files []File) (BundleRef, error)
-	Get(ctx context.Context, name, digest string) (*Bundle, error)
+	Put(ctx context.Context, scope string, files []File) (BundleRef, error)
+	Get(ctx context.Context, scope, name, digest string) (*Bundle, error)
 }
 
 // FileStore stores bundles as JSON files in a local directory.
@@ -123,14 +124,19 @@ func (s *FileStore) Dir() string {
 }
 
 // Put validates, canonicalizes, and writes an immutable bundle.
-func (s *FileStore) Put(ctx context.Context, files []File) (BundleRef, error) {
+func (s *FileStore) Put(ctx context.Context, scope string, files []File) (BundleRef, error) {
 	if s == nil {
 		return BundleRef{}, errors.New("bundle store is nil")
+	}
+	key, err := scopeKey(scope)
+	if err != nil {
+		return BundleRef{}, err
 	}
 	bundle, ref, err := buildBundle(files)
 	if err != nil {
 		return BundleRef{}, err
 	}
+	bundle.Scope = strings.TrimSpace(scope)
 	if err := ctx.Err(); err != nil {
 		return BundleRef{}, err
 	}
@@ -138,13 +144,17 @@ func (s *FileStore) Put(ctx context.Context, files []File) (BundleRef, error) {
 	if err != nil {
 		return BundleRef{}, fmt.Errorf("marshal bundle: %w", err)
 	}
-	path := s.path(bundle.Name)
+	dir := s.scopeDir(key)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return BundleRef{}, fmt.Errorf("create scoped bundle directory: %w", err)
+	}
+	path := s.path(key, bundle.Name)
 	if _, err := os.Stat(path); err == nil {
 		return ref, nil
 	} else if !os.IsNotExist(err) {
 		return BundleRef{}, fmt.Errorf("stat bundle: %w", err)
 	}
-	tmp, err := os.CreateTemp(s.dir, "."+bundle.Name+"-*.tmp")
+	tmp, err := os.CreateTemp(dir, "."+bundle.Name+"-*.tmp")
 	if err != nil {
 		return BundleRef{}, fmt.Errorf("create temp bundle: %w", err)
 	}
@@ -166,17 +176,21 @@ func (s *FileStore) Put(ctx context.Context, files []File) (BundleRef, error) {
 }
 
 // Get loads a bundle and verifies its digest when digest is provided.
-func (s *FileStore) Get(ctx context.Context, name, digest string) (*Bundle, error) {
+func (s *FileStore) Get(ctx context.Context, scope, name, digest string) (*Bundle, error) {
 	if s == nil {
 		return nil, errors.New("bundle store is nil")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	key, err := scopeKey(scope)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateBundleName(name); err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(s.path(name))
+	data, err := os.ReadFile(s.path(key, name))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("bundle %q not found", name)
@@ -190,14 +204,30 @@ func (s *FileStore) Get(ctx context.Context, name, digest string) (*Bundle, erro
 	if bundle.Name != name {
 		return nil, fmt.Errorf("bundle %q has stored name %q", name, bundle.Name)
 	}
+	if bundle.Scope != strings.TrimSpace(scope) {
+		return nil, fmt.Errorf("bundle %q scope mismatch", name)
+	}
 	if strings.TrimSpace(digest) != "" && bundle.Digest != digest {
 		return nil, fmt.Errorf("bundle %q digest mismatch: got %s want %s", name, bundle.Digest, digest)
 	}
 	return &bundle, nil
 }
 
-func (s *FileStore) path(name string) string {
-	return filepath.Join(s.dir, name+".json")
+func (s *FileStore) scopeDir(scopeKey string) string {
+	return filepath.Join(s.dir, scopeKey)
+}
+
+func (s *FileStore) path(scopeKey, name string) string {
+	return filepath.Join(s.scopeDir(scopeKey), name+".json")
+}
+
+func scopeKey(scope string) (string, error) {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return "", errors.New("bundle scope is required")
+	}
+	sum := sha256.Sum256([]byte(scope))
+	return "scope-" + hex.EncodeToString(sum[:16]), nil
 }
 
 func buildBundle(files []File) (Bundle, BundleRef, error) {

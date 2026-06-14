@@ -19,6 +19,8 @@ package github
 import (
 	"testing"
 
+	gogithub "github.com/google/go-github/v66/github"
+
 	"github.com/faroshq/provider-code/backend"
 )
 
@@ -64,5 +66,29 @@ func TestGitTreeEntriesRejectsDuplicatePaths(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("gitTreeEntries returned nil error for duplicate normalized paths")
+	}
+}
+
+func TestShouldReuseHeadCommitWhenDesiredTreeAlreadyAtHead(t *testing.T) {
+	parent := &gogithub.Commit{SHA: gogithub.String("abc123")}
+	tree := &gogithub.Tree{SHA: gogithub.String("tree123")}
+	if !shouldReuseHeadCommit(parent, tree, "tree123") {
+		t.Fatal("shouldReuseHeadCommit returned false for matching head tree")
+	}
+	if shouldReuseHeadCommit(parent, tree, "other") {
+		t.Fatal("shouldReuseHeadCommit returned true for a different tree")
+	}
+	if shouldReuseHeadCommit(nil, tree, "tree123") {
+		t.Fatal("shouldReuseHeadCommit returned true without a parent commit")
+	}
+}
+
+func TestCommitMessageWithIdempotencyKey(t *testing.T) {
+	got := commitMessageWithIdempotencyKey("Initial app", "root:acme/demo")
+	if got != "Initial app\n\nKedge-RepositoryCommit: root:acme/demo" {
+		t.Fatalf("message = %q", got)
+	}
+	if got := commitMessageWithIdempotencyKey("Initial app", ""); got != "Initial app" {
+		t.Fatalf("message with empty key = %q, want unchanged", got)
 	}
 }

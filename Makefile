@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -175,6 +175,18 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 	done
 	./hack/ensure-boilerplate.sh
 
+codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the App Studio provider's local API (+ manifest + chart schema)
+	@mkdir -p providers/app-studio/config/crds providers/app-studio/config/kcp providers/app-studio/deploy/chart/files
+	cd providers/app-studio && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/app-studio/config/crds
+	./$(KCP_APIGEN_GEN) --input-dir providers/app-studio/config/crds --output-dir providers/app-studio/config/kcp
+	cp providers/app-studio/config/kcp/apiresourceschema-projects.ai.kedge.faros.sh.yaml \
+	   providers/app-studio/deploy/chart/files/apiresourceschema-projects.ai.kedge.faros.sh.yaml
+	python3 providers/app-studio/hack/gen-manifest.py
+	./hack/ensure-boilerplate.sh
+
 test:
 	go test $(shell go list ./... | grep -v '/test/e2e')
 
@@ -201,7 +213,7 @@ verify-boilerplate: ## Verify license boilerplate on all Go files
 crds: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Generate CRDs and kcp APIResourceSchemas
 	./hack/update-codegen-crds.sh
 
-codegen: crds boilerplate ## Generate all (CRDs + kcp resources + boilerplate)
+codegen: crds codegen-code-provider codegen-app-studio-provider boilerplate ## Generate all (CRDs + kcp resources + provider schemas + boilerplate)
 
 verify-codegen: codegen ## Verify codegen is up to date
 	@if ! git diff --quiet HEAD; then \

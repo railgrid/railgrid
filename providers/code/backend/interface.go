@@ -58,9 +58,10 @@ type RepositoryCommitFile struct {
 
 // RepositoryCommitInput describes a single commit authored through a backend.
 type RepositoryCommitInput struct {
-	Message string
-	Branch  string
-	Files   []RepositoryCommitFile
+	Message        string
+	Branch         string
+	IdempotencyKey string
+	Files          []RepositoryCommitFile
 }
 
 // RepositoryCommitResult is what a backend returns after moving the branch ref.

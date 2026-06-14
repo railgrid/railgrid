@@ -26,10 +26,10 @@ import {
   Wrench,
   X,
 } from 'lucide-vue-next'
-import ConfirmDialog from '@/components/ConfirmDialog.vue'
-import StatusBadge from '@/components/StatusBadge.vue'
-import { useEscapeKey } from '@/composables/useEscapeKey'
 import { api, isProjectAPIInitializingError } from './api'
+import ConfirmDialog from './components/ConfirmDialog.vue'
+import StatusBadge from './components/StatusBadge.vue'
+import { useEscapeKey } from './composables/useEscapeKey'
 import type {
   KedgeContext,
   Project,
@@ -1576,6 +1576,8 @@ function repositoryStatusLabel(repository: Project['repository']): string {
       return 'Connection missing'
     case 'Unavailable':
       return 'Status unavailable'
+    case 'Failed':
+      return 'Failed'
     case 'Provisioning':
       return 'Provisioning'
     default:
