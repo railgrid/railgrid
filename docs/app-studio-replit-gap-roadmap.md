@@ -236,19 +236,26 @@ Replit-style iteration needs smaller, safer file operations.
 
 **App Studio work:**
 
-- [ ] Add mutation tools against the App Studio workspace:
+- [x] Add mutation tools against the App Studio workspace that are durable
+  through today's provider-code write bundle model:
   - `write_file`
   - `apply_patch`
+  - `mkdir`
+- [x] Add `commit_project_files`, an App Studio bridge that reads selected
+  workspace files and commits those file contents through provider-code's
+  `code__commit_files` git-source boundary.
+- [ ] Add delete/rename support once provider-code has a change-set or expanded
+  commit bundle format that can represent git deletions:
   - `delete_file`
   - `rename_file`
-  - `mkdir`
 - [ ] Add path validation that blocks absolute paths, parent traversal, and
   ambiguous Unicode lookalikes where feasible.
 - [ ] Add idempotency keys or deterministic operation names to prevent duplicate
   file operations after retries.
-- [ ] Teach the system prompt to prefer small workspace edits for existing
+- [x] Teach the system prompt to prefer small workspace edits for existing
   projects.
-- [ ] Render mutation batches as action bundles with per-action drill-down.
+- [x] Render workspace mutation tool calls in the existing action summaries
+  without exposing file contents.
 
 **Provider-code work:**
 
@@ -258,13 +265,17 @@ Replit-style iteration needs smaller, safer file operations.
   resulting commit SHA, and commit URL.
 - [ ] Show commit progress states as provider-code status updates instead of
   leaving the UI parked on a generic "Writing" row.
+- [ ] Add delete/rename operation support to provider-code if App Studio should
+  persist those workspace operations to git without relying on a local clone.
 
 **Acceptance criteria:**
 
-- The LLM can modify one file without recommitting the whole project.
+- The LLM can modify one text file and commit only selected changed files,
+  without recommitting the whole project.
 - Users can see which files were touched before opening the resulting commit.
 - Duplicate tool invocations do not produce duplicate commits for the same
-  logical action.
+  logical action once the idempotency item above is complete; the current slice
+  does not claim duplicate-commit protection.
 
 **Verification:**
 
@@ -442,17 +453,22 @@ provider-code live file-read/search APIs.
   status row, expose provider status, and eventually resolve to a durable
   artifact or a clear error.
 
-## Open Decisions After Phase 1
+## Open Decisions After Current Slice
 
 - Decide how App Studio should perform a true git checkout for existing remote
   repositories. Recommendation: use provider-code `DeployKey` as the
   cross-provider credential seam so App Studio can own the checkout without
   owning git-host credentials directly.
-- Decide whether workspace contents should be committed by handing a bounded
-  file bundle to existing `code__commit_files`, by adding a provider-code
-  commit-from-workspace primitive, or by letting App Studio push through a
-  provider-code-facilitated deploy key. Recommendation: keep provider-code as
-  the durable commit/status owner either way.
+- For current write/patch flows, App Studio commits selected workspace files by
+  handing bounded file contents to existing `code__commit_files` through
+  `commit_project_files`. Decide whether longer-term checkout-based flows should
+  keep that bundle bridge, add a provider-code change-set primitive, or let App
+  Studio push through a provider-code-facilitated deploy key. Recommendation:
+  keep provider-code as the durable commit/status owner either way.
+- Decide how to persist delete/rename workspace operations to git. Today's
+  `RepositoryCommit` bundle can write path/content entries only, so git
+  deletion needs a provider-code change-set successor, expanded bundle format,
+  or an App Studio-owned checkout/push flow.
 - Decide the first user-facing file view once Phase 2 is resumed. Recommendation:
   project-specific App Studio workspace pane for common inspect/read flows,
   provider-code UI link for advanced repository management.

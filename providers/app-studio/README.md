@@ -80,7 +80,12 @@ old throwaway behavior, set `APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true`.
 ## Local project files
 
 App Studio keeps project files in its own workspace root so the assistant can
-list, read, and search the project before asking provider-code to commit changes
-to git. Set `APP_STUDIO_WORKSPACE_ROOT` to choose the directory; the binary
-defaults to a temp directory, while the Helm chart mounts a persistent volume at
-`/var/lib/kedge-app-studio/workspaces`.
+list, read, search, and safely mutate text files before asking provider-code to
+commit selected changed files to git. Set `APP_STUDIO_WORKSPACE_ROOT` to choose
+the directory; the binary defaults to a temp directory, while the Helm chart
+mounts a persistent volume at `/var/lib/kedge-app-studio/workspaces`.
+
+The assistant-facing workspace tools are App Studio local tools. Provider-code
+remains the git-source boundary: `commit_project_files` reads selected workspace
+files and delegates the actual commit to the Code provider's `code__commit_files`
+tool.

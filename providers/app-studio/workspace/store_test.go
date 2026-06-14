@@ -173,6 +173,100 @@ func TestFileStoreClampsBounds(t *testing.T) {
 	}
 }
 
+func TestFileStoreMutatesWorkspaceFiles(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+
+	mkdir, err := store.Mkdir(context.Background(), scope, MkdirOptions{Path: "src/components"})
+	if err != nil {
+		t.Fatalf("Mkdir returned error: %v", err)
+	}
+	if mkdir.Operation != "mkdir" || mkdir.Path != "src/components" {
+		t.Fatalf("mkdir result = %#v", mkdir)
+	}
+
+	write, err := store.WriteFile(context.Background(), scope, WriteOptions{
+		Path:    "src/components/App.tsx",
+		Content: "export function App() {\n  return <h1>Hello</h1>\n}\n",
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if write.Operation != "write_file" || write.Path != "src/components/App.tsx" || write.Size == 0 {
+		t.Fatalf("write result = %#v", write)
+	}
+
+	patch, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
+		Path:    "src/components/App.tsx",
+		OldText: "Hello",
+		NewText: "Kedge",
+	})
+	if err != nil {
+		t.Fatalf("ApplyPatch returned error: %v", err)
+	}
+	if patch.Operation != "apply_patch" || patch.Replacements != 1 {
+		t.Fatalf("patch result = %#v", patch)
+	}
+	read, err := store.ReadFile(context.Background(), scope, ReadOptions{Path: "src/components/App.tsx"})
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if !strings.Contains(read.Content, "Kedge") || strings.Contains(read.Content, "Hello") {
+		t.Fatalf("content after patch = %q", read.Content)
+	}
+}
+
+func TestFileStoreMutationValidation(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+
+	if _, err := store.WriteFile(context.Background(), scope, WriteOptions{
+		Path:    "too-large.txt",
+		Content: strings.Repeat("x", MaxWriteBytes+1),
+	}); err == nil {
+		t.Fatal("WriteFile returned nil error for oversized content")
+	}
+	if _, err := store.WriteFile(context.Background(), scope, WriteOptions{
+		Path:    "bad.bin",
+		Content: "a\x00b",
+	}); err == nil {
+		t.Fatal("WriteFile returned nil error for NUL content")
+	}
+	if _, err := store.Mkdir(context.Background(), scope, MkdirOptions{Path: ".git/hooks"}); err == nil {
+		t.Fatal("Mkdir returned nil error for reserved path")
+	}
+	if _, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
+		Path:    "missing.txt",
+		OldText: "x",
+		NewText: "y",
+	}); err == nil {
+		t.Fatal("ApplyPatch returned nil error for missing file")
+	}
+
+	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "ambiguous.txt", Content: "same same"}}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	if _, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
+		Path:    "ambiguous.txt",
+		OldText: "same",
+		NewText: "other",
+	}); err == nil {
+		t.Fatal("ApplyPatch returned nil error for ambiguous patch")
+	}
+	patch, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
+		Path:       "ambiguous.txt",
+		OldText:    "same",
+		NewText:    "other",
+		ReplaceAll: true,
+	})
+	if err != nil {
+		t.Fatalf("ApplyPatch replaceAll returned error: %v", err)
+	}
+	if patch.Replacements != 2 {
+		t.Fatalf("replaceAll replacements = %d, want 2", patch.Replacements)
+	}
+}
+
 func fileInfoPaths(files []FileInfo) []string {
 	paths := make([]string, 0, len(files))
 	for _, f := range files {

@@ -60,15 +60,21 @@ const (
 	// assistant generation may take before the final turn is forced to answer
 	// in text (tool_choice=none). It guards against a model that loops on
 	// failing or disallowed tool calls.
-	maxAssistantToolTurns = 8
-	projectToolInfoLimit  = 1000
-	projectMCPCallTimeout = 2 * time.Minute
+	maxAssistantToolTurns            = 8
+	projectToolInfoLimit             = 1000
+	projectMCPCallTimeout            = 2 * time.Minute
+	projectCommitProjectFilesMax     = 500
+	projectCommitProjectFilesMaxSize = 16 * 1024 * 1024
 )
 
 const (
 	projectToolListProjectFiles   = "list_project_files"
 	projectToolReadProjectFile    = "read_project_file"
 	projectToolSearchProjectFiles = "search_project_files"
+	projectToolWriteFile          = "write_file"
+	projectToolApplyPatch         = "apply_patch"
+	projectToolMkdir              = "mkdir"
+	projectToolCommitProjectFiles = "commit_project_files"
 	projectToolCommitFiles        = "commit_files"
 	projectToolCodeCommitFiles    = "code__commit_files"
 )
@@ -898,14 +904,9 @@ func (s *Server) resolveProjectToolCalls(
 		var resp string
 		var err error
 		if projectLocalToolAllowed(tc.Function.Name) {
-			resp, err = s.callProjectLocalTool(ctx, scope, tc.Function.Name, args)
+			resp, err = s.callProjectLocalTool(ctx, id, scope, mcpEndpoint, r, tc.Function.Name, args)
 		} else {
 			resp, err = callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, tc.Function.Name, args)
-			if err == nil && projectCommitFilesSucceeded(resp) {
-				if mirrorErr := s.mirrorCommitFilesToWorkspace(ctx, scope, tc.Function.Name, args); mirrorErr != nil {
-					err = fmt.Errorf("mirror committed project files into workspace: %w", mirrorErr)
-				}
-			}
 		}
 		if err != nil {
 			logger.Error(err, "project assistant tool call failed", "tool", tc.Function.Name, "endpoint", mcpEndpoint)
@@ -955,7 +956,7 @@ func projectWorkspaceScope(id identity, projectName string) workspace.Scope {
 	}
 }
 
-func (s *Server) callProjectLocalTool(ctx context.Context, scope workspace.Scope, name string, args map[string]any) (string, error) {
+func (s *Server) callProjectLocalTool(ctx context.Context, id identity, scope workspace.Scope, mcpEndpoint string, r *http.Request, name string, args map[string]any) (string, error) {
 	if s.workspaces == nil {
 		return "", errors.New("project workspace store is not configured")
 	}
@@ -976,6 +977,25 @@ func (s *Server) callProjectLocalTool(ctx context.Context, scope workspace.Scope
 			Query:      projectToolString(args["query"]),
 			MaxResults: projectToolInt(args["maxResults"]),
 		})
+	case projectToolWriteFile:
+		content, _ := projectToolRawString(args["content"])
+		out, err = s.workspaces.WriteFile(ctx, scope, workspace.WriteOptions{
+			Path:    projectToolString(args["path"]),
+			Content: content,
+		})
+	case projectToolApplyPatch:
+		oldText, _ := projectToolRawString(args["oldText"])
+		newText, _ := projectToolRawString(args["newText"])
+		out, err = s.workspaces.ApplyPatch(ctx, scope, workspace.PatchOptions{
+			Path:       projectToolString(args["path"]),
+			OldText:    oldText,
+			NewText:    newText,
+			ReplaceAll: projectToolBool(args["replaceAll"]),
+		})
+	case projectToolMkdir:
+		out, err = s.workspaces.Mkdir(ctx, scope, workspace.MkdirOptions{Path: projectToolString(args["path"])})
+	case projectToolCommitProjectFiles:
+		return s.commitProjectWorkspaceFiles(ctx, id, scope, mcpEndpoint, r, args)
 	default:
 		err = fmt.Errorf("unknown local project tool %q", name)
 	}
@@ -989,43 +1009,64 @@ func (s *Server) callProjectLocalTool(ctx context.Context, scope workspace.Scope
 	return string(raw), nil
 }
 
-func (s *Server) mirrorCommitFilesToWorkspace(ctx context.Context, scope workspace.Scope, name string, args map[string]any) error {
-	if s.workspaces == nil || !strings.EqualFold(strings.TrimSpace(name), projectToolCodeCommitFiles) {
-		return nil
+func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, scope workspace.Scope, mcpEndpoint string, r *http.Request, args map[string]any) (string, error) {
+	repositoryRef := projectToolString(args["repositoryRef"])
+	if repositoryRef == "" {
+		return "", errors.New("repositoryRef is required")
 	}
-	files := projectWorkspaceFilesFromArgs(args["files"])
-	if len(files) == 0 {
-		return nil
+	paths := projectToolStringList(args["paths"])
+	if len(paths) == 0 {
+		return "", errors.New("at least one path is required")
 	}
-	return s.workspaces.ApplyFiles(ctx, scope, files)
-}
-
-func projectWorkspaceFilesFromArgs(value any) []workspace.File {
-	items, ok := value.([]any)
-	if !ok {
-		return nil
+	if len(paths) > projectCommitProjectFilesMax {
+		return "", fmt.Errorf("too many paths: %d > %d", len(paths), projectCommitProjectFilesMax)
 	}
-	files := make([]workspace.File, 0, len(items))
-	for _, item := range items {
-		obj, ok := item.(map[string]any)
-		if !ok {
+	cleanPaths := make([]string, 0, len(paths))
+	seen := map[string]struct{}{}
+	for _, p := range paths {
+		clean, err := workspace.CleanProjectPath(p)
+		if err != nil {
+			return "", err
+		}
+		if _, ok := seen[clean]; ok {
 			continue
 		}
-		path := projectToolString(obj["path"])
-		content, _ := obj["content"].(string)
-		if path != "" {
-			files = append(files, workspace.File{Path: path, Content: content})
+		seen[clean] = struct{}{}
+		cleanPaths = append(cleanPaths, clean)
+	}
+	files := make([]map[string]string, 0, len(cleanPaths))
+	var totalBytes int64
+	for _, p := range cleanPaths {
+		read, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: p, MaxBytes: workspace.MaxWriteBytes})
+		if err != nil {
+			return "", err
 		}
+		if read.Binary {
+			return "", fmt.Errorf("file %q is binary and cannot be committed through code__commit_files", read.Path)
+		}
+		if read.Truncated {
+			return "", fmt.Errorf("file %q is too large to commit through commit_project_files", read.Path)
+		}
+		totalBytes += int64(len([]byte(read.Content)))
+		if totalBytes > projectCommitProjectFilesMaxSize {
+			return "", fmt.Errorf("commit_project_files payload is too large: %d > %d bytes", totalBytes, projectCommitProjectFilesMaxSize)
+		}
+		files = append(files, map[string]string{"path": read.Path, "content": read.Content})
 	}
-	return files
-}
-
-func projectCommitFilesSucceeded(result string) bool {
-	decoded := map[string]any{}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &decoded); err != nil {
-		return false
+	if len(files) == 0 {
+		return "", errors.New("no files to commit")
 	}
-	return strings.EqualFold(projectToolString(decoded["phase"]), "Succeeded")
+	commitArgs := map[string]any{
+		"repositoryRef": repositoryRef,
+		"files":         files,
+	}
+	if message := projectToolString(args["message"]); message != "" {
+		commitArgs["message"] = message
+	}
+	if branch := projectToolString(args["branch"]); branch != "" {
+		commitArgs["branch"] = branch
+	}
+	return callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeCommitFiles, commitArgs)
 }
 
 func ensureProjectToolCallIDs(toolCalls []chatToolCall) {
@@ -1052,7 +1093,7 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return ""
 	}
 	switch projectToolBaseName(name) {
-	case projectToolCommitFiles:
+	case projectToolCommitFiles, projectToolCommitProjectFiles:
 		parts := []string{}
 		if repo := projectToolString(args["repositoryRef"]); repo != "" {
 			parts = append(parts, "repository "+repo)
@@ -1063,7 +1104,11 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		if message := projectToolString(args["message"]); message != "" {
 			parts = append(parts, "message "+message)
 		}
-		if paths := projectToolFilePaths(args["files"]); len(paths) > 0 {
+		paths := projectToolFilePaths(args["files"])
+		if len(paths) == 0 {
+			paths = projectToolStringList(args["paths"])
+		}
+		if len(paths) > 0 {
 			parts = append(parts, fmt.Sprintf("%d file(s): %s", len(paths), summarizeProjectToolList(paths, 5)))
 		}
 		return truncateProjectToolInfo(strings.Join(parts, "; "))
@@ -1073,6 +1118,12 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return summarizeProjectToolKeyValues(args, []string{"path", "maxBytes"})
 	case projectToolSearchProjectFiles:
 		return summarizeProjectToolKeyValues(args, []string{"query", "maxResults"})
+	case projectToolWriteFile:
+		return summarizeProjectMutationArgs(args, []string{"path"}, true)
+	case projectToolApplyPatch:
+		return summarizeProjectMutationArgs(args, []string{"path"}, false)
+	case projectToolMkdir:
+		return summarizeProjectToolKeyValues(args, []string{"path"})
 	}
 	raw, err := json.Marshal(args)
 	if err != nil {
@@ -1089,7 +1140,7 @@ func summarizeProjectToolResult(name, result string) string {
 	decoded := map[string]any{}
 	if err := json.Unmarshal([]byte(result), &decoded); err == nil {
 		switch projectToolBaseName(name) {
-		case projectToolCommitFiles:
+		case projectToolCommitFiles, projectToolCommitProjectFiles:
 			parts := []string{}
 			if sha := projectToolString(decoded["commitSHA"]); sha != "" {
 				if len(sha) > 12 {
@@ -1117,6 +1168,8 @@ func summarizeProjectToolResult(name, result string) string {
 			return summarizeWorkspaceReadResult(decoded)
 		case projectToolSearchProjectFiles:
 			return summarizeWorkspaceSearchResult(decoded)
+		case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+			return summarizeWorkspaceMutationResult(decoded)
 		}
 		if message := projectToolString(decoded["message"]); message != "" {
 			return truncateProjectToolInfo(message)
@@ -1124,6 +1177,22 @@ func summarizeProjectToolResult(name, result string) string {
 	}
 	firstLine := strings.TrimSpace(strings.Split(result, "\n")[0])
 	return truncateProjectToolInfo(firstLine)
+}
+
+func summarizeProjectMutationArgs(args map[string]any, keys []string, includeContentBytes bool) string {
+	parts := []string{}
+	if summary := summarizeProjectToolKeyValues(args, keys); summary != "" {
+		parts = append(parts, summary)
+	}
+	if includeContentBytes {
+		if content, ok := args["content"].(string); ok {
+			parts = append(parts, fmt.Sprintf("%d bytes", len([]byte(content))))
+		}
+	}
+	if projectToolBool(args["replaceAll"]) {
+		parts = append(parts, "replaceAll")
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
 }
 
 func summarizeProjectToolKeyValues(args map[string]any, keys []string) string {
@@ -1139,6 +1208,23 @@ func summarizeProjectToolKeyValues(args map[string]any, keys []string) string {
 				parts = append(parts, key+" "+value)
 			}
 		}
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeWorkspaceMutationResult(decoded map[string]any) string {
+	parts := []string{}
+	if op := projectToolString(decoded["operation"]); op != "" {
+		parts = append(parts, op)
+	}
+	if path := projectToolString(decoded["path"]); path != "" {
+		parts = append(parts, path)
+	}
+	if size, ok := projectToolNumber(decoded["size"]); ok {
+		parts = append(parts, fmt.Sprintf("%d bytes", size))
+	}
+	if replacements, ok := projectToolNumber(decoded["replacements"]); ok {
+		parts = append(parts, fmt.Sprintf("%d replacement(s)", replacements))
 	}
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
 }
@@ -1192,7 +1278,8 @@ func summarizeWorkspaceSearchResult(decoded map[string]any) string {
 }
 
 func projectToolCallResultStatus(name, result string) string {
-	if projectToolBaseName(name) != "commit_files" {
+	baseName := projectToolBaseName(name)
+	if baseName != projectToolCommitFiles && baseName != projectToolCommitProjectFiles {
 		return "succeeded"
 	}
 	decoded := map[string]any{}
@@ -1224,6 +1311,11 @@ func projectToolString(value any) string {
 	default:
 		return ""
 	}
+}
+
+func projectToolRawString(value any) (string, bool) {
+	v, ok := value.(string)
+	return v, ok
 }
 
 func projectToolFilePaths(value any) []string {
@@ -1333,7 +1425,7 @@ func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings proj
 	if id.tenantPath == "" {
 		return nil, errors.New("tenant context missing")
 	}
-	out := projectLocalChatTools()
+	out := projectLocalChatTools(false)
 	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
 	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify)
 	if err != nil {
@@ -1342,27 +1434,23 @@ func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings proj
 	if len(tools) == 0 {
 		return out, nil
 	}
+	codeCommitAvailable := false
 	for _, t := range tools {
 		if strings.TrimSpace(t.Name) == "" {
 			continue
 		}
-		if !projectMCPToolAllowed(t.Name) {
-			continue
+		if projectMCPCommitToolAvailable(t.Name) {
+			codeCommitAvailable = true
 		}
-		out = append(out, chatTool{
-			Type: "function",
-			Function: chatToolFunction{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.InputSchema,
-			},
-		})
+	}
+	if codeCommitAvailable {
+		out = append(out, projectCommitProjectFilesChatTool())
 	}
 	return out, nil
 }
 
-func projectLocalChatTools() []chatTool {
-	return []chatTool{
+func projectLocalChatTools(includeCommitBridge bool) []chatTool {
+	tools := []chatTool{
 		{
 			Type: "function",
 			Function: chatToolFunction{
@@ -1386,6 +1474,45 @@ func projectLocalChatTools() []chatTool {
 				Description: "Search text files in the App Studio project workspace and return bounded path/fragments results.",
 				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"query":{"type":"string","description":"Text to search for."},"maxResults":{"type":"integer","minimum":1,"maximum":%d,"description":"Maximum matching files to return."}},"required":["query"]}`, workspace.MaxSearchLimit)),
 			},
+		},
+		{
+			Type: "function",
+			Function: chatToolFunction{
+				Name:        projectToolWriteFile,
+				Description: "Write a complete UTF-8 text file into the App Studio project workspace.",
+				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative file path."},"content":{"type":"string","description":"Complete UTF-8 text content to write. Maximum %d bytes."}},"required":["path","content"]}`, workspace.MaxWriteBytes)),
+			},
+		},
+		{
+			Type: "function",
+			Function: chatToolFunction{
+				Name:        projectToolApplyPatch,
+				Description: "Apply an exact text replacement to one App Studio workspace file. oldText must match exactly once unless replaceAll is true.",
+				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative file path."},"oldText":{"type":"string","description":"Exact text to replace. Maximum patch payload %d bytes with newText."},"newText":{"type":"string","description":"Replacement text."},"replaceAll":{"type":"boolean","description":"Replace every exact match instead of requiring one match."}},"required":["path","oldText","newText"]}`, workspace.MaxPatchBytes)),
+			},
+		},
+		{
+			Type: "function",
+			Function: chatToolFunction{
+				Name:        projectToolMkdir,
+				Description: "Create a directory in the App Studio project workspace for later file writes.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative directory path."}},"required":["path"]}`),
+			},
+		},
+	}
+	if includeCommitBridge {
+		tools = append(tools, projectCommitProjectFilesChatTool())
+	}
+	return tools
+}
+
+func projectCommitProjectFilesChatTool() chatTool {
+	return chatTool{
+		Type: "function",
+		Function: chatToolFunction{
+			Name:        projectToolCommitProjectFiles,
+			Description: "Commit selected App Studio workspace text files to the managed git source through the Code provider.",
+			Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"repositoryRef":{"type":"string","description":"Managed Code provider Repository resource name."},"paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":%d,"description":"Project-relative workspace file paths to commit."},"message":{"type":"string","description":"Commit message."},"branch":{"type":"string","description":"Optional branch override."}},"required":["repositoryRef","paths"]}`, projectCommitProjectFilesMax)),
 		},
 	}
 }
@@ -1918,7 +2045,9 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 			b.WriteString("Do not attempt to commit files until the user restores the missing Code repository or connection.\n")
 		} else {
 			b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
-			b.WriteString("When you create or modify application files, commit them to the managed git source with the code__commit_files MCP tool using repositoryRef \"" + repoRef + "\". ")
+			b.WriteString("Prefer small App Studio workspace mutations with write_file, apply_patch, and mkdir instead of rewriting a whole project. ")
+			b.WriteString("After workspace mutations, commit the changed source/config files to the managed git source with commit_project_files using repositoryRef \"" + repoRef + "\". ")
+			b.WriteString("Use provider-code only as the git-source boundary; do not use provider-code tools to inspect or mutate the live App Studio workspace. ")
 			b.WriteString("The tool creates a visible RepositoryCommit request; use concise commit messages and include every generated source/config file needed for the app to run. ")
 			b.WriteString("Do not paste large file contents into user-facing answers; summarize what you inspected instead. ")
 			b.WriteString("Do not create another repository for this Project unless the user explicitly asks for a different repository.\n")
@@ -1960,14 +2089,18 @@ func projectToolAllowed(name string) bool {
 
 func projectLocalToolAllowed(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles:
+	case projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles, projectToolWriteFile, projectToolApplyPatch, projectToolMkdir, projectToolCommitProjectFiles:
 		return true
 	default:
 		return false
 	}
 }
 
-func projectMCPToolAllowed(name string) bool {
+func projectMCPToolAllowed(_ string) bool {
+	return false
+}
+
+func projectMCPCommitToolAvailable(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), projectToolCodeCommitFiles)
 }
 

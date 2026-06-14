@@ -34,10 +34,13 @@ import (
 )
 
 const (
+	MaxProjectPathBytes       = 1024
 	DefaultListLimit          = 200
 	MaxListLimit              = 500
 	DefaultReadMaxBytes       = 64 << 10
 	MaxReadMaxBytes           = 256 << 10
+	MaxWriteBytes             = MaxReadMaxBytes
+	MaxPatchBytes             = 64 << 10
 	DefaultSearchLimit        = 50
 	MaxSearchLimit            = 100
 	MaxSearchFragmentBytes    = 240
@@ -57,6 +60,14 @@ type Scope struct {
 type File struct {
 	Path    string
 	Content string
+}
+
+// MutationResult describes one workspace mutation.
+type MutationResult struct {
+	Operation    string `json:"operation"`
+	Path         string `json:"path"`
+	Size         int64  `json:"size,omitempty"`
+	Replacements int    `json:"replacements,omitempty"`
 }
 
 // FileInfo describes one file in a project workspace.
@@ -81,6 +92,25 @@ type ListOptions struct {
 type ReadOptions struct {
 	Path     string
 	MaxBytes int
+}
+
+// WriteOptions configures a whole-file workspace write.
+type WriteOptions struct {
+	Path    string
+	Content string
+}
+
+// PatchOptions configures an exact text replacement in one workspace file.
+type PatchOptions struct {
+	Path       string
+	OldText    string
+	NewText    string
+	ReplaceAll bool
+}
+
+// MkdirOptions configures workspace directory creation.
+type MkdirOptions struct {
+	Path string
 }
 
 // FileContent is a bounded text-file read response.
@@ -123,6 +153,12 @@ func NewFileStore(root string) *FileStore {
 	return &FileStore{root: strings.TrimSpace(root)}
 }
 
+// CleanProjectPath returns the canonical workspace-relative path accepted by
+// FileStore APIs.
+func CleanProjectPath(raw string) (string, error) {
+	return cleanProjectPath(raw)
+}
+
 // Root returns the filesystem root used by the store.
 func (s *FileStore) Root() string {
 	return s.root
@@ -157,6 +193,95 @@ func (s *FileStore) ApplyFiles(ctx context.Context, scope Scope, files []File) e
 		}
 	}
 	return nil
+}
+
+// WriteFile writes one bounded UTF-8 text file into the project workspace.
+func (s *FileStore) WriteFile(ctx context.Context, scope Scope, opts WriteOptions) (MutationResult, error) {
+	if err := validateMutationContent(opts.Path, opts.Content); err != nil {
+		return MutationResult{}, err
+	}
+	if err := s.ApplyFiles(ctx, scope, []File{{Path: opts.Path, Content: opts.Content}}); err != nil {
+		return MutationResult{}, err
+	}
+	clean, _ := cleanProjectPath(opts.Path)
+	return MutationResult{Operation: "write_file", Path: clean, Size: int64(len([]byte(opts.Content)))}, nil
+}
+
+// ApplyPatch replaces exact text in one bounded UTF-8 workspace file.
+func (s *FileStore) ApplyPatch(ctx context.Context, scope Scope, opts PatchOptions) (MutationResult, error) {
+	if strings.TrimSpace(opts.OldText) == "" {
+		return MutationResult{}, errors.New("oldText is required")
+	}
+	if len([]byte(opts.OldText))+len([]byte(opts.NewText)) > MaxPatchBytes {
+		return MutationResult{}, fmt.Errorf("patch text is too large: %d > %d bytes", len([]byte(opts.OldText))+len([]byte(opts.NewText)), MaxPatchBytes)
+	}
+	if !validTextContent(opts.OldText) || !validTextContent(opts.NewText) {
+		return MutationResult{}, errors.New("patch text must be UTF-8 text without NUL bytes")
+	}
+	read, err := s.ReadFile(ctx, scope, ReadOptions{Path: opts.Path, MaxBytes: MaxWriteBytes})
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if read.Binary {
+		return MutationResult{}, fmt.Errorf("file %q is binary", read.Path)
+	}
+	if read.Truncated {
+		return MutationResult{}, fmt.Errorf("file %q is too large to patch", read.Path)
+	}
+	count := strings.Count(read.Content, opts.OldText)
+	if count == 0 {
+		return MutationResult{}, fmt.Errorf("oldText was not found in %q", read.Path)
+	}
+	if count > 1 && !opts.ReplaceAll {
+		return MutationResult{}, fmt.Errorf("oldText matched %d times in %q; set replaceAll to true or provide a more specific oldText", count, read.Path)
+	}
+	replacements := 1
+	next := strings.Replace(read.Content, opts.OldText, opts.NewText, 1)
+	if opts.ReplaceAll {
+		replacements = count
+		next = strings.ReplaceAll(read.Content, opts.OldText, opts.NewText)
+	}
+	result, err := s.WriteFile(ctx, scope, WriteOptions{Path: read.Path, Content: next})
+	if err != nil {
+		return MutationResult{}, err
+	}
+	result.Operation = "apply_patch"
+	result.Replacements = replacements
+	return result, nil
+}
+
+// Mkdir creates a directory in the project workspace. Empty directories are not
+// git artifacts, but this gives later writes a safe parent path.
+func (s *FileStore) Mkdir(ctx context.Context, scope Scope, opts MkdirOptions) (MutationResult, error) {
+	dir, err := s.scopeDir(scope)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return MutationResult{}, err
+	}
+	clean, err := cleanProjectPath(opts.Path)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	target := filepath.Join(dir, filepath.FromSlash(clean))
+	if err := ensureWithin(dir, target); err != nil {
+		return MutationResult{}, err
+	}
+	if err := mkdirAllForFile(dir, path.Join(clean, ".keep")); err != nil {
+		return MutationResult{}, fmt.Errorf("create directory %q: %w", clean, err)
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		return MutationResult{}, fmt.Errorf("stat directory %q: %w", clean, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return MutationResult{}, fmt.Errorf("path %q is a symlink", clean)
+	}
+	if !info.IsDir() {
+		return MutationResult{}, fmt.Errorf("path %q is not a directory", clean)
+	}
+	return MutationResult{Operation: "mkdir", Path: clean}, nil
 }
 
 // ListFiles lists regular files in the scoped project workspace.
@@ -352,6 +477,9 @@ func cleanProjectPath(raw string) (string, error) {
 	if raw == "" {
 		return "", errors.New("file path cannot be empty")
 	}
+	if len([]byte(raw)) > MaxProjectPathBytes {
+		return "", fmt.Errorf("file path %q is too long", raw)
+	}
 	if strings.HasPrefix(raw, "/") || path.IsAbs(raw) {
 		return "", fmt.Errorf("file path %q must be relative", raw)
 	}
@@ -472,6 +600,23 @@ func rejectSymlink(target, clean string) error {
 		return fmt.Errorf("path %q is a symlink", clean)
 	}
 	return nil
+}
+
+func validateMutationContent(path, content string) error {
+	if _, err := cleanProjectPath(path); err != nil {
+		return err
+	}
+	if len([]byte(content)) > MaxWriteBytes {
+		return fmt.Errorf("file %q is too large: %d > %d bytes", path, len([]byte(content)), MaxWriteBytes)
+	}
+	if !validTextContent(content) {
+		return fmt.Errorf("file %q must be UTF-8 text without NUL bytes", path)
+	}
+	return nil
+}
+
+func validTextContent(content string) bool {
+	return utf8.ValidString(content) && !strings.ContainsRune(content, '\x00')
 }
 
 func boundedPositive(value, fallback, maximum int) int {
