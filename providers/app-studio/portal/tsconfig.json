@@ -17,8 +17,8 @@
     "noUncheckedSideEffectImports": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["../../../portal/src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.vue", "env.d.ts"]
+  "include": ["src/**/*.ts", "src/**/*.vue", "../../../portal/env.d.ts", "env.d.ts"]
 }

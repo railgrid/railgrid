@@ -28,6 +28,7 @@
 @layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
+@source "../../../../portal/src/components/ConfirmDialog.vue";
 
 @theme inline {
   --color-surface: var(--color-surface, #06060b);

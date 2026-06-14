@@ -26,6 +26,8 @@ import {
   Wrench,
   X,
 } from 'lucide-vue-next'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import { useEscapeKey } from '@/composables/useEscapeKey'
 import { api, isProjectAPIInitializingError } from './api'
 import type {
   KedgeContext,
@@ -256,6 +258,14 @@ const conversationWorkingLabel = computed(() => {
   if (activeTool?.name) return `${toolCallStatusLabel(activeTool)} ${displayToolName(activeTool.name)}`
   if (lastAssistant?.content.trim()) return 'Writing'
   return 'Working'
+})
+const deleteProjectMessage = computed(() => {
+  const project = deleteProjectTarget.value
+  if (!project) return ''
+  const projectName = project.displayName || project.name
+  const repositoryName = project.repository?.name || project.repository?.ref
+  const repositoryNote = repositoryName ? ` The associated repository resource (${repositoryName})` : ' The associated repository resource'
+  return `Are you sure you want to delete ${projectName}? This removes the App Studio project and its conversation history.${repositoryNote} will be orphaned and will not be deleted.`
 })
 const isGoogleGeminiProvider = computed(() => llmProvider.value.trim().toLowerCase() === GOOGLE_AI_STUDIO_PROVIDER)
 const isGoogleServiceAccountMode = computed(() =>
@@ -498,6 +508,11 @@ watch(settingsProject, () => {
 watch(messages, async () => {
   await nextTick()
   if (messagesRef.value) messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+})
+
+useEscapeKey(() => {
+  if (!showSettings.value || deleteProjectTarget.value) return
+  closeSettings()
 })
 
 onBeforeUnmount(() => {
@@ -896,6 +911,11 @@ async function createProjectFromPrompt() {
 function openSettings() {
   syncProjectSettingsForm()
   showSettings.value = true
+}
+
+function closeSettings() {
+  if (projectSettingsSaving.value || llmSaving.value) return
+  showSettings.value = false
 }
 
 function syncProjectSettingsForm() {
@@ -2269,10 +2289,10 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
   <Teleport to="body">
     <div
       v-if="showSettings"
-      class="fixed inset-0 z-[200] flex items-center justify-center bg-black/65 px-4 py-6 backdrop-blur-sm"
-      @click.self="showSettings = false"
+      class="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 px-4 py-6 backdrop-blur-sm"
+      @click.self="closeSettings"
     >
-      <div class="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border-subtle bg-surface-raised shadow-2xl">
+      <div class="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised shadow-2xl">
         <header class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
@@ -2287,7 +2307,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             type="button"
             class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
             title="Close"
-            @click="showSettings = false"
+            @click="closeSettings"
           >
             <X class="h-4 w-4" :stroke-width="2" />
           </button>
@@ -2561,7 +2581,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 <button
                   type="button"
                   class="inline-flex h-9 items-center justify-center rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
-                  @click="showSettings = false"
+                  @click="closeSettings"
                 >
                   Cancel
                 </button>
@@ -2602,56 +2622,13 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
     </div>
   </Teleport>
 
-  <Teleport to="body">
-    <div
-      v-if="deleteProjectTarget"
-      class="fixed inset-0 z-[240] flex items-center justify-center bg-black/65 px-4 py-6 backdrop-blur-sm"
-      @click.self="closeDeleteProjectDialog"
-    >
-      <div class="w-full max-w-md rounded-2xl border border-border-subtle bg-surface-raised p-6 shadow-2xl">
-        <div class="flex items-start gap-3">
-          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-danger-subtle text-danger">
-            <Trash2 class="h-5 w-5" :stroke-width="1.75" />
-          </div>
-          <div class="min-w-0">
-            <h2 class="text-[14px] font-semibold text-text-primary">Delete project?</h2>
-            <p class="mt-1 text-[12px] leading-5 text-text-secondary">
-              Are you sure you want to delete
-              <span class="font-medium text-text-primary">{{ deleteProjectTarget.displayName || deleteProjectTarget.name }}</span>?
-            </p>
-          </div>
-        </div>
-
-        <div class="mt-4 grid gap-2 rounded-lg border border-danger/25 bg-danger-subtle/70 px-3 py-2.5 text-[12px] leading-5 text-danger">
-          <p>
-            This removes the App Studio project and its conversation history. The associated repository resource will be orphaned and will not be deleted.
-          </p>
-          <p v-if="deleteProjectTarget.repository" class="min-w-0 font-mono text-[11px] text-danger">
-            Repository: {{ deleteProjectTarget.repository.name || deleteProjectTarget.repository.ref }}
-          </p>
-        </div>
-
-        <div class="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            class="inline-flex h-9 items-center justify-center rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-            :disabled="deletingProject"
-            @click="closeDeleteProjectDialog"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-danger/30 bg-danger px-3 text-[13px] font-medium text-white transition hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-60"
-            :disabled="deletingProject"
-            @click="confirmDeleteProject"
-          >
-            <Loader2 v-if="deletingProject" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
-            <Trash2 v-else class="h-4 w-4" :stroke-width="1.75" />
-            Delete project
-          </button>
-        </div>
-      </div>
-    </div>
-  </Teleport>
+  <ConfirmDialog
+    v-if="deleteProjectTarget"
+    title="Delete project?"
+    :message="deleteProjectMessage"
+    confirm-label="Delete project"
+    :busy="deletingProject"
+    @cancel="closeDeleteProjectDialog"
+    @confirm="confirmDeleteProject"
+  />
 </template>
