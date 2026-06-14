@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +42,7 @@ import (
 	"github.com/faroshq/provider-app-studio/api"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/tenant"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 func envOr(key, def string) string {
@@ -96,9 +98,10 @@ func main() {
 	}
 	defer closeStore()
 
-	apiServer := api.New(
+	apiServer := api.NewWithWorkspace(
 		clientFactory,
 		msgStore,
+		openWorkspaceStore(),
 		os.Getenv("KEDGE_HUB_URL"),
 		os.Getenv("APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY") == "true",
 	)
@@ -171,6 +174,15 @@ func newHandler(apiServer *api.Server) (http.Handler, error) {
 	})
 
 	return r, nil
+}
+
+func openWorkspaceStore() *workspace.FileStore {
+	root := strings.TrimSpace(os.Getenv("APP_STUDIO_WORKSPACE_ROOT"))
+	if root == "" {
+		root = filepath.Join(os.TempDir(), "kedge-app-studio-workspaces")
+	}
+	log.Printf("app studio workspace root: %s", root)
+	return workspace.NewFileStore(root)
 }
 
 // openMessageStore builds the App Studio message store from env, wraps it with

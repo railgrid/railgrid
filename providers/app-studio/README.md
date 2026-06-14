@@ -55,6 +55,7 @@ Environment variables consumed by the binary:
 | `APP_STUDIO_IN_MEMORY_MESSAGE_STORE` | `true` → non-durable in-memory store (dev) |
 | `APP_STUDIO_MESSAGE_ENCRYPTION_KEYS` | Comma-separated `key-id:base64-aes-key` entries |
 | `APP_STUDIO_MESSAGE_RETENTION` | Retention window (`time.ParseDuration`, e.g. `720h`) |
+| `APP_STUDIO_WORKSPACE_ROOT` | Filesystem root for App Studio project workspaces and local file tools |
 | `APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verify on MCP calls (dev) |
 
 ## Local message history
@@ -75,3 +76,11 @@ or rebuilding the provider no longer drops prior conversation history.
 To use your own database, set `APP_STUDIO_DATABASE_URL` in the environment or in
 `providers/app-studio/.env` (copy from `.env.example`). To intentionally use the
 old throwaway behavior, set `APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true`.
+
+## Local project files
+
+App Studio keeps project files in its own workspace root so the assistant can
+list, read, and search the project before asking provider-code to commit changes
+to git. Set `APP_STUDIO_WORKSPACE_ROOT` to choose the directory; the binary
+defaults to a temp directory, while the Helm chart mounts a persistent volume at
+`/var/lib/kedge-app-studio/workspaces`.

@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 func TestParseProjectNamingResult(t *testing.T) {
@@ -58,12 +59,61 @@ func TestDNS1123LabelWithSuffix(t *testing.T) {
 	}
 }
 
-func TestProjectMCPToolAllowedCommitFiles(t *testing.T) {
+func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 	if !projectMCPToolAllowed("code__commit_files") {
 		t.Fatal("commit_files should be allowed for App Studio repository writes")
 	}
-	if projectMCPToolAllowed("delete_repository") {
+	if projectMCPToolAllowed("other__commit_files") {
+		t.Fatal("commit_files should only be accepted from the Code provider")
+	}
+	for _, name := range []string{
+		"code__list_repository_files",
+		"code__read_repository_file",
+		"code__search_repository_files",
+		"code__get_repository_commit",
+	} {
+		if projectMCPToolAllowed(name) {
+			t.Fatalf("%s should not be allowed; project file inspection belongs to App Studio workspace tools", name)
+		}
+	}
+	for _, name := range []string{
+		"list_project_files",
+		"read_project_file",
+		"search_project_files",
+	} {
+		if !projectLocalToolAllowed(name) {
+			t.Fatalf("%s should be allowed as an App Studio workspace-local tool", name)
+		}
+	}
+	if projectMCPToolAllowed("code__delete_repository") {
 		t.Fatal("delete_repository should not be allowed from App Studio")
+	}
+}
+
+func TestProjectSystemPromptRequiresWorkspaceInspectBeforeEdit(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo-project"
+	project.Spec.DisplayName = "Demo Project"
+	repository := &ProjectRepositoryView{
+		Ref:    "demo-repo",
+		Name:   "demo",
+		Status: projectRepositoryStatusReady,
+		Ready:  true,
+	}
+
+	prompt := projectSystemPrompt(project, repository)
+	for _, want := range []string{"list_project_files", "read_project_file", "search_project_files", "commit_files"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unwanted := range []string{"list_repository_files", "read_repository_file", "search_repository_files"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("prompt should not direct file inspection through provider-code tool %q:\n%s", unwanted, prompt)
+		}
+	}
+	if !strings.Contains(strings.ToLower(prompt), "before") || !strings.Contains(strings.ToLower(prompt), "inspect") {
+		t.Fatalf("prompt does not require inspect-before-edit guidance:\n%s", prompt)
 	}
 }
 
@@ -78,6 +128,61 @@ func TestSummarizeProjectToolArgumentsCommitFiles(t *testing.T) {
 	}
 	if strings.Contains(got, "secret-ish") || strings.Contains(got, "another generated body") {
 		t.Fatalf("summary leaked file contents: %q", got)
+	}
+}
+
+func TestSummarizeProjectToolArgumentsWorkspaceReadTools(t *testing.T) {
+	tests := []struct {
+		name string
+		args string
+		want []string
+	}{
+		{
+			name: "list_project_files",
+			args: `{"limit":25}`,
+			want: []string{"limit 25"},
+		},
+		{
+			name: "read_project_file",
+			args: `{"path":"src/App.tsx","maxBytes":4096}`,
+			want: []string{"path src/App.tsx", "maxBytes 4096"},
+		},
+		{
+			name: "search_project_files",
+			args: `{"query":"secret-ish user query","maxResults":10}`,
+			want: []string{"query secret-ish user query", "maxResults 10"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := summarizeProjectToolArguments(tt.name, tt.args)
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("summary = %q, want %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestSummarizeProjectToolResultWorkspaceReadTools(t *testing.T) {
+	readResult := `{"path":"src/App.tsx","size":2048,"content":"secret-ish file body","truncated":true,"binary":false}`
+	got := summarizeProjectToolResult("read_project_file", readResult)
+	for _, want := range []string{"file src/App.tsx", "2048 bytes", "truncated"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "secret-ish") {
+		t.Fatalf("summary leaked file contents: %q", got)
+	}
+
+	searchResult := `{"totalCount":12,"truncated":true,"results":[{"path":"src/App.tsx"},{"path":"src/main.ts"},{"path":"README.md"}]}`
+	got = summarizeProjectToolResult("search_project_files", searchResult)
+	for _, want := range []string{"12 match(es)", "src/App.tsx, src/main.ts, README.md", "truncated"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary = %q, want %q", got, want)
+		}
 	}
 }
 
@@ -135,6 +240,153 @@ func TestCallProjectMCPToolTreatsIsErrorAsFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "create RepositoryCommit") {
 		t.Fatalf("error = %q, want RepositoryCommit failure text", err.Error())
+	}
+}
+
+func TestResolveProjectToolCallsRunsLocalWorkspaceTools(t *testing.T) {
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{
+		{Path: "README.md", Content: "hello from App Studio workspace\n"},
+	}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	server := NewWithWorkspace(nil, nil, workspaces, "", false)
+
+	messages, err := server.resolveProjectToolCalls(
+		context.Background(),
+		identity{},
+		scope,
+		[]chatToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: chatToolCallFunction{
+				Name:      "read_project_file",
+				Arguments: `{"path":"README.md"}`,
+			},
+		}},
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
+	}
+	if len(messages) != 1 || !strings.Contains(messages[0].Content, "hello from App Studio workspace") {
+		t.Fatalf("tool messages = %#v, want workspace file content", messages)
+	}
+}
+
+func TestResolveProjectToolCallsMirrorsCommitFilesToWorkspace(t *testing.T) {
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["README.md"]}}}`)
+	}))
+	defer mcp.Close()
+
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
+
+	_, err := server.resolveProjectToolCalls(
+		context.Background(),
+		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		scope,
+		[]chatToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: chatToolCallFunction{
+				Name:      "code__commit_files",
+				Arguments: `{"repositoryRef":"demo","files":[{"path":"README.md","content":"committed through provider-code\n"}]}`,
+			},
+		}},
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
+	}
+	read, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "README.md"})
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if read.Content != "committed through provider-code\n" {
+		t.Fatalf("workspace content = %q", read.Content)
+	}
+}
+
+func TestResolveProjectToolCallsDoesNotMirrorUnsuccessfulCommitFiles(t *testing.T) {
+	for _, phase := range []string{"Pending", "Running", ""} {
+		t.Run("phase_"+phase, func(t *testing.T) {
+			body := `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"files":["README.md"]}}}`
+			if phase != "" {
+				body = fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":%q,"files":["README.md"]}}}`, phase)
+			}
+			mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, body)
+			}))
+			defer mcp.Close()
+
+			workspaces := workspace.NewFileStore(t.TempDir())
+			scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+			server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
+
+			_, err := server.resolveProjectToolCalls(
+				context.Background(),
+				identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+				scope,
+				[]chatToolCall{{
+					ID:   "call-1",
+					Type: "function",
+					Function: chatToolCallFunction{
+						Name:      "code__commit_files",
+						Arguments: `{"repositoryRef":"demo","files":[{"path":"README.md","content":"should not mirror\n"}]}`,
+					},
+				}},
+				httptest.NewRequest(http.MethodPost, "/", nil),
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("resolveProjectToolCalls returned error: %v", err)
+			}
+			if _, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "README.md"}); err == nil {
+				t.Fatal("ReadFile returned nil error, want no mirrored file")
+			}
+		})
+	}
+}
+
+func TestResolveProjectToolCallsSurfacesCommitMirrorFailure(t *testing.T) {
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":[".git/config"]}}}`)
+	}))
+	defer mcp.Close()
+
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
+
+	messages, err := server.resolveProjectToolCalls(
+		context.Background(),
+		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		scope,
+		[]chatToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: chatToolCallFunction{
+				Name:      "code__commit_files",
+				Arguments: `{"repositoryRef":"demo","files":[{"path":".git/config","content":"unsafe"}]}`,
+			},
+		}},
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
+	}
+	if len(messages) != 1 || !strings.Contains(messages[0].Content, "mirror committed project files into workspace") {
+		t.Fatalf("tool messages = %#v, want surfaced mirror failure", messages)
 	}
 }
 

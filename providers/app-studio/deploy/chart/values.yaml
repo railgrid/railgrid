@@ -35,6 +35,19 @@ store:
     name: ""
     key: keys
 
+# App Studio project workspaces. The provider stores checked-out/generated
+# project files here so the agent can list, read, search, and later mutate them.
+workspace:
+  path: /var/lib/kedge-app-studio/workspaces
+  existingClaim: ""
+  emptyDir: false
+  persistence:
+    enabled: true
+    size: 1Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: ""
+
 hub:
   url: "http://kedge-hub.kedge.svc.cluster.local:8080"
   insecure: false
@@ -44,6 +57,8 @@ hub:
 
 podLabels: {}
 podAnnotations: {}
+podSecurityContext:
+  fsGroup: 65532
 resources: {}
 nodeSelector: {}
 tolerations: []
