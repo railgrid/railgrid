@@ -60,6 +60,8 @@ spec:
             # provider kubeconfig (mounted below).
             - name: CODE_KUBECONFIG
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: CODE_COMMIT_BUNDLE_DIR
+              value: {{ .Values.bundleStore.path | quote }}
             {{- if .Values.tenant.credentialsNamespace }}
             - name: KEDGE_TENANT_CREDENTIALS_NAMESPACE
               value: {{ .Values.tenant.credentialsNamespace | quote }}
@@ -91,6 +93,8 @@ spec:
             - name: kedge-provider-kubeconfig
               mountPath: /var/run/secrets/kedge
               readOnly: true
+            - name: commit-bundles
+              mountPath: {{ .Values.bundleStore.path | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
@@ -105,6 +109,13 @@ spec:
             items:
               - key: kubeconfig
                 path: kedge-provider-kubeconfig
+        - name: commit-bundles
+          {{- if .Values.bundleStore.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.bundleStore.existingClaim | quote }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

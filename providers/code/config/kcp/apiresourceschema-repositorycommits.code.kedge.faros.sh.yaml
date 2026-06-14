@@ -1,0 +1,254 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260613-c20e09e.repositorycommits.code.kedge.faros.sh
+spec:
+  group: code.kedge.faros.sh
+  names:
+    categories:
+    - kedge
+    kind: RepositoryCommit
+    listKind: RepositoryCommitList
+    plural: repositorycommits
+    shortNames:
+    - gcommit
+    singular: repositorycommit
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.repositoryRef
+      name: Repository
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.branch
+      name: Branch
+      type: string
+    - jsonPath: .status.commitSHA
+      name: Commit
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      description: |-
+        RepositoryCommit is a durable request to write a provider-owned source bundle
+        to a managed Repository. The CR intentionally stores only the repository ref,
+        bundle ref, digest, and observed commit metadata; generated file contents stay
+        in the provider's bundle store so large LLM outputs do not bloat kcp/etcd.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: RepositoryCommitSpec is the desired commit operation.
+          properties:
+            branch:
+              description: |-
+                Branch overrides the repository default branch. Empty uses the
+                Repository's defaultBranch, then the host/provider default.
+              maxLength: 255
+              type: string
+            message:
+              description: Message is the commit message. Empty lets the backend choose
+                a default.
+              maxLength: 512
+              type: string
+            repositoryRef:
+              description: RepositoryRef names the Repository (same workspace) to
+                commit into.
+              maxLength: 253
+              minLength: 1
+              type: string
+            source:
+              description: |-
+                Source identifies the provider-owned bundle to commit. File contents are
+                intentionally not stored in this CR.
+              properties:
+                bundleRef:
+                  description: BundleRef points at a provider-owned, immutable bundle
+                    object.
+                  properties:
+                    digest:
+                      description: Digest is the expected bundle digest, usually sha256:<hex>.
+                      maxLength: 96
+                      type: string
+                    name:
+                      description: Name is the bundle object's provider-local name.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  type: object
+              type: object
+          required:
+          - repositoryRef
+          - source
+          type: object
+        status:
+          description: RepositoryCommitStatus is the observed result of the commit
+            operation.
+          properties:
+            branch:
+              description: Branch is the branch the backend committed to.
+              maxLength: 255
+              type: string
+            commitSHA:
+              description: CommitSHA is the resulting commit SHA.
+              maxLength: 128
+              type: string
+            commitURL:
+              description: CommitURL is the browser URL for the resulting commit.
+              maxLength: 2048
+              type: string
+            completedAt:
+              description: CompletedAt is when the controller reached a terminal phase.
+              format: date-time
+              type: string
+            conditions:
+              description: Conditions follows the standard Kubernetes conditions pattern.
+              items:
+                description: Condition contains details for one aspect of the current
+                  state of this API Resource.
+                properties:
+                  lastTransitionTime:
+                    description: |-
+                      lastTransitionTime is the last time the condition transitioned from one status to another.
+                      This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                    format: date-time
+                    type: string
+                  message:
+                    description: |-
+                      message is a human readable message indicating details about the transition.
+                      This may be an empty string.
+                    maxLength: 32768
+                    type: string
+                  observedGeneration:
+                    description: |-
+                      observedGeneration represents the .metadata.generation that the condition was set based upon.
+                      For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                      with respect to the current state of the instance.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  reason:
+                    description: |-
+                      reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                      Producers of specific condition types may define expected values and meanings for this field,
+                      and whether the values are considered a guaranteed API.
+                      The value should be a CamelCase string.
+                      This field may not be empty.
+                    maxLength: 1024
+                    minLength: 1
+                    pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                    type: string
+                  status:
+                    description: status of the condition, one of True, False, Unknown.
+                    enum:
+                    - "True"
+                    - "False"
+                    - Unknown
+                    type: string
+                  type:
+                    description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                    maxLength: 316
+                    pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                    type: string
+                required:
+                - lastTransitionTime
+                - message
+                - reason
+                - status
+                - type
+                type: object
+              type: array
+              x-kubernetes-list-map-keys:
+              - type
+              x-kubernetes-list-type: map
+            files:
+              description: |-
+                Files records per-file metadata for visibility and debugging. Contents
+                stay in the bundle store.
+              items:
+                description: RepositoryCommitFileStatus records metadata for one committed
+                  file.
+                properties:
+                  digest:
+                    description: Digest is the file content digest, usually sha256:<hex>.
+                    maxLength: 96
+                    type: string
+                  path:
+                    description: Path is the repository-relative file path.
+                    maxLength: 1024
+                    minLength: 1
+                    type: string
+                  size:
+                    description: Size is the UTF-8 content size in bytes.
+                    format: int64
+                    type: integer
+                required:
+                - path
+                type: object
+              maxItems: 500
+              type: array
+              x-kubernetes-list-map-keys:
+              - path
+              x-kubernetes-list-type: map
+            observedGeneration:
+              description: ObservedGeneration mirrors metadata.generation last reconciled.
+              format: int64
+              type: integer
+            phase:
+              description: Phase is the coarse status for clients that do not parse
+                conditions.
+              enum:
+              - Pending
+              - Running
+              - Succeeded
+              - Failed
+              type: string
+            source:
+              description: Source records the observed bundle metadata, without file
+                contents.
+              properties:
+                digest:
+                  description: Digest is the bundle digest committed by the controller.
+                  maxLength: 96
+                  type: string
+                fileCount:
+                  description: FileCount is the number of files in the bundle.
+                  type: integer
+                size:
+                  description: Size is the total bundle size in bytes.
+                  format: int64
+                  type: integer
+              type: object
+            startedAt:
+              description: StartedAt is when the controller first picked up the request.
+              format: date-time
+              type: string
+          type: object
+      required:
+      - spec
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

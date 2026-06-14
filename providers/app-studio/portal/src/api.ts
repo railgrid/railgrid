@@ -199,7 +199,10 @@ export const api = {
     return body.items ?? []
   },
 
-  async createProject(ctx: KedgeContext | null, body: { displayName: string; description?: string }): Promise<Project> {
+  async createProject(
+    ctx: KedgeContext | null,
+    body: { displayName?: string; description?: string; prompt?: string; connectionRef?: string },
+  ): Promise<Project> {
     return request<Project>(ctx, 'POST', baseURL(ctx), body)
   },
 
@@ -216,6 +219,14 @@ export const api = {
 
   async getProject(ctx: KedgeContext | null, name: string): Promise<Project> {
     return request<Project>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
+  },
+
+  async patchProject(
+    ctx: KedgeContext | null,
+    name: string,
+    body: { displayName?: string; description?: string },
+  ): Promise<Project> {
+    return request<Project>(ctx, 'PATCH', `${baseURL(ctx)}/${encodeURIComponent(name)}`, body)
   },
 
   async deleteProject(ctx: KedgeContext | null, name: string): Promise<void> {

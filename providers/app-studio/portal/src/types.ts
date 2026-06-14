@@ -24,11 +24,21 @@ export interface ProjectMessage {
   createdAt: string
 }
 
+export interface ProjectToolCallEvent {
+  id: string
+  name?: string
+  status: 'requested' | 'running' | 'succeeded' | 'failed' | 'rejected'
+  arguments?: string
+  summary?: string
+  error?: string
+}
+
 export interface ProjectMessageStreamEvent {
-  type: 'chunk' | 'done' | 'error'
+  type: 'chunk' | 'tool_call' | 'done' | 'error'
   assistantMessageID?: string
   content?: string
   error?: string
+  toolCall?: ProjectToolCallEvent
 }
 
 export interface Project {
@@ -36,9 +46,31 @@ export interface Project {
   displayName: string
   description?: string
   phase?: string
+  repository?: {
+    ref: string
+    name?: string
+    connectionRef?: string
+    htmlURL?: string
+    status?: string
+    message?: string
+    ready?: boolean
+    commits?: ProjectRepositoryCommit[]
+  }
   memory?: ProjectMemory
   createdAt: string
   updatedAt?: string
+}
+
+export interface ProjectRepositoryCommit {
+  name: string
+  phase?: string
+  branch?: string
+  commitSHA?: string
+  commitURL?: string
+  message?: string
+  fileCount?: number
+  createdAt: string
+  completedAt?: string
 }
 
 export interface ProjectMessagesPage {

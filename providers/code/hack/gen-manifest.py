@@ -2,7 +2,7 @@
 # Copyright 2026 The Faros Authors. Apache-2.0.
 #
 # Assembles providers/code/manifest.yaml (the CatalogEntry the hub provisions
-# from) by inlining the four apigen-generated APIResourceSchema bodies under
+# from) by inlining the apigen-generated APIResourceSchema bodies under
 # spec.apiExport.schemas[].body. Re-run after `make codegen-code-provider`:
 #
 #     python3 providers/code/hack/gen-manifest.py
@@ -19,6 +19,7 @@ KCP = os.path.join(ROOT, "config", "kcp")
 SCHEMAS = [
     ("connections.code.kedge.faros.sh", "apiresourceschema-connections.code.kedge.faros.sh.yaml"),
     ("repositories.code.kedge.faros.sh", "apiresourceschema-repositories.code.kedge.faros.sh.yaml"),
+    ("repositorycommits.code.kedge.faros.sh", "apiresourceschema-repositorycommits.code.kedge.faros.sh.yaml"),
     ("deploykeys.code.kedge.faros.sh", "apiresourceschema-deploykeys.code.kedge.faros.sh.yaml"),
     ("collaborators.code.kedge.faros.sh", "apiresourceschema-collaborators.code.kedge.faros.sh.yaml"),
     ("packages.code.kedge.faros.sh", "apiresourceschema-packages.code.kedge.faros.sh.yaml"),
@@ -37,10 +38,11 @@ HEADER = """\
 # re-run `make codegen-code-provider && python3 providers/code/hack/gen-manifest.py`.
 #
 # Unlike the infrastructure provider (schemas: []), the code provider ships its
-# four tenant-authored CRDs as static schemas so tenants who APIBind get
-# Connection / Repository / DeployKey / Collaborator authorable in their own
-# workspace. The hub provisioner (pkg/hub/providers/provision.go) applies these
-# with storage: {crd: {}} and references them from the APIExport.
+# tenant-facing CRDs as static schemas so tenants who APIBind get Connection /
+# Repository / RepositoryCommit / DeployKey / Collaborator authorable in their
+# own workspace, plus observed Package resources. The hub provisioner
+# (pkg/hub/providers/provision.go) applies these with storage: {crd: {}} and
+# references them from the APIExport.
 ---
 apiVersion: providers.kedge.faros.sh/v1alpha1
 kind: CatalogEntry

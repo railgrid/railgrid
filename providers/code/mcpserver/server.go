@@ -12,10 +12,9 @@ You may obtain a copy of the License at
 // proxy forwards /services/providers/code/mcp here so MCP clients can manage
 // repositories without the browser UI.
 //
-// PR A ships read-only list tools (list_connections, list_repositories) that
-// query the caller's tenant workspace as the caller. PR C adds the write tools
-// (create/delete repository, deploy keys, collaborators) — all CRD-native, so
-// the controllers do the actual host work.
+// Read-only tools query the caller's tenant workspace as the caller. Write tools
+// create/delete CRs for reconciled resources; commit_files stores a provider
+// bundle and creates a RepositoryCommit CR for the controller to apply.
 package mcpserver
 
 import (
@@ -23,13 +22,15 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/faroshq/provider-code/commitbundle"
 	"github.com/faroshq/provider-code/tenant"
 )
 
 // Deps is what the MCP transport needs: the per-tenant caller-token client
-// factory.
+// factory plus the provider-owned bundle store used by commit_files.
 type Deps struct {
-	Tenant *tenant.ClientFactory
+	Tenant  *tenant.ClientFactory
+	Bundles commitbundle.Store
 }
 
 // NewHandler returns the streamable-HTTP MCP handler to mount at /mcp. Builds a

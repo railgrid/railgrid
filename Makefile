@@ -159,7 +159,7 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 ## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the code
 ## provider's own API types, then re-assemble manifest.yaml (inline schemas)
 ## and sync the schema bodies into the Helm chart's files/schemas/. Unlike
-## infrastructure (schemas: []), the code provider ships its four CRDs as
+## infrastructure (schemas: []), the code provider ships its CRDs as
 ## static schemas the hub applies, so they must be regenerated here.
 codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the code provider's local API (+ manifest + chart schemas)
 	@mkdir -p providers/code/config/crds providers/code/config/kcp providers/code/deploy/chart/files/schemas
@@ -169,7 +169,7 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
 	python3 providers/code/hack/gen-manifest.py
-	@for r in connections repositories deploykeys collaborators packages; do \
+	@for r in connections repositories repositorycommits deploykeys collaborators packages; do \
 		cp providers/code/config/kcp/apiresourceschema-$$r.code.kedge.faros.sh.yaml \
 		   providers/code/deploy/chart/files/schemas/$$r.code.kedge.faros.sh.yaml; \
 	done
@@ -873,6 +873,7 @@ run-provider-code: build-code-provider ## Run the code provider (requires: make 
 	KEDGE_HUB_INSECURE=true \
 	KEDGE_PROVIDER_NAME=code \
 	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+	CODE_COMMIT_BUNDLE_DIR=$${CODE_COMMIT_BUNDLE_DIR:-$(KCP_DATA_DIR)/code-commit-bundles} \
 	CODE_KUBECONFIG=$${CODE_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
 	GITHUB_OAUTH_CLIENT_ID=$${GITHUB_OAUTH_CLIENT_ID:-} \
 	GITHUB_OAUTH_CLIENT_SECRET=$${GITHUB_OAUTH_CLIENT_SECRET:-} \

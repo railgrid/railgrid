@@ -23,6 +23,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -152,6 +154,92 @@ func (b *Backend) DeleteRepository(ctx context.Context, conn *codev1alpha1.Conne
 		return classify(resp, err)
 	}
 	return nil
+}
+
+// CommitFiles creates one commit containing all supplied text files and moves
+// the target branch. It uses GitHub's Git data API, so the provider never needs
+// a local clone or working tree.
+func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, input backend.RepositoryCommitInput) (backend.RepositoryCommitResult, error) {
+	if len(input.Files) == 0 {
+		return backend.RepositoryCommitResult{}, errors.New("github: at least one file is required")
+	}
+	message := strings.TrimSpace(input.Message)
+	if message == "" {
+		message = "Update generated application files"
+	}
+	branch := strings.TrimSpace(input.Branch)
+	if branch == "" {
+		branch = strings.TrimSpace(repo.Spec.DefaultBranch)
+	}
+	if branch == "" {
+		branch = "main"
+	}
+
+	entries, files, err := gitTreeEntries(input.Files)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, err
+	}
+
+	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, err
+	}
+	org := owner(conn, repo)
+	refName := "heads/" + branch
+	ref, resp, err := c.Git.GetRef(ctx, org, repo.Spec.Name, refName)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, classify(resp, err)
+	}
+	headSHA := ""
+	if ref.GetObject() != nil {
+		headSHA = ref.GetObject().GetSHA()
+	}
+	if headSHA == "" {
+		return backend.RepositoryCommitResult{}, fmt.Errorf("github: branch %q has no head SHA", branch)
+	}
+	parent, resp, err := c.Git.GetCommit(ctx, org, repo.Spec.Name, headSHA)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, classify(resp, err)
+	}
+	baseTree := ""
+	if parent.GetTree() != nil {
+		baseTree = parent.GetTree().GetSHA()
+	}
+	tree, resp, err := c.Git.CreateTree(ctx, org, repo.Spec.Name, baseTree, entries)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, classify(resp, err)
+	}
+	commit, resp, err := c.Git.CreateCommit(ctx, org, repo.Spec.Name, &gogithub.Commit{
+		Message: gogithub.String(message),
+		Tree:    tree,
+		Parents: []*gogithub.Commit{{SHA: gogithub.String(headSHA)}},
+	}, nil)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, classify(resp, err)
+	}
+	_, resp, err = c.Git.UpdateRef(ctx, org, repo.Spec.Name, &gogithub.Reference{
+		Ref: gogithub.String("refs/" + refName),
+		Object: &gogithub.GitObject{
+			SHA: commit.SHA,
+		},
+	}, false)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, classify(resp, err)
+	}
+	commitURL := commit.GetHTMLURL()
+	if commitURL == "" && commit.GetSHA() != "" {
+		repoURL := strings.TrimRight(repo.Status.HTMLURL, "/")
+		if repoURL == "" {
+			repoURL = "https://github.com/" + org + "/" + repo.Spec.Name
+		}
+		commitURL = repoURL + "/commit/" + commit.GetSHA()
+	}
+	return backend.RepositoryCommitResult{
+		CommitSHA: commit.GetSHA(),
+		CommitURL: commitURL,
+		Branch:    branch,
+		Files:     files,
+	}, nil
 }
 
 // EnsureDeployKey registers publicKey on the repo and returns its host id.
@@ -358,6 +446,58 @@ func packageInfo(p *gogithub.Package) backend.PackageInfo {
 		VersionCount: p.GetVersionCount(),
 		UpdatedAt:    updated,
 	}
+}
+
+func gitTreeEntries(files []backend.RepositoryCommitFile) ([]*gogithub.TreeEntry, []string, error) {
+	byPath := map[string]string{}
+	for _, f := range files {
+		clean, err := cleanRepositoryPath(f.Path)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, exists := byPath[clean]; exists {
+			return nil, nil, fmt.Errorf("github: duplicate file path %q", clean)
+		}
+		byPath[clean] = f.Content
+	}
+	paths := make([]string, 0, len(byPath))
+	for p := range byPath {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	entries := make([]*gogithub.TreeEntry, 0, len(paths))
+	for _, p := range paths {
+		entries = append(entries, &gogithub.TreeEntry{
+			Path:    gogithub.String(p),
+			Mode:    gogithub.String("100644"),
+			Type:    gogithub.String("blob"),
+			Content: gogithub.String(byPath[p]),
+		})
+	}
+	return entries, paths, nil
+}
+
+func cleanRepositoryPath(raw string) (string, error) {
+	raw = strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	if raw == "" {
+		return "", errors.New("github: file path cannot be empty")
+	}
+	if strings.HasPrefix(raw, "/") {
+		return "", fmt.Errorf("github: file path %q must be relative", raw)
+	}
+	for _, part := range strings.Split(raw, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("github: file path %q cannot contain ..", raw)
+		}
+		if strings.ContainsRune(part, 0) {
+			return "", fmt.Errorf("github: file path %q cannot contain NUL", raw)
+		}
+	}
+	clean := strings.TrimPrefix(path.Clean("/"+raw), "/")
+	if clean == "." || clean == "" {
+		return "", errors.New("github: file path cannot be empty")
+	}
+	return clean, nil
 }
 
 // sameKeyMaterial compares two OpenSSH public keys by type + base64 body,

@@ -16,10 +16,11 @@
 //   - /healthz                           — liveness; gates BackendHealthy
 //   - /mcp, /mcp/sse                     — MCP transport
 //
-// Connection / Repository / DeployKey / Collaborator are NOT served as REST
-// here: the portal and tenants drive them as CRDs directly against kcp
-// (code.kedge.faros.sh), projected to tenant workspaces via the APIExport. The
-// controllers reconcile them across all tenant workspaces (controller_manager.go).
+// Connection / Repository / RepositoryCommit / DeployKey / Collaborator are NOT
+// served as REST here: the portal and tenants drive them as CRDs directly
+// against kcp (code.kedge.faros.sh), projected to tenant workspaces via the
+// APIExport. The controllers reconcile them across all tenant workspaces
+// (controller_manager.go).
 package main
 
 import (
@@ -35,6 +36,7 @@ import (
 
 	"github.com/faroshq/provider-code/backend"
 	githubbackend "github.com/faroshq/provider-code/backend/github"
+	"github.com/faroshq/provider-code/commitbundle"
 	"github.com/faroshq/provider-code/mcpserver"
 	"github.com/faroshq/provider-code/oauthgithub"
 	"github.com/faroshq/provider-code/server"
@@ -104,12 +106,19 @@ func runServe() {
 		log.Fatalf("register github backend: %v", err)
 	}
 
+	bundles, err := commitbundle.NewFileStoreFromEnv()
+	if err != nil {
+		log.Fatalf("commit bundle store: %v", err)
+	}
+	log.Printf("commit bundle store: %s", bundles.Dir())
+
 	// Caller-token client factory for the MCP tools: they act on the caller's
 	// behalf, never as the provider.
 	tenantFactory := tenant.NewClientFactory(kcpConfig)
 
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
-		Tenant: tenantFactory,
+		Tenant:  tenantFactory,
+		Bundles: bundles,
 	})
 
 	fileServer, distFS, err := portalHandler()
@@ -152,7 +161,7 @@ func runServe() {
 		}
 	}()
 
-	if err := startControllerManager(ctx, kcpConfig, backends); err != nil {
+	if err := startControllerManager(ctx, kcpConfig, backends, bundles); err != nil {
 		if errors.Is(err, errControllerDisabled) {
 			log.Printf("controller manager: disabled (no kubeconfig); set CODE_KUBECONFIG to enable")
 		} else {

@@ -6,9 +6,9 @@ import {
   ArrowLeft,
   ArrowRight,
   BarChart3,
-  Bot,
   Braces,
   Check,
+  ChevronRight,
   ClipboardList,
   ExternalLink,
   Folder,
@@ -32,7 +32,9 @@ import type {
   Project,
   ProjectLLMSettings,
   ProjectMessage,
+  ProjectRepositoryCommit,
   ProjectMessageStreamEvent,
+  ProjectToolCallEvent,
   ProviderItem,
 } from './types'
 
@@ -62,8 +64,10 @@ interface LandingCategoryTile {
 
 type LLMCredentialMode = 'api-key' | 'service-account-json'
 type ProjectMessageViewStatus = 'interrupted'
+type ProjectToolCallView = ProjectToolCallEvent
 type ProjectMessageView = ProjectMessage & {
   viewStatus?: ProjectMessageViewStatus
+  toolCalls?: ProjectToolCallView[]
 }
 
 const SPLIT_WIDTH_KEY = 'kedge:projects:split-width'
@@ -75,6 +79,10 @@ const GOOGLE_CLOUD_DEFAULT_MODEL = 'google/gemini-3.5-flash'
 const GEMINI_OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai'
 const GOOGLE_CLOUD_OPENAI_BASE_URL = 'https://aiplatform.googleapis.com/v1/projects/<project-id>/locations/global/endpoints/openapi'
 const CREATE_PROJECT_ROUTE = '~new'
+const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
+const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
+const CODE_REPOSITORIES_URL = '/ui/providers/code/repositories'
+const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
 const assistantMarkdown = new MarkdownIt({
   html: false,
   breaks: true,
@@ -184,6 +192,13 @@ const toolError = ref<string | null>(null)
 const newName = ref('')
 const newDescription = ref('')
 const showSettings = ref(false)
+const projectSettingsName = ref('')
+const projectSettingsDescription = ref('')
+const projectSettingsSaving = ref(false)
+const projectSettingsStatus = ref<string | null>(null)
+const projectSettingsError = ref<string | null>(null)
+const deleteProjectTarget = ref<Project | null>(null)
+const deletingProject = ref(false)
 const prompt = ref('')
 const projectQuery = ref('')
 const providerQuery = ref('')
@@ -198,6 +213,7 @@ const llmCredentialMode = ref<LLMCredentialMode>('api-key')
 const llmSaving = ref(false)
 const llmStatus = ref<string | null>(null)
 const messagesRef = ref<HTMLDivElement | null>(null)
+const expandedMessageTimestampID = ref<string | null>(null)
 const promptRef = ref<HTMLTextAreaElement | null>(null)
 const workspaceRef = ref<HTMLDivElement | null>(null)
 const toolHostRef = ref<HTMLDivElement | null>(null)
@@ -226,6 +242,21 @@ const showNewProjectComposer = computed(() => isCreateRoute.value)
 const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
 const canStartProjectFromPrompt = computed(() => prompt.value.trim().length > 0)
 const canSendPrompt = computed(() => (llmSettings.value?.configured ?? false) && prompt.value.trim().length > 0)
+const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
+const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'LLM settings'))
+const settingsDescription = computed(() =>
+  settingsProject.value
+    ? 'Update this project and configure the model credentials App Studio uses for project conversations.'
+    : 'Configure the model credentials App Studio uses when creating and chatting in projects.',
+)
+const conversationWorkingLabel = computed(() => {
+  if (!messageStreaming.value) return ''
+  const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
+  const activeTool = lastAssistant?.toolCalls?.find((toolCall) => toolCall.status === 'requested' || toolCall.status === 'running')
+  if (activeTool?.name) return `${toolCallStatusLabel(activeTool)} ${displayToolName(activeTool.name)}`
+  if (lastAssistant?.content.trim()) return 'Writing'
+  return 'Working'
+})
 const isGoogleGeminiProvider = computed(() => llmProvider.value.trim().toLowerCase() === GOOGLE_AI_STUDIO_PROVIDER)
 const isGoogleServiceAccountMode = computed(() =>
   isGoogleGeminiProvider.value && llmCredentialMode.value === 'service-account-json',
@@ -348,7 +379,7 @@ const providerTools = computed<ProviderTool[]>(() => {
   for (const provider of providers.value) {
     if (!provider.ready || !provider.hasUI || provider.name === 'app-studio') continue
     for (const child of provider.children ?? []) {
-      if (!isWorkloadsProviderView(provider, child)) continue
+      if (!isProjectToolProviderView(provider, child)) continue
       out.push({
         id: `${provider.name}/${child.builtinRoute}`,
         provider,
@@ -401,10 +432,10 @@ const landingCategoryTiles = computed<LandingCategoryTile[]>(() => {
   return tiles
 })
 
-function isWorkloadsProviderView(provider: ProviderItem, child: { displayName?: string; builtinRoute?: string }): boolean {
-  return [provider.category, provider.name, provider.displayName, child.displayName, child.builtinRoute]
-    .filter(Boolean)
-    .some((value) => String(value).toLowerCase().includes('workload'))
+function isProjectToolProviderView(provider: ProviderItem, child: { displayName?: string; builtinRoute?: string }): boolean {
+  if (!child.builtinRoute) return false
+  const category = provider.category?.trim().toLowerCase()
+  return !!category && PROJECT_TOOL_CATEGORIES.has(category)
 }
 
 const filteredProviderTools = computed(() => {
@@ -459,6 +490,10 @@ watch(
     pushToolContext()
   },
 )
+
+watch(settingsProject, () => {
+  if (showSettings.value) syncProjectSettingsForm()
+})
 
 watch(messages, async () => {
   await nextTick()
@@ -721,56 +756,6 @@ function clearLandingPlaceholderTyping() {
   landingPlaceholderTypingTimer = undefined
 }
 
-function deriveProjectName(promptText: string, category?: string | null): string {
-  const normalized = promptText.trim().replace(/\s+/g, ' ')
-  if (!normalized) return category ? titleCase(category).slice(0, 32) : 'New project'
-
-  const lowered = normalized.toLowerCase()
-  const candidate =
-    lowered.match(/\b(?:that|for|to|which)\s+(.+)$/)?.[1] ??
-    lowered.match(/\b(?:build|make|create|ship|launch|design|help me build)\s+(?:an?|the)?\s*(.+)$/)?.[1] ??
-    normalized
-
-  const words = candidate
-    .replace(/^[^a-z0-9]+/i, '')
-    .split(/[^a-z0-9]+/i)
-    .map((word) => word.trim())
-    .filter(Boolean)
-    .filter(
-      (word) =>
-        ![
-          'a',
-          'an',
-          'the',
-          'and',
-          'or',
-          'for',
-          'to',
-          'with',
-          'that',
-          'this',
-          'app',
-          'tool',
-          'dashboard',
-          'website',
-          'workflow',
-          'api',
-        ].includes(word),
-    )
-
-  const chosen = words.slice(0, 3).join(' ')
-  return titleCase(chosen || normalized).slice(0, 48)
-}
-
-function titleCase(value: string): string {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
-    .join(' ')
-    .replace(/\bApi\b/g, 'API')
-}
-
 interface ProjectCreateOptions {
   displayName?: string
   description?: string
@@ -868,20 +853,22 @@ async function clearLLMKey() {
 async function createProject(eventOrOptions?: SubmitEvent | ProjectCreateOptions) {
   const options = isProjectCreateOptions(eventOrOptions) ? eventOrOptions : undefined
   const displayName = (options?.displayName ?? newName.value).trim()
-  if (!displayName) return
+  const promptText = options?.promptText?.trim() || ''
+  if (!displayName && !promptText) return
   busy.value = true
   error.value = null
   try {
     const created = await api.createProject(props.ctx, {
-      displayName,
+      displayName: displayName || undefined,
       description: (options?.description ?? newDescription.value).trim() || undefined,
+      prompt: promptText || undefined,
     })
     newName.value = ''
     newDescription.value = ''
     projects.value = await api.listProjects(props.ctx)
     await openProject(created.name, true)
-    if (options?.promptText?.trim()) {
-      prompt.value = options.promptText.trim()
+    if (promptText) {
+      prompt.value = promptText
       await nextTick()
       await sendMessage()
     }
@@ -897,15 +884,58 @@ async function createProjectFromPrompt() {
   const content = prompt.value.trim()
   if (!content) return
   if (!llmSettings.value?.configured) {
-    showSettings.value = true
+    openSettings()
     return
   }
-  const displayName = deriveProjectName(content, selectedLandingCategory.value?.title ?? null)
   await createProject({
-    displayName,
     description: selectedLandingCategory.value?.subtitle,
     promptText: content,
   })
+}
+
+function openSettings() {
+  syncProjectSettingsForm()
+  showSettings.value = true
+}
+
+function syncProjectSettingsForm() {
+  const project = settingsProject.value
+  projectSettingsName.value = project?.displayName ?? ''
+  projectSettingsDescription.value = project?.description ?? ''
+  projectSettingsStatus.value = null
+  projectSettingsError.value = null
+}
+
+async function saveProjectSettings() {
+  const project = settingsProject.value
+  if (!project) return
+  const displayName = projectSettingsName.value.trim()
+  const description = projectSettingsDescription.value.trim()
+  projectSettingsStatus.value = null
+  projectSettingsError.value = null
+  if (!displayName) {
+    projectSettingsError.value = 'Name is required.'
+    return
+  }
+
+  projectSettingsSaving.value = true
+  try {
+    const updated = await api.patchProject(props.ctx, project.name, { displayName, description })
+    selected.value = updated
+    const idx = projects.value.findIndex((item) => item.name === updated.name)
+    if (idx >= 0) {
+      projects.value[idx] = updated
+      projects.value = [...projects.value]
+    }
+    projectSettingsName.value = updated.displayName
+    projectSettingsDescription.value = updated.description ?? ''
+    projectSettingsStatus.value = 'Project details saved.'
+  } catch (e) {
+    if (handleProjectAPIInitializing(e)) return
+    projectSettingsError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    projectSettingsSaving.value = false
+  }
 }
 
 async function openProject(name: string, updateURL = true) {
@@ -921,9 +951,21 @@ async function openProject(name: string, updateURL = true) {
   }
 }
 
-async function deleteProject(name: string) {
-  if (!window.confirm(`Delete project "${name}"?`)) return
+function requestDeleteProject(project: Project) {
+  deleteProjectTarget.value = project
+}
+
+function closeDeleteProjectDialog() {
+  if (deletingProject.value) return
+  deleteProjectTarget.value = null
+}
+
+async function confirmDeleteProject() {
+  const project = deleteProjectTarget.value
+  if (!project) return
+  const name = project.name
   busy.value = true
+  deletingProject.value = true
   error.value = null
   try {
     await api.deleteProject(props.ctx, name)
@@ -933,11 +975,14 @@ async function deleteProject(name: string) {
       messages.value = []
       props.navigate('')
       closeTool()
+      showSettings.value = false
     }
+    deleteProjectTarget.value = null
     if (projects.value.length === 0) props.navigate(CREATE_PROJECT_ROUTE)
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
+    deletingProject.value = false
     busy.value = false
   }
 }
@@ -971,30 +1016,20 @@ async function sendMessage() {
           assistantMessageID = event.assistantMessageID
         }
 
-        const idx = messages.value.findIndex(
-          (message) => message.id === event.assistantMessageID && message.role === 'assistant',
-        )
-        if (idx === -1) {
-          messages.value = [
-            ...messages.value,
-            {
-              id: event.assistantMessageID,
-              projectID: projectName,
-              role: 'assistant',
-              content: event.content ?? '',
-              createdAt: new Date().toISOString(),
-            },
-          ]
-          return
-        }
-
         if (event.content === undefined) return
+        const idx = ensureAssistantMessage(projectName, event.assistantMessageID)
         const existing = messages.value[idx]
         messages.value[idx] = {
           ...existing,
           content: `${existing.content}${event.content ?? ''}`,
         }
         messages.value = [...messages.value]
+      } else if (event.type === 'tool_call') {
+        if (!event.assistantMessageID || !event.toolCall) return
+        if (!assistantMessageID) {
+          assistantMessageID = event.assistantMessageID
+        }
+        upsertAssistantToolCall(projectName, event.assistantMessageID, event.toolCall)
       } else if (event.type === 'done') {
         if (!assistantMessageID) {
           assistantMessageID = event.assistantMessageID ?? ''
@@ -1031,6 +1066,51 @@ function cancelMessageStream() {
   activeMessageStreamController.abort()
 }
 
+function ensureAssistantMessage(projectName: string, assistantMessageID: string): number {
+  const idx = messages.value.findIndex((message) => message.id === assistantMessageID && message.role === 'assistant')
+  if (idx !== -1) return idx
+
+  messages.value = [
+    ...messages.value,
+    {
+      id: assistantMessageID,
+      projectID: projectName,
+      role: 'assistant',
+      content: '',
+      createdAt: new Date().toISOString(),
+    },
+  ]
+  return messages.value.length - 1
+}
+
+function upsertAssistantToolCall(projectName: string, assistantMessageID: string, toolCall: ProjectToolCallEvent) {
+  const idx = ensureAssistantMessage(projectName, assistantMessageID)
+  const message = messages.value[idx]
+  const toolCalls = [...(message.toolCalls ?? [])]
+  const existingIdx = toolCalls.findIndex((item) => item.id === toolCall.id)
+  if (existingIdx === -1) {
+    toolCalls.push(toolCall)
+  } else {
+    toolCalls[existingIdx] = mergeToolCall(toolCalls[existingIdx], toolCall)
+  }
+  messages.value[idx] = {
+    ...message,
+    toolCalls,
+  }
+  messages.value = [...messages.value]
+}
+
+function mergeToolCall(existing: ProjectToolCallView, next: ProjectToolCallEvent): ProjectToolCallView {
+  return {
+    ...existing,
+    ...next,
+    name: next.name || existing.name,
+    arguments: next.arguments || existing.arguments,
+    summary: next.summary || existing.summary,
+    error: next.error || existing.error,
+  }
+}
+
 function markAssistantMessageInterrupted(projectName: string, assistantMessageID: string) {
   if (assistantMessageID) {
     const idx = messages.value.findIndex((message) => message.id === assistantMessageID && message.role === 'assistant')
@@ -1059,11 +1139,30 @@ function markAssistantMessageInterrupted(projectName: string, assistantMessageID
 
 function toProjectMessageView(message: ProjectMessage): ProjectMessageView {
   const viewStatus = projectMessageViewStatus(message)
-  return viewStatus ? { ...message, viewStatus } : message
+  const toolCalls = projectMessageToolCalls(message)
+  if (!viewStatus && toolCalls.length === 0) return message
+  return {
+    ...message,
+    ...(viewStatus ? { viewStatus } : {}),
+    ...(toolCalls.length > 0 ? { toolCalls } : {}),
+  }
 }
 
 function projectMessageViewStatus(message: ProjectMessage): ProjectMessageViewStatus | undefined {
   return message.role === 'assistant' && message.metadata?.status === 'interrupted' ? 'interrupted' : undefined
+}
+
+function projectMessageToolCalls(message: ProjectMessage): ProjectToolCallView[] {
+  if (message.role !== 'assistant') return []
+  const raw = message.metadata?.toolCalls
+  if (!Array.isArray(raw)) return []
+  return raw.filter(isProjectToolCallEvent)
+}
+
+function isProjectToolCallEvent(value: unknown): value is ProjectToolCallEvent {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<ProjectToolCallEvent>
+  return typeof item.id === 'string' && typeof item.status === 'string'
 }
 
 function isAbortError(err: unknown): boolean {
@@ -1209,10 +1308,20 @@ function projectTimestamp(project: Project): string {
   return formatRelativeTime(project.updatedAt ?? project.createdAt)
 }
 
-function formatRelativeTime(value?: string | null): string {
+function messageTimestampLabel(message: ProjectMessageView): string {
+  if (expandedMessageTimestampID.value === message.id) return formatFullTime(message.createdAt)
+  return formatRelativeTime(message.createdAt, 'always')
+}
+
+function toggleMessageTimestamp(messageID: string) {
+  expandedMessageTimestampID.value = expandedMessageTimestampID.value === messageID ? null : messageID
+}
+
+function formatRelativeTime(value?: string | null, numeric: Intl.RelativeTimeFormatNumeric = 'auto'): string {
   if (!value) return ''
   const date = new Date(value)
   const elapsedSeconds = Math.round((date.getTime() - Date.now()) / 1000)
+  if (numeric === 'always' && Math.abs(elapsedSeconds) < 45) return 'just now'
   const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
     ['year', 60 * 60 * 24 * 365],
     ['month', 60 * 60 * 24 * 30],
@@ -1222,7 +1331,7 @@ function formatRelativeTime(value?: string | null): string {
     ['minute', 60],
     ['second', 1],
   ]
-  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric })
   for (const [unit, secondsInUnit] of units) {
     if (Math.abs(elapsedSeconds) >= secondsInUnit || unit === 'second') {
       return formatter.format(Math.round(elapsedSeconds / secondsInUnit), unit)
@@ -1231,12 +1340,13 @@ function formatRelativeTime(value?: string | null): string {
   return ''
 }
 
-function formatTime(value?: string | null): string {
+function formatFullTime(value?: string | null): string {
   if (!value) return ''
   try {
     return new Intl.DateTimeFormat(undefined, {
       month: 'short',
       day: 'numeric',
+      year: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
     }).format(new Date(value))
@@ -1262,6 +1372,157 @@ function normalizeAssistantMarkdown(value: string): string {
 function renderMessageContent(content: string, role: ProjectMessage['role']): string {
   if (role !== 'assistant') return escapeHtml(content).replace(/\n/g, '<br />')
   return assistantMarkdown.render(normalizeAssistantMarkdown(content))
+}
+
+function displayToolName(name?: string): string {
+  const value = (name || 'tool').trim()
+  const scoped = value.includes('__') ? value.split('__').pop() || value : value
+  return scoped
+}
+
+function toolCallStatusLabel(toolCall: ProjectToolCallView): string {
+  switch (toolCall.status) {
+    case 'requested':
+      return 'Preparing'
+    case 'running':
+      return 'Running'
+    case 'succeeded':
+      return 'Ran'
+    case 'failed':
+      return 'Failed'
+    case 'rejected':
+      return 'Rejected'
+    default:
+      return 'Tool'
+  }
+}
+
+function toolCallHasDetails(toolCall: ProjectToolCallView): boolean {
+  return Boolean(toolCall.arguments || toolCall.summary || toolCall.error)
+}
+
+function actionBundleLabel(toolCalls?: ProjectToolCallView[]): string {
+  const count = toolCalls?.length ?? 0
+  return `${count} ${count === 1 ? 'action' : 'actions'}`
+}
+
+function actionSummary(toolCall: ProjectToolCallView): string {
+  if (toolCall.error) return toolCall.error
+  if (toolCall.summary) return toolCall.summary
+  if (toolCall.arguments) return toolCall.arguments
+  switch (toolCall.status) {
+    case 'requested':
+      return 'Preparing tool input'
+    case 'running':
+      return 'Waiting for result'
+    case 'succeeded':
+      return 'Completed'
+    case 'failed':
+      return 'Tool call failed'
+    case 'rejected':
+      return 'Tool call rejected'
+    default:
+      return ''
+  }
+}
+
+function actionSummaryClass(toolCall: ProjectToolCallView): string {
+  return toolCall.error ? 'text-danger' : 'text-text-muted'
+}
+
+function toolCallStatusClass(toolCall: ProjectToolCallView): string {
+  switch (toolCall.status) {
+    case 'succeeded':
+      return 'text-success'
+    case 'failed':
+    case 'rejected':
+      return 'text-danger'
+    case 'requested':
+    case 'running':
+    default:
+      return 'text-warning'
+  }
+}
+
+function isMissingCodeConnectionError(value: string | null): boolean {
+  return value === MISSING_CODE_CONNECTION_ERROR
+}
+
+function codeConnectionURL(connectionRef?: string | null): string {
+  return connectionRef ? `${CODE_CONNECTIONS_URL}/${encodeURIComponent(connectionRef)}` : CODE_CONNECTIONS_URL
+}
+
+function codeRepositoryURL(repositoryRef?: string | null): string {
+  return repositoryRef ? `${CODE_REPOSITORIES_URL}/${encodeURIComponent(repositoryRef)}` : CODE_REPOSITORIES_URL
+}
+
+function repositoryStatusLabel(repository: Project['repository']): string {
+  switch (repository?.status) {
+    case 'Ready':
+      return 'Ready'
+    case 'RepositoryMissing':
+      return 'Repository missing'
+    case 'ConnectionMissing':
+      return 'Connection missing'
+    case 'Unavailable':
+      return 'Status unavailable'
+    case 'Provisioning':
+      return 'Provisioning'
+    default:
+      return repository?.ready ? 'Ready' : 'Provisioning'
+  }
+}
+
+function repositoryStatusClass(repository: Project['repository']): string {
+  switch (repository?.status) {
+    case 'Ready':
+      return 'border-success/30 bg-success-subtle text-success'
+    case 'RepositoryMissing':
+    case 'ConnectionMissing':
+      return 'border-danger/30 bg-danger-subtle text-danger'
+    default:
+      return 'border-warning/30 bg-warning-subtle text-warning'
+  }
+}
+
+function repositoryCommitPhaseLabel(commit: ProjectRepositoryCommit): string {
+  switch (commit.phase) {
+    case 'Succeeded':
+      return 'Committed'
+    case 'Failed':
+      return 'Failed'
+    case 'Running':
+      return 'Running'
+    case 'Pending':
+      return 'Pending'
+    default:
+      return commit.phase || 'Unknown'
+  }
+}
+
+function repositoryCommitPhaseClass(commit: ProjectRepositoryCommit): string {
+  switch (commit.phase) {
+    case 'Succeeded':
+      return 'border-success/30 bg-success-subtle text-success'
+    case 'Failed':
+      return 'border-danger/30 bg-danger-subtle text-danger'
+    default:
+      return 'border-warning/30 bg-warning-subtle text-warning'
+  }
+}
+
+function shortCommitSHA(sha?: string | null): string {
+  if (!sha) return ''
+  return sha.length > 12 ? sha.slice(0, 12) : sha
+}
+
+function repositoryCommitTime(commit: ProjectRepositoryCommit): string {
+  return formatRelativeTime(commit.completedAt || commit.createdAt, 'always')
+}
+
+function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
+  const count = commit.fileCount ?? 0
+  return `${count} ${count === 1 ? 'file' : 'files'}`
 }
 </script>
 
@@ -1297,7 +1558,7 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
             type="button"
             class="flex h-9 items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
             title="LLM settings"
-            @click="showSettings = true"
+            @click="openSettings"
           >
             <Settings2 class="h-4 w-4" :stroke-width="1.75" />
             Settings
@@ -1337,7 +1598,14 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
         </div>
 
         <div v-if="error" class="mb-4 max-w-[720px] rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
-          {{ error }}
+          <template v-if="isMissingCodeConnectionError(error)">
+            You need to
+            <a :href="CODE_CONNECTIONS_URL" class="font-medium underline underline-offset-2 hover:text-danger/80">
+              connect to a Git account
+            </a>
+            before you can continue.
+          </template>
+          <template v-else>{{ error }}</template>
         </div>
 
         <div v-if="loading || !projectsLoaded" class="flex items-center gap-2 py-8 text-[13px] text-text-muted">
@@ -1389,6 +1657,15 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
                   <span class="rounded-md border border-border-subtle bg-surface px-1.5 py-0.5 text-[10px] font-semibold uppercase text-text-secondary">
                     {{ project.phase || 'Ready' }}
                   </span>
+                  <span
+                    v-if="project.repository"
+                    class="inline-flex min-w-0 max-w-[130px] items-center gap-1 truncate rounded-md border px-1.5 py-0.5 text-[10px] font-medium"
+                    :class="repositoryStatusClass(project.repository)"
+                    :title="project.repository.message || repositoryStatusLabel(project.repository)"
+                  >
+                    <GitBranch class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                    <span class="truncate">{{ project.repository.name || project.repository.ref }}</span>
+                  </span>
                   <span>{{ projectTimestamp(project) }}</span>
                 </div>
               </div>
@@ -1397,7 +1674,7 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
               class="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-raised/90 text-text-muted opacity-0 transition hover:bg-danger-subtle hover:text-danger group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
               title="Delete project"
               :disabled="busy"
-              @click.stop="deleteProject(project.name)"
+              @click.stop="requestDeleteProject(project)"
             >
               <Trash2 class="h-4 w-4" :stroke-width="1.75" />
             </button>
@@ -1462,7 +1739,7 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
                       v-if="!llmSettings?.configured"
                       type="button"
                       class="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
-                      @click="showSettings = true"
+                      @click="openSettings"
                     >
                       <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                       Set up LLM
@@ -1527,7 +1804,14 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
       </div>
 
       <div v-if="error" class="mx-auto mt-4 w-full max-w-[860px] rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
-        {{ error }}
+        <template v-if="isMissingCodeConnectionError(error)">
+          You need to
+          <a :href="CODE_CONNECTIONS_URL" class="font-medium underline underline-offset-2 hover:text-danger/80">
+            connect to a Git account
+          </a>
+          before you can continue.
+        </template>
+        <template v-else>{{ error }}</template>
       </div>
     </div>
   </div>
@@ -1545,8 +1829,14 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
           <div class="truncate text-[13px] font-semibold text-text-primary">
             {{ selected?.displayName || 'Project' }}
           </div>
-          <div class="truncate text-[11px] text-text-muted">
-            {{ selected?.description || selected?.name || 'App Studio project' }}
+          <div class="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-text-muted">
+            <template v-if="selected?.repository">
+              <GitBranch class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+              <span class="truncate">{{ selected.repository.name || selected.repository.ref }}</span>
+            </template>
+            <template v-else>
+              <span class="truncate">{{ selected?.description || selected?.name || 'App Studio project' }}</span>
+            </template>
           </div>
         </div>
         <button
@@ -1554,18 +1844,29 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
           class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle transition hover:bg-surface-hover"
           :class="llmSettings?.configured ? 'text-success' : 'text-text-muted hover:text-text-primary'"
           :title="llmSettings?.configured ? 'LLM settings configured' : 'Configure LLM settings'"
-          @click="showSettings = true"
+          @click="openSettings"
         >
           <Settings2 class="h-4 w-4" :stroke-width="1.75" />
         </button>
       </header>
 
       <div v-if="error" class="mx-3 mt-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
-        {{ error }}
+        <template v-if="isMissingCodeConnectionError(error)">
+          You need to
+          <a :href="CODE_CONNECTIONS_URL" class="font-medium underline underline-offset-2 hover:text-danger/80">
+            connect to a Git account
+          </a>
+          before you can continue.
+        </template>
+        <template v-else>{{ error }}</template>
       </div>
 
       <template v-if="selected">
-        <div ref="messagesRef" class="min-h-0 flex-1 overflow-auto px-4 py-3">
+        <div
+          ref="messagesRef"
+          class="min-h-0 flex-1 overflow-auto px-4 py-3"
+          :aria-busy="messageStreaming"
+        >
           <div v-if="messages.length === 0" class="flex min-h-full items-center justify-center py-6">
             <div class="w-full max-w-[720px] rounded-lg border border-border-subtle bg-surface-raised/70 p-4">
               <div class="flex items-start gap-3">
@@ -1591,7 +1892,7 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
                     <button
                       type="button"
                       class="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
-                      @click="showSettings = true"
+                      @click="openSettings"
                     >
                       <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                       Open LLM settings
@@ -1617,37 +1918,209 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
               </div>
             </div>
           </div>
-          <div v-else class="flex flex-col gap-3">
+          <div v-else class="mx-auto flex w-full max-w-[820px] flex-col gap-5">
             <div
               v-for="message in messages"
               :key="message.id"
-              class="flex"
+              class="flex w-full"
               :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
             >
               <div
-                class="max-w-[86%] rounded-lg border px-3 py-2"
-                :class="message.role === 'user'
-                  ? 'border-accent/30 bg-accent/10 text-text-primary'
-                  : 'border-border-subtle bg-surface text-text-secondary'"
+                v-if="message.role === 'user'"
+                class="flex max-w-[86%] flex-col items-end gap-1 sm:max-w-[72%]"
               >
-                <div class="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase text-text-muted">
-                  <Bot v-if="message.role === 'assistant'" class="h-3 w-3" :stroke-width="1.75" />
-                  {{ message.role }}
-                  <span class="font-normal normal-case">{{ formatTime(message.createdAt) }}</span>
+                <div
+                  class="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 text-[13px] leading-5 text-text-primary shadow-sm"
+                  v-html="renderMessageContent(message.content, message.role)"
+                />
+                <div class="group/timestamp relative max-w-full">
+                  <button
+                    type="button"
+                    class="max-w-full whitespace-nowrap px-1 text-[11px] leading-4 text-text-muted transition hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    :title="formatFullTime(message.createdAt)"
+                    :aria-label="formatFullTime(message.createdAt)"
+                    @click="toggleMessageTimestamp(message.id)"
+                  >
+                    <time :datetime="message.createdAt">{{ messageTimestampLabel(message) }}</time>
+                  </button>
+                  <div
+                    v-if="expandedMessageTimestampID !== message.id"
+                    class="pointer-events-none absolute right-0 top-full z-20 mt-1 whitespace-nowrap rounded-md border border-border-subtle bg-surface-raised px-2 py-1 text-[11px] leading-4 text-text-secondary opacity-0 shadow-lg transition group-hover/timestamp:opacity-100 group-focus-within/timestamp:opacity-100"
+                  >
+                    {{ formatFullTime(message.createdAt) }}
+                  </div>
+                </div>
+              </div>
+              <div
+                v-else
+                class="w-full min-w-0 py-1 text-[13px] leading-6 text-text-secondary"
+              >
+                <div
+                  v-if="message.toolCalls?.length"
+                  class="mb-3"
+                >
+                  <details
+                    class="group/actions overflow-hidden rounded-lg bg-transparent text-[12px] text-text-secondary transition hover:bg-surface-overlay/50 focus-within:bg-surface-overlay/50 [&[open]]:bg-surface-overlay/40"
+                  >
+                    <summary class="flex min-h-11 min-w-0 cursor-pointer list-none items-center gap-2 px-2.5 py-2 [&::-webkit-details-marker]:hidden">
+                      <ChevronRight
+                        class="h-4 w-4 shrink-0 text-text-muted transition group-open/actions:rotate-90"
+                        :stroke-width="1.75"
+                      />
+                      <div class="flex min-w-0 items-center -space-x-1">
+                        <span
+                          v-for="toolCall in (message.toolCalls ?? []).slice(0, 4)"
+                          :key="`bundle-${toolCall.id}`"
+                          class="flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-muted shadow-sm"
+                        >
+                          <Loader2
+                            v-if="toolCall.status === 'running' || toolCall.status === 'requested'"
+                            class="h-4 w-4 animate-spin"
+                            :class="toolCallStatusClass(toolCall)"
+                            :stroke-width="1.75"
+                          />
+                          <Check
+                            v-else-if="toolCall.status === 'succeeded'"
+                            class="h-4 w-4"
+                            :class="toolCallStatusClass(toolCall)"
+                            :stroke-width="1.75"
+                          />
+                          <X
+                            v-else-if="toolCall.status === 'failed' || toolCall.status === 'rejected'"
+                            class="h-4 w-4"
+                            :class="toolCallStatusClass(toolCall)"
+                            :stroke-width="1.75"
+                          />
+                          <Wrench v-else class="h-4 w-4" :stroke-width="1.75" />
+                        </span>
+                        <span
+                          v-if="(message.toolCalls?.length ?? 0) > 4"
+                          class="flex h-8 min-w-8 items-center justify-center rounded-md border border-border-subtle bg-surface px-1.5 text-[11px] font-medium text-text-muted shadow-sm"
+                        >
+                          +{{ (message.toolCalls?.length ?? 0) - 4 }}
+                        </span>
+                      </div>
+                      <span class="truncate text-[13px] font-medium text-text-secondary">{{ actionBundleLabel(message.toolCalls) }}</span>
+                    </summary>
+                    <div class="grid gap-1.5 border-t border-border-subtle px-2 py-2">
+                      <template v-for="toolCall in message.toolCalls" :key="toolCall.id">
+                        <details
+                          v-if="toolCallHasDetails(toolCall)"
+                          class="group/action overflow-hidden rounded-md border border-border-subtle bg-surface/80"
+                        >
+                          <summary class="flex min-w-0 cursor-pointer list-none items-center gap-2 px-2.5 py-2 [&::-webkit-details-marker]:hidden">
+                            <ChevronRight
+                              class="h-3.5 w-3.5 shrink-0 text-text-muted transition group-open/action:rotate-90"
+                              :stroke-width="1.75"
+                            />
+                            <Loader2
+                              v-if="toolCall.status === 'running' || toolCall.status === 'requested'"
+                              class="h-3.5 w-3.5 shrink-0 animate-spin"
+                              :class="toolCallStatusClass(toolCall)"
+                              :stroke-width="1.75"
+                            />
+                            <Check
+                              v-else-if="toolCall.status === 'succeeded'"
+                              class="h-3.5 w-3.5 shrink-0"
+                              :class="toolCallStatusClass(toolCall)"
+                              :stroke-width="1.75"
+                            />
+                            <X
+                              v-else-if="toolCall.status === 'failed' || toolCall.status === 'rejected'"
+                              class="h-3.5 w-3.5 shrink-0"
+                              :class="toolCallStatusClass(toolCall)"
+                              :stroke-width="1.75"
+                            />
+                            <Wrench v-else class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
+                            <div class="min-w-0 flex-1">
+                              <div class="flex min-w-0 items-center gap-1.5">
+                                <span class="shrink-0 font-medium text-text-secondary">{{ toolCallStatusLabel(toolCall) }}</span>
+                                <span class="truncate font-mono text-[12px] text-text-primary">{{ displayToolName(toolCall.name) }}</span>
+                              </div>
+                              <div class="truncate text-[11px]" :class="actionSummaryClass(toolCall)">
+                                {{ actionSummary(toolCall) }}
+                              </div>
+                            </div>
+                          </summary>
+                          <div class="grid gap-2 border-t border-border-subtle px-3 py-2.5">
+                            <div v-if="toolCall.arguments" class="grid gap-1">
+                              <div class="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Input</div>
+                              <pre class="overflow-x-auto whitespace-pre-wrap rounded-md border border-border-subtle bg-surface px-2 py-1.5 font-mono text-[11px] leading-4 text-text-secondary">{{ toolCall.arguments }}</pre>
+                            </div>
+                            <div v-if="toolCall.summary" class="grid gap-1">
+                              <div class="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Result</div>
+                              <div class="rounded-md border border-border-subtle bg-surface px-2 py-1.5 text-[11px] leading-4 text-text-secondary">
+                                {{ toolCall.summary }}
+                              </div>
+                            </div>
+                            <div v-if="toolCall.error" class="grid gap-1">
+                              <div class="text-[10px] font-semibold uppercase tracking-[0.12em] text-danger">Error</div>
+                              <div class="rounded-md border border-danger/30 bg-danger-subtle px-2 py-1.5 text-[11px] leading-4 text-danger">
+                                {{ toolCall.error }}
+                              </div>
+                            </div>
+                          </div>
+                        </details>
+                        <div
+                          v-else
+                          class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface/80 px-2.5 py-2"
+                        >
+                          <Loader2
+                            v-if="toolCall.status === 'running' || toolCall.status === 'requested'"
+                            class="h-3.5 w-3.5 shrink-0 animate-spin"
+                            :class="toolCallStatusClass(toolCall)"
+                            :stroke-width="1.75"
+                          />
+                          <Check
+                            v-else-if="toolCall.status === 'succeeded'"
+                            class="h-3.5 w-3.5 shrink-0"
+                            :class="toolCallStatusClass(toolCall)"
+                            :stroke-width="1.75"
+                          />
+                          <X
+                            v-else-if="toolCall.status === 'failed' || toolCall.status === 'rejected'"
+                            class="h-3.5 w-3.5 shrink-0"
+                            :class="toolCallStatusClass(toolCall)"
+                            :stroke-width="1.75"
+                          />
+                          <Wrench v-else class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
+                          <div class="min-w-0 flex-1">
+                            <div class="flex min-w-0 items-center gap-1.5">
+                              <span class="shrink-0 font-medium text-text-secondary">{{ toolCallStatusLabel(toolCall) }}</span>
+                              <span class="truncate font-mono text-[12px] text-text-primary">{{ displayToolName(toolCall.name) }}</span>
+                            </div>
+                            <div class="truncate text-[11px]" :class="actionSummaryClass(toolCall)">
+                              {{ actionSummary(toolCall) }}
+                            </div>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                  </details>
                 </div>
                 <div
                   v-if="message.content.trim()"
-                  class="text-[13px] leading-5"
-                  :class="message.role === 'assistant' ? assistantMarkdownClass : 'whitespace-pre-wrap'"
+                  :class="assistantMarkdownClass"
                   v-html="renderMessageContent(message.content, message.role)"
                 />
                 <div
-                  v-if="message.role === 'assistant' && message.viewStatus === 'interrupted'"
-                  class="mt-2 flex items-center gap-1.5 border-t border-border-subtle pt-2 text-[11px] font-medium text-text-muted"
+                  v-if="message.viewStatus === 'interrupted'"
+                  class="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2 py-1 text-[11px] font-medium text-text-muted"
                 >
                   <Square class="h-3 w-3 fill-current" :stroke-width="2" />
                   Interrupted
                 </div>
+              </div>
+            </div>
+            <div v-if="conversationWorkingLabel" class="flex w-full justify-start" aria-live="polite">
+              <div class="flex min-w-0 items-center gap-2 py-1 text-[13px] leading-6 text-text-muted">
+                <Loader2 class="h-3.5 w-3.5 shrink-0 animate-spin text-accent" :stroke-width="1.75" />
+                <span class="font-medium text-text-secondary">{{ conversationWorkingLabel }}</span>
+                <span class="flex items-center gap-0.5 text-text-muted" aria-hidden="true">
+                  <span class="h-1 w-1 animate-pulse rounded-full bg-current"></span>
+                  <span class="h-1 w-1 animate-pulse rounded-full bg-current [animation-delay:120ms]"></span>
+                  <span class="h-1 w-1 animate-pulse rounded-full bg-current [animation-delay:240ms]"></span>
+                </span>
               </div>
             </div>
           </div>
@@ -1799,157 +2272,386 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
       class="fixed inset-0 z-[200] flex items-center justify-center bg-black/65 px-4 py-6 backdrop-blur-sm"
       @click.self="showSettings = false"
     >
-      <form
-        class="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border-subtle bg-surface-raised shadow-2xl"
-        @submit.prevent="saveLLMSettings"
-      >
-      <header class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3">
-        <div class="min-w-0">
-          <div class="flex items-center gap-2">
-            <Settings2 class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
-            <h2 class="truncate text-[15px] font-semibold text-text-primary">LLM settings</h2>
-          </div>
-          <p class="mt-1 text-[12px] text-text-muted">
-            Configure the model credentials App Studio uses when creating and chatting in projects.
-          </p>
-        </div>
-        <button
-          type="button"
-          class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
-          title="Close"
-          @click="showSettings = false"
-        >
-          <X class="h-4 w-4" :stroke-width="2" />
-        </button>
-      </header>
-
-      <div class="grid gap-4 overflow-auto p-4">
-        <section class="grid gap-2">
-          <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Provider</div>
-          <div class="grid gap-2 sm:grid-cols-[minmax(0,300px)_minmax(0,1fr)]">
-            <div class="flex h-10 min-w-0 rounded-md border border-border-subtle bg-surface p-0.5">
-              <button
-                type="button"
-                class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
-                :class="!isGoogleGeminiProvider ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
-                :disabled="llmSaving"
-                @click="selectLLMProvider(OPENAI_COMPATIBLE_PROVIDER)"
-              >
-                OpenAI-compatible
-              </button>
-              <button
-                type="button"
-                class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
-                :class="isGoogleGeminiProvider ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
-                :disabled="llmSaving"
-                @click="selectLLMProvider(GOOGLE_AI_STUDIO_PROVIDER)"
-              >
-                Google
-              </button>
+      <div class="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border-subtle bg-surface-raised shadow-2xl">
+        <header class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <Settings2 class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
+              <h2 class="truncate text-[15px] font-semibold text-text-primary">{{ settingsTitle }}</h2>
             </div>
-            <div
-              v-if="isGoogleGeminiProvider"
-              class="flex h-10 min-w-0 rounded-md border border-border-subtle bg-surface p-0.5"
-            >
-              <button
-                type="button"
-                class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
-                :class="llmCredentialMode === 'api-key' ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
-                :disabled="llmSaving"
-                @click="llmCredentialMode = 'api-key'"
-              >
-                API key
-              </button>
-              <button
-                type="button"
-                class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
-                :class="llmCredentialMode === 'service-account-json' ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
-                :disabled="llmSaving"
-                @click="llmCredentialMode = 'service-account-json'"
-              >
-                Service account JSON
-              </button>
-            </div>
+            <p class="mt-1 text-[12px] text-text-muted">
+              {{ settingsDescription }}
+            </p>
           </div>
-        </section>
-
-        <section class="grid gap-2">
-          <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Model</div>
-          <div class="grid gap-2 sm:grid-cols-2">
-            <input
-              v-model="llmBaseURL"
-              class="h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-              :placeholder="llmBaseURLPlaceholder"
-              :disabled="llmSaving"
-            />
-            <input
-              v-model="llmModel"
-              class="h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-              placeholder="Model"
-              :disabled="llmSaving"
-            />
-          </div>
-        </section>
-
-        <section class="grid gap-2">
-          <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Credential</div>
-          <textarea
-            v-if="isGoogleServiceAccountMode"
-            v-model="llmApiKey"
-            class="min-h-[140px] min-w-0 resize-y rounded-md border border-border-subtle bg-surface px-3 py-2.5 font-mono text-[12px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-            :placeholder="llmApiKeyPlaceholder"
-            autocomplete="off"
-            :disabled="llmSaving"
-          />
-          <input
-            v-else
-            v-model="llmApiKey"
-            class="h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-            :placeholder="llmApiKeyPlaceholder"
-            type="password"
-            autocomplete="off"
-            :disabled="llmSaving"
-          />
-          <div v-if="llmApiKeyHint" class="text-[12px] leading-5 text-text-muted">
-            {{ llmApiKeyHint }}
-          </div>
-          <div v-if="llmStatus" class="rounded-md border border-border-subtle bg-surface px-3 py-2 text-[12px] text-text-muted">
-            {{ llmStatus }}
-          </div>
-        </section>
-      </div>
-
-      <footer class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle bg-surface-overlay/40 px-4 py-3">
-        <button
-          type="button"
-          class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
-          :title="isGoogleGeminiProvider ? 'Clear Google credential' : 'Clear LLM key'"
-          :disabled="llmSaving || !llmSettings?.configured"
-          @click="clearLLMKey"
-        >
-          <Trash2 class="h-4 w-4" :stroke-width="1.75" />
-          Clear key
-        </button>
-        <div class="flex items-center gap-2">
           <button
             type="button"
-            class="inline-flex h-9 items-center justify-center rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
+            title="Close"
             @click="showSettings = false"
+          >
+            <X class="h-4 w-4" :stroke-width="2" />
+          </button>
+        </header>
+
+        <div class="min-h-0 overflow-auto p-4">
+          <div class="grid gap-4">
+          <form
+            v-if="settingsProject"
+            class="grid gap-3 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3"
+            @submit.prevent="saveProjectSettings"
+          >
+            <div>
+              <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Project</div>
+              <p class="mt-1 text-[12px] text-text-muted">Update the project name and description shown in App Studio.</p>
+            </div>
+            <label class="grid gap-1.5">
+              <span class="text-[12px] font-medium text-text-secondary">Name</span>
+              <input
+                v-model="projectSettingsName"
+                class="h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                placeholder="Project name"
+                :disabled="projectSettingsSaving"
+              />
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-[12px] font-medium text-text-secondary">Description</span>
+              <textarea
+                v-model="projectSettingsDescription"
+                class="min-h-[88px] min-w-0 resize-y rounded-md border border-border-subtle bg-surface px-3 py-2.5 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                placeholder="Describe this project"
+                :disabled="projectSettingsSaving"
+              />
+            </label>
+            <section class="grid gap-2 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
+              <div class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+                <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Code
+              </div>
+              <dl v-if="settingsProject.repository" class="grid gap-2 text-[12px] sm:grid-cols-[112px_minmax(0,1fr)]">
+                <dt class="text-text-muted">Repository</dt>
+                <dd class="min-w-0">
+                  <a
+                    :href="codeRepositoryURL(settingsProject.repository.ref)"
+                    class="inline-flex min-w-0 max-w-full items-center gap-1 font-mono text-text-primary underline underline-offset-2 hover:text-accent"
+                  >
+                    <span class="truncate">{{ settingsProject.repository.name || settingsProject.repository.ref }}</span>
+                  </a>
+                </dd>
+                <dt class="text-text-muted">Connection</dt>
+                <dd class="min-w-0">
+                  <a
+                    v-if="settingsProject.repository.connectionRef"
+                    :href="codeConnectionURL(settingsProject.repository.connectionRef)"
+                    class="inline-flex min-w-0 max-w-full items-center gap-1 font-mono text-text-primary underline underline-offset-2 hover:text-accent"
+                  >
+                    <span class="truncate">{{ settingsProject.repository.connectionRef }}</span>
+                  </a>
+                  <span v-else class="text-text-muted">Not recorded</span>
+                </dd>
+                <dt class="text-text-muted">Status</dt>
+                <dd>
+                  <span
+                    class="inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase"
+                    :class="repositoryStatusClass(settingsProject.repository)"
+                  >
+                    {{ repositoryStatusLabel(settingsProject.repository) }}
+                  </span>
+                </dd>
+                <template v-if="settingsProject.repository.message">
+                  <dt class="text-text-muted">Notice</dt>
+                  <dd class="text-text-secondary">{{ settingsProject.repository.message }}</dd>
+                </template>
+                <template v-if="settingsProject.repository.htmlURL">
+                  <dt class="text-text-muted">Git URL</dt>
+                  <dd class="min-w-0">
+                    <a
+                      :href="settingsProject.repository.htmlURL"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="inline-flex min-w-0 max-w-full items-center gap-1 font-mono text-text-primary underline underline-offset-2 hover:text-accent"
+                    >
+                      <span class="truncate">{{ settingsProject.repository.htmlURL }}</span>
+                      <ExternalLink class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                    </a>
+                  </dd>
+                </template>
+              </dl>
+              <div v-if="settingsProject.repository?.commits?.length" class="grid gap-2 border-t border-border-subtle pt-3">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Commits</div>
+                  <div class="text-[11px] text-text-muted">{{ settingsProject.repository.commits.length }} recent</div>
+                </div>
+                <div class="grid gap-1.5">
+                  <div
+                    v-for="commit in settingsProject.repository.commits"
+                    :key="commit.name"
+                    class="grid gap-1 rounded-md px-2 py-1.5 transition hover:bg-surface-hover"
+                  >
+                    <div class="flex min-w-0 items-center gap-2">
+                      <span
+                        class="inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase"
+                        :class="repositoryCommitPhaseClass(commit)"
+                      >
+                        {{ repositoryCommitPhaseLabel(commit) }}
+                      </span>
+                      <a
+                        v-if="commit.commitURL"
+                        :href="commit.commitURL"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="inline-flex min-w-0 items-center gap-1 font-mono text-[12px] text-text-primary underline underline-offset-2 hover:text-accent"
+                      >
+                        <span class="truncate">{{ shortCommitSHA(commit.commitSHA) || commit.name }}</span>
+                        <ExternalLink class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                      </a>
+                      <span v-else class="min-w-0 truncate font-mono text-[12px] text-text-primary">
+                        {{ shortCommitSHA(commit.commitSHA) || commit.name }}
+                      </span>
+                    </div>
+                    <div class="min-w-0 truncate text-[12px] text-text-secondary">
+                      {{ commit.message || 'Repository commit' }}
+                    </div>
+                    <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-text-muted">
+                      <span v-if="commit.branch" class="font-mono">{{ commit.branch }}</span>
+                      <span>{{ repositoryCommitFilesLabel(commit) }}</span>
+                      <span>{{ repositoryCommitTime(commit) }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else-if="settingsProject.repository" class="border-t border-border-subtle pt-3 text-[12px] text-text-muted">
+                No commits recorded yet.
+              </div>
+              <div v-else class="text-[12px] text-text-muted">No repository is linked to this project.</div>
+            </section>
+            <div
+              v-if="projectSettingsError || projectSettingsStatus"
+              class="rounded-md border px-3 py-2 text-[12px]"
+              :class="projectSettingsError
+                ? 'border-danger/30 bg-danger-subtle text-danger'
+                : 'border-success/30 bg-success-subtle text-success'"
+            >
+              {{ projectSettingsError || projectSettingsStatus }}
+            </div>
+            <div class="flex justify-end">
+              <button
+                class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 text-[13px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="projectSettingsSaving || !projectSettingsName.trim()"
+                title="Save project details"
+              >
+                <Loader2 v-if="projectSettingsSaving" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
+                <Check v-else class="h-4 w-4" :stroke-width="2" />
+                Save project
+              </button>
+            </div>
+          </form>
+
+          <form class="grid gap-4 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3" @submit.prevent="saveLLMSettings">
+            <section class="grid gap-1">
+              <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">LLM</div>
+              <p class="text-[12px] text-text-muted">Configure the model credentials App Studio uses for this workspace.</p>
+            </section>
+
+            <section class="grid gap-2">
+              <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Provider</div>
+              <div class="grid gap-2 sm:grid-cols-[minmax(0,300px)_minmax(0,1fr)]">
+                <div class="flex h-10 min-w-0 rounded-md border border-border-subtle bg-surface p-0.5">
+                  <button
+                    type="button"
+                    class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
+                    :class="!isGoogleGeminiProvider ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
+                    :disabled="llmSaving"
+                    @click="selectLLMProvider(OPENAI_COMPATIBLE_PROVIDER)"
+                  >
+                    OpenAI-compatible
+                  </button>
+                  <button
+                    type="button"
+                    class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
+                    :class="isGoogleGeminiProvider ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
+                    :disabled="llmSaving"
+                    @click="selectLLMProvider(GOOGLE_AI_STUDIO_PROVIDER)"
+                  >
+                    Google
+                  </button>
+                </div>
+                <div
+                  v-if="isGoogleGeminiProvider"
+                  class="flex h-10 min-w-0 rounded-md border border-border-subtle bg-surface p-0.5"
+                >
+                  <button
+                    type="button"
+                    class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
+                    :class="llmCredentialMode === 'api-key' ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
+                    :disabled="llmSaving"
+                    @click="llmCredentialMode = 'api-key'"
+                  >
+                    API key
+                  </button>
+                  <button
+                    type="button"
+                    class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
+                    :class="llmCredentialMode === 'service-account-json' ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
+                    :disabled="llmSaving"
+                    @click="llmCredentialMode = 'service-account-json'"
+                  >
+                    Service account JSON
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section class="grid gap-2">
+              <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Model</div>
+              <div class="grid gap-2 sm:grid-cols-2">
+                <input
+                  v-model="llmBaseURL"
+                  class="h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                  :placeholder="llmBaseURLPlaceholder"
+                  :disabled="llmSaving"
+                />
+                <input
+                  v-model="llmModel"
+                  class="h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                  placeholder="Model"
+                  :disabled="llmSaving"
+                />
+              </div>
+            </section>
+
+            <section class="grid gap-2">
+              <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Credential</div>
+              <textarea
+                v-if="isGoogleServiceAccountMode"
+                v-model="llmApiKey"
+                class="min-h-[140px] min-w-0 resize-y rounded-md border border-border-subtle bg-surface px-3 py-2.5 font-mono text-[12px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                :placeholder="llmApiKeyPlaceholder"
+                autocomplete="off"
+                :disabled="llmSaving"
+              />
+              <input
+                v-else
+                v-model="llmApiKey"
+                class="h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                :placeholder="llmApiKeyPlaceholder"
+                type="password"
+                autocomplete="off"
+                :disabled="llmSaving"
+              />
+              <div v-if="llmApiKeyHint" class="text-[12px] leading-5 text-text-muted">
+                {{ llmApiKeyHint }}
+              </div>
+              <div v-if="llmStatus" class="rounded-md border border-border-subtle bg-surface px-3 py-2 text-[12px] text-text-muted">
+                {{ llmStatus }}
+              </div>
+            </section>
+
+            <footer class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-3">
+              <button
+                type="button"
+                class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                :title="isGoogleGeminiProvider ? 'Clear Google credential' : 'Clear LLM key'"
+                :disabled="llmSaving || !llmSettings?.configured"
+                @click="clearLLMKey"
+              >
+                <Trash2 class="h-4 w-4" :stroke-width="1.75" />
+                Clear key
+              </button>
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  class="inline-flex h-9 items-center justify-center rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
+                  @click="showSettings = false"
+                >
+                  Cancel
+                </button>
+                <button
+                  class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 text-[13px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  title="Save LLM settings"
+                  :disabled="llmSaving || !llmModel.trim()"
+                >
+                  <Loader2 v-if="llmSaving" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
+                  <Check v-else class="h-4 w-4" :stroke-width="2" />
+                  Save settings
+                </button>
+              </div>
+            </footer>
+          </form>
+
+          <footer v-if="settingsProject" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-4">
+            <div class="min-w-0">
+              <div class="text-[12px] font-medium text-text-primary">Delete project</div>
+              <p class="mt-1 text-[12px] text-text-muted">
+                Remove this App Studio project without deleting its associated repository resource.
+              </p>
+            </div>
+            <button
+              type="button"
+              class="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-danger/30 bg-danger px-3 text-[13px] font-medium text-white transition hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-60"
+              title="Delete project"
+              :disabled="busy"
+              @click="requestDeleteProject(settingsProject)"
+            >
+              <Trash2 class="h-4 w-4" :stroke-width="1.75" />
+              Delete project
+            </button>
+          </footer>
+          </div>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="deleteProjectTarget"
+      class="fixed inset-0 z-[240] flex items-center justify-center bg-black/65 px-4 py-6 backdrop-blur-sm"
+      @click.self="closeDeleteProjectDialog"
+    >
+      <div class="w-full max-w-md rounded-2xl border border-border-subtle bg-surface-raised p-6 shadow-2xl">
+        <div class="flex items-start gap-3">
+          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-danger-subtle text-danger">
+            <Trash2 class="h-5 w-5" :stroke-width="1.75" />
+          </div>
+          <div class="min-w-0">
+            <h2 class="text-[14px] font-semibold text-text-primary">Delete project?</h2>
+            <p class="mt-1 text-[12px] leading-5 text-text-secondary">
+              Are you sure you want to delete
+              <span class="font-medium text-text-primary">{{ deleteProjectTarget.displayName || deleteProjectTarget.name }}</span>?
+            </p>
+          </div>
+        </div>
+
+        <div class="mt-4 grid gap-2 rounded-lg border border-danger/25 bg-danger-subtle/70 px-3 py-2.5 text-[12px] leading-5 text-danger">
+          <p>
+            This removes the App Studio project and its conversation history. The associated repository resource will be orphaned and will not be deleted.
+          </p>
+          <p v-if="deleteProjectTarget.repository" class="min-w-0 font-mono text-[11px] text-danger">
+            Repository: {{ deleteProjectTarget.repository.name || deleteProjectTarget.repository.ref }}
+          </p>
+        </div>
+
+        <div class="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            class="inline-flex h-9 items-center justify-center rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+            :disabled="deletingProject"
+            @click="closeDeleteProjectDialog"
           >
             Cancel
           </button>
           <button
-            class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 text-[13px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-            title="Save LLM settings"
-            :disabled="llmSaving || !llmModel.trim()"
+            type="button"
+            class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-danger/30 bg-danger px-3 text-[13px] font-medium text-white transition hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-60"
+            :disabled="deletingProject"
+            @click="confirmDeleteProject"
           >
-            <Loader2 v-if="llmSaving" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
-            <Check v-else class="h-4 w-4" :stroke-width="2" />
-            Save settings
+            <Loader2 v-if="deletingProject" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
+            <Trash2 v-else class="h-4 w-4" :stroke-width="1.75" />
+            Delete project
           </button>
         </div>
-      </footer>
-      </form>
+      </div>
     </div>
   </Teleport>
 </template>

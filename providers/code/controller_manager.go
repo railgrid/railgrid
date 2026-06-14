@@ -9,7 +9,7 @@
 package main
 
 // Multicluster controller manager — reconciles the code provider's
-// tenant-authored CRs (Connection / Repository / DeployKey / Collaborator)
+// tenant-authored CRs (Connection / Repository / RepositoryCommit / DeployKey / Collaborator)
 // across EVERY tenant workspace that has bound this provider's APIExport.
 //
 // Unlike the infrastructure provider (a single-cluster manager over its own
@@ -40,11 +40,13 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"github.com/faroshq/provider-code/backend"
+	"github.com/faroshq/provider-code/commitbundle"
 	"github.com/faroshq/provider-code/controller/collaborator"
 	"github.com/faroshq/provider-code/controller/connection"
 	"github.com/faroshq/provider-code/controller/deploykey"
 	"github.com/faroshq/provider-code/controller/packages"
 	"github.com/faroshq/provider-code/controller/repository"
+	"github.com/faroshq/provider-code/controller/repositorycommit"
 	"github.com/faroshq/provider-code/install"
 	codescheme "github.com/faroshq/provider-code/scheme"
 )
@@ -58,11 +60,11 @@ const endpointSliceName = install.APIExportEndpointSliceName
 // lives in (root:kedge:providers:<name>). Overridable via CODE_WORKSPACE_PATH.
 const defaultWorkspacePath = "root:kedge:providers:code"
 
-// startControllerManager builds the multicluster manager and starts the four
+// startControllerManager builds the multicluster manager and starts the
 // reconcilers, dispatching through the shared backend registry (built in
 // runServe so the HTTP packages handler shares it). A nil config means "skip
 // the manager, run REST/MCP-only".
-func startControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry) error {
+func startControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry, bundles commitbundle.Store) error {
 	if config == nil {
 		return errControllerDisabled
 	}
@@ -101,6 +103,9 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 	}
 	if err := (&repository.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("repository controller: %w", err)
+	}
+	if err := (&repositorycommit.Reconciler{Backends: registry, Bundles: bundles}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("repositorycommit controller: %w", err)
 	}
 	if err := (&deploykey.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("deploykey controller: %w", err)
