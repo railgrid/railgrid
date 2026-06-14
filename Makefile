@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal run-provider-app-studio install-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -723,6 +723,16 @@ APP_STUDIO_CATALOGENTRY_UI_URL ?= http://localhost:$(APP_STUDIO_PORT)
 # Tiltfiles work without a separate override.
 APP_STUDIO_CATALOGENTRY_BACKEND_URL ?= $(APP_STUDIO_CATALOGENTRY_UI_URL)
 APP_STUDIO_CATALOGENTRY_RENDERED ?= /tmp/kedge-app-studio-catalogentry.yaml
+APP_STUDIO_DATABASE_URL ?=
+APP_STUDIO_IN_MEMORY_MESSAGE_STORE ?=
+APP_STUDIO_DEV_DATABASE_URL ?= postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable
+APP_STUDIO_POSTGRES_CONTAINER ?= kedge-app-studio-postgres
+APP_STUDIO_POSTGRES_IMAGE ?= postgres:16-alpine
+APP_STUDIO_POSTGRES_PORT ?= 55432
+APP_STUDIO_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/app-studio-postgres
+APP_STUDIO_POSTGRES_USER ?= appstudio
+APP_STUDIO_POSTGRES_PASSWORD ?= appstudio
+APP_STUDIO_POSTGRES_DB ?= appstudio
 
 ## Run the infrastructure provider binary locally. Heartbeats to the hub on
 ## $(KROMC_HUB_URL); TLS verification skipped (dev cert is self-signed).
@@ -756,19 +766,88 @@ run-provider-infrastructure: build-infrastructure-provider ## Run the infrastruc
 
 ## Run the App Studio provider binary locally. Mirrors the other external
 ## providers so the heartbeat path is consistent and the UI runs on :8085.
-run-provider-app-studio: build-app-studio-provider ## Run the App Studio provider (requires: make run-hub-embedded-static + make install-provider-app-studio)
+app-studio-db-up: ## Start/reuse local Postgres for App Studio message history (skips when APP_STUDIO_DATABASE_URL or in-memory mode is set)
+	@set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
+	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
+	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
+	if [ "$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-}" = "true" ]; then \
+		echo "Skipping App Studio Postgres because APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true"; \
+		exit 0; \
+	fi; \
+	if [ -n "$${APP_STUDIO_DATABASE_URL:-}" ]; then \
+		echo "Using externally configured APP_STUDIO_DATABASE_URL; not starting local App Studio Postgres"; \
+		exit 0; \
+	fi; \
+	mkdir -p "$(APP_STUDIO_POSTGRES_DATA_DIR)"; \
+	if docker ps --format '{{.Names}}' | grep -qx "$(APP_STUDIO_POSTGRES_CONTAINER)"; then \
+		echo "App Studio Postgres already running ($(APP_STUDIO_POSTGRES_CONTAINER))"; \
+	elif docker ps -a --format '{{.Names}}' | grep -qx "$(APP_STUDIO_POSTGRES_CONTAINER)"; then \
+		echo "Starting existing App Studio Postgres container ($(APP_STUDIO_POSTGRES_CONTAINER))"; \
+		docker start "$(APP_STUDIO_POSTGRES_CONTAINER)" >/dev/null; \
+	else \
+		echo "Creating App Studio Postgres container ($(APP_STUDIO_POSTGRES_CONTAINER))"; \
+		docker run -d \
+			--name "$(APP_STUDIO_POSTGRES_CONTAINER)" \
+			-e POSTGRES_USER="$(APP_STUDIO_POSTGRES_USER)" \
+			-e POSTGRES_PASSWORD="$(APP_STUDIO_POSTGRES_PASSWORD)" \
+			-e POSTGRES_DB="$(APP_STUDIO_POSTGRES_DB)" \
+			-p 127.0.0.1:$(APP_STUDIO_POSTGRES_PORT):5432 \
+			-v "$(abspath $(APP_STUDIO_POSTGRES_DATA_DIR)):/var/lib/postgresql/data" \
+			"$(APP_STUDIO_POSTGRES_IMAGE)" >/dev/null; \
+	fi; \
+	echo "Waiting for App Studio Postgres..."; \
+	for _ in $$(seq 1 30); do \
+		if docker exec "$(APP_STUDIO_POSTGRES_CONTAINER)" pg_isready -U "$(APP_STUDIO_POSTGRES_USER)" -d "$(APP_STUDIO_POSTGRES_DB)" >/dev/null 2>&1; then \
+			echo "  database: $(APP_STUDIO_DEV_DATABASE_URL)"; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "ERROR: App Studio Postgres did not become ready"; \
+	docker logs "$(APP_STUDIO_POSTGRES_CONTAINER)" --tail=50; \
+	exit 1
+
+app-studio-db-down: ## Stop and remove the local App Studio Postgres container (data remains in APP_STUDIO_POSTGRES_DATA_DIR)
+	@if docker ps -a --format '{{.Names}}' | grep -qx "$(APP_STUDIO_POSTGRES_CONTAINER)"; then \
+		docker rm -f "$(APP_STUDIO_POSTGRES_CONTAINER)" >/dev/null; \
+		echo "Removed App Studio Postgres container ($(APP_STUDIO_POSTGRES_CONTAINER)); data remains in $(APP_STUDIO_POSTGRES_DATA_DIR)"; \
+	else \
+		echo "App Studio Postgres container not found ($(APP_STUDIO_POSTGRES_CONTAINER))"; \
+	fi
+
+run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the App Studio provider (requires: make run-hub-embedded-static + make install-provider-app-studio)
 	@echo "Starting App Studio provider on :$(APP_STUDIO_PORT)"
 	@echo "  hub:   $(APP_STUDIO_HUB_URL)"
 	@echo "  token: $(APP_STUDIO_TOKEN)"
-	PORT=$(APP_STUDIO_PORT) \
-	KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
-	KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
-	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=app-studio \
-	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
-	APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
-	APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
-		$(BINDIR)/app-studio-provider
+	@# Auto-source providers/app-studio/.env (gitignored) so local store/LLM
+	@# overrides reach Tilt and make without a manual export. See .env.example.
+	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
+	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
+	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
+	if [ "$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-}" = "true" ]; then \
+		echo "  store: in-memory (non-durable)"; \
+		APP_STUDIO_DATABASE_URL= \
+		PORT=$(APP_STUDIO_PORT) \
+		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
+		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
+		KEDGE_HUB_INSECURE=true \
+		KEDGE_PROVIDER_NAME=app-studio \
+		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
+		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
+			$(BINDIR)/app-studio-provider; \
+	else \
+		echo "  store: $${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}"; \
+		PORT=$(APP_STUDIO_PORT) \
+		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
+		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
+		KEDGE_HUB_INSECURE=true \
+		KEDGE_PROVIDER_NAME=app-studio \
+		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
+		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
+			$(BINDIR)/app-studio-provider; \
+	fi
 
 ## Apply the App Studio CatalogEntry into root:kedge:providers. Idempotent.
 ## Renders only the CatalogEntry from the Helm chart so host-cluster objects
@@ -1211,6 +1290,8 @@ help-dev: ## Show development environment options
 	@echo "  QUICKSTART_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
 	@echo "  APP_STUDIO_PORT    - Port the App Studio provider listens on (default: 8085)"
 	@echo "  APP_STUDIO_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
+	@echo "  APP_STUDIO_DEV_DATABASE_URL - Local App Studio Postgres DSN (default: postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable)"
+	@echo "  APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true - Force non-durable App Studio message store"
 	@echo ""
 
 DOCKER_PLATFORM ?= linux/amd64

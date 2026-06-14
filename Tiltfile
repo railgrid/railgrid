@@ -214,6 +214,18 @@ local_resource(
 
 # --- providers-app-studio ---
 local_resource(
+    'app-studio-db',
+    cmd='make app-studio-db-up',
+    deps=[
+        'Makefile',
+        'providers/app-studio/.env',
+        'providers/app-studio/.env.example',
+    ],
+    resource_deps=['hub'],
+    labels=['providers-app-studio'],
+)
+
+local_resource(
     'app-studio',
     cmd='make build-app-studio-provider',
     serve_cmd='make run-provider-app-studio',
@@ -221,17 +233,33 @@ local_resource(
         'providers/app-studio/main.go',
         'providers/app-studio/heartbeat.go',
         'providers/app-studio/assets.go',
+        'providers/app-studio/api',
+        'providers/app-studio/apis',
+        'providers/app-studio/client',
+        'providers/app-studio/store',
+        'providers/app-studio/tenant',
+        'providers/app-studio/go.mod',
+        'providers/app-studio/go.sum',
         'providers/app-studio/portal/src',
         'providers/app-studio/portal/package.json',
         'providers/app-studio/portal/vite.config.ts',
         'providers/app-studio/deploy/chart/templates/catalogentry.yaml',
         'providers/app-studio/deploy/chart/values.yaml',
+        'providers/app-studio/.env',
     ],
-    resource_deps=['hub'],
+    resource_deps=['hub', 'app-studio-db'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8085, path='/healthz'),
     ),
+    labels=['providers-app-studio'],
+)
+
+local_resource(
+    'app-studio-db-down',
+    cmd='make app-studio-db-down',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
     labels=['providers-app-studio'],
 )
 

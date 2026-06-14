@@ -157,6 +157,7 @@ type projectAssistantReply struct {
 
 type projectAssistantStreamCallbacks struct {
 	OnChunk    func(string)
+	OnStatus   func(string)
 	OnToolCall func(projectToolCallStreamEvent)
 }
 
@@ -340,7 +341,7 @@ func (s *Server) generateProjectAssistantStream(
 		}
 		maybeInjectGoogleThoughtSignature(settings, reqBody.Messages)
 
-		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, callbacks.OnChunk)
+		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, callbacks.OnChunk, callbacks.OnStatus)
 		if err != nil {
 			return "", err
 		}
@@ -542,6 +543,7 @@ func callProjectChatCompletionStream(
 	settings projectLLMSettings,
 	reqBody chatCompletionRequest,
 	onChunk func(string),
+	onStatus func(string),
 ) (projectAssistantReply, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
@@ -595,6 +597,7 @@ func callProjectChatCompletionStream(
 	var toolCallByIndex = map[int]chatToolCall{}
 	var content strings.Builder
 	var sawStreamingEvents bool
+	var reportedToolPreparation bool
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	for scanner.Scan() {
@@ -626,6 +629,12 @@ func callProjectChatCompletionStream(
 				content.WriteString(choice.Delta.Content)
 				if onChunk != nil {
 					onChunk(choice.Delta.Content)
+				}
+			}
+			if len(choice.Delta.ToolCalls) > 0 && !reportedToolPreparation {
+				reportedToolPreparation = true
+				if onStatus != nil {
+					onStatus("Preparing action")
 				}
 			}
 			for _, toolCall := range choice.Delta.ToolCalls {

@@ -15,6 +15,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, '..', '..', '..', 'portal', 'src'),
+      'lucide-vue-next': resolve(__dirname, 'node_modules', 'lucide-vue-next', 'dist', 'esm', 'lucide-vue-next.js'),
+      vue: resolve(__dirname, 'node_modules', 'vue', 'dist', 'vue.esm-bundler.js'),
     },
   },
   build: {

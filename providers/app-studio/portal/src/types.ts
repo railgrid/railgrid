@@ -34,10 +34,12 @@ export interface ProjectToolCallEvent {
 }
 
 export interface ProjectMessageStreamEvent {
-  type: 'chunk' | 'tool_call' | 'done' | 'error'
+  type: 'chunk' | 'tool_call' | 'done' | 'error' | 'status' | 'project'
   assistantMessageID?: string
   content?: string
+  status?: string
   error?: string
+  project?: Project
   toolCall?: ProjectToolCallEvent
 }
 

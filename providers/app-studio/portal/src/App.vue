@@ -192,8 +192,6 @@ const initializing = ref(false)
 const initializingMessage = ref('App Studio is preparing this workspace...')
 const error = ref<string | null>(null)
 const toolError = ref<string | null>(null)
-const newName = ref('')
-const newDescription = ref('')
 const showSettings = ref(false)
 const projectSettingsName = ref('')
 const projectSettingsDescription = ref('')
@@ -205,6 +203,7 @@ const deletingProject = ref(false)
 const prompt = ref('')
 const projectQuery = ref('')
 const providerQuery = ref('')
+const conversationStatus = ref('')
 const selectedTool = ref<ProviderTool | null>(null)
 const toolState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const llmSettings = ref<ProjectLLMSettings | null>(null)
@@ -241,6 +240,7 @@ const isProjectIndexRoute = computed(() => routeSegment.value === '')
 const isCreateRoute = computed(() => routeSegment.value === CREATE_PROJECT_ROUTE)
 const selectedNameFromPath = computed(() => (isCreateRoute.value ? '' : routeSegment.value))
 const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value)
+const isBuilderVisible = computed(() => !isAppStudioLandingRoute.value || selected.value !== null)
 const showNewProjectComposer = computed(() => isCreateRoute.value)
 const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
 const canStartProjectFromPrompt = computed(() => prompt.value.trim().length > 0)
@@ -253,6 +253,7 @@ const settingsDescription = computed(() =>
     : 'Configure the model credentials App Studio uses when creating and chatting in projects.',
 )
 const conversationWorkingLabel = computed(() => {
+  if (conversationStatus.value) return conversationStatus.value
   if (!messageStreaming.value) return ''
   const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
   const activeTool = lastAssistant?.toolCalls?.find((toolCall) => toolCall.status === 'requested' || toolCall.status === 'running')
@@ -527,6 +528,11 @@ onBeforeUnmount(() => {
 
 async function load() {
   if (!props.ctx?.token) return
+  if (messageStreaming.value && selected.value && selectedNameFromPath.value === selected.value.name) {
+    loading.value = false
+    projectsLoaded.value = true
+    return
+  }
   clearInitializationRetry()
   loading.value = true
   projectsLoaded.value = false
@@ -772,16 +778,6 @@ function clearLandingPlaceholderTyping() {
   landingPlaceholderTypingTimer = undefined
 }
 
-interface ProjectCreateOptions {
-  displayName?: string
-  description?: string
-  promptText?: string
-}
-
-function isProjectCreateOptions(value: SubmitEvent | ProjectCreateOptions | undefined): value is ProjectCreateOptions {
-  return !!value && ('displayName' in value || 'description' in value || 'promptText' in value)
-}
-
 function normalizeLLMBaseURLInput(provider: string, baseURL: string, credentialMode: LLMCredentialMode): string {
   const normalizedProvider = provider.trim().toLowerCase()
   const normalizedBaseURL = baseURL.trim().replace(/\/+$/, '')
@@ -866,36 +862,6 @@ async function clearLLMKey() {
   }
 }
 
-async function createProject(eventOrOptions?: SubmitEvent | ProjectCreateOptions) {
-  const options = isProjectCreateOptions(eventOrOptions) ? eventOrOptions : undefined
-  const displayName = (options?.displayName ?? newName.value).trim()
-  const promptText = options?.promptText?.trim() || ''
-  if (!displayName && !promptText) return
-  busy.value = true
-  error.value = null
-  try {
-    const created = await api.createProject(props.ctx, {
-      displayName: displayName || undefined,
-      description: (options?.description ?? newDescription.value).trim() || undefined,
-      prompt: promptText || undefined,
-    })
-    newName.value = ''
-    newDescription.value = ''
-    projects.value = await api.listProjects(props.ctx)
-    await openProject(created.name, true)
-    if (promptText) {
-      prompt.value = promptText
-      await nextTick()
-      await sendMessage()
-    }
-  } catch (e) {
-    if (handleProjectAPIInitializing(e)) return
-    error.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    busy.value = false
-  }
-}
-
 async function createProjectFromPrompt() {
   const content = prompt.value.trim()
   if (!content) return
@@ -903,10 +869,127 @@ async function createProjectFromPrompt() {
     openSettings()
     return
   }
-  await createProject({
-    description: selectedLandingCategory.value?.subtitle,
-    promptText: content,
-  })
+  await createProjectAndStartConversation(content)
+}
+
+async function createProjectAndStartConversation(content: string) {
+  const now = new Date().toISOString()
+  const draftName = `draft-${Date.now()}`
+  const description = selectedLandingCategory.value?.subtitle ?? ''
+  const controller = new AbortController()
+  let projectName = ''
+  let assistantMessageID = ''
+
+  activeMessageStreamController = controller
+  busy.value = true
+  messageStreaming.value = true
+  conversationStatus.value = 'Starting'
+  error.value = null
+  prompt.value = ''
+  selectedLandingCategory.value = null
+  closeTool()
+  selected.value = {
+    name: draftName,
+    displayName: 'New project',
+    description,
+    phase: 'Creating',
+    createdAt: now,
+  }
+  messages.value = [
+    {
+      id: `temp-${Date.now()}-user`,
+      projectID: draftName,
+      role: 'user',
+      content,
+      createdAt: now,
+    },
+  ]
+
+  try {
+    await nextTick()
+    await api.createProjectStream(props.ctx, { description: description || undefined, prompt: content }, (event: ProjectMessageStreamEvent) => {
+      if (event.type === 'status') {
+        conversationStatus.value = event.status || 'Working'
+      } else if (event.type === 'project') {
+        if (!event.project) return
+        projectName = event.project.name
+        selected.value = event.project
+        messages.value = messages.value.map((message) => ({ ...message, projectID: projectName }))
+        props.navigate(encodeURIComponent(projectName))
+      } else if (event.type === 'chunk') {
+        conversationStatus.value = ''
+        if (!projectName || !event.assistantMessageID) return
+        if (!assistantMessageID) {
+          assistantMessageID = event.assistantMessageID
+        }
+
+        if (event.content === undefined) return
+        const idx = ensureAssistantMessage(projectName, event.assistantMessageID)
+        const existing = messages.value[idx]
+        messages.value[idx] = {
+          ...existing,
+          content: `${existing.content}${event.content ?? ''}`,
+        }
+        messages.value = [...messages.value]
+      } else if (event.type === 'tool_call') {
+        conversationStatus.value = ''
+        if (!projectName || !event.assistantMessageID || !event.toolCall) return
+        if (!assistantMessageID) {
+          assistantMessageID = event.assistantMessageID
+        }
+        upsertAssistantToolCall(projectName, event.assistantMessageID, event.toolCall)
+      } else if (event.type === 'done') {
+        conversationStatus.value = ''
+        if (!assistantMessageID) {
+          assistantMessageID = event.assistantMessageID ?? ''
+        }
+      } else if (event.type === 'error') {
+        throw new Error(event.error ?? 'Streaming error')
+      }
+    }, controller.signal)
+
+    if (projectName) {
+      if (assistantMessageID && messages.value.every((message) => message.id !== assistantMessageID)) {
+        messages.value = (await api.listAllMessages(props.ctx, projectName)).map(toProjectMessageView)
+      }
+      selected.value = await api.getProject(props.ctx, projectName)
+      projects.value = await api.listProjects(props.ctx)
+    }
+  } catch (e) {
+    if (isAbortError(e)) {
+      if (projectName) {
+        markAssistantMessageInterrupted(projectName, assistantMessageID)
+      } else {
+        selected.value = null
+        messages.value = []
+        props.navigate(CREATE_PROJECT_ROUTE)
+      }
+      return
+    }
+    if (handleProjectAPIInitializing(e)) {
+      selected.value = null
+      messages.value = []
+      prompt.value = content
+      props.navigate(CREATE_PROJECT_ROUTE)
+      return
+    }
+    error.value = e instanceof Error ? e.message : String(e)
+    prompt.value = content
+    if (!projectName) {
+      selected.value = null
+      messages.value = []
+      props.navigate(CREATE_PROJECT_ROUTE)
+    } else {
+      messages.value = messages.value.filter((message) => message.id !== assistantMessageID)
+    }
+  } finally {
+    if (activeMessageStreamController === controller) {
+      activeMessageStreamController = null
+    }
+    conversationStatus.value = ''
+    messageStreaming.value = false
+    busy.value = false
+  }
 }
 
 function openSettings() {
@@ -1031,7 +1114,10 @@ async function sendMessage() {
   messages.value = optimisticMessages
   try {
     await api.createMessageStream(props.ctx, projectName, content, (event: ProjectMessageStreamEvent) => {
-      if (event.type === 'chunk') {
+      if (event.type === 'status') {
+        conversationStatus.value = event.status || 'Working'
+      } else if (event.type === 'chunk') {
+        conversationStatus.value = ''
         if (!event.assistantMessageID) return
         if (!assistantMessageID) {
           assistantMessageID = event.assistantMessageID
@@ -1046,12 +1132,14 @@ async function sendMessage() {
         }
         messages.value = [...messages.value]
       } else if (event.type === 'tool_call') {
+        conversationStatus.value = ''
         if (!event.assistantMessageID || !event.toolCall) return
         if (!assistantMessageID) {
           assistantMessageID = event.assistantMessageID
         }
         upsertAssistantToolCall(projectName, event.assistantMessageID, event.toolCall)
       } else if (event.type === 'done') {
+        conversationStatus.value = ''
         if (!assistantMessageID) {
           assistantMessageID = event.assistantMessageID ?? ''
         }
@@ -1077,6 +1165,7 @@ async function sendMessage() {
     if (activeMessageStreamController === controller) {
       activeMessageStreamController = null
     }
+    conversationStatus.value = ''
     messageStreaming.value = false
     busy.value = false
   }
@@ -1535,7 +1624,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
     </div>
   </div>
 
-  <div v-else-if="isAppStudioLandingRoute" class="h-full min-h-0 overflow-auto bg-surface text-text-primary">
+  <div v-else-if="!isBuilderVisible" class="h-full min-h-0 overflow-auto bg-surface text-text-primary">
     <div class="mx-auto flex min-h-full w-full max-w-[1600px] flex-col px-6 py-8 md:px-10 lg:px-14">
       <header class="mb-8 flex items-center justify-between gap-3">
         <div class="flex min-w-0 items-center gap-2">
@@ -2261,7 +2350,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
   <Teleport to="body">
     <div
       v-if="showSettings"
-      class="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 px-4 py-6 backdrop-blur-sm"
+      class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4 py-6 backdrop-blur-sm"
       @click.self="closeSettings"
     >
       <div class="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised shadow-2xl">

@@ -22,7 +22,7 @@ catalogEntry:
   backendURL: ""
 
 # App Studio chat-message persistence. Prefer databaseURLSecretRef in
-# production; inMemoryMessageStore is for local development only.
+# production; inMemoryMessageStore is an explicit non-durable fallback only.
 store:
   databaseURL: ""
   databaseURLSecretRef:

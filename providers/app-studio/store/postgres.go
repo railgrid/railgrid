@@ -27,6 +27,11 @@ import (
 
 const messageSchemaVersion = "v1"
 
+const createMessageSchemaMigrationsTable = `CREATE TABLE IF NOT EXISTS app_studio_message_schema_migrations (
+	version text PRIMARY KEY,
+	applied_at timestamptz NOT NULL DEFAULT now()
+)`
+
 // PostgresStore stores App Studio messages in Postgres with tenant-scoped
 // primary keys and cursor pagination.
 type PostgresStore struct {
@@ -82,11 +87,11 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 		}
 	}()
 
+	if _, err = tx.ExecContext(ctx, createMessageSchemaMigrationsTable); err != nil {
+		return fmt.Errorf("create schema migrations table: %w", err)
+	}
+
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS app_studio_message_schema_migrations (
-			version text PRIMARY KEY,
-			applied_at timestamptz NOT NULL DEFAULT now()
-		)`,
 		`CREATE TABLE IF NOT EXISTS app_studio_messages (
 			org_uuid text NOT NULL,
 			workspace_uuid text NOT NULL,
@@ -120,12 +125,7 @@ func ensureSchemaVersion(ctx context.Context, tx *sql.Tx, version string, stmts 
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
 		SELECT 1 FROM app_studio_message_schema_migrations WHERE version = $1
 	)`, version).Scan(&exists); err != nil {
-		if !isUndefinedTable(err) {
-			return fmt.Errorf("check schema migration %s: %w", version, err)
-		}
-		// The migrations table itself is part of the same idempotent schema
-		// block, so an undefined-table error here means this is the first run.
-		exists = false
+		return fmt.Errorf("check schema migration %s: %w", version, err)
 	}
 	if exists {
 		return nil
@@ -353,14 +353,6 @@ func scanMessage(row interface {
 	msg.UpdatedAt = updatedAt.UTC()
 	msg.ProjectName = projectName
 	return msg, nil
-}
-
-func isUndefinedTable(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "relation \"app_studio_message_schema_migrations\" does not exist") ||
-		strings.Contains(err.Error(), "relation \"app_studio_messages\" does not exist")
 }
 
 var _ Store = (*PostgresStore)(nil)
