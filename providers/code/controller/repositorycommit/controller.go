@@ -155,6 +155,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if err := c.Status().Update(ctx, next); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update repositorycommit %q status: %w", commit.Name, err)
 	}
+	if err := r.Bundles.Delete(ctx, string(req.ClusterName), bundleRef.Name, bundleRef.Digest); err != nil {
+		logger.Error(err, "delete committed source bundle", "bundle", bundleRef.Name)
+	}
 	logger.V(3).Info("repository commit succeeded", "repository", commit.Spec.RepositoryRef, "commitSHA", res.CommitSHA)
 	return ctrl.Result{}, nil
 }

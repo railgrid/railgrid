@@ -44,6 +44,8 @@ func New() *Backend { return &Backend{} }
 
 func (b *Backend) Name() string { return string(codev1alpha1.ProviderGitHub) }
 
+const repositoryCommitIdempotencyTrailer = "Kedge-RepositoryCommit:"
+
 // client builds a token-authenticated go-github client for one call. baseURL
 // (Connection.spec.baseURL) targets GitHub Enterprise Server when set; empty
 // uses the public github.com API.
@@ -195,6 +197,20 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 	if ref != nil && ref.GetObject() != nil {
 		headSHA = ref.GetObject().GetSHA()
 	}
+	if headSHA != "" && strings.TrimSpace(input.IdempotencyKey) != "" {
+		prior, found, err := findRepositoryCommitByIdempotencyKey(ctx, c, org, repo.Spec.Name, branch, input.IdempotencyKey)
+		if err != nil {
+			return backend.RepositoryCommitResult{}, err
+		}
+		if found {
+			return backend.RepositoryCommitResult{
+				CommitSHA: prior.GetSHA(),
+				CommitURL: prior.GetHTMLURL(),
+				Branch:    branch,
+				Files:     files,
+			}, nil
+		}
+	}
 	var parent *gogithub.Commit
 	baseTree := ""
 	if headSHA != "" {
@@ -258,10 +274,51 @@ func shouldReuseHeadCommit(parent *gogithub.Commit, tree *gogithub.Tree, baseTre
 
 func commitMessageWithIdempotencyKey(message, key string) string {
 	key = strings.TrimSpace(key)
-	if key == "" || strings.Contains(message, "Kedge-RepositoryCommit:") {
+	if key == "" || strings.Contains(message, repositoryCommitIdempotencyTrailer) {
 		return message
 	}
-	return message + "\n\nKedge-RepositoryCommit: " + key
+	return message + "\n\n" + repositoryCommitIdempotencyTrailer + " " + key
+}
+
+func findRepositoryCommitByIdempotencyKey(ctx context.Context, c *gogithub.Client, org, repo, branch, key string) (*gogithub.RepositoryCommit, bool, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, false, nil
+	}
+	commits, resp, err := c.Repositories.ListCommits(ctx, org, repo, &gogithub.CommitsListOptions{
+		SHA: branch,
+		ListOptions: gogithub.ListOptions{
+			PerPage: 50,
+		},
+	})
+	if err != nil {
+		if resp != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusConflict) {
+			return nil, false, nil
+		}
+		return nil, false, classify(resp, err)
+	}
+	for _, commit := range commits {
+		if commit == nil || commit.GetCommit() == nil {
+			continue
+		}
+		if commitMessageHasIdempotencyKey(commit.GetCommit().GetMessage(), key) {
+			return commit, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+func commitMessageHasIdempotencyKey(message, key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	for _, line := range strings.Split(message, "\n") {
+		if strings.TrimSpace(line) == repositoryCommitIdempotencyTrailer+" "+key {
+			return true
+		}
+	}
+	return false
 }
 
 func commitURL(org string, repo *codev1alpha1.Repository, commit *gogithub.Commit) string {

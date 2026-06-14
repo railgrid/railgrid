@@ -92,3 +92,16 @@ func TestCommitMessageWithIdempotencyKey(t *testing.T) {
 		t.Fatalf("message with empty key = %q, want unchanged", got)
 	}
 }
+
+func TestCommitMessageHasIdempotencyKey(t *testing.T) {
+	message := "Initial app\n\nKedge-RepositoryCommit: root:acme/demo"
+	if !commitMessageHasIdempotencyKey(message, "root:acme/demo") {
+		t.Fatal("commitMessageHasIdempotencyKey returned false for matching trailer")
+	}
+	if commitMessageHasIdempotencyKey(message, "root:acme/other") {
+		t.Fatal("commitMessageHasIdempotencyKey returned true for a different key")
+	}
+	if commitMessageHasIdempotencyKey("Initial app Kedge-RepositoryCommit: root:acme/demo", "root:acme/demo") {
+		t.Fatal("commitMessageHasIdempotencyKey returned true for an inline substring")
+	}
+}

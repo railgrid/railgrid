@@ -31,6 +31,7 @@ import (
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -247,6 +248,7 @@ func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Clien
 	}
 	updated, err := touchProjectStatus(ctx, c, created)
 	if err != nil {
+		cleanupCreatedProjectSetup(ctx, c, created)
 		return nil, err
 	}
 	return updated, nil
@@ -327,15 +329,14 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := mux.Vars(r)["project"]
-	if s.store != nil {
-		if err := s.store.DeleteProjectMessages(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, name)); err != nil {
-			writeStatus(w, http.StatusInternalServerError, "InternalError", "deleting project messages: "+err.Error())
-			return
-		}
-	}
 	if err := c.Projects().Delete(r.Context(), name, metav1.DeleteOptions{}); err != nil {
 		writeProjectError(w, err)
 		return
+	}
+	if s.store != nil {
+		if err := s.store.DeleteProjectMessages(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, name)); err != nil {
+			klog.FromContext(r.Context()).Error(err, "delete project messages", "project", name)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

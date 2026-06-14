@@ -90,6 +90,26 @@ func TestFileStoreVerifiesDigest(t *testing.T) {
 	}
 }
 
+func TestFileStoreDeletesBundles(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore returned error: %v", err)
+	}
+	ref, err := store.Put(context.Background(), "root:acme", []File{{Path: "a.txt", Content: "x"}})
+	if err != nil {
+		t.Fatalf("Put returned error: %v", err)
+	}
+	if err := store.Delete(context.Background(), "root:acme", ref.Name, ref.Digest); err != nil {
+		t.Fatalf("Delete returned error: %v", err)
+	}
+	if _, err := store.Get(context.Background(), "root:acme", ref.Name, ref.Digest); err == nil {
+		t.Fatal("Get returned nil error after Delete")
+	}
+	if err := store.Delete(context.Background(), "root:acme", ref.Name, ref.Digest); err != nil {
+		t.Fatalf("second Delete returned error: %v", err)
+	}
+}
+
 func TestFileStoreScopesBundles(t *testing.T) {
 	store, err := NewFileStore(t.TempDir())
 	if err != nil {

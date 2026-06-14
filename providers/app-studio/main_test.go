@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -100,5 +101,34 @@ func TestPortalAssets(t *testing.T) {
 				t.Fatalf("GET %s body missing %q", tc.path, tc.bodyContains)
 			}
 		}()
+	}
+}
+
+func TestOpenMessageStoreRequiresConfiguredStore(t *testing.T) {
+	t.Setenv("APP_STUDIO_DATABASE_URL", "")
+	t.Setenv("APP_STUDIO_IN_MEMORY_MESSAGE_STORE", "")
+	t.Setenv("APP_STUDIO_MESSAGE_ENCRYPTION_KEYS", "")
+	t.Setenv("APP_STUDIO_MESSAGE_RETENTION", "")
+
+	_, closeFn, err := openMessageStore(context.Background())
+	if err == nil {
+		t.Fatal("openMessageStore returned nil error without a configured store")
+	}
+	closeFn()
+}
+
+func TestOpenMessageStoreAllowsInMemoryStore(t *testing.T) {
+	t.Setenv("APP_STUDIO_DATABASE_URL", "")
+	t.Setenv("APP_STUDIO_IN_MEMORY_MESSAGE_STORE", "true")
+	t.Setenv("APP_STUDIO_MESSAGE_ENCRYPTION_KEYS", "")
+	t.Setenv("APP_STUDIO_MESSAGE_RETENTION", "")
+
+	msgStore, closeFn, err := openMessageStore(context.Background())
+	if err != nil {
+		t.Fatalf("openMessageStore returned error: %v", err)
+	}
+	defer closeFn()
+	if msgStore == nil {
+		t.Fatal("openMessageStore returned nil store")
 	}
 }

@@ -44,6 +44,8 @@ const (
 	MaxPathLength = 1024
 )
 
+var errBundleNotFound = errors.New("bundle not found")
+
 // File is one UTF-8 text file from an MCP commit_files call.
 type File struct {
 	Path    string
@@ -87,6 +89,7 @@ type BundleFile struct {
 type Store interface {
 	Put(ctx context.Context, scope string, files []File) (BundleRef, error)
 	Get(ctx context.Context, scope, name, digest string) (*Bundle, error)
+	Delete(ctx context.Context, scope, name, digest string) error
 }
 
 // FileStore stores bundles as JSON files in a local directory.
@@ -193,7 +196,7 @@ func (s *FileStore) Get(ctx context.Context, scope, name, digest string) (*Bundl
 	data, err := os.ReadFile(s.path(key, name))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("bundle %q not found", name)
+			return nil, fmt.Errorf("%w: %s", errBundleNotFound, name)
 		}
 		return nil, fmt.Errorf("read bundle %q: %w", name, err)
 	}
@@ -211,6 +214,40 @@ func (s *FileStore) Get(ctx context.Context, scope, name, digest string) (*Bundl
 		return nil, fmt.Errorf("bundle %q digest mismatch: got %s want %s", name, bundle.Digest, digest)
 	}
 	return &bundle, nil
+}
+
+// Delete removes a bundle after its RepositoryCommit has reached terminal
+// status. A missing bundle is already gone and is treated as success.
+func (s *FileStore) Delete(ctx context.Context, scope, name, digest string) error {
+	if s == nil {
+		return errors.New("bundle store is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	key, err := scopeKey(scope)
+	if err != nil {
+		return err
+	}
+	if err := validateBundleName(name); err != nil {
+		return err
+	}
+	if strings.TrimSpace(digest) != "" {
+		bundle, err := s.Get(ctx, scope, name, digest)
+		if err != nil {
+			if errors.Is(err, errBundleNotFound) {
+				return nil
+			}
+			return err
+		}
+		if bundle.Digest != digest {
+			return fmt.Errorf("bundle %q digest mismatch: got %s want %s", name, bundle.Digest, digest)
+		}
+	}
+	if err := os.Remove(s.path(key, name)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete bundle %q: %w", name, err)
+	}
+	return nil
 }
 
 func (s *FileStore) scopeDir(scopeKey string) string {

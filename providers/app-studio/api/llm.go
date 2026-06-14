@@ -909,7 +909,7 @@ func (s *Server) resolveProjectToolCalls(
 			onToolCall(projectToolCallStreamEvent{
 				ID:        tc.ID,
 				Name:      tc.Function.Name,
-				Status:    "succeeded",
+				Status:    projectToolCallResultStatus(tc.Function.Name, resp),
 				Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
 				Summary:   summarizeProjectToolResult(tc.Function.Name, resp),
 			})
@@ -1007,6 +1007,24 @@ func summarizeProjectToolResult(name, result string) string {
 	}
 	firstLine := strings.TrimSpace(strings.Split(result, "\n")[0])
 	return truncateProjectToolInfo(firstLine)
+}
+
+func projectToolCallResultStatus(name, result string) string {
+	if projectToolBaseName(name) != "commit_files" {
+		return "succeeded"
+	}
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &decoded); err != nil {
+		return "succeeded"
+	}
+	switch strings.ToLower(projectToolString(decoded["phase"])) {
+	case "pending", "running":
+		return "running"
+	case "failed":
+		return "failed"
+	default:
+		return "succeeded"
+	}
 }
 
 func projectToolBaseName(name string) string {

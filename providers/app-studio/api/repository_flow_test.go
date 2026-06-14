@@ -100,6 +100,19 @@ func TestProjectAssistantMessageMetadataToolCalls(t *testing.T) {
 	}
 }
 
+func TestProjectToolCallResultStatusCommitFilesPending(t *testing.T) {
+	result := `{"name":"demo-commit","phase":"Pending","files":["index.html"]}`
+	if got := projectToolCallResultStatus("code__commit_files", result); got != "running" {
+		t.Fatalf("status = %q, want running", got)
+	}
+	if got := projectToolCallResultStatus("code__commit_files", `{"phase":"Succeeded"}`); got != "succeeded" {
+		t.Fatalf("status = %q, want succeeded", got)
+	}
+	if got := projectToolCallResultStatus("other_tool", result); got != "succeeded" {
+		t.Fatalf("non-commit status = %q, want succeeded", got)
+	}
+}
+
 func TestCallProjectMCPToolTreatsIsErrorAsFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
