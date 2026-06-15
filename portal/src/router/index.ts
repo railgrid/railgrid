@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useAdminStore } from '@/stores/admin'
 
 const routes = [
   {
@@ -40,6 +41,22 @@ const routes = [
     component: () => import('@/pages/TenantSettingsPage.vue'),
   },
   {
+    // Platform-admin area. Gated by an admin-only meta flag: the guard below
+    // probes /api/admin/access and redirects non-admins to the dashboard, so
+    // the shell (and its admin data fetches) never loads for them. The shell
+    // renders an admin sub-nav + a nested <router-view> for each section.
+    path: '/bonkers',
+    component: () => import('@/pages/BonkersPage.vue'),
+    meta: { admin: true },
+    children: [
+      { path: '', redirect: '/bonkers/providers' },
+      { path: 'providers', name: 'bonkers-providers', component: () => import('@/pages/bonkers/ProvidersSection.vue') },
+      { path: 'identities', name: 'bonkers-identities', component: () => import('@/pages/bonkers/IdentitiesSection.vue') },
+      { path: 'organizations', name: 'bonkers-organizations', component: () => import('@/pages/bonkers/OrgsSection.vue') },
+      { path: 'users', name: 'bonkers-users', component: () => import('@/pages/bonkers/UsersSection.vue') },
+    ],
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/pages/NotFoundPage.vue'),
@@ -52,9 +69,16 @@ export const router = createRouter({
   routes,
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (!to.meta.public && !auth.isAuthenticated) {
     return { name: 'login' }
+  }
+  // Admin-only routes: confirm access before loading. Non-admins are bounced to
+  // the dashboard so the page never mounts and never fires admin data fetches.
+  if (to.meta.admin) {
+    const admin = useAdminStore()
+    const ok = admin.isAdmin === null ? await admin.checkAccess() : admin.isAdmin
+    if (!ok) return { name: 'dashboard' }
   }
 })

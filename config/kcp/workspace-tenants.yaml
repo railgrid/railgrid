@@ -1,0 +1,15 @@
+apiVersion: tenancy.kcp.io/v1alpha1
+kind: Workspace
+metadata:
+  name: tenants
+  annotations:
+    bootstrap.kcp.io/create-only: "true"
+spec:
+  # Parent of every tenant (Organization) workspace. Each Organization gets a
+  # child workspace at root:kedge:tenants:{uuid} of type `organization` (see
+  # workspacetype-organization.yaml). The tenants parent itself is plain
+  # universal because nothing tenant-facing lives directly inside it —
+  # only child Organization workspaces.
+  type:
+    name: universal
+    path: root

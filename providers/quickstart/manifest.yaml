@@ -63,7 +63,6 @@ spec:
   version: "0.1.0"
   category: "Demo"
   iconURL: "/ui/providers/quickstart/icon.svg"
-  serviceAccountNamespace: "quickstart"
   ui:
     url: "http://localhost:8081"
     indexPath: "/"
@@ -84,45 +83,3 @@ spec:
       - resource: configmaps
         verbs: [get, list, watch]
         tenantScoped: true
-    schemas:
-      - groupResource: "greetings.quickstart.providers.kedge.faros.sh"
-        # Schema body is applied verbatim into the sub-workspace. The name
-        # must include a content-version segment because kcp treats
-        # APIResourceSchemas as immutable; a body change requires a new name.
-        body: |
-          apiVersion: apis.kcp.io/v1alpha1
-          kind: APIResourceSchema
-          metadata:
-            name: v260522-001.greetings.quickstart.providers.kedge.faros.sh
-          spec:
-            group: quickstart.providers.kedge.faros.sh
-            names:
-              kind: Greeting
-              listKind: GreetingList
-              plural: greetings
-              singular: greeting
-            scope: Namespaced
-            versions:
-              - name: v1alpha1
-                served: true
-                storage: true
-                subresources:
-                  status: {}
-                schema:
-                  type: object
-                  properties:
-                    apiVersion: { type: string }
-                    kind: { type: string }
-                    metadata: { type: object }
-                    spec:
-                      type: object
-                      properties:
-                        message:
-                          type: string
-                          maxLength: 256
-                    status:
-                      type: object
-                      properties:
-                        observedAt:
-                          type: string
-                          format: date-time

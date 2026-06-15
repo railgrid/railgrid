@@ -1,0 +1,13 @@
+# Provider — declarative provisioning record (admin.kedge.faros.sh, admin-only).
+# Applied into root:kedge:system:providers. The hub's Provider controller creates the
+# provider sub-workspace (root:kedge:providers:quickstart), its "provider"
+# ServiceAccount, and writes a kubeconfig Secret (quickstart-kubeconfig) into
+# root:kedge:system:providers. Nothing else — the APIExport/schemas/bind-grant come
+# from the provider's own `init`, and routing/UI from the companion
+# CatalogEntry in manifest.yaml.
+apiVersion: admin.kedge.faros.sh/v1alpha1
+kind: Provider
+metadata:
+  name: quickstart
+spec:
+  displayName: "Quickstart"

@@ -51,14 +51,14 @@ var (
 		Version:  kedgev1alpha1.Version,
 		Resource: "placements",
 	}
-	// UserGVR points at the new tenancy.kedge.faros.sh User CRD. PRs
-	// #204-#207 introduced the tenancy.kedge.faros.sh group; this GVR
+	// UserGVR points at the new tenants.kedge.faros.sh User CRD. PRs
+	// #204-#207 introduced the tenants.kedge.faros.sh group; this GVR
 	// previously pointed at the legacy kedge.faros.sh group, which left
 	// User writes from the auth handler invisible to the org bootstrap
 	// controller (which watches the new group). Migration in roadmap
-	// step 7+ aligns both sides on tenancy.kedge.faros.sh.
+	// step 7+ aligns both sides on tenants.kedge.faros.sh.
 	UserGVR = schema.GroupVersionResource{
-		Group:    "tenancy.kedge.faros.sh",
+		Group:    "tenants.kedge.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "users",
 	}
@@ -68,7 +68,7 @@ var (
 	// One UMI per User; the tenant middleware reads this on every
 	// request to authorise (Org, Workspace) header pairs.
 	UserMembershipIndexGVR = schema.GroupVersionResource{
-		Group:    "tenancy.kedge.faros.sh",
+		Group:    "tenants.kedge.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "usermembershipindices",
 	}
@@ -77,7 +77,7 @@ var (
 	// (see apis/tenancy/v1alpha1/types_organization.go). Used by the
 	// step 10 REST surface for Org CRUD against root:kedge:users.
 	OrganizationGVR = schema.GroupVersionResource{
-		Group:    "tenancy.kedge.faros.sh",
+		Group:    "tenants.kedge.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "organizations",
 	}

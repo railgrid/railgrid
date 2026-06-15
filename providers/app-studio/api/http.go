@@ -37,7 +37,7 @@ type identity struct {
 	token         string // bearer token, forwarded as-is from Authorization
 }
 
-const tenantPathPrefix = "root:kedge:orgs:"
+const tenantPathPrefix = "root:kedge:tenants:"
 
 // identityFromRequest extracts the caller identity from the proxy-injected
 // headers. It returns ok=false (and writes 401) when no tenant is present.

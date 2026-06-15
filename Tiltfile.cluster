@@ -302,6 +302,9 @@ k8s_yaml(helm(
         # Match the plain Tiltfile's App Studio in-memory message store wiring.
         'hub.appStudio.inMemoryMessageStore=true',
         'hub.staticAuthTokens={dev-token}',
+        # /bonkers admin access for the dev static token (resolves to
+        # static-dev-toke@kedge.local — see proxy.ensureStaticTokenUserOnce).
+        'hub.adminUsers={static-dev-toke@kedge.local}',
         # Make *.kcp.localhost resolve to the Envoy gateway from the hub pod,
         # so the operator-issued kubeconfigs work in-cluster unchanged.
         'hostAliases[0].ip=%s' % gateway_ip,
@@ -454,6 +457,17 @@ local_resource(
 )
 
 local_resource(
+    'quickstart-init',
+    cmd=('QUICKSTART_KCP_KUBECONFIG={kc} QUICKSTART_KCP_SERVER={sv} ' +
+         'make init-provider-quickstart').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub', 'quickstart-register'],
+    labels=['providers-quickstart'],
+)
+
+local_resource(
     'quickstart-unregister',
     cmd=('{rewrite} && QUICKSTART_KCP_KUBECONFIG={kc} ' +
          'QUICKSTART_KCP_SERVER={sv} QUICKSTART_MANIFEST={mf} ' +
@@ -501,6 +515,17 @@ local_resource(
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['kedge-hub'],
+    labels=['providers-app-studio'],
+)
+
+local_resource(
+    'app-studio-init',
+    cmd=('APP_STUDIO_KCP_KUBECONFIG={kc} APP_STUDIO_KCP_SERVER={sv} ' +
+         'make init-provider-app-studio').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub', 'app-studio-register'],
     labels=['providers-app-studio'],
 )
 

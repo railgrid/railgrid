@@ -88,3 +88,7 @@ values.yaml
 kuery.db
 kuery.db-shm
 kuery.db-wal
+
+# TypeScript incremental build artifact
+portal/tsconfig.tsbuildinfo
+*.tsbuildinfo

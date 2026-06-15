@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260613-9670926.catalogentries.providers.kedge.faros.sh
+  name: v260615-5246b68.catalogentries.providers.kedge.faros.sh
 spec:
   group: providers.kedge.faros.sh
   names:
@@ -71,7 +71,10 @@ spec:
                 name:
                   description: |-
                     Name is the APIExport name (also the API group binding consumers
-                    reference).
+                    reference). The APIExport itself, along with its APIResourceSchemas and
+                    bind grant, is created by the provider's own Helm `init` (see the
+                    kedge-provider-sdk) — the hub only references it here for the portal
+                    Enable flow. Schemas are no longer embedded on the CatalogEntry.
                   minLength: 1
                   type: string
                 permissionClaims:
@@ -105,29 +108,6 @@ spec:
                         type: array
                     required:
                     - resource
-                    type: object
-                  type: array
-                schemas:
-                  description: |-
-                    Schemas are inline APIResourceSchema bodies the hub will apply to the
-                    provider's workspace. Not yet honored (Phase 1B).
-                  items:
-                    description: |-
-                      ProviderAPIResourceSchema is an inline APIResourceSchema definition the hub
-                      applies to the provider's workspace on first reconcile.
-                    properties:
-                      body:
-                        description: Body is the full APIResourceSchema YAML as a
-                          string.
-                        minLength: 1
-                        type: string
-                      groupResource:
-                        description: GroupResource identifies the schema (e.g. "greetings.cost.faros.sh").
-                        minLength: 1
-                        type: string
-                    required:
-                    - body
-                    - groupResource
                     type: object
                   type: array
               required:
@@ -211,13 +191,6 @@ spec:
                 Typically "/ui/providers/{name}/icon.svg" so it is served through the
                 UI proxy.
               maxLength: 256
-              type: string
-            serviceAccountNamespace:
-              description: |-
-                ServiceAccountNamespace is the host-cluster namespace where the
-                provider Deployment runs. In future iterations the hub will write the
-                kedge-provider-kubeconfig Secret here. Currently informational.
-              maxLength: 63
               type: string
             ui:
               description: |-
@@ -376,27 +349,6 @@ spec:
                   type: string
                 virtualWorkspace:
                   type: string
-              type: object
-            kubeconfigSecret:
-              description: |-
-                KubeconfigSecret, when set, points at the host-cluster Secret the
-                hub wrote the provider's kubeconfig into. Populated only when the
-                hub was started with --provider-secret-write and could resolve a
-                host-cluster client.
-              properties:
-                name:
-                  description: Name is the Secret name. Conventionally kedge-provider-kubeconfig.
-                  minLength: 1
-                  type: string
-                namespace:
-                  description: |-
-                    Namespace is the host-cluster Namespace (matches
-                    spec.serviceAccountNamespace from the CatalogEntry).
-                  minLength: 1
-                  type: string
-              required:
-              - name
-              - namespace
               type: object
             lastHeartbeat:
               description: |-

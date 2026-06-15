@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal run-provider-app-studio install-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -388,7 +388,14 @@ HUB_FLAGS_OIDC := \
 
 # Auth: Static token
 HUB_FLAGS_STATIC := \
-	--static-auth-token=$(STATIC_AUTH_TOKEN)
+	--static-auth-token=$(STATIC_AUTH_TOKEN) \
+	--admin-users=$(ADMIN_USERS)
+
+# Platform-admin identities allowed at /api/admin/* + the portal /bonkers area.
+# The dev static token "$(STATIC_AUTH_TOKEN)" resolves (proxy.ensureStaticTokenUserOnce)
+# to email static-<first8chars>@kedge.local — for dev-token that's
+# static-dev-toke@kedge.local. Override for OIDC dev with your real email.
+ADMIN_USERS ?= static-dev-toke@kedge.local
 
 # KCP: External (requires running kcp separately)
 HUB_FLAGS_KCP_EXTERNAL := \
@@ -509,6 +516,11 @@ QUICKSTART_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 # gateway at kcp.localhost:8443 and overrides this from the Tilt resource.
 QUICKSTART_KCP_SERVER ?= https://localhost:6443
 QUICKSTART_MANIFEST ?= providers/quickstart/manifest.yaml
+# Declarative provisioning record: the hub's Provider controller creates the
+# sub-workspace + ServiceAccount + kubeconfig Secret from this.
+QUICKSTART_PROVIDER_MANIFEST ?= providers/quickstart/provider.yaml
+QUICKSTART_WORKSPACE_PATH ?= root:kedge:providers:quickstart
+QUICKSTART_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/quickstart-runtime.kubeconfig
 
 ## Run the quickstart provider binary locally. Heartbeats to the hub on
 ## $(QUICKSTART_HUB_URL); TLS verification skipped (dev cert is self-signed).
@@ -525,16 +537,16 @@ run-provider-quickstart: build-quickstart-provider ## Run the quickstart provide
 
 ## Apply the quickstart CatalogEntry into root:kedge:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.
-install-provider-quickstart: ## Apply quickstart CatalogEntry into root:kedge:providers
+install-provider-quickstart: ## Apply quickstart Provider + CatalogEntry into root:kedge:providers
 	@test -f $(QUICKSTART_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(QUICKSTART_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
-		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:kedge:providers \
+		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		apply -f $(QUICKSTART_MANIFEST)
+		apply -f $(QUICKSTART_PROVIDER_MANIFEST) -f $(QUICKSTART_MANIFEST)
 
 ## Run provider e2e suite (embedded kcp + quickstart-provider subprocess).
 ## Lightweight — no kind/Helm, just two host binaries the suite drives over
@@ -597,12 +609,42 @@ e2e-tilt-cluster: ## Run Tilt-cluster provider e2e (requires `make tilt-cluster`
 	}
 	go test ./test/e2e/suites/tiltcluster/... -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
-## Delete the quickstart CatalogEntry. Useful while iterating on the manifest.
-uninstall-provider-quickstart: ## Delete quickstart CatalogEntry
-	-kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
-		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:kedge:providers \
+## Create quickstart's APIExport (+ endpoint slice + bind grant) inside its
+## provider workspace, so tenants can Enable it. The Provider controller already
+## minted the provider-token Secret on register; we read it, write a dev runtime
+## kubeconfig targeting the sub-workspace, and run the provider's `init`
+## (sdkinstall.Bootstrap). Idempotent. Order: install-provider-quickstart →
+## this → Enable works. Mirrors init-provider-kuery/code/infrastructure.
+init-provider-quickstart: build-quickstart-provider ## Bootstrap quickstart APIExport + write dev runtime kubeconfig
+	@test -f $(QUICKSTART_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(QUICKSTART_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	@echo "Reading provider-token from $(QUICKSTART_WORKSPACE_PATH) and writing $(QUICKSTART_RUNTIME_KUBECONFIG)"
+	@TOKEN=$$(kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
+		--server=$(QUICKSTART_KCP_SERVER)/clusters/$(QUICKSTART_WORKSPACE_PATH) \
 		--insecure-skip-tls-verify \
-		delete -f $(QUICKSTART_MANIFEST)
+		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
+	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
+	mkdir -p $(KCP_DATA_DIR); \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+		"$(QUICKSTART_KCP_SERVER)/clusters/$(QUICKSTART_WORKSPACE_PATH)" "$$TOKEN" \
+		> $(QUICKSTART_RUNTIME_KUBECONFIG)
+	@echo "Running quickstart-provider init (creates APIExport + endpoint slice + bind grant)"
+	KEDGE_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
+	QUICKSTART_WORKSPACE_PATH=$(QUICKSTART_WORKSPACE_PATH) \
+	KEDGE_SCHEMAS_DIR=/nonexistent \
+		$(BINDIR)/quickstart-provider init
+
+## Delete the quickstart CatalogEntry + Provider. Deleting the Provider triggers
+## full teardown of root:kedge:providers:quickstart (workspace, SA, APIExport)
+## via the controller's finalizer.
+uninstall-provider-quickstart: ## Delete quickstart CatalogEntry + Provider (full teardown)
+	-kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
+		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--insecure-skip-tls-verify \
+		delete -f $(QUICKSTART_MANIFEST) -f $(QUICKSTART_PROVIDER_MANIFEST)
 
 # --- Provider kuery (local dev) ---
 # Mirror of the quickstart pattern above. Distinct port (8084) so the demo
@@ -615,7 +657,13 @@ KUERY_TOKEN ?= $(STATIC_AUTH_TOKEN)
 KUERY_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 KUERY_KCP_SERVER ?= https://localhost:6443
 KUERY_MANIFEST ?= providers/kuery/manifest.yaml
+KUERY_PROVIDER_MANIFEST ?= providers/kuery/provider.yaml
 KUERY_WORKSPACE_PATH ?= root:kedge:providers:kuery
+KUERY_SCHEMAS_DIR ?= providers/kuery/deploy/chart/files/schemas
+# Optional: identityHash of the edges export for kuery's first-party edges
+# permission claim (copy from /bonkers Root identities). Empty → APIExport is
+# still created (Enable binds), but edge engagement won't activate until set.
+KUERY_EDGES_IDENTITY_HASH ?=
 # Dev runtime kubeconfig for the engagement controller, written by
 # init-provider-kuery from the provider SA token the hub mints.
 KUERY_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/kuery-runtime.kubeconfig
@@ -638,52 +686,69 @@ run-provider-kuery: build-kuery-provider ## Run the kuery provider (requires: ma
 	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
 		$(BINDIR)/kuery-provider
 
-install-provider-kuery: ## Apply kuery CatalogEntry into root:kedge:providers
+install-provider-kuery: ## Apply kuery Provider + CatalogEntry into root:kedge:providers
 	@test -f $(KUERY_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KUERY_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
-		--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:providers \
+		--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		apply -f $(KUERY_MANIFEST)
+		apply -f $(KUERY_PROVIDER_MANIFEST) -f $(KUERY_MANIFEST)
 
-## Dev bootstrap for the engagement controller. The hub-provisioned flow
-## delivers the minted kubeconfig as a host-cluster Secret, which doesn't
-## exist in host-binary dev — so mint the same thing from the provider SA
-## token Secret the catalog controller created, and ensure the
-## APIExportEndpointSlice the engagement watcher discovers VW URLs from.
-## Order: install-provider-kuery (CatalogEntry reconciled) → this → the
-## kuery Tilt resource restarts on the kubeconfig file appearing.
-init-provider-kuery: ## Ensure kuery APIExportEndpointSlice + write dev runtime kubeconfig
+## Dev bootstrap for the engagement controller. The Provider controller writes
+## the minted kubeconfig into a Secret in root:kedge:providers, but host-binary
+## dev needs a host-reachable server URL — so we read the provider SA token from
+## the sub-workspace (the same token the Provider controller minted) and write a
+## dev kubeconfig with the local server URL, plus the APIExportEndpointSlice the
+## engagement watcher discovers VW URLs from.
+## Order: install-provider-kuery (Provider CR applied → controller provisions
+## the sub-workspace + provider-token Secret) → this → the kuery Tilt resource
+## restarts on the kubeconfig file appearing.
+init-provider-kuery: build-kuery-provider ## Bootstrap kuery APIExport (schemas+slice+bind grant) + write dev runtime kubeconfig
 	@test -f $(KUERY_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KUERY_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
-	@echo "Ensuring APIExportEndpointSlice in $(KUERY_WORKSPACE_PATH)"
-	@printf 'apiVersion: apis.kcp.io/v1alpha1\nkind: APIExportEndpointSlice\nmetadata:\n  name: kuery.providers.kedge.faros.sh\nspec:\n  export:\n    path: $(KUERY_WORKSPACE_PATH)\n    name: kuery.providers.kedge.faros.sh\n' | \
-		kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
-			--server=$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH) \
-			--insecure-skip-tls-verify apply -f -
-	@echo "Writing $(KUERY_RUNTIME_KUBECONFIG) (server $(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH))"
+	@echo "Reading provider-token from $(KUERY_WORKSPACE_PATH) and writing $(KUERY_RUNTIME_KUBECONFIG)"
 	@TOKEN=$$(kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
 		--server=$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH) \
 		--insecure-skip-tls-verify \
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
-	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the catalog controller to reconcile"; exit 1; }; \
+	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
 	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
 		"$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(KUERY_RUNTIME_KUBECONFIG)
-	@echo "wrote $(KUERY_RUNTIME_KUBECONFIG)"
+	@# kcp requires kuery's first-party edges permissionClaim to carry the
+	@# identityHash of the export that serves edges. Tenants consume edges
+	@# through the core.faros.sh binding, so resolve core.faros.sh's
+	@# identityHash from system:controllers (override via KUERY_EDGES_IDENTITY_HASH).
+	@# The slice + bind grant are created inside install.Bootstrap using the
+	@# provider SA (cluster-admin → has `bind`), not the admin kubeconfig.
+	@echo "Running kuery-provider init (schemas + APIExport + endpoint slice + bind grant)"
+	@HASH="$(KUERY_EDGES_IDENTITY_HASH)"; \
+	if [ -z "$$HASH" ]; then \
+		HASH=$$(kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
+			--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:system:controllers \
+			--insecure-skip-tls-verify \
+			get apiexport core.faros.sh -o jsonpath='{.status.identityHash}'); \
+		echo "resolved edges identityHash from core.faros.sh: $$HASH"; \
+	fi; \
+	test -n "$$HASH" || { echo "could not resolve core.faros.sh identityHash — is the hub bootstrapped?"; exit 1; }; \
+	KEDGE_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
+	KUERY_WORKSPACE_PATH=$(KUERY_WORKSPACE_PATH) \
+	KEDGE_SCHEMAS_DIR=$(KUERY_SCHEMAS_DIR) \
+	KUERY_EDGES_IDENTITY_HASH=$$HASH \
+		$(BINDIR)/kuery-provider init
 
-uninstall-provider-kuery: ## Delete kuery CatalogEntry
+uninstall-provider-kuery: ## Delete kuery CatalogEntry + Provider (full teardown)
 	-kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
-		--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:providers \
+		--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		delete -f $(KUERY_MANIFEST)
+		delete -f $(KUERY_MANIFEST) -f $(KUERY_PROVIDER_MANIFEST)
 
 # --- Provider infrastructure (local dev) ---
 # Mirror of the quickstart pattern above. Distinct port (8082) so both
@@ -701,6 +766,7 @@ KROMC_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 # repoints this at the envoy gateway.
 KROMC_KCP_SERVER ?= https://localhost:6443
 KROMC_MANIFEST ?= providers/infrastructure/manifest.yaml
+KROMC_PROVIDER_MANIFEST ?= providers/infrastructure/provider.yaml
 
 # --- App Studio provider (local dev) ---
 # Same pattern as quickstart/infrastructure, but the CatalogEntry template
@@ -711,9 +777,13 @@ APP_STUDIO_HUB_URL ?= https://localhost:9443
 APP_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
 APP_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 APP_STUDIO_KCP_SERVER ?= https://localhost:6443
+APP_STUDIO_WORKSPACE_PATH ?= root:kedge:providers:app-studio
+APP_STUDIO_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/app-studio-runtime.kubeconfig
+APP_STUDIO_SCHEMAS_DIR ?= providers/app-studio/deploy/chart/files/schemas
 APP_STUDIO_HELM_RELEASE ?= app-studio
 APP_STUDIO_HELM_NAMESPACE ?= app-studio
 APP_STUDIO_CHART ?= providers/app-studio/deploy/chart
+APP_STUDIO_PROVIDER_MANIFEST ?= providers/app-studio/provider.yaml
 APP_STUDIO_CATALOGENTRY_UI_URL ?= http://localhost:$(APP_STUDIO_PORT)
 # The backend (REST/LLM API) is reverse-proxied by the hub too, to the SAME
 # host:port as the UI (one provider process serves both). It must point at the
@@ -786,9 +856,37 @@ install-provider-app-studio: ## Apply App Studio CatalogEntry into root:kedge:pr
 		--show-only templates/catalogentry.yaml \
 		> $(APP_STUDIO_CATALOGENTRY_RENDERED)
 	kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:providers \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		apply -f $(APP_STUDIO_CATALOGENTRY_RENDERED)
+		apply -f $(APP_STUDIO_PROVIDER_MANIFEST) -f $(APP_STUDIO_CATALOGENTRY_RENDERED)
+
+## Create App Studio's APIExport (+ schemas + endpoint slice + bind grant) in
+## its provider workspace so tenants can Enable it. Reads the provider-token the
+## Provider controller minted on register, writes a dev runtime kubeconfig, and
+## runs the provider's `init` (sdkinstall.Bootstrap) with the shipped schemas.
+## KEDGE_CATALOGENTRY_FILE is intentionally unset — the dev install target
+## already applied the CatalogEntry to system:providers. Idempotent.
+init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIExport + write dev runtime kubeconfig
+	@test -f $(APP_STUDIO_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(APP_STUDIO_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	@echo "Reading provider-token from $(APP_STUDIO_WORKSPACE_PATH) and writing $(APP_STUDIO_RUNTIME_KUBECONFIG)"
+	@TOKEN=$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/$(APP_STUDIO_WORKSPACE_PATH) \
+		--insecure-skip-tls-verify \
+		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
+	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
+	mkdir -p $(KCP_DATA_DIR); \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+		"$(APP_STUDIO_KCP_SERVER)/clusters/$(APP_STUDIO_WORKSPACE_PATH)" "$$TOKEN" \
+		> $(APP_STUDIO_RUNTIME_KUBECONFIG)
+	@echo "Running app-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
+	KEDGE_PROVIDER_KUBECONFIG=$(APP_STUDIO_RUNTIME_KUBECONFIG) \
+	APP_STUDIO_WORKSPACE_PATH=$(APP_STUDIO_WORKSPACE_PATH) \
+	KEDGE_SCHEMAS_DIR=$(APP_STUDIO_SCHEMAS_DIR) \
+		$(BINDIR)/app-studio-provider init
 
 ## Delete the App Studio CatalogEntry. Useful while iterating on the chart.
 uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
@@ -804,29 +902,30 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		--show-only templates/catalogentry.yaml \
 		> $(APP_STUDIO_CATALOGENTRY_RENDERED)
 	-kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:providers \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		delete -f $(APP_STUDIO_CATALOGENTRY_RENDERED)
+		delete -f $(APP_STUDIO_CATALOGENTRY_RENDERED) -f $(APP_STUDIO_PROVIDER_MANIFEST)
 
 ## Apply the infrastructure CatalogEntry into root:kedge:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.
-install-provider-infrastructure: ## Apply infrastructure CatalogEntry into root:kedge:providers
+install-provider-infrastructure: ## Apply infrastructure Provider + CatalogEntry into root:kedge:providers
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		apply -f $(KROMC_MANIFEST)
+		apply -f $(KROMC_PROVIDER_MANIFEST) -f $(KROMC_MANIFEST)
 
-## Delete the infrastructure CatalogEntry. Useful while iterating on the manifest.
-uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry
+## Delete the infrastructure CatalogEntry + Provider (Provider delete triggers
+## full teardown of the sub-workspace via the controller's finalizer).
+uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry + Provider (full teardown)
 	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		delete -f $(KROMC_MANIFEST)
+		delete -f $(KROMC_MANIFEST) -f $(KROMC_PROVIDER_MANIFEST)
 
 ## One-shot bootstrap for the infrastructure provider's workspace.
 ## Uses the hub's admin kubeconfig to install CRDs, register APIExport
@@ -860,6 +959,7 @@ init-provider-infrastructure: build-infrastructure-provider ## Bootstrap infrast
 #   Terminal 3: make run-provider-code                # tenant: run binary
 CODE_PORT ?= 8083
 CODE_MANIFEST ?= providers/code/manifest.yaml
+CODE_PROVIDER_MANIFEST ?= providers/code/provider.yaml
 CODE_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/code-runtime.kubeconfig
 
 run-provider-code: build-code-provider ## Run the code provider (requires: make run-hub-embedded-static + make install-provider-code)
@@ -873,29 +973,29 @@ run-provider-code: build-code-provider ## Run the code provider (requires: make 
 	KEDGE_HUB_INSECURE=true \
 	KEDGE_PROVIDER_NAME=code \
 	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
-	CODE_KUBECONFIG=$${CODE_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
+	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
 	GITHUB_OAUTH_CLIENT_ID=$${GITHUB_OAUTH_CLIENT_ID:-} \
 	GITHUB_OAUTH_CLIENT_SECRET=$${GITHUB_OAUTH_CLIENT_SECRET:-} \
 	GITHUB_OAUTH_REDIRECT_URL=$${GITHUB_OAUTH_REDIRECT_URL:-http://localhost:$(CODE_PORT)/oauth/github/callback} \
 	GITHUB_OAUTH_PORTAL_ORIGIN=$${GITHUB_OAUTH_PORTAL_ORIGIN:-$(KROMC_HUB_URL)} \
 		$(BINDIR)/code-provider serve
 
-install-provider-code: ## Apply the code CatalogEntry into root:kedge:providers
+install-provider-code: ## Apply the code Provider + CatalogEntry into root:kedge:providers
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		apply -f $(CODE_MANIFEST)
+		apply -f $(CODE_PROVIDER_MANIFEST) -f $(CODE_MANIFEST)
 
-uninstall-provider-code: ## Delete the code CatalogEntry
+uninstall-provider-code: ## Delete the code CatalogEntry + Provider (full teardown)
 	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		delete -f $(CODE_MANIFEST)
+		delete -f $(CODE_MANIFEST) -f $(CODE_PROVIDER_MANIFEST)
 
 CODE_WORKSPACE_PATH ?= root:kedge:providers:code
 ## Dev bootstrap for the code provider. The hub mints a real provider
@@ -915,14 +1015,18 @@ init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the
 		exit 1; \
 	}
 	@mkdir -p $(KCP_DATA_DIR)
+	@# The provider workspace (root:kedge:providers:code) is created
+	@# declaratively by the Provider controller when code-register applies the
+	@# Provider CR — no need to create it here.
 	@echo "Writing dev kubeconfig $(CODE_RUNTIME_KUBECONFIG) (workspace $(CODE_WORKSPACE_PATH), server $(KROMC_KCP_SERVER))"
 	@kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) config view --minify --flatten > $(CODE_RUNTIME_KUBECONFIG)
 	@CL=$$(kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config view -o jsonpath='{.clusters[0].name}'); \
 		kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config set-cluster "$$CL" \
 			--server=$(KROMC_KCP_SERVER)/clusters/$(CODE_WORKSPACE_PATH) \
 			--insecure-skip-tls-verify=true >/dev/null
-	CODE_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
+	KEDGE_PROVIDER_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
 	CODE_WORKSPACE_PATH=$(CODE_WORKSPACE_PATH) \
+	KEDGE_SCHEMAS_DIR=$(CURDIR)/providers/code/deploy/chart/files/schemas \
 		$(BINDIR)/code-provider init
 
 # --- Experimental: run the infrastructure provider as a POD (init-container

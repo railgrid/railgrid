@@ -90,6 +90,9 @@ spec:
             {{- range .Values.hub.staticAuthTokens }}
             - --static-auth-token={{ . }}
             {{- end }}
+            {{- range .Values.hub.adminUsers }}
+            - --admin-users={{ . }}
+            {{- end }}
             {{- if .Values.hub.devMode }}
             - --dev-mode
             {{- end }}

@@ -35,11 +35,18 @@ import (
 	"os"
 	"strings"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	sdkinstall "github.com/faroshq/provider-sdk/install"
+
 	"github.com/faroshq/provider-infrastructure/install"
 )
+
+// apiExportName is the infrastructure provider's APIExport (manifest.yaml
+// spec.apiExport.name).
+const apiExportName = "infrastructure.providers.kedge.faros.sh"
 
 // runInitCmd drives the bootstrap chain. Reads admin credentials from
 // INFRASTRUCTURE_ADMIN_KUBECONFIG (preferred) or the standard
@@ -93,6 +100,31 @@ func runInitCmd(ctx context.Context) error {
 	log.Printf("init: registering platform schemas on APIExport (templates storage=%s)", storageLabel(templatesIdentityHash))
 	if err := install.PlatformSchemaInAPIExport(ctx, adminConfig, templatesIdentityHash); err != nil {
 		return fmt.Errorf("register APIExport schemas: %w", err)
+	}
+
+	// Bind grant: let any authenticated tenant bind this APIExport from their
+	// own workspace. The hub catalog controller used to create this; in the new
+	// bootstrap split it is the provider init's responsibility. adminConfig.Host
+	// already targets the provider workspace (retargeted from
+	// INFRASTRUCTURE_WORKSPACE_PATH), so the SDK call lands there.
+	log.Printf("init: applying APIExport bind grant")
+	dynCl, err := dynamic.NewForConfig(adminConfig)
+	if err != nil {
+		return fmt.Errorf("dynamic client for bind grant: %w", err)
+	}
+	if err := sdkinstall.ApplyBindGrant(ctx, dynCl, apiExportName); err != nil {
+		return fmt.Errorf("apply bind grant: %w", err)
+	}
+
+	// CatalogEntry self-registration: apply the provider's CatalogEntry into its
+	// own workspace (the Provider controller bound providers.kedge.faros.sh
+	// here). adminConfig.Host already targets the provider workspace. Empty
+	// KEDGE_CATALOGENTRY_FILE → skip.
+	if f := os.Getenv("KEDGE_CATALOGENTRY_FILE"); f != "" {
+		log.Printf("init: self-registering CatalogEntry from %s", f)
+		if err := sdkinstall.ApplyCatalogEntry(ctx, dynCl, f); err != nil {
+			return fmt.Errorf("apply CatalogEntry: %w", err)
+		}
 	}
 
 	// Seed catalog Templates so a fresh workspace renders a non-empty

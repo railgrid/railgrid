@@ -101,7 +101,7 @@ type UserStatus struct {
 	// bootstrap. Set once by the organization bootstrap controller;
 	// never reassigned. The portal uses this as the default
 	// X-Kedge-Workspace when the user has not explicitly picked a
-	// Workspace. Lives at root:kedge:orgs:{personalOrg}:{defaultWorkspace}.
+	// Workspace. Lives at root:kedge:tenants:{personalOrg}:{defaultWorkspace}.
 	//
 	// +optional
 	DefaultWorkspace string `json:"defaultWorkspace,omitempty"`

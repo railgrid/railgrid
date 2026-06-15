@@ -1,0 +1,27 @@
+// go.work.template — committed seed for the per-developer go.work.
+//
+// go.work itself is gitignored (it's local + may reference checkouts outside
+// this repo, e.g. a sibling kubernetes-graphql-gateway). Copy this to go.work
+// to get a working multi-module workspace:
+//
+//	cp go.work.template go.work
+//
+// Workspace mode makes the provider modules resolve github.com/faroshq/provider-sdk
+// to the local ./provider-sdk source — so once the SDK is published and the
+// per-provider `replace` directives are dropped, you still develop the SDK and
+// the providers together in-tree without touching any go.mod.
+//
+// Add extra `use ./../some-sibling-module` lines locally as needed; keep them
+// out of the committed template since paths above the repo root aren't portable.
+
+go 1.26.3
+
+use (
+	.
+	./provider-sdk
+	./providers/quickstart
+	./providers/infrastructure
+	./providers/code
+	./providers/kuery
+	./providers/app-studio
+)

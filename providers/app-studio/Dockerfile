@@ -17,6 +17,10 @@ RUN npm run build
 
 # 2. Build the Go binary. assets.go //go:embeds portal/dist, overlaid from the
 #    node stage so the bundle is fresh.
+#
+# TODO(sdk-publish): depends on github.com/faroshq/kedge-provider-sdk via a
+# `replace => ../../provider-sdk` that only resolves in the monorepo (go.work).
+# Standalone image builds need the SDK published (drop the replace) or vendored.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -25,9 +29,12 @@ COPY . ./
 COPY --from=portal /portal/dist ./portal/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app-studio-provider .
 
-# 3. Minimal runtime image. The portal bundle is baked into the binary.
+# 3. Minimal runtime image. The portal bundle is baked into the binary; the
+#    APIResourceSchemas the `init` subcommand applies are baked at
+#    /etc/kedge/schemas (KEDGE_SCHEMAS_DIR).
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/app-studio-provider /app-studio-provider
+COPY deploy/chart/files/schemas /etc/kedge/schemas
 EXPOSE 8081
 ENV PORT=8081
 USER nonroot:nonroot

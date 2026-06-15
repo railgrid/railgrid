@@ -22,6 +22,23 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "quickstart.serviceAccountName" . }}
+      initContainers:
+        # Bootstrap the provider workspace (schemas, APIExport, slice, bind
+        # grant) with the onboarded workspace-admin kubeconfig. Schemas baked at
+        # /etc/kedge/schemas (Dockerfile). Idempotent.
+        - name: init
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["init"]
+          env:
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: KEDGE_SCHEMAS_DIR
+              value: /etc/kedge/schemas
+          volumeMounts:
+            - name: kedge-provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
       containers:
         - name: provider
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
@@ -57,6 +74,15 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        # Required: the workspace-admin kubeconfig minted via /bonkers (admin
+        # onboarding), consumed by the init container.
+        - name: kedge-provider-kubeconfig
+          secret:
+            secretName: {{ .Values.providerKubeconfig.secretName }}
+            items:
+              - key: kubeconfig
+                path: kedge-provider-kubeconfig
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

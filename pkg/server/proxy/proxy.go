@@ -479,7 +479,7 @@ func isConflictError(err error) bool {
 
 // ensureStaticTokenUserOnce is the single-attempt logic for ensureStaticTokenUser.
 func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash string) (*tenancyv1alpha1.User, error) {
-	labelSelector := fmt.Sprintf("tenancy.kedge.faros.sh/sub=%s", subHash)
+	labelSelector := fmt.Sprintf("tenants.kedge.faros.sh/sub=%s", subHash)
 	users, err := p.kedgeClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
@@ -506,18 +506,23 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 		return user, nil
 	}
 
-	// Create new user with a short token prefix for identification.
+	// Create new user with a DETERMINISTIC name derived from the token hash.
+	// Using GenerateName here is racy: two concurrent logins both miss the
+	// List above and both create a user with a different random name, so the
+	// AlreadyExists guard never fires and we get duplicate users for one token.
+	// A stable name makes a racing create collide → AlreadyExists → reuse.
 	tokenPrefix := token
 	if len(tokenPrefix) > 8 {
 		tokenPrefix = tokenPrefix[:8]
 	}
+	userName := "static-user-" + subHash[:16]
 
 	user := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "static-user-",
+			Name: userName,
 			Labels: map[string]string{
-				"tenancy.kedge.faros.sh/sub":       subHash,
-				"tenancy.kedge.faros.sh/auth-type": "static-token",
+				"tenants.kedge.faros.sh/sub":       subHash,
+				"tenants.kedge.faros.sh/auth-type": "static-token",
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
@@ -526,20 +531,18 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 			RBACIdentity: fmt.Sprintf("kedge:static:%s", subHash[:16]),
 		},
 	}
-	user.APIVersion = "tenancy.kedge.faros.sh/v1alpha1"
+	user.APIVersion = "tenants.kedge.faros.sh/v1alpha1"
 	user.Kind = "User"
 
 	created, err := p.kedgeClient.Users().Create(ctx, user, metav1.CreateOptions{})
 	if err != nil {
-		// If user already exists (race condition), re-fetch and return.
+		// Concurrent login won the race — reuse the existing user by name.
 		if apierrors.IsAlreadyExists(err) {
-			users, listErr := p.kedgeClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
-			if listErr != nil {
-				return nil, fmt.Errorf("listing users after conflict: %w", listErr)
+			existing, getErr := p.kedgeClient.Users().Get(ctx, userName, metav1.GetOptions{})
+			if getErr != nil {
+				return nil, fmt.Errorf("getting user after create conflict: %w", getErr)
 			}
-			if len(users.Items) > 0 {
-				return &users.Items[0], nil
-			}
+			return existing, nil
 		}
 		return nil, fmt.Errorf("creating user: %w", err)
 	}
@@ -657,7 +660,7 @@ func writeUnauthorized(w http.ResponseWriter) {
 // uses this prefix together with the structural rule "an Organization
 // workspace has exactly one segment after orgs:" to decide whether a
 // requested target is an Org workspace.
-const orgWorkspacePathPrefix = "root:kedge:orgs:"
+const orgWorkspacePathPrefix = "root:kedge:tenants:"
 
 // orgWorkspaceForbiddenBody is the JSON the proxy returns when refusing a
 // direct request to an Organization workspace per docs/organizations.md
@@ -665,7 +668,7 @@ const orgWorkspacePathPrefix = "root:kedge:orgs:"
 // the standard Kubernetes Status envelope so kubectl renders the message
 // nicely while also carrying a kedge-specific reason + a pointer at the
 // hub REST surface so CLI tooling can suggest the right endpoint.
-const orgWorkspaceForbiddenBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Organization workspaces are hub-mediated and not directly accessible — use the hub REST endpoints at /api/orgs/{org-uuid}/... instead.","reason":"OrgWorkspaceNotDirectlyAccessible","code":403,"details":{"kind":"OrganizationWorkspace","group":"tenancy.kedge.faros.sh"}}`
+const orgWorkspaceForbiddenBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Organization workspaces are hub-mediated and not directly accessible — use the hub REST endpoints at /api/orgs/{org-uuid}/... instead.","reason":"OrgWorkspaceNotDirectlyAccessible","code":403,"details":{"kind":"OrganizationWorkspace","group":"tenants.kedge.faros.sh"}}`
 
 // isOrgWorkspacePath reports whether clusterPath addresses a kcp
 // Organization workspace (path root:kedge:orgs:{single-segment}). Child
@@ -811,7 +814,7 @@ func (p *KCPProxy) resolveUser(ctx context.Context, issuer, sub string) (*tenanc
 	hash := sha256.Sum256([]byte(issuer + "/" + sub))
 	subHash := hex.EncodeToString(hash[:])[:63]
 
-	labelSelector := fmt.Sprintf("tenancy.kedge.faros.sh/sub=%s", subHash)
+	labelSelector := fmt.Sprintf("tenants.kedge.faros.sh/sub=%s", subHash)
 	users, err := p.kedgeClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)

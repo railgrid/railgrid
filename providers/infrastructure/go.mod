@@ -3,6 +3,7 @@ module github.com/faroshq/provider-infrastructure
 go 1.26.3
 
 require (
+	github.com/faroshq/provider-sdk v0.0.0-00010101000000-000000000000
 	github.com/kcp-dev/multicluster-provider v0.0.0-00010101000000-000000000000
 	github.com/kcp-dev/sdk v0.31.1
 	github.com/modelcontextprotocol/go-sdk v1.3.1
@@ -87,3 +88,6 @@ replace github.com/kcp-dev/sdk => github.com/kcp-dev/sdk v0.28.1-0.2026050407520
 replace github.com/kcp-dev/multicluster-provider => github.com/kcp-dev/multicluster-provider v0.7.1-0.20260515112510-8f4137891edf
 
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.7.1-0.20260515112510-8f4137891edf
+
+// Local shared provider bootstrap SDK (monorepo). TODO(sdk-publish): drop once tagged.
+replace github.com/faroshq/provider-sdk => ../../provider-sdk

@@ -5,6 +5,7 @@ go 1.26.3
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.7.1-0.20260515112510-8f4137891edf
 
 require (
+	github.com/faroshq/provider-sdk v0.0.0-00010101000000-000000000000
 	github.com/faroshq/kuery v0.0.0-20260614065711-08329d47d344
 	github.com/kcp-dev/multicluster-provider v0.7.1
 	github.com/kcp-dev/sdk v0.31.0
@@ -100,3 +101,6 @@ require (
 replace github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.31.2-0.20260505083940-abda469632ba
 
 replace github.com/kcp-dev/multicluster-provider => github.com/kcp-dev/multicluster-provider v0.7.1-0.20260515112510-8f4137891edf
+
+// Local shared provider bootstrap SDK (monorepo). TODO(sdk-publish): drop once tagged.
+replace github.com/faroshq/provider-sdk => ../../provider-sdk

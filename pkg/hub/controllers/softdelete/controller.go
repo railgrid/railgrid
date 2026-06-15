@@ -34,7 +34,7 @@ limitations under the License.
 //   - Workspace: kcp Workspaces aren't in our scheme, so this branch
 //     polls (default every minute) — lists Org workspaces, lists each
 //     Org's child Workspaces, reads the annotation
-//     tenancy.kedge.faros.sh/deletion-requested-at and, once the grace
+//     tenants.kedge.faros.sh/deletion-requested-at and, once the grace
 //     window expires, drives the Workspace cascade (kcp Workspace +
 //     workspace-scope UMI rows).
 //

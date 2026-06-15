@@ -33,7 +33,7 @@ spec:
   #     topology.kcp.io into the tenant's namespace, letting them spawn
   #     arbitrary child workspaces and inspect cluster topology — both
   #     are kedge-system surfaces, not tenant surfaces.
-  #   * tenancy.kedge.faros.sh (Membership / Organization / User /
+  #   * tenants.kedge.faros.sh (Membership / Organization / User /
   #     UserMembershipIndex) is also a system primitive: tenants care
   #     about edges, MCPServers, and Placements, not about org/user
   #     plumbing. Membership management goes through the portal/hub

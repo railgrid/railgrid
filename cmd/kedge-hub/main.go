@@ -74,6 +74,7 @@ func main() {
 	cmd.Flags().StringVar(&opts.ProviderInternalURL, "provider-internal-url", "", "Server URL baked into the minted provider kubeconfig (default: --hub-external-url). Override for in-cluster provider pods, e.g. https://host.docker.internal:9443.")
 	cmd.Flags().BoolVar(&opts.DevMode, "dev-mode", false, "Enable dev mode (skip TLS verification for OIDC)")
 	cmd.Flags().StringSliceVar(&opts.StaticAuthTokens, "static-auth-token", nil, "Static bearer tokens for access (can be specified multiple times)")
+	cmd.Flags().StringSliceVar(&opts.AdminUsers, "admin-users", nil, "Platform-admin identities (User name, email, or rbacIdentity) allowed to reach /api/admin/* and the portal /bonkers area. Empty disables the admin surface.")
 	cmd.Flags().StringSliceVar(&opts.Providers, "providers", providers.BuiltinNames(),
 		"First-party providers to enable as CatalogEntries (comma-separated or repeat). "+
 			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")
