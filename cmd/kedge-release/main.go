@@ -60,11 +60,13 @@ type component struct {
 	triggers string
 }
 
-var componentOrder = []string{"hub", "quickstart", "infrastructure", "code"}
+var componentOrder = []string{"hub", "quickstart", "kuery", "app-studio", "infrastructure", "code"}
 
 var components = map[string]component{
 	"hub":            {"v", "goreleaser CLI release + hub/agent/provider images + Helm charts (ghcr.io/faroshq)"},
 	"quickstart":     {"providers/quickstart/v", "split → faroshq/provider-quickstart; the mirror builds its image + chart"},
+	"kuery":          {"providers/kuery/v", "split → faroshq/provider-kuery; the mirror builds its image + chart"},
+	"app-studio":     {"providers/app-studio/v", "split → faroshq/provider-app-studio; the mirror builds its image + chart"},
 	"infrastructure": {"providers/infrastructure/v", "tag only — no split/release workflow wired up yet"},
 	"code":           {"providers/code/v", "tag only — no split/release workflow wired up yet"},
 }
