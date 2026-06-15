@@ -24,14 +24,20 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"golang.org/x/sync/errgroup"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/klog/v2"
 
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	gatewayv1alpha1 "github.com/platform-mesh/kubernetes-graphql-gateway/apis/v1alpha1"
 	gatewaygw "github.com/platform-mesh/kubernetes-graphql-gateway/gateway/gateway"
 	"github.com/platform-mesh/kubernetes-graphql-gateway/gateway/gateway/authn"
@@ -75,6 +81,24 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 		return fmt.Errorf("writing temp kubeconfig for GraphQL listener: %w", err)
 	}
 
+	// Resolve the configured APIExportEndpointSlice workspace PATH
+	// (e.g. root:kedge:system:controllers) to its logical-cluster ID via the
+	// front-proxy. The listener's multicluster provider builds its slice cache
+	// over kcpShardConfig (shard-direct, because the slice advertises
+	// shard-direct VW URLs that reject the front-proxy client cert). But shards
+	// only resolve /clusters/<id> — workspace PATHS are a front-proxy-only
+	// concept, so a path here makes shard discovery 404 ("could not find the
+	// requested resource"). IDs resolve on both the front-proxy and shards, so
+	// we always hand the listener the ID.
+	logicalCluster := opts.GraphQLAPIExportLogicalCluster
+	if id, rerr := resolveLogicalClusterID(ctx, kcpFrontProxyConfig, logicalCluster); rerr != nil {
+		cleanup()
+		return fmt.Errorf("resolving logical-cluster ID for %q: %w", logicalCluster, rerr)
+	} else {
+		logger.Info("Resolved APIExportEndpointSlice workspace to logical-cluster ID", "path", logicalCluster, "id", id)
+		logicalCluster = id
+	}
+
 	// ── Listener ─────────────────────────────────────────────────────────────
 	listenerOpts := listeneroptions.NewOptions()
 	listenerOpts.Provider = "kcp"
@@ -91,7 +115,7 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	listenerOpts.ProviderKcp = &kcplisteneroptions.Options{
 		ExtraOptions: kcplisteneroptions.ExtraOptions{
 			APIExportEndpointSliceName:           opts.GraphQLAPIExportSliceName,
-			APIExportEndpointSliceLogicalCluster: opts.GraphQLAPIExportLogicalCluster,
+			APIExportEndpointSliceLogicalCluster: logicalCluster,
 			WorkspaceSchemaKubeconfigOverride:    kubeconfigPath,
 		},
 	}
@@ -220,6 +244,51 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	})
 
 	return nil
+}
+
+// logicalClusterGVR identifies the kcp LogicalCluster singleton ("cluster")
+// present in every workspace; its kcp.io/cluster annotation holds the
+// workspace's logical-cluster ID.
+var logicalClusterGVR = schema.GroupVersionResource{
+	Group: "core.kcp.io", Version: "v1alpha1", Resource: "logicalclusters",
+}
+
+// clusterAnnotation is the kcp-managed annotation carrying an object's
+// logical-cluster ID (the shard-resolvable cluster name).
+const clusterAnnotation = "kcp.io/cluster"
+
+// resolveLogicalClusterID translates a workspace path (e.g.
+// root:kedge:system:controllers) to its logical-cluster ID by reading the
+// LogicalCluster singleton through the front-proxy config (only the front-proxy
+// resolves paths). If clusterPath is already an ID (no ":" separator) it is
+// returned unchanged. The LogicalCluster's kcp.io/cluster annotation is set
+// asynchronously after workspace creation, so we poll briefly.
+func resolveLogicalClusterID(ctx context.Context, frontProxyConfig *rest.Config, clusterPath string) (string, error) {
+	if !strings.Contains(clusterPath, ":") {
+		// Not a path — assume the caller already supplied an ID.
+		return clusterPath, nil
+	}
+
+	cfg := rest.CopyConfig(frontProxyConfig)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, clusterPath)
+	client, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return "", fmt.Errorf("creating dynamic client: %w", err)
+	}
+
+	var id string
+	if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, time.Minute, true, func(ctx context.Context) (bool, error) {
+		lc, getErr := client.Resource(logicalClusterGVR).Get(ctx, "cluster", metav1.GetOptions{})
+		if getErr != nil {
+			klog.FromContext(ctx).V(4).Info("LogicalCluster not yet readable, retrying", "path", clusterPath, "err", getErr)
+			return false, nil
+		}
+		id = lc.GetAnnotations()[clusterAnnotation]
+		return id != "", nil
+	}); err != nil {
+		return "", fmt.Errorf("waiting for %s annotation on LogicalCluster: %w", clusterAnnotation, err)
+	}
+	return id, nil
 }
 
 // writeKubeconfigTemp serialises kcpConfig as a kubeconfig to a temporary file
