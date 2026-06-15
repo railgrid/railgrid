@@ -89,3 +89,11 @@ The assistant-facing workspace tools are App Studio local tools. Provider-code
 remains the git-source boundary: `commit_project_files` reads selected workspace
 files and delegates the actual commit to the Code provider's `code__commit_files`
 tool.
+
+## Runtime binding
+
+Projects can optionally name a pluggable runtime provider through
+`spec.runtime`. App Studio treats that binding as an interface: the runtime
+provider owns process state, logs, preview URLs, and target-specific behavior.
+App Studio exposes the binding and a status view in the project API and portal,
+but it does not execute commands directly or assume a fixed runtime target.

@@ -104,6 +104,31 @@ spec:
                 required:
                 - repositoryRef
                 type: object
+              runtime:
+                description: |-
+                  Runtime records the runtime provider attached to this Project. Runtime
+                  providers own process state, logs, preview URLs, and deployment targets.
+                properties:
+                  providerRef:
+                    description: ProviderRef names the runtime provider implementation
+                      or capability.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  runtimeRef:
+                    description: RuntimeRef names the runtime provider-owned resource
+                      for this Project.
+                    maxLength: 253
+                    type: string
+                  target:
+                    description: |-
+                      Target identifies the provider-specific runtime target, such as local,
+                      kubernetes, cloud-run, or lambda.
+                    maxLength: 128
+                    type: string
+                required:
+                - providerRef
+                type: object
             required:
             - displayName
             type: object

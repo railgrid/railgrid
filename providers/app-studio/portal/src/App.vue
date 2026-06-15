@@ -18,6 +18,7 @@ import {
   MessageSquare,
   PanelRight,
   Plus,
+  Rocket,
   Search,
   Send,
   Settings2,
@@ -1585,6 +1586,38 @@ function repositoryStatusLabel(repository: Project['repository']): string {
   }
 }
 
+function runtimeStatusLabel(runtime: Project['runtime']): string {
+  switch (runtime?.status) {
+    case 'Ready':
+      return 'Ready'
+    case 'NotConfigured':
+      return 'Not configured'
+    case 'Unavailable':
+      return 'Status unavailable'
+    case 'Failed':
+      return 'Failed'
+    case 'Pending':
+      return 'Pending'
+    default:
+      return runtime?.ready ? 'Ready' : runtime?.status || 'Not configured'
+  }
+}
+
+function runtimeCapabilitiesLabel(runtime: Project['runtime']): string {
+  return (runtime?.capabilities ?? []).filter(Boolean).join(', ')
+}
+
+function runtimePreviewURL(runtime: Project['runtime']): string {
+  const raw = runtime?.previewURL?.trim()
+  if (!raw) return ''
+  try {
+    const url = new URL(raw)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''
+  } catch {
+    return ''
+  }
+}
+
 function repositoryCommitPhaseLabel(commit: ProjectRepositoryCommit): string {
   switch (commit.phase) {
     case 'Succeeded':
@@ -2496,6 +2529,52 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 No commits recorded yet.
               </div>
               <div v-else class="text-[12px] text-text-muted">No repository is linked to this project.</div>
+            </section>
+            <section class="grid gap-2 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
+              <div class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+                <Rocket class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Runtime
+              </div>
+              <dl class="grid gap-2 text-[12px] sm:grid-cols-[112px_minmax(0,1fr)]">
+                <dt class="text-text-muted">Provider</dt>
+                <dd class="min-w-0 font-mono text-text-primary">
+                  {{ settingsProject.runtime?.providerRef || 'Not configured' }}
+                </dd>
+                <template v-if="settingsProject.runtime?.target">
+                  <dt class="text-text-muted">Target</dt>
+                  <dd class="min-w-0 font-mono text-text-primary">{{ settingsProject.runtime.target }}</dd>
+                </template>
+                <template v-if="settingsProject.runtime?.runtimeRef">
+                  <dt class="text-text-muted">Resource</dt>
+                  <dd class="min-w-0 font-mono text-text-primary">{{ settingsProject.runtime.runtimeRef }}</dd>
+                </template>
+                <dt class="text-text-muted">Status</dt>
+                <dd>
+                  <StatusBadge :status="runtimeStatusLabel(settingsProject.runtime)" />
+                </dd>
+                <template v-if="settingsProject.runtime?.message">
+                  <dt class="text-text-muted">Notice</dt>
+                  <dd class="text-text-secondary">{{ settingsProject.runtime.message }}</dd>
+                </template>
+                <template v-if="runtimePreviewURL(settingsProject.runtime)">
+                  <dt class="text-text-muted">Preview</dt>
+                  <dd class="min-w-0">
+                    <a
+                      :href="runtimePreviewURL(settingsProject.runtime)"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="inline-flex min-w-0 max-w-full items-center gap-1 font-mono text-text-primary underline underline-offset-2 hover:text-accent"
+                    >
+                      <span class="truncate">{{ runtimePreviewURL(settingsProject.runtime) }}</span>
+                      <ExternalLink class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                    </a>
+                  </dd>
+                </template>
+                <template v-if="runtimeCapabilitiesLabel(settingsProject.runtime)">
+                  <dt class="text-text-muted">Capabilities</dt>
+                  <dd class="min-w-0 font-mono text-text-primary">{{ runtimeCapabilitiesLabel(settingsProject.runtime) }}</dd>
+                </template>
+              </dl>
             </section>
             <div
               v-if="projectSettingsError || projectSettingsStatus"

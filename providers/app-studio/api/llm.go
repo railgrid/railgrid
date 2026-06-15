@@ -2053,6 +2053,21 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 			b.WriteString("Do not create another repository for this Project unless the user explicitly asks for a different repository.\n")
 		}
 	}
+	runtime := projectRuntimeView(p)
+	b.WriteString("\nRuntime:\n")
+	if runtime.Status == projectRuntimeStatusNotConfigured {
+		b.WriteString("- Runtime provider: not configured\n")
+		b.WriteString("No runtime provider is attached to this Project yet. Runtime, logs, and preview URLs must come from a configured runtime provider; do not run commands directly in App Studio or claim a preview is available without runtime provider evidence.\n")
+	} else {
+		b.WriteString("- Runtime provider: " + runtime.ProviderRef + "\n")
+		if runtime.Target != "" {
+			b.WriteString("- Runtime target: " + runtime.Target + "\n")
+		}
+		if runtime.RuntimeRef != "" {
+			b.WriteString("- Runtime resource: " + runtime.RuntimeRef + "\n")
+		}
+		b.WriteString("Runtime, logs, and preview URLs are owned by the configured runtime provider. Use runtime provider tools or status when they are available; do not run commands directly in App Studio or claim a preview is available unless runtime provider status or tool results provide one.\n")
+	}
 	b.WriteString("\nProject memory:\n")
 	appendMemoryList(&b, "Goals", p.Spec.Memory.Goals)
 	appendMemoryList(&b, "Requirements", p.Spec.Memory.Requirements)

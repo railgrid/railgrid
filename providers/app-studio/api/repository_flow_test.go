@@ -170,6 +170,87 @@ func TestProjectSystemPromptRequiresWorkspaceInspectBeforeEdit(t *testing.T) {
 	}
 }
 
+func TestProjectRuntimeViewDefaultsToNotConfigured(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+
+	view := projectView(context.Background(), nil, project)
+
+	if view.Runtime == nil {
+		t.Fatal("projectView Runtime is nil, want not-configured runtime view")
+	}
+	if view.Runtime.Status != projectRuntimeStatusNotConfigured {
+		t.Fatalf("runtime status = %q, want %q", view.Runtime.Status, projectRuntimeStatusNotConfigured)
+	}
+	if view.Runtime.Ready {
+		t.Fatal("runtime ready = true, want false for unconfigured runtime")
+	}
+	if !strings.Contains(view.Runtime.Message, "No runtime provider") {
+		t.Fatalf("runtime message = %q, want missing runtime provider guidance", view.Runtime.Message)
+	}
+}
+
+func TestProjectRuntimeViewUsesPluggableBinding(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Spec.Runtime = &aiv1alpha1.ProjectRuntimeBinding{
+		ProviderRef: "runtime-kubernetes",
+		Target:      "cloud-run",
+		RuntimeRef:  "demo-runtime",
+	}
+
+	view := projectView(context.Background(), nil, project)
+
+	if view.Runtime == nil {
+		t.Fatal("projectView Runtime is nil, want runtime binding view")
+	}
+	if view.Runtime.ProviderRef != "runtime-kubernetes" {
+		t.Fatalf("providerRef = %q, want runtime-kubernetes", view.Runtime.ProviderRef)
+	}
+	if view.Runtime.Target != "cloud-run" {
+		t.Fatalf("target = %q, want cloud-run", view.Runtime.Target)
+	}
+	if view.Runtime.RuntimeRef != "demo-runtime" {
+		t.Fatalf("runtimeRef = %q, want demo-runtime", view.Runtime.RuntimeRef)
+	}
+	if view.Runtime.Status != projectRuntimeStatusPending {
+		t.Fatalf("runtime status = %q, want %q", view.Runtime.Status, projectRuntimeStatusPending)
+	}
+	if view.Runtime.Ready {
+		t.Fatal("runtime ready = true, want false until runtime provider reports readiness")
+	}
+	if !strings.Contains(view.Runtime.Message, "runtime provider status is not available") {
+		t.Fatalf("runtime message = %q, want provider status guidance", view.Runtime.Message)
+	}
+}
+
+func TestProjectSystemPromptDescribesPluggableRuntimeBoundary(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Spec.Runtime = &aiv1alpha1.ProjectRuntimeBinding{
+		ProviderRef: "runtime-kubernetes",
+		Target:      "kubernetes",
+		RuntimeRef:  "demo-runtime",
+	}
+	repository := &ProjectRepositoryView{
+		Ref:    "demo-repo",
+		Name:   "demo",
+		Status: projectRepositoryStatusReady,
+		Ready:  true,
+	}
+
+	prompt := projectSystemPrompt(project, repository)
+
+	for _, want := range []string{
+		"Runtime provider: runtime-kubernetes",
+		"Runtime target: kubernetes",
+		"Runtime resource: demo-runtime",
+		"runtime provider",
+		"do not run commands directly in App Studio",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestSummarizeProjectToolArgumentsCommitFiles(t *testing.T) {
 	args := `{"repositoryRef":"invoice-desk","message":"Initial app","files":[{"path":"package.json","content":"secret-ish generated file body"},{"path":"src/App.tsx","content":"another generated body"}]}`
 	got := summarizeProjectToolArguments("code__commit_files", args)

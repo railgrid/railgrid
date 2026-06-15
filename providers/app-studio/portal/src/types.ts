@@ -13,6 +13,17 @@ export interface ProjectMemory {
   constraints?: string[]
 }
 
+export interface ProjectRuntimeView {
+  providerRef?: string
+  target?: string
+  runtimeRef?: string
+  status?: string
+  message?: string
+  previewURL?: string
+  ready?: boolean
+  capabilities?: string[]
+}
+
 export interface ProjectMessage {
   id: string
   projectID: string
@@ -58,6 +69,7 @@ export interface Project {
     ready?: boolean
     commits?: ProjectRepositoryCommit[]
   }
+  runtime?: ProjectRuntimeView
   memory?: ProjectMemory
   createdAt: string
   updatedAt?: string
