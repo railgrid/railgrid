@@ -308,11 +308,24 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 	obj := repositoryCommitObject(repo, bundle, in)
 	created, err := dyn.Resource(repositoryCommitsGVR).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
+		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
 		if apierrors.IsNotFound(err) {
 			return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: RepositoryCommit API is not available in this workspace; enable or re-register the Code provider so repositorycommits.code.kedge.faros.sh is published: %w", err)
 		}
 		return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: %w", err)
 	}
+	storageScope := repositoryCommitBundleStorageScope(tenantScope, created)
+	if storageScope == "" {
+		_ = dyn.Resource(repositoryCommitsGVR).Delete(ctx, created.GetName(), metav1.DeleteOptions{})
+		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
+		return nil, commitFilesOutput{}, fmt.Errorf("created RepositoryCommit %q did not include kcp.io/cluster", created.GetName())
+	}
+	if _, err := bundles.Put(ctx, storageScope, files); err != nil {
+		_ = dyn.Resource(repositoryCommitsGVR).Delete(ctx, created.GetName(), metav1.DeleteOptions{})
+		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
+		return nil, commitFilesOutput{}, fmt.Errorf("store RepositoryCommit bundle: %w", err)
+	}
+	_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
 	out := commitFilesOutput{
 		RepositoryRef: in.RepositoryRef,
 		Name:          created.GetName(),
@@ -332,6 +345,15 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 		}
 	}
 	return nil, out, nil
+}
+
+func repositoryCommitBundleStorageScope(tenantScope string, created metav1.Object) string {
+	if created != nil {
+		if cluster := strings.TrimSpace(created.GetAnnotations()["kcp.io/cluster"]); cluster != "" {
+			return cluster
+		}
+	}
+	return ""
 }
 
 func repositoryCommitObject(repo *codev1alpha1.Repository, bundle commitbundle.BundleRef, in commitFilesInput) *unstructured.Unstructured {
@@ -358,13 +380,14 @@ func repositoryCommitObject(repo *codev1alpha1.Repository, bundle commitbundle.B
 			"blockOwnerDeletion": false,
 		}}
 	}
+	bundleRef := map[string]any{
+		"name":   bundle.Name,
+		"digest": bundle.Digest,
+	}
 	spec := map[string]any{
 		"repositoryRef": in.RepositoryRef,
 		"source": map[string]any{
-			"bundleRef": map[string]any{
-				"name":   bundle.Name,
-				"digest": bundle.Digest,
-			},
+			"bundleRef": bundleRef,
 		},
 	}
 	putIf(spec, "message", in.Message)

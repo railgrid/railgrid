@@ -37,6 +37,9 @@ func TestFileStorePutGet(t *testing.T) {
 	if ref.Name == "" || !strings.HasPrefix(ref.Digest, "sha256:") {
 		t.Fatalf("unexpected ref: %#v", ref)
 	}
+	if ref.Scope != "root:acme" {
+		t.Fatalf("scope = %q, want root:acme", ref.Scope)
+	}
 	if ref.Size == 0 || ref.FileCount != 2 || len(ref.Files) != 2 {
 		t.Fatalf("unexpected metadata: %#v", ref)
 	}
@@ -46,6 +49,9 @@ func TestFileStorePutGet(t *testing.T) {
 	}
 	if bundle.Digest != ref.Digest || len(bundle.Files) != 2 {
 		t.Fatalf("unexpected bundle: %#v", bundle)
+	}
+	if bundle.Scope != ref.Scope {
+		t.Fatalf("bundle scope = %q, want %q", bundle.Scope, ref.Scope)
 	}
 	if bundle.Files[0].Path != "README.md" || bundle.Files[1].Path != "src/main.go" {
 		t.Fatalf("files were not canonicalized and sorted: %#v", bundle.Files)

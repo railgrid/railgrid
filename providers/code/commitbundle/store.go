@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package commitbundle stores generated source bundles outside Kubernetes API
 // objects. RepositoryCommit CRs carry only a bundle name and digest; this store
-// owns the bytes until the controller commits them to the host repository.
+// owns the scoped bytes until the controller commits them to the host repository.
 package commitbundle
 
 import (
@@ -46,6 +46,12 @@ const (
 
 var errBundleNotFound = errors.New("bundle not found")
 
+// IsNotFound reports whether err means the requested bundle is not present in
+// the addressed scope.
+func IsNotFound(err error) bool {
+	return errors.Is(err, errBundleNotFound)
+}
+
 // File is one UTF-8 text file from an MCP commit_files call.
 type File struct {
 	Path    string
@@ -63,6 +69,7 @@ type FileMeta struct {
 type BundleRef struct {
 	Name      string
 	Digest    string
+	Scope     string
 	Size      int64
 	FileCount int
 	Files     []FileMeta
@@ -131,6 +138,7 @@ func (s *FileStore) Put(ctx context.Context, scope string, files []File) (Bundle
 	if s == nil {
 		return BundleRef{}, errors.New("bundle store is nil")
 	}
+	scope = strings.TrimSpace(scope)
 	key, err := scopeKey(scope)
 	if err != nil {
 		return BundleRef{}, err
@@ -139,7 +147,8 @@ func (s *FileStore) Put(ctx context.Context, scope string, files []File) (Bundle
 	if err != nil {
 		return BundleRef{}, err
 	}
-	bundle.Scope = strings.TrimSpace(scope)
+	bundle.Scope = scope
+	ref.Scope = scope
 	if err := ctx.Err(); err != nil {
 		return BundleRef{}, err
 	}

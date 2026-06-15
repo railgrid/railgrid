@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +39,8 @@ type Reconciler struct {
 	Backends *backend.Registry
 	Bundles  commitbundle.Store
 }
+
+const bundleArrivalTimeout = 30 * time.Second
 
 // SetupWithManager wires the reconciler into the multicluster manager.
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -113,8 +116,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	bundleRef := commit.Spec.Source.BundleRef
-	bundle, err := r.Bundles.Get(ctx, string(req.ClusterName), bundleRef.Name, bundleRef.Digest)
+	bundleScope := string(req.ClusterName)
+	bundle, err := r.Bundles.Get(ctx, bundleScope, bundleRef.Name, bundleRef.Digest)
 	if err != nil {
+		if commitbundle.IsNotFound(err) && !bundleArrivalTimedOut(commit.Status.StartedAt, time.Now()) {
+			logger.V(4).Info("source bundle not visible yet, requeuing", "bundle", bundleRef.Name)
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
 		return ctrl.Result{}, r.fail(ctx, c, &commit, err.Error())
 	}
 	files := make([]backend.RepositoryCommitFile, 0, len(bundle.Files))
@@ -155,7 +163,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if err := c.Status().Update(ctx, next); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update repositorycommit %q status: %w", commit.Name, err)
 	}
-	if err := r.Bundles.Delete(ctx, string(req.ClusterName), bundleRef.Name, bundleRef.Digest); err != nil {
+	if err := r.Bundles.Delete(ctx, bundleScope, bundleRef.Name, bundleRef.Digest); err != nil {
 		logger.Error(err, "delete committed source bundle", "bundle", bundleRef.Name)
 	}
 	logger.V(3).Info("repository commit succeeded", "repository", commit.Spec.RepositoryRef, "commitSHA", res.CommitSHA)
@@ -204,4 +212,11 @@ func repositoryCommitIdempotencyKey(commit *codev1alpha1.RepositoryCommit) strin
 		return string(commit.UID)
 	}
 	return commit.Name
+}
+
+func bundleArrivalTimedOut(startedAt *metav1.Time, now time.Time) bool {
+	if startedAt == nil {
+		return false
+	}
+	return now.Sub(startedAt.Time) >= bundleArrivalTimeout
 }
