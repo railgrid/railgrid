@@ -135,8 +135,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
-          # Repo-root context so the ../../provider-sdk replace resolves (see Dockerfile).
-          context: .
+          context: ./providers/infrastructure
           file: ./providers/infrastructure/Dockerfile
           # Multi-arch on release; single-arch build-only on PRs (no QEMU emulation cost).
           platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
@@ -173,8 +172,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
-          # Repo-root context so the ../../provider-sdk replace resolves (see Dockerfile).
-          context: .
+          context: ./providers/quickstart
           file: ./providers/quickstart/Dockerfile
           # Multi-arch on release; single-arch build-only on PRs (no QEMU emulation cost).
           platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}

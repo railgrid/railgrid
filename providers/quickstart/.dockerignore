@@ -1,0 +1,8 @@
+# The portal bundle is rebuilt in the node stage and overlaid into the Go
+# build stage, so the host-side copies must NOT enter the build context:
+# node_modules is large (and on dev checkouts is a symlink that dangles once
+# it leaves the workspace tree), and a host dist/ would shadow the fresh build.
+# Was covered by the repo-root .dockerignore while the image built from the
+# repo root; needed here now the build context is ./providers/quickstart.
+portal/node_modules
+portal/dist
