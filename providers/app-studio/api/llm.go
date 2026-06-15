@@ -58,7 +58,7 @@ const (
 
 	// maxAssistantToolTurns bounds how many tool-call/round-trips a single
 	// assistant generation may take before the final turn is forced to answer
-	// in text (tool_choice=none). It guards against a model that loops on
+	// in text without tools. It guards against a model that loops on
 	// failing or disallowed tool calls.
 	maxAssistantToolTurns            = 8
 	projectToolInfoLimit             = 1000
@@ -80,8 +80,9 @@ const (
 )
 
 var (
-	errProjectLLMNotConfigured = errors.New("project LLM API key is not configured")
-	secretGVR                  = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
+	errProjectLLMNotConfigured    = errors.New("project LLM API key is not configured")
+	errProjectLLMNoStreamedChoice = errors.New("LLM API returned no streamed choices")
+	secretGVR                     = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 )
 
 type ProjectLLMSettingsView struct {
@@ -333,10 +334,12 @@ func (s *Server) generateProjectAssistantStream(
 	// instead of grinding through every turn and dying with a generic error.
 	seenToolCalls := map[string]int{}
 	forceTextAnswer := false
+	repeatedToolLoop := false
+	var lastToolMessages []chatMessage
 
 	for i := 0; i < maxAssistantToolTurns; i++ {
-		// On the last allowed turn (or once we have detected a loop) set
-		// tool_choice=none so the model MUST produce a final text answer. This
+		// On the last allowed turn (or once we have detected a loop), stop
+		// offering tools so the model must produce a final text answer. This
 		// turns "exceeded safe turn limit" into a graceful explanation of why
 		// the assistant could not complete the request.
 		finalTurn := forceTextAnswer || i == maxAssistantToolTurns-1
@@ -347,18 +350,17 @@ func (s *Server) generateProjectAssistantStream(
 			Temperature: 0.2,
 			Stream:      true,
 		}
-		if len(tools) > 0 {
+		if len(tools) > 0 && !finalTurn {
 			reqBody.Tools = tools
-			if finalTurn {
-				reqBody.ToolChoice = "none"
-			} else {
-				reqBody.ToolChoice = "auto"
-			}
+			reqBody.ToolChoice = "auto"
 		}
 		maybeInjectGoogleThoughtSignature(settings, reqBody.Messages)
 
 		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, callbacks.OnChunk, callbacks.OnStatus)
 		if err != nil {
+			if repeatedToolLoop && errors.Is(err, errProjectLLMNoStreamedChoice) {
+				return projectRepeatedToolLoopFallback(lastToolMessages), nil
+			}
 			return "", err
 		}
 		if len(reply.ToolCalls) > 0 && !finalTurn {
@@ -382,23 +384,57 @@ func (s *Server) generateProjectAssistantStream(
 			if callErr != nil {
 				return "", callErr
 			}
+			lastToolMessages = nextMessages
 			messages = append(messages, nextMessages...)
 
 			if repeated {
 				logger.Info("project assistant repeated an identical tool call across turns; forcing a final text answer",
 					"turn", i, "project", p.Name)
 				forceTextAnswer = true
+				repeatedToolLoop = true
 			}
 			continue
 		}
 
 		if strings.TrimSpace(reply.Content) == "" {
+			if repeatedToolLoop {
+				return projectRepeatedToolLoopFallback(lastToolMessages), nil
+			}
 			return "", errors.New("LLM API returned an empty assistant message")
 		}
 		return reply.Content, nil
 	}
 
 	return "", errors.New("LLM tool loop exceeded safe turn limit")
+}
+
+func projectRepeatedToolLoopFallback(toolMessages []chatMessage) string {
+	summaries := make([]string, 0, len(toolMessages))
+	for _, msg := range toolMessages {
+		name := strings.TrimSpace(msg.Name)
+		if name == "" {
+			continue
+		}
+		if summary := summarizeProjectToolResult(name, msg.Content); summary != "" {
+			summaries = append(summaries, name+": "+summary)
+			continue
+		}
+		summaries = append(summaries, name)
+	}
+
+	var b strings.Builder
+	b.WriteString("I stopped because the assistant repeated the same action and the model did not provide a final text answer.")
+	if len(summaries) > 0 {
+		b.WriteString(" Last action result")
+		if len(summaries) > 1 {
+			b.WriteString("s")
+		}
+		b.WriteString(": ")
+		b.WriteString(strings.Join(summaries, "; "))
+		b.WriteString(".")
+	}
+	b.WriteString(" Please ask me to continue if you want the next step.")
+	return b.String()
 }
 
 func (s *Server) generateProjectNaming(ctx context.Context, c *asclient.Client, prompt string) (projectNamingResult, error) {
@@ -684,10 +720,10 @@ func callProjectChatCompletionStream(
 		return projectAssistantReply{}, fmt.Errorf("scan stream response: %w", err)
 	}
 	if !sawStreamingEvents {
-		return projectAssistantReply{}, errors.New("LLM API returned no streamed choices")
+		return projectAssistantReply{}, errProjectLLMNoStreamedChoice
 	}
 	if content.Len() == 0 && len(toolCallByIndex) == 0 {
-		return projectAssistantReply{}, errors.New("LLM API returned no streamed choices")
+		return projectAssistantReply{}, errProjectLLMNoStreamedChoice
 	}
 	toolCalls := make([]chatToolCall, 0, len(toolCallByIndex))
 	indices := make([]int, 0, len(toolCallByIndex))

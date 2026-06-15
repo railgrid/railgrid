@@ -31,8 +31,11 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -643,6 +646,150 @@ func TestResolveProjectToolCallsRunsLocalWorkspaceMutationTools(t *testing.T) {
 	if read.Content != "hello Kedge\n" {
 		t.Fatalf("workspace content = %q", read.Content)
 	}
+}
+
+func TestGenerateProjectAssistantStreamStopsOfferingToolsAfterRepeatedToolLoop(t *testing.T) {
+	reply, requests, err := runRepeatedWriteFileAssistantStream(t, func(w http.ResponseWriter) {
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"I updated src/App.tsx and stopped before repeating the same action.\"}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	})
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if !strings.Contains(reply, "I updated src/App.tsx") {
+		t.Fatalf("reply = %q, want final text answer", reply)
+	}
+	if len(requests) != 3 {
+		t.Fatalf("LLM request count = %d, want 3", len(requests))
+	}
+	if len(requests[2].Tools) != 0 || requests[2].ToolChoice != "" {
+		t.Fatalf("final request offered tools: tools=%d tool_choice=%q", len(requests[2].Tools), requests[2].ToolChoice)
+	}
+}
+
+func TestGenerateProjectAssistantStreamFallsBackWhenFinalNoToolResponseIsEmpty(t *testing.T) {
+	reply, requests, err := runRepeatedWriteFileAssistantStream(t, func(w http.ResponseWriter) {
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	})
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if !strings.Contains(reply, "repeated the same action") || !strings.Contains(reply, "write_file") || !strings.Contains(reply, "src/App.tsx") {
+		t.Fatalf("reply = %q, want repeated action fallback", reply)
+	}
+	if len(requests) != 3 {
+		t.Fatalf("LLM request count = %d, want 3", len(requests))
+	}
+	if len(requests[2].Tools) != 0 || requests[2].ToolChoice != "" {
+		t.Fatalf("final request offered tools: tools=%d tool_choice=%q", len(requests[2].Tools), requests[2].ToolChoice)
+	}
+}
+
+func runRepeatedWriteFileAssistantStream(t *testing.T, finalNoToolResponse func(http.ResponseWriter)) (string, []chatCompletionRequest, error) {
+	t.Helper()
+
+	var requests []chatCompletionRequest
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode LLM request: %v", err)
+		}
+		requests = append(requests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(requests) > 2 && len(req.Tools) == 0 && finalNoToolResponse != nil {
+			finalNoToolResponse(w)
+			return
+		}
+		callID := fmt.Sprintf("call-%d", len(requests))
+		chunk := chatCompletionStreamResponse{
+			Choices: []chatCompletionStreamChoice{{}},
+		}
+		chunk.Choices[0].Delta.ToolCalls = []chatStreamingCall{{
+			Index: 0,
+			ID:    callID,
+			Type:  "function",
+		}}
+		chunk.Choices[0].Delta.ToolCalls[0].Function.Name = "write_file"
+		chunk.Choices[0].Delta.ToolCalls[0].Function.Arguments = `{"path":"src/App.tsx","content":"hello world\n"}`
+		raw, err := json.Marshal(chunk)
+		if err != nil {
+			t.Fatalf("marshal LLM stream chunk: %v", err)
+		}
+		fmt.Fprintf(w, "data: %s\n\n", raw)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer llm.Close()
+
+	settings := projectLLMSettings{
+		Provider: defaultProjectLLMProvider,
+		BaseURL:  llm.URL,
+		Model:    "test-model",
+		APIKey:   "test-key",
+	}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messages := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	if err := appendProjectUserMessage(context.Background(), messages, scope, "write a hello app"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	project.Spec.DisplayName = "Demo"
+
+	reply, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	return reply, requests, err
+}
+
+func TestProjectRepeatedToolLoopFallbackSummarizesLastToolResult(t *testing.T) {
+	got := projectRepeatedToolLoopFallback([]chatMessage{{
+		Role:    "tool",
+		Name:    "write_file",
+		Content: `{"operation":"write_file","path":"src/App.tsx","size":12}`,
+	}})
+	for _, want := range []string{"repeated the same action", "Last action result", "write_file", "src/App.tsx", "12 bytes"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("fallback = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "completed action") {
+		t.Fatalf("fallback = %q, should not claim the action completed", got)
+	}
+}
+
+type projectSettingsDynamicClient struct {
+	secret *unstructured.Unstructured
+}
+
+func (c projectSettingsDynamicClient) Resource(gvr schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
+	return projectSettingsDynamicResource{gvr: gvr, secret: c.secret}
+}
+
+type projectSettingsDynamicResource struct {
+	dynamic.ResourceInterface
+	gvr       schema.GroupVersionResource
+	namespace string
+	secret    *unstructured.Unstructured
+}
+
+func (r projectSettingsDynamicResource) Namespace(namespace string) dynamic.ResourceInterface {
+	r.namespace = namespace
+	return r
+}
+
+func (r projectSettingsDynamicResource) Get(_ context.Context, name string, _ metav1.GetOptions, _ ...string) (*unstructured.Unstructured, error) {
+	if r.gvr == secretGVR && r.namespace == projectLLMSecretNamespace && name == projectLLMSecretName && r.secret != nil {
+		return r.secret.DeepCopy(), nil
+	}
+	return nil, apierrors.NewNotFound(schema.GroupResource{Group: r.gvr.Group, Resource: r.gvr.Resource}, name)
 }
 
 func TestResolveProjectToolCallsCommitsWorkspaceFilesThroughCodeProvider(t *testing.T) {
