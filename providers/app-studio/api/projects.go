@@ -605,8 +605,7 @@ func (s *Server) streamProjectAssistant(
 		return
 	}
 	if streamErr != nil {
-		assistantReply := projectAssistantStoredContent(reply, assistantContent.String())
-		_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantReply)
+		_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
 		return
 	}
 	assistantReply := projectAssistantStoredContent(reply, assistantContent.String())
@@ -616,6 +615,13 @@ func (s *Server) streamProjectAssistant(
 			Error: "assistant generation returned an empty response",
 		})
 		return
+	}
+	if pending := projectAssistantUnstreamedContent(assistantReply, assistantContent.String()); pending != "" {
+		streamChunk(pending)
+		if streamErr != nil {
+			_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
+			return
+		}
 	}
 
 	if err := appendProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantReply, projectAssistantMessageMetadata("", streamedToolCalls)); err != nil {
@@ -634,10 +640,25 @@ func (s *Server) streamProjectAssistant(
 }
 
 func projectAssistantStoredContent(reply, streamed string) string {
-	if strings.TrimSpace(streamed) != "" {
-		return streamed
+	if strings.TrimSpace(reply) != "" {
+		return reply
 	}
-	return reply
+	return streamed
+}
+
+func projectAssistantUnstreamedContent(reply, streamed string) string {
+	reply = strings.TrimSpace(reply)
+	if reply == "" {
+		return ""
+	}
+	streamed = strings.TrimSpace(streamed)
+	if streamed == "" {
+		return reply
+	}
+	if strings.Contains(streamed, reply) {
+		return ""
+	}
+	return "\n\n" + reply
 }
 
 func shouldPersistInterruptedProjectAssistant(ctx context.Context, err, streamErr error, streamed string) bool {

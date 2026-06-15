@@ -390,6 +390,11 @@ func (s *Server) generateProjectAssistantStream(
 			lastToolMessages = nextMessages
 			messages = append(messages, nextMessages...)
 
+			if commitReply, ok := projectCommitToolReply(nextMessages); ok {
+				logger.Info("project assistant completed a project commit handoff attempt; forcing a final text answer",
+					"turn", i, "project", p.Name)
+				return commitReply, nil
+			}
 			if repeated {
 				logger.Info("project assistant repeated an identical tool call across turns; forcing a final text answer",
 					"turn", i, "project", p.Name)
@@ -416,6 +421,42 @@ func (s *Server) generateProjectAssistantStream(
 
 func projectRepeatedToolLoopFallback(toolMessages []chatMessage) string {
 	return projectToolLoopFallback(toolMessages, "repeated the same action")
+}
+
+func projectCommitToolReply(toolMessages []chatMessage) (string, bool) {
+	for i := len(toolMessages) - 1; i >= 0; i-- {
+		msg := toolMessages[i]
+		if projectToolBaseName(msg.Name) != projectToolCommitProjectFiles {
+			continue
+		}
+		status := projectToolMessageStatus(msg)
+		summary := summarizeProjectToolResult(msg.Name, msg.Content)
+		summary = strings.TrimSpace(strings.TrimPrefix(summary, "Tool call failed:"))
+
+		var b strings.Builder
+		switch status {
+		case "failed":
+			b.WriteString("I could not commit the workspace files to the managed git source.")
+		case "running":
+			b.WriteString("The repository commit request was created, but it is still running.")
+		default:
+			b.WriteString("Committed the workspace files to the managed git source.")
+		}
+		if summary != "" {
+			b.WriteString(" Last action result: ")
+			b.WriteString(summary)
+			b.WriteString(".")
+		}
+		return b.String(), true
+	}
+	return "", false
+}
+
+func projectToolMessageStatus(msg chatMessage) string {
+	if strings.HasPrefix(strings.TrimSpace(msg.Content), "Tool call failed:") {
+		return "failed"
+	}
+	return projectToolCallResultStatus(msg.Name, msg.Content)
 }
 
 func projectToolLoopFallback(toolMessages []chatMessage, reason string) string {
@@ -2052,6 +2093,7 @@ func normalizeLLMBasePath(path string, host string) string {
 
 func projectPromptMessages(p *aiv1alpha1.Project, repository *ProjectRepositoryView, history []store.Message) []chatMessage {
 	messages := []chatMessage{{Role: "system", Content: projectSystemPrompt(p, repository)}}
+	var lastRole, lastContent string
 	for _, m := range history {
 		if m.Role != aiv1alpha1.ProjectMessageRoleUser && m.Role != aiv1alpha1.ProjectMessageRoleAssistant {
 			continue
@@ -2060,7 +2102,12 @@ func projectPromptMessages(p *aiv1alpha1.Project, repository *ProjectRepositoryV
 		if content == "" {
 			continue
 		}
+		if m.Role == aiv1alpha1.ProjectMessageRoleUser && lastRole == aiv1alpha1.ProjectMessageRoleUser && lastContent == content {
+			continue
+		}
 		messages = append(messages, chatMessage{Role: m.Role, Content: content})
+		lastRole = m.Role
+		lastContent = content
 	}
 	return messages
 }

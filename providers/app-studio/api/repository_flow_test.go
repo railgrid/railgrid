@@ -704,6 +704,195 @@ func TestGenerateProjectAssistantStreamFallsBackWhenFinalToolLimitResponseHasOnl
 	}
 }
 
+func TestProjectPromptMessagesCollapsesConsecutiveDuplicateUserMessages(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	history := []store.Message{
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "Make an app"},
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "Make an app"},
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: " Make an app "},
+		{Role: aiv1alpha1.ProjectMessageRoleAssistant, Content: "I inspected the workspace."},
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "Make an app"},
+	}
+
+	messages := projectPromptMessages(project, nil, history)
+
+	var userMessages []string
+	for _, msg := range messages {
+		if msg.Role == aiv1alpha1.ProjectMessageRoleUser {
+			userMessages = append(userMessages, msg.Content)
+		}
+	}
+	if len(userMessages) != 2 {
+		t.Fatalf("user prompt count = %d, want 2: %#v", len(userMessages), userMessages)
+	}
+	for _, got := range userMessages {
+		if got != "Make an app" {
+			t.Fatalf("user prompt = %q, want normalized prompt", got)
+		}
+	}
+}
+
+func TestGenerateProjectAssistantStreamReturnsCommitProjectFilesResult(t *testing.T) {
+	var llmRequests []chatCompletionRequest
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode LLM request: %v", err)
+		}
+		llmRequests = append(llmRequests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch len(llmRequests) {
+		case 1:
+			writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"index.html","content":"hello\n"}`)
+		case 2:
+			writeProjectTestToolCallChunk(t, w, "call-commit", "commit_project_files", `{"repositoryRef":"demo-repo","paths":["index.html"],"message":"Initial app"}`)
+		default:
+			t.Fatalf("unexpected LLM request after commit handoff: tools=%d tool_choice=%q", len(req.Tools), req.ToolChoice)
+		}
+	}))
+	defer llm.Close()
+
+	var commitCalls int
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch envelope.Method {
+		case "tools/list":
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"commit files"}]}}`)
+		case "tools/call":
+			commitCalls++
+			if envelope.Params.Name != "code__commit_files" {
+				t.Fatalf("unexpected MCP tool call: %#v", envelope)
+			}
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["index.html"],"commitSHA":"abcdef1234567890"}}}`)
+		default:
+			t.Fatalf("unexpected MCP request method %q", envelope.Method)
+		}
+	}))
+	defer mcp.Close()
+
+	reply, requests, err := runProjectAssistantStreamWithLLMAndHub(t, llm.URL, mcp.URL, &llmRequests)
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if !strings.Contains(reply, "Committed the workspace files") || !strings.Contains(reply, "commit abcdef123456") {
+		t.Fatalf("reply = %q, want deterministic commit success", reply)
+	}
+	if commitCalls != 1 {
+		t.Fatalf("commit call count = %d, want 1", commitCalls)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("LLM request count = %d, want 2", len(requests))
+	}
+}
+
+func TestGenerateProjectAssistantStreamReportsCommitProjectFilesFailure(t *testing.T) {
+	var llmRequests []chatCompletionRequest
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode LLM request: %v", err)
+		}
+		llmRequests = append(llmRequests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch len(llmRequests) {
+		case 1:
+			writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"index.html","content":"hello\n"}`)
+		case 2:
+			writeProjectTestToolCallChunk(t, w, "call-commit", "commit_project_files", `{"repositoryRef":"demo-repo","paths":["index.html"],"message":"Initial app"}`)
+		default:
+			t.Fatalf("unexpected LLM request after failed commit handoff: tools=%d tool_choice=%q", len(req.Tools), req.ToolChoice)
+		}
+	}))
+	defer llm.Close()
+
+	var commitCalls int
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch envelope.Method {
+		case "tools/list":
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"commit files"}]}}`)
+		case "tools/call":
+			commitCalls++
+			if envelope.Params.Name != "code__commit_files" {
+				t.Fatalf("unexpected MCP tool call: %#v", envelope)
+			}
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"RepositoryCommit failed: bundle not found"}]}}`)
+		default:
+			t.Fatalf("unexpected MCP request method %q", envelope.Method)
+		}
+	}))
+	defer mcp.Close()
+
+	reply, requests, err := runProjectAssistantStreamWithLLMAndHub(t, llm.URL, mcp.URL, &llmRequests)
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if !strings.Contains(reply, "could not commit") || !strings.Contains(reply, "bundle not found") {
+		t.Fatalf("reply = %q, want deterministic commit failure", reply)
+	}
+	if strings.Contains(reply, "Committed the workspace files") {
+		t.Fatalf("reply = %q, should not claim commit success", reply)
+	}
+	if commitCalls != 1 {
+		t.Fatalf("commit call count = %d, want 1", commitCalls)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("LLM request count = %d, want 2", len(requests))
+	}
+}
+
+func TestProjectCommitToolReplyReportsRunningCommit(t *testing.T) {
+	reply, ok := projectCommitToolReply([]chatMessage{{
+		Role:    "tool",
+		Name:    "commit_project_files",
+		Content: `{"name":"demo-commit","phase":"Running","files":["index.html"]}`,
+	}})
+	if !ok {
+		t.Fatal("projectCommitToolReply returned ok=false")
+	}
+	if !strings.Contains(reply, "still running") || !strings.Contains(reply, "request demo-commit") {
+		t.Fatalf("reply = %q, want running commit result", reply)
+	}
+	if strings.Contains(reply, "Committed the workspace files") {
+		t.Fatalf("reply = %q, should not claim commit success", reply)
+	}
+}
+
+func TestProjectAssistantStoredContentPrefersFinalReply(t *testing.T) {
+	got := projectAssistantStoredContent("Committed index.html.", "I will inspect the project files.")
+	if got != "Committed index.html." {
+		t.Fatalf("stored content = %q, want final reply", got)
+	}
+}
+
+func TestProjectAssistantUnstreamedContentAppendsDistinctFinalReply(t *testing.T) {
+	got := projectAssistantUnstreamedContent("Committed index.html.", "I will inspect the project files.")
+	if got != "\n\nCommitted index.html." {
+		t.Fatalf("unstreamed content = %q, want final reply chunk", got)
+	}
+	if duplicate := projectAssistantUnstreamedContent("Committed index.html.", "Committed index.html."); duplicate != "" {
+		t.Fatalf("duplicate unstreamed content = %q, want empty", duplicate)
+	}
+}
+
 func runRepeatedWriteFileAssistantStream(t *testing.T, finalNoToolResponse func(http.ResponseWriter)) (string, []chatCompletionRequest, error) {
 	t.Helper()
 
@@ -772,6 +961,10 @@ func writeProjectTestToolCallChunk(t *testing.T, w http.ResponseWriter, id, name
 }
 
 func runProjectAssistantStreamWithLLM(t *testing.T, llmURL string, requests *[]chatCompletionRequest) (string, []chatCompletionRequest, error) {
+	return runProjectAssistantStreamWithLLMAndHub(t, llmURL, "", requests)
+}
+
+func runProjectAssistantStreamWithLLMAndHub(t *testing.T, llmURL string, hubBase string, requests *[]chatCompletionRequest) (string, []chatCompletionRequest, error) {
 	t.Helper()
 
 	settings := projectLLMSettings{
@@ -787,7 +980,7 @@ func runProjectAssistantStreamWithLLM(t *testing.T, llmURL string, requests *[]c
 		t.Fatalf("appendProjectUserMessage returned error: %v", err)
 	}
 	workspaces := workspace.NewFileStore(t.TempDir())
-	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	server := NewWithWorkspace(nil, messages, workspaces, hubBase, false)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.Spec.DisplayName = "Demo"
