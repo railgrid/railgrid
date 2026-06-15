@@ -174,9 +174,42 @@ type ProjectStatus struct {
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
+	// Runtime is a shallow runtime-provider status summary for App Studio
+	// display and assistant context. Runtime providers own detailed process
+	// state, logs, and target-specific resources.
+	// +optional
+	Runtime *ProjectRuntimeStatus `json:"runtime,omitempty"`
+
 	// UpdatedAt reflects the latest API mutation affecting metadata or memory.
 	// +optional
 	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
+}
+
+// ProjectRuntimeStatus summarizes the observed runtime provider state.
+type ProjectRuntimeStatus struct {
+	// Phase is the runtime provider's coarse phase, such as Pending, Running,
+	// Ready, Failed, or Unavailable.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	Phase string `json:"phase,omitempty"`
+
+	// Message is a concise human-readable runtime status detail.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	Message string `json:"message,omitempty"`
+
+	// PreviewURL is an HTTP(S) URL served by the runtime provider.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	PreviewURL string `json:"previewURL,omitempty"`
+
+	// Ready indicates whether the runtime is ready for user preview.
+	// +optional
+	Ready bool `json:"ready,omitempty"`
+
+	// Capabilities names runtime-provider capabilities App Studio can surface.
+	// +optional
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // +kubebuilder:object:root=true

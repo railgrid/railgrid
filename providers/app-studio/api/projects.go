@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -31,6 +32,7 @@ import (
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -785,9 +787,23 @@ func projectName(ctx context.Context, c *asclient.Client, requested, displayName
 
 func touchProjectStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) (*aiv1alpha1.Project, error) {
 	now := metav1.Now()
-	p.Status.Phase = aiv1alpha1.ProjectPhaseReady
-	p.Status.UpdatedAt = &now
-	return c.Projects().UpdateStatus(ctx, p, metav1.UpdateOptions{})
+	data, err := projectStatusTouchPatch(now)
+	if err != nil {
+		return nil, err
+	}
+	return c.Projects().Patch(ctx, p.Name, types.MergePatchType, data, metav1.PatchOptions{}, "status")
+}
+
+func projectStatusTouchPatch(now metav1.Time) ([]byte, error) {
+	patch := struct {
+		Status struct {
+			Phase     string      `json:"phase"`
+			UpdatedAt metav1.Time `json:"updatedAt"`
+		} `json:"status"`
+	}{}
+	patch.Status.Phase = aiv1alpha1.ProjectPhaseReady
+	patch.Status.UpdatedAt = now
+	return json.Marshal(patch)
 }
 
 func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) ProjectView {
@@ -816,13 +832,50 @@ func projectRuntimeView(p *aiv1alpha1.Project) *ProjectRuntimeView {
 			Message: "No runtime provider is attached to this project yet.",
 		}
 	}
-	return &ProjectRuntimeView{
+	view := &ProjectRuntimeView{
 		ProviderRef: strings.TrimSpace(runtime.ProviderRef),
 		Target:      strings.TrimSpace(runtime.Target),
 		RuntimeRef:  strings.TrimSpace(runtime.RuntimeRef),
 		Status:      projectRuntimeStatusPending,
 		Message:     "The runtime provider status is not available yet.",
 	}
+	if status := p.Status.Runtime; status != nil {
+		if phase := strings.TrimSpace(status.Phase); phase != "" {
+			view.Status = phase
+		}
+		if message := strings.TrimSpace(status.Message); message != "" {
+			view.Message = message
+		}
+		view.PreviewURL = safeRuntimePreviewURL(status.PreviewURL)
+		view.Ready = status.Ready
+		view.Capabilities = compactStrings(status.Capabilities)
+	}
+	return view
+}
+
+func safeRuntimePreviewURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	return parsed.String()
+}
+
+func compactStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func projectUpdatedAt(p *aiv1alpha1.Project) time.Time {

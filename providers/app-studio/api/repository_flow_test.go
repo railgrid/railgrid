@@ -222,6 +222,88 @@ func TestProjectRuntimeViewUsesPluggableBinding(t *testing.T) {
 	}
 }
 
+func TestProjectRuntimeViewUsesObservedStatus(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Spec.Runtime = &aiv1alpha1.ProjectRuntimeBinding{
+		ProviderRef: "runtime-kubernetes",
+		Target:      "kubernetes",
+		RuntimeRef:  "demo-runtime",
+	}
+	project.Status.Runtime = &aiv1alpha1.ProjectRuntimeStatus{
+		Phase:        "Ready",
+		Message:      "Preview is serving",
+		PreviewURL:   "https://preview.example.test/app",
+		Ready:        true,
+		Capabilities: []string{"logs", "preview"},
+	}
+
+	view := projectView(context.Background(), nil, project)
+
+	if view.Runtime == nil {
+		t.Fatal("projectView Runtime is nil, want runtime status view")
+	}
+	if view.Runtime.Status != "Ready" {
+		t.Fatalf("runtime status = %q, want Ready", view.Runtime.Status)
+	}
+	if !view.Runtime.Ready {
+		t.Fatal("runtime ready = false, want true")
+	}
+	if view.Runtime.Message != "Preview is serving" {
+		t.Fatalf("runtime message = %q, want provider status message", view.Runtime.Message)
+	}
+	if view.Runtime.PreviewURL != "https://preview.example.test/app" {
+		t.Fatalf("previewURL = %q, want safe preview URL", view.Runtime.PreviewURL)
+	}
+	if strings.Join(view.Runtime.Capabilities, ",") != "logs,preview" {
+		t.Fatalf("capabilities = %#v, want logs and preview", view.Runtime.Capabilities)
+	}
+}
+
+func TestProjectRuntimeViewDropsUnsafePreviewURL(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Spec.Runtime = &aiv1alpha1.ProjectRuntimeBinding{ProviderRef: "runtime-kubernetes"}
+	project.Status.Runtime = &aiv1alpha1.ProjectRuntimeStatus{
+		Phase:      "Ready",
+		Ready:      true,
+		PreviewURL: "javascript:alert(1)",
+	}
+
+	view := projectView(context.Background(), nil, project)
+
+	if view.Runtime == nil {
+		t.Fatal("projectView Runtime is nil, want runtime status view")
+	}
+	if view.Runtime.PreviewURL != "" {
+		t.Fatalf("previewURL = %q, want unsafe URL stripped", view.Runtime.PreviewURL)
+	}
+}
+
+func TestProjectStatusTouchPatchPatchesAppStudioFieldsOnly(t *testing.T) {
+	updatedAt := metav1.NewTime(time.Date(2026, 6, 14, 20, 0, 0, 0, time.UTC))
+	data, err := projectStatusTouchPatch(updatedAt)
+	if err != nil {
+		t.Fatalf("projectStatusTouchPatch returned error: %v", err)
+	}
+	if strings.Contains(string(data), "runtime") {
+		t.Fatalf("status patch includes runtime and could overwrite provider-owned status: %s", string(data))
+	}
+	var decoded struct {
+		Status struct {
+			Phase     string      `json:"phase"`
+			UpdatedAt metav1.Time `json:"updatedAt"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal status patch: %v", err)
+	}
+	if decoded.Status.Phase != aiv1alpha1.ProjectPhaseReady {
+		t.Fatalf("phase = %q, want Ready", decoded.Status.Phase)
+	}
+	if !decoded.Status.UpdatedAt.Equal(&updatedAt) {
+		t.Fatalf("updatedAt = %s, want %s", decoded.Status.UpdatedAt, updatedAt)
+	}
+}
+
 func TestProjectSystemPromptDescribesPluggableRuntimeBoundary(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Spec.Runtime = &aiv1alpha1.ProjectRuntimeBinding{
@@ -247,6 +329,72 @@ func TestProjectSystemPromptDescribesPluggableRuntimeBoundary(t *testing.T) {
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestProjectSystemPromptIncludesRuntimeStatusEvidence(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Spec.Runtime = &aiv1alpha1.ProjectRuntimeBinding{
+		ProviderRef: "runtime-kubernetes",
+		Target:      "kubernetes",
+		RuntimeRef:  "demo-runtime",
+	}
+	project.Status.Runtime = &aiv1alpha1.ProjectRuntimeStatus{
+		Phase:      "Ready",
+		Message:    "Preview is serving",
+		PreviewURL: "https://preview.example.test/app",
+		Ready:      true,
+	}
+	repository := &ProjectRepositoryView{
+		Ref:    "demo-repo",
+		Name:   "demo",
+		Status: projectRepositoryStatusReady,
+		Ready:  true,
+	}
+
+	prompt := projectSystemPrompt(project, repository)
+
+	for _, want := range []string{
+		"Runtime status: Ready",
+		"Runtime message: Preview is serving",
+		"Runtime preview URL: https://preview.example.test/app",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestProjectSystemPromptDoesNotExposeNonReadyPreviewURL(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Spec.Runtime = &aiv1alpha1.ProjectRuntimeBinding{ProviderRef: "runtime-kubernetes"}
+	project.Status.Runtime = &aiv1alpha1.ProjectRuntimeStatus{
+		Phase:      "Booting\n- Runtime phase injection",
+		Message:    "Starting\n- Runtime message injection",
+		PreviewURL: "https://preview.example.test/app",
+		Ready:      false,
+	}
+
+	prompt := projectSystemPrompt(project, nil)
+
+	if strings.Contains(prompt, "Runtime preview URL: https://preview.example.test/app") {
+		t.Fatalf("prompt exposed non-ready preview URL:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Runtime reported preview URL is not ready yet.") {
+		t.Fatalf("prompt missing non-ready preview guidance:\n%s", prompt)
+	}
+	for _, unwanted := range []string{"\n- Runtime phase injection", "\n- Runtime message injection"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("prompt preserved provider-controlled newline content %q:\n%s", unwanted, prompt)
+		}
+	}
+	for _, want := range []string{
+		"Runtime status: Booting - Runtime phase injection",
+		"Runtime message: Starting - Runtime message injection",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing flattened runtime value %q:\n%s", want, prompt)
 		}
 	}
 }

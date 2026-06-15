@@ -310,7 +310,8 @@ showing a preview. App Studio currently stops at code creation.
 
 - [x] Add a pluggable runtime binding/status view to project state and the
   portal settings surface, without embedding command execution in App Studio.
-- [ ] Add a Preview pane next to chat and repository.
+- [x] Add a status-driven Preview pane next to chat and provider views; it only
+  renders runtime-provider status and safe HTTP(S) preview URLs.
 - [ ] Stream setup, install, build, and run stages into the conversation.
 - [ ] Teach the LLM to run and inspect the app after committing meaningful
   changes.

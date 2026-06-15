@@ -97,3 +97,8 @@ Projects can optionally name a pluggable runtime provider through
 provider owns process state, logs, preview URLs, and target-specific behavior.
 App Studio exposes the binding and a status view in the project API and portal,
 but it does not execute commands directly or assume a fixed runtime target.
+
+Runtime providers can publish a shallow summary through `status.runtime`
+(`phase`, `message`, `ready`, `previewURL`, and `capabilities`). App Studio
+filters preview links to absolute HTTP(S) URLs before exposing them to the
+assistant or rendering them in the preview pane.

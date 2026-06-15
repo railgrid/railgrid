@@ -262,6 +262,9 @@ const conversationWorkingLabel = computed(() => {
   if (lastAssistant?.content.trim()) return 'Writing'
   return 'Working'
 })
+const selectedRuntimePreviewURL = computed(() => runtimePreviewURL(selected.value?.runtime))
+const selectedRuntimeReadyPreviewURL = computed(() => runtimeReadyPreviewURL(selected.value?.runtime))
+const selectedRuntimeCapabilities = computed(() => runtimeCapabilitiesLabel(selected.value?.runtime))
 const deleteProjectMessage = computed(() => {
   const project = deleteProjectTarget.value
   if (!project) return ''
@@ -1618,6 +1621,10 @@ function runtimePreviewURL(runtime: Project['runtime']): string {
   }
 }
 
+function runtimeReadyPreviewURL(runtime: Project['runtime']): string {
+  return runtime?.ready ? runtimePreviewURL(runtime) : ''
+}
+
 function repositoryCommitPhaseLabel(commit: ProjectRepositoryCommit): string {
   switch (commit.phase) {
     case 'Succeeded':
@@ -2336,6 +2343,62 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
         <div v-if="toolError" class="mb-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
           {{ toolError }}
         </div>
+        <section v-if="selected" class="mb-3 overflow-hidden rounded-md border border-border-subtle bg-surface">
+          <div class="flex min-w-0 items-center justify-between gap-2 border-b border-border-subtle px-3 py-2.5">
+            <div class="flex min-w-0 items-center gap-2">
+              <Rocket class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
+              <div class="min-w-0">
+                <div class="truncate text-[13px] font-semibold text-text-primary">Runtime preview</div>
+                <div class="truncate font-mono text-[11px] text-text-muted">
+                  {{ selected.runtime?.providerRef || 'No runtime provider' }}
+                </div>
+              </div>
+            </div>
+            <StatusBadge :status="runtimeStatusLabel(selected.runtime)" />
+          </div>
+          <div v-if="selectedRuntimeReadyPreviewURL" class="h-[320px] min-h-[220px] border-b border-border-subtle bg-surface-overlay">
+            <iframe
+              :src="selectedRuntimeReadyPreviewURL"
+              title="Runtime preview"
+              sandbox="allow-forms allow-modals allow-popups allow-scripts"
+              referrerpolicy="no-referrer"
+              class="h-full w-full bg-white"
+            />
+          </div>
+          <div v-else class="grid gap-2 px-3 py-3 text-[12px] leading-5 text-text-muted">
+            <div>{{ selected.runtime?.message || 'No preview URL has been reported by a runtime provider yet.' }}</div>
+            <div v-if="selected.runtime?.target || selected.runtime?.runtimeRef || selectedRuntimeCapabilities" class="grid gap-1.5 border-t border-border-subtle pt-2">
+              <div v-if="selected.runtime?.target" class="flex min-w-0 items-center justify-between gap-2">
+                <span>Target</span>
+                <span class="min-w-0 truncate font-mono text-text-secondary">{{ selected.runtime.target }}</span>
+              </div>
+              <div v-if="selected.runtime?.runtimeRef" class="flex min-w-0 items-center justify-between gap-2">
+                <span>Resource</span>
+                <span class="min-w-0 truncate font-mono text-text-secondary">{{ selected.runtime.runtimeRef }}</span>
+              </div>
+              <div v-if="selectedRuntimeCapabilities" class="flex min-w-0 items-center justify-between gap-2">
+                <span>Capabilities</span>
+                <span class="min-w-0 truncate font-mono text-text-secondary">{{ selectedRuntimeCapabilities }}</span>
+              </div>
+              <div v-if="selectedRuntimePreviewURL && !selectedRuntimeReadyPreviewURL" class="flex min-w-0 items-center justify-between gap-2">
+                <span>Preview URL</span>
+                <span class="min-w-0 truncate font-mono text-text-secondary">{{ selectedRuntimePreviewURL }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="selectedRuntimeReadyPreviewURL" class="flex min-w-0 items-center justify-between gap-2 px-3 py-2 text-[11px] text-text-muted">
+            <span class="min-w-0 truncate font-mono">{{ selectedRuntimeReadyPreviewURL }}</span>
+            <a
+              :href="selectedRuntimeReadyPreviewURL"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex shrink-0 items-center gap-1 font-medium text-text-secondary underline underline-offset-2 hover:text-accent"
+            >
+              Open
+              <ExternalLink class="h-3 w-3" :stroke-width="1.75" />
+            </a>
+          </div>
+        </section>
         <div v-if="providersLoading" class="flex items-center gap-2 p-3 text-[13px] text-text-muted">
           <Loader2 class="h-4 w-4 animate-spin" :stroke-width="1.75" />
           Loading provider views...
@@ -2556,16 +2619,16 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                   <dt class="text-text-muted">Notice</dt>
                   <dd class="text-text-secondary">{{ settingsProject.runtime.message }}</dd>
                 </template>
-                <template v-if="runtimePreviewURL(settingsProject.runtime)">
+                <template v-if="runtimeReadyPreviewURL(settingsProject.runtime)">
                   <dt class="text-text-muted">Preview</dt>
                   <dd class="min-w-0">
                     <a
-                      :href="runtimePreviewURL(settingsProject.runtime)"
+                      :href="runtimeReadyPreviewURL(settingsProject.runtime)"
                       target="_blank"
                       rel="noopener noreferrer"
                       class="inline-flex min-w-0 max-w-full items-center gap-1 font-mono text-text-primary underline underline-offset-2 hover:text-accent"
                     >
-                      <span class="truncate">{{ runtimePreviewURL(settingsProject.runtime) }}</span>
+                      <span class="truncate">{{ runtimeReadyPreviewURL(settingsProject.runtime) }}</span>
                       <ExternalLink class="h-3 w-3 shrink-0" :stroke-width="1.75" />
                     </a>
                   </dd>

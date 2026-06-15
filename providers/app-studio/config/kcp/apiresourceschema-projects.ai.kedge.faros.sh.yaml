@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260614-14028a8.projects.ai.kedge.faros.sh
+  name: v260614-65da574.projects.ai.kedge.faros.sh
 spec:
   group: ai.kedge.faros.sh
   names:
@@ -133,6 +133,39 @@ spec:
             phase:
               description: Phase is Ready for MVP-created Projects.
               type: string
+            runtime:
+              description: |-
+                Runtime is a shallow runtime-provider status summary for App Studio
+                display and assistant context. Runtime providers own detailed process
+                state, logs, and target-specific resources.
+              properties:
+                capabilities:
+                  description: Capabilities names runtime-provider capabilities App
+                    Studio can surface.
+                  items:
+                    type: string
+                  type: array
+                message:
+                  description: Message is a concise human-readable runtime status
+                    detail.
+                  maxLength: 2048
+                  type: string
+                phase:
+                  description: |-
+                    Phase is the runtime provider's coarse phase, such as Pending, Running,
+                    Ready, Failed, or Unavailable.
+                  maxLength: 128
+                  type: string
+                previewURL:
+                  description: PreviewURL is an HTTP(S) URL served by the runtime
+                    provider.
+                  maxLength: 2048
+                  type: string
+                ready:
+                  description: Ready indicates whether the runtime is ready for user
+                    preview.
+                  type: boolean
+              type: object
             updatedAt:
               description: UpdatedAt reflects the latest API mutation affecting metadata
                 or memory.

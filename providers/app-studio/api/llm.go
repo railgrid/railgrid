@@ -2059,12 +2059,23 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 		b.WriteString("- Runtime provider: not configured\n")
 		b.WriteString("No runtime provider is attached to this Project yet. Runtime, logs, and preview URLs must come from a configured runtime provider; do not run commands directly in App Studio or claim a preview is available without runtime provider evidence.\n")
 	} else {
-		b.WriteString("- Runtime provider: " + runtime.ProviderRef + "\n")
+		b.WriteString("- Runtime provider: " + singleLineRuntimePromptValue(runtime.ProviderRef) + "\n")
 		if runtime.Target != "" {
-			b.WriteString("- Runtime target: " + runtime.Target + "\n")
+			b.WriteString("- Runtime target: " + singleLineRuntimePromptValue(runtime.Target) + "\n")
 		}
 		if runtime.RuntimeRef != "" {
-			b.WriteString("- Runtime resource: " + runtime.RuntimeRef + "\n")
+			b.WriteString("- Runtime resource: " + singleLineRuntimePromptValue(runtime.RuntimeRef) + "\n")
+		}
+		if runtime.Status != "" && runtime.Status != projectRuntimeStatusPending {
+			b.WriteString("- Runtime status: " + singleLineRuntimePromptValue(runtime.Status) + "\n")
+		}
+		if strings.TrimSpace(runtime.Message) != "" && runtime.Message != "The runtime provider status is not available yet." {
+			b.WriteString("- Runtime message: " + singleLineRuntimePromptValue(runtime.Message) + "\n")
+		}
+		if runtime.Ready && runtime.PreviewURL != "" {
+			b.WriteString("- Runtime preview URL: " + runtime.PreviewURL + "\n")
+		} else if runtime.PreviewURL != "" {
+			b.WriteString("- Runtime reported preview URL is not ready yet.\n")
 		}
 		b.WriteString("Runtime, logs, and preview URLs are owned by the configured runtime provider. Use runtime provider tools or status when they are available; do not run commands directly in App Studio or claim a preview is available unless runtime provider status or tool results provide one.\n")
 	}
@@ -2073,6 +2084,10 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 	appendMemoryList(&b, "Requirements", p.Spec.Memory.Requirements)
 	appendMemoryList(&b, "Constraints", p.Spec.Memory.Constraints)
 	return b.String()
+}
+
+func singleLineRuntimePromptValue(value string) string {
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func projectMCPToolsPrompt(tools []chatTool) string {
