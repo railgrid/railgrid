@@ -361,6 +361,9 @@ func (s *Server) generateProjectAssistantStream(
 			if repeatedToolLoop && errors.Is(err, errProjectLLMNoStreamedChoice) {
 				return projectRepeatedToolLoopFallback(lastToolMessages), nil
 			}
+			if finalTurn && len(lastToolMessages) > 0 && errors.Is(err, errProjectLLMNoStreamedChoice) {
+				return projectToolLoopFallback(lastToolMessages, "kept requesting actions"), nil
+			}
 			return "", err
 		}
 		if len(reply.ToolCalls) > 0 && !finalTurn {
@@ -400,6 +403,9 @@ func (s *Server) generateProjectAssistantStream(
 			if repeatedToolLoop {
 				return projectRepeatedToolLoopFallback(lastToolMessages), nil
 			}
+			if finalTurn && len(lastToolMessages) > 0 {
+				return projectToolLoopFallback(lastToolMessages, "kept requesting actions"), nil
+			}
 			return "", errors.New("LLM API returned an empty assistant message")
 		}
 		return reply.Content, nil
@@ -409,6 +415,14 @@ func (s *Server) generateProjectAssistantStream(
 }
 
 func projectRepeatedToolLoopFallback(toolMessages []chatMessage) string {
+	return projectToolLoopFallback(toolMessages, "repeated the same action")
+}
+
+func projectToolLoopFallback(toolMessages []chatMessage, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "could not finish using tools"
+	}
 	summaries := make([]string, 0, len(toolMessages))
 	for _, msg := range toolMessages {
 		name := strings.TrimSpace(msg.Name)
@@ -423,7 +437,7 @@ func projectRepeatedToolLoopFallback(toolMessages []chatMessage) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("I stopped because the assistant repeated the same action and the model did not provide a final text answer.")
+	b.WriteString("I stopped because the assistant " + reason + " and the model did not provide a final text answer.")
 	if len(summaries) > 0 {
 		b.WriteString(" Last action result")
 		if len(summaries) > 1 {

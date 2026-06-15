@@ -686,6 +686,24 @@ func TestGenerateProjectAssistantStreamFallsBackWhenFinalNoToolResponseIsEmpty(t
 	}
 }
 
+func TestGenerateProjectAssistantStreamFallsBackWhenFinalToolLimitResponseHasOnlyToolCalls(t *testing.T) {
+	reply, requests, err := runUniqueWriteFileAssistantStream(t, func(w http.ResponseWriter) {
+		writeProjectTestToolCallChunk(t, w, "call-final", "write_file", `{"path":"src/final.tsx","content":"final\n"}`)
+	})
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if !strings.Contains(reply, "kept requesting actions") || !strings.Contains(reply, "write_file") || !strings.Contains(reply, "src/file-7.tsx") {
+		t.Fatalf("reply = %q, want tool-limit fallback", reply)
+	}
+	if len(requests) != maxAssistantToolTurns {
+		t.Fatalf("LLM request count = %d, want %d", len(requests), maxAssistantToolTurns)
+	}
+	if len(requests[len(requests)-1].Tools) != 0 || requests[len(requests)-1].ToolChoice != "" {
+		t.Fatalf("final request offered tools: tools=%d tool_choice=%q", len(requests[len(requests)-1].Tools), requests[len(requests)-1].ToolChoice)
+	}
+}
+
 func runRepeatedWriteFileAssistantStream(t *testing.T, finalNoToolResponse func(http.ResponseWriter)) (string, []chatCompletionRequest, error) {
 	t.Helper()
 
@@ -702,28 +720,63 @@ func runRepeatedWriteFileAssistantStream(t *testing.T, finalNoToolResponse func(
 			return
 		}
 		callID := fmt.Sprintf("call-%d", len(requests))
-		chunk := chatCompletionStreamResponse{
-			Choices: []chatCompletionStreamChoice{{}},
-		}
-		chunk.Choices[0].Delta.ToolCalls = []chatStreamingCall{{
-			Index: 0,
-			ID:    callID,
-			Type:  "function",
-		}}
-		chunk.Choices[0].Delta.ToolCalls[0].Function.Name = "write_file"
-		chunk.Choices[0].Delta.ToolCalls[0].Function.Arguments = `{"path":"src/App.tsx","content":"hello world\n"}`
-		raw, err := json.Marshal(chunk)
-		if err != nil {
-			t.Fatalf("marshal LLM stream chunk: %v", err)
-		}
-		fmt.Fprintf(w, "data: %s\n\n", raw)
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		writeProjectTestToolCallChunk(t, w, callID, "write_file", `{"path":"src/App.tsx","content":"hello world\n"}`)
 	}))
 	defer llm.Close()
 
+	return runProjectAssistantStreamWithLLM(t, llm.URL, &requests)
+}
+
+func runUniqueWriteFileAssistantStream(t *testing.T, finalNoToolResponse func(http.ResponseWriter)) (string, []chatCompletionRequest, error) {
+	t.Helper()
+
+	var requests []chatCompletionRequest
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode LLM request: %v", err)
+		}
+		requests = append(requests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(req.Tools) == 0 && finalNoToolResponse != nil {
+			finalNoToolResponse(w)
+			return
+		}
+		n := len(requests)
+		writeProjectTestToolCallChunk(t, w, fmt.Sprintf("call-%d", n), "write_file", fmt.Sprintf(`{"path":"src/file-%d.tsx","content":"hello %d\n"}`, n, n))
+	}))
+	defer llm.Close()
+
+	return runProjectAssistantStreamWithLLM(t, llm.URL, &requests)
+}
+
+func writeProjectTestToolCallChunk(t *testing.T, w http.ResponseWriter, id, name, arguments string) {
+	t.Helper()
+
+	chunk := chatCompletionStreamResponse{
+		Choices: []chatCompletionStreamChoice{{}},
+	}
+	chunk.Choices[0].Delta.ToolCalls = []chatStreamingCall{{
+		Index: 0,
+		ID:    id,
+		Type:  "function",
+	}}
+	chunk.Choices[0].Delta.ToolCalls[0].Function.Name = name
+	chunk.Choices[0].Delta.ToolCalls[0].Function.Arguments = arguments
+	raw, err := json.Marshal(chunk)
+	if err != nil {
+		t.Fatalf("marshal LLM stream chunk: %v", err)
+	}
+	fmt.Fprintf(w, "data: %s\n\n", raw)
+	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
+func runProjectAssistantStreamWithLLM(t *testing.T, llmURL string, requests *[]chatCompletionRequest) (string, []chatCompletionRequest, error) {
+	t.Helper()
+
 	settings := projectLLMSettings{
 		Provider: defaultProjectLLMProvider,
-		BaseURL:  llm.URL,
+		BaseURL:  llmURL,
 		Model:    "test-model",
 		APIKey:   "test-key",
 	}
@@ -746,7 +799,7 @@ func runRepeatedWriteFileAssistantStream(t *testing.T, finalNoToolResponse func(
 		project,
 		projectAssistantStreamCallbacks{},
 	)
-	return reply, requests, err
+	return reply, *requests, err
 }
 
 func TestProjectRepeatedToolLoopFallbackSummarizesLastToolResult(t *testing.T) {
