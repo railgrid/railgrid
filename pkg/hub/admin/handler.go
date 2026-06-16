@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -91,9 +92,18 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 type orgDTO struct {
-	Name          string `json:"name"`
-	DisplayName   string `json:"displayName"`
-	WorkspacePath string `json:"workspacePath"`
+	Name          string         `json:"name"`
+	DisplayName   string         `json:"displayName"`
+	WorkspacePath string         `json:"workspacePath"`
+	Workspaces    []workspaceDTO `json:"workspaces"`
+}
+
+type workspaceDTO struct {
+	UUID                string   `json:"uuid"`
+	DisplayName         string   `json:"displayName"`
+	ClusterName         string   `json:"clusterName"`
+	Providers           []string `json:"providers"`
+	DeletionRequestedAt *string  `json:"deletionRequestedAt,omitempty"`
 }
 
 func (h *Handler) listOrganizations(w http.ResponseWriter, r *http.Request) {
@@ -105,11 +115,34 @@ func (h *Handler) listOrganizations(w http.ResponseWriter, r *http.Request) {
 	items := make([]orgDTO, 0, len(list.Items))
 	for i := range list.Items {
 		o := &list.Items[i]
-		items = append(items, orgDTO{
+		dto := orgDTO{
 			Name:          o.Name,
 			DisplayName:   o.Spec.DisplayName,
 			WorkspacePath: o.Status.WorkspacePath,
-		})
+			Workspaces:    []workspaceDTO{},
+		}
+		// Best-effort: enumerate the org's child workspaces and their
+		// enabled providers. An org whose workspace tree can't be read
+		// (e.g. mid-provisioning) still renders with an empty list.
+		if wss, err := h.svc.ListOrgWorkspaces(r.Context(), o.Name); err == nil {
+			for _, ws := range wss {
+				wd := workspaceDTO{
+					UUID:        ws.UUID,
+					DisplayName: ws.DisplayName,
+					ClusterName: ws.ClusterName,
+					Providers:   ws.Providers,
+				}
+				if wd.Providers == nil {
+					wd.Providers = []string{}
+				}
+				if ws.DeletionRequestedAt != nil {
+					s := ws.DeletionRequestedAt.UTC().Format(time.RFC3339)
+					wd.DeletionRequestedAt = &s
+				}
+				dto.Workspaces = append(dto.Workspaces, wd)
+			}
+		}
+		items = append(items, dto)
 	}
 	writeJSON(w, map[string]any{"items": items})
 }

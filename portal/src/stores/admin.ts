@@ -26,10 +26,18 @@ export interface AdminUser {
   displayName: string
   rbacIdentity: string
 }
+export interface AdminWorkspace {
+  uuid: string
+  displayName: string
+  clusterName: string
+  providers: string[]
+  deletionRequestedAt?: string
+}
 export interface AdminOrg {
   name: string
   displayName: string
   workspacePath: string
+  workspaces: AdminWorkspace[]
 }
 export interface AdminProvider {
   name: string

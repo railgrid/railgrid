@@ -25,6 +25,8 @@ package admin
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +37,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
 	"github.com/faroshq/faros-kedge/pkg/kcppaths"
 )
@@ -146,6 +149,10 @@ type Service struct {
 	// kcpConfig is the admin kcp rest.Config (used for cross-workspace reads
 	// like root-identity discovery).
 	kcpConfig *rest.Config
+	// bootstrapper walks the tenant workspace hierarchy with kcp-admin
+	// credentials so the admin surface can enumerate every org's child
+	// workspaces and their enabled provider bindings.
+	bootstrapper *kcp.Bootstrapper
 }
 
 // NewService returns an admin Service. hubExternalURL/providerInternalURL are
@@ -154,9 +161,58 @@ type Service struct {
 // Provider CR reconciler.
 func NewService(kcpConfig *rest.Config, _, _ string) *Service {
 	return &Service{
-		prov:      providers.NewProvisioner(kcpConfig),
-		kcpConfig: kcpConfig,
+		prov:         providers.NewProvisioner(kcpConfig),
+		kcpConfig:    kcpConfig,
+		bootstrapper: kcp.NewBootstrapper(kcpConfig),
 	}
+}
+
+// OrgWorkspace is a child Workspace of an organization together with the
+// provider names enabled in it (derived from the workspace's provider
+// APIBindings).
+type OrgWorkspace struct {
+	UUID                string     `json:"uuid"`
+	DisplayName         string     `json:"displayName"`
+	ClusterName         string     `json:"clusterName"`
+	Providers           []string   `json:"providers"`
+	DeletionRequestedAt *time.Time `json:"deletionRequestedAt,omitempty"`
+}
+
+// ListOrgWorkspaces returns every child Workspace under the org at
+// root:kedge:tenants:{orgUUID}, enriched with display name, cluster name,
+// soft-delete timestamp and the set of enabled provider names. Reads run
+// with kcp-admin credentials, so the admin surface sees all workspaces
+// regardless of per-user RBAC. Per-workspace lookups are best-effort: a
+// workspace that hasn't reached Ready (no cluster) or whose provider
+// listing fails still appears with whatever fields resolved.
+func (s *Service) ListOrgWorkspaces(ctx context.Context, orgUUID string) ([]OrgWorkspace, error) {
+	names, err := s.bootstrapper.ListChildWorkspaces(ctx, orgUUID)
+	if err != nil {
+		return nil, fmt.Errorf("listing child workspaces for org %s: %w", orgUUID, err)
+	}
+	out := make([]OrgWorkspace, 0, len(names))
+	for _, wsUUID := range names {
+		ws := OrgWorkspace{UUID: wsUUID, Providers: []string{}}
+		if dn, err := s.bootstrapper.GetWorkspaceDisplayName(ctx, orgUUID, wsUUID); err == nil {
+			ws.DisplayName = dn
+		}
+		if cluster, err := s.bootstrapper.GetChildWorkspaceClusterName(ctx, orgUUID, wsUUID); err == nil {
+			ws.ClusterName = cluster
+		}
+		if t, found, err := s.bootstrapper.GetWorkspaceDeletionRequestedAt(ctx, orgUUID, wsUUID); err == nil && found && t != nil {
+			tt := *t
+			ws.DeletionRequestedAt = &tt
+		}
+		if bindings, err := s.bootstrapper.ListProviderAPIBindings(ctx, orgUUID, wsUUID); err == nil {
+			for name := range bindings {
+				ws.Providers = append(ws.Providers, name)
+			}
+			sort.Strings(ws.Providers)
+		}
+		out = append(out, ws)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UUID < out[j].UUID })
+	return out, nil
 }
 
 // OnboardedWorkspace mirrors providers.OnboardedWorkspace for the admin API.
