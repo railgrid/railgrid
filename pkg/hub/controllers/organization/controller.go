@@ -78,7 +78,7 @@ const (
 	// orgWorkspaceParent is the kcp path beneath which every Organization
 	// workspace will live. Combined with metadata.name gives the canonical
 	// status.workspacePath value.
-	orgWorkspaceParent = "root:kedge:orgs"
+	orgWorkspaceParent = "root:kedge:tenants"
 )
 
 // WorkspaceProvisioner is the slice of the kcp Bootstrapper that this
@@ -486,7 +486,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 
 	// (Former Step F — workspace-scope Membership CR inside the child
 	// workspace — was dropped when the workspace WorkspaceType stopped
-	// binding tenancy.kedge.faros.sh. The tenancy CRDs are system
+	// binding tenants.kedge.faros.sh. The tenancy CRDs are system
 	// primitives that the user shouldn't see in their default workspace;
 	// the UMI entry written by Step D below carries the same fact for
 	// the portal switcher to render. Manual workspace-membership
@@ -1022,7 +1022,7 @@ func (r *Reconciler) mapOrganizationToUser(_ context.Context, obj client.Object)
 // to. Set on creation and used by the dedup check + the reverse map watch.
 // Not user-facing; the canonical truth is Organization.spec.personal and
 // User.status.personalOrg.
-const labelPersonalOwner = "tenancy.kedge.faros.sh/personal-owner"
+const labelPersonalOwner = "tenants.kedge.faros.sh/personal-owner"
 
 // personalOrgDisplayName produces the default displayName for a personal
 // Organization (per docs/organizations.md §Personal Org and decision O-12

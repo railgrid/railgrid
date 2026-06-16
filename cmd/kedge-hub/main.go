@@ -63,7 +63,6 @@ func main() {
 	cmd.Flags().StringVar(&opts.ListenAddr, "listen-addr", opts.ListenAddr, "Address to listen on")
 	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Kubeconfig for hub cluster")
 	cmd.Flags().StringVar(&opts.ExternalKCPKubeconfig, "external-kcp-kubeconfig", "", "Kubeconfig for external kcp (empty for embedded)")
-	cmd.Flags().StringVar(&opts.KCPShardKubeconfig, "kcp-shard-kubeconfig", "", "Optional kubeconfig used only for APIExport virtual-workspace connections (shard-direct URLs). If empty, --external-kcp-kubeconfig is used for both. Set this when the primary kubeconfig auths via the kcp front-proxy and shards reject its cert.")
 	cmd.Flags().StringVar(&opts.IDPIssuerURL, "idp-issuer-url", "", "OIDC identity provider issuer URL")
 	cmd.Flags().StringVar(&opts.IDPClientID, "idp-client-id", "kedge", "OIDC identity provider client ID")
 	cmd.Flags().StringVar(&opts.IDPCAFile, "idp-ca-file", "", "PEM-encoded CA bundle for verifying the IdP's TLS cert (required for self-signed/private CAs)")
@@ -74,6 +73,7 @@ func main() {
 	cmd.Flags().StringVar(&opts.ProviderInternalURL, "provider-internal-url", "", "Server URL baked into the minted provider kubeconfig (default: --hub-external-url). Override for in-cluster provider pods, e.g. https://host.docker.internal:9443.")
 	cmd.Flags().BoolVar(&opts.DevMode, "dev-mode", false, "Enable dev mode (skip TLS verification for OIDC)")
 	cmd.Flags().StringSliceVar(&opts.StaticAuthTokens, "static-auth-token", nil, "Static bearer tokens for access (can be specified multiple times)")
+	cmd.Flags().StringSliceVar(&opts.AdminUsers, "admin-users", nil, "Platform-admin identities (User name, email, or rbacIdentity) allowed to reach /api/admin/* and the portal /bonkers area. Empty disables the admin surface.")
 	cmd.Flags().StringSliceVar(&opts.Providers, "providers", providers.BuiltinNames(),
 		"First-party providers to enable as CatalogEntries (comma-separated or repeat). "+
 			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")

@@ -92,7 +92,8 @@ func main() {
 	// root:kedge:users) and writes their CRs with admin credentials.
 	excludedAPIExports := map[string]bool{
 		"apiexport-providers.kedge.faros.sh.yaml": true,
-		"apiexport-tenancy.kedge.faros.sh.yaml":   true,
+		"apiexport-admin.kedge.faros.sh.yaml":     true,
+		"apiexport-tenants.kedge.faros.sh.yaml":   true,
 	}
 
 	var files []string

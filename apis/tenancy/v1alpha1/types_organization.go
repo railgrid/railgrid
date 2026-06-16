@@ -58,7 +58,7 @@ const (
 
 	// OrganizationConditionDefaultWorkspaceReady reports whether the
 	// personal Org's default child Workspace has been provisioned at
-	// root:kedge:orgs:{org-uuid}:{default-ws-uuid}. The portal pins this
+	// root:kedge:tenants:{org-uuid}:{default-ws-uuid}. The portal pins this
 	// UUID as the default X-Kedge-Workspace so members always have
 	// somewhere to land on first login.
 	OrganizationConditionDefaultWorkspaceReady = "DefaultWorkspaceReady"
@@ -106,7 +106,7 @@ const (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Organization is the unit of tenancy in kedge. An Organization owns a kcp
-// workspace at root:kedge:orgs:{metadata.name} that holds catalog metadata
+// workspace at root:kedge:tenants:{metadata.name} that holds catalog metadata
 // and membership for its members. All tenant work (APIBindings, edges, MCP
 // instances, …) lives in child Workspaces beneath the Organization, never
 // in the Organization workspace itself.
@@ -178,7 +178,7 @@ type OrganizationSpec struct {
 // OrganizationStatus defines the observed state of an Organization.
 type OrganizationStatus struct {
 	// WorkspacePath is the path to the materialized kcp Workspace, always
-	// root:kedge:orgs:{metadata.name}. Set by the bootstrap controller once
+	// root:kedge:tenants:{metadata.name}. Set by the bootstrap controller once
 	// the workspace has been provisioned.
 	//
 	// +optional

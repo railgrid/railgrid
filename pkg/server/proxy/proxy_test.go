@@ -136,18 +136,18 @@ func TestIsOrgWorkspacePath(t *testing.T) {
 		path   string
 		wantOK bool
 	}{
-		{"org workspace UUID", "root:kedge:orgs:7f3a91d2-aaaa-bbbb-cccc-1111", true},
-		{"org workspace short", "root:kedge:orgs:acme", true},
-		{"child team workspace", "root:kedge:orgs:7f3a:9c4b", false},
-		{"child team workspace nested", "root:kedge:orgs:acme:platform", false},
-		{"tenants workspace", "root:kedge:tenants:alice", false},
+		{"org workspace UUID", "root:kedge:tenants:7f3a91d2-aaaa-bbbb-cccc-1111", true},
+		{"org workspace short", "root:kedge:tenants:acme", true},
+		{"child team workspace", "root:kedge:tenants:7f3a:9c4b", false},
+		{"child team workspace nested", "root:kedge:tenants:acme:platform", false},
+		{"system tenants object store", "root:kedge:system:tenants", false},
 		{"providers workspace", "root:kedge:providers", false},
 		{"root", "root", false},
 		{"empty", "", false},
-		{"orgs parent (no org)", "root:kedge:orgs:", false},
-		{"orgs parent (no trailing colon)", "root:kedge:orgs", false},
+		{"tenants parent (no org)", "root:kedge:tenants:", false},
+		{"tenants parent (no trailing colon)", "root:kedge:tenants", false},
 		{"random workspace under root", "root:other", false},
-		{"path traversal attempt", "root:kedge:orgs:foo/etc/passwd", true /* path has no colon → structural match; caller's regex strips traversal earlier */},
+		{"path traversal attempt", "root:kedge:tenants:foo/etc/passwd", true /* path has no colon → structural match; caller's regex strips traversal earlier */},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -166,9 +166,9 @@ func TestExtractClusterPathFromKCPPath(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"clusters with subpath", "/clusters/root:kedge:orgs:7f3a/api/v1/pods", "root:kedge:orgs:7f3a"},
+		{"clusters with subpath", "/clusters/root:kedge:tenants:7f3a/api/v1/pods", "root:kedge:tenants:7f3a"},
 		{"clusters with mount suffix", "/clusters/root:tenant:abc:mount1/api/v1/pods", "root:tenant:abc:mount1"},
-		{"clusters bare (no subpath)", "/clusters/root:kedge:orgs:7f3a", "root:kedge:orgs:7f3a"},
+		{"clusters bare (no subpath)", "/clusters/root:kedge:tenants:7f3a", "root:kedge:tenants:7f3a"},
 		{"non-clusters path", "/api/v1/pods", ""},
 		{"empty", "", ""},
 	}

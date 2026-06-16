@@ -23,12 +23,12 @@ import (
 const (
 	// MembershipScopeOrg marks a Membership that grants access to the Org
 	// workspace itself (e.g. "Bob is an admin of acme Org"). Memberships
-	// of this scope live at root:kedge:orgs:{org-uuid}.
+	// of this scope live at root:kedge:tenants:{org-uuid}.
 	MembershipScopeOrg = "org"
 
 	// MembershipScopeWorkspace marks a Membership that grants access to a
 	// child Workspace ("Bob is admin of acme/platform"). Memberships of
-	// this scope live at root:kedge:orgs:{org-uuid}:{ws-uuid}.
+	// this scope live at root:kedge:tenants:{org-uuid}:{ws-uuid}.
 	MembershipScopeWorkspace = "workspace"
 
 	// MembershipRoleAdmin grants full administrative access in the target

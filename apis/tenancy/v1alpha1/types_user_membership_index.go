@@ -124,7 +124,7 @@ type MembershipIndexEntry struct {
 	// pending cascade. Cleared on undelete. Mirrors the underlying
 	// Organization.status.deletionRequestedAt (for org-scope entries)
 	// or the Workspace annotation
-	// tenancy.kedge.faros.sh/deletion-requested-at (for workspace-scope
+	// tenants.kedge.faros.sh/deletion-requested-at (for workspace-scope
 	// entries).
 	//
 	// +optional

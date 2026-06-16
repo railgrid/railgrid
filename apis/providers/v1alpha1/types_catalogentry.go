@@ -87,13 +87,6 @@ type CatalogEntrySpec struct {
 	// +kubebuilder:validation:MaxLength=64
 	Category string `json:"category,omitempty"`
 
-	// ServiceAccountNamespace is the host-cluster namespace where the
-	// provider Deployment runs. In future iterations the hub will write the
-	// kedge-provider-kubeconfig Secret here. Currently informational.
-	// +optional
-	// +kubebuilder:validation:MaxLength=63
-	ServiceAccountNamespace string `json:"serviceAccountNamespace,omitempty"`
-
 	// Dependencies lists providers that must already be enabled in a
 	// tenant workspace before this provider can be enabled there. The hub
 	// and portal use this as an enable-time guard; it does not grant access
@@ -233,32 +226,18 @@ type ProviderVirtualWorkspace struct {
 // declaration the catalog controller will use to materialise that CRD.
 type ProviderAPIExport struct {
 	// Name is the APIExport name (also the API group binding consumers
-	// reference).
+	// reference). The APIExport itself, along with its APIResourceSchemas and
+	// bind grant, is created by the provider's own Helm `init` (see the
+	// kedge-provider-sdk) — the hub only references it here for the portal
+	// Enable flow. Schemas are no longer embedded on the CatalogEntry.
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
-
-	// Schemas are inline APIResourceSchema bodies the hub will apply to the
-	// provider's workspace. Not yet honored (Phase 1B).
-	// +optional
-	Schemas []ProviderAPIResourceSchema `json:"schemas,omitempty"`
 
 	// PermissionClaims mirrors the APIExport's permissionClaims for display
 	// in the Enable dialog. Each claim must be marked TenantScoped=true to
 	// be auto-acceptable.
 	// +optional
 	PermissionClaims []ProviderPermissionClaim `json:"permissionClaims,omitempty"`
-}
-
-// ProviderAPIResourceSchema is an inline APIResourceSchema definition the hub
-// applies to the provider's workspace on first reconcile.
-type ProviderAPIResourceSchema struct {
-	// GroupResource identifies the schema (e.g. "greetings.cost.faros.sh").
-	// +kubebuilder:validation:MinLength=1
-	GroupResource string `json:"groupResource"`
-
-	// Body is the full APIResourceSchema YAML as a string.
-	// +kubebuilder:validation:MinLength=1
-	Body string `json:"body"`
 }
 
 // ProviderPermissionClaim describes a permission the provider's APIExport
@@ -295,13 +274,6 @@ type CatalogEntryStatus struct {
 	// +optional
 	Endpoints *ProviderEndpoints `json:"endpoints,omitempty"`
 
-	// KubeconfigSecret, when set, points at the host-cluster Secret the
-	// hub wrote the provider's kubeconfig into. Populated only when the
-	// hub was started with --provider-secret-write and could resolve a
-	// host-cluster client.
-	// +optional
-	KubeconfigSecret *KubeconfigSecretRef `json:"kubeconfigSecret,omitempty"`
-
 	// LastHeartbeat is the wall-clock time the provider last heartbeated.
 	// Phase 1C will populate this from the heartbeat endpoint.
 	// +optional
@@ -315,18 +287,6 @@ type CatalogEntryStatus struct {
 	// Conditions describe the current state of the provider.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// KubeconfigSecretRef points at the host-cluster Secret the hub wrote a
-// provider's kubeconfig into.
-type KubeconfigSecretRef struct {
-	// Namespace is the host-cluster Namespace (matches
-	// spec.serviceAccountNamespace from the CatalogEntry).
-	// +kubebuilder:validation:MinLength=1
-	Namespace string `json:"namespace"`
-	// Name is the Secret name. Conventionally kedge-provider-kubeconfig.
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
 }
 
 // ProviderEndpoints holds resolved endpoint URLs for status reporting.

@@ -350,7 +350,7 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 	hash := sha256.Sum256([]byte(issuer + "/" + sub))
 	subHash := hex.EncodeToString(hash[:])[:63]
 
-	labelSelector := fmt.Sprintf("tenancy.kedge.faros.sh/sub=%s", subHash)
+	labelSelector := fmt.Sprintf("tenants.kedge.faros.sh/sub=%s", subHash)
 	users, err := h.kedgeClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		return "", fmt.Errorf("listing users: %w", err)
@@ -392,7 +392,7 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "user-",
 			Labels: map[string]string{
-				"tenancy.kedge.faros.sh/sub": subHash,
+				"tenants.kedge.faros.sh/sub": subHash,
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
@@ -409,7 +409,7 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 		},
 	}
 	// Set apiVersion and kind for dynamic client.
-	user.APIVersion = "tenancy.kedge.faros.sh/v1alpha1"
+	user.APIVersion = "tenants.kedge.faros.sh/v1alpha1"
 	user.Kind = "User"
 
 	created, err := h.kedgeClient.Users().Create(ctx, user, metav1.CreateOptions{})

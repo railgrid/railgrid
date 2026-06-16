@@ -42,12 +42,13 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
   --hub-external-url=https://localhost:9443 \
   --dev-mode -v 4 \
   --static-auth-token=dev-token \
+  --admin-users=static-dev-toke@kedge.local \
   --embedded-kcp \
   --kcp-root-dir=.kcp \
   --kcp-secure-port=6443 \
   --embedded-graphql \
   --graphql-apiexport-slice-name=core.faros.sh \
-  --graphql-apiexport-logical-cluster=root:kedge:providers \
+  --graphql-apiexport-logical-cluster=root:kedge:system:controllers \
   --graphql-grpc-addr=localhost:50051 \
   --graphql-playground \
   --portal-dev-url=http://localhost:3000 \
@@ -87,8 +88,21 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
 #
 # Each provider has three resources:
 #   <name>            build + serve; auto-restarts on src change
-#   <name>-register   manual ▶ to kubectl apply the CatalogEntry
-#   <name>-unregister manual ▶ to kubectl delete it
+#   <name>-register   manual ▶ to kubectl apply the Provider + CatalogEntry.
+#                     Applying the Provider CR is what provisions the
+#                     sub-workspace + ServiceAccount + kubeconfig Secret —
+#                     the hub's Provider controller does it declaratively
+#                     (no admin "onboard" step anymore). The Provider
+#                     (admin.kedge.faros.sh) is admin-only; the CatalogEntry
+#                     (providers.kedge.faros.sh) is also bound into provider
+#                     sub-workspaces so a provider can self-register it from
+#                     inside. Both objects live in root:kedge:system:providers;
+#                     in dev we apply Provider + CatalogEntry there for
+#                     host-binary simplicity; in production the provider's init
+#                     self-registers the CatalogEntry into its own workspace via
+#                     KEDGE_CATALOGENTRY_FILE.
+#   <name>-unregister manual ▶ to kubectl delete them (deleting the Provider
+#                     triggers full teardown of the sub-workspace)
 #
 # The kro group adds two more for the backing infrastructure:
 #   kro-mgmt-up    builds the kind cluster + helm-installs kro +
@@ -129,6 +143,18 @@ local_resource(
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
+    labels=['providers-quickstart'],
+)
+
+# Creates quickstart's APIExport (+ endpoint slice + bind grant) so tenants can
+# Enable it. Run AFTER quickstart-register (which applies the Provider CR → the
+# controller provisions the workspace + provider-token Secret this reads).
+local_resource(
+    'quickstart-init',
+    cmd='make init-provider-quickstart',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub', 'quickstart-register'],
     labels=['providers-quickstart'],
 )
 
@@ -272,6 +298,17 @@ local_resource(
     labels=['providers-app-studio'],
 )
 
+# Creates App Studio's APIExport (+ schemas + endpoint slice + bind grant) so
+# tenants can Enable it. Run AFTER app-studio-register.
+local_resource(
+    'app-studio-init',
+    cmd='make init-provider-app-studio',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub', 'app-studio-register'],
+    labels=['providers-app-studio'],
+)
+
 local_resource(
     'app-studio-unregister',
     cmd='make uninstall-provider-app-studio',
@@ -322,8 +359,9 @@ local_resource(
 )
 
 # Mints the dev runtime kubeconfig from the provider SA token (created by
-# the catalog controller on register) and ensures the
-# APIExportEndpointSlice the engagement controller discovers VW URLs from.
+# the Provider controller when kuery-register applies the Provider CR) and
+# ensures the APIExportEndpointSlice the engagement controller discovers VW
+# URLs from.
 local_resource(
     'kuery-init',
     cmd='make init-provider-kuery',

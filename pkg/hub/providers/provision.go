@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,43 +31,46 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"sigs.k8s.io/yaml"
 
-	providersv1alpha1 "github.com/faroshq/faros-kedge/apis/providers/v1alpha1"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/kcppaths"
 )
 
-// provisioner owns the side-effects the catalog controller performs against
-// kcp when a CatalogEntry is reconciled: creating the per-provider
-// sub-workspace, applying inline APIResourceSchemas, and applying the
-// APIExport that lets tenants bind.
-//
-// Phase 1B scope. Phase 1C will add the RBAC grant + MaximalPermissionPolicy
-// that gate tenant binds.
-type provisioner struct {
+// Provisioner owns the kcp-side side-effects of provisioning a provider:
+// creating the per-provider sub-workspace, the "provider" ServiceAccount, and
+// the minted kubeconfig Secret. It is driven by the Provider CR reconciler
+// (provider_controller.go); the provider's own APIExport/schemas come from its
+// `init`.
+type Provisioner struct {
 	kcpConfig *rest.Config
 }
 
-const providersParentWorkspace = "root:kedge:providers"
+// NewProvisioner returns a Provisioner that performs provider-workspace
+// side-effects (workspace, ServiceAccount, minted kubeconfig) against kcp using
+// the given admin config. Used by the admin onboarding API
+// (pkg/hub/admin); the catalog controller no longer provisions.
+func NewProvisioner(kcpConfig *rest.Config) *Provisioner {
+	return &Provisioner{kcpConfig: kcpConfig}
+}
+
+// providersParentWorkspace is the parent of per-provider sub-workspaces
+// (root:kedge:providers:<name>). NOTE: APIExports and Provider/CatalogEntry
+// objects no longer live here — they live in root:kedge:system:controllers and
+// root:kedge:system:providers respectively.
+const providersParentWorkspace = kcppaths.ProvidersParent
 
 var (
 	workspaceGVR = schema.GroupVersionResource{
 		Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces",
-	}
-	apiResourceSchemaGVR = schema.GroupVersionResource{
-		Group: "apis.kcp.io", Version: "v1alpha1", Resource: "apiresourceschemas",
-	}
-	apiExportGVR = schema.GroupVersionResource{
-		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports",
-	}
-	clusterRoleGVR = schema.GroupVersionResource{
-		Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles",
 	}
 	clusterRoleBindingGVR = schema.GroupVersionResource{
 		Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings",
 	}
 	serviceAccountGVR = schema.GroupVersionResource{
 		Group: "", Version: "v1", Resource: "serviceaccounts",
+	}
+	namespaceGVR = schema.GroupVersionResource{
+		Group: "", Version: "v1", Resource: "namespaces",
 	}
 )
 
@@ -93,10 +95,20 @@ const ProviderTokenSecretSuffix = "-token"
 // EnsureProviderSA creates the "provider" ServiceAccount in the sub-workspace
 // and grants it cluster-admin within that workspace. Idempotent. Returns the
 // fully-qualified SA cluster-role-bound name "system:serviceaccount:default:provider".
-func (p *provisioner) EnsureProviderSA(ctx context.Context, providerName string) error {
+func (p *Provisioner) EnsureProviderSA(ctx context.Context, providerName string) error {
 	cl, err := p.clientFor(providersParentWorkspace + ":" + providerName)
 	if err != nil {
 		return err
+	}
+	// The `provider` WorkspaceType does NOT extend universal, so the `default`
+	// namespace is not auto-created. Ensure it before placing the SA there.
+	ns := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Namespace",
+		"metadata":   map[string]any{"name": ProviderSANamespace},
+	}}
+	if _, err := cl.Resource(namespaceGVR).Create(ctx, ns, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("ensuring namespace %s in provider workspace: %w", ProviderSANamespace, err)
 	}
 	sa := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
@@ -140,7 +152,7 @@ func (p *provisioner) EnsureProviderSA(ctx context.Context, providerName string)
 // Secret populated by kcp's token controller, so it does not expire and needs
 // no rotation. The server URL is hubExternalURL + /clusters/{sub-workspace-path}
 // so the provider's typed Kubernetes clients land in its own workspace by default.
-func (p *provisioner) MintProviderKubeconfig(ctx context.Context, providerName, hubExternalURL string) ([]byte, error) {
+func (p *Provisioner) MintProviderKubeconfig(ctx context.Context, providerName, hubExternalURL string) ([]byte, error) {
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, providersParentWorkspace+":"+providerName)
 	typed, err := kubernetes.NewForConfig(cfg)
@@ -236,17 +248,20 @@ func EncodeKubeconfig(kc []byte) string {
 // workspace's logical cluster ID (Workspace.spec.cluster) — the cluster name
 // kcp embeds in the provider SA's token claims, which the Enable-time
 // edges-proxy grant needs to build the qualified RBAC subject.
-func (p *provisioner) EnsureProviderWorkspace(ctx context.Context, name string) (string, error) {
+func (p *Provisioner) EnsureProviderWorkspace(ctx context.Context, name string) (string, error) {
 	parent, err := p.clientFor(providersParentWorkspace)
 	if err != nil {
 		return "", err
 	}
+	// Use the restricted `provider` WorkspaceType (config/kcp/workspacetype-provider.yaml,
+	// defined under root:kedge): no universal → the provider cannot create
+	// Workspaces; a defaultAPIBinding pulls in the CatalogEntry export.
 	ws := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "tenancy.kcp.io/v1alpha1",
 		"kind":       "Workspace",
 		"metadata":   map[string]any{"name": name},
 		"spec": map[string]any{
-			"type": map[string]any{"name": "universal", "path": "root"},
+			"type": map[string]any{"name": "provider", "path": kcppaths.Root},
 		},
 	}}
 	if _, err := parent.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -270,327 +285,148 @@ func (p *provisioner) EnsureProviderWorkspace(ctx context.Context, name string) 
 	return cluster, nil
 }
 
-// ApplySchemas parses each inline APIResourceSchema body and applies it to
-// the provider's sub-workspace. APIResourceSchemas are immutable in kcp, so
-// the body author MUST embed a content-version in metadata.name (e.g.
-// "v260522-abc.greetings.hello.cost.faros.sh"). Re-applying the same name
-// is a no-op; a schema-body change must come with a new name.
-func (p *provisioner) ApplySchemas(ctx context.Context, providerName string, schemas []providersv1alpha1.ProviderAPIResourceSchema) ([]string, error) {
-	cl, err := p.clientFor(providersParentWorkspace + ":" + providerName)
+// ResolveWorkspaceCluster returns the logical cluster ID of the provider's
+// sub-workspace (root:kedge:providers/{name}), read-only. Returns "" (no error)
+// when the workspace does not exist yet — i.e. the provider has not been
+// onboarded. The catalog reconciler feeds this into the registry so the Enable
+// endpoint can build the edges-proxy RBAC subject without the hub provisioning
+// anything.
+func (p *Provisioner) ResolveWorkspaceCluster(ctx context.Context, name string) (string, error) {
+	parent, err := p.clientFor(providersParentWorkspace)
+	if err != nil {
+		return "", err
+	}
+	got, err := parent.Resource(workspaceGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	cluster, _, _ := unstructured.NestedString(got.Object, "spec", "cluster")
+	return cluster, nil
+}
+
+// OnboardedWorkspace is a provider sub-workspace under root:kedge:providers
+// created by onboarding (independent of whether a CatalogEntry has registered
+// the provider yet).
+type OnboardedWorkspace struct {
+	Name    string
+	Cluster string
+	Phase   string
+}
+
+// ListProviderWorkspaces returns the provider sub-workspaces under
+// root:kedge:providers. Used by the admin UI so onboarded providers appear even
+// before their Helm chart (and CatalogEntry) is installed.
+func (p *Provisioner) ListProviderWorkspaces(ctx context.Context) ([]OnboardedWorkspace, error) {
+	parent, err := p.clientFor(providersParentWorkspace)
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(schemas))
-	for i, s := range schemas {
-		u := &unstructured.Unstructured{}
-		if err := yaml.Unmarshal([]byte(s.Body), &u.Object); err != nil {
-			return nil, fmt.Errorf("parsing schema[%d] (%s): %w", i, s.GroupResource, err)
-		}
-		// Defensive: require apiVersion + kind + name on the parsed object.
-		if u.GetAPIVersion() == "" || u.GetKind() == "" || u.GetName() == "" {
-			return nil, fmt.Errorf("schema[%d] (%s): body must include apiVersion, kind, and metadata.name", i, s.GroupResource)
-		}
-		if u.GetAPIVersion() != "apis.kcp.io/v1alpha1" || u.GetKind() != "APIResourceSchema" {
-			return nil, fmt.Errorf("schema[%d] (%s): expected APIResourceSchema apis.kcp.io/v1alpha1, got %s/%s", i, s.GroupResource, u.GetAPIVersion(), u.GetKind())
-		}
-		if _, err := cl.Resource(apiResourceSchemaGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-			return nil, fmt.Errorf("creating schema %s: %w", u.GetName(), err)
-		}
-		names = append(names, u.GetName())
+	list, err := parent.Resource(workspaceGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing workspaces in %s: %w", providersParentWorkspace, err)
 	}
-	return names, nil
+	out := make([]OnboardedWorkspace, 0, len(list.Items))
+	for i := range list.Items {
+		w := &list.Items[i]
+		cluster, _, _ := unstructured.NestedString(w.Object, "spec", "cluster")
+		phase, _, _ := unstructured.NestedString(w.Object, "status", "phase")
+		out = append(out, OnboardedWorkspace{Name: w.GetName(), Cluster: cluster, Phase: phase})
+	}
+	return out, nil
 }
 
-// ApplyAPIExport creates / updates the APIExport in the provider's sub-
-// workspace that references the just-applied schemas. The
-// permissionClaims on the export mirror the catalog entry's declared
-// claims; Phase 3 will additionally set MaximalPermissionPolicy.
-func (p *provisioner) ApplyAPIExport(ctx context.Context, providerName, exportName string, schemaNames []string, claims []providersv1alpha1.ProviderPermissionClaim) error {
-	cl, err := p.clientFor(providersParentWorkspace + ":" + providerName)
+// The provider's CatalogEntry APIBinding is no longer created imperatively —
+// the `provider` WorkspaceType declares a defaultAPIBinding to
+// providers.kedge.faros.sh (in system:controllers), so kcp's WorkspaceType
+// initializer binds it automatically when the sub-workspace is created.
+
+// ProviderKubeconfigSecretKey is the data key the provider kubeconfig is stored
+// under in the Secret the Provider controller writes into system:providers.
+const ProviderKubeconfigSecretKey = "kubeconfig"
+
+// WriteKubeconfigSecret create-or-updates a Secret in root:kedge:system:providers
+// (where the Provider CR lives, NOT the provider sub-workspace) holding the
+// provider's minted kubeconfig under key. The Secret lives next to the Provider
+// CR so a provider pod (or dev tooling) can read its credentials from one
+// well-known place. Idempotent. Ensures the target namespace exists first.
+func (p *Provisioner) WriteKubeconfigSecret(ctx context.Context, namespace, name, key string, kc []byte, providerName string) error {
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, kcppaths.SystemProviders)
+	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("typed kube client for %s: %w", kcppaths.SystemProviders, err)
 	}
-	resources := make([]any, 0, len(schemaNames))
-	for _, n := range schemaNames {
-		// Schema name format is "vYYMMDD-hash.<resource>.<group>" — derive
-		// resource + group for the APIExport.spec.resources entry.
-		group, resource := splitSchemaName(n)
-		if group == "" || resource == "" {
-			return fmt.Errorf("cannot derive group/resource from schema name %q", n)
-		}
-		resources = append(resources, map[string]any{
-			"group":  group,
-			"name":   resource,
-			"schema": n,
-			"storage": map[string]any{
-				"crd": map[string]any{},
+
+	// Defensively ensure the namespace exists.
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+	if _, err := cs.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("ensuring namespace %s in %s: %w", namespace, kcppaths.SystemProviders, err)
+	}
+
+	desired := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"providers.kedge.faros.sh/provider":   providerName,
+				"providers.kedge.faros.sh/managed-by": "provider-controller",
 			},
-		})
-	}
-
-	pcList := make([]any, 0, len(claims))
-	for _, c := range claims {
-		pc := map[string]any{
-			"resource": c.Resource,
-		}
-		if c.Group != "" {
-			pc["group"] = c.Group
-		}
-		// kcp rejects a permissionClaim on a non-built-in API type unless
-		// it carries the identityHash of the APIExport that serves it (the
-		// hash pins the claim to a specific provider, so a tenant can't be
-		// tricked into granting access to a look-alike resource). Resolve
-		// it from the sibling APIExport in the providers parent workspace;
-		// an empty hash means the type is built-in and needs none.
-		hash, err := p.resolveClaimIdentityHash(ctx, c.Group, c.Resource)
-		if err != nil {
-			return fmt.Errorf("resolving identityHash for claim %s.%s: %w", c.Resource, c.Group, err)
-		}
-		if hash != "" {
-			pc["identityHash"] = hash
-		}
-		if len(c.Verbs) > 0 {
-			verbs := make([]any, 0, len(c.Verbs))
-			for _, v := range c.Verbs {
-				verbs = append(verbs, v)
-			}
-			pc["verbs"] = verbs
-		}
-		pcList = append(pcList, pc)
-	}
-
-	desired := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "apis.kcp.io/v1alpha2",
-		"kind":       "APIExport",
-		"metadata":   map[string]any{"name": exportName},
-		"spec": map[string]any{
-			"resources":        resources,
-			"permissionClaims": pcList,
-			// MaximalPermissionPolicy is intentionally NOT set. With
-			// Local{}, kcp gates tenant access to bound resources on RBAC
-			// in *this* workspace for apis.kcp.io:binding:<user> subjects
-			// — i.e. it caps the tenant too, not just the provider's
-			// controllers. Without prefixed-subject ClusterRoles minted
-			// here, that policy effectively denies tenants access to
-			// their own bound CRs. The right way to scope provider
-			// controller reach is via the permissionClaims list above
-			// (which kcp enforces) plus the bind grant (ClusterRole +
-			// CRB) ApplyBindGrant creates. If a future provider model
-			// genuinely needs a maximal-permission policy, plumb in the
-			// required apis.kcp.io:binding:* RBAC at the same time.
 		},
-	}}
-
-	existing, err := cl.Resource(apiExportGVR).Get(ctx, exportName, metav1.GetOptions{})
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{key: kc},
+	}
+	existing, err := cs.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cl.Resource(apiExportGVR).Create(ctx, desired, metav1.CreateOptions{})
-		if err != nil {
-			return fmt.Errorf("creating APIExport %s: %w", exportName, err)
+		if _, err := cs.CoreV1().Secrets(namespace).Create(ctx, desired, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating kubeconfig Secret %s/%s: %w", namespace, name, err)
 		}
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("getting existing APIExport %s: %w", exportName, err)
+		return fmt.Errorf("getting kubeconfig Secret %s/%s: %w", namespace, name, err)
 	}
-
-	// Merge, don't clobber. spec.resources has multiple writers: this hub
-	// controller (the catalog-declared schemas), the provider's one-shot
-	// install step (e.g. templates.infrastructure.kedge.faros.sh with
-	// storage.virtual), and the provider's Template controller (per-template
-	// entries minted at runtime). A full replace here drops every entry not
-	// derived from the CatalogEntry's schemas — which is exactly what silently
-	// deletes the templates virtual-storage resource on a reconcile. So we
-	// upsert only the entries we own (keyed by group+name) and preserve the rest.
-	existingResources, _, err := unstructured.NestedSlice(existing.Object, "spec", "resources")
-	if err != nil {
-		return fmt.Errorf("reading existing spec.resources on APIExport %s: %w", exportName, err)
-	}
-	if err := unstructured.SetNestedSlice(desired.Object, mergeAPIExportResources(existingResources, resources), "spec", "resources"); err != nil {
-		return fmt.Errorf("merging spec.resources for APIExport %s: %w", exportName, err)
-	}
-
-	// Patch spec to converge, preserving resourceVersion.
 	desired.SetResourceVersion(existing.GetResourceVersion())
-	if _, err := cl.Resource(apiExportGVR).Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("updating APIExport %s: %w", exportName, err)
+	if _, err := cs.CoreV1().Secrets(namespace).Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating kubeconfig Secret %s/%s: %w", namespace, name, err)
 	}
 	return nil
 }
 
-// resolveClaimIdentityHash returns the identityHash of the APIExport in the
-// providers parent workspace that serves (group, resource), as required on
-// any permissionClaim for a non-built-in API type. A built-in type (no
-// sibling APIExport serves it — e.g. core k8s resources) yields "" and no
-// hash is set. An empty group is always built-in.
-//
-// kedge keeps every first-party APIExport (core.faros.sh, kedge.faros.sh,
-// …) in the providers parent workspace, so a single list there covers all
-// resolvable claims; matching is by (spec.resources[].group, .name) rather
-// than the export name so it does not depend on the name==group convention.
-func (p *provisioner) resolveClaimIdentityHash(ctx context.Context, group, resource string) (string, error) {
-	if group == "" {
-		return "", nil
-	}
-	cl, err := p.clientFor(providersParentWorkspace)
+// DeleteKubeconfigSecret removes the kubeconfig Secret from
+// root:kedge:system:providers. Idempotent (NotFound tolerated).
+func (p *Provisioner) DeleteKubeconfigSecret(ctx context.Context, namespace, name string) error {
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, kcppaths.SystemProviders)
+	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return "", err
+		return fmt.Errorf("typed kube client for %s: %w", kcppaths.SystemProviders, err)
 	}
-
-	// First-party kedge APIs (*.faros.sh) are always served by a sibling
-	// APIExport in the providers parent workspace, so a miss can only mean the
-	// serving export — or its kcp-minted identity — has not yet synced into our
-	// view; we poll that out rather than write an empty (permanently-invalid)
-	// hash. Built-in and kcp-system groups have no sibling export, so for those
-	// a miss is the terminal, correct "" answer. Mirrors
-	// Bootstrapper.resolveClaimIdentityHash on the binding side — keep both in
-	// lockstep.
-	firstParty := strings.HasSuffix(group, ".faros.sh")
-
-	var hash string
-	lookup := func(ctx context.Context) (bool, error) {
-		list, err := cl.Resource(apiExportGVR).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return false, fmt.Errorf("listing APIExports in %s: %w", providersParentWorkspace, err)
-		}
-		for i := range list.Items {
-			ex := &list.Items[i]
-			resources, _, _ := unstructured.NestedSlice(ex.Object, "spec", "resources")
-			for _, r := range resources {
-				rm, ok := r.(map[string]any)
-				if !ok {
-					continue
-				}
-				g, _ := rm["group"].(string)
-				n, _ := rm["name"].(string)
-				if g != group || n != resource {
-					continue
-				}
-				h, _, _ := unstructured.NestedString(ex.Object, "status", "identityHash")
-				if h == "" {
-					// Serving export exists but kcp has not minted its identity
-					// yet — not resolved; the poll below waits it out.
-					return false, nil
-				}
-				hash = h
-				return true, nil
-			}
-		}
-		// No sibling APIExport serves it: terminal "" for built-ins, a
-		// not-yet-synced race for first-party APIs (keep polling).
-		return !firstParty, nil
+	if err := cs.CoreV1().Secrets(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("deleting kubeconfig Secret %s/%s: %w", namespace, name, err)
 	}
-
-	if !firstParty {
-		if _, err := lookup(ctx); err != nil {
-			return "", err
-		}
-		return hash, nil // "" — built-in / kcp-system, needs no identityHash
-	}
-
-	if err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true, lookup); err != nil {
-		return "", fmt.Errorf("resolving identityHash for first-party claim %s.%s: no APIExport in %s serves it with a minted status.identityHash yet: %w", resource, group, providersParentWorkspace, err)
-	}
-	return hash, nil
+	return nil
 }
 
-// mergeAPIExportResources upserts the hub-owned entries (owned, derived from
-// the CatalogEntry's schemas) into the existing spec.resources list, keyed by
-// (group, name), while preserving every existing entry the hub does not own.
-// Owned entries win (schema/storage refreshed from the catalog) and come first
-// in the given order so the result stays deterministic; foreign entries — e.g.
-// the provider's templates virtual-storage resource or runtime per-template
-// entries — are kept verbatim.
-func mergeAPIExportResources(existing, owned []any) []any {
-	key := func(r any) (string, bool) {
-		m, ok := r.(map[string]any)
-		if !ok {
-			return "", false
-		}
-		group, _ := m["group"].(string)
-		name, _ := m["name"].(string)
-		return group + "/" + name, true
-	}
-	ownedKeys := make(map[string]struct{}, len(owned))
-	for _, r := range owned {
-		if k, ok := key(r); ok {
-			ownedKeys[k] = struct{}{}
-		}
-	}
-	out := make([]any, 0, len(owned)+len(existing))
-	out = append(out, owned...)
-	for _, r := range existing {
-		k, ok := key(r)
-		if !ok {
-			out = append(out, r) // unparseable — keep rather than risk dropping data
-			continue
-		}
-		if _, isOwned := ownedKeys[k]; isOwned {
-			continue // replaced by the owned version above
-		}
-		out = append(out, r)
-	}
-	return out
-}
-
-// ApplyBindGrant creates / updates the ClusterRole + ClusterRoleBinding in
-// the provider's sub-workspace that lets any authenticated kedge user bind
-// to the provider's APIExport from their own workspace. Without this grant,
-// kcp refuses tenant-side APIBinding creates with 403.
-//
-// Subject is "system:authenticated" — the platform-installation contract is
-// "every authenticated tenant may opt in to any installed provider". The
-// platform admin is the gatekeeper at chart-install time. If finer scoping
-// is needed later (e.g. allow-list per provider), this is the hook.
-//
-// Idempotent: re-apply on every reconcile.
-func (p *provisioner) ApplyBindGrant(ctx context.Context, providerName, exportName string) error {
-	cl, err := p.clientFor(providersParentWorkspace + ":" + providerName)
+// DeleteProviderWorkspace deletes the provider sub-workspace
+// root:kedge:providers/{name}. kcp cascades the ServiceAccount, its token
+// Secret, and any APIExport / APIResourceSchemas the provider created there.
+// Idempotent (NotFound tolerated).
+func (p *Provisioner) DeleteProviderWorkspace(ctx context.Context, name string) error {
+	parent, err := p.clientFor(providersParentWorkspace)
 	if err != nil {
 		return err
 	}
-	roleName := "kedge:providers:bind:" + exportName
-	cr := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "rbac.authorization.k8s.io/v1",
-		"kind":       "ClusterRole",
-		"metadata":   map[string]any{"name": roleName},
-		"rules": []any{
-			map[string]any{
-				"apiGroups":     []any{"apis.kcp.io"},
-				"resources":     []any{"apiexports"},
-				"verbs":         []any{"bind"},
-				"resourceNames": []any{exportName},
-			},
-		},
-	}}
-	if err := applyUnstructured(ctx, cl, clusterRoleGVR, cr); err != nil {
-		return fmt.Errorf("applying ClusterRole %s: %w", roleName, err)
-	}
-
-	crb := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "rbac.authorization.k8s.io/v1",
-		"kind":       "ClusterRoleBinding",
-		"metadata":   map[string]any{"name": roleName},
-		"roleRef": map[string]any{
-			"apiGroup": "rbac.authorization.k8s.io",
-			"kind":     "ClusterRole",
-			"name":     roleName,
-		},
-		"subjects": []any{
-			map[string]any{
-				"apiGroup": "rbac.authorization.k8s.io",
-				"kind":     "Group",
-				"name":     "system:authenticated",
-			},
-		},
-	}}
-	if err := applyUnstructured(ctx, cl, clusterRoleBindingGVR, crb); err != nil {
-		return fmt.Errorf("applying ClusterRoleBinding %s: %w", roleName, err)
+	if err := parent.Resource(workspaceGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("deleting sub-workspace %s: %w", name, err)
 	}
 	return nil
 }
 
-// applyUnstructured is a tiny create-or-update helper for cluster-scoped
-// resources. Preserves resourceVersion on update.
+// applyUnstructured is a create-or-update helper for cluster-scoped resources.
+// Preserves resourceVersion on update.
 func applyUnstructured(ctx context.Context, cl dynamic.Interface, gvr schema.GroupVersionResource, desired *unstructured.Unstructured) error {
 	existing, err := cl.Resource(gvr).Get(ctx, desired.GetName(), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -605,39 +441,8 @@ func applyUnstructured(ctx context.Context, cl dynamic.Interface, gvr schema.Gro
 	return err
 }
 
-func (p *provisioner) clientFor(clusterPath string) (dynamic.Interface, error) {
+func (p *Provisioner) clientFor(clusterPath string) (dynamic.Interface, error) {
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, clusterPath)
 	return dynamic.NewForConfig(cfg)
-}
-
-// splitSchemaName parses a kcp APIResourceSchema metadata.name of the form
-// "v260522-abc.greetings.hello.cost.faros.sh" → resource="greetings",
-// group="hello.cost.faros.sh". The leading version segment is everything up
-// to the FIRST dot; the resource is the next segment; the group is the rest.
-func splitSchemaName(n string) (group, resource string) {
-	// find first dot (end of version segment)
-	first := -1
-	for i := 0; i < len(n); i++ {
-		if n[i] == '.' {
-			first = i
-			break
-		}
-	}
-	if first < 0 || first == len(n)-1 {
-		return "", ""
-	}
-	rest := n[first+1:]
-	// find next dot (end of resource segment)
-	second := -1
-	for i := 0; i < len(rest); i++ {
-		if rest[i] == '.' {
-			second = i
-			break
-		}
-	}
-	if second <= 0 || second == len(rest)-1 {
-		return "", ""
-	}
-	return rest[second+1:], rest[:second]
 }

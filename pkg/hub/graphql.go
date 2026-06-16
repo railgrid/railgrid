@@ -40,23 +40,25 @@ import (
 	"github.com/platform-mesh/kubernetes-graphql-gateway/listener"
 	listeneroptions "github.com/platform-mesh/kubernetes-graphql-gateway/listener/options"
 	kcplisteneroptions "github.com/platform-mesh/kubernetes-graphql-gateway/providers/kcp/options"
+
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 )
 
 // startEmbeddedGraphQL starts the GraphQL listener and gateway in-process,
 // registers the GraphQL handler on the provided router under
 // /graphql/clusters/{clusterName}, and launches both goroutines into g.
 //
-// kcpFrontProxyConfig is the front-proxy-fronted kcp config; gateway resolver
-// clients use this host so per-request workspace traffic is routed to the
-// correct shard. kcpShardConfig is the shard-direct config; the listener uses
-// it because the APIExport endpoint slice advertises shard-direct VW URLs that
-// only succeed when reached from a shard-direct kubeconfig.
+// kcpConfig is the front-proxy-fronted kcp config used for everything: the
+// listener's APIExportEndpointSlice watch and the gateway resolver clients. The
+// front-proxy resolves the workspace path and routes to whichever shard hosts
+// it (so it is multi-shard safe), and the shards accept the front-proxy client
+// cert for the shard-direct VW endpoints advertised in the slice status.
 //
 // The listener watches the kcp APIExportEndpointSlice and pushes OpenAPI schemas
 // over an in-process gRPC connection. The gateway subscribes to those schemas
 // and serves GraphQL. No separate process or port is required; all requests
 // arrive via the hub's own mux.
-func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options, kcpFrontProxyConfig, kcpShardConfig *rest.Config, router *mux.Router) error {
+func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options, kcpConfig *rest.Config, router *mux.Router) error {
 	logger := klog.FromContext(ctx)
 
 	grpcAddr := opts.GraphQLGRPCAddr
@@ -64,13 +66,14 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 		grpcAddr = "localhost:50051"
 	}
 
-	// Write a kubeconfig containing only the kcp server endpoint and CA (no
-	// credentials) so the listener and kcp-provider can locate the server.
-	// Per-request authentication uses the user's own bearer token injected via
-	// utilscontext.SetToken; admin credentials are intentionally excluded.
-	// The listener side targets shard-direct URLs so the APIExportEndpointSlice
-	// endpoints (which advertise shard-direct VW hosts) are reachable.
-	kubeconfigPath, cleanup, err := writeKubeconfigTemp(kcpShardConfig)
+	// Write a kubeconfig containing the front-proxy server endpoint, CA and
+	// admin credentials so the listener's kcp-provider can locate the server and
+	// perform startup discovery. Per-request authentication for GraphQL queries
+	// is handled separately via utilscontext.SetToken (the user's bearer token).
+	// The front-proxy resolves the APIExportEndpointSlice workspace path and
+	// routes to the hosting shard, and reaches the shard-direct VW endpoints the
+	// slice advertises (the shards trust the front-proxy client cert).
+	kubeconfigPath, cleanup, err := writeKubeconfigTemp(kcpConfig)
 	if err != nil {
 		return fmt.Errorf("writing temp kubeconfig for GraphQL listener: %w", err)
 	}
@@ -117,7 +120,7 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	// shard actually hosting each workspace: in a multi-shard topology a
 	// shard-direct host yields empty discovery for cross-shard workspaces and
 	// the gateway resolver then trips `no matches for kind`.
-	frontProxyHost := kcpFrontProxyConfig.Host
+	frontProxyHost := kcpConfig.Host
 	workspaceURL := func(clusterName string) (string, error) {
 		parsed, err := url.Parse(frontProxyHost)
 		if err != nil {
@@ -130,7 +133,7 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 		return workspaceURL(clusterName)
 	}
 	listenerCompleted.ClusterMetadataFunc = func(clusterName string) (*gatewayv1alpha1.ClusterMetadata, error) {
-		metadata, err := gatewayv1alpha1.BuildClusterMetadataFromConfig(kcpFrontProxyConfig)
+		metadata, err := gatewayv1alpha1.BuildClusterMetadataFromConfig(kcpConfig)
 		if err != nil {
 			return nil, fmt.Errorf("building front-proxy cluster metadata: %w", err)
 		}

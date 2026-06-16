@@ -1,0 +1,38 @@
+apiVersion: tenancy.kcp.io/v1alpha1
+kind: WorkspaceType
+metadata:
+  name: provider
+  annotations:
+    bootstrap.kcp.io/create-only: "true"
+spec:
+  # A `provider` workspace (root:kedge:providers:<name>) hosts a single
+  # extension provider: its own APIExport + APIResourceSchemas (created by the
+  # provider's `init`), the `provider` ServiceAccount, and a self-registered
+  # CatalogEntry.
+  #
+  # Deliberately NO `extend: universal`:
+  #   * Universal would pull tenancy.kcp.io (Workspace/WorkspaceType) into the
+  #     workspace, letting a provider — which holds cluster-admin over its own
+  #     workspace — spawn arbitrary child/sibling workspaces and bootstrap other
+  #     providers. apis.kcp.io (APIExport / APIResourceSchema / APIBinding /
+  #     APIExportEndpointSlice), core v1 (namespaces/secrets/serviceaccounts) and
+  #     rbac.authorization.k8s.io are CORE kcp groups served in every logical
+  #     cluster regardless of WorkspaceType, so the provider's `init` still
+  #     creates its export/schemas/slice/bind-grant in-workspace. The only thing
+  #     universal would have added that we need — the `default` namespace — is
+  #     created explicitly by the Provider controller before the SA is minted.
+  limitAllowedChildren:
+    none: true
+  # Provider workspaces only make sense directly under root:kedge:providers
+  # (a `universal` workspace). kcp WorkspaceType admission rejects creation at
+  # any other path.
+  limitAllowedParents:
+    types:
+    - name: universal
+      path: root
+  # Bind the CatalogEntry APIExport so the provider can self-register its
+  # CatalogEntry from inside its workspace. The provisioning (Provider) and
+  # other platform exports are intentionally NOT bound here.
+  defaultAPIBindings:
+  - path: root:kedge:system:controllers
+    export: providers.kedge.faros.sh

@@ -1,0 +1,11 @@
+# Provider — declarative provisioning record (admin.kedge.faros.sh, admin-only).
+# The hub's Provider controller creates root:kedge:providers:code, its
+# "provider" ServiceAccount, and the code-kubeconfig Secret in
+# root:kedge:system:providers. The APIExport/schemas/bind-grant come from code's own
+# `init`; routing/UI from the companion CatalogEntry in manifest.yaml.
+apiVersion: admin.kedge.faros.sh/v1alpha1
+kind: Provider
+metadata:
+  name: code
+spec:
+  displayName: "Code"

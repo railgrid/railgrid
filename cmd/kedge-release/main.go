@@ -60,11 +60,17 @@ type component struct {
 	triggers string
 }
 
-var componentOrder = []string{"hub", "quickstart", "infrastructure", "code"}
+// provider-sdk is first: the providers depend on it, so when releasing `all`
+// the SDK tag is cut (and published to the mirror) before the providers that
+// will eventually `require` that published version.
+var componentOrder = []string{"provider-sdk", "hub", "quickstart", "kuery", "app-studio", "infrastructure", "code"}
 
 var components = map[string]component{
+	"provider-sdk":   {"provider-sdk/v", "split → faroshq/provider-sdk; publishes the go-gettable SDK module (providers require this version once the replace is dropped)"},
 	"hub":            {"v", "goreleaser CLI release + hub/agent/provider images + Helm charts (ghcr.io/faroshq)"},
 	"quickstart":     {"providers/quickstart/v", "split → faroshq/provider-quickstart; the mirror builds its image + chart"},
+	"kuery":          {"providers/kuery/v", "split → faroshq/provider-kuery; the mirror builds its image + chart"},
+	"app-studio":     {"providers/app-studio/v", "split → faroshq/provider-app-studio; the mirror builds its image + chart"},
 	"infrastructure": {"providers/infrastructure/v", "tag only — no split/release workflow wired up yet"},
 	"code":           {"providers/code/v", "tag only — no split/release workflow wired up yet"},
 }
@@ -337,6 +343,7 @@ Usage:
   kedge-release <component|all> [flags]
 
 Components:
+  provider-sdk    provider-sdk/v<X.Y.Z>             (split → faroshq/provider-sdk)
   hub             v<X.Y.Z>                          (repo-wide release)
   quickstart      providers/quickstart/v<X.Y.Z>
   infrastructure  providers/infrastructure/v<X.Y.Z>

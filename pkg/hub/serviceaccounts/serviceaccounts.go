@@ -23,11 +23,11 @@ limitations under the License.
 // project our domain concerns:
 //
 //	labels:
-//	  tenancy.kedge.faros.sh/kedge-sa: "true"
+//	  tenants.kedge.faros.sh/kedge-sa: "true"
 //	annotations:
-//	  tenancy.kedge.faros.sh/display-name:           <human label>
-//	  tenancy.kedge.faros.sh/role:                   admin|member
-//	  tenancy.kedge.faros.sh/last-token-issued-at:   <RFC3339>
+//	  tenants.kedge.faros.sh/display-name:           <human label>
+//	  tenants.kedge.faros.sh/role:                   admin|member
+//	  tenants.kedge.faros.sh/last-token-issued-at:   <RFC3339>
 //
 // Plus a ClusterRoleBinding owned by the SA that maps
 // `system:serviceaccount:default:<sa-name>` to `cluster-admin`
@@ -73,22 +73,22 @@ const (
 	// LabelKedgeSA marks a kube ServiceAccount as a kedge-managed SA.
 	// Cheap listing selector; used both by the REST list endpoint and
 	// the soft-delete cascade if it ever wants to enumerate.
-	LabelKedgeSA = "tenancy.kedge.faros.sh/kedge-sa"
+	LabelKedgeSA = "tenants.kedge.faros.sh/kedge-sa"
 
 	// AnnotationDisplayName carries the human-facing label. Editable
 	// via PATCH; not unique.
-	AnnotationDisplayName = "tenancy.kedge.faros.sh/display-name"
+	AnnotationDisplayName = "tenants.kedge.faros.sh/display-name"
 
 	// AnnotationRole carries the requested role ("admin" or
 	// "member"). The hub maintains a ClusterRoleBinding consistent
 	// with this value; the annotation is the source of truth for the
 	// REST projection. PATCH on this triggers a CRB rewrite.
-	AnnotationRole = "tenancy.kedge.faros.sh/role"
+	AnnotationRole = "tenants.kedge.faros.sh/role"
 
 	// AnnotationLastTokenIssuedAt is RFC3339 — set on each successful
 	// /tokens POST so the portal can render "last issued N days ago"
 	// without scanning audit logs.
-	AnnotationLastTokenIssuedAt = "tenancy.kedge.faros.sh/last-token-issued-at"
+	AnnotationLastTokenIssuedAt = "tenants.kedge.faros.sh/last-token-issued-at"
 
 	// RoleAdmin / RoleMember are the only valid role values. Mirrors
 	// Membership.role; validated at the REST boundary.

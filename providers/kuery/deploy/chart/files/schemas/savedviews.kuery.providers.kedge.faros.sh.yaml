@@ -1,0 +1,68 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260612-001.savedviews.kuery.providers.kedge.faros.sh
+spec:
+  group: kuery.providers.kedge.faros.sh
+  names:
+    kind: SavedView
+    listKind: SavedViewList
+    plural: savedviews
+    singular: savedview
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        type: object
+        properties:
+          apiVersion: { type: string }
+          kind: { type: string }
+          metadata: { type: object }
+          spec:
+            type: object
+            properties:
+              displayName:
+                description: Human-readable name shown in the portal.
+                type: string
+                maxLength: 128
+              description:
+                type: string
+                maxLength: 512
+              root:
+                description: >-
+                  The object the view is anchored on. Cluster is the
+                  kedge edge name; empty matches any engaged edge.
+                type: object
+                properties:
+                  cluster: { type: string, maxLength: 256 }
+                  apiGroup: { type: string, maxLength: 256 }
+                  kind: { type: string, maxLength: 128 }
+                  namespace: { type: string, maxLength: 63 }
+                  name: { type: string, maxLength: 253 }
+              relations:
+                description: >-
+                  Kuery relation names to expand from the root
+                  (owners, owners+, descendants, descendants+,
+                  references, selects, selected-by, events, linked,
+                  linked+, grouped).
+                type: array
+                maxItems: 16
+                items:
+                  type: string
+                  maxLength: 32
+              maxDepth:
+                description: Transitive relation depth cap.
+                type: integer
+                format: int32
+                minimum: 1
+                maximum: 20
+          status:
+            type: object
+            properties:
+              lastOpenedAt:
+                type: string
+                format: date-time

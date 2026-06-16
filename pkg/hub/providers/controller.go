@@ -19,6 +19,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -51,47 +52,32 @@ import (
 //     providers that ship a controller — Phase 1D).
 //   - RBAC grant + MaximalPermissionPolicy enabling tenant Enable (Phase 3).
 type CatalogReconciler struct {
-	mgr            mcmanager.Manager
-	reg            *Registry
-	prov           *provisioner
-	noKCP          bool // true when running without kcp — skip provisioning
-	hubExternalURL string
-	// providerInternalURL, when set, is baked into the minted provider
-	// kubeconfig instead of hubExternalURL (for in-cluster provider pods).
+	mgr   mcmanager.Manager
+	reg   *Registry
+	prov  *Provisioner
+	noKCP bool // true when running without kcp — skip workspace-cluster resolve
+	// hubExternalURL / providerInternalURL are retained for parity with the
+	// onboarding service's kubeconfig minting; the reconciler itself no longer
+	// mints kubeconfigs (admin onboarding does).
+	hubExternalURL      string
 	providerInternalURL string
-	secrets             SecretWriter // nil → host-cluster Secret writes skipped
 }
 
 // CatalogReconcilerOptions threads optional extras into the reconciler
 // without bloating its constructor signature. All fields optional.
 type CatalogReconcilerOptions struct {
-	// HubExternalURL is baked into the minted provider kubeconfig as the
-	// cluster.server field so provider pods inside the cluster can reach
-	// the hub front-proxy at the same URL portals use. Empty falls back to
-	// the kcp host the reconciler itself uses (works for in-process dev).
-	HubExternalURL string
-	// ProviderInternalURL, when set, is the server URL baked into the minted
-	// provider kubeconfig instead of HubExternalURL — for provider pods that
-	// reach the hub front-proxy at a different address than browsers do.
+	// HubExternalURL / ProviderInternalURL are kept for symmetry with the
+	// admin onboarding service; the catalog controller no longer provisions or
+	// mints kubeconfigs, so they are currently unused by the reconciler.
+	HubExternalURL      string
 	ProviderInternalURL string
-	// HostSecretWriter, when non-nil, writes the minted kubeconfig as a
-	// host-cluster Secret in spec.serviceAccountNamespace. Left nil in dev
-	// (no host cluster available); set in production by server.go.
-	HostSecretWriter SecretWriter
-}
-
-// SecretWriter abstracts the host-cluster Secret apply so this package
-// doesn't take a hard dep on a host kubernetes client interface — keeps the
-// controller test-friendly and lets server.go inject the real client only
-// when one is configured.
-type SecretWriter interface {
-	WriteKubeconfigSecret(ctx context.Context, namespace, name string, kubeconfig []byte) error
 }
 
 // SetupCatalogWithManager wires the reconciler into a multicluster manager.
-// kcpConfig is the admin rest.Config the reconciler uses to provision per-
-// provider sub-workspaces, APIResourceSchemas, and APIExports. Pass nil to
-// run the controller in registry-only mode (no kcp side-effects).
+// kcpConfig is the admin rest.Config used only to RESOLVE each provider's
+// workspace cluster ID (read-only) for the Enable flow. Pass nil to run the
+// controller in registry-only mode (no kcp reads). The hub no longer
+// provisions providers — that moved to admin onboarding + provider Helm init.
 func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *rest.Config, opts CatalogReconcilerOptions) error {
 	r := &CatalogReconciler{
 		mgr:                 mgr,
@@ -99,10 +85,9 @@ func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *re
 		noKCP:               kcpConfig == nil,
 		hubExternalURL:      opts.HubExternalURL,
 		providerInternalURL: opts.ProviderInternalURL,
-		secrets:             opts.HostSecretWriter,
 	}
 	if kcpConfig != nil {
-		r.prov = &provisioner{kcpConfig: kcpConfig}
+		r.prov = NewProvisioner(kcpConfig)
 	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("provider-catalog").
@@ -209,14 +194,23 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		(prov.UIURL != nil || prov.BackendURL != nil || prov.BuiltinRoute != "" || prov.LocalUIAssets != nil)
 
 	r.reg.Upsert(prov)
-	logger.Info("Upserted provider", "endpointsValid", prov.EndpointsValid, "ui", prov.UIURL, "backend", prov.BackendURL, "localUI", prov.LocalUIAssets != nil)
+	// Render URLs as strings: a nil *url.URL panics klog's stringer (shows as
+	// "<panic: ...>" in logs), which is the common case for builtins (localUI).
+	logger.Info("Upserted provider", "endpointsValid", prov.EndpointsValid, "ui", urlString(prov.UIURL), "backend", urlString(prov.BackendURL), "localUI", prov.LocalUIAssets != nil)
 
-	// Phase 1B: provision the per-provider kcp sub-workspace, schemas, and
-	// APIExport. Skipped when spec.apiExport is omitted (UI/backend-only
-	// providers) or when the controller was set up without kcp.
-	var provisionErr error
+	// The hub no longer provisions the per-provider workspace, schemas,
+	// APIExport, SA, or kubeconfig — that moved to admin onboarding
+	// (pkg/hub/admin) plus the provider's own Helm `init` (kedge-provider-sdk).
+	// We only RESOLVE the provider workspace's logical cluster ID (read-only)
+	// so the Enable endpoint can build the edges-proxy RBAC subject. Returns
+	// empty until the provider has been onboarded, which is the correct gate.
 	if r.prov != nil && entry.Spec.APIExport != nil {
-		provisionErr = r.provision(ctx, &entry)
+		if cluster, err := r.prov.ResolveWorkspaceCluster(ctx, entry.Name); err != nil {
+			logger.Info("WARNING could not resolve provider workspace cluster", "err", err.Error())
+		} else if cluster != "" {
+			entry.Status.Workspace = providersParentWorkspace + ":" + entry.Name
+			r.reg.SetWorkspaceCluster(entry.Name, cluster)
+		}
 	}
 
 	// Update status.
@@ -239,10 +233,6 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = "InvalidEndpoint"
 		cond.Message = fmt.Sprintf("Endpoint parse errors: %v", parseErrs)
-	case provisionErr != nil:
-		cond.Status = metav1.ConditionFalse
-		cond.Reason = "ProvisioningFailed"
-		cond.Message = provisionErr.Error()
 	case prov.EndpointsValid:
 		cond.Status = metav1.ConditionTrue
 		cond.Reason = "EndpointsResolved"
@@ -263,65 +253,13 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	return ctrl.Result{}, nil
 }
 
-// provision runs the kcp-side side-effects: sub-workspace, schemas, and
-// APIExport. Mutates entry.Status to record the resolved kcp coordinates.
-func (r *CatalogReconciler) provision(ctx context.Context, entry *providersv1alpha1.CatalogEntry) error {
-	workspaceCluster, err := r.prov.EnsureProviderWorkspace(ctx, entry.Name)
-	if err != nil {
-		return fmt.Errorf("ensuring sub-workspace: %w", err)
+// urlString renders a *url.URL for logging, returning "" for nil (a nil
+// *url.URL panics klog's stringer).
+func urlString(u *url.URL) string {
+	if u == nil {
+		return ""
 	}
-	workspacePath := providersParentWorkspace + ":" + entry.Name
-	entry.Status.Workspace = workspacePath
-	// Record the logical cluster ID so the Enable endpoint can build the
-	// qualified RBAC subject for the edges-proxy grant.
-	r.reg.SetWorkspaceCluster(entry.Name, workspaceCluster)
-
-	schemaNames, err := r.prov.ApplySchemas(ctx, entry.Name, entry.Spec.APIExport.Schemas)
-	if err != nil {
-		return fmt.Errorf("applying schemas: %w", err)
-	}
-	if err := r.prov.ApplyAPIExport(ctx, entry.Name, entry.Spec.APIExport.Name, schemaNames, entry.Spec.APIExport.PermissionClaims); err != nil {
-		return fmt.Errorf("applying APIExport: %w", err)
-	}
-	if err := r.prov.ApplyBindGrant(ctx, entry.Name, entry.Spec.APIExport.Name); err != nil {
-		return fmt.Errorf("applying bind grant: %w", err)
-	}
-
-	// Phase 1D: ensure the provider's ServiceAccount + cluster-admin
-	// binding within its own workspace, then mint a kubeconfig the
-	// provider pod can mount. The kubeconfig is written to a host-cluster
-	// Secret only when a SecretWriter is configured.
-	if err := r.prov.EnsureProviderSA(ctx, entry.Name); err != nil {
-		return fmt.Errorf("ensuring provider ServiceAccount: %w", err)
-	}
-	// Bake the provider-internal URL into the kubeconfig when set (so an
-	// in-cluster pod dials a pod-reachable address); otherwise the external
-	// URL, which is correct for in-process dev.
-	serverURL := r.providerInternalURL
-	if serverURL == "" {
-		serverURL = r.hubExternalURL
-	}
-	kc, err := r.prov.MintProviderKubeconfig(ctx, entry.Name, serverURL)
-	if err != nil {
-		return fmt.Errorf("minting provider kubeconfig: %w", err)
-	}
-	if r.secrets != nil && entry.Spec.ServiceAccountNamespace != "" {
-		const secretName = "kedge-provider-kubeconfig"
-		if err := r.secrets.WriteKubeconfigSecret(ctx, entry.Spec.ServiceAccountNamespace, secretName, kc); err != nil {
-			return fmt.Errorf("writing kubeconfig Secret: %w", err)
-		}
-		entry.Status.KubeconfigSecret = &providersv1alpha1.KubeconfigSecretRef{
-			Namespace: entry.Spec.ServiceAccountNamespace,
-			Name:      secretName,
-		}
-	} else {
-		// Clear any stale reference if the writer was removed since last
-		// reconcile; the kubeconfig itself was still minted (length tells
-		// observers whether the mint path worked).
-		entry.Status.KubeconfigSecret = nil
-		_ = kc // kubeconfig is held in memory only; printable via curl if needed
-	}
-	return nil
+	return u.String()
 }
 
 // setCondition is a small upsert helper for metav1.Condition slices.

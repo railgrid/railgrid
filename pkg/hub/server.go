@@ -37,7 +37,6 @@ import (
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
@@ -48,6 +47,7 @@ import (
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	"github.com/faroshq/faros-kedge/pkg/hub/admin"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/organization"
@@ -59,6 +59,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/restapi"
 	"github.com/faroshq/faros-kedge/pkg/hub/serviceaccounts"
 	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
+	"github.com/faroshq/faros-kedge/pkg/kcppaths"
 	"github.com/faroshq/faros-kedge/pkg/server/auth"
 	"github.com/faroshq/faros-kedge/pkg/server/proxy"
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
@@ -172,17 +173,6 @@ func (s *Server) Run(ctx context.Context) error {
 		kcpConfig, err = clientcmd.BuildConfigFromFlags("", s.opts.ExternalKCPKubeconfig)
 		if err != nil {
 			return fmt.Errorf("building kcp rest config: %w", err)
-		}
-	}
-
-	// Optional separate kubeconfig for APIExport virtual-workspace (shard-direct)
-	// connections — see Options.KCPShardKubeconfig. Defaults to kcpConfig.
-	kcpShardConfig := kcpConfig
-	if s.opts.KCPShardKubeconfig != "" {
-		var err error
-		kcpShardConfig, err = clientcmd.BuildConfigFromFlags("", s.opts.KCPShardKubeconfig)
-		if err != nil {
-			return fmt.Errorf("building kcp shard rest config: %w", err)
 		}
 	}
 
@@ -441,7 +431,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.opts.EmbeddedGraphQL && kcpConfig != nil {
 		g, gctx := errgroup.WithContext(ctx)
 		graphqlGroup = g
-		if err := startEmbeddedGraphQL(gctx, g, s.opts, kcpConfig, kcpShardConfig, router); err != nil {
+		if err := startEmbeddedGraphQL(gctx, g, s.opts, kcpConfig, router); err != nil {
 			return fmt.Errorf("starting embedded GraphQL: %w", err)
 		}
 		logger.Info("Embedded GraphQL enabled")
@@ -581,6 +571,41 @@ func (s *Server) Run(ctx context.Context) error {
 			saHandler.Register(tenantSub)
 
 			logger.Info("REST routes registered (Org/Workspace/Membership/User + ServiceAccount)")
+
+			// Platform-admin surface (/api/admin/*, portal /bonkers). Only
+			// wired when --admin-users is set; gated so only allowlisted
+			// identities pass. Onboards providers (workspace + SA + kubeconfig)
+			// and surfaces users / orgs / providers / root identities.
+			if len(s.opts.AdminUsers) > 0 {
+				adminSet := make(map[string]struct{}, len(s.opts.AdminUsers))
+				for _, a := range s.opts.AdminUsers {
+					adminSet[strings.ToLower(strings.TrimSpace(a))] = struct{}{}
+				}
+				adminResolver := admin.UserResolverFunc(func(r *http.Request) (string, error) {
+					return kcpProxy.IdentifyUser(r)
+				})
+				adminChecker := admin.AdminCheckerFunc(func(ctx context.Context, userName string) bool {
+					if _, ok := adminSet[strings.ToLower(userName)]; ok {
+						return true
+					}
+					u, err := userClient.Users().Get(ctx, userName, metav1.GetOptions{})
+					if err != nil {
+						return false
+					}
+					if _, ok := adminSet[strings.ToLower(u.Spec.Email)]; ok {
+						return true
+					}
+					if _, ok := adminSet[strings.ToLower(u.Spec.RBACIdentity)]; ok {
+						return true
+					}
+					return false
+				})
+				adminSvc := admin.NewService(kcpConfig, s.opts.HubExternalURL, s.opts.ProviderInternalURL)
+				adminSub := router.PathPrefix("/api/admin").Subrouter()
+				adminSub.Use(admin.Middleware(adminResolver, adminChecker))
+				admin.NewHandler(adminSvc, userClient, providerRegistry).Register(adminSub)
+				logger.Info("Admin routes registered at /api/admin/* (gated by --admin-users)")
+			}
 		}
 	}
 
@@ -591,17 +616,17 @@ func (s *Server) Run(ctx context.Context) error {
 
 		scheme := NewScheme()
 
-		// The multicluster provider watches APIExportEndpointSlice which
-		// lives in the root:kedge:providers workspace. Use kcpShardConfig so
-		// that connections to shard-direct virtual-workspace URLs (advertised
-		// in APIExportEndpointSlice.status.endpoints) authenticate against the
-		// shards' ClientCA, not the front-proxy's. When --kcp-shard-kubeconfig
-		// is not set, kcpShardConfig == kcpConfig.
-		providersConfig := rest.CopyConfig(kcpShardConfig)
-		providersConfig.Host = apiurl.KCPClusterURL(providersConfig.Host, "root:kedge:providers")
+		// The multicluster providers watch APIExportEndpointSlices that live in
+		// root:kedge:system:controllers. Route through the front-proxy: it
+		// resolves the workspace path and forwards to whichever shard hosts it
+		// (multi-shard safe), and the shards accept the front-proxy client cert
+		// for the shard-direct virtual-workspace endpoints advertised in
+		// APIExportEndpointSlice.status.endpoints.
+		providersConfig := rest.CopyConfig(kcpConfig)
+		providersConfig.Host = apiurl.KCPClusterURL(providersConfig.Host, kcppaths.SystemControllers)
 
 		// core.faros.sh is the merged APIExport that covers all kedge API groups
-		// (kedge.faros.sh, tenancy.kedge.faros.sh, etc.). Generated by hack/gen-core-apiexport.
+		// (kedge.faros.sh, tenants.kedge.faros.sh, etc.). Generated by hack/gen-core-apiexport.
 		provider, err := apiexport.New(providersConfig, "core.faros.sh", apiexport.Options{Scheme: scheme})
 		if err != nil {
 			return fmt.Errorf("creating multicluster provider: %w", err)
@@ -663,31 +688,14 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("creating providers multicluster manager: %w", err)
 		}
-		// HostSecretWriter delivers the minted kedge-provider-kubeconfig into
-		// the provider's host-cluster namespace. Wired only when the hub is
-		// given a host kubeconfig (--kubeconfig); without it the kubeconfig is
-		// still minted (surfaced in CatalogEntry status) but not written as a
-		// Secret, which is the right behaviour for the in-process dev hub that
-		// has no host cluster to write to.
-		var hostSecretWriter providers.SecretWriter
-		if s.opts.Kubeconfig != "" {
-			// Tolerant on purpose: in dev the host kubeconfig (e.g. a kind
-			// cluster) may not exist when the hub first boots. Degrade to
-			// no-delivery with a visible warning rather than crash-looping;
-			// the Tiltfile re-runs the hub once the file appears.
-			if hostCfg, err := clientcmd.BuildConfigFromFlags("", s.opts.Kubeconfig); err != nil {
-				logger.Info("WARNING provider kubeconfig Secret delivery disabled: host kubeconfig not loadable", "kubeconfig", s.opts.Kubeconfig, "err", err.Error())
-			} else if hostCS, err := kubernetes.NewForConfig(hostCfg); err != nil {
-				logger.Info("WARNING provider kubeconfig Secret delivery disabled: host client error", "err", err.Error())
-			} else {
-				hostSecretWriter = providers.NewHostSecretWriter(hostCS)
-				logger.Info("Provider kubeconfig Secret delivery enabled", "from", "--kubeconfig")
-			}
-		}
+		// The hub no longer provisions providers or writes the
+		// kedge-provider-kubeconfig Secret — admin onboarding mints it and the
+		// provider's Helm init applies the in-workspace objects. The catalog
+		// controller only maintains the registry + resolves the workspace
+		// cluster ID for the Enable flow.
 		if err := providers.SetupCatalogWithManager(providersMgr, providerRegistry, kcpConfig, providers.CatalogReconcilerOptions{
 			HubExternalURL:      s.opts.HubExternalURL,
 			ProviderInternalURL: s.opts.ProviderInternalURL,
-			HostSecretWriter:    hostSecretWriter,
 		}); err != nil {
 			return fmt.Errorf("setting up provider catalog controller: %w", err)
 		}
@@ -695,6 +703,38 @@ func (s *Server) Run(ctx context.Context) error {
 			logger.Info("Starting providers multicluster manager")
 			if err := providersMgr.Start(ctx); err != nil {
 				logger.Error(err, "Providers multicluster manager failed")
+			}
+		}()
+
+		// Provider provisioning reconciler: the declarative replacement for
+		// the former admin "onboard" call. Provisions each provider's
+		// sub-workspace + ServiceAccount + kubeconfig Secret, then binds the
+		// CatalogEntry export into the sub-workspace so the provider
+		// self-registers. Provider lives in its OWN APIExport
+		// (admin.kedge.faros.sh), bound ONLY in root:kedge:providers (so
+		// a provider cannot create Provider objects from its own sub-workspace),
+		// hence a THIRD multicluster manager bound to the admin export.
+		adminExportProvider, err := apiexport.New(providersConfig, "admin.kedge.faros.sh", apiexport.Options{Scheme: scheme})
+		if err != nil {
+			return fmt.Errorf("creating admin.kedge.faros.sh multicluster provider: %w", err)
+		}
+		adminMgr, err := mcmanager.New(providersConfig, adminExportProvider, manager.Options{
+			Scheme:  scheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
+		})
+		if err != nil {
+			return fmt.Errorf("creating admin multicluster manager: %w", err)
+		}
+		if err := providers.SetupProviderWithManager(adminMgr, kcpConfig, providers.CatalogReconcilerOptions{
+			HubExternalURL:      s.opts.HubExternalURL,
+			ProviderInternalURL: s.opts.ProviderInternalURL,
+		}); err != nil {
+			return fmt.Errorf("setting up provider provisioning controller: %w", err)
+		}
+		go func() {
+			logger.Info("Starting admin multicluster manager")
+			if err := adminMgr.Start(ctx); err != nil {
+				logger.Error(err, "Admin multicluster manager failed")
 			}
 		}()
 

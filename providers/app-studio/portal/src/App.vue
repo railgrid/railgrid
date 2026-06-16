@@ -28,9 +28,9 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api, isProjectAPIInitializingError } from './api'
-import ConfirmDialog from './components/ConfirmDialog.vue'
-import StatusBadge from './components/StatusBadge.vue'
-import { useEscapeKey } from './composables/useEscapeKey'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import StatusBadge from '@/components/StatusBadge.vue'
+import { useEscapeKey } from '@/composables/useEscapeKey'
 import type {
   KedgeContext,
   Project,

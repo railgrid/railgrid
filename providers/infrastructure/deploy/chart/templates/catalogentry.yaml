@@ -61,7 +61,6 @@ spec:
   version: {{ .Chart.AppVersion | quote }}
   category: "Workloads"
   iconURL: "/ui/providers/infrastructure/icon.svg"
-  serviceAccountNamespace: {{ .Release.Namespace }}
   ui:
     url: "http://{{ include "infrastructure.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
     indexPath: "/"
@@ -78,11 +77,13 @@ spec:
   backend:
     url: "http://{{ include "infrastructure.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
     healthPath: "/healthz"
+  # Reference-only. The APIExport + its dynamically-generated schemas + the bind
+  # grant are created by this chart's init container (provider `init`); the hub
+  # no longer provisions.
   apiExport:
     name: "infrastructure.providers.kedge.faros.sh"
     permissionClaims:
       - resource: secrets
         verbs: [get, list, watch]
         tenantScoped: true
-    schemas: []
 {{- end }}

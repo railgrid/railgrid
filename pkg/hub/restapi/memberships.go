@@ -212,7 +212,7 @@ func (h *Handler) selfLeaveOrg(w http.ResponseWriter, r *http.Request) {
 
 // listWorkspaceMemberships returns the workspace-scope members.
 // Because workspace-scope Memberships don't have an in-workspace CR
-// (the workspace WorkspaceType no longer binds tenancy.kedge.faros.sh
+// (the workspace WorkspaceType no longer binds tenants.kedge.faros.sh
 // per PR #211), the source of truth is each member's UMI. We can't
 // scan every user's UMI cheaply, so v1 lists nothing concrete —
 // returning the workspace-scope memberships requires a watch /

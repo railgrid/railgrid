@@ -47,7 +47,34 @@ type helloResponse struct {
 	TokenLength int       `json:"tokenLength,omitempty"`
 }
 
+// Subcommands:
+//
+//	quickstart-provider init   — one-shot: apply APIResourceSchemas, APIExport,
+//	    APIExportEndpointSlice, and bind grant into the provider workspace using
+//	    KEDGE_PROVIDER_KUBECONFIG. See init_cmd.go.
+//	quickstart-provider serve  — runtime (default).
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "init":
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			if err := runInitCmd(ctx); err != nil {
+				fmt.Fprintln(os.Stderr, "init:", err)
+				os.Exit(1)
+			}
+			return
+		case "serve":
+			// fall through
+		default:
+			fmt.Fprintf(os.Stderr, "unknown subcommand: %s\nusage: quickstart-provider [init|serve]\n", os.Args[1])
+			os.Exit(2)
+		}
+	}
+	runServe()
+}
+
+func runServe() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8081"

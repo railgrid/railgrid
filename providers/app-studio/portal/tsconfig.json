@@ -17,6 +17,7 @@
     "noUncheckedSideEffectImports": true,
     "baseUrl": ".",
     "paths": {
+      "@/*": ["../../../portal/src/*"],
       "lucide-vue-next": ["node_modules/lucide-vue-next"],
       "vue": ["node_modules/vue"]
     }

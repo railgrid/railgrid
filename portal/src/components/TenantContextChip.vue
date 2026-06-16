@@ -39,6 +39,44 @@ defineProps<{ variant?: 'sidebar' | 'horizontal' }>()
 const tenant = useTenantStore()
 const open = ref(false)
 const rootRef = ref<HTMLElement | null>(null)
+const triggerRef = ref<HTMLElement | null>(null)
+const popoverRef = ref<HTMLElement | null>(null)
+
+// The popover is teleported to <body> so it escapes the sidebar's
+// `overflow-hidden` + `backdrop-blur` (a backdrop-filter establishes a
+// containing block that clips even fixed-position descendants). We
+// position it with fixed coordinates derived from the trigger's rect.
+const POPOVER_WIDTH = 224 // matches w-56
+const popoverStyle = ref<Record<string, string>>({})
+
+function updatePopoverPosition() {
+  const el = triggerRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  // Clamp horizontally so a right-docked sidebar (or narrow viewport)
+  // doesn't push the popover off-screen.
+  const left = Math.min(
+    Math.max(8, rect.left),
+    window.innerWidth - POPOVER_WIDTH - 8,
+  )
+  popoverStyle.value = {
+    position: 'fixed',
+    top: `${rect.bottom + 4}px`,
+    left: `${left}px`,
+    width: `${POPOVER_WIDTH}px`,
+  }
+}
+
+watch(open, (v) => {
+  if (v) {
+    updatePopoverPosition()
+    window.addEventListener('scroll', updatePopoverPosition, true)
+    window.addEventListener('resize', updatePopoverPosition)
+  } else {
+    window.removeEventListener('scroll', updatePopoverPosition, true)
+    window.removeEventListener('resize', updatePopoverPosition)
+  }
+})
 
 const orgLabel = computed(() => tenant.activeOrg?.displayName ?? 'No org')
 const wsLabel = computed(() => {
@@ -118,9 +156,12 @@ async function onDownloadKubeconfig() {
 // the chip's root collapses the popover. Esc also closes.
 function onDocClick(e: MouseEvent) {
   if (!open.value || !rootRef.value) return
-  if (!rootRef.value.contains(e.target as Node)) {
-    open.value = false
-  }
+  const target = e.target as Node
+  // The popover is teleported out of rootRef, so check it separately —
+  // otherwise clicking the org/workspace selects would close it.
+  if (rootRef.value.contains(target)) return
+  if (popoverRef.value?.contains(target)) return
+  open.value = false
 }
 function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape') open.value = false
@@ -132,6 +173,8 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('mousedown', onDocClick)
   document.removeEventListener('keydown', onKey)
+  window.removeEventListener('scroll', updatePopoverPosition, true)
+  window.removeEventListener('resize', updatePopoverPosition)
 })
 </script>
 
@@ -139,6 +182,7 @@ onUnmounted(() => {
   <div ref="rootRef" class="relative" :class="variant === 'horizontal' ? 'inline-block' : 'block w-full px-1'">
     <!-- Closed chip -->
     <button
+      ref="triggerRef"
       type="button"
       class="group flex w-full items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-overlay/60 px-2 py-1 text-left text-[11px] transition-colors hover:border-accent/30"
       :class="open ? 'border-accent/40 bg-surface-overlay' : ''"
@@ -157,12 +201,16 @@ onUnmounted(() => {
       />
     </button>
 
-    <!-- Popover -->
+    <!-- Popover — teleported to <body> so the sidebar's overflow-hidden +
+         backdrop-blur containing block can't clip it. Positioned via fixed
+         coords from the trigger's rect (see updatePopoverPosition). -->
+    <Teleport to="body">
     <Transition name="popover">
       <div
         v-if="open"
-        class="absolute z-[80] mt-1 w-56 rounded-lg border border-border-default bg-surface-raised/95 p-2 shadow-2xl backdrop-blur-xl"
-        :class="variant === 'horizontal' ? 'left-0 top-full' : 'left-1 top-full'"
+        ref="popoverRef"
+        class="z-[80] rounded-lg border border-border-default bg-surface-raised/95 p-2 shadow-2xl backdrop-blur-xl"
+        :style="popoverStyle"
       >
         <label class="block text-[9px] font-semibold uppercase tracking-wider text-text-muted/70">
           Organization
@@ -235,6 +283,7 @@ onUnmounted(() => {
         </router-link>
       </div>
     </Transition>
+    </Teleport>
   </div>
 </template>
 
