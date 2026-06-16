@@ -31,6 +31,7 @@ import (
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -38,9 +39,11 @@ import (
 )
 
 type CreateProjectRequest struct {
-	Name        string `json:"name,omitempty"`
-	DisplayName string `json:"displayName"`
-	Description string `json:"description,omitempty"`
+	Name          string `json:"name,omitempty"`
+	DisplayName   string `json:"displayName,omitempty"`
+	Description   string `json:"description,omitempty"`
+	Prompt        string `json:"prompt,omitempty"`
+	ConnectionRef string `json:"connectionRef,omitempty"`
 }
 
 type PatchProjectRequest struct {
@@ -64,9 +67,33 @@ type ProjectView struct {
 	DisplayName string                   `json:"displayName"`
 	Description string                   `json:"description,omitempty"`
 	Phase       string                   `json:"phase,omitempty"`
+	Repository  *ProjectRepositoryView   `json:"repository,omitempty"`
 	Memory      aiv1alpha1.ProjectMemory `json:"memory,omitempty"`
 	CreatedAt   time.Time                `json:"createdAt"`
 	UpdatedAt   *time.Time               `json:"updatedAt,omitempty"`
+}
+
+type ProjectRepositoryView struct {
+	Ref           string                        `json:"ref"`
+	Name          string                        `json:"name,omitempty"`
+	ConnectionRef string                        `json:"connectionRef,omitempty"`
+	HTMLURL       string                        `json:"htmlURL,omitempty"`
+	Status        string                        `json:"status,omitempty"`
+	Message       string                        `json:"message,omitempty"`
+	Ready         bool                          `json:"ready,omitempty"`
+	Commits       []ProjectRepositoryCommitView `json:"commits,omitempty"`
+}
+
+type ProjectRepositoryCommitView struct {
+	Name        string     `json:"name"`
+	Phase       string     `json:"phase,omitempty"`
+	Branch      string     `json:"branch,omitempty"`
+	CommitSHA   string     `json:"commitSHA,omitempty"`
+	CommitURL   string     `json:"commitURL,omitempty"`
+	Message     string     `json:"message,omitempty"`
+	FileCount   int64      `json:"fileCount,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
 }
 
 type ProjectMessagesResponse struct {
@@ -75,16 +102,31 @@ type ProjectMessagesResponse struct {
 }
 
 type projectMessageStreamEvent struct {
-	Type               string `json:"type"`
-	AssistantMessageID string `json:"assistantMessageID,omitempty"`
-	Content            string `json:"content,omitempty"`
-	Error              string `json:"error,omitempty"`
+	Type               string                      `json:"type"`
+	AssistantMessageID string                      `json:"assistantMessageID,omitempty"`
+	Content            string                      `json:"content,omitempty"`
+	Status             string                      `json:"status,omitempty"`
+	Error              string                      `json:"error,omitempty"`
+	Project            *ProjectView                `json:"project,omitempty"`
+	ToolCall           *projectToolCallStreamEvent `json:"toolCall,omitempty"`
+}
+
+type projectToolCallStreamEvent struct {
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	Status    string `json:"status"`
+	Arguments string `json:"arguments,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 const projectAPIInitializingMessage = "App Studio is still initializing for this workspace. Try again shortly."
 const projectMessageMetadataStatus = "status"
+const projectMessageMetadataToolCalls = "toolCalls"
 const projectMessageStatusInterrupted = "interrupted"
 const projectMessagePersistTimeout = 5 * time.Second
+
+type projectCreationStatusFunc func(string) error
 
 func writeProjectError(w http.ResponseWriter, err error) {
 	if isProjectAPIInitializingError(err) {
@@ -117,7 +159,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	})
 	out := make([]ProjectView, 0, len(list.Items))
 	for i := range list.Items {
-		out = append(out, projectView(&list.Items[i]))
+		out = append(out, projectView(r.Context(), c, &list.Items[i]))
 	}
 	writeJSON(w, http.StatusOK, ListResponse[ProjectView]{Items: out})
 }
@@ -131,23 +173,57 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	req.DisplayName = strings.TrimSpace(req.DisplayName)
-	req.Description = strings.TrimSpace(req.Description)
-	if req.DisplayName == "" {
-		writeProjectError(w, newValidationError("displayName is required"))
-		return
-	}
-	name, err := projectName(r.Context(), c, req.Name, req.DisplayName)
+	created, err := s.createProjectFromRequest(r.Context(), c, req, nil)
 	if err != nil {
 		writeProjectError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusCreated, projectView(r.Context(), c, created))
+}
+
+func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Client, req CreateProjectRequest, onStatus projectCreationStatusFunc) (*aiv1alpha1.Project, error) {
+	req.DisplayName = strings.TrimSpace(req.DisplayName)
+	req.Description = strings.TrimSpace(req.Description)
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	req.ConnectionRef = strings.TrimSpace(req.ConnectionRef)
+	repoBase := slugifyProjectName(req.DisplayName)
+	if req.Prompt != "" {
+		if err := emitProjectCreationStatus(onStatus, "Naming project"); err != nil {
+			return nil, err
+		}
+		naming, err := s.generateProjectNaming(ctx, c, req.Prompt)
+		if err != nil {
+			return nil, err
+		}
+		req.DisplayName = naming.DisplayName
+		repoBase = naming.RepositoryName
+	}
+	if req.DisplayName == "" {
+		return nil, newValidationError("displayName is required")
+	}
+	if err := emitProjectCreationStatus(onStatus, "Preparing project"); err != nil {
+		return nil, err
+	}
+	name, err := projectName(ctx, c, req.Name, req.DisplayName)
+	if err != nil {
+		return nil, err
+	}
+	if err := emitProjectCreationStatus(onStatus, "Configuring repository"); err != nil {
+		return nil, err
+	}
+	repoPlan, err := s.prepareProjectRepository(ctx, c, req.ConnectionRef, repoBase, req.DisplayName, req.Description)
+	if err != nil {
+		return nil, err
+	}
 	now := metav1.Now()
 	p := &aiv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
 		Spec: aiv1alpha1.ProjectSpec{
 			DisplayName: req.DisplayName,
 			Description: req.Description,
+			Repository:  repoPlan.projectBinding(),
 			Memory:      emptyProjectMemory(),
 		},
 		Status: aiv1alpha1.ProjectStatus{
@@ -155,25 +231,56 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt: &now,
 		},
 	}
-	created, err := c.Projects().Create(r.Context(), p, metav1.CreateOptions{})
+	if err := emitProjectCreationStatus(onStatus, "Creating project"); err != nil {
+		return nil, err
+	}
+	created, err := c.Projects().Create(ctx, p, metav1.CreateOptions{})
 	if err != nil {
-		writeProjectError(w, err)
+		return nil, err
+	}
+	if err := emitProjectCreationStatus(onStatus, "Creating repository"); err != nil {
+		cleanupCreatedProjectSetup(ctx, c, created)
+		return nil, err
+	}
+	if err := s.createProjectRepository(ctx, c, created.Name, repoPlan); err != nil {
+		cleanupCreatedProjectSetup(ctx, c, created)
+		return nil, err
+	}
+	updated, err := touchProjectStatus(ctx, c, created)
+	if err != nil {
+		cleanupCreatedProjectSetup(ctx, c, created)
+		return nil, err
+	}
+	return updated, nil
+}
+
+func emitProjectCreationStatus(onStatus projectCreationStatusFunc, status string) error {
+	if onStatus == nil {
+		return nil
+	}
+	return onStatus(status)
+}
+
+func cleanupCreatedProjectSetup(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) {
+	if c == nil || p == nil {
 		return
 	}
-	updated, err := touchProjectStatus(r.Context(), c, created)
-	if err != nil {
-		writeProjectError(w, err)
-		return
+	if p.Spec.Repository != nil {
+		if ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef); ref != "" {
+			_ = c.Dynamic().Resource(codeRepositoriesGVR).Delete(ctx, ref, metav1.DeleteOptions{})
+		}
 	}
-	writeJSON(w, http.StatusCreated, projectView(updated))
+	if name := strings.TrimSpace(p.Name); name != "" {
+		_ = c.Projects().Delete(ctx, name, metav1.DeleteOptions{})
+	}
 }
 
 func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.requireProject(w, r)
+	c, _, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, projectView(p))
+	writeJSON(w, http.StatusOK, projectView(r.Context(), c, p))
 }
 
 func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +320,7 @@ func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, projectView(updated))
+	writeJSON(w, http.StatusOK, projectView(r.Context(), c, updated))
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
@@ -222,15 +329,14 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := mux.Vars(r)["project"]
-	if s.store != nil {
-		if err := s.store.DeleteProjectMessages(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, name)); err != nil {
-			writeStatus(w, http.StatusInternalServerError, "InternalError", "deleting project messages: "+err.Error())
-			return
-		}
-	}
 	if err := c.Projects().Delete(r.Context(), name, metav1.DeleteOptions{}); err != nil {
 		writeProjectError(w, err)
 		return
+	}
+	if s.store != nil {
+		if err := s.store.DeleteProjectMessages(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, name)); err != nil {
+			klog.FromContext(r.Context()).Error(err, "delete project messages", "project", name)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -259,6 +365,68 @@ func (s *Server) listProjectMessages(w http.ResponseWriter, r *http.Request) {
 		Items:      projectMessagesToAPI(page.Items),
 		NextCursor: page.NextCursor,
 	})
+}
+
+func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request) {
+	c, id, ok := s.requireProjectClient(w, r)
+	if !ok {
+		return
+	}
+	var req CreateProjectRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	if req.Prompt == "" {
+		writeProjectError(w, newValidationError("prompt is required"))
+		return
+	}
+	msgStore, ok := s.requireStore(w)
+	if !ok {
+		return
+	}
+	flusher, ok := startProjectMessageStream(w)
+	if !ok {
+		return
+	}
+	writeStreamError := func(err error) {
+		_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
+			Type:  "error",
+			Error: err.Error(),
+		})
+	}
+	writeStatus := func(status string) error {
+		return writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
+			Type:   "status",
+			Status: status,
+		})
+	}
+
+	if err := writeStatus("Starting"); err != nil {
+		return
+	}
+	created, err := s.createProjectFromRequest(r.Context(), c, req, writeStatus)
+	if err != nil {
+		writeStreamError(err)
+		return
+	}
+	if err := appendProjectUserMessage(r.Context(), msgStore, projectMessageScope(id.orgUUID, id.workspaceUUID, created.Name), req.Prompt); err != nil {
+		cleanupCreatedProjectSetup(r.Context(), c, created)
+		writeStreamError(err)
+		return
+	}
+	view := projectView(r.Context(), c, created)
+	if err := writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
+		Type:    "project",
+		Status:  "Project ready",
+		Project: &view,
+	}); err != nil {
+		return
+	}
+	if err := writeStatus("Working"); err != nil {
+		return
+	}
+	s.streamProjectAssistant(w, flusher, r, c, id, created, msgStore)
 }
 
 func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Request) {
@@ -292,21 +460,19 @@ func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Reque
 		writeProjectError(w, err)
 		return
 	}
-
-	now := metav1.Now()
-	userID := newMessageID()
-	userMsg := store.Message{
-		ID:        userID,
-		Role:      aiv1alpha1.ProjectMessageRoleUser,
-		Content:   req.Content,
-		CreatedAt: now.UTC(),
-		UpdatedAt: now.UTC(),
-	}
-	if err := msgStore.AppendMessage(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name), userMsg); err != nil {
+	if err := appendProjectUserMessage(r.Context(), msgStore, projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name), req.Content); err != nil {
 		writeProjectError(w, err)
 		return
 	}
 
+	flusher, ok := startProjectMessageStream(w)
+	if !ok {
+		return
+	}
+	s.streamProjectAssistant(w, flusher, r, c, id, p, msgStore)
+}
+
+func startProjectMessageStream(w http.ResponseWriter) (http.Flusher, bool) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -314,12 +480,35 @@ func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Reque
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "streaming unsupported")
-		return
+		return nil, false
 	}
+	return flusher, true
+}
 
+func appendProjectUserMessage(ctx context.Context, msgStore store.Store, scope store.Scope, content string) error {
+	now := time.Now().UTC()
+	return msgStore.AppendMessage(ctx, scope, store.Message{
+		ID:        newMessageID(),
+		Role:      aiv1alpha1.ProjectMessageRoleUser,
+		Content:   content,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+}
+
+func (s *Server) streamProjectAssistant(
+	w http.ResponseWriter,
+	flusher http.Flusher,
+	r *http.Request,
+	c *asclient.Client,
+	id identity,
+	p *aiv1alpha1.Project,
+	msgStore store.Store,
+) {
 	assistantID := newMessageID()
 	assistantContent := &strings.Builder{}
 	var streamErr error
+	var streamedToolCalls []projectToolCallStreamEvent
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
 
 	streamChunk := func(chunk string) {
@@ -336,8 +525,38 @@ func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Reque
 			Content:            chunk,
 		})
 	}
+	streamStatus := func(status string) {
+		if streamErr != nil {
+			return
+		}
+		if status == "" {
+			return
+		}
+		streamErr = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
+			Type:   "status",
+			Status: status,
+		})
+	}
+	streamToolCall := func(toolCall projectToolCallStreamEvent) {
+		if streamErr != nil {
+			return
+		}
+		if toolCall.ID == "" || toolCall.Status == "" {
+			return
+		}
+		streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, toolCall)
+		streamErr = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
+			Type:               "tool_call",
+			AssistantMessageID: assistantID,
+			ToolCall:           &toolCall,
+		})
+	}
 
-	reply, err := s.generateProjectAssistantStream(r, id, c, p, streamChunk)
+	reply, err := s.generateProjectAssistantStream(r, id, c, p, projectAssistantStreamCallbacks{
+		OnChunk:    streamChunk,
+		OnStatus:   streamStatus,
+		OnToolCall: streamToolCall,
+	})
 	if err != nil {
 		if shouldPersistInterruptedProjectAssistant(r.Context(), err, streamErr, assistantContent.String()) {
 			persistErr := appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
@@ -380,7 +599,7 @@ func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if err := appendProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantReply, nil); err != nil {
+	if err := appendProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantReply, projectAssistantMessageMetadata("", streamedToolCalls)); err != nil {
 		_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
 			Type:  "error",
 			Error: "assistant persistence failed: " + err.Error(),
@@ -391,7 +610,6 @@ func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Reque
 		Type:               "done",
 		AssistantMessageID: assistantID,
 	}); err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
 }
@@ -417,9 +635,7 @@ func appendInterruptedProjectAssistantMessage(ctx context.Context, msgStore stor
 	}
 	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
 	defer cancel()
-	return appendProjectAssistantMessage(persistCtx, msgStore, scope, id, content, map[string]any{
-		projectMessageMetadataStatus: projectMessageStatusInterrupted,
-	})
+	return appendProjectAssistantMessage(persistCtx, msgStore, scope, id, content, projectAssistantMessageMetadata(projectMessageStatusInterrupted, nil))
 }
 
 func appendProjectAssistantMessage(ctx context.Context, msgStore store.Store, scope store.Scope, id, content string, metadata map[string]any) error {
@@ -432,6 +648,46 @@ func appendProjectAssistantMessage(ctx context.Context, msgStore store.Store, sc
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
+}
+
+func projectAssistantMessageMetadata(status string, toolCalls []projectToolCallStreamEvent) map[string]any {
+	metadata := map[string]any{}
+	if status != "" {
+		metadata[projectMessageMetadataStatus] = status
+	}
+	if len(toolCalls) > 0 {
+		metadata[projectMessageMetadataToolCalls] = toolCalls
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
+}
+
+func upsertProjectToolCallStreamEvent(events []projectToolCallStreamEvent, event projectToolCallStreamEvent) []projectToolCallStreamEvent {
+	for i := range events {
+		if events[i].ID == event.ID {
+			events[i] = mergeProjectToolCallStreamEvent(events[i], event)
+			return events
+		}
+	}
+	return append(events, event)
+}
+
+func mergeProjectToolCallStreamEvent(existing, next projectToolCallStreamEvent) projectToolCallStreamEvent {
+	if next.Name == "" {
+		next.Name = existing.Name
+	}
+	if next.Arguments == "" {
+		next.Arguments = existing.Arguments
+	}
+	if next.Summary == "" {
+		next.Summary = existing.Summary
+	}
+	if next.Error == "" {
+		next.Error = existing.Error
+	}
+	return next
 }
 
 func (s *Server) getProjectMemory(w http.ResponseWriter, r *http.Request) {
@@ -517,12 +773,13 @@ func touchProjectStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.P
 	return c.Projects().UpdateStatus(ctx, p, metav1.UpdateOptions{})
 }
 
-func projectView(p *aiv1alpha1.Project) ProjectView {
+func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) ProjectView {
 	view := ProjectView{
 		Name:        p.Name,
 		DisplayName: p.Spec.DisplayName,
 		Description: p.Spec.Description,
 		Phase:       p.Status.Phase,
+		Repository:  projectRepositoryView(ctx, c, p),
 		Memory:      p.Spec.Memory,
 		CreatedAt:   p.CreationTimestamp.Time,
 	}

@@ -16,6 +16,10 @@
 # portal bundle and the /api backend to the loopback URLs below. For in-cluster
 # deployment, the Helm chart renders the Service DNS instead, e.g.
 #   url: http://app-studio.app-studio.svc.cluster.local:8081
+#
+# This CatalogEntry registers routing and references apiExport.name. The
+# provider's init command creates the APIExport, schemas, endpoint slice, and
+# bind grant from deploy/chart/files/schemas.
 ---
 apiVersion: providers.kedge.faros.sh/v1alpha1
 kind: CatalogEntry

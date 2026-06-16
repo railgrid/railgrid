@@ -222,12 +222,12 @@ func openMessageStore(ctx context.Context) (store.Store, func(), error) {
 	} else if os.Getenv("APP_STUDIO_IN_MEMORY_MESSAGE_STORE") == "true" {
 		msgStore = store.NewMemoryStore()
 	}
+	if msgStore == nil {
+		return nil, noop, fmt.Errorf("app studio message store requires APP_STUDIO_DATABASE_URL or APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true")
+	}
 
 	encKeys := strings.TrimSpace(os.Getenv("APP_STUDIO_MESSAGE_ENCRYPTION_KEYS"))
 	if encKeys != "" {
-		if msgStore == nil {
-			return nil, noop, fmt.Errorf("app studio message encryption requires APP_STUDIO_DATABASE_URL or APP_STUDIO_IN_MEMORY_MESSAGE_STORE")
-		}
 		keys, err := store.ParseEncryptionKeys(encKeys)
 		if err != nil {
 			return nil, noop, fmt.Errorf("parsing app studio message encryption keys: %w", err)
@@ -239,9 +239,6 @@ func openMessageStore(ctx context.Context) (store.Store, func(), error) {
 	}
 
 	if retention := parseRetention(os.Getenv("APP_STUDIO_MESSAGE_RETENTION")); retention > 0 {
-		if msgStore == nil {
-			return nil, noop, fmt.Errorf("app studio message retention requires APP_STUDIO_DATABASE_URL or APP_STUDIO_IN_MEMORY_MESSAGE_STORE")
-		}
 		go runRetention(ctx, msgStore, retention)
 	}
 

@@ -420,6 +420,7 @@ INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/in
 # hub lives inside the kind cluster, so the rendered CatalogEntry must point
 # at host.docker.internal rather than localhost.
 APP_STUDIO_CATALOGENTRY_UI_URL = 'http://host.docker.internal:8085'
+APP_STUDIO_CATALOGENTRY_BACKEND_URL = APP_STUDIO_CATALOGENTRY_UI_URL
 CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code/manifest.yaml')
 KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/kuery/manifest.yaml')
 
@@ -482,6 +483,18 @@ local_resource(
 
 # --- providers-app-studio ---
 local_resource(
+    'app-studio-db',
+    cmd='make app-studio-db-up',
+    deps=[
+        'Makefile',
+        'providers/app-studio/.env',
+        'providers/app-studio/.env.example',
+    ],
+    resource_deps=['kedge-hub'],
+    labels=['providers-app-studio'],
+)
+
+local_resource(
     'app-studio',
     cmd='make build-app-studio-provider',
     # The tenant client needs the kcp front-proxy host+TLS (it drops the
@@ -493,13 +506,21 @@ local_resource(
         'providers/app-studio/main.go',
         'providers/app-studio/heartbeat.go',
         'providers/app-studio/assets.go',
+        'providers/app-studio/api',
+        'providers/app-studio/apis',
+        'providers/app-studio/client',
+        'providers/app-studio/store',
+        'providers/app-studio/tenant',
+        'providers/app-studio/go.mod',
+        'providers/app-studio/go.sum',
         'providers/app-studio/portal/src',
         'providers/app-studio/portal/package.json',
         'providers/app-studio/portal/vite.config.ts',
         'providers/app-studio/deploy/chart/templates/catalogentry.yaml',
         'providers/app-studio/deploy/chart/values.yaml',
+        'providers/app-studio/.env',
     ],
-    resource_deps=['kedge-hub'],
+    resource_deps=['kedge-hub', 'app-studio-db'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8085, path='/healthz'),
@@ -508,10 +529,22 @@ local_resource(
 )
 
 local_resource(
+    'app-studio-db-down',
+    cmd='make app-studio-db-down',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['providers-app-studio'],
+)
+
+local_resource(
     'app-studio-register',
     cmd=('APP_STUDIO_KCP_KUBECONFIG={kc} APP_STUDIO_KCP_SERVER={sv} ' +
-         'APP_STUDIO_CATALOGENTRY_UI_URL={ui} make install-provider-app-studio').format(
-             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER, ui=APP_STUDIO_CATALOGENTRY_UI_URL),
+         'APP_STUDIO_CATALOGENTRY_UI_URL={ui} ' +
+         'APP_STUDIO_CATALOGENTRY_BACKEND_URL={backend} ' +
+         'make install-provider-app-studio').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER,
+             ui=APP_STUDIO_CATALOGENTRY_UI_URL,
+             backend=APP_STUDIO_CATALOGENTRY_BACKEND_URL),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['kedge-hub'],
@@ -532,8 +565,12 @@ local_resource(
 local_resource(
     'app-studio-unregister',
     cmd=('APP_STUDIO_KCP_KUBECONFIG={kc} APP_STUDIO_KCP_SERVER={sv} ' +
-         'APP_STUDIO_CATALOGENTRY_UI_URL={ui} make uninstall-provider-app-studio').format(
-             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER, ui=APP_STUDIO_CATALOGENTRY_UI_URL),
+         'APP_STUDIO_CATALOGENTRY_UI_URL={ui} ' +
+         'APP_STUDIO_CATALOGENTRY_BACKEND_URL={backend} ' +
+         'make uninstall-provider-app-studio').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER,
+             ui=APP_STUDIO_CATALOGENTRY_UI_URL,
+             backend=APP_STUDIO_CATALOGENTRY_BACKEND_URL),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['kedge-hub'],
@@ -745,6 +782,8 @@ local_resource(
         'providers/code/mcpserver',
         'providers/code/controller',
         'providers/code/backend',
+        'providers/code/commitbundle',
+        'providers/code/apis',
         'providers/code/install',
         'providers/code/scheme',
         'providers/code/portal/src',

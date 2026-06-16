@@ -220,6 +220,7 @@ the connection token's `read:packages` scope.
 | `KEDGE_HUB_INSECURE` | (unset) | `true` skips TLS verify on heartbeats |
 | `CODE_KUBECONFIG` | (unset → controllers disabled) | kcp kubeconfig for the multicluster controller manager |
 | `CODE_WORKSPACE_PATH` | `root:kedge:providers:code` | Workspace the APIExportEndpointSlice is ensured in |
+| `CODE_COMMIT_BUNDLE_DIR` | system temp dir | Directory for provider-owned RepositoryCommit source bundles; use shared storage before running multiple replicas |
 | `KEDGE_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace the Connection credential Secret lives in |
 | `KEDGE_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=`/`?token=` replace identity headers (dev only) |
 | `GITHUB_OAUTH_CLIENT_ID` | (unset → OAuth off) | GitHub OAuth App client ID |

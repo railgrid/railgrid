@@ -23,6 +23,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +43,8 @@ type Backend struct{}
 func New() *Backend { return &Backend{} }
 
 func (b *Backend) Name() string { return string(codev1alpha1.ProviderGitHub) }
+
+const repositoryCommitIdempotencyTrailer = "Kedge-RepositoryCommit:"
 
 // client builds a token-authenticated go-github client for one call. baseURL
 // (Connection.spec.baseURL) targets GitHub Enterprise Server when set; empty
@@ -152,6 +156,186 @@ func (b *Backend) DeleteRepository(ctx context.Context, conn *codev1alpha1.Conne
 		return classify(resp, err)
 	}
 	return nil
+}
+
+// CommitFiles creates one commit containing all supplied text files and moves
+// the target branch. It uses GitHub's Git data API, so the provider never needs
+// a local clone or working tree.
+func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, input backend.RepositoryCommitInput) (backend.RepositoryCommitResult, error) {
+	if len(input.Files) == 0 {
+		return backend.RepositoryCommitResult{}, errors.New("github: at least one file is required")
+	}
+	message := strings.TrimSpace(input.Message)
+	if message == "" {
+		message = "Update generated application files"
+	}
+	message = commitMessageWithIdempotencyKey(message, input.IdempotencyKey)
+	branch := strings.TrimSpace(input.Branch)
+	if branch == "" {
+		branch = strings.TrimSpace(repo.Spec.DefaultBranch)
+	}
+	if branch == "" {
+		branch = "main"
+	}
+
+	entries, files, err := gitTreeEntries(input.Files)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, err
+	}
+
+	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, err
+	}
+	org := owner(conn, repo)
+	refName := "heads/" + branch
+	ref, resp, err := c.Git.GetRef(ctx, org, repo.Spec.Name, refName)
+	if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
+		return backend.RepositoryCommitResult{}, classify(resp, err)
+	}
+	headSHA := ""
+	if ref != nil && ref.GetObject() != nil {
+		headSHA = ref.GetObject().GetSHA()
+	}
+	if headSHA != "" && strings.TrimSpace(input.IdempotencyKey) != "" {
+		prior, found, err := findRepositoryCommitByIdempotencyKey(ctx, c, org, repo.Spec.Name, branch, input.IdempotencyKey)
+		if err != nil {
+			return backend.RepositoryCommitResult{}, err
+		}
+		if found {
+			return backend.RepositoryCommitResult{
+				CommitSHA: prior.GetSHA(),
+				CommitURL: prior.GetHTMLURL(),
+				Branch:    branch,
+				Files:     files,
+			}, nil
+		}
+	}
+	var parent *gogithub.Commit
+	baseTree := ""
+	if headSHA != "" {
+		parent, resp, err = c.Git.GetCommit(ctx, org, repo.Spec.Name, headSHA)
+		if err != nil {
+			return backend.RepositoryCommitResult{}, classify(resp, err)
+		}
+		if parent.GetTree() != nil {
+			baseTree = parent.GetTree().GetSHA()
+		}
+	}
+	tree, resp, err := c.Git.CreateTree(ctx, org, repo.Spec.Name, baseTree, entries)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, classify(resp, err)
+	}
+	if shouldReuseHeadCommit(parent, tree, baseTree) {
+		return backend.RepositoryCommitResult{
+			CommitSHA: parent.GetSHA(),
+			CommitURL: commitURL(org, repo, parent),
+			Branch:    branch,
+			Files:     files,
+		}, nil
+	}
+	parents := []*gogithub.Commit(nil)
+	if headSHA != "" {
+		parents = []*gogithub.Commit{{SHA: gogithub.String(headSHA)}}
+	}
+	commit, resp, err := c.Git.CreateCommit(ctx, org, repo.Spec.Name, &gogithub.Commit{
+		Message: gogithub.String(message),
+		Tree:    tree,
+		Parents: parents,
+	}, nil)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, classify(resp, err)
+	}
+	nextRef := &gogithub.Reference{
+		Ref: gogithub.String("refs/" + refName),
+		Object: &gogithub.GitObject{
+			SHA: commit.SHA,
+		},
+	}
+	if headSHA == "" {
+		_, resp, err = c.Git.CreateRef(ctx, org, repo.Spec.Name, nextRef)
+	} else {
+		_, resp, err = c.Git.UpdateRef(ctx, org, repo.Spec.Name, nextRef, false)
+	}
+	if err != nil {
+		return backend.RepositoryCommitResult{}, classify(resp, err)
+	}
+	return backend.RepositoryCommitResult{
+		CommitSHA: commit.GetSHA(),
+		CommitURL: commitURL(org, repo, commit),
+		Branch:    branch,
+		Files:     files,
+	}, nil
+}
+
+func shouldReuseHeadCommit(parent *gogithub.Commit, tree *gogithub.Tree, baseTree string) bool {
+	return parent != nil && tree != nil && tree.GetSHA() != "" && tree.GetSHA() == baseTree
+}
+
+func commitMessageWithIdempotencyKey(message, key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" || strings.Contains(message, repositoryCommitIdempotencyTrailer) {
+		return message
+	}
+	return message + "\n\n" + repositoryCommitIdempotencyTrailer + " " + key
+}
+
+func findRepositoryCommitByIdempotencyKey(ctx context.Context, c *gogithub.Client, org, repo, branch, key string) (*gogithub.RepositoryCommit, bool, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, false, nil
+	}
+	commits, resp, err := c.Repositories.ListCommits(ctx, org, repo, &gogithub.CommitsListOptions{
+		SHA: branch,
+		ListOptions: gogithub.ListOptions{
+			PerPage: 50,
+		},
+	})
+	if err != nil {
+		if resp != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusConflict) {
+			return nil, false, nil
+		}
+		return nil, false, classify(resp, err)
+	}
+	for _, commit := range commits {
+		if commit == nil || commit.GetCommit() == nil {
+			continue
+		}
+		if commitMessageHasIdempotencyKey(commit.GetCommit().GetMessage(), key) {
+			return commit, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+func commitMessageHasIdempotencyKey(message, key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	for _, line := range strings.Split(message, "\n") {
+		if strings.TrimSpace(line) == repositoryCommitIdempotencyTrailer+" "+key {
+			return true
+		}
+	}
+	return false
+}
+
+func commitURL(org string, repo *codev1alpha1.Repository, commit *gogithub.Commit) string {
+	if commit == nil {
+		return ""
+	}
+	if url := commit.GetHTMLURL(); url != "" {
+		return url
+	}
+	if commit.GetSHA() == "" {
+		return ""
+	}
+	repoURL := strings.TrimRight(repo.Status.HTMLURL, "/")
+	if repoURL == "" {
+		repoURL = "https://github.com/" + org + "/" + repo.Spec.Name
+	}
+	return repoURL + "/commit/" + commit.GetSHA()
 }
 
 // EnsureDeployKey registers publicKey on the repo and returns its host id.
@@ -358,6 +542,58 @@ func packageInfo(p *gogithub.Package) backend.PackageInfo {
 		VersionCount: p.GetVersionCount(),
 		UpdatedAt:    updated,
 	}
+}
+
+func gitTreeEntries(files []backend.RepositoryCommitFile) ([]*gogithub.TreeEntry, []string, error) {
+	byPath := map[string]string{}
+	for _, f := range files {
+		clean, err := cleanRepositoryPath(f.Path)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, exists := byPath[clean]; exists {
+			return nil, nil, fmt.Errorf("github: duplicate file path %q", clean)
+		}
+		byPath[clean] = f.Content
+	}
+	paths := make([]string, 0, len(byPath))
+	for p := range byPath {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	entries := make([]*gogithub.TreeEntry, 0, len(paths))
+	for _, p := range paths {
+		entries = append(entries, &gogithub.TreeEntry{
+			Path:    gogithub.String(p),
+			Mode:    gogithub.String("100644"),
+			Type:    gogithub.String("blob"),
+			Content: gogithub.String(byPath[p]),
+		})
+	}
+	return entries, paths, nil
+}
+
+func cleanRepositoryPath(raw string) (string, error) {
+	raw = strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	if raw == "" {
+		return "", errors.New("github: file path cannot be empty")
+	}
+	if strings.HasPrefix(raw, "/") {
+		return "", fmt.Errorf("github: file path %q must be relative", raw)
+	}
+	for _, part := range strings.Split(raw, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("github: file path %q cannot contain ..", raw)
+		}
+		if strings.ContainsRune(part, 0) {
+			return "", fmt.Errorf("github: file path %q cannot contain NUL", raw)
+		}
+	}
+	clean := strings.TrimPrefix(path.Clean("/"+raw), "/")
+	if clean == "." || clean == "" {
+		return "", errors.New("github: file path cannot be empty")
+	}
+	return clean, nil
 }
 
 // sameKeyMaterial compares two OpenSSH public keys by type + base64 body,

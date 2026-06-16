@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -157,10 +157,8 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 	./hack/ensure-boilerplate.sh
 
 ## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the code
-## provider's own API types, then re-assemble manifest.yaml (inline schemas)
-## and sync the schema bodies into the Helm chart's files/schemas/. Unlike
-## infrastructure (schemas: []), the code provider ships its four CRDs as
-## static schemas the hub applies, so they must be regenerated here.
+## provider's own API types, then sync the schema bodies into the Helm chart's
+## files/schemas/ directory. Provider init applies these schemas at runtime.
 codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the code provider's local API (+ manifest + chart schemas)
 	@mkdir -p providers/code/config/crds providers/code/config/kcp providers/code/deploy/chart/files/schemas
 	cd providers/code && \
@@ -168,11 +166,21 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
-	python3 providers/code/hack/gen-manifest.py
-	@for r in connections repositories deploykeys collaborators packages; do \
+	@for r in connections repositories repositorycommits deploykeys collaborators packages; do \
 		cp providers/code/config/kcp/apiresourceschema-$$r.code.kedge.faros.sh.yaml \
 		   providers/code/deploy/chart/files/schemas/$$r.code.kedge.faros.sh.yaml; \
 	done
+	./hack/ensure-boilerplate.sh
+
+codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the App Studio provider's local API (+ manifest + chart schema)
+	@mkdir -p providers/app-studio/config/crds providers/app-studio/config/kcp providers/app-studio/deploy/chart/files/schemas
+	cd providers/app-studio && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/app-studio/config/crds
+	./$(KCP_APIGEN_GEN) --input-dir providers/app-studio/config/crds --output-dir providers/app-studio/config/kcp
+	cp providers/app-studio/config/kcp/apiresourceschema-projects.ai.kedge.faros.sh.yaml \
+	   providers/app-studio/deploy/chart/files/schemas/projects.ai.kedge.faros.sh.yaml
 	./hack/ensure-boilerplate.sh
 
 test:
@@ -201,7 +209,7 @@ verify-boilerplate: ## Verify license boilerplate on all Go files
 crds: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Generate CRDs and kcp APIResourceSchemas
 	./hack/update-codegen-crds.sh
 
-codegen: crds boilerplate ## Generate all (CRDs + kcp resources + boilerplate)
+codegen: crds codegen-code-provider codegen-app-studio-provider boilerplate ## Generate all (CRDs + kcp resources + provider schemas + boilerplate)
 
 verify-codegen: codegen ## Verify codegen is up to date
 	@if ! git diff --quiet HEAD; then \
@@ -793,6 +801,16 @@ APP_STUDIO_CATALOGENTRY_UI_URL ?= http://localhost:$(APP_STUDIO_PORT)
 # Tiltfiles work without a separate override.
 APP_STUDIO_CATALOGENTRY_BACKEND_URL ?= $(APP_STUDIO_CATALOGENTRY_UI_URL)
 APP_STUDIO_CATALOGENTRY_RENDERED ?= /tmp/kedge-app-studio-catalogentry.yaml
+APP_STUDIO_DATABASE_URL ?=
+APP_STUDIO_IN_MEMORY_MESSAGE_STORE ?=
+APP_STUDIO_DEV_DATABASE_URL ?= postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable
+APP_STUDIO_POSTGRES_CONTAINER ?= kedge-app-studio-postgres
+APP_STUDIO_POSTGRES_IMAGE ?= postgres:16-alpine
+APP_STUDIO_POSTGRES_PORT ?= 55432
+APP_STUDIO_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/app-studio-postgres
+APP_STUDIO_POSTGRES_USER ?= appstudio
+APP_STUDIO_POSTGRES_PASSWORD ?= appstudio
+APP_STUDIO_POSTGRES_DB ?= appstudio
 
 ## Run the infrastructure provider binary locally. Heartbeats to the hub on
 ## $(KROMC_HUB_URL); TLS verification skipped (dev cert is self-signed).
@@ -826,19 +844,88 @@ run-provider-infrastructure: build-infrastructure-provider ## Run the infrastruc
 
 ## Run the App Studio provider binary locally. Mirrors the other external
 ## providers so the heartbeat path is consistent and the UI runs on :8085.
-run-provider-app-studio: build-app-studio-provider ## Run the App Studio provider (requires: make run-hub-embedded-static + make install-provider-app-studio)
+app-studio-db-up: ## Start/reuse local Postgres for App Studio message history (skips when APP_STUDIO_DATABASE_URL or in-memory mode is set)
+	@set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
+	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
+	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
+	if [ "$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-}" = "true" ]; then \
+		echo "Skipping App Studio Postgres because APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true"; \
+		exit 0; \
+	fi; \
+	if [ -n "$${APP_STUDIO_DATABASE_URL:-}" ]; then \
+		echo "Using externally configured APP_STUDIO_DATABASE_URL; not starting local App Studio Postgres"; \
+		exit 0; \
+	fi; \
+	mkdir -p "$(APP_STUDIO_POSTGRES_DATA_DIR)"; \
+	if docker ps --format '{{.Names}}' | grep -qx "$(APP_STUDIO_POSTGRES_CONTAINER)"; then \
+		echo "App Studio Postgres already running ($(APP_STUDIO_POSTGRES_CONTAINER))"; \
+	elif docker ps -a --format '{{.Names}}' | grep -qx "$(APP_STUDIO_POSTGRES_CONTAINER)"; then \
+		echo "Starting existing App Studio Postgres container ($(APP_STUDIO_POSTGRES_CONTAINER))"; \
+		docker start "$(APP_STUDIO_POSTGRES_CONTAINER)" >/dev/null; \
+	else \
+		echo "Creating App Studio Postgres container ($(APP_STUDIO_POSTGRES_CONTAINER))"; \
+		docker run -d \
+			--name "$(APP_STUDIO_POSTGRES_CONTAINER)" \
+			-e POSTGRES_USER="$(APP_STUDIO_POSTGRES_USER)" \
+			-e POSTGRES_PASSWORD="$(APP_STUDIO_POSTGRES_PASSWORD)" \
+			-e POSTGRES_DB="$(APP_STUDIO_POSTGRES_DB)" \
+			-p 127.0.0.1:$(APP_STUDIO_POSTGRES_PORT):5432 \
+			-v "$(abspath $(APP_STUDIO_POSTGRES_DATA_DIR)):/var/lib/postgresql/data" \
+			"$(APP_STUDIO_POSTGRES_IMAGE)" >/dev/null; \
+	fi; \
+	echo "Waiting for App Studio Postgres..."; \
+	for _ in $$(seq 1 30); do \
+		if docker exec "$(APP_STUDIO_POSTGRES_CONTAINER)" pg_isready -U "$(APP_STUDIO_POSTGRES_USER)" -d "$(APP_STUDIO_POSTGRES_DB)" >/dev/null 2>&1; then \
+			echo "  database: $(APP_STUDIO_DEV_DATABASE_URL)"; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "ERROR: App Studio Postgres did not become ready"; \
+	docker logs "$(APP_STUDIO_POSTGRES_CONTAINER)" --tail=50; \
+	exit 1
+
+app-studio-db-down: ## Stop and remove the local App Studio Postgres container (data remains in APP_STUDIO_POSTGRES_DATA_DIR)
+	@if docker ps -a --format '{{.Names}}' | grep -qx "$(APP_STUDIO_POSTGRES_CONTAINER)"; then \
+		docker rm -f "$(APP_STUDIO_POSTGRES_CONTAINER)" >/dev/null; \
+		echo "Removed App Studio Postgres container ($(APP_STUDIO_POSTGRES_CONTAINER)); data remains in $(APP_STUDIO_POSTGRES_DATA_DIR)"; \
+	else \
+		echo "App Studio Postgres container not found ($(APP_STUDIO_POSTGRES_CONTAINER))"; \
+	fi
+
+run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the App Studio provider (requires: make run-hub-embedded-static + make install-provider-app-studio)
 	@echo "Starting App Studio provider on :$(APP_STUDIO_PORT)"
 	@echo "  hub:   $(APP_STUDIO_HUB_URL)"
 	@echo "  token: $(APP_STUDIO_TOKEN)"
-	PORT=$(APP_STUDIO_PORT) \
-	KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
-	KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
-	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=app-studio \
-	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
-	APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
-	APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
-		$(BINDIR)/app-studio-provider
+	@# Auto-source providers/app-studio/.env (gitignored) so local store/LLM
+	@# overrides reach Tilt and make without a manual export. See .env.example.
+	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
+	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
+	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
+	if [ "$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-}" = "true" ]; then \
+		echo "  store: in-memory (non-durable)"; \
+		APP_STUDIO_DATABASE_URL= \
+		PORT=$(APP_STUDIO_PORT) \
+		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
+		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
+		KEDGE_HUB_INSECURE=true \
+		KEDGE_PROVIDER_NAME=app-studio \
+		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
+		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
+			$(BINDIR)/app-studio-provider; \
+	else \
+		echo "  store: $${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}"; \
+		PORT=$(APP_STUDIO_PORT) \
+		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
+		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
+		KEDGE_HUB_INSECURE=true \
+		KEDGE_PROVIDER_NAME=app-studio \
+		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
+		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
+			$(BINDIR)/app-studio-provider; \
+	fi
 
 ## Apply the App Studio CatalogEntry into root:kedge:providers. Idempotent.
 ## Renders only the CatalogEntry from the Helm chart so host-cluster objects
@@ -973,6 +1060,7 @@ run-provider-code: build-code-provider ## Run the code provider (requires: make 
 	KEDGE_HUB_INSECURE=true \
 	KEDGE_PROVIDER_NAME=code \
 	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+	CODE_COMMIT_BUNDLE_DIR=$${CODE_COMMIT_BUNDLE_DIR:-$(KCP_DATA_DIR)/code-commit-bundles} \
 	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
 	GITHUB_OAUTH_CLIENT_ID=$${GITHUB_OAUTH_CLIENT_ID:-} \
 	GITHUB_OAUTH_CLIENT_SECRET=$${GITHUB_OAUTH_CLIENT_SECRET:-} \
@@ -1004,7 +1092,7 @@ CODE_WORKSPACE_PATH ?= root:kedge:providers:code
 ## the admin kubeconfig — reusing its working credential (a static token in
 ## embedded mode, a client cert in cluster mode) and retargeting only the server
 ## URL to the provider workspace — and ensure the APIExportEndpointSlice the
-## controller manager needs. run-provider-code reads it via CODE_KUBECONFIG.
+## controller manager needs. run-provider-code reads it via KEDGE_PROVIDER_KUBECONFIG.
 ## Order: install-provider-code (creates the workspace) → init-provider-code →
 ## run-provider-code. Re-runnable. The Tiltfile.cluster flow reuses this target
 ## verbatim, overriding KROMC_KCP_KUBECONFIG / KROMC_KCP_SERVER.
@@ -1314,6 +1402,8 @@ help-dev: ## Show development environment options
 	@echo "  QUICKSTART_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
 	@echo "  APP_STUDIO_PORT    - Port the App Studio provider listens on (default: 8085)"
 	@echo "  APP_STUDIO_HUB_URL - Hub URL the provider heartbeats to (default: https://localhost:9443)"
+	@echo "  APP_STUDIO_DEV_DATABASE_URL - Local App Studio Postgres DSN (default: postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable)"
+	@echo "  APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true - Force non-durable App Studio message store"
 	@echo ""
 
 DOCKER_PLATFORM ?= linux/amd64

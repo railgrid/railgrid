@@ -5,15 +5,10 @@
 #
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
 #
-# GENERATED FILE. The spec.apiExport.schemas[].body blocks are inlined from
-# providers/code/config/kcp/apiresourceschema-*.yaml. Edit the Go API types and
-# re-run `make codegen-code-provider && python3 providers/code/hack/gen-manifest.py`.
-#
-# Unlike the infrastructure provider (schemas: []), the code provider ships its
-# four tenant-authored CRDs as static schemas so tenants who APIBind get
-# Connection / Repository / DeployKey / Collaborator authorable in their own
-# workspace. The hub provisioner (pkg/hub/providers/provision.go) applies these
-# with storage: {crd: {}} and references them from the APIExport.
+# This CatalogEntry registers routing and references apiExport.name. The
+# provider's init command creates the APIExport, schemas, endpoint slice, and
+# bind grant from deploy/chart/files/schemas, including Connection, Repository,
+# RepositoryCommit, DeployKey, Collaborator, and Package resources.
 ---
 apiVersion: providers.kedge.faros.sh/v1alpha1
 kind: CatalogEntry

@@ -13,16 +13,20 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
+	"github.com/faroshq/provider-code/commitbundle"
 )
 
 var (
@@ -30,10 +34,9 @@ var (
 	collaboratorsGVR = codev1alpha1.SchemeGroupVersion.WithResource("collaborators")
 )
 
-// The write tools are CRD-native: each creates or deletes a CR in the caller's
-// tenant workspace AS THE CALLER. The controllers do the actual host work, so
-// these tools never carry a credential and never call GitHub directly —
-// pasting a PAT remains a portal-only action (create_connection references an
+// Write tools are CRD-native: they create or delete a CR in the caller's tenant
+// workspace AS THE CALLER, and controllers do the reconciled host work. Pasting
+// a PAT remains a portal-only action (create_connection references an
 // already-stored Secret by name).
 
 type createConnectionInput struct {
@@ -54,7 +57,19 @@ type createRepositoryInput struct {
 	Visibility    string `json:"visibility,omitempty" jsonschema:"private|public|internal; defaults to private"`
 	Description   string `json:"description,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
-	AutoInit      bool   `json:"autoInit,omitempty" jsonschema:"Create an initial commit so the default branch exists"`
+	AutoInit      *bool  `json:"autoInit,omitempty" jsonschema:"Create an initial commit so the default branch exists; defaults to true"`
+}
+
+type commitFileInput struct {
+	Path    string `json:"path" jsonschema:"Repository-relative file path"`
+	Content string `json:"content" jsonschema:"Complete UTF-8 text content for the file"`
+}
+
+type commitFilesInput struct {
+	RepositoryRef string            `json:"repositoryRef" jsonschema:"Name of the managed Repository CR to commit into"`
+	Message       string            `json:"message,omitempty" jsonschema:"Commit message; defaults to a generated update message"`
+	Branch        string            `json:"branch,omitempty" jsonschema:"Branch name; defaults to the Repository defaultBranch, then main"`
+	Files         []commitFileInput `json:"files" jsonschema:"Files to write in this commit"`
 }
 
 type addDeployKeyInput struct {
@@ -84,6 +99,18 @@ type createOutput struct {
 
 type deleteOutput struct {
 	Deleted bool `json:"deleted"`
+}
+
+type commitFilesOutput struct {
+	RepositoryRef string   `json:"repositoryRef"`
+	Name          string   `json:"name,omitempty"`
+	Phase         string   `json:"phase,omitempty"`
+	BundleRef     string   `json:"bundleRef,omitempty"`
+	BundleDigest  string   `json:"bundleDigest,omitempty"`
+	CommitSHA     string   `json:"commitSHA,omitempty"`
+	CommitURL     string   `json:"commitURL,omitempty"`
+	Branch        string   `json:"branch,omitempty"`
+	Files         []string `json:"files,omitempty"`
 }
 
 func registerWriteTools(srv *mcp.Server, deps Deps, ident identity) {
@@ -139,18 +166,7 @@ func registerWriteTools(srv *mcp.Server, deps Deps, ident identity) {
 		if repoName == "" {
 			repoName = in.Name
 		}
-		spec := map[string]any{
-			"connectionRef": in.ConnectionRef,
-			"name":          repoName,
-		}
-		putIf(spec, "owner", in.Owner)
-		putIf(spec, "visibility", in.Visibility)
-		putIf(spec, "description", in.Description)
-		putIf(spec, "defaultBranch", in.DefaultBranch)
-		if in.AutoInit {
-			spec["autoInit"] = true
-		}
-		return createCR(ctx, dyn, repositoriesGVR, "Repository", in.Name, spec)
+		return createCR(ctx, dyn, repositoriesGVR, "Repository", in.Name, repositorySpec(in, repoName))
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -164,6 +180,19 @@ func registerWriteTools(srv *mcp.Server, deps Deps, ident identity) {
 			return nil, deleteOutput{}, err
 		}
 		return deleteCR(ctx, dyn, repositoriesGVR, in.Name)
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "commit_files",
+		Title:       "Commit files to a repository",
+		Description: "Commit UTF-8 text files to a managed Repository. The tool stores a provider-owned source bundle, creates a RepositoryCommit request in your workspace, and reports the resulting commit status.",
+		Annotations: mutating,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in commitFilesInput) (*mcp.CallToolResult, commitFilesOutput, error) {
+		dyn, err := tenantClient(deps, ident)
+		if err != nil {
+			return nil, commitFilesOutput{}, err
+		}
+		return commitFiles(ctx, dyn, deps.Bundles, ident.tenantPath, in)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -247,6 +276,253 @@ func deleteCR(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersio
 		return nil, deleteOutput{}, fmt.Errorf("delete %s: %w", name, err)
 	}
 	return nil, deleteOutput{Deleted: true}, nil
+}
+
+func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundle.Store, tenantScope string, in commitFilesInput) (*mcp.CallToolResult, commitFilesOutput, error) {
+	if bundles == nil {
+		return nil, commitFilesOutput{}, fmt.Errorf("commit bundle store is unavailable")
+	}
+	tenantScope = strings.TrimSpace(tenantScope)
+	if tenantScope == "" {
+		return nil, commitFilesOutput{}, fmt.Errorf("tenant identity is required")
+	}
+	in.RepositoryRef = strings.TrimSpace(in.RepositoryRef)
+	if in.RepositoryRef == "" {
+		return nil, commitFilesOutput{}, fmt.Errorf("repositoryRef is required")
+	}
+	if len(in.Files) == 0 {
+		return nil, commitFilesOutput{}, fmt.Errorf("at least one file is required")
+	}
+	repo, err := getRepository(ctx, dyn, in.RepositoryRef)
+	if err != nil {
+		return nil, commitFilesOutput{}, err
+	}
+	files := make([]commitbundle.File, 0, len(in.Files))
+	for _, f := range in.Files {
+		files = append(files, commitbundle.File{Path: f.Path, Content: f.Content})
+	}
+	bundle, err := bundles.Put(ctx, tenantScope, files)
+	if err != nil {
+		return nil, commitFilesOutput{}, err
+	}
+	obj := repositoryCommitObject(repo, bundle, in)
+	created, err := dyn.Resource(repositoryCommitsGVR).Create(ctx, obj, metav1.CreateOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: RepositoryCommit API is not available in this workspace; enable or re-register the Code provider so repositorycommits.code.kedge.faros.sh is published: %w", err)
+		}
+		return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: %w", err)
+	}
+	out := commitFilesOutput{
+		RepositoryRef: in.RepositoryRef,
+		Name:          created.GetName(),
+		Phase:         string(codev1alpha1.RepositoryCommitPhasePending),
+		BundleRef:     bundle.Name,
+		BundleDigest:  bundle.Digest,
+		Files:         bundleFilePaths(bundle.Files),
+	}
+	waited, err := waitRepositoryCommit(ctx, dyn, created.GetName(), 75*time.Second)
+	if err != nil {
+		return nil, out, err
+	}
+	if waited != nil {
+		out = repositoryCommitOutput(waited, out)
+		if out.Phase == string(codev1alpha1.RepositoryCommitPhaseFailed) {
+			return nil, out, fmt.Errorf("RepositoryCommit %q failed: %s", out.Name, repositoryCommitConditionMessage(waited))
+		}
+	}
+	return nil, out, nil
+}
+
+func repositoryCommitObject(repo *codev1alpha1.Repository, bundle commitbundle.BundleRef, in commitFilesInput) *unstructured.Unstructured {
+	labels := map[string]string{}
+	for k, v := range repo.Labels {
+		labels[k] = v
+	}
+	labels[codev1alpha1.LabelRepository] = in.RepositoryRef
+	labelValues := make(map[string]any, len(labels))
+	for k, v := range labels {
+		labelValues[k] = v
+	}
+	metadata := map[string]any{
+		"name":   commitObjectName(in.RepositoryRef, bundle.Digest, time.Now()),
+		"labels": labelValues,
+	}
+	if repo.UID != "" {
+		metadata["ownerReferences"] = []map[string]any{{
+			"apiVersion":         codev1alpha1.SchemeGroupVersion.String(),
+			"kind":               "Repository",
+			"name":               repo.Name,
+			"uid":                string(repo.UID),
+			"controller":         false,
+			"blockOwnerDeletion": false,
+		}}
+	}
+	spec := map[string]any{
+		"repositoryRef": in.RepositoryRef,
+		"source": map[string]any{
+			"bundleRef": map[string]any{
+				"name":   bundle.Name,
+				"digest": bundle.Digest,
+			},
+		},
+	}
+	putIf(spec, "message", in.Message)
+	putIf(spec, "branch", in.Branch)
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": codev1alpha1.SchemeGroupVersion.String(),
+		"kind":       "RepositoryCommit",
+		"metadata":   metadata,
+		"spec":       spec,
+	}}
+}
+
+func repositorySpec(in createRepositoryInput, repoName string) map[string]any {
+	spec := map[string]any{
+		"connectionRef": in.ConnectionRef,
+		"name":          repoName,
+	}
+	putIf(spec, "owner", in.Owner)
+	putIf(spec, "visibility", in.Visibility)
+	putIf(spec, "description", in.Description)
+	putIf(spec, "defaultBranch", in.DefaultBranch)
+	if in.AutoInit == nil || *in.AutoInit {
+		spec["autoInit"] = true
+	}
+	return spec
+}
+
+func waitRepositoryCommit(ctx context.Context, dyn dynamic.Interface, name string, timeout time.Duration) (*unstructured.Unstructured, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		obj, err := dyn.Resource(repositoryCommitsGVR).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("get RepositoryCommit %q: %w", name, err)
+		}
+		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
+		if phase == string(codev1alpha1.RepositoryCommitPhaseSucceeded) || phase == string(codev1alpha1.RepositoryCommitPhaseFailed) {
+			return obj, nil
+		}
+		select {
+		case <-ctx.Done():
+			return obj, nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func repositoryCommitOutput(obj *unstructured.Unstructured, fallback commitFilesOutput) commitFilesOutput {
+	out := fallback
+	if obj.GetName() != "" {
+		out.Name = obj.GetName()
+	}
+	if phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase"); phase != "" {
+		out.Phase = phase
+	}
+	if branch, _, _ := unstructured.NestedString(obj.Object, "status", "branch"); branch != "" {
+		out.Branch = branch
+	}
+	if sha, _, _ := unstructured.NestedString(obj.Object, "status", "commitSHA"); sha != "" {
+		out.CommitSHA = sha
+	}
+	if url, _, _ := unstructured.NestedString(obj.Object, "status", "commitURL"); url != "" {
+		out.CommitURL = url
+	}
+	if files := repositoryCommitFilePaths(obj); len(files) > 0 {
+		out.Files = files
+	}
+	return out
+}
+
+func repositoryCommitFilePaths(obj *unstructured.Unstructured) []string {
+	items, found, _ := unstructured.NestedSlice(obj.Object, "status", "files")
+	if !found {
+		return nil
+	}
+	paths := make([]string, 0, len(items))
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		path, _ := m["path"].(string)
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func bundleFilePaths(files []commitbundle.FileMeta) []string {
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	return paths
+}
+
+func repositoryCommitConditionMessage(obj *unstructured.Unstructured) string {
+	conds, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if !found {
+		return "unknown error"
+	}
+	for _, raw := range conds {
+		cond, ok := raw.(map[string]any)
+		if !ok || cond["type"] != codev1alpha1.ConditionReady {
+			continue
+		}
+		if msg, ok := cond["message"].(string); ok && msg != "" {
+			return msg
+		}
+	}
+	return "unknown error"
+}
+
+func commitObjectName(repositoryRef, digest string, now time.Time) string {
+	base := strings.Trim(repositoryRef, "-")
+	if base == "" {
+		base = "repository"
+	}
+	sum := strings.TrimPrefix(digest, "sha256:")
+	if len(sum) > 12 {
+		sum = sum[:12]
+	}
+	if sum == "" {
+		sum = "bundle"
+	}
+	suffix := fmt.Sprintf("%s-%x", sum, now.UnixNano())
+	maxBase := 253 - len("-commit-") - len(suffix)
+	if maxBase < 1 {
+		maxBase = 1
+	}
+	if len(base) > maxBase {
+		base = strings.Trim(base[:maxBase], "-")
+	}
+	if base == "" {
+		base = "repository"
+	}
+	return base + "-commit-" + suffix
+}
+
+func getRepository(ctx context.Context, dyn dynamic.Interface, name string) (*codev1alpha1.Repository, error) {
+	u, err := dyn.Resource(repositoriesGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("repository %q not found", name)
+		}
+		return nil, fmt.Errorf("get repository %q: %w", name, err)
+	}
+	var repo codev1alpha1.Repository
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &repo); err != nil {
+		return nil, fmt.Errorf("decode repository %q: %w", name, err)
+	}
+	return &repo, nil
 }
 
 func putIf(m map[string]any, k, v string) {

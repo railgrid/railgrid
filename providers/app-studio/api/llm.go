@@ -60,6 +60,8 @@ const (
 	// in text (tool_choice=none). It guards against a model that loops on
 	// failing or disallowed tool calls.
 	maxAssistantToolTurns = 8
+	projectToolInfoLimit  = 1000
+	projectMCPCallTimeout = 2 * time.Minute
 )
 
 var (
@@ -151,6 +153,17 @@ type chatCompletionResponse struct {
 type projectAssistantReply struct {
 	Content   string
 	ToolCalls []chatToolCall
+}
+
+type projectAssistantStreamCallbacks struct {
+	OnChunk    func(string)
+	OnStatus   func(string)
+	OnToolCall func(projectToolCallStreamEvent)
+}
+
+type projectNamingResult struct {
+	DisplayName    string
+	RepositoryName string
 }
 
 type chatCompletionStreamChoice struct {
@@ -256,7 +269,7 @@ func (s *Server) generateProjectAssistantStream(
 	id identity,
 	c *asclient.Client,
 	p *aiv1alpha1.Project,
-	onChunk func(string),
+	callbacks projectAssistantStreamCallbacks,
 ) (string, error) {
 	ctx := r.Context()
 	if s.store == nil {
@@ -279,7 +292,8 @@ func (s *Server) generateProjectAssistantStream(
 	if err != nil {
 		return "", err
 	}
-	messages := projectPromptMessages(p, recent)
+	repository := projectRepositoryView(ctx, c, p)
+	messages := projectPromptMessages(p, repository, recent)
 	tools, toolsErr := s.loadProjectMCPTools(r, id, settings)
 	if toolsErr == nil {
 		if toolPrompt := projectMCPToolsPrompt(tools); toolPrompt != "" {
@@ -327,11 +341,12 @@ func (s *Server) generateProjectAssistantStream(
 		}
 		maybeInjectGoogleThoughtSignature(settings, reqBody.Messages)
 
-		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, onChunk)
+		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, callbacks.OnChunk, callbacks.OnStatus)
 		if err != nil {
 			return "", err
 		}
 		if len(reply.ToolCalls) > 0 && !finalTurn {
+			ensureProjectToolCallIDs(reply.ToolCalls)
 			repeated := false
 			for _, tc := range reply.ToolCalls {
 				sig := tc.Function.Name + "\x00" + tc.Function.Arguments
@@ -347,7 +362,7 @@ func (s *Server) generateProjectAssistantStream(
 				Role:      aiv1alpha1.ProjectMessageRoleAssistant,
 				ToolCalls: reply.ToolCalls,
 			})
-			nextMessages, callErr := s.resolveProjectToolCalls(ctx, id, reply.ToolCalls, r)
+			nextMessages, callErr := s.resolveProjectToolCalls(ctx, id, reply.ToolCalls, r, callbacks.OnToolCall)
 			if callErr != nil {
 				return "", callErr
 			}
@@ -368,6 +383,86 @@ func (s *Server) generateProjectAssistantStream(
 	}
 
 	return "", errors.New("LLM tool loop exceeded safe turn limit")
+}
+
+func (s *Server) generateProjectNaming(ctx context.Context, c *asclient.Client, prompt string) (projectNamingResult, error) {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return projectNamingResult{}, newValidationError("prompt is required")
+	}
+	settings, err := readProjectLLMSettings(ctx, c)
+	if err != nil {
+		return projectNamingResult{}, err
+	}
+	if err := normalizeProjectLLMSettings(&settings); err != nil {
+		return projectNamingResult{}, err
+	}
+	if strings.TrimSpace(settings.APIKey) == "" {
+		return projectNamingResult{}, errProjectLLMNotConfigured
+	}
+
+	reqBody := chatCompletionRequest{
+		Model:       settings.Model,
+		Temperature: 0.1,
+		Messages: []chatMessage{
+			{
+				Role: "system",
+				Content: "Generate concise app project names. Return only JSON with string fields displayName and repositoryName. " +
+					"displayName should be 2-5 words, human-readable, and no longer than 64 characters. " +
+					"repositoryName must be derived from displayName and must already satisfy DNS-1123 label rules: lowercase a-z, 0-9, hyphen only; starts and ends with alphanumeric; max 63 characters.",
+			},
+			{
+				Role:    "user",
+				Content: "Prompt:\n" + prompt,
+			},
+		},
+	}
+	reply, err := callProjectChatCompletion(ctx, settings, reqBody)
+	if err != nil {
+		return projectNamingResult{}, err
+	}
+	out, err := parseProjectNamingResult(reply.Content)
+	if err != nil {
+		return projectNamingResult{}, err
+	}
+	out.DisplayName = strings.TrimSpace(out.DisplayName)
+	if out.DisplayName == "" {
+		return projectNamingResult{}, errors.New("LLM naming response omitted displayName")
+	}
+	if len(out.DisplayName) > 64 {
+		out.DisplayName = strings.TrimSpace(out.DisplayName[:64])
+	}
+	out.RepositoryName = dns1123Label(out.RepositoryName)
+	if out.RepositoryName == "" {
+		return projectNamingResult{}, errors.New("LLM naming response did not produce a valid repositoryName")
+	}
+	return out, nil
+}
+
+func parseProjectNamingResult(content string) (projectNamingResult, error) {
+	content = strings.TrimSpace(content)
+	if strings.HasPrefix(content, "```") {
+		content = strings.TrimPrefix(content, "```json")
+		content = strings.TrimPrefix(content, "```")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	}
+	if start := strings.Index(content, "{"); start >= 0 {
+		if end := strings.LastIndex(content, "}"); end > start {
+			content = content[start : end+1]
+		}
+	}
+	var decoded struct {
+		DisplayName    string `json:"displayName"`
+		RepositoryName string `json:"repositoryName"`
+	}
+	if err := json.Unmarshal([]byte(content), &decoded); err != nil {
+		return projectNamingResult{}, fmt.Errorf("decode LLM naming response: %w", err)
+	}
+	return projectNamingResult{
+		DisplayName:    decoded.DisplayName,
+		RepositoryName: decoded.RepositoryName,
+	}, nil
 }
 
 const googleThoughtSignatureSkipValue = "skip_thought_signature_validator"
@@ -448,6 +543,7 @@ func callProjectChatCompletionStream(
 	settings projectLLMSettings,
 	reqBody chatCompletionRequest,
 	onChunk func(string),
+	onStatus func(string),
 ) (projectAssistantReply, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
@@ -467,7 +563,7 @@ func callProjectChatCompletionStream(
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := projectLLMStreamClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return projectAssistantReply{}, err
@@ -501,6 +597,7 @@ func callProjectChatCompletionStream(
 	var toolCallByIndex = map[int]chatToolCall{}
 	var content strings.Builder
 	var sawStreamingEvents bool
+	var reportedToolPreparation bool
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	for scanner.Scan() {
@@ -532,6 +629,12 @@ func callProjectChatCompletionStream(
 				content.WriteString(choice.Delta.Content)
 				if onChunk != nil {
 					onChunk(choice.Delta.Content)
+				}
+			}
+			if len(choice.Delta.ToolCalls) > 0 && !reportedToolPreparation {
+				reportedToolPreparation = true
+				if onStatus != nil {
+					onStatus("Preparing action")
 				}
 			}
 			for _, toolCall := range choice.Delta.ToolCalls {
@@ -585,6 +688,71 @@ func callProjectChatCompletionStream(
 	}, nil
 }
 
+func projectLLMStreamClient() *http.Client {
+	// Do not use http.Client.Timeout for SSE. That timeout covers reading the
+	// entire response body, so healthy long-running generations can be cut off
+	// mid-stream. The request context still handles user cancellation and server
+	// shutdown.
+	return &http.Client{}
+}
+
+func callProjectChatCompletion(
+	ctx context.Context,
+	settings projectLLMSettings,
+	reqBody chatCompletionRequest,
+) (chatMessage, error) {
+	reqBody.Stream = false
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return chatMessage{}, fmt.Errorf("encoding request: %w", err)
+	}
+
+	endpoint := strings.TrimRight(settings.BaseURL, "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return chatMessage{}, fmt.Errorf("creating request: %w", err)
+	}
+	authToken, err := projectLLMAuthToken(ctx, settings)
+	if err != nil {
+		return chatMessage{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return chatMessage{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		return chatMessage{}, fmt.Errorf("reading response: %w", readErr)
+	}
+	var decoded chatCompletionResponse
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &decoded)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		detail := strings.TrimSpace(string(body))
+		if decoded.Error != nil && decoded.Error.Message != "" {
+			detail = decoded.Error.Message
+		}
+		if detail == "" {
+			detail = resp.Status
+		}
+		klog.FromContext(ctx).Error(nil, "LLM API returned non-2xx",
+			"endpoint", endpoint, "model", reqBody.Model, "status", resp.Status, "detail", detail)
+		return chatMessage{}, fmt.Errorf("LLM API returned %s: %s", resp.Status, detail)
+	}
+	if len(decoded.Choices) == 0 {
+		return chatMessage{}, errors.New("LLM API returned no choices")
+	}
+	return decoded.Choices[0].Message, nil
+}
+
 func projectLLMAuthToken(ctx context.Context, settings projectLLMSettings) (string, error) {
 	apiKey := strings.TrimSpace(settings.APIKey)
 	_, usesGoogleServiceAccount, err := googleServiceAccountCredentialFromJSON(apiKey)
@@ -608,7 +776,13 @@ func projectLLMAuthToken(ctx context.Context, settings projectLLMSettings) (stri
 	return token.AccessToken, nil
 }
 
-func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolCalls []chatToolCall, r *http.Request) ([]chatMessage, error) {
+func (s *Server) resolveProjectToolCalls(
+	ctx context.Context,
+	id identity,
+	toolCalls []chatToolCall,
+	r *http.Request,
+	onToolCall func(projectToolCallStreamEvent),
+) ([]chatMessage, error) {
 	if len(toolCalls) == 0 {
 		return nil, nil
 	}
@@ -618,8 +792,23 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 	logger := klog.FromContext(ctx)
 
 	for _, tc := range toolCalls {
+		if onToolCall != nil {
+			onToolCall(projectToolCallStreamEvent{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Status:    "requested",
+				Arguments: summarizeProjectToolArguments(tc.Function.Name, tc.Function.Arguments),
+			})
+		}
 		if tc.Function.Name == "" {
 			logger.Info("project assistant tool call rejected", "reason", "missing function name")
+			if onToolCall != nil {
+				onToolCall(projectToolCallStreamEvent{
+					ID:     tc.ID,
+					Status: "rejected",
+					Error:  "missing function name",
+				})
+			}
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -629,6 +818,14 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 		}
 		if !projectMCPToolAllowed(tc.Function.Name) {
 			logger.Info("project assistant tool call rejected", "reason", "disallowed MCP tool name", "tool", tc.Function.Name)
+			if onToolCall != nil {
+				onToolCall(projectToolCallStreamEvent{
+					ID:     tc.ID,
+					Name:   tc.Function.Name,
+					Status: "rejected",
+					Error:  "disallowed MCP tool name",
+				})
+			}
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
@@ -642,6 +839,14 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 		}
 		if tc.Type != "function" {
 			logger.Info("project assistant tool call rejected", "reason", "unsupported tool call type", "tool", tc.Function.Name, "type", tc.Type)
+			if onToolCall != nil {
+				onToolCall(projectToolCallStreamEvent{
+					ID:     tc.ID,
+					Name:   tc.Function.Name,
+					Status: "rejected",
+					Error:  "unsupported tool call type: " + tc.Type,
+				})
+			}
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
@@ -654,6 +859,14 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 		if strings.TrimSpace(tc.Function.Arguments) != "" {
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 				logger.Info("project assistant tool call rejected", "reason", "invalid arguments", "tool", tc.Function.Name, "args", tc.Function.Arguments, "err", err.Error())
+				if onToolCall != nil {
+					onToolCall(projectToolCallStreamEvent{
+						ID:     tc.ID,
+						Name:   tc.Function.Name,
+						Status: "rejected",
+						Error:  "invalid arguments: " + truncateProjectToolInfo(err.Error()),
+					})
+				}
 				toolMessages = append(toolMessages, chatMessage{
 					Role:       "tool",
 					Name:       tc.Function.Name,
@@ -663,9 +876,26 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 				continue
 			}
 		}
+		if onToolCall != nil {
+			onToolCall(projectToolCallStreamEvent{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Status:    "running",
+				Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+			})
+		}
 		resp, err := callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, tc.Function.Name, args)
 		if err != nil {
 			logger.Error(err, "project assistant MCP tool call failed", "tool", tc.Function.Name, "endpoint", mcpEndpoint)
+			if onToolCall != nil {
+				onToolCall(projectToolCallStreamEvent{
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
+					Status:    "failed",
+					Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+					Error:     truncateProjectToolInfo(err.Error()),
+				})
+			}
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
@@ -675,6 +905,15 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 			continue
 		}
 		logger.V(2).Info("project assistant MCP tool call succeeded", "tool", tc.Function.Name, "responseBytes", len(resp))
+		if onToolCall != nil {
+			onToolCall(projectToolCallStreamEvent{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Status:    projectToolCallResultStatus(tc.Function.Name, resp),
+				Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+				Summary:   summarizeProjectToolResult(tc.Function.Name, resp),
+			})
+		}
 		toolMessages = append(toolMessages, chatMessage{
 			Role:       "tool",
 			Name:       tc.Function.Name,
@@ -684,6 +923,178 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 	}
 
 	return toolMessages, nil
+}
+
+func ensureProjectToolCallIDs(toolCalls []chatToolCall) {
+	for i := range toolCalls {
+		if toolCalls[i].ID == "" {
+			toolCalls[i].ID = fmt.Sprintf("tool-%d", i+1)
+		}
+	}
+}
+
+func summarizeProjectToolArguments(name, raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	args := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return "unparseable arguments"
+	}
+	return summarizeProjectToolArgumentsMap(name, args)
+}
+
+func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	if projectToolBaseName(name) == "commit_files" {
+		parts := []string{}
+		if repo := projectToolString(args["repositoryRef"]); repo != "" {
+			parts = append(parts, "repository "+repo)
+		}
+		if branch := projectToolString(args["branch"]); branch != "" {
+			parts = append(parts, "branch "+branch)
+		}
+		if message := projectToolString(args["message"]); message != "" {
+			parts = append(parts, "message "+message)
+		}
+		if paths := projectToolFilePaths(args["files"]); len(paths) > 0 {
+			parts = append(parts, fmt.Sprintf("%d file(s): %s", len(paths), summarizeProjectToolList(paths, 5)))
+		}
+		return truncateProjectToolInfo(strings.Join(parts, "; "))
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return ""
+	}
+	return truncateProjectToolInfo(string(raw))
+}
+
+func summarizeProjectToolResult(name, result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return ""
+	}
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(result), &decoded); err == nil {
+		if projectToolBaseName(name) == "commit_files" {
+			parts := []string{}
+			if sha := projectToolString(decoded["commitSHA"]); sha != "" {
+				if len(sha) > 12 {
+					sha = sha[:12]
+				}
+				parts = append(parts, "commit "+sha)
+			} else if reqName := projectToolString(decoded["name"]); reqName != "" {
+				parts = append(parts, "request "+reqName)
+			}
+			if phase := projectToolString(decoded["phase"]); phase != "" {
+				parts = append(parts, "phase "+phase)
+			}
+			if branch := projectToolString(decoded["branch"]); branch != "" {
+				parts = append(parts, "branch "+branch)
+			}
+			if files := projectToolStringList(decoded["files"]); len(files) > 0 {
+				parts = append(parts, fmt.Sprintf("%d file(s): %s", len(files), summarizeProjectToolList(files, 5)))
+			}
+			if len(parts) > 0 {
+				return truncateProjectToolInfo(strings.Join(parts, "; "))
+			}
+		}
+		if message := projectToolString(decoded["message"]); message != "" {
+			return truncateProjectToolInfo(message)
+		}
+	}
+	firstLine := strings.TrimSpace(strings.Split(result, "\n")[0])
+	return truncateProjectToolInfo(firstLine)
+}
+
+func projectToolCallResultStatus(name, result string) string {
+	if projectToolBaseName(name) != "commit_files" {
+		return "succeeded"
+	}
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &decoded); err != nil {
+		return "succeeded"
+	}
+	switch strings.ToLower(projectToolString(decoded["phase"])) {
+	case "pending", "running":
+		return "running"
+	case "failed":
+		return "failed"
+	default:
+		return "succeeded"
+	}
+}
+
+func projectToolBaseName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if idx := strings.LastIndex(name, "__"); idx >= 0 {
+		return name[idx+2:]
+	}
+	return name
+}
+
+func projectToolString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return ""
+	}
+}
+
+func projectToolFilePaths(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	paths := make([]string, 0, len(items))
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if path := projectToolString(obj["path"]); path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func projectToolStringList(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if value := projectToolString(item); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func summarizeProjectToolList(values []string, limit int) string {
+	if len(values) == 0 {
+		return ""
+	}
+	if limit <= 0 || len(values) <= limit {
+		return strings.Join(values, ", ")
+	}
+	return strings.Join(values[:limit], ", ") + fmt.Sprintf(", +%d more", len(values)-limit)
+}
+
+func truncateProjectToolInfo(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= projectToolInfoLimit {
+		return value
+	}
+	if projectToolInfoLimit <= 3 {
+		return value[:projectToolInfoLimit]
+	}
+	return strings.TrimSpace(value[:projectToolInfoLimit-3]) + "..."
 }
 
 func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings projectLLMSettings) ([]chatTool, error) {
@@ -776,16 +1187,23 @@ func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, t
 		ErrorMessage      string          `json:"error"`
 	}
 	if err := json.Unmarshal(body, &result); err == nil {
-		if result.IsError {
-			if result.ErrorMessage != "" {
-				return "", errors.New(result.ErrorMessage)
-			}
-		}
 		textParts := make([]string, 0, len(result.Content))
 		for _, item := range result.Content {
 			if item.Type == "text" && item.Text != "" {
 				textParts = append(textParts, item.Text)
 			}
+		}
+		if result.IsError {
+			if result.ErrorMessage != "" {
+				return "", errors.New(result.ErrorMessage)
+			}
+			if len(textParts) > 0 {
+				return "", errors.New(strings.Join(textParts, "\n"))
+			}
+			if len(result.StructuredContent) > 0 {
+				return "", errors.New(string(result.StructuredContent))
+			}
+			return "", errors.New("tool call returned an error")
 		}
 		if len(textParts) > 0 {
 			return strings.Join(textParts, "\n"), nil
@@ -822,11 +1240,11 @@ func projectMCPRequest(ctx context.Context, endpoint, method string, paramsJSON 
 	}
 
 	transport := projectMCPTransport(skipTLSVerify)
-	client := &http.Client{Timeout: 15 * time.Second, Transport: transport}
+	client := &http.Client{Timeout: projectMCPCallTimeout, Transport: transport}
 	resp, err := client.Do(req)
 	if err != nil && projectMCPShouldRetryInsecure(endpoint, err, skipTLSVerify) {
 		transport = projectMCPTransport(true)
-		client = &http.Client{Timeout: 15 * time.Second, Transport: transport}
+		client = &http.Client{Timeout: projectMCPCallTimeout, Transport: transport}
 		resp, err = client.Do(req)
 	}
 	if err != nil {
@@ -1194,8 +1612,8 @@ func normalizeLLMBasePath(path string, host string) string {
 	return path
 }
 
-func projectPromptMessages(p *aiv1alpha1.Project, history []store.Message) []chatMessage {
-	messages := []chatMessage{{Role: "system", Content: projectSystemPrompt(p)}}
+func projectPromptMessages(p *aiv1alpha1.Project, repository *ProjectRepositoryView, history []store.Message) []chatMessage {
+	messages := []chatMessage{{Role: "system", Content: projectSystemPrompt(p, repository)}}
 	for _, m := range history {
 		if m.Role != aiv1alpha1.ProjectMessageRoleUser && m.Role != aiv1alpha1.ProjectMessageRoleAssistant {
 			continue
@@ -1209,7 +1627,7 @@ func projectPromptMessages(p *aiv1alpha1.Project, history []store.Message) []cha
 	return messages
 }
 
-func projectSystemPrompt(p *aiv1alpha1.Project) string {
+func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryView) string {
 	var b strings.Builder
 	b.WriteString("You are the assistant for a persistent Kedge Project workspace. ")
 	b.WriteString("Help the user reason about and build the application represented by this Project. ")
@@ -1220,6 +1638,28 @@ func projectSystemPrompt(p *aiv1alpha1.Project) string {
 	b.WriteString("- Display name: " + p.Spec.DisplayName + "\n")
 	if strings.TrimSpace(p.Spec.Description) != "" {
 		b.WriteString("- Description: " + p.Spec.Description + "\n")
+	}
+	if repo := p.Spec.Repository; repo != nil && strings.TrimSpace(repo.RepositoryRef) != "" {
+		repoRef := strings.TrimSpace(repo.RepositoryRef)
+		b.WriteString("\nSource repository:\n")
+		b.WriteString("- Repository resource: " + repoRef + "\n")
+		if repoName := strings.TrimSpace(repo.Name); repoName != "" {
+			b.WriteString("- Repository name: " + repoName + "\n")
+		}
+		if connectionRef := strings.TrimSpace(repo.ConnectionRef); connectionRef != "" {
+			b.WriteString("- Connection: " + connectionRef + "\n")
+		}
+		if repository != nil && repository.Status != "" && repository.Status != projectRepositoryStatusReady && repository.Status != projectRepositoryStatusProvisioning {
+			b.WriteString("- Repository status: " + repository.Status + "\n")
+			if strings.TrimSpace(repository.Message) != "" {
+				b.WriteString("- Repository issue: " + repository.Message + "\n")
+			}
+			b.WriteString("Do not attempt to commit files until the user restores the missing Code repository or connection.\n")
+		} else {
+			b.WriteString("When you create or modify application files, commit them with the commit_files MCP tool using repositoryRef \"" + repoRef + "\". ")
+			b.WriteString("The tool creates a visible RepositoryCommit request; use concise commit messages and include every generated source/config file needed for the app to run. ")
+			b.WriteString("Do not create another repository for this Project unless the user explicitly asks for a different repository.\n")
+		}
 	}
 	b.WriteString("\nProject memory:\n")
 	appendMemoryList(&b, "Goals", p.Spec.Memory.Goals)
@@ -1252,24 +1692,7 @@ func projectMCPToolsFailurePrompt(err error) string {
 }
 
 func projectMCPToolAllowed(name string) bool {
-	baseName := projectMCPToolBaseName(name)
-	if baseName == "" {
-		return false
-	}
-	lower := strings.ToLower(baseName)
-	for _, prefix := range []string{"read", "list", "get", "describe"} {
-		if !strings.HasPrefix(lower, prefix) {
-			continue
-		}
-		if len(baseName) == len(prefix) {
-			return true
-		}
-		next := baseName[len(prefix)]
-		if next == '-' || next == '_' || next == '.' || next == ':' || next == '/' || next == ' ' || (next >= 'A' && next <= 'Z') {
-			return true
-		}
-	}
-	return false
+	return strings.EqualFold(projectMCPToolBaseName(name), "commit_files")
 }
 
 func projectMCPToolBaseName(name string) string {

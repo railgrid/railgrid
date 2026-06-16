@@ -2,8 +2,8 @@ apiVersion: v2
 name: kedge-app-studio-provider
 description: |
   App Studio provider chart. Ships the provider Deployment, Service,
-  and CatalogEntry. Configure durable App Studio message storage on the
-  kedge-hub chart with hub.appStudio.databaseURLSecretRef.
+  and CatalogEntry. Configure durable App Studio message storage with
+  store.databaseURLSecretRef.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

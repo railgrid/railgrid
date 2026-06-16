@@ -23,9 +23,8 @@ import (
 )
 
 const (
-	// GroupName is the API group for code-provider types. All four
-	// tenant-authored kinds (Connection, Repository, DeployKey,
-	// Collaborator) share this group.
+	// GroupName is the API group for code-provider types. Tenant-authored
+	// desired-state resources and observed helper resources share this group.
 	GroupName = "code.kedge.faros.sh"
 	// Version pins the served + storage version. Bumping to v1 will
 	// require a conversion plan — keep all in-tree changes additive
@@ -52,6 +51,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&ConnectionList{},
 		&Repository{},
 		&RepositoryList{},
+		&RepositoryCommit{},
+		&RepositoryCommitList{},
 		&DeployKey{},
 		&DeployKeyList{},
 		&Collaborator{},

@@ -16,8 +16,8 @@ workspace**: named Projects with durable "memory" (goals / requirements /
 constraints) and a chat surface backed by the tenant's own LLM credentials,
 with optional MCP tool use against their workspace. Projects are stored as
 `projects.ai.kedge.faros.sh` resources in the tenant's own kcp workspace; chat
-transcripts persist in the provider's message store (Postgres in production,
-in-memory for dev).
+transcripts persist in the provider's message store (Postgres in production and
+local dev, with explicit in-memory mode available only for throwaway UI work).
 
 The provider acts **as the calling user**: the hub's backend proxy forwards
 `/services/providers/app-studio/*` with the verified `X-Kedge-Tenant` /
@@ -56,3 +56,22 @@ Environment variables consumed by the binary:
 | `APP_STUDIO_MESSAGE_ENCRYPTION_KEYS` | Comma-separated `key-id:base64-aes-key` entries |
 | `APP_STUDIO_MESSAGE_RETENTION` | Retention window (`time.ParseDuration`, e.g. `720h`) |
 | `APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verify on MCP calls (dev) |
+
+## Local message history
+
+`make run-provider-app-studio` starts/reuses a local Postgres container by
+default and passes `APP_STUDIO_DATABASE_URL` to the provider:
+
+```sh
+make app-studio-db-up
+make run-provider-app-studio
+```
+
+The database container is named `kedge-app-studio-postgres`, listens on
+`127.0.0.1:55432`, and stores data under `.kcp/app-studio-postgres/`. Both
+Tiltfiles expose it as the `app-studio-db` resource, so hard-refreshing the UI
+or rebuilding the provider no longer drops prior conversation history.
+
+To use your own database, set `APP_STUDIO_DATABASE_URL` in the environment or in
+`providers/app-studio/.env` (copy from `.env.example`). To intentionally use the
+old throwaway behavior, set `APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true`.

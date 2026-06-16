@@ -22,10 +22,12 @@ limitations under the License.
 // hosting sub-providers (GitHub today; GitLab and others later).
 //
 // Unlike the infrastructure provider (whose Templates are platform-authored
-// and projected read-only to tenants), every kind in this group is
-// TENANT-AUTHORED: tenants create Connection, Repository, DeployKey, and
-// Collaborator CRs directly in their own workspace via the APIBinding, and
-// the provider's controllers reconcile them against the chosen git host.
+// and projected read-only to tenants), desired-state kinds in this group are
+// tenant-facing: tenants create Connection, Repository, RepositoryCommit,
+// DeployKey, and Collaborator CRs directly in their own workspace via the
+// APIBinding, and the provider's controllers reconcile them against the chosen
+// git host. Observed helper resources such as Package expose host metadata
+// without making every portal read hit the host directly.
 //
 // See docs/code-provider-architecture.md for the full design.
 package v1alpha1

@@ -26,8 +26,9 @@ import (
 )
 
 var (
-	connectionsGVR  = codev1alpha1.SchemeGroupVersion.WithResource("connections")
-	repositoriesGVR = codev1alpha1.SchemeGroupVersion.WithResource("repositories")
+	connectionsGVR       = codev1alpha1.SchemeGroupVersion.WithResource("connections")
+	repositoriesGVR      = codev1alpha1.SchemeGroupVersion.WithResource("repositories")
+	repositoryCommitsGVR = codev1alpha1.SchemeGroupVersion.WithResource("repositorycommits")
 )
 
 // tenantClient resolves a tenant-scoped dynamic client that acts AS THE CALLER.

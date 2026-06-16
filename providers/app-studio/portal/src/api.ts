@@ -138,7 +138,20 @@ async function requestStream(
   })
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(parseRequestError(text, `${method} ${path} failed: ${res.status} ${res.statusText}`))
+    const fallback = `${method} ${path} failed: ${res.status} ${res.statusText}`
+    let detail = parseRequestError(text, fallback)
+    let reason = ''
+    try {
+      const parsed = JSON.parse(text) as { message?: string; reason?: string }
+      detail = parsed.message || detail
+      reason = parsed.reason || ''
+    } catch {
+      // keep parsed text fallback
+    }
+    if (isProjectAPIInitializingResponse(res.status, reason, detail)) {
+      throw new ProjectAPIInitializingError(detail)
+    }
+    throw new Error(detail)
   }
   if (!res.body) {
     throw new Error('missing response stream body')
@@ -160,13 +173,15 @@ async function requestStream(
       }
     }
     if (!data) return
+    let event: ProjectMessageStreamEvent
     try {
-      const event = JSON.parse(data) as ProjectMessageStreamEvent
-      if (!event.type) event.type = type === 'done' || type === 'error' ? type : 'chunk'
-      onEvent(event)
+      event = JSON.parse(data) as ProjectMessageStreamEvent
     } catch {
       onEvent({ type: 'error', error: data })
+      return
     }
+    if (!event.type) event.type = type === 'done' || type === 'error' ? type : 'chunk'
+    onEvent(event)
   }
 
   try {
@@ -199,8 +214,20 @@ export const api = {
     return body.items ?? []
   },
 
-  async createProject(ctx: KedgeContext | null, body: { displayName: string; description?: string }): Promise<Project> {
+  async createProject(
+    ctx: KedgeContext | null,
+    body: { displayName?: string; description?: string; prompt?: string; connectionRef?: string },
+  ): Promise<Project> {
     return request<Project>(ctx, 'POST', baseURL(ctx), body)
+  },
+
+  async createProjectStream(
+    ctx: KedgeContext | null,
+    body: { displayName?: string; description?: string; prompt: string; connectionRef?: string },
+    onEvent: (event: ProjectMessageStreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return requestStream(ctx, 'POST', `${baseURL(ctx)}/stream`, body, onEvent, signal)
   },
 
   async getLLMSettings(ctx: KedgeContext | null): Promise<ProjectLLMSettings> {
@@ -216,6 +243,14 @@ export const api = {
 
   async getProject(ctx: KedgeContext | null, name: string): Promise<Project> {
     return request<Project>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
+  },
+
+  async patchProject(
+    ctx: KedgeContext | null,
+    name: string,
+    body: { displayName?: string; description?: string },
+  ): Promise<Project> {
+    return request<Project>(ctx, 'PATCH', `${baseURL(ctx)}/${encodeURIComponent(name)}`, body)
   },
 
   async deleteProject(ctx: KedgeContext | null, name: string): Promise<void> {

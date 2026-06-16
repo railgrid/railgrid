@@ -70,6 +70,30 @@ func (b *Backend) DeleteRepository(_ context.Context, _ *codev1alpha1.Connection
 	return nil
 }
 
+func (b *Backend) CommitFiles(_ context.Context, conn *codev1alpha1.Connection, _ backend.Credential, repo *codev1alpha1.Repository, input backend.RepositoryCommitInput) (backend.RepositoryCommitResult, error) {
+	owner := repo.Spec.Owner
+	if owner == "" {
+		owner = conn.Spec.Owner
+	}
+	branch := input.Branch
+	if branch == "" {
+		branch = repo.Spec.DefaultBranch
+	}
+	if branch == "" {
+		branch = "main"
+	}
+	files := make([]string, 0, len(input.Files))
+	for _, f := range input.Files {
+		files = append(files, f.Path)
+	}
+	return backend.RepositoryCommitResult{
+		CommitSHA: "stub-commit-" + repo.Spec.Name,
+		CommitURL: "https://stub.example/" + owner + "/" + repo.Spec.Name + "/commit/stub-commit-" + repo.Spec.Name,
+		Branch:    branch,
+		Files:     files,
+	}, nil
+}
+
 func (b *Backend) EnsureDeployKey(_ context.Context, _ *codev1alpha1.Connection, _ backend.Credential, repo *codev1alpha1.Repository, key *codev1alpha1.DeployKey, publicKey string) (backend.DeployKeyResult, error) {
 	if publicKey == "" {
 		return backend.DeployKeyResult{}, fmt.Errorf("stub: no public key supplied for deploy key %q", key.Name)

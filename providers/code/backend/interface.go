@@ -50,6 +50,28 @@ type RepositoryResult struct {
 	SSHURL   string
 }
 
+// RepositoryCommitFile is one text file to write in a repository commit.
+type RepositoryCommitFile struct {
+	Path    string
+	Content string
+}
+
+// RepositoryCommitInput describes a single commit authored through a backend.
+type RepositoryCommitInput struct {
+	Message        string
+	Branch         string
+	IdempotencyKey string
+	Files          []RepositoryCommitFile
+}
+
+// RepositoryCommitResult is what a backend returns after moving the branch ref.
+type RepositoryCommitResult struct {
+	CommitSHA string
+	CommitURL string
+	Branch    string
+	Files     []string
+}
+
 // DeployKeyResult is what EnsureDeployKey reports back. PublicKey echoes the
 // key actually registered (useful when the backend, not the caller, supplied
 // it — though key generation happens in the controller, not the backend).
@@ -91,6 +113,12 @@ type PackageInfo struct {
 type PackageLister interface {
 	// ListPackages returns the packages linked to repo. Idempotent, read-only.
 	ListPackages(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository) ([]PackageInfo, error)
+}
+
+// RepositoryCommitter is an OPTIONAL capability for backends that can write
+// text files to a repository without requiring a local git clone.
+type RepositoryCommitter interface {
+	CommitFiles(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository, input RepositoryCommitInput) (RepositoryCommitResult, error)
 }
 
 // GitBackend is the seam between the controllers and a concrete git host.

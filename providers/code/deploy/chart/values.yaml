@@ -8,9 +8,10 @@ image:
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
-# Number of Deployment replicas. The provider is stateless apart from an
-# in-process per-tenant client cache, so >1 replica is safe.
-replicaCount: 2
+# Number of Deployment replicas. Keep this at 1 unless bundleStore.existingClaim
+# points at shared storage: commit_files writes provider-owned bundles to disk
+# and the RepositoryCommit controller must read the same bytes.
+replicaCount: 1
 
 service:
   type: ClusterIP
@@ -68,6 +69,21 @@ githubOAuth:
 # admin pushes credential Secrets into a namespace tenants cannot write to.
 tenant:
   credentialsNamespace: ""
+
+# RepositoryCommit source bundles. The CR stores only a bundle ref/digest; the
+# generated file contents live here until the controller commits them.
+bundleStore:
+  path: /var/lib/kedge-code/commit-bundles
+  # Use an existing PVC instead of rendering one.
+  existingClaim: ""
+  # Explicit non-durable fallback for throwaway/dev deployments.
+  emptyDir: false
+  persistence:
+    enabled: true
+    size: 1Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: ""
 
 # When true, the chart also renders the CatalogEntry that registers the provider
 # (with its four APIResourceSchemas) with the hub. Set to false to manage the
