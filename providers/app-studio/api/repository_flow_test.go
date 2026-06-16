@@ -370,6 +370,7 @@ func TestResolveProjectToolCallsRunsLocalWorkspaceTools(t *testing.T) {
 		context.Background(),
 		identity{},
 		scope,
+		"",
 		[]chatToolCall{{
 			ID:   "call-1",
 			Type: "function",
@@ -398,6 +399,7 @@ func TestResolveProjectToolCallsRunsLocalWorkspaceMutationTools(t *testing.T) {
 		context.Background(),
 		identity{},
 		scope,
+		"",
 		[]chatToolCall{
 			{
 				ID:   "call-1",
@@ -653,6 +655,65 @@ func TestGenerateProjectAssistantStreamReportsCommitProjectFilesFailure(t *testi
 	}
 }
 
+func TestGenerateProjectAssistantStreamRejectsCommitProjectFilesRepositoryMismatch(t *testing.T) {
+	var llmRequests []chatCompletionRequest
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode LLM request: %v", err)
+		}
+		llmRequests = append(llmRequests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch len(llmRequests) {
+		case 1:
+			writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"index.html","content":"hello\n"}`)
+		case 2:
+			writeProjectTestToolCallChunk(t, w, "call-commit", "commit_project_files", `{"repositoryRef":"other-repo","paths":["index.html"],"message":"Initial app"}`)
+		default:
+			t.Fatalf("unexpected LLM request after rejected commit handoff: tools=%d tool_choice=%q", len(req.Tools), req.ToolChoice)
+		}
+	}))
+	defer llm.Close()
+
+	var sawCommit bool
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch envelope.Method {
+		case "tools/list":
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"commit files"}]}}`)
+		case "tools/call":
+			sawCommit = true
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["index.html"],"commitSHA":"abcdef1234567890"}}}`)
+		default:
+			t.Fatalf("unexpected MCP request method %q", envelope.Method)
+		}
+	}))
+	defer mcp.Close()
+
+	reply, requests, err := runProjectAssistantStreamWithLLMAndHub(t, llm.URL, mcp.URL, &llmRequests)
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if sawCommit {
+		t.Fatal("commit_project_files reached provider-code for a repository outside the Project binding")
+	}
+	if !strings.Contains(reply, "could not commit") || !strings.Contains(reply, "does not match this Project") {
+		t.Fatalf("reply = %q, want deterministic repository mismatch failure", reply)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("LLM request count = %d, want 2", len(requests))
+	}
+}
+
 func TestProjectCommitToolReplyReportsRunningCommit(t *testing.T) {
 	reply, ok := projectCommitToolReply([]chatMessage{{
 		Role:    "tool",
@@ -880,6 +941,7 @@ func TestResolveProjectToolCallsCommitsWorkspaceFilesThroughCodeProvider(t *test
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
 		scope,
+		"demo-repo",
 		[]chatToolCall{{
 			ID:   "call-1",
 			Type: "function",
@@ -917,6 +979,7 @@ func TestResolveProjectToolCallsRejectsDirectCodeCommitFiles(t *testing.T) {
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
 		scope,
+		"demo",
 		[]chatToolCall{{
 			ID:   "call-1",
 			Type: "function",
@@ -961,6 +1024,7 @@ func TestCommitProjectWorkspaceFilesBoundsPayloadBeforeProviderCode(t *testing.T
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1"},
 		scope,
+		"demo",
 		mcp.URL,
 		httptest.NewRequest(http.MethodPost, "/", nil),
 		map[string]any{"repositoryRef": "demo", "paths": tooManyPaths},
@@ -982,6 +1046,7 @@ func TestCommitProjectWorkspaceFilesBoundsPayloadBeforeProviderCode(t *testing.T
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1"},
 		scope,
+		"demo",
 		mcp.URL,
 		httptest.NewRequest(http.MethodPost, "/", nil),
 		map[string]any{"repositoryRef": "demo", "paths": paths},

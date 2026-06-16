@@ -310,6 +310,7 @@ func (s *Server) generateProjectAssistantStream(
 	}
 	repository := projectRepositoryView(ctx, c, p)
 	workspaceScope := projectWorkspaceScope(id, p.Name)
+	projectRepositoryRef := projectLinkedRepositoryRef(p)
 	messages := projectPromptMessages(p, repository, recent)
 	tools, toolsErr := s.loadProjectMCPTools(r, id, settings)
 	if toolsErr == nil {
@@ -383,7 +384,7 @@ func (s *Server) generateProjectAssistantStream(
 				Role:      aiv1alpha1.ProjectMessageRoleAssistant,
 				ToolCalls: reply.ToolCalls,
 			})
-			nextMessages, callErr := s.resolveProjectToolCalls(ctx, id, workspaceScope, reply.ToolCalls, r, callbacks.OnToolCall)
+			nextMessages, callErr := s.resolveProjectToolCalls(ctx, id, workspaceScope, projectRepositoryRef, reply.ToolCalls, r, callbacks.OnToolCall)
 			if callErr != nil {
 				return "", callErr
 			}
@@ -887,6 +888,7 @@ func (s *Server) resolveProjectToolCalls(
 	ctx context.Context,
 	id identity,
 	scope workspace.Scope,
+	projectRepositoryRef string,
 	toolCalls []chatToolCall,
 	r *http.Request,
 	onToolCall func(projectToolCallStreamEvent),
@@ -995,7 +997,7 @@ func (s *Server) resolveProjectToolCalls(
 		var resp string
 		var err error
 		if projectLocalToolAllowed(tc.Function.Name) {
-			resp, err = s.callProjectLocalTool(ctx, id, scope, mcpEndpoint, r, tc.Function.Name, args)
+			resp, err = s.callProjectLocalTool(ctx, id, scope, projectRepositoryRef, mcpEndpoint, r, tc.Function.Name, args)
 		} else {
 			resp, err = callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, tc.Function.Name, args)
 		}
@@ -1047,7 +1049,14 @@ func projectWorkspaceScope(id identity, projectName string) workspace.Scope {
 	}
 }
 
-func (s *Server) callProjectLocalTool(ctx context.Context, id identity, scope workspace.Scope, mcpEndpoint string, r *http.Request, name string, args map[string]any) (string, error) {
+func projectLinkedRepositoryRef(p *aiv1alpha1.Project) string {
+	if p == nil || p.Spec.Repository == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.Spec.Repository.RepositoryRef)
+}
+
+func (s *Server) callProjectLocalTool(ctx context.Context, id identity, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, name string, args map[string]any) (string, error) {
 	if s.workspaces == nil {
 		return "", errors.New("project workspace store is not configured")
 	}
@@ -1086,7 +1095,7 @@ func (s *Server) callProjectLocalTool(ctx context.Context, id identity, scope wo
 	case projectToolMkdir:
 		out, err = s.workspaces.Mkdir(ctx, scope, workspace.MkdirOptions{Path: projectToolString(args["path"])})
 	case projectToolCommitProjectFiles:
-		return s.commitProjectWorkspaceFiles(ctx, id, scope, mcpEndpoint, r, args)
+		return s.commitProjectWorkspaceFiles(ctx, id, scope, projectRepositoryRef, mcpEndpoint, r, args)
 	default:
 		err = fmt.Errorf("unknown local project tool %q", name)
 	}
@@ -1100,10 +1109,17 @@ func (s *Server) callProjectLocalTool(ctx context.Context, id identity, scope wo
 	return string(raw), nil
 }
 
-func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, scope workspace.Scope, mcpEndpoint string, r *http.Request, args map[string]any) (string, error) {
+func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, args map[string]any) (string, error) {
+	projectRepositoryRef = strings.TrimSpace(projectRepositoryRef)
+	if projectRepositoryRef == "" {
+		return "", errors.New("project repository is not configured")
+	}
 	repositoryRef := projectToolString(args["repositoryRef"])
 	if repositoryRef == "" {
 		return "", errors.New("repositoryRef is required")
+	}
+	if repositoryRef != projectRepositoryRef {
+		return "", fmt.Errorf("repositoryRef %q does not match this Project's repository %q", repositoryRef, projectRepositoryRef)
 	}
 	paths := projectToolStringList(args["paths"])
 	if len(paths) == 0 {
@@ -1148,7 +1164,7 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		return "", errors.New("no files to commit")
 	}
 	commitArgs := map[string]any{
-		"repositoryRef": repositoryRef,
+		"repositoryRef": projectRepositoryRef,
 		"files":         files,
 	}
 	if message := projectToolString(args["message"]); message != "" {
