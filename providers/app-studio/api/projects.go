@@ -31,6 +31,7 @@ import (
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -586,8 +587,7 @@ func (s *Server) streamProjectAssistant(
 		return
 	}
 	if streamErr != nil {
-		assistantReply := projectAssistantStoredContent(reply, assistantContent.String())
-		_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantReply)
+		_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
 		return
 	}
 	assistantReply := projectAssistantStoredContent(reply, assistantContent.String())
@@ -597,6 +597,13 @@ func (s *Server) streamProjectAssistant(
 			Error: "assistant generation returned an empty response",
 		})
 		return
+	}
+	if pending := projectAssistantUnstreamedContent(assistantReply, assistantContent.String()); pending != "" {
+		streamChunk(pending)
+		if streamErr != nil {
+			_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
+			return
+		}
 	}
 
 	if err := appendProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantReply, projectAssistantMessageMetadata("", streamedToolCalls)); err != nil {
@@ -615,10 +622,25 @@ func (s *Server) streamProjectAssistant(
 }
 
 func projectAssistantStoredContent(reply, streamed string) string {
-	if strings.TrimSpace(streamed) != "" {
-		return streamed
+	if strings.TrimSpace(reply) != "" {
+		return reply
 	}
-	return reply
+	return streamed
+}
+
+func projectAssistantUnstreamedContent(reply, streamed string) string {
+	reply = strings.TrimSpace(reply)
+	if reply == "" {
+		return ""
+	}
+	streamed = strings.TrimSpace(streamed)
+	if streamed == "" {
+		return reply
+	}
+	if strings.Contains(streamed, reply) {
+		return ""
+	}
+	return "\n\n" + reply
 }
 
 func shouldPersistInterruptedProjectAssistant(ctx context.Context, err, streamErr error, streamed string) bool {
@@ -768,9 +790,23 @@ func projectName(ctx context.Context, c *asclient.Client, requested, displayName
 
 func touchProjectStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) (*aiv1alpha1.Project, error) {
 	now := metav1.Now()
-	p.Status.Phase = aiv1alpha1.ProjectPhaseReady
-	p.Status.UpdatedAt = &now
-	return c.Projects().UpdateStatus(ctx, p, metav1.UpdateOptions{})
+	data, err := projectStatusTouchPatch(now)
+	if err != nil {
+		return nil, err
+	}
+	return c.Projects().Patch(ctx, p.Name, types.MergePatchType, data, metav1.PatchOptions{}, "status")
+}
+
+func projectStatusTouchPatch(now metav1.Time) ([]byte, error) {
+	patch := struct {
+		Status struct {
+			Phase     string      `json:"phase"`
+			UpdatedAt metav1.Time `json:"updatedAt"`
+		} `json:"status"`
+	}{}
+	patch.Status.Phase = aiv1alpha1.ProjectPhaseReady
+	patch.Status.UpdatedAt = now
+	return json.Marshal(patch)
 }
 
 func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) ProjectView {

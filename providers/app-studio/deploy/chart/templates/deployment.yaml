@@ -22,6 +22,10 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "appstudio.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       initContainers:
         # Bootstrap the provider workspace (schemas, APIExport, slice, bind
         # grant) with the onboarded workspace-admin kubeconfig. Schemas baked at
@@ -66,6 +70,8 @@ spec:
             # calling user via the forwarded bearer token.
             - name: KEDGE_PROVIDER_KUBECONFIG
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: APP_STUDIO_WORKSPACE_ROOT
+              value: {{ .Values.workspace.path | quote }}
             {{- if .Values.store.databaseURL }}
             - name: APP_STUDIO_DATABASE_URL
               value: {{ .Values.store.databaseURL | quote }}
@@ -108,6 +114,8 @@ spec:
             - name: kedge-provider-kubeconfig
               mountPath: /var/run/secrets/kedge
               readOnly: true
+            - name: project-workspaces
+              mountPath: {{ .Values.workspace.path | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
@@ -121,6 +129,16 @@ spec:
             items:
               - key: kubeconfig
                 path: kedge-provider-kubeconfig
+        - name: project-workspaces
+          {{- if .Values.workspace.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.workspace.existingClaim | quote }}
+          {{- else if or .Values.workspace.emptyDir (not .Values.workspace.persistence.enabled) }}
+          emptyDir: {}
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: {{ include "appstudio.fullname" . }}-workspaces
+          {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

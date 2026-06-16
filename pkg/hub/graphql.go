@@ -40,8 +40,6 @@ import (
 	"github.com/platform-mesh/kubernetes-graphql-gateway/listener"
 	listeneroptions "github.com/platform-mesh/kubernetes-graphql-gateway/listener/options"
 	kcplisteneroptions "github.com/platform-mesh/kubernetes-graphql-gateway/providers/kcp/options"
-
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
 )
 
 // startEmbeddedGraphQL starts the GraphQL listener and gateway in-process,

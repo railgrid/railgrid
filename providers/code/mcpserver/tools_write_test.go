@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
 	"github.com/faroshq/provider-code/commitbundle"
@@ -41,6 +42,20 @@ func TestCommitFilesCreatesRepositoryCommitRequest(t *testing.T) {
 		},
 	}}
 	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), repo)
+	dyn.PrependReactor("create", "repositorycommits", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		create := action.(k8stesting.CreateAction)
+		obj := create.GetObject().(*unstructured.Unstructured).DeepCopy()
+		annotations := obj.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations["kcp.io/cluster"] = "logical-cluster"
+		obj.SetAnnotations(annotations)
+		if err := dyn.Tracker().Create(repositoryCommitsGVR, obj, "", metav1.CreateOptions{}); err != nil {
+			return true, nil, err
+		}
+		return true, obj, nil
+	})
 	store, err := commitbundle.NewFileStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewFileStore returned error: %v", err)
@@ -84,6 +99,16 @@ func TestCommitFilesCreatesRepositoryCommitRequest(t *testing.T) {
 	if name != out.BundleRef || digest != out.BundleDigest {
 		t.Fatalf("bundle ref = %s/%s, want %s/%s", name, digest, out.BundleRef, out.BundleDigest)
 	}
+	scope, _, _ := unstructured.NestedString(created.Object, "spec", "source", "bundleRef", "scope")
+	if scope != "" {
+		t.Fatalf("RepositoryCommit spec exposed bundle scope %q", scope)
+	}
+	if _, err := store.Get(context.Background(), "logical-cluster", out.BundleRef, out.BundleDigest); err != nil {
+		t.Fatalf("logical-cluster bundle lookup returned error: %v", err)
+	}
+	if _, err := store.Get(context.Background(), "root:acme", out.BundleRef, out.BundleDigest); err == nil {
+		t.Fatal("staging bundle was not cleaned up")
+	}
 }
 
 func TestRepositoryCommitObjectKeepsAuthoritativeRepositoryLabel(t *testing.T) {
@@ -108,6 +133,24 @@ func TestRepositoryCommitObjectKeepsAuthoritativeRepositoryLabel(t *testing.T) {
 	}
 	if got := obj.GetLabels()["app-studio.ai.kedge.faros.sh/project"]; got != "demo-project" {
 		t.Fatalf("project label = %q, want demo-project", got)
+	}
+	scope, _, _ := unstructured.NestedString(obj.Object, "spec", "source", "bundleRef", "scope")
+	if scope != "" {
+		t.Fatalf("RepositoryCommit spec exposed bundle scope %q", scope)
+	}
+}
+
+func TestRepositoryCommitBundleStorageScope(t *testing.T) {
+	obj := &unstructured.Unstructured{}
+	obj.SetAnnotations(map[string]string{"kcp.io/cluster": " logical-cluster "})
+	if got := repositoryCommitBundleStorageScope("root:acme", obj); got != "logical-cluster" {
+		t.Fatalf("scope = %q, want logical-cluster", got)
+	}
+	if got := repositoryCommitBundleStorageScope("root:acme", &unstructured.Unstructured{}); got != "" {
+		t.Fatalf("fallback scope = %q, want empty", got)
+	}
+	if got := repositoryCommitBundleStorageScope("root:acme", nil); got != "" {
+		t.Fatalf("nil fallback scope = %q, want empty", got)
 	}
 }
 

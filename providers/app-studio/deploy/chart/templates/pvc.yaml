@@ -1,0 +1,17 @@
+{{- if and .Values.workspace.persistence.enabled (not .Values.workspace.existingClaim) (not .Values.workspace.emptyDir) -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "appstudio.fullname" . }}-workspaces
+  labels:
+    {{- include "appstudio.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.workspace.persistence.accessModes | nindent 4 }}
+  {{- with .Values.workspace.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.workspace.persistence.size | quote }}
+{{- end }}
