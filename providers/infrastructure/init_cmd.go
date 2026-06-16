@@ -64,6 +64,41 @@ func runInitCmd(ctx context.Context) error {
 		return fmt.Errorf("install CRDs: %w", err)
 	}
 
+	// dynCl targets the provider workspace (adminConfig.Host is retargeted from
+	// INFRASTRUCTURE_WORKSPACE_PATH). Reused for the APIExport shell, bind grant,
+	// and CatalogEntry self-registration below.
+	dynCl, err := dynamic.NewForConfig(adminConfig)
+	if err != nil {
+		return fmt.Errorf("dynamic client: %w", err)
+	}
+
+	// Materialize the APIExport shell BEFORE any APIExportEndpointSlice. The hub
+	// catalog controller used to create this; in the bootstrap split it is the
+	// provider init's job. It must exist first because the slice carries
+	// spec.export.path, which makes kcp's APIExportEndpointSlice admission resolve
+	// the export by path — a missing export surfaces as the misleading
+	// "no permission to bind to export" forbidden, not a NotFound.
+	//
+	// Empty spec.resources: PlatformSchemaInAPIExport (below) upserts the
+	// Templates entry once the CachedResource identityHash is ready, and the
+	// Template controller adds per-template entries at runtime. The secrets claim
+	// (built-in type → no identityHash) lets the provider read each tenant's
+	// cloud-credentials Secret; tenantScoped auto-accept is a CatalogEntry/Enable
+	// concept and is not part of the kcp APIExport spec.
+	log.Printf("init: materializing APIExport shell %q", apiExportName)
+	if err := sdkinstall.ApplyAPIExport(ctx, dynCl, apiExportName, nil, []sdkinstall.PermissionClaim{
+		{Resource: "secrets", Verbs: []string{"get", "list", "watch"}},
+	}); err != nil {
+		return fmt.Errorf("materialize APIExport: %w", err)
+	}
+
+	// Bind grant: let any authenticated tenant bind this APIExport from their own
+	// workspace. Applied before the slice so the export reference is fully wired.
+	log.Printf("init: applying APIExport bind grant")
+	if err := sdkinstall.ApplyBindGrant(ctx, dynCl, apiExportName); err != nil {
+		return fmt.Errorf("apply bind grant: %w", err)
+	}
+
 	// CachedResource MUST precede APIExport wiring: the APIExport's
 	// templates entry uses storage.virtual backed by an EndpointSlice
 	// over this CachedResource. Order = CachedResource → EndpointSlice
@@ -100,20 +135,6 @@ func runInitCmd(ctx context.Context) error {
 	log.Printf("init: registering platform schemas on APIExport (templates storage=%s)", storageLabel(templatesIdentityHash))
 	if err := install.PlatformSchemaInAPIExport(ctx, adminConfig, templatesIdentityHash); err != nil {
 		return fmt.Errorf("register APIExport schemas: %w", err)
-	}
-
-	// Bind grant: let any authenticated tenant bind this APIExport from their
-	// own workspace. The hub catalog controller used to create this; in the new
-	// bootstrap split it is the provider init's responsibility. adminConfig.Host
-	// already targets the provider workspace (retargeted from
-	// INFRASTRUCTURE_WORKSPACE_PATH), so the SDK call lands there.
-	log.Printf("init: applying APIExport bind grant")
-	dynCl, err := dynamic.NewForConfig(adminConfig)
-	if err != nil {
-		return fmt.Errorf("dynamic client for bind grant: %w", err)
-	}
-	if err := sdkinstall.ApplyBindGrant(ctx, dynCl, apiExportName); err != nil {
-		return fmt.Errorf("apply bind grant: %w", err)
 	}
 
 	// CatalogEntry self-registration: apply the provider's CatalogEntry into its

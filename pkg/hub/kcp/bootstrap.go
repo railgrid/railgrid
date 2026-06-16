@@ -1430,6 +1430,13 @@ func (b *Bootstrapper) exportClaimIdentities(ctx context.Context, exportPath, ex
 	out := map[string]string{}
 	lookup := func(ctx context.Context) (bool, error) {
 		ex, err := exportClient.Resource(apiExportGVR).Get(ctx, exportName, metav1.GetOptions{})
+		if errors.IsNotFound(err) {
+			// The export itself doesn't exist yet. After the bootstrap split the
+			// provider's own init (Helm init-container) creates the APIExport, and
+			// that races a tenant clicking Enable — so keep polling until it
+			// appears rather than hard-failing the whole Enable on the first miss.
+			return false, nil
+		}
 		if err != nil {
 			return false, fmt.Errorf("getting APIExport %q in %s: %w", exportName, exportPath, err)
 		}
@@ -1458,7 +1465,7 @@ func (b *Bootstrapper) exportClaimIdentities(ctx context.Context, exportPath, ex
 	// immediate=true returns on the first hit in the common case where the
 	// export is already fully provisioned; otherwise poll until it is.
 	if err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true, lookup); err != nil {
-		return nil, fmt.Errorf("APIExport %q (%s) permissionClaims not yet stamped with identityHashes by the provisioner: %w", exportName, exportPath, err)
+		return nil, fmt.Errorf("APIExport %q (%s) not yet created, or its permissionClaims not yet stamped with identityHashes, by the provider init: %w", exportName, exportPath, err)
 	}
 	return out, nil
 }
