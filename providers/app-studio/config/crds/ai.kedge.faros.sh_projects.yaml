@@ -104,31 +104,6 @@ spec:
                 required:
                 - repositoryRef
                 type: object
-              runtime:
-                description: |-
-                  Runtime records the runtime provider attached to this Project. Runtime
-                  providers own process state, logs, preview URLs, and deployment targets.
-                properties:
-                  providerRef:
-                    description: ProviderRef names the runtime provider implementation
-                      or capability.
-                    maxLength: 253
-                    minLength: 1
-                    type: string
-                  runtimeRef:
-                    description: RuntimeRef names the runtime provider-owned resource
-                      for this Project.
-                    maxLength: 253
-                    type: string
-                  target:
-                    description: |-
-                      Target identifies the provider-specific runtime target, such as local,
-                      kubernetes, cloud-run, or lambda.
-                    maxLength: 128
-                    type: string
-                required:
-                - providerRef
-                type: object
             required:
             - displayName
             type: object
@@ -138,39 +113,6 @@ spec:
               phase:
                 description: Phase is Ready for MVP-created Projects.
                 type: string
-              runtime:
-                description: |-
-                  Runtime is a shallow runtime-provider status summary for App Studio
-                  display and assistant context. Runtime providers own detailed process
-                  state, logs, and target-specific resources.
-                properties:
-                  capabilities:
-                    description: Capabilities names runtime-provider capabilities
-                      App Studio can surface.
-                    items:
-                      type: string
-                    type: array
-                  message:
-                    description: Message is a concise human-readable runtime status
-                      detail.
-                    maxLength: 2048
-                    type: string
-                  phase:
-                    description: |-
-                      Phase is the runtime provider's coarse phase, such as Pending, Running,
-                      Ready, Failed, or Unavailable.
-                    maxLength: 128
-                    type: string
-                  previewURL:
-                    description: PreviewURL is an HTTP(S) URL served by the runtime
-                      provider.
-                    maxLength: 2048
-                    type: string
-                  ready:
-                    description: Ready indicates whether the runtime is ready for
-                      user preview.
-                    type: boolean
-                type: object
               updatedAt:
                 description: UpdatedAt reflects the latest API mutation affecting
                   metadata or memory.

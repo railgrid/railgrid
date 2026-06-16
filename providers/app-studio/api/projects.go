@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -70,7 +69,6 @@ type ProjectView struct {
 	Description string                   `json:"description,omitempty"`
 	Phase       string                   `json:"phase,omitempty"`
 	Repository  *ProjectRepositoryView   `json:"repository,omitempty"`
-	Runtime     *ProjectRuntimeView      `json:"runtime,omitempty"`
 	Memory      aiv1alpha1.ProjectMemory `json:"memory,omitempty"`
 	CreatedAt   time.Time                `json:"createdAt"`
 	UpdatedAt   *time.Time               `json:"updatedAt,omitempty"`
@@ -85,17 +83,6 @@ type ProjectRepositoryView struct {
 	Message       string                        `json:"message,omitempty"`
 	Ready         bool                          `json:"ready,omitempty"`
 	Commits       []ProjectRepositoryCommitView `json:"commits,omitempty"`
-}
-
-type ProjectRuntimeView struct {
-	ProviderRef  string   `json:"providerRef,omitempty"`
-	Target       string   `json:"target,omitempty"`
-	RuntimeRef   string   `json:"runtimeRef,omitempty"`
-	Status       string   `json:"status,omitempty"`
-	Message      string   `json:"message,omitempty"`
-	PreviewURL   string   `json:"previewURL,omitempty"`
-	Ready        bool     `json:"ready,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 type ProjectRepositoryCommitView struct {
@@ -139,11 +126,6 @@ const projectMessageMetadataStatus = "status"
 const projectMessageMetadataToolCalls = "toolCalls"
 const projectMessageStatusInterrupted = "interrupted"
 const projectMessagePersistTimeout = 5 * time.Second
-
-const (
-	projectRuntimeStatusNotConfigured = "NotConfigured"
-	projectRuntimeStatusPending       = "Pending"
-)
 
 type projectCreationStatusFunc func(string) error
 
@@ -834,7 +816,6 @@ func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project)
 		Description: p.Spec.Description,
 		Phase:       p.Status.Phase,
 		Repository:  projectRepositoryView(ctx, c, p),
-		Runtime:     projectRuntimeView(p),
 		Memory:      p.Spec.Memory,
 		CreatedAt:   p.CreationTimestamp.Time,
 	}
@@ -843,60 +824,6 @@ func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project)
 		view.UpdatedAt = &t
 	}
 	return view
-}
-
-func projectRuntimeView(p *aiv1alpha1.Project) *ProjectRuntimeView {
-	runtime := p.Spec.Runtime
-	if runtime == nil || strings.TrimSpace(runtime.ProviderRef) == "" {
-		return &ProjectRuntimeView{
-			Status:  projectRuntimeStatusNotConfigured,
-			Message: "No runtime provider is attached to this project yet.",
-		}
-	}
-	view := &ProjectRuntimeView{
-		ProviderRef: strings.TrimSpace(runtime.ProviderRef),
-		Target:      strings.TrimSpace(runtime.Target),
-		RuntimeRef:  strings.TrimSpace(runtime.RuntimeRef),
-		Status:      projectRuntimeStatusPending,
-		Message:     "The runtime provider status is not available yet.",
-	}
-	if status := p.Status.Runtime; status != nil {
-		if phase := strings.TrimSpace(status.Phase); phase != "" {
-			view.Status = phase
-		}
-		if message := strings.TrimSpace(status.Message); message != "" {
-			view.Message = message
-		}
-		view.PreviewURL = safeRuntimePreviewURL(status.PreviewURL)
-		view.Ready = status.Ready
-		view.Capabilities = compactStrings(status.Capabilities)
-	}
-	return view
-}
-
-func safeRuntimePreviewURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
-		return ""
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return ""
-	}
-	return parsed.String()
-}
-
-func compactStrings(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			out = append(out, value)
-		}
-	}
-	return out
 }
 
 func projectUpdatedAt(p *aiv1alpha1.Project) time.Time {

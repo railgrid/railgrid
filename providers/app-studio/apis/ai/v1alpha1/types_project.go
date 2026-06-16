@@ -68,11 +68,6 @@ type ProjectSpec struct {
 	// +optional
 	Repository *ProjectRepositoryBinding `json:"repository,omitempty"`
 
-	// Runtime records the runtime provider attached to this Project. Runtime
-	// providers own process state, logs, preview URLs, and deployment targets.
-	// +optional
-	Runtime *ProjectRuntimeBinding `json:"runtime,omitempty"`
-
 	// Memory stores durable context the AI should consider for this
 	// project. It is edited explicitly through the API in the MVP.
 	// +optional
@@ -97,26 +92,6 @@ type ProjectRepositoryBinding struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	ConnectionRef string `json:"connectionRef,omitempty"`
-}
-
-// ProjectRuntimeBinding identifies the runtime provider attached to a Project.
-type ProjectRuntimeBinding struct {
-	// ProviderRef names the runtime provider implementation or capability.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	ProviderRef string `json:"providerRef"`
-
-	// Target identifies the provider-specific runtime target, such as local,
-	// kubernetes, cloud-run, or lambda.
-	// +optional
-	// +kubebuilder:validation:MaxLength=128
-	Target string `json:"target,omitempty"`
-
-	// RuntimeRef names the runtime provider-owned resource for this Project.
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	RuntimeRef string `json:"runtimeRef,omitempty"`
 }
 
 // ProjectMemory is the MVP project memory document.
@@ -174,42 +149,9 @@ type ProjectStatus struct {
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
-	// Runtime is a shallow runtime-provider status summary for App Studio
-	// display and assistant context. Runtime providers own detailed process
-	// state, logs, and target-specific resources.
-	// +optional
-	Runtime *ProjectRuntimeStatus `json:"runtime,omitempty"`
-
 	// UpdatedAt reflects the latest API mutation affecting metadata or memory.
 	// +optional
 	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
-}
-
-// ProjectRuntimeStatus summarizes the observed runtime provider state.
-type ProjectRuntimeStatus struct {
-	// Phase is the runtime provider's coarse phase, such as Pending, Running,
-	// Ready, Failed, or Unavailable.
-	// +optional
-	// +kubebuilder:validation:MaxLength=128
-	Phase string `json:"phase,omitempty"`
-
-	// Message is a concise human-readable runtime status detail.
-	// +optional
-	// +kubebuilder:validation:MaxLength=2048
-	Message string `json:"message,omitempty"`
-
-	// PreviewURL is an HTTP(S) URL served by the runtime provider.
-	// +optional
-	// +kubebuilder:validation:MaxLength=2048
-	PreviewURL string `json:"previewURL,omitempty"`
-
-	// Ready indicates whether the runtime is ready for user preview.
-	// +optional
-	Ready bool `json:"ready,omitempty"`
-
-	// Capabilities names runtime-provider capabilities App Studio can surface.
-	// +optional
-	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // +kubebuilder:object:root=true
