@@ -308,11 +308,33 @@ func (s *Server) generateProjectAssistantStream(
 	if err != nil {
 		return "", err
 	}
-	repository := projectRepositoryView(ctx, c, p)
-	workspaceScope := projectWorkspaceScope(id, p.Name)
-	projectRepositoryRef := projectLinkedRepositoryRef(p)
-	messages := projectPromptMessages(p, repository, recent)
-	tools, toolsErr := s.loadProjectMCPTools(r, id, settings)
+	req := projectAssistantRunRequest{
+		Identity:                 id,
+		HTTPRequest:              r,
+		Client:                   c,
+		Project:                  p,
+		Repository:               projectRepositoryView(ctx, c, p),
+		WorkspaceScope:           projectWorkspaceScope(id, p.Name),
+		Workspace:                s.workspaces,
+		MessageScope:             projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name),
+		LLM:                      settings,
+		History:                  recent,
+		MCPBaseURL:               s.hubBase,
+		MCPInsecureSkipTLSVerify: s.mcpInsecureSkipTLSVerify,
+		StreamCallbacks:          callbacks,
+	}
+	result, err := projectChatCompletionAssistantEngine{server: s}.StreamProjectAssistant(ctx, req, nil)
+	if err != nil {
+		return "", err
+	}
+	return result.Content, nil
+}
+
+func (s *Server) runProjectAssistantChatLoop(ctx context.Context, req projectAssistantRunRequest) (string, error) {
+	settings := req.LLM
+	projectRepositoryRef := projectLinkedRepositoryRef(req.Project)
+	messages := projectPromptMessages(req.Project, req.Repository, req.History)
+	tools, toolsErr := s.loadProjectMCPTools(req.HTTPRequest, req.Identity, settings)
 	if toolsErr == nil {
 		if toolPrompt := projectMCPToolsPrompt(tools); toolPrompt != "" {
 			messages = append(messages, chatMessage{
@@ -357,7 +379,7 @@ func (s *Server) generateProjectAssistantStream(
 		}
 		maybeInjectGoogleThoughtSignature(settings, reqBody.Messages)
 
-		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, callbacks.OnChunk, callbacks.OnStatus)
+		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, req.StreamCallbacks.OnChunk, req.StreamCallbacks.OnStatus)
 		if err != nil {
 			if repeatedToolLoop && errors.Is(err, errProjectLLMNoStreamedChoice) {
 				return projectRepeatedToolLoopFallback(lastToolMessages), nil
@@ -384,7 +406,7 @@ func (s *Server) generateProjectAssistantStream(
 				Role:      aiv1alpha1.ProjectMessageRoleAssistant,
 				ToolCalls: reply.ToolCalls,
 			})
-			nextMessages, callErr := s.resolveProjectToolCalls(ctx, id, workspaceScope, projectRepositoryRef, reply.ToolCalls, r, callbacks.OnToolCall)
+			nextMessages, callErr := s.resolveProjectToolCalls(ctx, req.Identity, req.WorkspaceScope, projectRepositoryRef, reply.ToolCalls, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
 			if callErr != nil {
 				return "", callErr
 			}
@@ -393,12 +415,12 @@ func (s *Server) generateProjectAssistantStream(
 
 			if commitReply, ok := projectCommitToolReply(nextMessages); ok {
 				logger.Info("project assistant completed a project commit handoff attempt; forcing a final text answer",
-					"turn", i, "project", p.Name)
+					"turn", i, "project", req.Project.Name)
 				return commitReply, nil
 			}
 			if repeated {
 				logger.Info("project assistant repeated an identical tool call across turns; forcing a final text answer",
-					"turn", i, "project", p.Name)
+					"turn", i, "project", req.Project.Name)
 				forceTextAnswer = true
 				repeatedToolLoop = true
 			}
