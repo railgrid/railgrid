@@ -37,7 +37,6 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	gatewayv1alpha1 "github.com/platform-mesh/kubernetes-graphql-gateway/apis/v1alpha1"
 	gatewaygw "github.com/platform-mesh/kubernetes-graphql-gateway/gateway/gateway"
 	"github.com/platform-mesh/kubernetes-graphql-gateway/gateway/gateway/authn"
@@ -46,6 +45,8 @@ import (
 	"github.com/platform-mesh/kubernetes-graphql-gateway/listener"
 	listeneroptions "github.com/platform-mesh/kubernetes-graphql-gateway/listener/options"
 	kcplisteneroptions "github.com/platform-mesh/kubernetes-graphql-gateway/providers/kcp/options"
+
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 )
 
 // startEmbeddedGraphQL starts the GraphQL listener and gateway in-process,
