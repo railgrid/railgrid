@@ -70,11 +70,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if !commit.DeletionTimestamp.IsZero() || isTerminal(commit.Status.Phase) {
 		return ctrl.Result{}, nil
 	}
+	bundleRef := commit.Spec.Source.BundleRef
+	bundleScope := string(req.ClusterName)
+	fail := func(message string) error {
+		return r.failAndDeleteBundle(ctx, c, &commit, message, bundleScope, bundleRef)
+	}
 	if r.Bundles == nil {
-		return ctrl.Result{}, r.fail(ctx, c, &commit, "bundle store is unavailable")
+		return ctrl.Result{}, fail("bundle store is unavailable")
 	}
 	if r.Backends == nil {
-		return ctrl.Result{}, r.fail(ctx, c, &commit, "git backends are unavailable")
+		return ctrl.Result{}, fail("git backends are unavailable")
 	}
 
 	now := metav1.Now()
@@ -93,37 +98,35 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	repo, err := shared.ResolveRepository(ctx, c, commit.Spec.RepositoryRef)
 	if err != nil {
-		return ctrl.Result{}, r.fail(ctx, c, &commit, err.Error())
+		return ctrl.Result{}, fail(err.Error())
 	}
 	conn, err := shared.ResolveConnection(ctx, c, repo.Spec.ConnectionRef)
 	if err != nil {
-		return ctrl.Result{}, r.fail(ctx, c, &commit, err.Error())
+		return ctrl.Result{}, fail(err.Error())
 	}
 	gitBackend, ok := r.Backends.Get(string(conn.Spec.Provider))
 	if !ok {
-		return ctrl.Result{}, r.fail(ctx, c, &commit, fmt.Sprintf("git provider %q is not registered", conn.Spec.Provider))
+		return ctrl.Result{}, fail(fmt.Sprintf("git provider %q is not registered", conn.Spec.Provider))
 	}
 	committer, ok := gitBackend.(backend.RepositoryCommitter)
 	if !ok {
-		return ctrl.Result{}, r.fail(ctx, c, &commit, fmt.Sprintf("git provider %q does not support committing files", conn.Spec.Provider))
+		return ctrl.Result{}, fail(fmt.Sprintf("git provider %q does not support committing files", conn.Spec.Provider))
 	}
 	cred, err := shared.ResolveCredential(ctx, c, conn)
 	if err != nil {
-		return ctrl.Result{}, r.fail(ctx, c, &commit, err.Error())
+		return ctrl.Result{}, fail(err.Error())
 	}
 	if _, err := gitBackend.EnsureRepository(ctx, conn, cred, repo); err != nil {
-		return ctrl.Result{}, r.fail(ctx, c, &commit, fmt.Sprintf("ensure repository: %v", err))
+		return ctrl.Result{}, fail(fmt.Sprintf("ensure repository: %v", err))
 	}
 
-	bundleRef := commit.Spec.Source.BundleRef
-	bundleScope := string(req.ClusterName)
 	bundle, err := r.Bundles.Get(ctx, bundleScope, bundleRef.Name, bundleRef.Digest)
 	if err != nil {
 		if commitbundle.IsNotFound(err) && !bundleArrivalTimedOut(commit.Status.StartedAt, time.Now()) {
 			logger.V(4).Info("source bundle not visible yet, requeuing", "bundle", bundleRef.Name)
 			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
-		return ctrl.Result{}, r.fail(ctx, c, &commit, err.Error())
+		return ctrl.Result{}, fail(err.Error())
 	}
 	files := make([]backend.RepositoryCommitFile, 0, len(bundle.Files))
 	fileStatus := make([]codev1alpha1.RepositoryCommitFileStatus, 0, len(bundle.Files))
@@ -142,7 +145,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		Files:          files,
 	})
 	if err != nil {
-		return ctrl.Result{}, r.fail(ctx, c, &commit, err.Error())
+		return ctrl.Result{}, fail(err.Error())
 	}
 
 	completed := metav1.Now()
@@ -186,6 +189,19 @@ func (r *Reconciler) fail(ctx context.Context, c client.Client, commit *codev1al
 	return nil
 }
 
+func (r *Reconciler) failAndDeleteBundle(ctx context.Context, c client.Client, commit *codev1alpha1.RepositoryCommit, message, bundleScope string, bundleRef codev1alpha1.RepositoryCommitBundleReference) error {
+	if err := r.fail(ctx, c, commit, message); err != nil {
+		return err
+	}
+	if r.Bundles == nil || bundleRef.Name == "" {
+		return nil
+	}
+	if err := r.Bundles.Delete(ctx, bundleScope, bundleRef.Name, bundleRef.Digest); err != nil {
+		klog.FromContext(ctx).Error(err, "delete failed source bundle", "bundle", bundleRef.Name)
+	}
+	return nil
+}
+
 func updateStatusIfChanged(ctx context.Context, c client.Client, commit *codev1alpha1.RepositoryCommit) error {
 	current := &codev1alpha1.RepositoryCommit{}
 	if err := c.Get(ctx, client.ObjectKey{Name: commit.Name}, current); err != nil {
@@ -194,7 +210,8 @@ func updateStatusIfChanged(ctx context.Context, c client.Client, commit *codev1a
 	if reflect.DeepEqual(current.Status, commit.Status) {
 		return nil
 	}
-	if err := c.Status().Update(ctx, commit); err != nil {
+	current.Status = commit.Status
+	if err := c.Status().Update(ctx, current); err != nil {
 		return fmt.Errorf("update repositorycommit %q status: %w", commit.Name, err)
 	}
 	return nil
