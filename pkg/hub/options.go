@@ -16,6 +16,8 @@ limitations under the License.
 
 package hub
 
+import "github.com/faroshq/faros-kedge/pkg/kcppaths"
+
 // Options holds configuration for the hub server.
 type Options struct {
 	DataDir               string
@@ -51,6 +53,12 @@ type Options struct {
 	ProviderInternalURL string
 	DevMode             bool
 	StaticAuthTokens    []string
+
+	// AdminUsers is the allowlist of platform-admin identities permitted to
+	// reach the /api/admin/* surface and the portal's /bonkers area. Each entry
+	// matches a User CR by name, email, or rbacIdentity (case-insensitive).
+	// Empty disables the admin surface entirely.
+	AdminUsers []string
 
 	// Providers is the list of first-party builtin providers to materialize
 	// into root:kedge:providers at bootstrap. The flag accepts a comma-
@@ -118,7 +126,7 @@ func NewOptions() *Options {
 		KCPBatteriesInclude: "admin,user",
 
 		GraphQLAPIExportSliceName:      "core.faros.sh",
-		GraphQLAPIExportLogicalCluster: "root:kedge:providers",
+		GraphQLAPIExportLogicalCluster: kcppaths.SystemControllers,
 		GraphQLGRPCAddr:                "localhost:50051",
 		GraphQLPlayground:              true,
 	}

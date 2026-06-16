@@ -39,6 +39,7 @@ import (
 	"github.com/faroshq/faros-kedge/config/kcp"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+	"github.com/faroshq/faros-kedge/pkg/kcppaths"
 	"github.com/faroshq/faros-kedge/pkg/util/confighelpers"
 )
 
@@ -60,7 +61,7 @@ var (
 		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "mcpservers",
 	}
 	membershipGVR = schema.GroupVersionResource{
-		Group: "tenancy.kedge.faros.sh", Version: "v1alpha1", Resource: "memberships",
+		Group: "tenants.kedge.faros.sh", Version: "v1alpha1", Resource: "memberships",
 	}
 )
 
@@ -91,11 +92,13 @@ func (b *Bootstrapper) WithEnabledProviders(names []string) *Bootstrapper {
 
 // Bootstrap creates the workspace hierarchy:
 //
-//	root:kedge                     - Root kedge workspace
-//	root:kedge:providers           - Holds APIExport "kedge.faros.sh"
-//	root:kedge:tenants             - Parent for tenant workspaces
-//	  root:kedge:tenants:{userID}  - Per-user workspace (created on login)
-//	root:kedge:users               - Stores User CRDs
+//	root:kedge                          - Root kedge workspace
+//	root:kedge:providers                - Parent of per-provider sub-workspaces
+//	  root:kedge:providers:{name}       - One provider (restricted `provider` type)
+//	root:kedge:tenants:{uuid}:{ws}:{edge}  - Tenant org/team/edge fleet
+//	root:kedge:system:controllers       - ALL platform APIExports + schemas
+//	root:kedge:system:providers         - Provider + CatalogEntry objects
+//	root:kedge:system:tenants           - User/Organization/Membership objects
 func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Bootstrapping kcp workspace hierarchy")
@@ -122,13 +125,31 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("creating kedge clients: %w", err)
 	}
 
-	logger.Info("Bootstrapping child workspaces: providers, users, orgs")
+	logger.Info("Bootstrapping child workspaces: providers, tenants, system")
 	if err := confighelpers.Bootstrap(ctx, kedgeDiscovery, kedgeDynamic, kcp.KedgeWorkspaceFS); err != nil {
 		return fmt.Errorf("bootstrapping child workspaces: %w", err)
 	}
-	for _, name := range []string{"providers", "users", "orgs"} {
+	for _, name := range []string{"providers", "tenants", "system"} {
 		if err := waitForWorkspaceReady(ctx, kedgeDynamic, name); err != nil {
 			return fmt.Errorf("waiting for %s workspace: %w", name, err)
+		}
+	}
+
+	// 3b. Bootstrap the system sub-workspaces: controllers (all platform
+	//     APIExports), providers (Provider/CatalogEntry objects), tenants
+	//     (User/Organization/Membership objects).
+	systemConfig := configForPath(b.config, kcppaths.System)
+	systemDynamic, systemDiscovery, err := newClients(systemConfig)
+	if err != nil {
+		return fmt.Errorf("creating system clients: %w", err)
+	}
+	logger.Info("Bootstrapping system sub-workspaces: controllers, providers, tenants")
+	if err := confighelpers.Bootstrap(ctx, systemDiscovery, systemDynamic, kcp.SystemWorkspaceFS); err != nil {
+		return fmt.Errorf("bootstrapping system sub-workspaces: %w", err)
+	}
+	for _, name := range []string{"controllers", "providers", "tenants"} {
+		if err := waitForWorkspaceReady(ctx, systemDynamic, name); err != nil {
+			return fmt.Errorf("waiting for system:%s workspace: %w", name, err)
 		}
 	}
 
@@ -156,43 +177,52 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	b.workspaceIdentityHash = identityHash
 	logger.Info("Got tenancy.kcp.io identity hash", "hash", identityHash)
 
-	// 5. Bootstrap APIResourceSchemas and APIExport in root:kedge:providers.
+	// 5. Bootstrap ALL platform APIResourceSchemas + APIExports in
+	//    root:kedge:system:controllers — the single home for platform exports.
 	//    The __TENANCY_IDENTITY_HASH__ placeholder in the APIExport YAML is
 	//    replaced with the actual identity hash from step 4.
-	providersConfig := configForPath(b.config, "root:kedge:providers")
-	providersDynamic, providersDiscovery, err := newClients(providersConfig)
+	controllersConfig := configForPath(b.config, kcppaths.SystemControllers)
+	controllersDynamic, controllersDiscovery, err := newClients(controllersConfig)
 	if err != nil {
-		return fmt.Errorf("creating providers clients: %w", err)
+		return fmt.Errorf("creating system:controllers clients: %w", err)
 	}
 
-	logger.Info("Bootstrapping APIResourceSchemas and APIExport")
-	if err := confighelpers.Bootstrap(ctx, providersDiscovery, providersDynamic, kcp.ProvidersFS,
+	logger.Info("Bootstrapping APIResourceSchemas and APIExports in system:controllers")
+	if err := confighelpers.Bootstrap(ctx, controllersDiscovery, controllersDynamic, kcp.ProvidersFS,
 		confighelpers.ReplaceOption("__TENANCY_IDENTITY_HASH__", identityHash),
 	); err != nil {
-		return fmt.Errorf("bootstrapping providers: %w", err)
+		return fmt.Errorf("bootstrapping platform exports: %w", err)
 	}
 
-	// 5b. APIBinding from root:kedge:providers → providers.kedge.faros.sh.
-	//     Lets the catalog controller (and admins) create ProviderCatalogEntry
-	//     resources in the same workspace that hosts the APIExport. The
-	//     providers.kedge.faros.sh export is deliberately NOT bound by tenant
-	//     workspaces — see hack/gen-core-apiexport/main.go excludedAPIExports.
-	if err := ensureProvidersSelfBinding(ctx, providersDynamic); err != nil {
-		return fmt.Errorf("creating providers self APIBinding: %w", err)
+	// 5b. Bind the platform exports into the workspaces that hold their
+	//     objects: system:providers binds providers.kedge.faros.sh (CatalogEntry)
+	//     + admin.kedge.faros.sh (Provider); system:tenants binds
+	//     tenants.kedge.faros.sh (User/Organization/Membership). All FROM
+	//     system:controllers. These exports are excluded from tenant-bound
+	//     core.faros.sh — see hack/gen-core-apiexport/main.go excludedAPIExports.
+	systemProvidersDynamic, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.SystemProviders))
+	if err != nil {
+		return fmt.Errorf("creating system:providers client: %w", err)
+	}
+	for _, exportName := range []string{"providers.kedge.faros.sh", "admin.kedge.faros.sh"} {
+		if err := ensureExportBinding(ctx, systemProvidersDynamic, kcppaths.SystemControllers, exportName); err != nil {
+			return fmt.Errorf("binding %s in system:providers: %w", exportName, err)
+		}
 	}
 
 	// 5c. First-party CatalogEntries — the portal's MCP / Edges /
 	//     Workloads tabs surface as ordinary entries in the providers
 	//     list. They declare spec.ui.builtinRoute (not URL) so the portal
 	//     renders an in-tree Vue route instead of loading a custom
-	//     element bundle.
-	if err := ensureBuiltinCatalogEntries(ctx, providersDynamic, b.enabledProviders); err != nil {
+	//     element bundle. They live in system:providers alongside the
+	//     admin-applied Provider/CatalogEntry objects.
+	if err := ensureBuiltinCatalogEntries(ctx, systemProvidersDynamic, b.enabledProviders); err != nil {
 		return fmt.Errorf("creating builtin CatalogEntries: %w", err)
 	}
 
 	// 5d. Apply post-providers workspace artefacts under root:kedge — namely
 	//     the `organization` WorkspaceType, which declares a defaultAPIBinding
-	//     to tenancy.kedge.faros.sh in root:kedge:providers. kcp's WT
+	//     to tenants.kedge.faros.sh in root:kedge:providers. kcp's WT
 	//     admission resolves the binding's LogicalCluster and checks bind
 	//     RBAC at apply time, so the APIExport (created in step 5) must
 	//     exist beforehand or the apply fails with a 403 forbidden.
@@ -201,97 +231,52 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("bootstrapping post-providers artefacts: %w", err)
 	}
 
-	// 6. Bind tenancy.kedge.faros.sh APIExport in root:kedge:users so
-	//    User, Organization, Membership, and UserMembershipIndex CRDs
-	//    are all reachable there. The previous standalone install of a
-	//    legacy `users.kedge.faros.sh` CRD was removed when the auth
-	//    handler + dynamic client were migrated to the new tenancy
-	//    group (User now ships via the same APIExport as the other
-	//    tenancy types). Same admission rules as step 5d apply — the
-	//    APIExport must exist (step 5) and bind RBAC must be in place
-	//    (step 5b) before this APIBinding is created.
-	logger.Info("Binding tenancy.kedge.faros.sh in root:kedge:users")
-	if err := b.ensureUsersTenancyAPIBinding(ctx); err != nil {
-		return fmt.Errorf("binding tenancy.kedge.faros.sh in root:kedge:users: %w", err)
+	// 6. Bind tenants.kedge.faros.sh APIExport in root:kedge:system:tenants so
+	//    User, Organization, Membership, and UserMembershipIndex CRs are all
+	//    reachable there (this is the CR-object storage workspace; the org
+	//    *fleet* lives separately under root:kedge:tenants). Same admission rules
+	//    as step 5d apply — the APIExport must exist (step 5) before this
+	//    APIBinding is created.
+	logger.Info("Binding tenants.kedge.faros.sh in system:tenants")
+	if err := b.ensureTenancyObjectsBinding(ctx); err != nil {
+		return fmt.Errorf("binding tenants.kedge.faros.sh in system:tenants: %w", err)
 	}
 
 	logger.Info("kcp bootstrap complete")
 	return nil
 }
 
-// ensureUsersTenancyAPIBinding creates an APIBinding to the
-// tenancy.kedge.faros.sh APIExport (at root:kedge:providers) inside
-// root:kedge:users. Idempotent: returns nil if a matching binding already
-// exists. Without this binding the organization bootstrap controller's
-// writes to Organization / UserMembershipIndex CRs in root:kedge:users
-// would fail with "no matches for kind".
-func (b *Bootstrapper) ensureUsersTenancyAPIBinding(ctx context.Context) error {
-	usersDynamic, err := dynamic.NewForConfig(b.UsersConfig())
+// ensureTenancyObjectsBinding creates an APIBinding to the
+// tenants.kedge.faros.sh APIExport (in root:kedge:system:controllers) inside
+// root:kedge:system:tenants. Idempotent. Without this binding the organization
+// bootstrap controller's writes to User / Organization / Membership CRs in
+// system:tenants would fail with "no matches for kind".
+func (b *Bootstrapper) ensureTenancyObjectsBinding(ctx context.Context) error {
+	tenancyDynamic, err := dynamic.NewForConfig(b.UsersConfig())
 	if err != nil {
-		return fmt.Errorf("creating users client: %w", err)
+		return fmt.Errorf("creating system:tenants client: %w", err)
 	}
-
-	const (
-		exportPath  = "root:kedge:providers"
-		exportName  = "tenancy.kedge.faros.sh"
-		bindingName = "tenancy.kedge.faros.sh"
-	)
-
-	existing, err := usersDynamic.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("listing APIBindings in root:kedge:users: %w", err)
-	}
-	for _, b := range existing.Items {
-		path, _, _ := unstructured.NestedString(b.Object, "spec", "reference", "export", "path")
-		name, _, _ := unstructured.NestedString(b.Object, "spec", "reference", "export", "name")
-		if path == exportPath && name == exportName {
-			return nil
-		}
-	}
-
-	binding := &apisv1alpha2.APIBinding{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
-			Kind:       "APIBinding",
-		},
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName},
-		Spec: apisv1alpha2.APIBindingSpec{
-			Reference: apisv1alpha2.BindingReference{
-				Export: &apisv1alpha2.ExportBindingReference{
-					Path: exportPath,
-					Name: exportName,
-				},
-			},
-		},
-	}
-	raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(binding)
-	if err != nil {
-		return fmt.Errorf("encoding APIBinding: %w", err)
-	}
-	if _, err := usersDynamic.Resource(apiBindingGVR).Create(ctx, &unstructured.Unstructured{Object: raw}, metav1.CreateOptions{}); err != nil {
-		if errors.IsAlreadyExists(err) {
-			return nil
-		}
-		return fmt.Errorf("creating tenancy.kedge.faros.sh APIBinding in root:kedge:users: %w", err)
-	}
-	return nil
+	return ensureExportBinding(ctx, tenancyDynamic, kcppaths.SystemControllers, "tenants.kedge.faros.sh")
 }
 
-// UsersConfig returns a rest.Config targeting the root:kedge:users workspace
-// where User CRDs are stored.
+// UsersConfig returns a rest.Config targeting root:kedge:system:tenants, where
+// the User / Organization / Membership CR OBJECTS are stored (this replaces the
+// former root:kedge:users). The org *fleet* lives separately under
+// root:kedge:tenants (see OrgsConfig).
 func (b *Bootstrapper) UsersConfig() *rest.Config {
-	return configForPath(b.config, "root:kedge:users")
+	return configForPath(b.config, kcppaths.SystemTenants)
 }
 
-// OrgsConfig returns a rest.Config targeting the root:kedge:orgs parent
-// workspace. The Organization bootstrap controller (PR #1) uses this to
-// create child Workspaces of type `organization` — one per Organization
-// CR — at root:kedge:orgs:{org-uuid}.
+// OrgsConfig returns a rest.Config targeting the root:kedge:tenants parent
+// workspace. The Organization bootstrap controller uses this to create child
+// Workspaces of type `organization` — one per Organization CR — at
+// root:kedge:tenants:{org-uuid}. The fleet location is unchanged by the
+// system-workspace restructure.
 func (b *Bootstrapper) OrgsConfig() *rest.Config {
-	return configForPath(b.config, "root:kedge:orgs")
+	return configForPath(b.config, kcppaths.TenantsParent)
 }
 
-// EnsureOrgWorkspace creates a kcp Workspace at root:kedge:orgs:{orgUUID}
+// EnsureOrgWorkspace creates a kcp Workspace at root:kedge:tenants:{orgUUID}
 // of type `organization` (see config/kcp/workspacetype-organization.yaml).
 // Idempotent: returns nil on AlreadyExists. Blocks until the workspace is
 // Ready so callers can immediately patch the corresponding Organization
@@ -303,7 +288,7 @@ func (b *Bootstrapper) OrgsConfig() *rest.Config {
 // admin config; no per-User RBAC is granted inside the workspace.
 //
 // The "organization" WorkspaceType's defaultAPIBindings bring
-// tenancy.kedge.faros.sh (Organization, CatalogEntry, future Membership)
+// tenants.kedge.faros.sh (Organization, CatalogEntry, future Membership)
 // and tenancy.kcp.io (Workspace for child team-workspace creation in
 // PR #3) into the Org workspace.
 func (b *Bootstrapper) EnsureOrgWorkspace(ctx context.Context, orgUUID string) error {
@@ -345,7 +330,7 @@ func (b *Bootstrapper) EnsureOrgWorkspace(ctx context.Context, orgUUID string) e
 }
 
 // GetOrgClusterName returns the kcp logical cluster name of an Organization
-// workspace at root:kedge:orgs:{orgUUID} once it is Ready. The cluster
+// workspace at root:kedge:tenants:{orgUUID} once it is Ready. The cluster
 // name is what status.workspaceCluster on the Organization CR can record
 // for observers that need the canonical kcp identifier rather than the
 // human-readable path.
@@ -366,7 +351,7 @@ func (b *Bootstrapper) GetOrgClusterName(ctx context.Context, orgUUID string) (s
 }
 
 // EnsureOrgMembership creates a Membership CR inside the Organization
-// workspace at root:kedge:orgs:{orgUUID} granting the given User the
+// workspace at root:kedge:tenants:{orgUUID} granting the given User the
 // given role at scope=org. Idempotent — returns nil if a Membership with
 // the same metadata.name already exists, regardless of role drift (an
 // admin demoting a member is owned by a separate Role-patch endpoint
@@ -384,7 +369,7 @@ func (b *Bootstrapper) EnsureOrgMembership(ctx context.Context, orgUUID, userNam
 		return fmt.Errorf("EnsureOrgMembership: invalid role %q (want admin or member)", role)
 	}
 
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return fmt.Errorf("creating org workspace client: %w", err)
@@ -392,7 +377,7 @@ func (b *Bootstrapper) EnsureOrgMembership(ctx context.Context, orgUUID, userNam
 
 	membership := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "tenancy.kedge.faros.sh/v1alpha1",
+			"apiVersion": "tenants.kedge.faros.sh/v1alpha1",
 			"kind":       "Membership",
 			"metadata": map[string]interface{}{
 				"name": userName,
@@ -415,7 +400,7 @@ func (b *Bootstrapper) EnsureOrgMembership(ctx context.Context, orgUUID, userNam
 }
 
 // EnsureChildWorkspace materializes a kcp Workspace at
-// root:kedge:orgs:{orgUUID}:{wsUUID} of type `workspace` (see
+// root:kedge:tenants:{orgUUID}:{wsUUID} of type `workspace` (see
 // config/kcp/workspacetype-workspace.yaml). Used by the organization
 // bootstrap controller to create the User's default team Workspace
 // inside their personal Org so the portal can pin a default
@@ -426,7 +411,7 @@ func (b *Bootstrapper) EnsureOrgMembership(ctx context.Context, orgUUID, userNam
 // workspace itself; the child team Workspace IS tenant-accessible.
 // This method is invoked from the org bootstrap controller with the
 // hub's admin credentials so the WorkspaceType admission's bind check
-// against tenancy.kedge.faros.sh passes (same chain that already
+// against tenants.kedge.faros.sh passes (same chain that already
 // powers EnsureOrgWorkspace).
 func (b *Bootstrapper) EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error {
 	if orgUUID == "" || wsUUID == "" {
@@ -434,7 +419,7 @@ func (b *Bootstrapper) EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID
 	}
 	logger := klog.FromContext(ctx).WithValues("orgUUID", orgUUID, "wsUUID", wsUUID)
 
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return fmt.Errorf("creating org workspace client: %w", err)
@@ -475,11 +460,11 @@ func (b *Bootstrapper) EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID
 // default team Workspace inside an Organization workspace. Centralized
 // here so all helpers compute it the same way.
 func childWorkspacePath(orgUUID, wsUUID string) string {
-	return "root:kedge:orgs:" + orgUUID + ":" + wsUUID
+	return kcppaths.WorkspacePath(orgUUID, wsUUID)
 }
 
 // ChildWorkspaceConfig returns a rest.Config targeting the child
-// Workspace at root:kedge:orgs:{orgUUID}:{wsUUID}. Used by REST
+// Workspace at root:kedge:tenants:{orgUUID}:{wsUUID}. Used by REST
 // endpoints that operate inside a Workspace (e.g. the ServiceAccount
 // surface) so they can mint a typed kube clientset without rebuilding
 // path strings themselves.
@@ -489,7 +474,7 @@ func (b *Bootstrapper) ChildWorkspaceConfig(orgUUID, wsUUID string) *rest.Config
 
 // GetChildWorkspaceClusterName returns the kcp logical-cluster short
 // hash (e.g. "2mmugqjf6k4nwuve") for the child team Workspace at
-// root:kedge:orgs:{orgUUID}:{wsUUID}. kcp sets it in
+// root:kedge:tenants:{orgUUID}:{wsUUID}. kcp sets it in
 // Workspace.spec.cluster when the workspace reaches phase Ready;
 // EnsureChildWorkspace blocks on Ready, so by the time this method is
 // called the field is populated. The short hash is the form kubectl /
@@ -499,7 +484,7 @@ func (b *Bootstrapper) GetChildWorkspaceClusterName(ctx context.Context, orgUUID
 	if orgUUID == "" || wsUUID == "" {
 		return "", fmt.Errorf("GetChildWorkspaceClusterName: orgUUID and wsUUID are required")
 	}
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return "", fmt.Errorf("creating org workspace client: %w", err)
@@ -561,7 +546,7 @@ func (b *Bootstrapper) EnsureChildWorkspaceKedgeBinding(ctx context.Context, org
 		Spec: apisv1alpha2.APIBindingSpec{
 			Reference: apisv1alpha2.BindingReference{
 				Export: &apisv1alpha2.ExportBindingReference{
-					Path: "root:kedge:providers",
+					Path: kcppaths.SystemControllers,
 					Name: "core.faros.sh",
 				},
 			},
@@ -658,10 +643,10 @@ func (b *Bootstrapper) EnsureChildWorkspaceDefaultMCPServer(ctx context.Context,
 // 30-day grace window from the annotation's RFC3339 value has elapsed.
 // kept on the kcp Workspace (rather than a kedge wrapper CRD) because
 // the kcp Workspace IS the source of truth for workspace lifecycle.
-const WorkspaceDeletionAnnotation = "tenancy.kedge.faros.sh/deletion-requested-at"
+const WorkspaceDeletionAnnotation = "tenants.kedge.faros.sh/deletion-requested-at"
 
 // DeleteOrgWorkspace removes the kcp Workspace at
-// root:kedge:orgs:{orgUUID}. Idempotent on NotFound. Cascade callers
+// root:kedge:tenants:{orgUUID}. Idempotent on NotFound. Cascade callers
 // should ensure all child Workspaces and the in-workspace Memberships
 // have already been removed; kcp will delete the LogicalCluster.
 func (b *Bootstrapper) DeleteOrgWorkspace(ctx context.Context, orgUUID string) error {
@@ -679,12 +664,12 @@ func (b *Bootstrapper) DeleteOrgWorkspace(ctx context.Context, orgUUID string) e
 }
 
 // DeleteChildWorkspace removes the kcp Workspace at
-// root:kedge:orgs:{orgUUID}:{wsUUID}. Idempotent on NotFound.
+// root:kedge:tenants:{orgUUID}:{wsUUID}. Idempotent on NotFound.
 func (b *Bootstrapper) DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error {
 	if orgUUID == "" || wsUUID == "" {
 		return fmt.Errorf("DeleteChildWorkspace: orgUUID and wsUUID are required")
 	}
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return fmt.Errorf("creating org workspace client: %w", err)
@@ -696,12 +681,12 @@ func (b *Bootstrapper) DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID
 }
 
 // ListChildWorkspaces returns the names of every child Workspace under
-// root:kedge:orgs:{orgUUID}. Empty list if the Org workspace is gone.
+// root:kedge:tenants:{orgUUID}. Empty list if the Org workspace is gone.
 func (b *Bootstrapper) ListChildWorkspaces(ctx context.Context, orgUUID string) ([]string, error) {
 	if orgUUID == "" {
 		return nil, fmt.Errorf("ListChildWorkspaces: orgUUID is required")
 	}
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return nil, fmt.Errorf("creating org workspace client: %w", err)
@@ -721,7 +706,7 @@ func (b *Bootstrapper) ListChildWorkspaces(ctx context.Context, orgUUID string) 
 }
 
 // ListOrgWorkspaces returns the names (UUIDs) of every Organization
-// workspace at root:kedge:orgs. Used by the soft-delete reconciler's
+// workspace at root:kedge:tenants. Used by the soft-delete reconciler's
 // Workspace branch to fan out across Orgs at resync time without
 // standing up per-Org dynamic informers.
 func (b *Bootstrapper) ListOrgWorkspaces(ctx context.Context) ([]string, error) {
@@ -750,7 +735,7 @@ func (b *Bootstrapper) GetWorkspaceDeletionRequestedAt(ctx context.Context, orgU
 	if orgUUID == "" || wsUUID == "" {
 		return nil, false, fmt.Errorf("GetWorkspaceDeletionRequestedAt: orgUUID and wsUUID are required")
 	}
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return nil, false, fmt.Errorf("creating org workspace client: %w", err)
@@ -774,7 +759,7 @@ func (b *Bootstrapper) GetWorkspaceDeletionRequestedAt(ctx context.Context, orgU
 }
 
 // DeleteOrgMemberships removes every Membership CR inside the
-// Organization workspace at root:kedge:orgs:{orgUUID}. Used by the
+// Organization workspace at root:kedge:tenants:{orgUUID}. Used by the
 // soft-delete cascade right before tearing down the workspace itself,
 // so the index sync sees a clean delta. Idempotent on NotFound /
 // empty list.
@@ -782,7 +767,7 @@ func (b *Bootstrapper) DeleteOrgMemberships(ctx context.Context, orgUUID string)
 	if orgUUID == "" {
 		return fmt.Errorf("DeleteOrgMemberships: orgUUID is required")
 	}
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return fmt.Errorf("creating org workspace client: %w", err)
@@ -808,10 +793,10 @@ func (b *Bootstrapper) DeleteOrgMemberships(ctx context.Context, orgUUID string)
 // an annotation rather than a separate CRD field because kcp's
 // Workspace type doesn't carry a displayName slot. Editable via the
 // REST PATCH endpoint.
-const WorkspaceDisplayNameAnnotation = "tenancy.kedge.faros.sh/display-name"
+const WorkspaceDisplayNameAnnotation = "tenants.kedge.faros.sh/display-name"
 
 // SetWorkspaceDeletionAnnotation stamps the kcp Workspace at
-// root:kedge:orgs:{orgUUID}:{wsUUID} with the soft-delete annotation
+// root:kedge:tenants:{orgUUID}:{wsUUID} with the soft-delete annotation
 // (WorkspaceDeletionAnnotation) carrying the given timestamp. The
 // soft-delete reconciler picks it up on its next poll. Idempotent
 // when the annotation is already set to the same value.
@@ -837,7 +822,7 @@ func (b *Bootstrapper) GetWorkspaceDisplayName(ctx context.Context, orgUUID, wsU
 	if orgUUID == "" || wsUUID == "" {
 		return "", fmt.Errorf("GetWorkspaceDisplayName: orgUUID and wsUUID are required")
 	}
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return "", fmt.Errorf("creating org workspace client: %w", err)
@@ -857,7 +842,7 @@ func (b *Bootstrapper) patchWorkspaceAnnotation(ctx context.Context, orgUUID, ws
 	if orgUUID == "" || wsUUID == "" {
 		return fmt.Errorf("patchWorkspaceAnnotation: orgUUID and wsUUID are required")
 	}
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return fmt.Errorf("creating org workspace client: %w", err)
@@ -897,7 +882,7 @@ func (b *Bootstrapper) GetOrgMembershipRole(ctx context.Context, orgUUID, userNa
 	if orgUUID == "" || userName == "" {
 		return "", fmt.Errorf("GetOrgMembershipRole: orgUUID and userName are required")
 	}
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return "", fmt.Errorf("creating org workspace client: %w", err)
@@ -920,7 +905,7 @@ func (b *Bootstrapper) PatchOrgMembershipRole(ctx context.Context, orgUUID, user
 	if role != "admin" && role != "member" {
 		return fmt.Errorf("PatchOrgMembershipRole: invalid role %q", role)
 	}
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return fmt.Errorf("creating org workspace client: %w", err)
@@ -948,7 +933,7 @@ func (b *Bootstrapper) DeleteOrgMembership(ctx context.Context, orgUUID, userNam
 	if orgUUID == "" || userName == "" {
 		return fmt.Errorf("DeleteOrgMembership: orgUUID and userName are required")
 	}
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return fmt.Errorf("creating org workspace client: %w", err)
@@ -968,7 +953,7 @@ func (b *Bootstrapper) ListOrgMemberships(ctx context.Context, orgUUID string) (
 	if orgUUID == "" {
 		return nil, fmt.Errorf("ListOrgMemberships: orgUUID is required")
 	}
-	orgConfig := configForPath(b.config, "root:kedge:orgs:"+orgUUID)
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
 		return nil, fmt.Errorf("creating org workspace client: %w", err)
@@ -1151,26 +1136,17 @@ func ensureBuiltinCatalogEntries(ctx context.Context, providersDynamic dynamic.I
 	return nil
 }
 
-// ensureProvidersSelfBinding creates (idempotently) an APIBinding inside
-// root:kedge:providers that points at the providers.kedge.faros.sh APIExport
-// in that same workspace. Without this binding, ProviderCatalogEntry CRs
-// cannot be created in root:kedge:providers — kcp serves the APIExport's
-// schemas only to workspaces that have explicitly bound to it.
-//
-// We bind self-to-self deliberately: the catalog controller and platform
-// administrators both work against root:kedge:providers, and the export is
-// intentionally excluded from tenant-bound core.faros.sh (see
-// hack/gen-core-apiexport/main.go).
-func ensureProvidersSelfBinding(ctx context.Context, providersDynamic dynamic.Interface) error {
-	const (
-		exportPath  = "root:kedge:providers"
-		exportName  = "providers.kedge.faros.sh"
-		bindingName = "providers.kedge.faros.sh"
-	)
+// ensureExportBinding creates (idempotently) an APIBinding in the workspace the
+// given dynamic client targets, pointing at exportName located at exportPath.
+// Used to bind platform exports (in system:controllers) into the workspaces
+// that hold their objects (system:providers, system:tenants). Without the
+// binding, kcp serves the export's schemas only to workspaces that bound it.
+func ensureExportBinding(ctx context.Context, bindDynamic dynamic.Interface, exportPath, exportName string) error {
+	bindingName := exportName
 
-	existing, err := providersDynamic.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
+	existing, err := bindDynamic.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return fmt.Errorf("listing APIBindings in providers workspace: %w", err)
+		return fmt.Errorf("listing APIBindings: %w", err)
 	}
 	for _, b := range existing.Items {
 		path, _, _ := unstructured.NestedString(b.Object, "spec", "reference", "export", "path")
@@ -1197,10 +1173,10 @@ func ensureProvidersSelfBinding(ctx context.Context, providersDynamic dynamic.In
 	}
 	u, err := toUnstructured(binding)
 	if err != nil {
-		return fmt.Errorf("converting providers APIBinding to unstructured: %w", err)
+		return fmt.Errorf("converting %s APIBinding to unstructured: %w", exportName, err)
 	}
-	if _, err := providersDynamic.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating providers.kedge.faros.sh APIBinding: %w", err)
+	if _, err := bindDynamic.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating %s APIBinding: %w", exportName, err)
 	}
 	return nil
 }
@@ -1329,7 +1305,7 @@ type ProviderClaim struct {
 
 // EnsureProviderAPIBinding creates (or no-ops on AlreadyExists) an
 // APIBinding named `bindingName` in the child workspace
-// root:kedge:orgs:{orgUUID}:{wsUUID}, pointing at exportPath/exportName.
+// root:kedge:tenants:{orgUUID}:{wsUUID}, pointing at exportPath/exportName.
 //
 // Used by the server-side POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 // handler so the portal doesn't have to talk to /clusters/{cluster}/apis/...
@@ -1488,7 +1464,7 @@ func (b *Bootstrapper) exportClaimIdentities(ctx context.Context, exportPath, ex
 }
 
 // ListProviderAPIBindings returns the set of Bound provider APIBindings
-// present in the child workspace root:kedge:orgs:{orgUUID}:{wsUUID},
+// present in the child workspace root:kedge:tenants:{orgUUID}:{wsUUID},
 // keyed by provider name. Used by the GET /api/orgs/{org}/workspaces/{ws}/
 // providers/enabled handler so the portal can render the
 // per-workspace "enabled providers" set on every workspace switch —
@@ -1532,7 +1508,7 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 }
 
 // DeleteProviderAPIBinding removes the named provider APIBinding from the
-// child workspace root:kedge:orgs:{orgUUID}:{wsUUID}. NotFound is a no-op so
+// child workspace root:kedge:tenants:{orgUUID}:{wsUUID}. NotFound is a no-op so
 // the Disable action is idempotent. Counterpart to EnsureProviderAPIBinding.
 func (b *Bootstrapper) DeleteProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName string) error {
 	if orgUUID == "" || wsUUID == "" || bindingName == "" {
@@ -1565,7 +1541,7 @@ func edgeProxyGrantName(providerName string) string {
 
 // EnsureProviderEdgeProxyGrant grants `subject` (the provider SA's
 // cluster-qualified identity — see pkg/util/identity) the "proxy" verb on
-// edges.kedge.faros.sh in the child workspace root:kedge:orgs:{orgUUID}:
+// edges.kedge.faros.sh in the child workspace root:kedge:tenants:{orgUUID}:
 // {wsUUID}. The edges-proxy virtual workspace SAR-checks exactly this tuple
 // (pkg/virtual/builder/edges_proxy_builder.go), so the grant is what lets a
 // provider with CatalogEntry spec.edgeProxyAccess open background

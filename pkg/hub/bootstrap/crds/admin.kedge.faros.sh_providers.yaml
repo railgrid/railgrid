@@ -1,0 +1,207 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: providers.admin.kedge.faros.sh
+spec:
+  group: admin.kedge.faros.sh
+  names:
+    kind: Provider
+    listKind: ProviderList
+    plural: providers
+    shortNames:
+    - prov
+    singular: provider
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.workspacePath
+      name: Workspace
+      type: string
+    - jsonPath: .status.secretRef.name
+      name: Secret
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Provider declaratively provisions the kcp-side scaffolding a third-party
+          extension needs to run: the per-provider sub-workspace
+          root:kedge:providers:<name>, a "provider" ServiceAccount with cluster-admin
+          inside that workspace, and a long-lived kubeconfig the provider pod mounts —
+          written into a Secret in root:kedge:system:providers (the same workspace this CR
+          lives in). It also binds the providers.kedge.faros.sh APIExport (CatalogEntry)
+          into the new sub-workspace so the provider can self-register its CatalogEntry.
+
+          It is deliberately minimal: workspace + ServiceAccount + kubeconfig Secret +
+          the CatalogEntry binding, and NOTHING ELSE. The provider's APIExport,
+          APIResourceSchemas, APIExportEndpointSlice, bind grant, and CatalogEntry all
+          come from the provider's own `init` (running inside the sub-workspace with the
+          minted kubeconfig).
+
+          Provider lives in the admin.kedge.faros.sh APIExport, bound ONLY in
+          root:kedge:system:providers — a provider cannot create a Provider from its own
+          sub-workspace, so it cannot bootstrap sibling providers.
+
+          WARNING: deleting a Provider triggers FULL teardown — its finalizer deletes
+          the sub-workspace (cascading the ServiceAccount, its token, the CatalogEntry,
+          and any APIExport / APIResourceSchemas the provider's init created there) plus
+          the kubeconfig Secret. Do not delete a Provider whose exports tenants still
+          depend on.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ProviderSpec defines the desired state of a Provider. The provider's name
+              (metadata.name) is the identity: it drives the sub-workspace path
+              (root:kedge:providers:<name>) and the ServiceAccount, so the spec carries
+              only optional knobs.
+            properties:
+              displayName:
+                description: |-
+                  DisplayName is informational, shown in admin tooling. The provisioned
+                  sub-workspace is always root:kedge:providers:<metadata.name> regardless.
+                maxLength: 128
+                type: string
+              secretName:
+                description: |-
+                  SecretName overrides the name of the kubeconfig Secret the controller
+                  writes into root:kedge:system:providers. Defaults to "<name>-kubeconfig".
+                maxLength: 253
+                type: string
+              serverURLOverride:
+                description: |-
+                  ServerURLOverride overrides the API server URL baked into the minted
+                  kubeconfig. Empty means the controller's configured provider server URL
+                  (the hub's --provider-internal-url when set, otherwise --hub-external-url).
+                maxLength: 512
+                type: string
+            type: object
+          status:
+            description: ProviderStatus defines the observed state of a Provider.
+            properties:
+              conditions:
+                description: |-
+                  Conditions describe the current state of the Provider. The "Ready"
+                  condition is True once the workspace, ServiceAccount, and kubeconfig
+                  Secret all exist.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastProvisioned:
+                description: LastProvisioned is the wall-clock time provisioning last
+                  succeeded.
+                format: date-time
+                type: string
+              secretRef:
+                description: |-
+                  SecretRef points at the kubeconfig Secret the controller wrote into
+                  root:kedge:system:providers.
+                properties:
+                  key:
+                    description: Key is the data key holding the kubeconfig YAML.
+                      Typically "kubeconfig".
+                    type: string
+                  name:
+                    description: Name is the Secret name.
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is the namespace the Secret lives in within
+                      root:kedge:system:providers. Typically "default".
+                    type: string
+                required:
+                - name
+                type: object
+              workspaceCluster:
+                description: |-
+                  WorkspaceCluster is the logical-cluster ID of the provisioned
+                  sub-workspace (Workspace.spec.cluster).
+                type: string
+              workspacePath:
+                description: |-
+                  WorkspacePath is the kcp workspace path the controller provisioned, e.g.
+                  "root:kedge:providers:kuery".
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

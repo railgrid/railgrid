@@ -61,7 +61,6 @@ spec:
   version: "0.1.0"
   category: "Workloads"
   iconURL: "/ui/providers/infrastructure/icon.svg"
-  serviceAccountNamespace: "infrastructure"
   # Local dev (Tilt / Makefile): the provider binary runs on the host
   # at PORT=8082 — distinct from the quickstart provider's :8081 so
   # both can run side-by-side. For in-cluster deployment, change to
@@ -100,4 +99,3 @@ spec:
     # controller adds per-template entries as operators apply
     # Templates. Both paths reuse the same APIResourceSchema mint +
     # APIExport upsert logic.
-    schemas: []

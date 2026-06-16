@@ -38,6 +38,7 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 | `hub.listenAddr` | `:9443` | Hub TLS listen address |
 | `hub.devMode` | `false` | Enable development mode (verbose logging, relaxed security) |
 | `hub.staticAuthTokens` | `[]` | Static bearer tokens for access. Each token creates its own user/workspace. Generate with `openssl rand -base64 32` |
+| `hub.adminUsers` | `[]` | Platform-admin identities allowed at `/api/admin/*` + the portal `/bonkers` area. Match a User by name, email, or rbacIdentity. Empty disables the admin surface (the `/bonkers` menu item stays hidden). For a static token the identity is `static-<first8chars>@kedge.local`. |
 | `hub.resources` | see values | CPU/memory requests and limits (includes embedded kcp overhead) |
 
 ### TLS (Hub)

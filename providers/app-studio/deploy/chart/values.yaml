@@ -21,6 +21,12 @@ catalogEntry:
   uiURL: ""
   backendURL: ""
 
+# Secret holding the workspace-admin kubeconfig minted by the platform admin
+# via /bonkers (admin onboarding). Consumed by both the init container and the
+# serve container. Key must be "kubeconfig".
+providerKubeconfig:
+  secretName: kedge-provider-kubeconfig
+
 # App Studio chat-message persistence. Prefer databaseURLSecretRef in
 # production; inMemoryMessageStore is an explicit non-durable fallback only.
 store:

@@ -32,6 +32,12 @@ hub:
   # Skip TLS verification on heartbeat — dev only, defaults off.
   insecure: false
 
+# Secret holding the workspace-admin kubeconfig minted by the platform admin
+# via /bonkers (admin onboarding). The init container uses it to apply the
+# provider's schemas/APIExport/slice/bind grant. Key must be "kubeconfig".
+providerKubeconfig:
+  secretName: kedge-provider-kubeconfig
+
 # When true, the chart also renders the CatalogEntry that registers the
 # provider with the hub. Set to false to manage the CatalogEntry separately
 # (e.g. via GitOps with a different rollout cadence than the workload).

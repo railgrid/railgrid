@@ -1,0 +1,12 @@
+# Provider — declarative provisioning record (admin.kedge.faros.sh, admin-only).
+# The hub's Provider controller creates root:kedge:providers:app-studio, its
+# "provider" ServiceAccount, and the app-studio-kubeconfig Secret in
+# root:kedge:system:providers. The APIExport/schemas/bind-grant come from app-studio's
+# own `init`; routing/UI from the companion CatalogEntry (Helm-rendered from
+# deploy/chart/templates/catalogentry.yaml).
+apiVersion: admin.kedge.faros.sh/v1alpha1
+kind: Provider
+metadata:
+  name: app-studio
+spec:
+  displayName: "App Studio"

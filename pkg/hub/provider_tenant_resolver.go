@@ -53,7 +53,7 @@ const (
 // under in kcp. Kept as a constant so the format stays in sync with
 // the bootstrap controllers (orgWorkspaceParent in
 // pkg/hub/controllers/organization/controller.go).
-const workspacePathRoot = "root:kedge:orgs"
+const workspacePathRoot = "root:kedge:tenants"
 
 // kcpTenantResolver implements providers.TenantResolver against the
 // same identity store the rest of the hub uses: bearer token → User CR

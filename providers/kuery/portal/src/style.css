@@ -249,6 +249,114 @@ kedge-provider-kuery .kuery-graph {
   border: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
   border-radius: 8px;
   background: var(--color-surface-base, rgba(0, 0, 0, 0.02));
+  outline: none;
+}
+
+/* Fullscreen: the panel fills the viewport and the graph grows to match. */
+kedge-provider-kuery .panel.kuery-full {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  margin: 0;
+  border-radius: 0;
+  overflow: auto;
+  background: var(--color-surface-overlay, var(--color-surface-base, #1b1b20));
+}
+
+kedge-provider-kuery .panel.kuery-full .kuery-graph {
+  height: calc(100vh - 150px);
+}
+
+/* Fullscreen API path: the panel itself is the fullscreen element. Give it a
+   solid background (the API default is black) and let the graph fill it. */
+kedge-provider-kuery .panel:fullscreen {
+  overflow: auto;
+  padding: 16px;
+  background: var(--color-surface-overlay, var(--color-surface-base, #1b1b20));
+}
+
+kedge-provider-kuery .panel:fullscreen .kuery-graph {
+  height: calc(100vh - 150px);
+}
+
+kedge-provider-kuery .pg-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  align-items: stretch;
+}
+
+@media (max-width: 820px) {
+  kedge-provider-kuery .pg-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+kedge-provider-kuery .pg-editor {
+  min-height: 360px;
+  border: 1px solid var(--color-border-default, rgba(127, 127, 127, 0.45));
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+kedge-provider-kuery .pg-editor .CodeMirror {
+  height: 100%;
+  min-height: 360px;
+  font-size: 12px;
+}
+
+kedge-provider-kuery .pg-fallback {
+  width: 100%;
+  min-height: 360px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+kedge-provider-kuery .pg-result {
+  margin: 0;
+  min-height: 360px;
+  max-height: 520px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
+  border-radius: 8px;
+  background: var(--color-surface-base, rgba(0, 0, 0, 0.02));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+kedge-provider-kuery .pg-result.error {
+  color: var(--color-text-error, #e0607a);
+}
+
+kedge-provider-kuery .pg-docs {
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+kedge-provider-kuery .pg-docs summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--color-text-muted, #9aa0ad);
+}
+
+kedge-provider-kuery .rel-group {
+  margin: 0 0 14px;
+}
+
+kedge-provider-kuery .rel-group-title {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted, #9aa0ad);
+  border-bottom: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
+  padding-bottom: 3px;
 }
 
 kedge-provider-kuery .legend {

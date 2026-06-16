@@ -1,12 +1,10 @@
 {{- if .Values.catalogEntry.enabled -}}
-# CatalogEntry registers this provider with the kedge hub. The hub's catalog
-# controller materializes root:kedge:providers:code, mints
-# kedge-provider-kubeconfig into serviceAccountNamespace, applies the four
-# APIResourceSchemas below, and creates the APIExport tenants APIBind to.
-#
-# The schemas[] bodies are loaded from files/schemas/*.yaml (the apigen output,
-# kept in sync via `make codegen-code-provider`). The filename (minus .yaml) is
-# the groupResource. This is the same content as providers/code/manifest.yaml.
+# CatalogEntry registers this provider with the kedge hub for routing + the
+# portal Enable flow. It only REFERENCES the APIExport (apiExport.name); the
+# APIExport, its APIResourceSchemas, the APIExportEndpointSlice, and the bind
+# grant are created by this chart's init container (provider `init`, via the
+# kedge-provider-sdk) using the onboarded kubeconfig. The hub no longer
+# provisions anything from this CatalogEntry.
 apiVersion: providers.kedge.faros.sh/v1alpha1
 kind: CatalogEntry
 metadata:
@@ -20,7 +18,6 @@ spec:
   version: {{ .Chart.AppVersion | quote }}
   category: "Developer"
   iconURL: "/ui/providers/code/icon.svg"
-  serviceAccountNamespace: {{ .Release.Namespace }}
   ui:
     url: "http://{{ include "code.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
     indexPath: "/"
@@ -40,10 +37,4 @@ spec:
       - resource: secrets
         verbs: [get, list, watch, create, update, patch, delete]
         tenantScoped: true
-    schemas:
-    {{- range $path, $_ := .Files.Glob "files/schemas/*.yaml" }}
-      - groupResource: {{ base $path | trimSuffix ".yaml" }}
-        body: |
-{{ $.Files.Get $path | indent 10 }}
-    {{- end }}
 {{- end }}

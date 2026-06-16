@@ -9,14 +9,21 @@ import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
 import TenantContextChip from '@/components/TenantContextChip.vue'
 import ThemeSwitch from '@/components/ThemeSwitch.vue'
 import FirstWorkspaceWizard from '@/components/FirstWorkspaceWizard.vue'
-import { Hexagon, LayoutDashboard, LogOut, Zap, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot, Settings } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, LogOut, Zap, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot, Settings, ShieldAlert } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
+import { useAdminStore } from '@/stores/admin'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 
 const auth = useAuthStore()
 const terminalStore = useTerminalSessionsStore()
 const providersStore = useProvidersStore()
 const tenantStore = useTenantStore()
+const adminStore = useAdminStore()
+
+// Probe platform-admin access once so the sidebar can show the /bonkers entry
+// only to allowlisted identities. Non-admins get a single quiet 403 and the
+// menu item stays hidden.
+onMounted(() => { void adminStore.checkAccess() })
 const layoutProps = defineProps<{ fullBleed?: boolean }>()
 
 const route = useRoute()
@@ -502,6 +509,18 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
       >
         <Settings class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
         <span>Settings</span>
+      </router-link>
+
+      <!-- Platform admin (/bonkers): only rendered for allowlisted identities
+           (adminStore.isAdmin, set by the access probe on mount). -->
+      <router-link
+        v-if="adminStore.isAdmin"
+        to="/bonkers"
+        class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
+        :class="isActive('/bonkers') ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+      >
+        <ShieldAlert class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
+        <span>Platform admin</span>
       </router-link>
 
       <!-- Theme segmented control: shows all three options so users can

@@ -25,14 +25,12 @@ spec:
     # caller's bearer token. The provider serves /api/projects/* + /healthz.
     url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
     healthPath: "/healthz"
+  # Reference-only: the APIExport, schemas, slice, and bind grant are created by
+  # this chart's init container (provider `init`, via the kedge-provider-sdk).
   apiExport:
     name: "ai.kedge.faros.sh"
     permissionClaims:
       - resource: secrets
         verbs: ["get", "list", "watch", "create", "update", "delete"]
         tenantScoped: true
-    schemas:
-      - groupResource: "projects.ai.kedge.faros.sh"
-        body: |-
-{{ .Files.Get "files/apiresourceschema-projects.ai.kedge.faros.sh.yaml" | indent 10 }}
 {{- end }}

@@ -135,6 +135,15 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 //
 // Returns errControllerDisabled when none resolve.
 func loadControllerConfig() (*rest.Config, error) {
+	// KEDGE_PROVIDER_KUBECONFIG is the standardized name across all providers.
+	// CODE_KUBECONFIG is kept as a fallback for one release.
+	if p := os.Getenv("KEDGE_PROVIDER_KUBECONFIG"); p != "" {
+		c, err := clientcmd.BuildConfigFromFlags("", p)
+		if err != nil {
+			return nil, fmt.Errorf("KEDGE_PROVIDER_KUBECONFIG: %w", err)
+		}
+		return c, nil
+	}
 	if p := os.Getenv("CODE_KUBECONFIG"); p != "" {
 		c, err := clientcmd.BuildConfigFromFlags("", p)
 		if err != nil {

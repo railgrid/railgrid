@@ -1,8 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# 1. Build the portal micro-frontend (Vite + TS → portal/dist) in a node
-#    stage. portal/ is a self-contained npm project so we only need its
-#    package.json/lockfile + source — no host-side npm install required.
+# 1. Build the portal micro-frontend (Vite + TS → portal/dist).
 FROM node:22-alpine AS portal
 WORKDIR /portal
 COPY portal/package.json portal/package-lock.json* ./
@@ -10,12 +8,9 @@ RUN npm install --no-audit --no-fund
 COPY portal/ ./
 RUN npm run build
 
-# 2. Build the Go binary. The binary serves two subcommands — `init`
-#    (bootstrap) and `serve` (runtime) — so the WHOLE module source has to be
-#    present, not just main.go: init_cmd.go, install/ (which //go:embeds its
-#    crds/ + templates/), controller/, backend/, kro/, tenant/, mcpserver/,
-#    server/, apis/. assets.go //go:embeds portal/dist, which is overlaid from
-#    the node stage below so the bundle is fresh.
+# 2. Build the Go binary. The binary serves `init` + `serve`, so the whole
+#    module source has to be present. The kedge-provider-sdk is now a published
+#    dependency (no replace), so `go mod download` fetches it from the proxy.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -24,8 +19,7 @@ COPY . ./
 COPY --from=portal /portal/dist ./portal/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/infrastructure-provider .
 
-# 3. Minimal runtime image. The portal assets are baked into the binary,
-#    so there is nothing else to copy.
+# 3. Minimal runtime image.
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/infrastructure-provider /infrastructure-provider
 EXPOSE 8081

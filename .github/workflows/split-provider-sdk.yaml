@@ -1,0 +1,130 @@
+name: Split provider-sdk
+
+# Publishes provider-sdk/ from this monorepo to the standalone, read-only
+# mirror at faroshq/provider-sdk, preserving git history. The provider modules
+# depend on this SDK via `replace => ../../provider-sdk` in the monorepo; the
+# mirror is what a future published/`go get`-able SDK is cut from.
+#
+# Uses splitsh-lite (https://github.com/splitsh/lite) which is deterministic:
+# the same source always splits to the same commit sha1s, so pushes normally
+# fast-forward. Runs on every push to main (mirrors the branch) and on
+# SDK release tags. workflow_dispatch is provided for the initial seed /
+# manual re-sync. It also runs on PRs that touch the split surface, but those
+# only validate (install + split) — the deploy-key and push steps are gated to
+# non-PR events, so a PR never writes to the mirror.
+#
+# Releases are tagged in the monorepo as `provider-sdk/vX.Y.Z`; the prefix is
+# stripped on the way out, so the mirror receives a plain `vX.Y.Z` tag.
+#
+# Required secret: PROVIDER_SDK_DEPLOY_KEY
+#   An SSH private key whose public half is added as a *write* deploy key on
+#   faroshq/provider-sdk.
+
+on:
+  push:
+    branches: [main]
+    tags: ['provider-sdk/v*']
+  pull_request:
+    branches: [main]
+    paths:
+      - 'provider-sdk/**'
+      - '.github/workflows/split-provider-sdk.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize splits per ref so two runs never race on the same push to the
+# mirror. Do not cancel in-progress runs: a half-completed push is worse than
+# waiting.
+concurrency:
+  group: split-provider-sdk-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PREFIX: provider-sdk
+  TARGET_REPO: git@github.com:faroshq/provider-sdk.git
+  TARGET_BRANCH: main
+  SPLITSH_VERSION: v1.0.1
+
+jobs:
+  split:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          # splitsh-lite needs the complete history to compute the split.
+          fetch-depth: 0
+
+      - name: Install splitsh-lite
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          # The v1.0.1 tarball stores the binary as ./splitsh-lite (leading
+          # ./), so GNU tar won't match a bare `splitsh-lite` member name.
+          curl -fsSL "https://github.com/splitsh/lite/releases/download/${SPLITSH_VERSION}/lite_linux_amd64.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin" ./splitsh-lite
+          chmod +x "$HOME/.local/bin/splitsh-lite"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Set up SSH deploy key
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          install -m 600 /dev/null ~/.ssh/id_split
+          echo "${{ secrets.PROVIDER_SDK_DEPLOY_KEY }}" > ~/.ssh/id_split
+          ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          cat > ~/.ssh/config <<'EOF'
+          Host github.com
+            HostName github.com
+            User git
+            IdentityFile ~/.ssh/id_split
+            IdentitiesOnly yes
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Compute split
+        run: |
+          set -euo pipefail
+
+          # Deterministic split of the provider-sdk subtree. The resulting
+          # commit objects are written into the local object store, so they can
+          # be pushed directly by sha. Runs on every event (incl. PRs) so it
+          # validates the install + split end-to-end without publishing.
+          #
+          # --origin takes a git REF, not a raw commit hash; HEAD is the
+          # checked-out commit (the pushed tip, or the PR merge commit) and
+          # resolves cleanly where a bare ${GITHUB_SHA} does not. Capture via a
+          # file so splitsh-lite's own output isn't swallowed by $(...) on error.
+          splitsh-lite --prefix="${PREFIX}" --origin=HEAD | tee /tmp/split-sha
+          SHA="$(tail -n1 /tmp/split-sha)"
+          [ -n "${SHA}" ] || { echo "split produced no sha"; exit 1; }
+          echo "Split sha: ${SHA}"
+          echo "SPLIT_SHA=${SHA}" >> "$GITHUB_ENV"
+
+      - name: Push to mirror
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          SHA="${SPLIT_SHA}"
+
+          git remote add mirror "${TARGET_REPO}"
+
+          if [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
+            # SDK tag: refs/tags/provider-sdk/vX.Y.Z. Strip the path prefix
+            # (everything up to the last '/') so the mirror gets a plain vX.Y.Z tag.
+            FULL_TAG="${GITHUB_REF#refs/tags/}"
+            TAG="${FULL_TAG##*/}"
+            echo "Publishing tag ${FULL_TAG} -> ${TARGET_REPO} as ${TAG}"
+            # Tags are immutable; push without force so an accidental re-tag fails loudly.
+            git push mirror "${SHA}:refs/tags/${TAG}"
+          else
+            echo "Publishing branch ${TARGET_BRANCH} -> ${TARGET_REPO}"
+            # --force keeps the mirror a faithful reflection even if monorepo
+            # history is ever rewritten. The mirror is read-only, so there are
+            # no downstream commits to clobber.
+            git push --force mirror "${SHA}:refs/heads/${TARGET_BRANCH}"
+          fi

@@ -21,8 +21,8 @@ spec:
   # which is also how the existing `tenant` WorkspaceType picks it up.
   # Redeclaring it would add a redundant bind check for no benefit.
   defaultAPIBindings:
-  - path: root:kedge:providers
-    export: tenancy.kedge.faros.sh
+  - path: root:kedge:system:controllers
+    export: tenants.kedge.faros.sh
   # Child workspaces inside an Organization are the team / project
   # spaces where tenant work (APIBindings, edges, MCP instances)
   # actually lives. v1 caps the allowed child type to a single value

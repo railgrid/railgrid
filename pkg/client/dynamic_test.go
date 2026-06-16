@@ -50,8 +50,8 @@ func TestTypedResourceCreateInjectsTypeMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
-	if got.GetAPIVersion() != "tenancy.kedge.faros.sh/v1alpha1" {
-		t.Errorf("expected apiVersion 'tenancy.kedge.faros.sh/v1alpha1', got %q", got.GetAPIVersion())
+	if got.GetAPIVersion() != "tenants.kedge.faros.sh/v1alpha1" {
+		t.Errorf("expected apiVersion 'tenants.kedge.faros.sh/v1alpha1', got %q", got.GetAPIVersion())
 	}
 	if got.GetKind() != "Organization" {
 		t.Errorf("expected kind 'Organization', got %q", got.GetKind())

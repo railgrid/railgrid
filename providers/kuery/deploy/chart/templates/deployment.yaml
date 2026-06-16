@@ -22,6 +22,27 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "kuery.serviceAccountName" . }}
+      initContainers:
+        # Bootstrap the provider workspace (schemas, APIExport, slice, bind
+        # grant) with the onboarded workspace-admin kubeconfig. kuery's edges
+        # permission claim is first-party, so its identityHash MUST be supplied
+        # (copy it from the /bonkers "Root identities" view into
+        # apiExport.edgesIdentityHash) or tenant Enable engages zero edges.
+        - name: init
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["init"]
+          env:
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: KEDGE_SCHEMAS_DIR
+              value: /etc/kedge/schemas
+            - name: KUERY_EDGES_IDENTITY_HASH
+              value: {{ .Values.apiExport.edgesIdentityHash | quote }}
+          volumeMounts:
+            - name: kedge-provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
       containers:
         - name: provider
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
@@ -72,9 +93,9 @@ spec:
                   key: {{ .Values.hub.tokenSecretRef.key }}
             {{- end }}
           volumeMounts:
-            # Minted by the hub's catalog controller into this namespace;
-            # the SA token inside is what the Enable-time edges-proxy grant
-            # authorizes for background edge sync.
+            # The onboarded workspace-admin kubeconfig; the SA token inside is
+            # what the Enable-time edges-proxy grant authorizes for background
+            # edge sync.
             - name: kedge-provider-kubeconfig
               mountPath: /var/run/secrets/kedge
               readOnly: true
@@ -83,13 +104,15 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
+        # Required input: the workspace-admin kubeconfig minted via /bonkers
+        # (admin onboarding), consumed by both init and serve. The onboard
+        # response stores it under key "kubeconfig".
         - name: kedge-provider-kubeconfig
           secret:
-            secretName: kedge-provider-kubeconfig
-            # The Secret appears only after the hub reconciles the
-            # CatalogEntry; optional lets the pod start (engagement
-            # disabled with a warning) instead of wedging on scheduling.
-            optional: true
+            secretName: {{ .Values.providerKubeconfig.secretName }}
+            items:
+              - key: kubeconfig
+                path: kedge-provider-kubeconfig
         - name: store
           {{- if .Values.store.persistence.enabled }}
           persistentVolumeClaim:

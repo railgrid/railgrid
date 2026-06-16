@@ -48,7 +48,7 @@ type Provisioner interface {
 	ListOrgWorkspaces(ctx context.Context) ([]string, error)
 
 	// GetWorkspaceDeletionRequestedAt reads the
-	// tenancy.kedge.faros.sh/deletion-requested-at annotation from the
+	// tenants.kedge.faros.sh/deletion-requested-at annotation from the
 	// child Workspace. The second return reports presence — callers
 	// can distinguish "no soft-delete requested" from "annotation
 	// present but malformed".

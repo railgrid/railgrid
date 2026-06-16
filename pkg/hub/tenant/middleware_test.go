@@ -193,7 +193,7 @@ func TestMiddleware_NoMatchingMembership(t *testing.T) {
 
 func TestMiddleware_IndexNotFound(t *testing.T) {
 	resolver := UserResolverFunc(func(_ *http.Request) (string, error) { return "alice", nil })
-	notFound := apierrors.NewNotFound(schema.GroupResource{Group: "tenancy.kedge.faros.sh", Resource: "usermembershipindices"}, "alice")
+	notFound := apierrors.NewNotFound(schema.GroupResource{Group: "tenants.kedge.faros.sh", Resource: "usermembershipindices"}, "alice")
 	lookup := MembershipLookupFunc(func(_ context.Context, _ string) (*tenancyv1alpha1.UserMembershipIndex, error) {
 		return nil, notFound
 	})

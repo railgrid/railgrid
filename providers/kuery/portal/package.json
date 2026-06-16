@@ -5,13 +5,15 @@
   "description": "Kuery provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle plus static assets the kedge hub serves under /ui/providers/kuery/.",
   "type": "module",
   "scripts": {
-    "build": "vite build && npm run vendor-cytoscape",
+    "build": "vite build && npm run vendor-cytoscape && npm run vendor-codemirror",
     "vendor-cytoscape": "node -e \"require('fs').copyFileSync('node_modules/cytoscape/dist/cytoscape.min.js','dist/cytoscape.min.js')\"",
+    "vendor-codemirror": "node vendor-codemirror.cjs",
     "dev": "vite",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/cytoscape": "^3.21.9",
+    "codemirror": "^5.65.16",
     "cytoscape": "^3.34.0",
     "typescript": "^5.6.3",
     "vite": "^6.4.1"
