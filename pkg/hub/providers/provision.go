@@ -72,6 +72,9 @@ var (
 	namespaceGVR = schema.GroupVersionResource{
 		Group: "", Version: "v1", Resource: "namespaces",
 	}
+	logicalClusterGVR = schema.GroupVersionResource{
+		Group: "core.kcp.io", Version: "v1alpha1", Resource: "logicalclusters",
+	}
 )
 
 // ProviderSAName is the standard ServiceAccount name created in every
@@ -150,8 +153,10 @@ func (p *Provisioner) EnsureProviderSA(ctx context.Context, providerName string)
 // SA and returns a base64-encoded exec-credential-less kubeconfig the provider
 // pod can mount. The token is read from a kubernetes.io/service-account-token
 // Secret populated by kcp's token controller, so it does not expire and needs
-// no rotation. The server URL is hubExternalURL + /clusters/{sub-workspace-path}
+// no rotation. The server URL is hubExternalURL + /clusters/{logical-cluster-id}
 // so the provider's typed Kubernetes clients land in its own workspace by default.
+// The ID (not the workspace path) is used so the kubeconfig works once requests
+// reach a kcp shard, which only resolves /clusters/<id>.
 func (p *Provisioner) MintProviderKubeconfig(ctx context.Context, providerName, hubExternalURL string) ([]byte, error) {
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, providersParentWorkspace+":"+providerName)
@@ -165,13 +170,23 @@ func (p *Provisioner) MintProviderKubeconfig(ctx context.Context, providerName, 
 		return nil, fmt.Errorf("ensuring SA token for %s: %w", providerName, err)
 	}
 
+	// Resolve the provider workspace's logical cluster ID. The kubeconfig must
+	// address kcp by ID (/clusters/<id>), not by workspace path: kcp shards only
+	// resolve /clusters/<id>, and workspace-path resolution is front-proxy-only.
+	// A provider kubeconfig pointed at the path 404s once the request reaches a
+	// shard (the SA token also carries this ID in its clusterName claim).
+	clusterID, err := resolveLogicalClusterID(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("resolving logical cluster ID for %s: %w", providerName, err)
+	}
+
 	server := hubExternalURL
 	if server == "" {
 		// Fall back to the kcp host we're talking to. Useful in tests
 		// when no public hub URL is configured.
 		server = cfg.Host
 	} else {
-		server = apiurl.KCPClusterURL(server, providersParentWorkspace+":"+providerName)
+		server = apiurl.KCPClusterURL(server, clusterID)
 	}
 
 	// Minimal kubeconfig; the provider pod uses controller-runtime which
@@ -195,6 +210,29 @@ users:
     token: %s
 `, server, token)
 	return []byte(kc), nil
+}
+
+// resolveLogicalClusterID returns the kcp logical cluster ID for the workspace
+// addressed by cfg (cfg.Host must already point at the target workspace, by path
+// or ID). It reads the well-known LogicalCluster object named "cluster" and
+// returns its `kcp.io/cluster` annotation. The ID is required for kubeconfigs:
+// kcp shards only resolve /clusters/<id>, while workspace-path resolution is
+// front-proxy-only, so a path-based server URL 404s once a request reaches a
+// shard.
+func resolveLogicalClusterID(ctx context.Context, cfg *rest.Config) (string, error) {
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return "", fmt.Errorf("dynamic client: %w", err)
+	}
+	lc, err := dyn.Resource(logicalClusterGVR).Get(ctx, "cluster", metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("getting LogicalCluster: %w", err)
+	}
+	id := lc.GetAnnotations()["kcp.io/cluster"]
+	if id == "" {
+		return "", fmt.Errorf("LogicalCluster has no kcp.io/cluster annotation")
+	}
+	return id, nil
 }
 
 // ensureLegacySAToken creates (idempotently) a kubernetes.io/service-account-token
