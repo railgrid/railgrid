@@ -17,6 +17,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/url"
 	"os"
 	"strings"
@@ -70,6 +71,59 @@ func TestPostgresStoreExternalDSN(t *testing.T) {
 	}
 	if len(page.Items) != 1 || page.Items[0].Content != msg.Content {
 		t.Fatalf("unexpected messages: %#v", page.Items)
+	}
+
+	run := AssistantRun{
+		ID:         "run-1",
+		Status:     AssistantRunStatusPendingPermission,
+		RequestID:  "perm-1",
+		Checkpoint: json.RawMessage(`{"tool":"write_file"}`),
+		Audit:      json.RawMessage(`{"decisions":[{"decision":"allow"}]}`),
+		CreatedAt:  time.Date(2026, 6, 14, 12, 1, 0, 0, time.UTC),
+		UpdatedAt:  time.Date(2026, 6, 14, 12, 1, 0, 0, time.UTC),
+	}
+	if err := s.SaveAssistantRun(ctx, scope, run); err != nil {
+		t.Fatalf("SaveAssistantRun: %v", err)
+	}
+	gotRun, err := s.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun: %v", err)
+	}
+	if gotRun.ID != run.ID || gotRun.Status != run.Status || gotRun.RequestID != run.RequestID || string(gotRun.Checkpoint) != string(run.Checkpoint) || string(gotRun.Audit) != string(run.Audit) {
+		t.Fatalf("assistant run = %#v, want %#v", gotRun, run)
+	}
+	claimed, err := s.ClaimAssistantRun(ctx, scope, run.ID, run.RequestID, run.UpdatedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ClaimAssistantRun: %v", err)
+	}
+	if claimed.Status != AssistantRunStatusRunning || claimed.RequestID != run.RequestID {
+		t.Fatalf("claimed assistant run = %#v, want running request", claimed)
+	}
+	if _, err := s.ClaimAssistantRun(ctx, scope, run.ID, run.RequestID, run.UpdatedAt.Add(2*time.Minute)); err == nil {
+		t.Fatal("second ClaimAssistantRun returned nil error")
+	}
+	claimed.Status = AssistantRunStatusCompleted
+	claimed.UpdatedAt = run.UpdatedAt.Add(3 * time.Minute)
+	claimed.Audit = json.RawMessage(`{"decisions":[{"decision":"allow","result":"ok"}]}`)
+	if err := s.SaveAssistantRun(ctx, scope, claimed); err != nil {
+		t.Fatalf("SaveAssistantRun completed: %v", err)
+	}
+	completed, err := s.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun completed: %v", err)
+	}
+	if completed.Status != AssistantRunStatusCompleted || string(completed.Audit) != string(claimed.Audit) {
+		t.Fatalf("completed assistant run = %#v, want completed audit", completed)
+	}
+	deleted, err := s.DeleteMessagesOlderThan(ctx, run.UpdatedAt.Add(4*time.Minute))
+	if err != nil {
+		t.Fatalf("DeleteMessagesOlderThan: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted count = %d, want message and assistant run", deleted)
+	}
+	if _, err := s.GetAssistantRun(ctx, scope, run.ID); err == nil {
+		t.Fatal("GetAssistantRun after retention returned nil error")
 	}
 }
 

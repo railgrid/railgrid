@@ -19,10 +19,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -483,15 +485,491 @@ func TestResolveProjectToolCallsRunsLocalWorkspaceMutationTools(t *testing.T) {
 	}
 }
 
+func TestGenerateProjectAssistantStreamRequestsPermissionForWriteTool(t *testing.T) {
+	var llmRequests []chatCompletionRequest
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode LLM request: %v", err)
+		}
+		llmRequests = append(llmRequests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"src/App.tsx","content":"hello\n"}`)
+	}))
+	defer llm.Close()
+
+	settings := projectLLMSettings{
+		Provider: defaultProjectLLMProvider,
+		BaseURL:  llm.URL,
+		Model:    "test-model",
+		APIKey:   "test-key",
+	}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messages := store.NewMemoryStore()
+	messageScope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "write a file"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+
+	var events []projectAssistantEvent
+	_, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		client,
+		project,
+		projectAssistantStreamCallbacks{
+			OnAssistantEvent: func(event projectAssistantEvent) {
+				events = append(events, event)
+			},
+		},
+	)
+	var permissionErr *projectAssistantPermissionRequiredError
+	if !errors.As(err, &permissionErr) {
+		t.Fatalf("generateProjectAssistantStream error = %v, want permission required", err)
+	}
+	if permissionErr.RunID == "" || permissionErr.RequestID == "" {
+		t.Fatalf("permission error missing ids: %#v", permissionErr)
+	}
+	if len(llmRequests) != 1 {
+		t.Fatalf("LLM request count = %d, want 1", len(llmRequests))
+	}
+	if _, err := workspaces.ReadFile(context.Background(), workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}, workspace.ReadOptions{Path: "src/App.tsx"}); err == nil {
+		t.Fatal("write_file ran before permission was approved")
+	}
+
+	var sawPermission, sawCheckpoint bool
+	for _, event := range events {
+		switch event.Type {
+		case projectAssistantEventPermissionNeeded:
+			sawPermission = true
+			if event.Permission == nil || event.Permission.ID != permissionErr.RequestID || event.Permission.ToolName != "write_file" {
+				t.Fatalf("permission event = %#v, want write_file request %q", event, permissionErr.RequestID)
+			}
+		case projectAssistantEventCheckpointSaved:
+			sawCheckpoint = true
+			if event.Checkpoint == nil || event.Checkpoint.ID != permissionErr.RunID {
+				t.Fatalf("checkpoint event = %#v, want run %q", event, permissionErr.RunID)
+			}
+		}
+	}
+	if !sawPermission || !sawCheckpoint {
+		t.Fatalf("events = %#v, want permission and checkpoint events", events)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), messageScope, permissionErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	if run.Status != store.AssistantRunStatusPendingPermission || run.RequestID != permissionErr.RequestID {
+		t.Fatalf("assistant run = %#v, want pending permission request", run)
+	}
+}
+
+func TestResumeProjectAssistantRunApprovesPendingTool(t *testing.T) {
+	messages := store.NewMemoryStore()
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	workspaceScope := projectWorkspaceScope(id, project.Name)
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolWriteFile)
+	if !ok {
+		t.Fatal("write_file tool missing from registry")
+	}
+	tc := chatToolCall{
+		ID:   "call-write",
+		Type: "function",
+		Function: chatToolCallFunction{
+			Name:      projectToolWriteFile,
+			Arguments: `{"path":"src/App.tsx","content":"approved\n"}`,
+		},
+	}
+	permissionErr, _, _, err := server.saveProjectAssistantPermissionCheckpoint(
+		context.Background(),
+		projectAssistantRunRequest{
+			Identity:       id,
+			HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+			Project:        project,
+			WorkspaceScope: workspaceScope,
+			MessageScope:   messageScope,
+		},
+		tool,
+		tc,
+		map[string]any{"path": "src/App.tsx", "content": "approved\n"},
+		projectLinkedRepositoryRef(project),
+	)
+	if err != nil {
+		t.Fatalf("saveProjectAssistantPermissionCheckpoint returned error: %v", err)
+	}
+
+	resp, err := server.resumeProjectAssistantRun(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		project,
+		permissionErr.RunID,
+		projectAssistantResumeRequest{
+			RequestID: permissionErr.RequestID,
+			Decision:  string(projectAssistantPermissionAllow),
+		},
+	)
+	if err != nil {
+		t.Fatalf("resumeProjectAssistantRun returned error: %v", err)
+	}
+	if resp.Status != store.AssistantRunStatusCompleted || resp.ToolCall == nil || resp.ToolCall.Status != "succeeded" {
+		t.Fatalf("resume response = %#v, want completed succeeded tool call", resp)
+	}
+	read, err := workspaces.ReadFile(context.Background(), workspaceScope, workspace.ReadOptions{Path: "src/App.tsx"})
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if read.Content != "approved\n" {
+		t.Fatalf("content = %q, want approved write", read.Content)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), messageScope, permissionErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	if run.Status != store.AssistantRunStatusCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+	audit := decodeProjectAssistantRunAudit(t, run.Audit)
+	if len(audit.Decisions) != 1 || audit.Decisions[0].Decision != projectAssistantPermissionAllow || audit.Decisions[0].Actor != id.user || audit.Decisions[0].Result == "" {
+		t.Fatalf("audit = %#v, want allow decision with actor and result", audit)
+	}
+}
+
+func TestAbortProjectAssistantRunMarksPendingRunAborted(t *testing.T) {
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	run := store.AssistantRun{
+		ID:         "run-1",
+		Status:     store.AssistantRunStatusPendingPermission,
+		RequestID:  "perm-1",
+		Checkpoint: json.RawMessage(`{"toolCall":{"id":"call-1"}}`),
+	}
+	if err := messages.SaveAssistantRun(context.Background(), messageScope, run); err != nil {
+		t.Fatalf("SaveAssistantRun returned error: %v", err)
+	}
+
+	resp, err := server.abortProjectAssistantRun(context.Background(), id, project, "run-1")
+	if err != nil {
+		t.Fatalf("abortProjectAssistantRun returned error: %v", err)
+	}
+	if resp.Status != store.AssistantRunStatusAborted {
+		t.Fatalf("abort response = %#v, want aborted", resp)
+	}
+	got, err := messages.GetAssistantRun(context.Background(), messageScope, "run-1")
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	if got.Status != store.AssistantRunStatusAborted {
+		t.Fatalf("run status = %q, want aborted", got.Status)
+	}
+	audit := decodeProjectAssistantRunAudit(t, got.Audit)
+	if len(audit.Decisions) != 1 || audit.Decisions[0].Decision != projectAssistantPermissionDeny || audit.Decisions[0].Error != "aborted by user" {
+		t.Fatalf("audit = %#v, want abort decision", audit)
+	}
+}
+
+func TestResumeProjectAssistantRunClaimsBeforeCommitSideEffects(t *testing.T) {
+	var commitCalls atomic.Int32
+	commitEntered := make(chan struct{})
+	releaseCommit := make(chan struct{})
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch envelope.Method {
+		case "tools/call":
+			if envelope.Params.Name != "code__commit_files" {
+				t.Fatalf("unexpected MCP tool call: %#v", envelope)
+			}
+			if commitCalls.Add(1) == 1 {
+				close(commitEntered)
+			}
+			<-releaseCommit
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["src/App.tsx"],"commitSHA":"abcdef1234567890"}}}`)
+		default:
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"commit files"}]}}`)
+		}
+	}))
+	defer mcp.Close()
+	releasedCommit := false
+	defer func() {
+		if !releasedCommit {
+			close(releaseCommit)
+		}
+	}()
+
+	messages := store.NewMemoryStore()
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, mcp.URL, false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	workspaceScope := projectWorkspaceScope(id, project.Name)
+	if err := workspaces.ApplyFiles(context.Background(), workspaceScope, []workspace.File{{Path: "src/App.tsx", Content: "approved\n"}}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolCommitProjectFiles)
+	if !ok {
+		t.Fatal("commit_project_files tool missing from registry")
+	}
+	tc := chatToolCall{
+		ID:   "call-commit",
+		Type: "function",
+		Function: chatToolCallFunction{
+			Name:      projectToolCommitProjectFiles,
+			Arguments: `{"repositoryRef":"demo-repo","paths":["src/App.tsx"],"message":"Initial app"}`,
+		},
+	}
+	permissionErr, _, _, err := server.saveProjectAssistantPermissionCheckpoint(
+		context.Background(),
+		projectAssistantRunRequest{Identity: id, HTTPRequest: httptest.NewRequest(http.MethodPost, "/", nil), Project: project, WorkspaceScope: workspaceScope, MessageScope: messageScope},
+		tool,
+		tc,
+		map[string]any{"repositoryRef": "demo-repo", "paths": []any{"src/App.tsx"}, "message": "Initial app"},
+		projectLinkedRepositoryRef(project),
+	)
+	if err != nil {
+		t.Fatalf("saveProjectAssistantPermissionCheckpoint returned error: %v", err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := server.resumeProjectAssistantRun(
+			context.Background(),
+			httptest.NewRequest(http.MethodPost, "/", nil),
+			id,
+			project,
+			permissionErr.RunID,
+			projectAssistantResumeRequest{RequestID: permissionErr.RequestID, Decision: string(projectAssistantPermissionAllow)},
+		)
+		firstErr <- err
+	}()
+	select {
+	case <-commitEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first resume did not reach commit call")
+	}
+
+	_, err = server.resumeProjectAssistantRun(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		project,
+		permissionErr.RunID,
+		projectAssistantResumeRequest{RequestID: permissionErr.RequestID, Decision: string(projectAssistantPermissionAllow)},
+	)
+	if err == nil {
+		t.Fatal("second resume returned nil error")
+	}
+	close(releaseCommit)
+	releasedCommit = true
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first resume returned error: %v", err)
+	}
+	if got := commitCalls.Load(); got != 1 {
+		t.Fatalf("commit call count = %d, want 1", got)
+	}
+}
+
+func TestResumeProjectAssistantRunRejectsStaleRepositoryBinding(t *testing.T) {
+	var sawCommit bool
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		if envelope.Method == "tools/call" {
+			sawCommit = true
+		}
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["src/App.tsx"],"commitSHA":"abcdef1234567890"}}}`)
+	}))
+	defer mcp.Close()
+
+	messages := store.NewMemoryStore()
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, mcp.URL, false)
+	project := projectWithRepository("old-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	workspaceScope := projectWorkspaceScope(id, project.Name)
+	if err := workspaces.ApplyFiles(context.Background(), workspaceScope, []workspace.File{{Path: "src/App.tsx", Content: "approved\n"}}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolCommitProjectFiles)
+	if !ok {
+		t.Fatal("commit_project_files tool missing from registry")
+	}
+	tc := chatToolCall{
+		ID:   "call-commit",
+		Type: "function",
+		Function: chatToolCallFunction{
+			Name:      projectToolCommitProjectFiles,
+			Arguments: `{"repositoryRef":"old-repo","paths":["src/App.tsx"],"message":"Initial app"}`,
+		},
+	}
+	permissionErr, _, _, err := server.saveProjectAssistantPermissionCheckpoint(
+		context.Background(),
+		projectAssistantRunRequest{Identity: id, HTTPRequest: httptest.NewRequest(http.MethodPost, "/", nil), Project: project, WorkspaceScope: workspaceScope, MessageScope: messageScope},
+		tool,
+		tc,
+		map[string]any{"repositoryRef": "old-repo", "paths": []any{"src/App.tsx"}, "message": "Initial app"},
+		projectLinkedRepositoryRef(project),
+	)
+	if err != nil {
+		t.Fatalf("saveProjectAssistantPermissionCheckpoint returned error: %v", err)
+	}
+	project.Spec.Repository.RepositoryRef = "new-repo"
+
+	_, err = server.resumeProjectAssistantRun(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		project,
+		permissionErr.RunID,
+		projectAssistantResumeRequest{RequestID: permissionErr.RequestID, Decision: string(projectAssistantPermissionAllow)},
+	)
+	if err == nil || !strings.Contains(err.Error(), "repository binding changed") {
+		t.Fatalf("resumeProjectAssistantRun error = %v, want stale repository binding", err)
+	}
+	if sawCommit {
+		t.Fatal("stale approval reached provider-code commit")
+	}
+	run, err := messages.GetAssistantRun(context.Background(), messageScope, permissionErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	if run.Status != store.AssistantRunStatusCompleted {
+		t.Fatalf("run status = %q, want completed stale checkpoint", run.Status)
+	}
+	audit := decodeProjectAssistantRunAudit(t, run.Audit)
+	if len(audit.Decisions) != 1 || !strings.Contains(audit.Decisions[0].Error, "repository binding changed") {
+		t.Fatalf("audit = %#v, want stale binding error", audit)
+	}
+}
+
+func TestResumeProjectAssistantRunContinuesToolBatchToNextPermission(t *testing.T) {
+	var llmRequests []chatCompletionRequest
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode LLM request: %v", err)
+		}
+		llmRequests = append(llmRequests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		callOne := chatStreamingCall{Index: 0, ID: "call-one", Type: "function"}
+		callOne.Function.Name = "write_file"
+		callOne.Function.Arguments = `{"path":"one.txt","content":"one\n"}`
+		callTwo := chatStreamingCall{Index: 1, ID: "call-two", Type: "function"}
+		callTwo.Function.Name = "write_file"
+		callTwo.Function.Arguments = `{"path":"two.txt","content":"two\n"}`
+		writeProjectTestToolCallChunks(t, w, callOne, callTwo)
+	}))
+	defer llm.Close()
+
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: llm.URL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messages := store.NewMemoryStore()
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, "demo")
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "write files"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+
+	_, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	var permissionErr *projectAssistantPermissionRequiredError
+	if !errors.As(err, &permissionErr) {
+		t.Fatalf("generateProjectAssistantStream error = %v, want permission required", err)
+	}
+	first, err := server.resumeProjectAssistantRun(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		project,
+		permissionErr.RunID,
+		projectAssistantResumeRequest{RequestID: permissionErr.RequestID, Decision: string(projectAssistantPermissionAllow)},
+	)
+	if err != nil {
+		t.Fatalf("first resumeProjectAssistantRun returned error: %v", err)
+	}
+	if first.Status != store.AssistantRunStatusPendingPermission || first.Permission == nil || first.Permission.ToolCallID != "call-two" {
+		t.Fatalf("first resume response = %#v, want next permission for call-two", first)
+	}
+	if _, err := workspaces.ReadFile(context.Background(), projectWorkspaceScope(id, project.Name), workspace.ReadOptions{Path: "one.txt"}); err != nil {
+		t.Fatalf("one.txt was not written after first approval: %v", err)
+	}
+	if _, err := workspaces.ReadFile(context.Background(), projectWorkspaceScope(id, project.Name), workspace.ReadOptions{Path: "two.txt"}); err == nil {
+		t.Fatal("two.txt was written before second approval")
+	}
+	second, err := server.resumeProjectAssistantRun(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		project,
+		permissionErr.RunID,
+		projectAssistantResumeRequest{RequestID: first.RequestID, Decision: string(projectAssistantPermissionAllow)},
+	)
+	if err != nil {
+		t.Fatalf("second resumeProjectAssistantRun returned error: %v", err)
+	}
+	if second.Status != store.AssistantRunStatusCompleted {
+		t.Fatalf("second resume response = %#v, want completed", second)
+	}
+	if _, err := workspaces.ReadFile(context.Background(), projectWorkspaceScope(id, project.Name), workspace.ReadOptions{Path: "two.txt"}); err != nil {
+		t.Fatalf("two.txt was not written after second approval: %v", err)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), messageScope, permissionErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	audit := decodeProjectAssistantRunAudit(t, run.Audit)
+	if len(audit.Decisions) != 2 {
+		t.Fatalf("audit decisions = %#v, want two approvals", audit.Decisions)
+	}
+}
+
 func TestGenerateProjectAssistantStreamStopsOfferingToolsAfterRepeatedToolLoop(t *testing.T) {
-	reply, requests, err := runRepeatedWriteFileAssistantStream(t, func(w http.ResponseWriter) {
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"I updated src/App.tsx and stopped before repeating the same action.\"}}]}\n\n")
+	reply, requests, err := runRepeatedReadFileAssistantStream(t, func(w http.ResponseWriter) {
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"I inspected src/App.tsx and stopped before repeating the same action.\"}}]}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	})
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
 	}
-	if !strings.Contains(reply, "I updated src/App.tsx") {
+	if !strings.Contains(reply, "I inspected src/App.tsx") {
 		t.Fatalf("reply = %q, want final text answer", reply)
 	}
 	if len(requests) != 3 {
@@ -503,14 +981,14 @@ func TestGenerateProjectAssistantStreamStopsOfferingToolsAfterRepeatedToolLoop(t
 }
 
 func TestGenerateProjectAssistantStreamFallsBackWhenFinalNoToolResponseIsEmpty(t *testing.T) {
-	reply, requests, err := runRepeatedWriteFileAssistantStream(t, func(w http.ResponseWriter) {
+	reply, requests, err := runRepeatedReadFileAssistantStream(t, func(w http.ResponseWriter) {
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{}}]}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	})
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
 	}
-	if !strings.Contains(reply, "repeated the same action") || !strings.Contains(reply, "write_file") || !strings.Contains(reply, "src/App.tsx") {
+	if !strings.Contains(reply, "repeated the same action") || !strings.Contains(reply, "read_project_file") || !strings.Contains(reply, "src/App.tsx") {
 		t.Fatalf("reply = %q, want repeated action fallback", reply)
 	}
 	if len(requests) != 3 {
@@ -522,13 +1000,13 @@ func TestGenerateProjectAssistantStreamFallsBackWhenFinalNoToolResponseIsEmpty(t
 }
 
 func TestGenerateProjectAssistantStreamFallsBackWhenFinalToolLimitResponseHasOnlyToolCalls(t *testing.T) {
-	reply, requests, err := runUniqueWriteFileAssistantStream(t, func(w http.ResponseWriter) {
-		writeProjectTestToolCallChunk(t, w, "call-final", "write_file", `{"path":"src/final.tsx","content":"final\n"}`)
+	reply, requests, err := runUniqueReadFileAssistantStream(t, func(w http.ResponseWriter) {
+		writeProjectTestToolCallChunk(t, w, "call-final", "read_project_file", `{"path":"src/final.tsx"}`)
 	})
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
 	}
-	if !strings.Contains(reply, "kept requesting actions") || !strings.Contains(reply, "write_file") || !strings.Contains(reply, "src/file-7.tsx") {
+	if !strings.Contains(reply, "kept requesting actions") || !strings.Contains(reply, "read_project_file") || !strings.Contains(reply, "src/file-7.tsx") {
 		t.Fatalf("reply = %q, want tool-limit fallback", reply)
 	}
 	if len(requests) != maxAssistantToolTurns {
@@ -567,7 +1045,7 @@ func TestProjectPromptMessagesCollapsesConsecutiveDuplicateUserMessages(t *testi
 	}
 }
 
-func TestGenerateProjectAssistantStreamReturnsCommitProjectFilesResult(t *testing.T) {
+func TestGenerateProjectAssistantStreamRequestsPermissionForCommitProjectFiles(t *testing.T) {
 	var llmRequests []chatCompletionRequest
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req chatCompletionRequest
@@ -578,8 +1056,6 @@ func TestGenerateProjectAssistantStreamReturnsCommitProjectFilesResult(t *testin
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch len(llmRequests) {
 		case 1:
-			writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"index.html","content":"hello\n"}`)
-		case 2:
 			writeProjectTestToolCallChunk(t, w, "call-commit", "commit_project_files", `{"repositoryRef":"demo-repo","paths":["index.html"],"message":"Initial app"}`)
 		default:
 			t.Fatalf("unexpected LLM request after commit handoff: tools=%d tool_choice=%q", len(req.Tools), req.ToolChoice)
@@ -614,41 +1090,24 @@ func TestGenerateProjectAssistantStreamReturnsCommitProjectFilesResult(t *testin
 	}))
 	defer mcp.Close()
 
-	reply, requests, err := runProjectAssistantStreamWithLLMAndHub(t, llm.URL, mcp.URL, &llmRequests)
-	if err != nil {
-		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	_, requests, err := runProjectAssistantStreamWithLLMAndHub(t, llm.URL, mcp.URL, &llmRequests)
+	var permissionErr *projectAssistantPermissionRequiredError
+	if !errors.As(err, &permissionErr) {
+		t.Fatalf("generateProjectAssistantStream error = %v, want permission required", err)
 	}
-	if !strings.Contains(reply, "Committed the workspace files") || !strings.Contains(reply, "commit abcdef123456") {
-		t.Fatalf("reply = %q, want deterministic commit success", reply)
+	if permissionErr.ToolName != "commit_project_files" {
+		t.Fatalf("permission error = %#v, want commit_project_files", permissionErr)
 	}
-	if commitCalls != 1 {
-		t.Fatalf("commit call count = %d, want 1", commitCalls)
+	if commitCalls != 0 {
+		t.Fatalf("commit call count = %d, want no commit before approval", commitCalls)
 	}
-	if len(requests) != 2 {
-		t.Fatalf("LLM request count = %d, want 2", len(requests))
+	if len(requests) != 1 {
+		t.Fatalf("LLM request count = %d, want 1", len(requests))
 	}
 }
 
-func TestGenerateProjectAssistantStreamReportsCommitProjectFilesFailure(t *testing.T) {
+func TestResolveProjectToolCallsReportsCommitProjectFilesFailure(t *testing.T) {
 	var llmRequests []chatCompletionRequest
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode LLM request: %v", err)
-		}
-		llmRequests = append(llmRequests, req)
-		w.Header().Set("Content-Type", "text/event-stream")
-		switch len(llmRequests) {
-		case 1:
-			writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"index.html","content":"hello\n"}`)
-		case 2:
-			writeProjectTestToolCallChunk(t, w, "call-commit", "commit_project_files", `{"repositoryRef":"demo-repo","paths":["index.html"],"message":"Initial app"}`)
-		default:
-			t.Fatalf("unexpected LLM request after failed commit handoff: tools=%d tool_choice=%q", len(req.Tools), req.ToolChoice)
-		}
-	}))
-	defer llm.Close()
-
 	var commitCalls int
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope struct {
@@ -676,44 +1135,43 @@ func TestGenerateProjectAssistantStreamReportsCommitProjectFilesFailure(t *testi
 	}))
 	defer mcp.Close()
 
-	reply, requests, err := runProjectAssistantStreamWithLLMAndHub(t, llm.URL, mcp.URL, &llmRequests)
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "index.html", Content: "hello\n"}}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
+	messages, err := server.resolveProjectToolCalls(
+		context.Background(),
+		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		scope,
+		"demo-repo",
+		[]chatToolCall{{
+			ID:   "call-commit",
+			Type: "function",
+			Function: chatToolCallFunction{
+				Name:      "commit_project_files",
+				Arguments: `{"repositoryRef":"demo-repo","paths":["index.html"],"message":"Initial app"}`,
+			},
+		}},
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		nil,
+	)
 	if err != nil {
-		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
 	}
-	if !strings.Contains(reply, "could not commit") || !strings.Contains(reply, "bundle not found") {
-		t.Fatalf("reply = %q, want deterministic commit failure", reply)
-	}
-	if strings.Contains(reply, "Committed the workspace files") {
-		t.Fatalf("reply = %q, should not claim commit success", reply)
+	if len(messages) != 1 || !strings.Contains(messages[0].Content, "bundle not found") {
+		t.Fatalf("tool messages = %#v, want commit failure", messages)
 	}
 	if commitCalls != 1 {
 		t.Fatalf("commit call count = %d, want 1", commitCalls)
 	}
-	if len(requests) != 2 {
-		t.Fatalf("LLM request count = %d, want 2", len(requests))
+	if len(llmRequests) != 0 {
+		t.Fatalf("LLM request count = %d, want none for executor test", len(llmRequests))
 	}
 }
 
-func TestGenerateProjectAssistantStreamRejectsCommitProjectFilesRepositoryMismatch(t *testing.T) {
-	var llmRequests []chatCompletionRequest
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode LLM request: %v", err)
-		}
-		llmRequests = append(llmRequests, req)
-		w.Header().Set("Content-Type", "text/event-stream")
-		switch len(llmRequests) {
-		case 1:
-			writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"index.html","content":"hello\n"}`)
-		case 2:
-			writeProjectTestToolCallChunk(t, w, "call-commit", "commit_project_files", `{"repositoryRef":"other-repo","paths":["index.html"],"message":"Initial app"}`)
-		default:
-			t.Fatalf("unexpected LLM request after rejected commit handoff: tools=%d tool_choice=%q", len(req.Tools), req.ToolChoice)
-		}
-	}))
-	defer llm.Close()
-
+func TestResolveProjectToolCallsRejectsCommitProjectFilesRepositoryMismatch(t *testing.T) {
 	var sawCommit bool
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope struct {
@@ -738,18 +1196,36 @@ func TestGenerateProjectAssistantStreamRejectsCommitProjectFilesRepositoryMismat
 	}))
 	defer mcp.Close()
 
-	reply, requests, err := runProjectAssistantStreamWithLLMAndHub(t, llm.URL, mcp.URL, &llmRequests)
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "index.html", Content: "hello\n"}}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
+	messages, err := server.resolveProjectToolCalls(
+		context.Background(),
+		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		scope,
+		"demo-repo",
+		[]chatToolCall{{
+			ID:   "call-commit",
+			Type: "function",
+			Function: chatToolCallFunction{
+				Name:      "commit_project_files",
+				Arguments: `{"repositoryRef":"other-repo","paths":["index.html"],"message":"Initial app"}`,
+			},
+		}},
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		nil,
+	)
 	if err != nil {
-		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
 	}
 	if sawCommit {
 		t.Fatal("commit_project_files reached provider-code for a repository outside the Project binding")
 	}
-	if !strings.Contains(reply, "could not commit") || !strings.Contains(reply, "does not match this Project") {
-		t.Fatalf("reply = %q, want deterministic repository mismatch failure", reply)
-	}
-	if len(requests) != 2 {
-		t.Fatalf("LLM request count = %d, want 2", len(requests))
+	if len(messages) != 1 || !strings.Contains(messages[0].Content, "does not match this Project") {
+		t.Fatalf("tool messages = %#v, want deterministic repository mismatch failure", messages)
 	}
 }
 
@@ -787,7 +1263,7 @@ func TestProjectAssistantUnstreamedContentAppendsDistinctFinalReply(t *testing.T
 	}
 }
 
-func runRepeatedWriteFileAssistantStream(t *testing.T, finalNoToolResponse func(http.ResponseWriter)) (string, []chatCompletionRequest, error) {
+func runRepeatedReadFileAssistantStream(t *testing.T, finalNoToolResponse func(http.ResponseWriter)) (string, []chatCompletionRequest, error) {
 	t.Helper()
 
 	var requests []chatCompletionRequest
@@ -803,14 +1279,14 @@ func runRepeatedWriteFileAssistantStream(t *testing.T, finalNoToolResponse func(
 			return
 		}
 		callID := fmt.Sprintf("call-%d", len(requests))
-		writeProjectTestToolCallChunk(t, w, callID, "write_file", `{"path":"src/App.tsx","content":"hello world\n"}`)
+		writeProjectTestToolCallChunk(t, w, callID, "read_project_file", `{"path":"src/App.tsx"}`)
 	}))
 	defer llm.Close()
 
 	return runProjectAssistantStreamWithLLM(t, llm.URL, &requests)
 }
 
-func runUniqueWriteFileAssistantStream(t *testing.T, finalNoToolResponse func(http.ResponseWriter)) (string, []chatCompletionRequest, error) {
+func runUniqueReadFileAssistantStream(t *testing.T, finalNoToolResponse func(http.ResponseWriter)) (string, []chatCompletionRequest, error) {
 	t.Helper()
 
 	var requests []chatCompletionRequest
@@ -826,7 +1302,7 @@ func runUniqueWriteFileAssistantStream(t *testing.T, finalNoToolResponse func(ht
 			return
 		}
 		n := len(requests)
-		writeProjectTestToolCallChunk(t, w, fmt.Sprintf("call-%d", n), "write_file", fmt.Sprintf(`{"path":"src/file-%d.tsx","content":"hello %d\n"}`, n, n))
+		writeProjectTestToolCallChunk(t, w, fmt.Sprintf("call-%d", n), "read_project_file", fmt.Sprintf(`{"path":"src/file-%d.tsx"}`, n))
 	}))
 	defer llm.Close()
 
@@ -836,16 +1312,23 @@ func runUniqueWriteFileAssistantStream(t *testing.T, finalNoToolResponse func(ht
 func writeProjectTestToolCallChunk(t *testing.T, w http.ResponseWriter, id, name, arguments string) {
 	t.Helper()
 
-	chunk := chatCompletionStreamResponse{
-		Choices: []chatCompletionStreamChoice{{}},
-	}
-	chunk.Choices[0].Delta.ToolCalls = []chatStreamingCall{{
+	call := chatStreamingCall{
 		Index: 0,
 		ID:    id,
 		Type:  "function",
-	}}
-	chunk.Choices[0].Delta.ToolCalls[0].Function.Name = name
-	chunk.Choices[0].Delta.ToolCalls[0].Function.Arguments = arguments
+	}
+	call.Function.Name = name
+	call.Function.Arguments = arguments
+	writeProjectTestToolCallChunks(t, w, call)
+}
+
+func writeProjectTestToolCallChunks(t *testing.T, w http.ResponseWriter, calls ...chatStreamingCall) {
+	t.Helper()
+
+	chunk := chatCompletionStreamResponse{
+		Choices: []chatCompletionStreamChoice{{}},
+	}
+	chunk.Choices[0].Delta.ToolCalls = calls
 	raw, err := json.Marshal(chunk)
 	if err != nil {
 		t.Fatalf("marshal LLM stream chunk: %v", err)
@@ -887,6 +1370,15 @@ func runProjectAssistantStreamWithLLMAndHub(t *testing.T, llmURL string, hubBase
 		projectAssistantStreamCallbacks{},
 	)
 	return reply, *requests, err
+}
+
+func decodeProjectAssistantRunAudit(t *testing.T, raw []byte) projectAssistantRunAudit {
+	t.Helper()
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(raw, &audit); err != nil {
+		t.Fatalf("decode assistant run audit: %v", err)
+	}
+	return audit
 }
 
 func TestProjectRepeatedToolLoopFallbackSummarizesLastToolResult(t *testing.T) {

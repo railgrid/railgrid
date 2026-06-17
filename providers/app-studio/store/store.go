@@ -52,6 +52,29 @@ type Message struct {
 	UpdatedAt        time.Time      `json:"updatedAt"`
 }
 
+type AssistantRunStatus string
+
+const (
+	AssistantRunStatusPendingPermission AssistantRunStatus = "pending_permission"
+	AssistantRunStatusRunning           AssistantRunStatus = "running"
+	AssistantRunStatusCompleted         AssistantRunStatus = "completed"
+	AssistantRunStatusAborted           AssistantRunStatus = "aborted"
+)
+
+// AssistantRun stores resumable assistant execution state. Checkpoint is an
+// App Studio API-owned JSON payload so store implementations do not need to
+// know private chat/tool types.
+type AssistantRun struct {
+	ID          string             `json:"id"`
+	ProjectName string             `json:"projectName,omitempty"`
+	Status      AssistantRunStatus `json:"status"`
+	RequestID   string             `json:"requestID,omitempty"`
+	Checkpoint  json.RawMessage    `json:"checkpoint,omitempty"`
+	Audit       json.RawMessage    `json:"audit,omitempty"`
+	CreatedAt   time.Time          `json:"createdAt"`
+	UpdatedAt   time.Time          `json:"updatedAt"`
+}
+
 // Page is an ordered slice of messages plus the next cursor for pagination.
 type Page struct {
 	Items      []Message `json:"items"`
@@ -64,6 +87,9 @@ type Store interface {
 	AppendMessage(ctx context.Context, scope Scope, msg Message) error
 	ListMessages(ctx context.Context, scope Scope, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, limit int) ([]Message, error)
+	SaveAssistantRun(ctx context.Context, scope Scope, run AssistantRun) error
+	ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error)
+	GetAssistantRun(ctx context.Context, scope Scope, id string) (AssistantRun, error)
 	DeleteProjectMessages(ctx context.Context, scope Scope) error
 	DeleteMessagesOlderThan(ctx context.Context, before time.Time) (int64, error)
 }

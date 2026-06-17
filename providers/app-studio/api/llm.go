@@ -172,9 +172,10 @@ type projectAssistantReply struct {
 }
 
 type projectAssistantStreamCallbacks struct {
-	OnChunk    func(string)
-	OnStatus   func(string)
-	OnToolCall func(projectToolCallStreamEvent)
+	OnChunk          func(string)
+	OnStatus         func(string)
+	OnToolCall       func(projectToolCallStreamEvent)
+	OnAssistantEvent func(projectAssistantEvent)
 }
 
 type projectNamingResult struct {
@@ -399,14 +400,14 @@ func (s *Server) runProjectAssistantChatLoop(ctx context.Context, req projectAss
 					repeated = true
 				}
 				logger.V(2).Info("project assistant requested tool call",
-					"turn", i, "tool", tc.Function.Name, "args", tc.Function.Arguments)
+					"turn", i, "tool", tc.Function.Name, "args", summarizeProjectToolArguments(tc.Function.Name, tc.Function.Arguments))
 			}
 
 			messages = append(messages, chatMessage{
 				Role:      aiv1alpha1.ProjectMessageRoleAssistant,
 				ToolCalls: reply.ToolCalls,
 			})
-			nextMessages, callErr := s.resolveProjectToolCalls(ctx, req.Identity, req.WorkspaceScope, projectRepositoryRef, reply.ToolCalls, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			nextMessages, callErr := s.resolveProjectToolCallsWithPermissions(ctx, req, projectRepositoryRef, reply.ToolCalls)
 			if callErr != nil {
 				return "", callErr
 			}
@@ -440,6 +441,97 @@ func (s *Server) runProjectAssistantChatLoop(ctx context.Context, req projectAss
 	}
 
 	return "", errors.New("LLM tool loop exceeded safe turn limit")
+}
+
+func (s *Server) resolveProjectToolCallsWithPermissions(
+	ctx context.Context,
+	req projectAssistantRunRequest,
+	projectRepositoryRef string,
+	toolCalls []chatToolCall,
+) ([]chatMessage, error) {
+	if len(toolCalls) == 0 {
+		return nil, nil
+	}
+	registry := s.projectAssistantToolRegistry()
+	var toolMessages []chatMessage
+	for i, tc := range toolCalls {
+		tool, ok := registry.Get(tc.Function.Name)
+		if !ok {
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			if err != nil {
+				return nil, err
+			}
+			toolMessages = append(toolMessages, nextMessages...)
+			continue
+		}
+		args, err := projectAssistantToolCallArguments(tc)
+		if err != nil {
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			if err != nil {
+				return nil, err
+			}
+			toolMessages = append(toolMessages, nextMessages...)
+			continue
+		}
+		spec := tool.Spec()
+		switch projectAssistantPermissionForTool(spec) {
+		case projectAssistantPermissionAllow:
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			if err != nil {
+				return nil, err
+			}
+			toolMessages = append(toolMessages, nextMessages...)
+		case projectAssistantPermissionAsk:
+			if req.StreamCallbacks.OnToolCall != nil {
+				req.StreamCallbacks.OnToolCall(projectToolCallStreamEvent{
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
+					Status:    "permission_required",
+					Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+					Summary:   projectAssistantPermissionReason(spec),
+				})
+			}
+			permissionErr, permission, checkpoint, err := s.saveProjectAssistantPermissionCheckpointForToolCalls(ctx, req, tool, toolCalls, i, projectRepositoryRef)
+			if err != nil {
+				return nil, err
+			}
+			if req.StreamCallbacks.OnAssistantEvent != nil {
+				req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
+					Type:       projectAssistantEventPermissionNeeded,
+					Permission: &permission,
+				})
+				req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
+					Type:       projectAssistantEventCheckpointSaved,
+					Checkpoint: &checkpoint,
+				})
+			}
+			return nil, permissionErr
+		case projectAssistantPermissionDeny:
+			reason := "unknown tool risk"
+			if req.StreamCallbacks.OnToolCall != nil {
+				req.StreamCallbacks.OnToolCall(projectToolCallStreamEvent{
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
+					Status:    "rejected",
+					Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+					Error:     reason,
+				})
+			}
+			toolMessages = append(toolMessages, projectAssistantPermissionDeniedToolMessage(tc, reason))
+		}
+	}
+	return toolMessages, nil
+}
+
+func projectAssistantToolCallArguments(tc chatToolCall) (map[string]any, error) {
+	args := map[string]any{}
+	if strings.TrimSpace(tc.Function.Arguments) == "" {
+		return args, nil
+	}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return nil, err
+	}
+	return args, nil
 }
 
 func projectRepeatedToolLoopFallback(toolMessages []chatMessage) string {
@@ -990,7 +1082,7 @@ func (s *Server) resolveProjectToolCalls(
 		args := map[string]any{}
 		if strings.TrimSpace(tc.Function.Arguments) != "" {
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				logger.Info("project assistant tool call rejected", "reason", "invalid arguments", "tool", tc.Function.Name, "args", tc.Function.Arguments, "err", err.Error())
+				logger.Info("project assistant tool call rejected", "reason", "invalid arguments", "tool", tc.Function.Name, "argsBytes", len(tc.Function.Arguments), "err", err.Error())
 				if onToolCall != nil {
 					onToolCall(projectToolCallStreamEvent{
 						ID:     tc.ID,

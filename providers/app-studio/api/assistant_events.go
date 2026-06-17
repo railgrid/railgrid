@@ -58,6 +58,24 @@ func (w projectAssistantStreamWriter) EmitProjectAssistantEvent(
 			AssistantMessageID: w.assistantID,
 			ToolCall:           &toolCall,
 		})
+	case projectAssistantEventPermissionNeeded:
+		if event.Permission == nil || event.Permission.ID == "" {
+			return nil
+		}
+		return w.write(projectMessageStreamEvent{
+			Type:               string(projectAssistantEventPermissionNeeded),
+			AssistantMessageID: w.assistantID,
+			Permission:         event.Permission,
+		})
+	case projectAssistantEventCheckpointSaved:
+		if event.Checkpoint == nil || event.Checkpoint.ID == "" {
+			return nil
+		}
+		return w.write(projectMessageStreamEvent{
+			Type:               string(projectAssistantEventCheckpointSaved),
+			AssistantMessageID: w.assistantID,
+			Checkpoint:         event.Checkpoint,
+		})
 	case projectAssistantEventRunFailed:
 		if event.Error == "" {
 			return nil

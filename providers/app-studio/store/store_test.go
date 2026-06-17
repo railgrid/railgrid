@@ -15,8 +15,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -36,6 +38,24 @@ func TestMemoryStorePaginationAndCleanup(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("AppendMessage %d: %v", i, err)
 		}
+	}
+	if err := s.SaveAssistantRun(context.Background(), scope, AssistantRun{
+		ID:        "run-old",
+		Status:    AssistantRunStatusPendingPermission,
+		RequestID: "perm-old",
+		CreatedAt: base,
+		UpdatedAt: base,
+	}); err != nil {
+		t.Fatalf("SaveAssistantRun old: %v", err)
+	}
+	if err := s.SaveAssistantRun(context.Background(), scope, AssistantRun{
+		ID:        "run-new",
+		Status:    AssistantRunStatusPendingPermission,
+		RequestID: "perm-new",
+		CreatedAt: base.Add(2 * time.Minute),
+		UpdatedAt: base.Add(2 * time.Minute),
+	}); err != nil {
+		t.Fatalf("SaveAssistantRun new: %v", err)
 	}
 
 	page, err := s.ListMessages(context.Background(), scope, 2, "")
@@ -69,8 +89,8 @@ func TestMemoryStorePaginationAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteMessagesOlderThan: %v", err)
 	}
-	if deleted != 2 {
-		t.Fatalf("expected 2 deleted messages, got %d", deleted)
+	if deleted != 3 {
+		t.Fatalf("expected 2 deleted messages and 1 assistant run, got %d", deleted)
 	}
 	remaining, err := s.ListMessages(context.Background(), scope, 10, "")
 	if err != nil {
@@ -78,6 +98,12 @@ func TestMemoryStorePaginationAndCleanup(t *testing.T) {
 	}
 	if len(remaining.Items) != 1 || remaining.Items[0].ID != "c" {
 		t.Fatalf("unexpected remaining messages: %#v", remaining)
+	}
+	if _, err := s.GetAssistantRun(context.Background(), scope, "run-old"); err == nil {
+		t.Fatal("old assistant run still exists after cleanup")
+	}
+	if _, err := s.GetAssistantRun(context.Background(), scope, "run-new"); err != nil {
+		t.Fatalf("new assistant run missing after cleanup: %v", err)
 	}
 }
 
@@ -137,5 +163,50 @@ func TestEncryptedStoreEncryptsAtRestAndDecryptsOnRead(t *testing.T) {
 	}
 	if page.Items[0].Content != msg.Content || page.Items[0].ContentEncrypted {
 		t.Fatalf("message was not decrypted on read: %#v", page.Items[0])
+	}
+}
+
+func TestEncryptedStoreEncryptsAssistantRunCheckpointAtRest(t *testing.T) {
+	base := NewMemoryStore()
+	rawKey := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	keys, err := ParseEncryptionKeys("primary:" + rawKey)
+	if err != nil {
+		t.Fatalf("ParseEncryptionKeys: %v", err)
+	}
+	store, err := NewEncryptedStore(base, keys)
+	if err != nil {
+		t.Fatalf("NewEncryptedStore: %v", err)
+	}
+
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal"}
+	run := AssistantRun{
+		ID:         "run-1",
+		Status:     AssistantRunStatusPendingPermission,
+		RequestID:  "perm-1",
+		Checkpoint: json.RawMessage(`{"tool":"write_file","content":"secret"}`),
+		Audit:      json.RawMessage(`{"decisions":[{"editedArguments":{"content":"secret"}}]}`),
+	}
+	if err := store.SaveAssistantRun(context.Background(), scope, run); err != nil {
+		t.Fatalf("SaveAssistantRun: %v", err)
+	}
+	rawRun, err := base.GetAssistantRun(context.Background(), scope, run.ID)
+	if err != nil {
+		t.Fatalf("raw GetAssistantRun: %v", err)
+	}
+	if string(rawRun.Checkpoint) == string(run.Checkpoint) || !bytes.Contains(rawRun.Checkpoint, []byte(`"encrypted":true`)) {
+		t.Fatalf("checkpoint was not encrypted at rest: %s", rawRun.Checkpoint)
+	}
+	if string(rawRun.Audit) == string(run.Audit) || !bytes.Contains(rawRun.Audit, []byte(`"encrypted":true`)) {
+		t.Fatalf("audit was not encrypted at rest: %s", rawRun.Audit)
+	}
+	got, err := store.GetAssistantRun(context.Background(), scope, run.ID)
+	if err != nil {
+		t.Fatalf("encrypted GetAssistantRun: %v", err)
+	}
+	if string(got.Checkpoint) != string(run.Checkpoint) {
+		t.Fatalf("checkpoint = %s, want %s", got.Checkpoint, run.Checkpoint)
+	}
+	if string(got.Audit) != string(run.Audit) {
+		t.Fatalf("audit = %s, want %s", got.Audit, run.Audit)
 	}
 }

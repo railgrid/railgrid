@@ -25,12 +25,16 @@ import (
 // MemoryStore is an in-memory implementation used for tests and explicit
 // local development. It must not be used as a silent production fallback.
 type MemoryStore struct {
-	mu       sync.RWMutex
-	messages map[Scope]map[string]Message
+	mu            sync.RWMutex
+	messages      map[Scope]map[string]Message
+	assistantRuns map[Scope]map[string]AssistantRun
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{messages: map[Scope]map[string]Message{}}
+	return &MemoryStore{
+		messages:      map[Scope]map[string]Message{},
+		assistantRuns: map[Scope]map[string]AssistantRun{},
+	}
 }
 
 func (s *MemoryStore) EnsureSchema(context.Context) error { return nil }
@@ -131,6 +135,86 @@ func (s *MemoryStore) LoadRecentMessages(_ context.Context, scope Scope, limit i
 	return all, nil
 }
 
+func (s *MemoryStore) SaveAssistantRun(_ context.Context, scope Scope, run AssistantRun) error {
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	if run.ID == "" {
+		return fmt.Errorf("assistant run id is required")
+	}
+	if run.Status == "" {
+		return fmt.Errorf("assistant run status is required")
+	}
+	if run.CreatedAt.IsZero() {
+		run.CreatedAt = time.Now().UTC()
+	}
+	if run.UpdatedAt.IsZero() {
+		run.UpdatedAt = run.CreatedAt
+	}
+	run.ProjectName = scope.ProjectName
+	run.Checkpoint = cloneRawMessage(run.Checkpoint)
+	run.Audit = cloneRawMessage(run.Audit)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.assistantRuns[scope] == nil {
+		s.assistantRuns[scope] = map[string]AssistantRun{}
+	}
+	s.assistantRuns[scope][run.ID] = run
+	return nil
+}
+
+func (s *MemoryStore) ClaimAssistantRun(_ context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
+	}
+	if id == "" {
+		return AssistantRun{}, fmt.Errorf("assistant run id is required")
+	}
+	if requestID == "" {
+		return AssistantRun{}, fmt.Errorf("assistant run request id is required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.assistantRuns[scope][id]
+	if !ok {
+		return AssistantRun{}, fmt.Errorf("assistant run %q not found", id)
+	}
+	if run.Status != AssistantRunStatusPendingPermission || run.RequestID != requestID {
+		return AssistantRun{}, fmt.Errorf("assistant run %q is not waiting for this permission request", id)
+	}
+	run.Status = AssistantRunStatusRunning
+	run.UpdatedAt = now.UTC()
+	run.ProjectName = scope.ProjectName
+	run.Checkpoint = cloneRawMessage(run.Checkpoint)
+	run.Audit = cloneRawMessage(run.Audit)
+	s.assistantRuns[scope][id] = run
+	return run, nil
+}
+
+func (s *MemoryStore) GetAssistantRun(_ context.Context, scope Scope, id string) (AssistantRun, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
+	}
+	if id == "" {
+		return AssistantRun{}, fmt.Errorf("assistant run id is required")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	run, ok := s.assistantRuns[scope][id]
+	if !ok {
+		return AssistantRun{}, fmt.Errorf("assistant run %q not found", id)
+	}
+	run.ProjectName = scope.ProjectName
+	run.Checkpoint = cloneRawMessage(run.Checkpoint)
+	run.Audit = cloneRawMessage(run.Audit)
+	return run, nil
+}
+
 func (s *MemoryStore) DeleteProjectMessages(_ context.Context, scope Scope) error {
 	if err := scope.validate(); err != nil {
 		return err
@@ -138,6 +222,7 @@ func (s *MemoryStore) DeleteProjectMessages(_ context.Context, scope Scope) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.messages, scope)
+	delete(s.assistantRuns, scope)
 	return nil
 }
 
@@ -156,6 +241,17 @@ func (s *MemoryStore) DeleteMessagesOlderThan(_ context.Context, before time.Tim
 			delete(s.messages, scope)
 		}
 	}
+	for scope, runs := range s.assistantRuns {
+		for id, run := range runs {
+			if run.UpdatedAt.Before(before) {
+				delete(runs, id)
+				deleted++
+			}
+		}
+		if len(runs) == 0 {
+			delete(s.assistantRuns, scope)
+		}
+	}
 	return deleted, nil
 }
 
@@ -172,6 +268,15 @@ func cloneMetadata(src map[string]any) map[string]any {
 	for k, v := range src {
 		dst[k] = v
 	}
+	return dst
+}
+
+func cloneRawMessage(src []byte) []byte {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make([]byte, len(src))
+	copy(dst, src)
 	return dst
 }
 

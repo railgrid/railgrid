@@ -20,6 +20,7 @@ import (
 	"crypto/cipher"
 	cryptoRand "crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -185,6 +186,45 @@ func (s *encryptedStore) LoadRecentMessages(ctx context.Context, scope Scope, li
 	return items, nil
 }
 
+func (s *encryptedStore) SaveAssistantRun(ctx context.Context, scope Scope, run AssistantRun) error {
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	checkpoint, err := s.encryptAssistantRunBlob(scope, run, "checkpoint", run.Checkpoint)
+	if err != nil {
+		return err
+	}
+	audit, err := s.encryptAssistantRunBlob(scope, run, "audit", run.Audit)
+	if err != nil {
+		return err
+	}
+	run.Checkpoint = checkpoint
+	run.Audit = audit
+	return s.inner.SaveAssistantRun(ctx, scope, run)
+}
+
+func (s *encryptedStore) ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error) {
+	run, err := s.inner.ClaimAssistantRun(ctx, scope, id, requestID, now)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
+		return AssistantRun{}, err
+	}
+	return run, nil
+}
+
+func (s *encryptedStore) GetAssistantRun(ctx context.Context, scope Scope, id string) (AssistantRun, error) {
+	run, err := s.inner.GetAssistantRun(ctx, scope, id)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
+		return AssistantRun{}, err
+	}
+	return run, nil
+}
+
 func (s *encryptedStore) DeleteProjectMessages(ctx context.Context, scope Scope) error {
 	return s.inner.DeleteProjectMessages(ctx, scope)
 }
@@ -233,6 +273,85 @@ func messageAAD(scope Scope, msg Message) []byte {
 		scope.ProjectName,
 		msg.ID,
 		msg.Role,
+	}, "\x00"))
+}
+
+type encryptedAssistantRunCheckpoint struct {
+	Encrypted bool   `json:"encrypted"`
+	KeyID     string `json:"keyID"`
+	Payload   string `json:"payload"`
+}
+
+func (s *encryptedStore) encryptAssistantRunBlob(scope Scope, run AssistantRun, label string, plaintext []byte) ([]byte, error) {
+	if len(plaintext) == 0 {
+		return nil, nil
+	}
+	var existing encryptedAssistantRunCheckpoint
+	if json.Unmarshal(plaintext, &existing) == nil && existing.Encrypted && existing.KeyID != "" && existing.Payload != "" {
+		return cloneRawMessage(plaintext), nil
+	}
+	aead := s.keys[s.active]
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := io.ReadFull(cryptoRand.Reader, nonce); err != nil {
+		return nil, fmt.Errorf("generate assistant checkpoint nonce: %w", err)
+	}
+	ciphertext := aead.Seal(nil, nonce, plaintext, assistantRunAAD(scope, run, label))
+	payload := append(nonce, ciphertext...)
+	envelope := encryptedAssistantRunCheckpoint{
+		Encrypted: true,
+		KeyID:     s.active,
+		Payload:   base64.RawStdEncoding.EncodeToString(payload),
+	}
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, fmt.Errorf("encode encrypted assistant checkpoint: %w", err)
+	}
+	return raw, nil
+}
+
+func (s *encryptedStore) decryptAssistantRunBlobs(scope Scope, run *AssistantRun) error {
+	if err := s.decryptAssistantRunBlob(scope, run, "checkpoint", &run.Checkpoint); err != nil {
+		return err
+	}
+	return s.decryptAssistantRunBlob(scope, run, "audit", &run.Audit)
+}
+
+func (s *encryptedStore) decryptAssistantRunBlob(scope Scope, run *AssistantRun, label string, value *json.RawMessage) error {
+	if run == nil || value == nil || len(*value) == 0 {
+		return nil
+	}
+	var envelope encryptedAssistantRunCheckpoint
+	if err := json.Unmarshal(*value, &envelope); err != nil || !envelope.Encrypted {
+		return nil
+	}
+	aead := s.keys[envelope.KeyID]
+	if aead == nil {
+		return fmt.Errorf("assistant run %q uses unknown encryption key %q", run.ID, envelope.KeyID)
+	}
+	payload, err := base64.RawStdEncoding.DecodeString(envelope.Payload)
+	if err != nil {
+		return fmt.Errorf("decode encrypted assistant checkpoint %q: %w", run.ID, err)
+	}
+	if len(payload) < aead.NonceSize() {
+		return fmt.Errorf("encrypted assistant checkpoint %q is too short", run.ID)
+	}
+	nonce := payload[:aead.NonceSize()]
+	ciphertext := payload[aead.NonceSize():]
+	plaintext, err := aead.Open(nil, nonce, ciphertext, assistantRunAAD(scope, *run, label))
+	if err != nil {
+		return fmt.Errorf("decrypt assistant checkpoint %q: %w", run.ID, err)
+	}
+	*value = plaintext
+	return nil
+}
+
+func assistantRunAAD(scope Scope, run AssistantRun, label string) []byte {
+	return []byte(strings.Join([]string{
+		scope.OrgUUID,
+		scope.WorkspaceUUID,
+		scope.ProjectName,
+		run.ID,
+		label,
 	}, "\x00"))
 }
 

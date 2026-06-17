@@ -74,6 +74,33 @@ func TestProjectAssistantStreamWriterMapsToolCall(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantStreamWriterMapsPermissionAndCheckpoint(t *testing.T) {
+	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
+		Type: projectAssistantEventPermissionNeeded,
+		Permission: &projectAssistantPermission{
+			ID:         "perm-1",
+			ToolCallID: "tool-1",
+			ToolName:   "write_file",
+			Reason:     "will write files",
+		},
+	}, projectAssistantEvent{
+		Type:       projectAssistantEventCheckpointSaved,
+		Checkpoint: &projectAssistantCheckpoint{ID: "run-1", Reason: "waiting_for_permission"},
+	})
+	if err != nil {
+		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("events = %#v, want permission and checkpoint", got)
+	}
+	if got[0].Type != "permission_required" || got[0].Permission == nil || got[0].Permission.ID != "perm-1" || got[0].AssistantMessageID != "assistant-1" {
+		t.Fatalf("permission event = %#v, want assistant permission payload", got[0])
+	}
+	if got[1].Type != "checkpoint_saved" || got[1].Checkpoint == nil || got[1].Checkpoint.ID != "run-1" || got[1].AssistantMessageID != "assistant-1" {
+		t.Fatalf("checkpoint event = %#v, want assistant checkpoint payload", got[1])
+	}
+}
+
 func TestProjectAssistantStreamWriterMapsTerminalEvents(t *testing.T) {
 	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
 		Type:  projectAssistantEventRunFailed,

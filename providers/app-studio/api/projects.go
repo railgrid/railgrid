@@ -110,6 +110,8 @@ type projectMessageStreamEvent struct {
 	Error              string                      `json:"error,omitempty"`
 	Project            *ProjectView                `json:"project,omitempty"`
 	ToolCall           *projectToolCallStreamEvent `json:"toolCall,omitempty"`
+	Permission         *projectAssistantPermission `json:"permission,omitempty"`
+	Checkpoint         *projectAssistantCheckpoint `json:"checkpoint,omitempty"`
 }
 
 type projectToolCallStreamEvent struct {
@@ -473,6 +475,36 @@ func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Reque
 	s.streamProjectAssistant(w, flusher, r, c, id, p, msgStore)
 }
 
+func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) {
+	_, id, p, ok := s.requireProjectWithClient(w, r)
+	if !ok {
+		return
+	}
+	var req projectAssistantResumeRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	resp, err := s.resumeProjectAssistantRun(r.Context(), r, id, p, mux.Vars(r)["run"], req)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) abortProjectAssistant(w http.ResponseWriter, r *http.Request) {
+	_, id, p, ok := s.requireProjectWithClient(w, r)
+	if !ok {
+		return
+	}
+	resp, err := s.abortProjectAssistantRun(r.Context(), id, p, mux.Vars(r)["run"])
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func startProjectMessageStream(w http.ResponseWriter) (http.Flusher, bool) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -571,11 +603,19 @@ func (s *Server) streamProjectAssistant(
 	}
 
 	reply, err := s.generateProjectAssistantStream(r, id, c, p, projectAssistantStreamCallbacks{
-		OnChunk:    streamChunk,
-		OnStatus:   streamStatus,
-		OnToolCall: streamToolCall,
+		OnChunk:          streamChunk,
+		OnStatus:         streamStatus,
+		OnToolCall:       streamToolCall,
+		OnAssistantEvent: emitAssistantEvent,
 	})
 	if err != nil {
+		var permissionErr *projectAssistantPermissionRequiredError
+		if errors.As(err, &permissionErr) {
+			if streamErr != nil {
+				_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
+			}
+			return
+		}
 		if shouldPersistInterruptedProjectAssistant(r.Context(), err, streamErr, assistantContent.String()) {
 			persistErr := appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
 			if persistErr != nil && streamErr == nil {
