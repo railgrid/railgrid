@@ -481,7 +481,7 @@ func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) {
-	_, id, p, ok := s.requireProjectWithClient(w, r)
+	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
@@ -489,7 +489,7 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	resp, err := s.resumeProjectAssistantRun(r.Context(), r, id, p, mux.Vars(r)["run"], req)
+	resp, err := s.resumeProjectAssistantRunWithRepository(r.Context(), r, id, p, projectRepositoryView(r.Context(), c, p), mux.Vars(r)["run"], req)
 	if err != nil {
 		writeProjectError(w, err)
 		return

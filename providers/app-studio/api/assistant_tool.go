@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 
+	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -53,6 +54,8 @@ func (s projectAssistantToolSpec) chatTool() chatTool {
 
 type projectAssistantToolCallRequest struct {
 	Identity             identity
+	Project              *aiv1alpha1.Project
+	Repository           *ProjectRepositoryView
 	WorkspaceScope       workspace.Scope
 	ProjectRepositoryRef string
 	MCPEndpoint          string

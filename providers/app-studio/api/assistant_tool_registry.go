@@ -143,6 +143,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}))
 			},
 		},
+		newProjectAssistantWorkflowTool(server),
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolWriteFile,

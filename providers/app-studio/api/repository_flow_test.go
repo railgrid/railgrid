@@ -94,6 +94,7 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 		"list_project_files",
 		"read_project_file",
 		"search_project_files",
+		"plan_project_changes",
 		"write_file",
 		"apply_patch",
 		"mkdir",
@@ -115,6 +116,7 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 		"list_project_files",
 		"read_project_file",
 		"search_project_files",
+		"plan_project_changes",
 		"write_file",
 		"apply_patch",
 		"mkdir",
@@ -273,6 +275,11 @@ func TestSummarizeProjectToolArgumentsWorkspaceReadTools(t *testing.T) {
 			want: []string{"query secret-ish user query", "maxResults 10"},
 		},
 		{
+			name: "plan_project_changes",
+			args: `{"includeFiles":true,"maxFiles":12}`,
+			want: []string{"includeFiles true", "maxFiles 12"},
+		},
+		{
 			name: "write_file",
 			args: `{"path":"src/App.tsx","content":"secret-ish file body"}`,
 			want: []string{"path src/App.tsx", "20 bytes"},
@@ -337,6 +344,14 @@ func TestSummarizeProjectToolResultWorkspaceReadTools(t *testing.T) {
 	}
 	if strings.Contains(got, "secret-ish") {
 		t.Fatalf("summary leaked content: %q", got)
+	}
+
+	workflowResult := `{"summary":"Plan project changes for Demo App.","files":["src/App.tsx"],"steps":["Inspect files","Commit after approval"]}`
+	got = summarizeProjectToolResult("plan_project_changes", workflowResult)
+	for _, want := range []string{"Plan project changes for Demo App.", "2 step(s)", "1 file(s): src/App.tsx"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary = %q, want %q", got, want)
+		}
 	}
 }
 
@@ -410,6 +425,8 @@ func TestResolveProjectToolCallsRunsLocalWorkspaceTools(t *testing.T) {
 	messages, err := server.resolveProjectToolCalls(
 		context.Background(),
 		identity{},
+		nil,
+		nil,
 		scope,
 		"",
 		[]chatToolCall{{
@@ -439,6 +456,8 @@ func TestResolveProjectToolCallsRunsLocalWorkspaceMutationTools(t *testing.T) {
 	messages, err := server.resolveProjectToolCalls(
 		context.Background(),
 		identity{},
+		nil,
+		nil,
 		scope,
 		"",
 		[]chatToolCall{
@@ -1389,6 +1408,88 @@ func TestResumeProjectAssistantRunContinuesToolBatchToNextPermission(t *testing.
 	}
 }
 
+func TestResumeProjectAssistantRunReplaysWorkflowWithRepositoryContext(t *testing.T) {
+	messages := store.NewMemoryStore()
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	project.Spec.DisplayName = "Demo"
+	project.Spec.Memory.Requirements = []string{"Keep the implementation small."}
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	workspaceScope := projectWorkspaceScope(id, project.Name)
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolWriteFile)
+	if !ok {
+		t.Fatal("write_file tool missing from registry")
+	}
+	toolCalls := []chatToolCall{
+		{
+			ID:   "call-write",
+			Type: "function",
+			Function: chatToolCallFunction{
+				Name:      projectToolWriteFile,
+				Arguments: `{"path":"src/App.tsx","content":"approved\n"}`,
+			},
+		},
+		{
+			ID:   "call-plan",
+			Type: "function",
+			Function: chatToolCallFunction{
+				Name:      projectToolPlanProjectChanges,
+				Arguments: `{"includeFiles":false}`,
+			},
+		},
+	}
+	permissionErr, _, _, err := server.saveProjectAssistantPermissionCheckpointForToolCalls(
+		context.Background(),
+		projectAssistantRunRequest{
+			Identity:       id,
+			HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+			Project:        project,
+			WorkspaceScope: workspaceScope,
+			MessageScope:   messageScope,
+		},
+		tool,
+		toolCalls,
+		0,
+		projectLinkedRepositoryRef(project),
+	)
+	if err != nil {
+		t.Fatalf("saveProjectAssistantPermissionCheckpointForToolCalls returned error: %v", err)
+	}
+
+	resp, err := server.resumeProjectAssistantRunWithRepository(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		project,
+		&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
+		permissionErr.RunID,
+		projectAssistantResumeRequest{
+			RequestID: permissionErr.RequestID,
+			Decision:  string(projectAssistantPermissionAllow),
+		},
+	)
+	if err != nil {
+		t.Fatalf("resumeProjectAssistantRunWithRepository returned error: %v", err)
+	}
+	if resp.Status != store.AssistantRunStatusCompleted || resp.ToolCall == nil || resp.ToolCall.Name != projectToolPlanProjectChanges || resp.ToolCall.Status != "succeeded" {
+		t.Fatalf("resume response = %#v, want completed planning workflow", resp)
+	}
+	var plan projectAssistantWorkflowPlan
+	if err := json.Unmarshal([]byte(resp.Result), &plan); err != nil {
+		t.Fatalf("decode planning workflow result: %v", err)
+	}
+	if plan.Repository == nil || plan.Repository.Ref != "demo-repo" || plan.Repository.Status != projectRepositoryStatusReady {
+		t.Fatalf("repository = %#v, want ready demo-repo", plan.Repository)
+	}
+	steps := strings.Join(plan.Steps, "\n")
+	if !strings.Contains(steps, "commit_project_files") || strings.Contains(steps, "Defer commit handoff") {
+		t.Fatalf("steps = %#v, want ready repository commit guidance", plan.Steps)
+	}
+}
+
 func TestGenerateProjectAssistantStreamStopsOfferingToolsAfterRepeatedToolLoop(t *testing.T) {
 	reply, requests, err := runRepeatedReadFileAssistantStream(t, func(w http.ResponseWriter) {
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"I inspected src/App.tsx and stopped before repeating the same action.\"}}]}\n\n")
@@ -1572,6 +1673,8 @@ func TestResolveProjectToolCallsReportsCommitProjectFilesFailure(t *testing.T) {
 	messages, err := server.resolveProjectToolCalls(
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		nil,
+		nil,
 		scope,
 		"demo-repo",
 		[]chatToolCall{{
@@ -1633,6 +1736,8 @@ func TestResolveProjectToolCallsRejectsCommitProjectFilesRepositoryMismatch(t *t
 	messages, err := server.resolveProjectToolCalls(
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		nil,
+		nil,
 		scope,
 		"demo-repo",
 		[]chatToolCall{{
@@ -1899,6 +2004,8 @@ func TestResolveProjectToolCallsCommitsWorkspaceFilesThroughCodeProvider(t *test
 	messages, err := server.resolveProjectToolCalls(
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		nil,
+		nil,
 		scope,
 		"demo-repo",
 		[]chatToolCall{{
@@ -1937,6 +2044,8 @@ func TestResolveProjectToolCallsRejectsDirectCodeCommitFiles(t *testing.T) {
 	messages, err := server.resolveProjectToolCalls(
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		nil,
+		nil,
 		scope,
 		"demo",
 		[]chatToolCall{{

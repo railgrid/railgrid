@@ -71,6 +71,7 @@ const (
 	projectToolListProjectFiles   = "list_project_files"
 	projectToolReadProjectFile    = "read_project_file"
 	projectToolSearchProjectFiles = "search_project_files"
+	projectToolPlanProjectChanges = "plan_project_changes"
 	projectToolWriteFile          = "write_file"
 	projectToolApplyPatch         = "apply_patch"
 	projectToolMkdir              = "mkdir"
@@ -457,7 +458,7 @@ func (s *Server) resolveProjectToolCallsWithPermissions(
 	for i, tc := range toolCalls {
 		tool, ok := registry.Get(tc.Function.Name)
 		if !ok {
-			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
 			if err != nil {
 				return nil, err
 			}
@@ -466,7 +467,7 @@ func (s *Server) resolveProjectToolCallsWithPermissions(
 		}
 		args, err := projectAssistantToolCallArguments(tc)
 		if err != nil {
-			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
 			if err != nil {
 				return nil, err
 			}
@@ -476,7 +477,7 @@ func (s *Server) resolveProjectToolCallsWithPermissions(
 		spec := tool.Spec()
 		switch projectAssistantPermissionForTool(spec) {
 		case projectAssistantPermissionAllow:
-			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
 			if err != nil {
 				return nil, err
 			}
@@ -1001,6 +1002,8 @@ func projectLLMAuthToken(ctx context.Context, settings projectLLMSettings) (stri
 func (s *Server) resolveProjectToolCalls(
 	ctx context.Context,
 	id identity,
+	project *aiv1alpha1.Project,
+	repository *ProjectRepositoryView,
 	scope workspace.Scope,
 	projectRepositoryRef string,
 	toolCalls []chatToolCall,
@@ -1111,7 +1114,7 @@ func (s *Server) resolveProjectToolCalls(
 		var resp string
 		var err error
 		if projectLocalToolAllowed(tc.Function.Name) {
-			resp, err = s.callProjectLocalTool(ctx, id, scope, projectRepositoryRef, mcpEndpoint, r, tc.Function.Name, args)
+			resp, err = s.callProjectLocalTool(ctx, id, project, repository, scope, projectRepositoryRef, mcpEndpoint, r, tc.Function.Name, args)
 		} else {
 			resp, err = callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, tc.Function.Name, args)
 		}
@@ -1170,13 +1173,15 @@ func projectLinkedRepositoryRef(p *aiv1alpha1.Project) string {
 	return strings.TrimSpace(p.Spec.Repository.RepositoryRef)
 }
 
-func (s *Server) callProjectLocalTool(ctx context.Context, id identity, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, name string, args map[string]any) (string, error) {
+func (s *Server) callProjectLocalTool(ctx context.Context, id identity, project *aiv1alpha1.Project, repository *ProjectRepositoryView, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, name string, args map[string]any) (string, error) {
 	tool, ok := s.projectAssistantToolRegistry().Get(name)
 	if !ok {
 		return "", fmt.Errorf("unknown local project tool %q", name)
 	}
 	return tool.Call(ctx, projectAssistantToolCallRequest{
 		Identity:             id,
+		Project:              project,
+		Repository:           repository,
 		WorkspaceScope:       scope,
 		ProjectRepositoryRef: projectRepositoryRef,
 		MCPEndpoint:          mcpEndpoint,
@@ -1301,6 +1306,8 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return summarizeProjectToolKeyValues(args, []string{"path", "maxBytes"})
 	case projectToolSearchProjectFiles:
 		return summarizeProjectToolKeyValues(args, []string{"query", "maxResults"})
+	case projectToolPlanProjectChanges:
+		return summarizeProjectPlanningWorkflowArgs(args)
 	case projectToolWriteFile:
 		return summarizeProjectMutationArgs(args, []string{"path"}, true)
 	case projectToolApplyPatch:
@@ -1351,6 +1358,8 @@ func summarizeProjectToolResult(name, result string) string {
 			return summarizeWorkspaceReadResult(decoded)
 		case projectToolSearchProjectFiles:
 			return summarizeWorkspaceSearchResult(decoded)
+		case projectToolPlanProjectChanges:
+			return summarizeProjectPlanningWorkflowResult(decoded)
 		case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
 			return summarizeWorkspaceMutationResult(decoded)
 		}
@@ -1395,6 +1404,17 @@ func summarizeProjectToolKeyValues(args map[string]any, keys []string) string {
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
 }
 
+func summarizeProjectPlanningWorkflowArgs(args map[string]any) string {
+	parts := []string{}
+	if includeFiles, ok := args["includeFiles"].(bool); ok {
+		parts = append(parts, fmt.Sprintf("includeFiles %t", includeFiles))
+	}
+	if n, ok := projectToolNumber(args["maxFiles"]); ok {
+		parts = append(parts, fmt.Sprintf("maxFiles %d", n))
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
 func summarizeWorkspaceMutationResult(decoded map[string]any) string {
 	parts := []string{}
 	if op := projectToolString(decoded["operation"]); op != "" {
@@ -1408,6 +1428,23 @@ func summarizeWorkspaceMutationResult(decoded map[string]any) string {
 	}
 	if replacements, ok := projectToolNumber(decoded["replacements"]); ok {
 		parts = append(parts, fmt.Sprintf("%d replacement(s)", replacements))
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectPlanningWorkflowResult(decoded map[string]any) string {
+	parts := []string{}
+	if summary := projectToolString(decoded["summary"]); summary != "" {
+		parts = append(parts, summary)
+	}
+	if steps, ok := decoded["steps"].([]any); ok && len(steps) > 0 {
+		parts = append(parts, fmt.Sprintf("%d step(s)", len(steps)))
+	}
+	if files := projectToolStringList(decoded["files"]); len(files) > 0 {
+		parts = append(parts, fmt.Sprintf("%d file(s): %s", len(files), summarizeProjectToolList(files, 5)))
+	}
+	if len(parts) == 0 {
+		return ""
 	}
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
 }

@@ -175,6 +175,18 @@ func (s *Server) resumeProjectAssistantRun(
 	runID string,
 	req projectAssistantResumeRequest,
 ) (projectAssistantResumeResponse, error) {
+	return s.resumeProjectAssistantRunWithRepository(ctx, r, id, p, nil, runID, req)
+}
+
+func (s *Server) resumeProjectAssistantRunWithRepository(
+	ctx context.Context,
+	r *http.Request,
+	id identity,
+	p *aiv1alpha1.Project,
+	repository *ProjectRepositoryView,
+	runID string,
+	req projectAssistantResumeRequest,
+) (projectAssistantResumeResponse, error) {
 	if s.store == nil {
 		return projectAssistantResumeResponse{}, fmt.Errorf("project message store not configured")
 	}
@@ -241,7 +253,7 @@ func (s *Server) resumeProjectAssistantRun(
 		return projectAssistantResumeResponse{}, newValidationError(staleBindingError)
 	}
 
-	run, out, err = s.resolveClaimedProjectAssistantRun(ctx, r, id, p, run, state, req, decision, out)
+	run, out, err = s.resolveClaimedProjectAssistantRun(ctx, r, id, p, repository, run, state, req, decision, out)
 	if err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
@@ -311,6 +323,7 @@ func (s *Server) resolveClaimedProjectAssistantRun(
 	r *http.Request,
 	id identity,
 	p *aiv1alpha1.Project,
+	repository *ProjectRepositoryView,
 	run store.AssistantRun,
 	state projectAssistantCheckpointState,
 	req projectAssistantResumeRequest,
@@ -338,7 +351,7 @@ func (s *Server) resolveClaimedProjectAssistantRun(
 			if err != nil {
 				return run, out, err
 			}
-			result, toolCall, err := s.executeApprovedProjectAssistantToolCall(ctx, r, id, p, state.ProjectRepositoryRef, tc)
+			result, toolCall, err := s.executeApprovedProjectAssistantToolCall(ctx, r, id, p, repository, state.ProjectRepositoryRef, tc)
 			if err != nil {
 				return run, out, err
 			}
@@ -414,6 +427,7 @@ func (s *Server) executeApprovedProjectAssistantToolCall(
 	r *http.Request,
 	id identity,
 	p *aiv1alpha1.Project,
+	repository *ProjectRepositoryView,
 	projectRepositoryRef string,
 	tc chatToolCall,
 ) (string, *projectToolCallStreamEvent, error) {
@@ -421,6 +435,8 @@ func (s *Server) executeApprovedProjectAssistantToolCall(
 	messages, err := s.resolveProjectToolCalls(
 		ctx,
 		id,
+		p,
+		repository,
 		projectWorkspaceScope(id, p.Name),
 		projectRepositoryRef,
 		[]chatToolCall{tc},
