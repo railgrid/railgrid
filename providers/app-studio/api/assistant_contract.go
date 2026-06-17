@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"time"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -40,6 +41,7 @@ type projectAssistantEngine interface {
 
 type projectAssistantRunRequest struct {
 	Identity                 identity
+	HTTPRequest              *http.Request
 	Client                   *asclient.Client
 	Project                  *aiv1alpha1.Project
 	Repository               *ProjectRepositoryView
@@ -50,6 +52,7 @@ type projectAssistantRunRequest struct {
 	History                  []store.Message
 	MCPBaseURL               string
 	MCPInsecureSkipTLSVerify bool
+	StreamCallbacks          projectAssistantStreamCallbacks
 }
 
 type projectAssistantRunResult struct {
