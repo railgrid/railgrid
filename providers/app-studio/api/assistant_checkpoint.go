@@ -148,6 +148,8 @@ func projectAssistantPermissionReason(spec projectAssistantToolSpec) string {
 		return "This action will modify files in the App Studio workspace."
 	case projectAssistantToolRiskCommit:
 		return "This action will commit App Studio workspace changes to the linked repository."
+	case projectAssistantToolRiskRuntime:
+		return "This action will start a sandboxed App Studio runtime command."
 	default:
 		return "This action requires approval."
 	}

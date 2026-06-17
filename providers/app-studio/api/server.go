@@ -39,7 +39,8 @@ import (
 // per-(tenant, caller) dynamic client; store persists chat transcripts; hubBase
 // locates the hub's MCP virtual workspace; mcpInsecureSkipTLSVerify relaxes TLS
 // for dev MCP calls; workspaces stores project files owned by App Studio;
-// assistantEngine runs project assistant turns.
+// assistantEngine runs project assistant turns; runtimeWorker is an optional
+// boundary for future sandboxed checks and previews.
 type Server struct {
 	clients                  *tenant.ClientFactory
 	store                    store.Store
@@ -47,6 +48,7 @@ type Server struct {
 	hubBase                  string
 	mcpInsecureSkipTLSVerify bool
 	assistantEngine          projectAssistantEngine
+	runtimeWorker            projectRuntimeWorker
 }
 
 // New constructs a Server.

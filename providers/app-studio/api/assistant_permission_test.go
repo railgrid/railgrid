@@ -30,6 +30,7 @@ func TestProjectAssistantPermissionPolicy(t *testing.T) {
 		{name: "read tools auto allow", risk: projectAssistantToolRiskRead, want: projectAssistantPermissionAllow},
 		{name: "write tools ask", risk: projectAssistantToolRiskWrite, want: projectAssistantPermissionAsk},
 		{name: "commit tools ask", risk: projectAssistantToolRiskCommit, want: projectAssistantPermissionAsk},
+		{name: "runtime tools ask", risk: projectAssistantToolRiskRuntime, want: projectAssistantPermissionAsk},
 		{name: "unknown risk denies", risk: projectAssistantToolRisk("danger"), want: projectAssistantPermissionDeny},
 	}
 	for _, tt := range tests {

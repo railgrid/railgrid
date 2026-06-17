@@ -75,6 +75,7 @@ const (
 	projectToolWriteFile          = "write_file"
 	projectToolApplyPatch         = "apply_patch"
 	projectToolMkdir              = "mkdir"
+	projectToolRuntimeCommand     = "runtime_command"
 	projectToolCommitProjectFiles = "commit_project_files"
 	projectToolCommitFiles        = "commit_files"
 	projectToolCodeCommitFiles    = "code__commit_files"
@@ -1017,6 +1018,7 @@ func (s *Server) resolveProjectToolCalls(
 	var toolMessages []chatMessage
 	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
 	logger := klog.FromContext(ctx)
+	registry := s.projectAssistantToolRegistry()
 
 	for _, tc := range toolCalls {
 		if onToolCall != nil {
@@ -1043,7 +1045,9 @@ func (s *Server) resolveProjectToolCalls(
 			})
 			continue
 		}
-		if !projectToolAllowed(tc.Function.Name) {
+		localTool := registry.Has(tc.Function.Name)
+		runtimeTool := projectRuntimeToolAllowed(tc.Function.Name)
+		if !localTool && !runtimeTool && !projectMCPToolAllowed(tc.Function.Name) {
 			logger.Info("project assistant tool call rejected", "reason", "disallowed tool name", "tool", tc.Function.Name)
 			if onToolCall != nil {
 				onToolCall(projectToolCallStreamEvent{
@@ -1113,8 +1117,14 @@ func (s *Server) resolveProjectToolCalls(
 		}
 		var resp string
 		var err error
-		if projectLocalToolAllowed(tc.Function.Name) {
+		if localTool {
 			resp, err = s.callProjectLocalTool(ctx, id, project, repository, scope, projectRepositoryRef, mcpEndpoint, r, tc.Function.Name, args)
+		} else if runtimeTool {
+			resp, err = newProjectRuntimeCommandTool(nil).Call(ctx, projectAssistantToolCallRequest{
+				Identity:       id,
+				WorkspaceScope: scope,
+				Arguments:      args,
+			})
 		} else {
 			resp, err = callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, tc.Function.Name, args)
 		}

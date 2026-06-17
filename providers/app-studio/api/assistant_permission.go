@@ -33,7 +33,7 @@ func projectAssistantPermissionForTool(spec projectAssistantToolSpec) projectAss
 	switch spec.Risk {
 	case projectAssistantToolRiskRead:
 		return projectAssistantPermissionAllow
-	case projectAssistantToolRiskWrite, projectAssistantToolRiskCommit:
+	case projectAssistantToolRiskWrite, projectAssistantToolRiskCommit, projectAssistantToolRiskRuntime:
 		return projectAssistantPermissionAsk
 	default:
 		return projectAssistantPermissionDeny

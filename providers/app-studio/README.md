@@ -89,3 +89,14 @@ The assistant-facing workspace tools are App Studio local tools. Provider-code
 remains the git-source boundary: `commit_project_files` reads selected workspace
 files and delegates the actual commit to the Code provider's `code__commit_files`
 tool.
+
+## Runtime workers
+
+App Studio does not run build, test, preview, or log commands inside the
+provider pod. Runtime commands are modeled behind an internal worker boundary so
+future implementations can use isolated tenant/project-scoped workers with their
+own resource limits, audit trail, and cancellation model.
+
+By default no runtime worker is configured, so `runtime_command` is not advertised
+to the assistant. If a future deployment injects a worker, runtime commands still
+require explicit user approval before the worker is started.

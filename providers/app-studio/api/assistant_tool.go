@@ -29,9 +29,10 @@ import (
 type projectAssistantToolRisk string
 
 const (
-	projectAssistantToolRiskRead   projectAssistantToolRisk = "read"
-	projectAssistantToolRiskWrite  projectAssistantToolRisk = "write"
-	projectAssistantToolRiskCommit projectAssistantToolRisk = "commit"
+	projectAssistantToolRiskRead    projectAssistantToolRisk = "read"
+	projectAssistantToolRiskWrite   projectAssistantToolRisk = "write"
+	projectAssistantToolRiskCommit  projectAssistantToolRisk = "commit"
+	projectAssistantToolRiskRuntime projectAssistantToolRisk = "runtime"
 )
 
 type projectAssistantToolSpec struct {
