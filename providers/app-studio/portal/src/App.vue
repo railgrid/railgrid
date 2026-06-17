@@ -75,6 +75,10 @@ type ProjectMessageView = ProjectMessage & {
   viewStatus?: ProjectMessageViewStatus
   toolCalls?: ProjectToolCallView[]
 }
+interface PendingApprovalView {
+  message: ProjectMessageView
+  toolCall: ProjectToolCallView
+}
 
 const SPLIT_WIDTH_KEY = 'kedge:projects:split-width'
 const OPENAI_COMPATIBLE_PROVIDER = 'openai-compatible'
@@ -186,6 +190,17 @@ const projects = ref<Project[]>([])
 const providers = ref<ProviderItem[]>([])
 const selected = ref<Project | null>(null)
 const messages = ref<ProjectMessageView[]>([])
+const pendingApproval = computed<PendingApprovalView | null>(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const message = messages.value[i]
+    for (const toolCall of message.toolCalls ?? []) {
+      if (toolCall.status === 'permission_required' && toolCall.permission) {
+        return { message, toolCall }
+      }
+    }
+  }
+  return null
+})
 const loading = ref(true)
 const projectsLoaded = ref(false)
 const providersLoading = ref(false)
@@ -1346,6 +1361,9 @@ async function resolveToolPermission(message: ProjectMessageView, toolCall: Proj
   }
 
   permissionBusy.value = { ...permissionBusy.value, [key]: decision }
+  if (decision === 'allow') {
+    conversationStatus.value = 'Working'
+  }
   try {
     const response = await api.resumeAssistantRun(props.ctx, projectName, runID, {
       requestID,
@@ -1363,6 +1381,7 @@ async function resolveToolPermission(message: ProjectMessageView, toolCall: Proj
     const next = { ...permissionBusy.value }
     delete next[key]
     permissionBusy.value = next
+    conversationStatus.value = ''
   }
 }
 
@@ -1397,6 +1416,21 @@ function applyPermissionResponse(
       attachAssistantCheckpoint(projectName, assistantMessageID, response.checkpoint)
     }
   }
+  if (response.assistantMessage) {
+    upsertProjectMessage(response.assistantMessage)
+  }
+}
+
+function upsertProjectMessage(message: ProjectMessage) {
+  const view = toProjectMessageView(message)
+  const idx = messages.value.findIndex((item) => item.id === view.id)
+  if (idx >= 0) {
+    messages.value[idx] = view
+  } else {
+    messages.value = [...messages.value, view]
+    return
+  }
+  messages.value = [...messages.value]
 }
 
 function toProjectMessageView(message: ProjectMessage): ProjectMessageView {
@@ -2158,6 +2192,75 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
       </div>
 
       <template v-if="selected">
+        <div
+          v-if="pendingApproval"
+          class="mx-4 mt-3 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
+        >
+          <div class="flex min-w-0 items-start gap-3">
+            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
+              <ClipboardList class="h-4 w-4" :stroke-width="1.75" />
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="flex min-w-0 items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-[13px] font-semibold text-text-primary">Approval required</div>
+                  <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
+                    {{ pendingApproval.toolCall.permission?.reason || 'Review this action before it runs.' }}
+                  </div>
+                </div>
+                <div class="shrink-0 rounded-md border border-border-subtle bg-surface px-2 py-1 font-mono text-[11px] text-text-muted">
+                  {{ pendingApproval.toolCall.checkpoint?.id || 'Saving' }}
+                </div>
+              </div>
+              <div class="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-text-muted">
+                <span class="rounded-md border border-border-subtle bg-surface px-2 py-1 font-mono text-text-primary">
+                  {{ displayToolName(pendingApproval.toolCall.permission?.toolName || pendingApproval.toolCall.name) }}
+                </span>
+                <span class="min-w-0 truncate">{{ actionSummary(pendingApproval.toolCall) }}</span>
+              </div>
+              <textarea
+                v-if="canEditPermission(pendingApproval.toolCall)"
+                v-model="permissionEdits[permissionKey(pendingApproval.toolCall)]"
+                rows="4"
+                class="mt-3 min-h-[92px] w-full resize-y rounded-md border border-border-subtle bg-surface px-2 py-1.5 font-mono text-[11px] leading-4 text-text-secondary outline-none transition focus:border-accent/50"
+                spellcheck="false"
+              />
+              <div v-if="permissionError(pendingApproval.toolCall)" class="mt-2 text-[11px] leading-4 text-danger">
+                {{ permissionError(pendingApproval.toolCall) }}
+              </div>
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  :disabled="!pendingApproval.toolCall.checkpoint || !!permissionBusyState(pendingApproval.toolCall)"
+                  @click="resolveToolPermission(pendingApproval.message, pendingApproval.toolCall, 'allow')"
+                >
+                  <Loader2
+                    v-if="permissionBusyState(pendingApproval.toolCall) === 'allow'"
+                    class="h-3.5 w-3.5 animate-spin"
+                    :stroke-width="1.75"
+                  />
+                  <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  Allow
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                  :disabled="!pendingApproval.toolCall.checkpoint || !!permissionBusyState(pendingApproval.toolCall)"
+                  @click="resolveToolPermission(pendingApproval.message, pendingApproval.toolCall, 'deny')"
+                >
+                  <Loader2
+                    v-if="permissionBusyState(pendingApproval.toolCall) === 'deny'"
+                    class="h-3.5 w-3.5 animate-spin"
+                    :stroke-width="1.75"
+                  />
+                  <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  Deny
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
         <div
           ref="messagesRef"
           class="min-h-0 flex-1 overflow-auto px-4 py-3"

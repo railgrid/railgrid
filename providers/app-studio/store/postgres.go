@@ -330,18 +330,20 @@ func (s *PostgresStore) SaveAssistantRun(ctx context.Context, scope Scope, run A
 	if len(checkpoint) == 0 {
 		checkpoint = json.RawMessage(`{}`)
 	}
-	if !json.Valid(checkpoint) {
-		return fmt.Errorf("assistant run checkpoint is not valid json")
+	normalizedCheckpoint, err := normalizePostgresJSONB(checkpoint)
+	if err != nil {
+		return fmt.Errorf("assistant run checkpoint is not valid json: %w", err)
 	}
 	audit := run.Audit
 	if len(audit) == 0 {
 		audit = json.RawMessage(`{}`)
 	}
-	if !json.Valid(audit) {
-		return fmt.Errorf("assistant run audit is not valid json")
+	normalizedAudit, err := normalizePostgresJSONB(audit)
+	if err != nil {
+		return fmt.Errorf("assistant run audit is not valid json: %w", err)
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO app_studio_assistant_runs (
 			org_uuid, workspace_uuid, project_name, run_id,
 			status, request_id, checkpoint, audit, created_at, updated_at
@@ -355,12 +357,27 @@ func (s *PostgresStore) SaveAssistantRun(ctx context.Context, scope Scope, run A
 			updated_at = EXCLUDED.updated_at
 	`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, run.ID,
-		run.Status, run.RequestID, []byte(checkpoint), []byte(audit), run.CreatedAt.UTC(), run.UpdatedAt.UTC(),
+		run.Status, run.RequestID, string(normalizedCheckpoint), string(normalizedAudit), run.CreatedAt.UTC(), run.UpdatedAt.UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert assistant run: %w", err)
 	}
 	return nil
+}
+
+func normalizePostgresJSONB(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var parsed any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, err
+	}
+	normalized, err := json.Marshal(parsed)
+	if err != nil {
+		return nil, err
+	}
+	return normalized, nil
 }
 
 func (s *PostgresStore) ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error) {

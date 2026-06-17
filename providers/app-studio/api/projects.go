@@ -489,7 +489,7 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	resp, err := s.resumeProjectAssistantRunWithRepository(r.Context(), r, id, p, projectRepositoryView(r.Context(), c, p), mux.Vars(r)["run"], req)
+	resp, err := s.resumeProjectAssistantRunWithRepositoryAndClient(r.Context(), r, id, c, p, projectRepositoryView(r.Context(), c, p), mux.Vars(r)["run"], req)
 	if err != nil {
 		writeProjectError(w, err)
 		return

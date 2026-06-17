@@ -1408,6 +1408,108 @@ func TestResumeProjectAssistantRunContinuesToolBatchToNextPermission(t *testing.
 	}
 }
 
+func TestResumeProjectAssistantRunContinuesLLMAfterApprovedPermission(t *testing.T) {
+	var llmRequests []chatCompletionRequest
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode LLM request: %v", err)
+		}
+		llmRequests = append(llmRequests, req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch len(llmRequests) {
+		case 1:
+			writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"src/App.tsx","content":"approved\n"}`)
+		case 2:
+			var sawAssistantCall, sawToolResult bool
+			for _, msg := range req.Messages {
+				if msg.Role == aiv1alpha1.ProjectMessageRoleAssistant && len(msg.ToolCalls) == 1 && msg.ToolCalls[0].ID == "call-write" {
+					sawAssistantCall = true
+				}
+				if msg.Role == "tool" && msg.ToolCallID == "call-write" && strings.Contains(msg.Content, "src/App.tsx") {
+					sawToolResult = true
+				}
+			}
+			if !sawAssistantCall || !sawToolResult {
+				t.Fatalf("resume LLM messages = %#v, want approved tool call and result context", req.Messages)
+			}
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"I wrote src/App.tsx after approval.\"}}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		default:
+			t.Fatalf("unexpected LLM request count %d", len(llmRequests))
+		}
+	}))
+	defer llm.Close()
+
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: llm.URL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messages := store.NewMemoryStore()
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, "demo")
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "write src/app"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+
+	_, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	var permissionErr *projectAssistantPermissionRequiredError
+	if !errors.As(err, &permissionErr) {
+		t.Fatalf("generateProjectAssistantStream error = %v, want permission required", err)
+	}
+
+	resp, err := server.resumeProjectAssistantRunWithRepositoryAndClient(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
+		permissionErr.RunID,
+		projectAssistantResumeRequest{RequestID: permissionErr.RequestID, Decision: string(projectAssistantPermissionAllow)},
+	)
+	if err != nil {
+		t.Fatalf("resumeProjectAssistantRunWithRepositoryAndClient returned error: %v", err)
+	}
+	if resp.Status != store.AssistantRunStatusCompleted {
+		t.Fatalf("resume response = %#v, want completed", resp)
+	}
+	if resp.AssistantMessage == nil || resp.AssistantMessage.Content != "I wrote src/App.tsx after approval." {
+		t.Fatalf("assistant message = %#v, want continuation response", resp.AssistantMessage)
+	}
+	if len(llmRequests) != 2 {
+		t.Fatalf("LLM request count = %d, want initial request plus resumed continuation", len(llmRequests))
+	}
+	read, err := workspaces.ReadFile(context.Background(), projectWorkspaceScope(id, project.Name), workspace.ReadOptions{Path: "src/App.tsx"})
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if read.Content != "approved\n" {
+		t.Fatalf("content = %q, want approved write", read.Content)
+	}
+	recent, err := messages.LoadRecentMessages(context.Background(), messageScope, 10)
+	if err != nil {
+		t.Fatalf("LoadRecentMessages returned error: %v", err)
+	}
+	var sawContinuation bool
+	for _, msg := range recent {
+		if msg.Role == aiv1alpha1.ProjectMessageRoleAssistant && msg.Content == "I wrote src/App.tsx after approval." {
+			sawContinuation = true
+		}
+	}
+	if !sawContinuation {
+		t.Fatalf("messages = %#v, want persisted resumed assistant continuation", recent)
+	}
+}
+
 func TestResumeProjectAssistantRunReplaysWorkflowWithRepositoryContext(t *testing.T) {
 	messages := store.NewMemoryStore()
 	workspaces := workspace.NewFileStore(t.TempDir())

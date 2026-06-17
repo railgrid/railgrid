@@ -60,7 +60,15 @@ func newProjectEinoAssistantBody(server *Server) projectEinoAssistantBody {
 		if err := ctx.Err(); err != nil {
 			return projectAssistantRunResult{}, err
 		}
-		reply, err := server.runProjectAssistantChatLoop(ctx, req)
+		var (
+			reply string
+			err   error
+		)
+		if req.Continuation != nil {
+			reply, err = server.runProjectAssistantChatLoopFromCheckpoint(ctx, req, *req.Continuation)
+		} else {
+			reply, err = server.runProjectAssistantChatLoop(ctx, req)
+		}
 		if err != nil {
 			return projectAssistantRunResult{}, err
 		}

@@ -95,7 +95,7 @@ func TestProjectRuntimeWorkerRequiresApprovalWithWorker(t *testing.T) {
 			WorkspaceScope: projectWorkspaceScope(id, "demo"),
 			MessageScope:   projectMessageScope(id.orgUUID, id.workspaceUUID, "demo"),
 		},
-		"",
+		projectAssistantCheckpointState{},
 		[]chatToolCall{{
 			ID:   "call-runtime",
 			Type: "function",

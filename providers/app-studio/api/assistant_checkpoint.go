@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/google/uuid"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/store"
 )
 
@@ -34,6 +36,12 @@ type projectAssistantCheckpointState struct {
 	ToolCalls            []chatToolCall `json:"toolCalls"`
 	CurrentIndex         int            `json:"currentIndex"`
 	ProjectRepositoryRef string         `json:"projectRepositoryRef,omitempty"`
+	Messages             []chatMessage  `json:"messages,omitempty"`
+	Turn                 int            `json:"turn,omitempty"`
+	SeenToolCalls        map[string]int `json:"seenToolCalls,omitempty"`
+	ForceTextAnswer      bool           `json:"forceTextAnswer,omitempty"`
+	RepeatedToolLoop     bool           `json:"repeatedToolLoop,omitempty"`
+	LastToolMessages     []chatMessage  `json:"lastToolMessages,omitempty"`
 }
 
 type projectAssistantResumeRequest struct {
@@ -44,14 +52,15 @@ type projectAssistantResumeRequest struct {
 }
 
 type projectAssistantResumeResponse struct {
-	RunID      string                             `json:"runID"`
-	RequestID  string                             `json:"requestID"`
-	Status     store.AssistantRunStatus           `json:"status"`
-	Decision   projectAssistantPermissionDecision `json:"decision"`
-	ToolCall   *projectToolCallStreamEvent        `json:"toolCall,omitempty"`
-	Permission *projectAssistantPermission        `json:"permission,omitempty"`
-	Checkpoint *projectAssistantCheckpoint        `json:"checkpoint,omitempty"`
-	Result     string                             `json:"result,omitempty"`
+	RunID            string                             `json:"runID"`
+	RequestID        string                             `json:"requestID"`
+	Status           store.AssistantRunStatus           `json:"status"`
+	Decision         projectAssistantPermissionDecision `json:"decision"`
+	ToolCall         *projectToolCallStreamEvent        `json:"toolCall,omitempty"`
+	Permission       *projectAssistantPermission        `json:"permission,omitempty"`
+	Checkpoint       *projectAssistantCheckpoint        `json:"checkpoint,omitempty"`
+	Result           string                             `json:"result,omitempty"`
+	AssistantMessage *aiv1alpha1.ProjectMessage         `json:"assistantMessage,omitempty"`
 }
 
 type projectAssistantRunAudit struct {
@@ -97,6 +106,22 @@ func (s *Server) saveProjectAssistantPermissionCheckpointForToolCalls(
 	currentIndex int,
 	projectRepositoryRef string,
 ) (*projectAssistantPermissionRequiredError, projectAssistantPermission, projectAssistantCheckpoint, error) {
+	state := projectAssistantCheckpointState{
+		ToolCalls:            cloneProjectAssistantToolCalls(toolCalls),
+		CurrentIndex:         currentIndex,
+		ProjectRepositoryRef: strings.TrimSpace(projectRepositoryRef),
+	}
+	return s.saveProjectAssistantPermissionCheckpointForState(ctx, req, tool, state, toolCalls, currentIndex)
+}
+
+func (s *Server) saveProjectAssistantPermissionCheckpointForState(
+	ctx context.Context,
+	req projectAssistantRunRequest,
+	tool projectAssistantTool,
+	state projectAssistantCheckpointState,
+	toolCalls []chatToolCall,
+	currentIndex int,
+) (*projectAssistantPermissionRequiredError, projectAssistantPermission, projectAssistantCheckpoint, error) {
 	if s.store == nil {
 		return nil, projectAssistantPermission{}, projectAssistantCheckpoint{}, fmt.Errorf("project message store not configured")
 	}
@@ -107,11 +132,12 @@ func (s *Server) saveProjectAssistantPermissionCheckpointForToolCalls(
 	runID := newProjectAssistantRunID()
 	requestID := newProjectAssistantPermissionRequestID()
 	now := time.Now().UTC()
-	state := projectAssistantCheckpointState{
-		ToolCalls:            cloneProjectAssistantToolCalls(toolCalls),
-		CurrentIndex:         currentIndex,
-		ProjectRepositoryRef: strings.TrimSpace(projectRepositoryRef),
-	}
+	state.ToolCalls = cloneProjectAssistantToolCalls(toolCalls)
+	state.CurrentIndex = currentIndex
+	state.ProjectRepositoryRef = strings.TrimSpace(state.ProjectRepositoryRef)
+	state.Messages = cloneChatMessages(state.Messages)
+	state.SeenToolCalls = cloneProjectAssistantSeenToolCalls(state.SeenToolCalls)
+	state.LastToolMessages = cloneChatMessages(state.LastToolMessages)
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return nil, projectAssistantPermission{}, projectAssistantCheckpoint{}, fmt.Errorf("encode assistant checkpoint: %w", err)
@@ -189,6 +215,19 @@ func (s *Server) resumeProjectAssistantRunWithRepository(
 	runID string,
 	req projectAssistantResumeRequest,
 ) (projectAssistantResumeResponse, error) {
+	return s.resumeProjectAssistantRunWithRepositoryAndClient(ctx, r, id, nil, p, repository, runID, req)
+}
+
+func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
+	ctx context.Context,
+	r *http.Request,
+	id identity,
+	c *asclient.Client,
+	p *aiv1alpha1.Project,
+	repository *ProjectRepositoryView,
+	runID string,
+	req projectAssistantResumeRequest,
+) (projectAssistantResumeResponse, error) {
 	if s.store == nil {
 		return projectAssistantResumeResponse{}, fmt.Errorf("project message store not configured")
 	}
@@ -255,7 +294,7 @@ func (s *Server) resumeProjectAssistantRunWithRepository(
 		return projectAssistantResumeResponse{}, newValidationError(staleBindingError)
 	}
 
-	run, out, err = s.resolveClaimedProjectAssistantRun(ctx, r, id, p, repository, run, state, req, decision, out)
+	run, out, state, err = s.resolveClaimedProjectAssistantRun(ctx, r, id, p, repository, run, state, req, decision, out)
 	if err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
@@ -265,6 +304,13 @@ func (s *Server) resumeProjectAssistantRunWithRepository(
 	out.Status = run.Status
 	if err := s.updateProjectAssistantPermissionMessage(ctx, messageScope, strings.TrimSpace(req.AssistantMessageID), out); err != nil {
 		return projectAssistantResumeResponse{}, err
+	}
+	if c != nil && decision == projectAssistantPermissionAllow && out.Status == store.AssistantRunStatusCompleted && len(state.Messages) > 0 {
+		assistantMessage, err := s.continueProjectAssistantRunAfterPermission(ctx, r, id, c, p, repository, state)
+		if err != nil {
+			return projectAssistantResumeResponse{}, err
+		}
+		out.AssistantMessage = assistantMessage
 	}
 	return out, nil
 }
@@ -331,7 +377,7 @@ func (s *Server) resolveClaimedProjectAssistantRun(
 	req projectAssistantResumeRequest,
 	decision projectAssistantPermissionDecision,
 	out projectAssistantResumeResponse,
-) (store.AssistantRun, projectAssistantResumeResponse, error) {
+) (store.AssistantRun, projectAssistantResumeResponse, projectAssistantCheckpointState, error) {
 	index := state.CurrentIndex
 	for index < len(state.ToolCalls) {
 		tc := state.ToolCalls[index]
@@ -351,14 +397,16 @@ func (s *Server) resolveClaimedProjectAssistantRun(
 			var err error
 			tc, err = projectAssistantToolCallWithEditedArguments(tc, editedArguments)
 			if err != nil {
-				return run, out, err
+				return run, out, state, err
 			}
-			result, toolCall, err := s.executeApprovedProjectAssistantToolCall(ctx, r, id, p, repository, state.ProjectRepositoryRef, tc)
+			messages, result, toolCall, err := s.executeApprovedProjectAssistantToolCall(ctx, r, id, p, repository, state.ProjectRepositoryRef, tc)
 			if err != nil {
-				return run, out, err
+				return run, out, state, err
 			}
 			out.Result = result
 			out.ToolCall = toolCall
+			state.Messages = append(state.Messages, messages...)
+			state.LastToolMessages = cloneChatMessages(messages)
 			now := time.Now().UTC()
 			run, err = appendProjectAssistantRunAudit(run, projectAssistantPermissionAudit{
 				RequestID:       run.RequestID,
@@ -372,7 +420,7 @@ func (s *Server) resolveClaimedProjectAssistantRun(
 				ResolvedAt:      now,
 			})
 			if err != nil {
-				return run, out, err
+				return run, out, state, err
 			}
 			index++
 		case projectAssistantPermissionDeny:
@@ -384,6 +432,8 @@ func (s *Server) resolveClaimedProjectAssistantRun(
 				Status: "rejected",
 				Error:  msg.Content,
 			}
+			state.Messages = append(state.Messages, msg)
+			state.LastToolMessages = []chatMessage{msg}
 			now := time.Now().UTC()
 			var err error
 			run, err = appendProjectAssistantRunAudit(run, projectAssistantPermissionAudit{
@@ -397,7 +447,7 @@ func (s *Server) resolveClaimedProjectAssistantRun(
 				ResolvedAt:      now,
 			})
 			if err != nil {
-				return run, out, err
+				return run, out, state, err
 			}
 			index++
 		case projectAssistantPermissionAsk:
@@ -408,20 +458,20 @@ func (s *Server) resolveClaimedProjectAssistantRun(
 			}
 			nextRun, permission, checkpoint, err := prepareProjectAssistantNextPermission(run, state, index, tool)
 			if err != nil {
-				return run, out, err
+				return run, out, state, err
 			}
 			out.RequestID = nextRun.RequestID
 			out.Status = nextRun.Status
 			out.Permission = &permission
 			out.Checkpoint = &checkpoint
-			return nextRun, out, nil
+			return nextRun, out, state, nil
 		default:
-			return run, out, newValidationError("decision must be allow or deny")
+			return run, out, state, newValidationError("decision must be allow or deny")
 		}
 	}
 	run.Status = store.AssistantRunStatusCompleted
 	run.UpdatedAt = time.Now().UTC()
-	return run, out, nil
+	return run, out, state, nil
 }
 
 func (s *Server) executeApprovedProjectAssistantToolCall(
@@ -432,7 +482,7 @@ func (s *Server) executeApprovedProjectAssistantToolCall(
 	repository *ProjectRepositoryView,
 	projectRepositoryRef string,
 	tc chatToolCall,
-) (string, *projectToolCallStreamEvent, error) {
+) ([]chatMessage, string, *projectToolCallStreamEvent, error) {
 	var streamed []projectToolCallStreamEvent
 	messages, err := s.resolveProjectToolCalls(
 		ctx,
@@ -448,7 +498,7 @@ func (s *Server) executeApprovedProjectAssistantToolCall(
 		},
 	)
 	if err != nil {
-		return "", nil, err
+		return nil, "", nil, err
 	}
 	var toolCall *projectToolCallStreamEvent
 	if len(streamed) > 0 {
@@ -459,7 +509,123 @@ func (s *Server) executeApprovedProjectAssistantToolCall(
 	if len(messages) > 0 {
 		result = messages[len(messages)-1].Content
 	}
-	return result, toolCall, nil
+	return messages, result, toolCall, nil
+}
+
+func (s *Server) continueProjectAssistantRunAfterPermission(
+	ctx context.Context,
+	r *http.Request,
+	id identity,
+	c *asclient.Client,
+	p *aiv1alpha1.Project,
+	repository *ProjectRepositoryView,
+	state projectAssistantCheckpointState,
+) (*aiv1alpha1.ProjectMessage, error) {
+	settings, err := readProjectLLMSettings(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	if err := normalizeProjectLLMSettings(&settings); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(settings.APIKey) == "" {
+		return nil, errProjectLLMNotConfigured
+	}
+
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
+	assistantID := newMessageID()
+	assistantContent := &strings.Builder{}
+	var streamedToolCalls []projectToolCallStreamEvent
+	var pendingPermissionToolCallID string
+	emitAssistantEvent := func(event projectAssistantEvent) {
+		switch event.Type {
+		case projectAssistantEventPermissionNeeded:
+			if event.Permission != nil && event.Permission.ToolCallID != "" {
+				pendingPermissionToolCallID = event.Permission.ToolCallID
+				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
+					ID:         event.Permission.ToolCallID,
+					Name:       event.Permission.ToolName,
+					Status:     "permission_required",
+					Summary:    event.Permission.Reason,
+					Permission: event.Permission,
+				})
+			}
+		case projectAssistantEventCheckpointSaved:
+			if event.Checkpoint != nil && pendingPermissionToolCallID != "" {
+				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
+					ID:         pendingPermissionToolCallID,
+					Status:     "permission_required",
+					Checkpoint: event.Checkpoint,
+				})
+			}
+		}
+	}
+	streamToolCall := func(toolCall projectToolCallStreamEvent) {
+		if toolCall.ID == "" || toolCall.Status == "" {
+			return
+		}
+		streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, toolCall)
+	}
+	continuation := state
+	continuation.Messages = cloneChatMessages(state.Messages)
+	req := projectAssistantRunRequest{
+		Identity:                 id,
+		HTTPRequest:              r,
+		Client:                   c,
+		Project:                  p,
+		Repository:               repository,
+		WorkspaceScope:           projectWorkspaceScope(id, p.Name),
+		Workspace:                s.workspaces,
+		MessageScope:             messageScope,
+		LLM:                      settings,
+		MCPBaseURL:               s.hubBase,
+		MCPInsecureSkipTLSVerify: s.mcpInsecureSkipTLSVerify,
+		StreamCallbacks: projectAssistantStreamCallbacks{
+			OnChunk: func(chunk string) {
+				assistantContent.WriteString(chunk)
+			},
+			OnStatus: func(string) {},
+			OnToolCall: func(toolCall projectToolCallStreamEvent) {
+				streamToolCall(toolCall)
+			},
+			OnAssistantEvent: emitAssistantEvent,
+		},
+		Continuation: &continuation,
+	}
+	result, err := s.projectAssistantEngine().StreamProjectAssistant(ctx, req, nil)
+	if err != nil {
+		var permissionErr *projectAssistantPermissionRequiredError
+		if errors.As(err, &permissionErr) {
+			return s.appendResumedProjectAssistantMessage(ctx, messageScope, assistantID, assistantContent.String(), projectAssistantMessageMetadata(projectMessageStatusPendingPermission, streamedToolCalls))
+		}
+		return nil, err
+	}
+	assistantReply := projectAssistantStoredContent(result.Content, assistantContent.String())
+	if pending := projectAssistantUnstreamedContent(assistantReply, assistantContent.String()); pending != "" {
+		assistantContent.WriteString(pending)
+	}
+	if strings.TrimSpace(assistantReply) == "" {
+		return nil, errors.New("assistant generation returned an empty response")
+	}
+	return s.appendResumedProjectAssistantMessage(ctx, messageScope, assistantID, assistantReply, projectAssistantMessageMetadata("", streamedToolCalls))
+}
+
+func (s *Server) appendResumedProjectAssistantMessage(
+	ctx context.Context,
+	scope store.Scope,
+	id string,
+	content string,
+	metadata map[string]any,
+) (*aiv1alpha1.ProjectMessage, error) {
+	if err := appendProjectAssistantMessage(ctx, s.store, scope, id, content, metadata); err != nil {
+		return nil, err
+	}
+	msg, err := s.findProjectMessage(ctx, scope, id)
+	if err != nil {
+		return nil, err
+	}
+	apiMessage := projectMessageToAPI(msg)
+	return &apiMessage, nil
 }
 
 func prepareProjectAssistantNextPermission(
@@ -553,6 +719,42 @@ func cloneProjectAssistantToolCalls(src []chatToolCall) []chatToolCall {
 		return nil
 	}
 	dst := make([]chatToolCall, len(src))
-	copy(dst, src)
+	for i, tc := range src {
+		dst[i] = cloneChatToolCall(tc)
+	}
+	return dst
+}
+
+func cloneChatMessages(src []chatMessage) []chatMessage {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make([]chatMessage, len(src))
+	for i, msg := range src {
+		dst[i] = msg
+		dst[i].ToolCalls = cloneProjectAssistantToolCalls(msg.ToolCalls)
+	}
+	return dst
+}
+
+func cloneChatToolCall(src chatToolCall) chatToolCall {
+	out := src
+	if len(src.ExtraContent) > 0 {
+		out.ExtraContent = make(map[string]any, len(src.ExtraContent))
+		for k, v := range src.ExtraContent {
+			out.ExtraContent[k] = v
+		}
+	}
+	return out
+}
+
+func cloneProjectAssistantSeenToolCalls(src map[string]int) map[string]int {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]int, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
 	return dst
 }

@@ -58,6 +58,7 @@ export interface ProjectAssistantResumeResponse {
   permission?: ProjectAssistantPermission
   checkpoint?: ProjectAssistantCheckpoint
   result?: string
+  assistantMessage?: ProjectMessage
 }
 
 export interface ProjectMessageStreamEvent {

@@ -53,6 +53,7 @@ type projectAssistantRunRequest struct {
 	MCPBaseURL               string
 	MCPInsecureSkipTLSVerify bool
 	StreamCallbacks          projectAssistantStreamCallbacks
+	Continuation             *projectAssistantCheckpointState
 }
 
 type projectAssistantRunResult struct {
