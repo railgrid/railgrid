@@ -38,13 +38,15 @@ import (
 // Server holds the dependencies the project handlers need. clients builds a
 // per-(tenant, caller) dynamic client; store persists chat transcripts; hubBase
 // locates the hub's MCP virtual workspace; mcpInsecureSkipTLSVerify relaxes TLS
-// for dev MCP calls; workspaces stores project files owned by App Studio.
+// for dev MCP calls; workspaces stores project files owned by App Studio;
+// assistantEngine runs project assistant turns.
 type Server struct {
 	clients                  *tenant.ClientFactory
 	store                    store.Store
 	workspaces               *workspace.FileStore
 	hubBase                  string
 	mcpInsecureSkipTLSVerify bool
+	assistantEngine          projectAssistantEngine
 }
 
 // New constructs a Server.
@@ -54,13 +56,22 @@ func New(clients *tenant.ClientFactory, msgStore store.Store, hubBase string, mc
 
 // NewWithWorkspace constructs a Server with an explicit project workspace store.
 func NewWithWorkspace(clients *tenant.ClientFactory, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
-	return &Server{
+	s := &Server{
 		clients:                  clients,
 		store:                    msgStore,
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
 	}
+	s.assistantEngine = NewEinoAssistantEngine(s)
+	return s
+}
+
+func (s *Server) projectAssistantEngine() projectAssistantEngine {
+	if s.assistantEngine == nil {
+		s.assistantEngine = NewEinoAssistantEngine(s)
+	}
+	return s.assistantEngine
 }
 
 // Register mounts the project routes onto r. The hub backend proxy strips the

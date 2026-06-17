@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cloudwego/eino/adk"
+
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 )
 
@@ -38,12 +40,11 @@ func TestEinoAssistantEngineRequiresProject(t *testing.T) {
 	}
 }
 
-func TestEinoAssistantEngineRunsBody(t *testing.T) {
-	engine, ok := NewEinoAssistantEngine(&Server{}).(projectEinoAssistantEngine)
-	if !ok {
-		t.Fatalf("engine = %T, want projectEinoAssistantEngine", NewEinoAssistantEngine(&Server{}))
+func TestEinoAssistantEngineRunsBodyThroughADKRunner(t *testing.T) {
+	engine := projectEinoAssistantEngine{
+		body:      stubProjectAssistantBody(projectAssistantRunResult{Content: "from eino runner"}, nil),
+		newRunner: newProjectEinoAssistantRunner,
 	}
-	engine.body = stubProjectAssistantEngine{result: projectAssistantRunResult{Content: "body result"}}
 	result, err := engine.StreamProjectAssistant(
 		context.Background(),
 		projectAssistantRunRequest{
@@ -54,20 +55,58 @@ func TestEinoAssistantEngineRunsBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamProjectAssistant returned error: %v", err)
 	}
-	if result.Content != "body result" {
-		t.Fatalf("content = %q, want body result", result.Content)
+	if result.Content != "from eino runner" {
+		t.Fatalf("content = %q, want Eino runner result", result.Content)
 	}
 }
 
-type stubProjectAssistantEngine struct {
-	result projectAssistantRunResult
-	err    error
+func TestEinoAssistantEngineRequiresRunnerOutput(t *testing.T) {
+	engine := projectEinoAssistantEngine{
+		body: stubProjectAssistantBody(projectAssistantRunResult{Content: "unused"}, nil),
+		newRunner: func(context.Context, adk.Agent) projectEinoAssistantRunner {
+			return emptyProjectEinoAssistantRunner{}
+		},
+	}
+	_, err := engine.StreamProjectAssistant(
+		context.Background(),
+		projectAssistantRunRequest{
+			Project: &aiv1alpha1.Project{},
+		},
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "eino runner completed without assistant output") {
+		t.Fatalf("StreamProjectAssistant error = %v, want missing runner output error", err)
+	}
 }
 
-func (e stubProjectAssistantEngine) StreamProjectAssistant(
+func TestServerRebuildsDefaultEinoAssistantEngine(t *testing.T) {
+	server := &Server{}
+	if _, ok := server.projectAssistantEngine().(projectEinoAssistantEngine); !ok {
+		t.Fatalf("engine = %T, want projectEinoAssistantEngine", server.projectAssistantEngine())
+	}
+}
+
+func TestNewServerDefaultsToEinoAssistantEngine(t *testing.T) {
+	server := NewWithWorkspace(nil, nil, nil, "", false)
+	if _, ok := server.projectAssistantEngine().(projectEinoAssistantEngine); !ok {
+		t.Fatalf("engine = %T, want projectEinoAssistantEngine", server.projectAssistantEngine())
+	}
+}
+
+func stubProjectAssistantBody(result projectAssistantRunResult, err error) projectEinoAssistantBody {
+	return func(context.Context, projectAssistantRunRequest, projectAssistantEventSink) (projectAssistantRunResult, error) {
+		return result, err
+	}
+}
+
+type emptyProjectEinoAssistantRunner struct{}
+
+func (emptyProjectEinoAssistantRunner) Run(
 	context.Context,
-	projectAssistantRunRequest,
-	projectAssistantEventSink,
-) (projectAssistantRunResult, error) {
-	return e.result, e.err
+	[]adk.Message,
+	...adk.AgentRunOption,
+) *adk.AsyncIterator[*adk.AgentEvent] {
+	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	gen.Close()
+	return iter
 }

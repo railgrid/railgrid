@@ -323,7 +323,7 @@ func (s *Server) generateProjectAssistantStream(
 		MCPInsecureSkipTLSVerify: s.mcpInsecureSkipTLSVerify,
 		StreamCallbacks:          callbacks,
 	}
-	result, err := projectChatCompletionAssistantEngine{server: s}.StreamProjectAssistant(ctx, req, nil)
+	result, err := s.projectAssistantEngine().StreamProjectAssistant(ctx, req, nil)
 	if err != nil {
 		return "", err
 	}
