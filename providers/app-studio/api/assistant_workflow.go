@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/compose"
 
@@ -28,7 +29,10 @@ import (
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
-const projectAssistantWorkflowMaxResultBytes = 4096
+const (
+	projectAssistantWorkflowMaxResultBytes   = 4096
+	projectAssistantWorkflowMaxRuntimeChecks = 3
+)
 
 type projectAssistantWorkflowInput struct {
 	Server         *Server
@@ -43,6 +47,7 @@ type projectAssistantWorkflowContext struct {
 	Project        *aiv1alpha1.Project
 	Repository     *ProjectRepositoryView
 	WorkspaceFiles []string
+	Trace          []projectAssistantWorkflowTraceEvent
 }
 
 type projectAssistantWorkflowPlan struct {
@@ -53,6 +58,50 @@ type projectAssistantWorkflowPlan struct {
 	Repository   *projectAssistantWorkflowRepo `json:"repository,omitempty"`
 	Files        []string                      `json:"files,omitempty"`
 	Steps        []string                      `json:"steps"`
+}
+
+type projectAssistantReadinessWorkflowResult struct {
+	Status            string                               `json:"status"`
+	Summary           string                               `json:"summary"`
+	RecommendedChecks []string                             `json:"recommendedChecks,omitempty"`
+	Repository        *projectAssistantWorkflowRepo        `json:"repository,omitempty"`
+	Files             []string                             `json:"files,omitempty"`
+	Trace             []projectAssistantWorkflowTraceEvent `json:"trace,omitempty"`
+}
+
+type projectAssistantRuntimeVerificationWorkflowInput struct {
+	Worker  projectRuntimeWorker
+	Request projectAssistantToolCallRequest
+}
+
+type projectAssistantRuntimeVerificationWorkflowState struct {
+	Worker         projectRuntimeWorker
+	Request        projectAssistantToolCallRequest
+	Checks         []projectAssistantRuntimeVerificationCheck
+	TimeoutSeconds int
+	Trace          []projectAssistantWorkflowTraceEvent
+}
+
+type projectAssistantRuntimeVerificationWorkflowResult struct {
+	Status  string                                     `json:"status"`
+	Summary string                                     `json:"summary,omitempty"`
+	Checks  []projectAssistantRuntimeVerificationCheck `json:"checks,omitempty"`
+	Trace   []projectAssistantWorkflowTraceEvent       `json:"trace,omitempty"`
+}
+
+type projectAssistantRuntimeVerificationCheck struct {
+	Name    string   `json:"name"`
+	Command []string `json:"command,omitempty"`
+	ID      string   `json:"id,omitempty"`
+	Status  string   `json:"status"`
+	Message string   `json:"message,omitempty"`
+}
+
+type projectAssistantWorkflowTraceEvent struct {
+	Node       string `json:"node"`
+	Status     string `json:"status"`
+	DurationMS int64  `json:"durationMs"`
+	Error      string `json:"error,omitempty"`
 }
 
 type projectAssistantWorkflowRepo struct {
@@ -83,6 +132,56 @@ func newProjectAssistantWorkflowTool(server *Server) projectAssistantTool {
 	}
 }
 
+func newProjectAssistantReadinessWorkflowTool(server *Server) projectAssistantTool {
+	return projectAssistantToolFunc{
+		spec: projectAssistantToolSpec{
+			Name:        projectToolCheckProjectReadiness,
+			Description: "Check deterministic App Studio project readiness from memory, repository status, and workspace context before edits, verification, or commit.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"includeFiles":{"type":"boolean","description":"Whether to include a bounded current workspace file list."},"maxFiles":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum workspace file paths to include when includeFiles is true."}}}`),
+			Risk:        projectAssistantToolRiskRead,
+		},
+		call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+			includeFiles := true
+			if rawIncludeFiles, ok := req.Arguments["includeFiles"]; ok {
+				includeFiles = projectToolBool(rawIncludeFiles)
+			}
+			input := projectAssistantWorkflowInput{
+				Server:         server,
+				Project:        req.Project,
+				Repository:     req.Repository,
+				WorkspaceScope: req.WorkspaceScope,
+				IncludeFiles:   includeFiles,
+				MaxFiles:       boundedWorkflowFileLimit(projectToolInt(req.Arguments["maxFiles"])),
+			}
+			return runProjectAssistantReadinessWorkflow(ctx, input)
+		},
+	}
+}
+
+func newProjectRuntimeVerificationWorkflowToolForRegistry(server *Server) projectAssistantTool {
+	if server == nil || server.runtimeWorker == nil {
+		return nil
+	}
+	return newProjectRuntimeVerificationWorkflowTool(server.runtimeWorker)
+}
+
+func newProjectRuntimeVerificationWorkflowTool(worker projectRuntimeWorker) projectAssistantTool {
+	return projectAssistantToolFunc{
+		spec: projectAssistantToolSpec{
+			Name:        projectToolVerifyProjectRuntime,
+			Description: "Start deterministic App Studio runtime verification checks by name through the sandboxed runtime worker.",
+			Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"checks":{"type":"array","items":{"type":"string","enum":["build","test"]},"minItems":1,"maxItems":%d,"description":"Named verification checks to start through the runtime worker."},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":%d,"description":"Maximum runtime per verification check in seconds."}},"required":["checks"]}`, projectAssistantWorkflowMaxRuntimeChecks, projectRuntimeCommandMaxTimeoutSeconds)),
+			Risk:        projectAssistantToolRiskRuntime,
+		},
+		call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+			return runProjectAssistantRuntimeVerificationWorkflow(ctx, projectAssistantRuntimeVerificationWorkflowInput{
+				Worker:  worker,
+				Request: req,
+			})
+		},
+	}
+}
+
 func runProjectAssistantPlanningWorkflow(ctx context.Context, input projectAssistantWorkflowInput) (string, error) {
 	runner, err := newProjectAssistantPlanningWorkflow(ctx)
 	if err != nil {
@@ -95,6 +194,38 @@ func runProjectAssistantPlanningWorkflow(ctx context.Context, input projectAssis
 	raw, err := marshalProjectAssistantWorkflowPlan(plan)
 	if err != nil {
 		return "", fmt.Errorf("encode project planning workflow result: %w", err)
+	}
+	return string(raw), nil
+}
+
+func runProjectAssistantReadinessWorkflow(ctx context.Context, input projectAssistantWorkflowInput) (string, error) {
+	runner, err := newProjectAssistantReadinessWorkflow(ctx)
+	if err != nil {
+		return "", err
+	}
+	readiness, err := runner.Invoke(ctx, input)
+	if err != nil {
+		return "", err
+	}
+	raw, err := marshalProjectAssistantWorkflowJSON(readiness)
+	if err != nil {
+		return "", fmt.Errorf("encode project readiness workflow result: %w", err)
+	}
+	return string(raw), nil
+}
+
+func runProjectAssistantRuntimeVerificationWorkflow(ctx context.Context, input projectAssistantRuntimeVerificationWorkflowInput) (string, error) {
+	runner, err := newProjectAssistantRuntimeVerificationWorkflow(ctx)
+	if err != nil {
+		return "", err
+	}
+	result, err := runner.Invoke(ctx, input)
+	if err != nil {
+		return "", err
+	}
+	raw, err := marshalProjectAssistantWorkflowJSON(result)
+	if err != nil {
+		return "", fmt.Errorf("encode project runtime verification workflow result: %w", err)
 	}
 	return string(raw), nil
 }
@@ -133,6 +264,17 @@ func marshalProjectAssistantWorkflowPlan(plan projectAssistantWorkflowPlan) ([]b
 	minimal.Summary = "Project planning context was bounded for assistant context."
 	minimal.Repository = nil
 	return json.Marshal(minimal)
+}
+
+func marshalProjectAssistantWorkflowJSON(value any) ([]byte, error) {
+	raw, err := json.Marshal(value)
+	if err != nil || len(raw) <= projectAssistantWorkflowMaxResultBytes {
+		return raw, err
+	}
+	return json.Marshal(map[string]any{
+		"status":  "bounded",
+		"summary": "Project assistant workflow result was bounded for assistant context.",
+	})
 }
 
 func boundedProjectAssistantWorkflowRepo(repo *projectAssistantWorkflowRepo) *projectAssistantWorkflowRepo {
@@ -190,6 +332,23 @@ func newProjectAssistantPlanningWorkflow(ctx context.Context) (compose.Runnable[
 	return chain.Compile(ctx, compose.WithGraphName("app-studio-plan-project-changes"), compose.WithMaxRunSteps(8))
 }
 
+func newProjectAssistantReadinessWorkflow(ctx context.Context) (compose.Runnable[projectAssistantWorkflowInput, projectAssistantReadinessWorkflowResult], error) {
+	chain := compose.NewChain[projectAssistantWorkflowInput, projectAssistantReadinessWorkflowResult]()
+	chain.
+		AppendLambda(compose.InvokableLambda(normalizeProjectAssistantWorkflowInput), compose.WithNodeKey("normalize")).
+		AppendLambda(compose.InvokableLambda(readProjectAssistantReadinessWorkflowContext), compose.WithNodeKey("read-context")).
+		AppendLambda(compose.InvokableLambda(formatProjectAssistantReadinessWorkflow), compose.WithNodeKey("format-readiness"))
+	return chain.Compile(ctx, compose.WithGraphName("app-studio-check-project-readiness"), compose.WithMaxRunSteps(8))
+}
+
+func newProjectAssistantRuntimeVerificationWorkflow(ctx context.Context) (compose.Runnable[projectAssistantRuntimeVerificationWorkflowInput, projectAssistantRuntimeVerificationWorkflowResult], error) {
+	chain := compose.NewChain[projectAssistantRuntimeVerificationWorkflowInput, projectAssistantRuntimeVerificationWorkflowResult]()
+	chain.
+		AppendLambda(compose.InvokableLambda(normalizeProjectAssistantRuntimeVerificationWorkflow), compose.WithNodeKey("normalize")).
+		AppendLambda(compose.InvokableLambda(startProjectAssistantRuntimeVerificationChecks), compose.WithNodeKey("start-runtime-checks"))
+	return chain.Compile(ctx, compose.WithGraphName("app-studio-verify-project-runtime"), compose.WithMaxRunSteps(6))
+}
+
 func normalizeProjectAssistantWorkflowInput(ctx context.Context, input projectAssistantWorkflowInput) (projectAssistantWorkflowInput, error) {
 	if err := ctx.Err(); err != nil {
 		return projectAssistantWorkflowInput{}, err
@@ -199,6 +358,13 @@ func normalizeProjectAssistantWorkflowInput(ctx context.Context, input projectAs
 		return projectAssistantWorkflowInput{}, fmt.Errorf("project is required")
 	}
 	return input, nil
+}
+
+func readProjectAssistantReadinessWorkflowContext(ctx context.Context, input projectAssistantWorkflowInput) (projectAssistantWorkflowContext, error) {
+	start := time.Now()
+	out, err := readProjectAssistantWorkflowContext(ctx, input)
+	out.Trace = appendProjectAssistantWorkflowTrace(out.Trace, "read-context", start, err)
+	return out, err
 }
 
 func readProjectAssistantWorkflowContext(ctx context.Context, input projectAssistantWorkflowInput) (projectAssistantWorkflowContext, error) {
@@ -229,6 +395,48 @@ func readProjectAssistantWorkflowContext(ctx context.Context, input projectAssis
 		out.WorkspaceFiles = append(out.WorkspaceFiles, fmt.Sprintf("+more (limit %d)", files.Limit))
 	}
 	return out, nil
+}
+
+func formatProjectAssistantReadinessWorkflow(ctx context.Context, input projectAssistantWorkflowContext) (projectAssistantReadinessWorkflowResult, error) {
+	start := time.Now()
+	result, err := formatProjectAssistantReadinessWorkflowResult(ctx, input)
+	result.Trace = appendProjectAssistantWorkflowTrace(result.Trace, "format-readiness", start, err)
+	return result, err
+}
+
+func formatProjectAssistantReadinessWorkflowResult(ctx context.Context, input projectAssistantWorkflowContext) (projectAssistantReadinessWorkflowResult, error) {
+	result := projectAssistantReadinessWorkflowResult{Trace: append([]projectAssistantWorkflowTraceEvent(nil), input.Trace...)}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	p := input.Project
+	if p == nil {
+		return result, fmt.Errorf("project is required")
+	}
+	displayName := strings.TrimSpace(p.Spec.DisplayName)
+	if displayName == "" {
+		displayName = p.Name
+	}
+	status := "ready_to_verify"
+	if len(p.Spec.Memory.Requirements) == 0 {
+		status = "needs_requirements"
+	} else if input.Repository == nil || input.Repository.Status != projectRepositoryStatusReady {
+		status = "needs_repository"
+	} else if len(input.WorkspaceFiles) == 0 {
+		status = "needs_workspace_context"
+	}
+	result.Status = status
+	result.Summary = fmt.Sprintf("Project %s is %s.", displayName, strings.ReplaceAll(status, "_", " "))
+	result.RecommendedChecks = projectAssistantRecommendedRuntimeChecks(input.WorkspaceFiles)
+	result.Files = append([]string(nil), input.WorkspaceFiles...)
+	if input.Repository != nil {
+		result.Repository = &projectAssistantWorkflowRepo{
+			Ref:    input.Repository.Ref,
+			Name:   input.Repository.Name,
+			Status: input.Repository.Status,
+		}
+	}
+	return result, nil
 }
 
 func formatProjectAssistantWorkflowPlan(ctx context.Context, input projectAssistantWorkflowContext) (projectAssistantWorkflowPlan, error) {
@@ -279,6 +487,147 @@ func projectAssistantWorkflowSteps(memory aiv1alpha1.ProjectMemory, repository *
 		steps = append(steps, "Defer commit handoff until the repository binding is ready.")
 	}
 	return steps
+}
+
+func normalizeProjectAssistantRuntimeVerificationWorkflow(ctx context.Context, input projectAssistantRuntimeVerificationWorkflowInput) (projectAssistantRuntimeVerificationWorkflowState, error) {
+	start := time.Now()
+	state, err := normalizeProjectAssistantRuntimeVerificationWorkflowInput(ctx, input)
+	state.Trace = appendProjectAssistantWorkflowTrace(state.Trace, "normalize", start, err)
+	return state, err
+}
+
+func normalizeProjectAssistantRuntimeVerificationWorkflowInput(ctx context.Context, input projectAssistantRuntimeVerificationWorkflowInput) (projectAssistantRuntimeVerificationWorkflowState, error) {
+	if err := ctx.Err(); err != nil {
+		return projectAssistantRuntimeVerificationWorkflowState{}, err
+	}
+	if input.Worker == nil {
+		return projectAssistantRuntimeVerificationWorkflowState{}, fmt.Errorf("runtime worker is not configured for this App Studio provider")
+	}
+	checks, err := projectAssistantRuntimeVerificationChecks(input.Request.Arguments["checks"])
+	if err != nil {
+		return projectAssistantRuntimeVerificationWorkflowState{}, err
+	}
+	timeout := projectToolInt(input.Request.Arguments["timeoutSeconds"])
+	if timeout <= 0 {
+		timeout = projectRuntimeCommandDefaultTimeoutSeconds
+	}
+	if timeout > projectRuntimeCommandMaxTimeoutSeconds {
+		timeout = projectRuntimeCommandMaxTimeoutSeconds
+	}
+	return projectAssistantRuntimeVerificationWorkflowState{
+		Worker:         input.Worker,
+		Request:        input.Request,
+		Checks:         checks,
+		TimeoutSeconds: timeout,
+	}, nil
+}
+
+func startProjectAssistantRuntimeVerificationChecks(ctx context.Context, input projectAssistantRuntimeVerificationWorkflowState) (projectAssistantRuntimeVerificationWorkflowResult, error) {
+	start := time.Now()
+	result, err := startProjectAssistantRuntimeVerificationChecksResult(ctx, input)
+	result.Trace = appendProjectAssistantWorkflowTrace(result.Trace, "start-runtime-checks", start, err)
+	return result, err
+}
+
+func startProjectAssistantRuntimeVerificationChecksResult(ctx context.Context, input projectAssistantRuntimeVerificationWorkflowState) (projectAssistantRuntimeVerificationWorkflowResult, error) {
+	result := projectAssistantRuntimeVerificationWorkflowResult{
+		Status: "started",
+		Checks: make([]projectAssistantRuntimeVerificationCheck, 0, len(input.Checks)),
+		Trace:  append([]projectAssistantWorkflowTraceEvent(nil), input.Trace...),
+	}
+	for _, check := range input.Checks {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		handle, err := input.Worker.Start(ctx, projectRuntimeRequest{
+			Identity:       input.Request.Identity,
+			WorkspaceScope: input.Request.WorkspaceScope,
+			Command:        append([]string(nil), check.Command...),
+			TimeoutSeconds: input.TimeoutSeconds,
+		})
+		started := check
+		if err != nil {
+			started.Status = "failed"
+			started.Message = trimProjectAssistantWorkflowString(err.Error(), 240)
+			result.Checks = append(result.Checks, started)
+			result.Status = "failed"
+			result.Summary = "One or more runtime verification checks failed to start."
+			return result, nil
+		}
+		started.ID = strings.TrimSpace(handle.ID)
+		started.Status = "started"
+		result.Checks = append(result.Checks, started)
+	}
+	result.Summary = fmt.Sprintf("Started %d runtime verification check(s).", len(result.Checks))
+	return result, nil
+}
+
+func projectAssistantRuntimeVerificationChecks(value any) ([]projectAssistantRuntimeVerificationCheck, error) {
+	if value == nil {
+		return nil, newValidationError("runtime verification requires at least one check")
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, newValidationError("runtime verification checks must be an array")
+	}
+	if len(items) == 0 {
+		return nil, newValidationError("runtime verification requires at least one check")
+	}
+	if len(items) > projectAssistantWorkflowMaxRuntimeChecks {
+		return nil, newValidationError(fmt.Sprintf("runtime verification checks cannot exceed %d", projectAssistantWorkflowMaxRuntimeChecks))
+	}
+	out := make([]projectAssistantRuntimeVerificationCheck, 0, len(items))
+	for i, item := range items {
+		name, ok := item.(string)
+		if !ok {
+			return nil, newValidationError(fmt.Sprintf("runtime verification check %d must be a string", i))
+		}
+		if strings.TrimSpace(name) == "" {
+			return nil, newValidationError(fmt.Sprintf("runtime verification check %d cannot be empty", i))
+		}
+		check, ok := projectAssistantRuntimeVerificationCheckForName(name)
+		if !ok {
+			return nil, newValidationError(fmt.Sprintf("unsupported runtime verification check %q", name))
+		}
+		out = append(out, check)
+	}
+	return out, nil
+}
+
+func projectAssistantRuntimeVerificationCheckForName(name string) (projectAssistantRuntimeVerificationCheck, bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "build":
+		return projectAssistantRuntimeVerificationCheck{Name: "build", Command: []string{"npm", "run", "build"}, Status: "pending"}, true
+	case "test":
+		return projectAssistantRuntimeVerificationCheck{Name: "test", Command: []string{"npm", "test"}, Status: "pending"}, true
+	default:
+		return projectAssistantRuntimeVerificationCheck{}, false
+	}
+}
+
+func projectAssistantRecommendedRuntimeChecks(files []string) []string {
+	for _, file := range files {
+		if strings.EqualFold(strings.TrimSpace(file), "package.json") {
+			return []string{"build", "test"}
+		}
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	return []string{"build"}
+}
+
+func appendProjectAssistantWorkflowTrace(trace []projectAssistantWorkflowTraceEvent, node string, start time.Time, err error) []projectAssistantWorkflowTraceEvent {
+	event := projectAssistantWorkflowTraceEvent{
+		Node:       node,
+		Status:     "ok",
+		DurationMS: time.Since(start).Milliseconds(),
+	}
+	if err != nil {
+		event.Status = "error"
+		event.Error = trimProjectAssistantWorkflowString(err.Error(), 240)
+	}
+	return append(trace, event)
 }
 
 func boundedWorkflowFileLimit(limit int) int {

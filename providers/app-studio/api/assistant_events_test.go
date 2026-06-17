@@ -22,7 +22,7 @@ import (
 	"testing"
 )
 
-func TestProjectAssistantStreamWriterMapsDeltaToChunk(t *testing.T) {
+func TestProjectAssistantStreamWriterMapsDeltaToTypedEvent(t *testing.T) {
 	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
 		Type:  projectAssistantEventMessageDelta,
 		Delta: "hello",
@@ -30,8 +30,8 @@ func TestProjectAssistantStreamWriterMapsDeltaToChunk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
 	}
-	if len(got) != 1 || got[0].Type != "chunk" || got[0].Content != "hello" || got[0].AssistantMessageID != "assistant-1" {
-		t.Fatalf("events = %#v, want one assistant chunk event", got)
+	if len(got) != 1 || got[0].Type != string(projectAssistantEventMessageDelta) || got[0].Content != "hello" || got[0].AssistantMessageID != "assistant-1" {
+		t.Fatalf("events = %#v, want one assistant message_delta event", got)
 	}
 }
 
@@ -63,14 +63,36 @@ func TestProjectAssistantStreamWriterMapsToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
 	}
-	if len(got) != 1 || got[0].Type != "tool_call" || got[0].AssistantMessageID != "assistant-1" {
-		t.Fatalf("events = %#v, want one assistant tool_call event", got)
+	if len(got) != 1 || got[0].Type != string(projectAssistantEventToolCallFinished) || got[0].AssistantMessageID != "assistant-1" {
+		t.Fatalf("events = %#v, want one assistant tool_call_finished event", got)
 	}
 	if got[0].ToolCall == nil {
 		t.Fatalf("tool call event omitted payload: %#v", got[0])
 	}
 	if got[0].ToolCall.ID != "tool-1" || got[0].ToolCall.Name != "write_file" || got[0].ToolCall.Status != "succeeded" || got[0].ToolCall.Arguments != `{"path":"src/App.tsx"}` || got[0].ToolCall.Error != "warning only" {
 		t.Fatalf("tool call = %#v, want preserved current SSE payload", got[0].ToolCall)
+	}
+}
+
+func TestProjectAssistantEventTypeForToolCallStatus(t *testing.T) {
+	tests := []struct {
+		status string
+		want   projectAssistantEventType
+	}{
+		{status: "requested", want: projectAssistantEventToolCallStarted},
+		{status: "running", want: projectAssistantEventToolCallStarted},
+		{status: "permission_required", want: projectAssistantEventToolCallFinished},
+		{status: "succeeded", want: projectAssistantEventToolCallFinished},
+		{status: "failed", want: projectAssistantEventToolCallFinished},
+		{status: "rejected", want: projectAssistantEventToolCallFinished},
+		{status: "", want: projectAssistantEventToolCallFinished},
+	}
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			if got := projectAssistantEventTypeForToolCallStatus(tt.status); got != tt.want {
+				t.Fatalf("event type = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -112,13 +134,13 @@ func TestProjectAssistantStreamWriterMapsTerminalEvents(t *testing.T) {
 		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("events = %#v, want error and done", got)
+		t.Fatalf("events = %#v, want run_failed and run_finished", got)
 	}
-	if got[0].Type != "error" || got[0].Error != "boom" {
-		t.Fatalf("first event = %#v, want error", got[0])
+	if got[0].Type != string(projectAssistantEventRunFailed) || got[0].Error != "boom" {
+		t.Fatalf("first event = %#v, want run_failed", got[0])
 	}
-	if got[1].Type != "done" || got[1].AssistantMessageID != "assistant-1" {
-		t.Fatalf("second event = %#v, want assistant done", got[1])
+	if got[1].Type != string(projectAssistantEventRunFinished) || got[1].AssistantMessageID != "assistant-1" {
+		t.Fatalf("second event = %#v, want assistant run_finished", got[1])
 	}
 }
 

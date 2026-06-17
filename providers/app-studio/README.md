@@ -97,6 +97,9 @@ provider pod. Runtime commands are modeled behind an internal worker boundary so
 future implementations can use isolated tenant/project-scoped workers with their
 own resource limits, audit trail, and cancellation model.
 
-By default no runtime worker is configured, so `runtime_command` is not advertised
-to the assistant. If a future deployment injects a worker, runtime commands still
-require explicit user approval before the worker is started.
+By default no runtime worker is configured, so runtime tools are not advertised
+to the assistant. If a deployment injects a worker, both `verify_project_runtime`
+and `runtime_command` still require explicit user approval before the worker is
+started. `verify_project_runtime` uses fixed App Studio verification presets and
+routes them through the same worker boundary instead of running commands in the
+provider pod.

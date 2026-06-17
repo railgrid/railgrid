@@ -399,7 +399,7 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 	}
 	writeStreamError := func(err error) {
 		_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-			Type:  "error",
+			Type:  string(projectAssistantEventRunFailed),
 			Error: err.Error(),
 		})
 	}
@@ -617,7 +617,7 @@ func (s *Server) streamProjectAssistant(
 			return
 		}
 		emitAssistantEvent(projectAssistantEvent{
-			Type: projectAssistantEventToolCallFinished,
+			Type: projectAssistantEventTypeForToolCallStatus(toolCall.Status),
 			ToolCall: &projectAssistantToolCall{
 				ID:        toolCall.ID,
 				Name:      toolCall.Name,

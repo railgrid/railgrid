@@ -132,6 +132,7 @@ func runServe() {
 		os.Getenv("KEDGE_HUB_URL"),
 		os.Getenv("APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY") == "true",
 	)
+	apiServer.SetAutoApproveAssistantActions(os.Getenv("APP_STUDIO_AUTO_APPROVE_ACTIONS") == "true")
 
 	handler, err := newHandler(apiServer)
 	if err != nil {

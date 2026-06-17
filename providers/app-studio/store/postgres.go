@@ -373,11 +373,31 @@ func normalizePostgresJSONB(raw json.RawMessage) (json.RawMessage, error) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, err
 	}
-	normalized, err := json.Marshal(parsed)
+	normalized, err := json.Marshal(sanitizePostgresJSONBValue(parsed))
 	if err != nil {
 		return nil, err
 	}
 	return normalized, nil
+}
+
+func sanitizePostgresJSONBValue(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return strings.ReplaceAll(typed, "\x00", "\ufffd")
+	case []any:
+		for i := range typed {
+			typed[i] = sanitizePostgresJSONBValue(typed[i])
+		}
+		return typed
+	case map[string]any:
+		sanitized := make(map[string]any, len(typed))
+		for key, item := range typed {
+			sanitized[strings.ReplaceAll(key, "\x00", "\ufffd")] = sanitizePostgresJSONBValue(item)
+		}
+		return sanitized
+	default:
+		return typed
+	}
 }
 
 func (s *PostgresStore) ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error) {

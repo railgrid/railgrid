@@ -36,7 +36,7 @@ func (w projectAssistantStreamWriter) EmitProjectAssistantEvent(
 			return nil
 		}
 		return w.write(projectMessageStreamEvent{
-			Type:               "chunk",
+			Type:               string(projectAssistantEventMessageDelta),
 			AssistantMessageID: w.assistantID,
 			Content:            event.Delta,
 		})
@@ -54,7 +54,7 @@ func (w projectAssistantStreamWriter) EmitProjectAssistantEvent(
 		}
 		toolCall := event.ToolCall.streamEvent()
 		return w.write(projectMessageStreamEvent{
-			Type:               "tool_call",
+			Type:               string(event.Type),
 			AssistantMessageID: w.assistantID,
 			ToolCall:           &toolCall,
 		})
@@ -81,12 +81,12 @@ func (w projectAssistantStreamWriter) EmitProjectAssistantEvent(
 			return nil
 		}
 		return w.write(projectMessageStreamEvent{
-			Type:  "error",
+			Type:  string(projectAssistantEventRunFailed),
 			Error: event.Error,
 		})
 	case projectAssistantEventRunFinished:
 		return w.write(projectMessageStreamEvent{
-			Type:               "done",
+			Type:               string(projectAssistantEventRunFinished),
 			AssistantMessageID: w.assistantID,
 		})
 	default:
@@ -102,5 +102,14 @@ func (tc projectAssistantToolCall) streamEvent() projectToolCallStreamEvent {
 		Arguments: tc.Arguments,
 		Summary:   tc.Summary,
 		Error:     tc.Error,
+	}
+}
+
+func projectAssistantEventTypeForToolCallStatus(status string) projectAssistantEventType {
+	switch status {
+	case "requested", "running":
+		return projectAssistantEventToolCallStarted
+	default:
+		return projectAssistantEventToolCallFinished
 	}
 }

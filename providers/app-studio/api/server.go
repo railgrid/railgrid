@@ -24,6 +24,7 @@ package api
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,8 +48,11 @@ type Server struct {
 	workspaces               *workspace.FileStore
 	hubBase                  string
 	mcpInsecureSkipTLSVerify bool
+	autoApproveActions       bool
 	assistantEngine          projectAssistantEngine
+	assistantRunManager      *projectAssistantRunManager
 	runtimeWorker            projectRuntimeWorker
+	mu                       sync.Mutex
 }
 
 // New constructs a Server.
@@ -66,14 +70,38 @@ func NewWithWorkspace(clients *tenant.ClientFactory, msgStore store.Store, works
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
 	}
 	s.assistantEngine = NewEinoAssistantEngine(s)
+	s.assistantRunManager = newProjectAssistantRunManager()
 	return s
 }
 
+func (s *Server) SetAutoApproveAssistantActions(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autoApproveActions = enabled
+}
+
+func (s *Server) autoApproveAssistantActions() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.autoApproveActions
+}
+
 func (s *Server) projectAssistantEngine() projectAssistantEngine {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.assistantEngine == nil {
 		s.assistantEngine = NewEinoAssistantEngine(s)
 	}
 	return s.assistantEngine
+}
+
+func (s *Server) projectAssistantRunManager() *projectAssistantRunManager {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.assistantRunManager == nil {
+		s.assistantRunManager = newProjectAssistantRunManager()
+	}
+	return s.assistantRunManager
 }
 
 // Register mounts the project routes onto r. The hub backend proxy strips the

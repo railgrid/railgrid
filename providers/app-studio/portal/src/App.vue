@@ -277,6 +277,8 @@ const conversationWorkingLabel = computed(() => {
   if (conversationStatus.value) return conversationStatus.value
   if (!messageStreaming.value) return ''
   const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
+  const activeGroup = activeToolActionGroup(lastAssistant?.toolCalls)
+  if (activeGroup) return toolActionGroupLabel(activeGroup)
   const activeTool = lastAssistant?.toolCalls?.find((toolCall) => toolCall.status === 'requested' || toolCall.status === 'running')
   if (activeTool?.name) return `${toolCallStatusLabel(activeTool)} ${displayToolName(activeTool.name)}`
   if (lastAssistant?.content.trim()) return 'Writing'
@@ -937,7 +939,7 @@ async function createProjectAndStartConversation(content: string) {
         selected.value = event.project
         messages.value = messages.value.map((message) => ({ ...message, projectID: projectName }))
         props.navigate(encodeURIComponent(projectName))
-      } else if (event.type === 'chunk') {
+      } else if (event.type === 'message_delta') {
         conversationStatus.value = ''
         if (!projectName || !event.assistantMessageID) return
         if (!assistantMessageID) {
@@ -952,7 +954,7 @@ async function createProjectAndStartConversation(content: string) {
           content: `${existing.content}${event.content ?? ''}`,
         }
         messages.value = [...messages.value]
-      } else if (event.type === 'tool_call') {
+      } else if (event.type === 'tool_call_started' || event.type === 'tool_call_finished') {
         conversationStatus.value = ''
         if (!projectName || !event.assistantMessageID || !event.toolCall) return
         if (!assistantMessageID) {
@@ -973,12 +975,12 @@ async function createProjectAndStartConversation(content: string) {
           assistantMessageID = event.assistantMessageID
         }
         attachAssistantCheckpoint(projectName, event.assistantMessageID, event.checkpoint)
-      } else if (event.type === 'done') {
+      } else if (event.type === 'run_finished') {
         conversationStatus.value = ''
         if (!assistantMessageID) {
           assistantMessageID = event.assistantMessageID ?? ''
         }
-      } else if (event.type === 'error') {
+      } else if (event.type === 'run_failed') {
         throw new Error(event.error ?? 'Streaming error')
       }
     }, controller.signal)
@@ -1151,7 +1153,7 @@ async function sendMessage() {
     await api.createMessageStream(props.ctx, projectName, content, (event: ProjectMessageStreamEvent) => {
       if (event.type === 'status') {
         conversationStatus.value = event.status || 'Working'
-      } else if (event.type === 'chunk') {
+      } else if (event.type === 'message_delta') {
         conversationStatus.value = ''
         if (!event.assistantMessageID) return
         if (!assistantMessageID) {
@@ -1166,7 +1168,7 @@ async function sendMessage() {
           content: `${existing.content}${event.content ?? ''}`,
         }
         messages.value = [...messages.value]
-      } else if (event.type === 'tool_call') {
+      } else if (event.type === 'tool_call_started' || event.type === 'tool_call_finished') {
         conversationStatus.value = ''
         if (!event.assistantMessageID || !event.toolCall) return
         if (!assistantMessageID) {
@@ -1187,12 +1189,12 @@ async function sendMessage() {
           assistantMessageID = event.assistantMessageID
         }
         attachAssistantCheckpoint(projectName, event.assistantMessageID, event.checkpoint)
-      } else if (event.type === 'done') {
+      } else if (event.type === 'run_finished') {
         conversationStatus.value = ''
         if (!assistantMessageID) {
           assistantMessageID = event.assistantMessageID ?? ''
         }
-      } else if (event.type === 'error') {
+      } else if (event.type === 'run_failed') {
         throw new Error(event.error ?? 'Streaming error')
       }
     }, controller.signal)
@@ -1699,9 +1701,175 @@ function toolCallHasDetails(toolCall: ProjectToolCallView): boolean {
   return Boolean(toolCall.arguments || toolCall.summary || toolCall.error || toolCall.permission || toolCall.checkpoint)
 }
 
+type ToolActionGroupKind = 'inspect' | 'edit' | 'run' | 'commit' | 'other'
+
+interface ToolActionGroup {
+  id: string
+  kind: ToolActionGroupKind
+  status: ProjectToolCallView['status']
+  calls: ProjectToolCallView[]
+}
+
+function activeToolActionGroup(toolCalls?: ProjectToolCallView[]): ToolActionGroup | null {
+  return (
+    toolActionGroups(toolCalls).find((group) =>
+      group.calls.some((toolCall) =>
+        toolCall.status === 'requested' ||
+        toolCall.status === 'running' ||
+        toolCall.status === 'permission_required',
+      ),
+    ) || null
+  )
+}
+
+function toolActionGroups(toolCalls?: ProjectToolCallView[]): ToolActionGroup[] {
+  const groups: ToolActionGroup[] = []
+  for (const toolCall of toolCalls ?? []) {
+    const kind = toolActionKind(toolCall)
+    let group = groups.find((candidate) => candidate.kind === kind)
+    if (!group) {
+      group = {
+        id: `tool-action-${kind}`,
+        kind,
+        status: toolCall.status,
+        calls: [],
+      }
+      groups.push(group)
+    }
+    group.calls.push(toolCall)
+    group.status = toolActionGroupStatus(group.calls)
+  }
+  return groups
+}
+
+function toolActionKind(toolCall: ProjectToolCallView): ToolActionGroupKind {
+  const name = displayToolName(toolCall.name).toLowerCase()
+  if (
+    name.includes('read') ||
+    name.includes('list') ||
+    name.includes('search') ||
+    name.includes('inspect') ||
+    name.includes('check_project')
+  ) {
+    return 'inspect'
+  }
+  if (
+    name.includes('write') ||
+    name.includes('patch') ||
+    name.includes('edit') ||
+    name.includes('mkdir') ||
+    name.includes('delete')
+  ) {
+    return 'edit'
+  }
+  if (
+    name.includes('runtime') ||
+    name.includes('command') ||
+    name.includes('build') ||
+    name.includes('test') ||
+    name.includes('verify') ||
+    name.includes('run')
+  ) {
+    return 'run'
+  }
+  if (name.includes('commit')) {
+    return 'commit'
+  }
+  return 'other'
+}
+
+function toolActionGroupStatus(toolCalls: ProjectToolCallView[]): ProjectToolCallView['status'] {
+  if (toolCalls.some((toolCall) => toolCall.status === 'failed')) return 'failed'
+  if (toolCalls.some((toolCall) => toolCall.status === 'rejected')) return 'rejected'
+  if (toolCalls.some((toolCall) => toolCall.status === 'permission_required')) return 'permission_required'
+  if (toolCalls.some((toolCall) => toolCall.status === 'running')) return 'running'
+  if (toolCalls.some((toolCall) => toolCall.status === 'requested')) return 'requested'
+  return 'succeeded'
+}
+
+function toolActionGroupLabel(group: ToolActionGroup): string {
+  const active = group.status === 'requested' || group.status === 'running' || group.status === 'permission_required'
+  const failed = group.status === 'failed' || group.status === 'rejected'
+  switch (group.kind) {
+    case 'inspect':
+      return failed ? 'Inspection failed' : active ? 'Inspecting project' : 'Inspected project'
+    case 'edit':
+      return failed ? 'Edit failed' : active ? 'Editing files' : 'Edited files'
+    case 'run':
+      return failed ? 'Run failed' : active ? 'Running checks' : 'Ran checks'
+    case 'commit':
+      return failed ? 'Commit failed' : active ? 'Committing changes' : 'Committed changes'
+    default:
+      return failed ? 'Action failed' : active ? 'Using tools' : 'Used tools'
+  }
+}
+
+function toolActionGroupSummary(group: ToolActionGroup): string {
+  const count = group.calls.length
+  const noun =
+    group.kind === 'inspect'
+      ? count === 1 ? 'read/search' : 'reads/searches'
+      : group.kind === 'edit'
+        ? count === 1 ? 'file change' : 'file changes'
+        : group.kind === 'run'
+          ? count === 1 ? 'run/check' : 'runs/checks'
+          : group.kind === 'commit'
+            ? count === 1 ? 'commit step' : 'commit steps'
+            : count === 1 ? 'tool action' : 'tool actions'
+  const targets = toolActionGroupTargets(group)
+  return `${count} ${noun}${targets ? ` · ${targets}` : ''}`
+}
+
+function toolActionGroupTargets(group: ToolActionGroup): string {
+  const targets = group.calls
+    .map((toolCall) => toolActionTarget(toolCall))
+    .filter((target): target is string => Boolean(target))
+  const uniqueTargets = Array.from(new Set(targets))
+  if (!uniqueTargets.length) return ''
+  const visibleTargets = uniqueTargets.slice(0, 3)
+  const remainder = uniqueTargets.length - visibleTargets.length
+  return `${visibleTargets.join(', ')}${remainder > 0 ? ` +${remainder}` : ''}`
+}
+
+function toolActionTarget(toolCall: ProjectToolCallView): string {
+  if (!toolCall.arguments) return ''
+  try {
+    const parsed = JSON.parse(toolCall.arguments) as Record<string, unknown>
+    const value =
+      parsed.path ||
+      parsed.file ||
+      parsed.filePath ||
+      parsed.filename ||
+      parsed.command ||
+      parsed.query
+    return typeof value === 'string' ? value : ''
+  } catch {
+    return ''
+  }
+}
+
+function toolActionGroupStatusClass(group: ToolActionGroup): string {
+  switch (group.status) {
+    case 'succeeded':
+      return 'text-success'
+    case 'failed':
+    case 'rejected':
+      return 'text-danger'
+    case 'permission_required':
+      return 'text-accent'
+    case 'requested':
+    case 'running':
+    default:
+      return 'text-warning'
+  }
+}
+
 function actionBundleLabel(toolCalls?: ProjectToolCallView[]): string {
-  const count = toolCalls?.length ?? 0
-  return `${count} ${count === 1 ? 'action' : 'actions'}`
+  const groups = toolActionGroups(toolCalls)
+  if (!groups.length) return 'No actions'
+  const firstGroup = groups[0]
+  if (groups.length === 1 && firstGroup) return toolActionGroupLabel(firstGroup)
+  return groups.map((group) => toolActionGroupLabel(group)).join(' · ')
 }
 
 function actionSummary(toolCall: ProjectToolCallView): string {
@@ -2368,40 +2536,79 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                       />
                       <div class="flex min-w-0 items-center -space-x-1">
                         <span
-                          v-for="toolCall in (message.toolCalls ?? []).slice(0, 4)"
-                          :key="`bundle-${toolCall.id}`"
+                          v-for="group in toolActionGroups(message.toolCalls).slice(0, 4)"
+                          :key="`bundle-${group.id}`"
                           class="flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-muted shadow-sm"
                         >
                           <Loader2
-                            v-if="toolCall.status === 'running' || toolCall.status === 'requested'"
+                            v-if="group.status === 'running' || group.status === 'requested'"
                             class="h-4 w-4 animate-spin"
-                            :class="toolCallStatusClass(toolCall)"
+                            :class="toolActionGroupStatusClass(group)"
                             :stroke-width="1.75"
                           />
                           <Check
-                            v-else-if="toolCall.status === 'succeeded'"
+                            v-else-if="group.status === 'succeeded'"
                             class="h-4 w-4"
-                            :class="toolCallStatusClass(toolCall)"
+                            :class="toolActionGroupStatusClass(group)"
                             :stroke-width="1.75"
                           />
                           <X
-                            v-else-if="toolCall.status === 'failed' || toolCall.status === 'rejected'"
+                            v-else-if="group.status === 'failed' || group.status === 'rejected'"
                             class="h-4 w-4"
-                            :class="toolCallStatusClass(toolCall)"
+                            :class="toolActionGroupStatusClass(group)"
                             :stroke-width="1.75"
                           />
                           <Wrench v-else class="h-4 w-4" :stroke-width="1.75" />
                         </span>
                         <span
-                          v-if="(message.toolCalls?.length ?? 0) > 4"
+                          v-if="toolActionGroups(message.toolCalls).length > 4"
                           class="flex h-8 min-w-8 items-center justify-center rounded-md border border-border-subtle bg-surface px-1.5 text-[11px] font-medium text-text-muted shadow-sm"
                         >
-                          +{{ (message.toolCalls?.length ?? 0) - 4 }}
+                          +{{ toolActionGroups(message.toolCalls).length - 4 }}
                         </span>
                       </div>
                       <span class="truncate text-[13px] font-medium text-text-secondary">{{ actionBundleLabel(message.toolCalls) }}</span>
                     </summary>
                     <div class="grid gap-1.5 border-t border-border-subtle px-2 py-2">
+                      <div class="grid gap-1.5">
+                        <div
+                          v-for="group in toolActionGroups(message.toolCalls)"
+                          :key="`group-${group.id}`"
+                          class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface/80 px-2.5 py-2"
+                        >
+                          <Loader2
+                            v-if="group.status === 'running' || group.status === 'requested'"
+                            class="h-3.5 w-3.5 shrink-0 animate-spin"
+                            :class="toolActionGroupStatusClass(group)"
+                            :stroke-width="1.75"
+                          />
+                          <Check
+                            v-else-if="group.status === 'succeeded'"
+                            class="h-3.5 w-3.5 shrink-0"
+                            :class="toolActionGroupStatusClass(group)"
+                            :stroke-width="1.75"
+                          />
+                          <X
+                            v-else-if="group.status === 'failed' || group.status === 'rejected'"
+                            class="h-3.5 w-3.5 shrink-0"
+                            :class="toolActionGroupStatusClass(group)"
+                            :stroke-width="1.75"
+                          />
+                          <Wrench v-else class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
+                          <div class="min-w-0 flex-1">
+                            <div class="flex min-w-0 items-center gap-1.5">
+                              <span class="truncate text-[12px] font-medium text-text-secondary">{{ toolActionGroupLabel(group) }}</span>
+                              <span class="shrink-0 rounded-full border border-border-subtle bg-surface px-1.5 py-0.5 font-mono text-[10px] text-text-muted">
+                                {{ group.calls.length }}
+                              </span>
+                            </div>
+                            <div class="truncate text-[11px] text-text-muted">
+                              {{ toolActionGroupSummary(group) }}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Trace</div>
                       <template v-for="toolCall in message.toolCalls" :key="toolCall.id">
                         <details
                           v-if="toolCallHasDetails(toolCall)"

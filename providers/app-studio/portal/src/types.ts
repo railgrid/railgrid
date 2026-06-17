@@ -62,7 +62,17 @@ export interface ProjectAssistantResumeResponse {
 }
 
 export interface ProjectMessageStreamEvent {
-  type: 'chunk' | 'tool_call' | 'permission_required' | 'checkpoint_saved' | 'done' | 'error' | 'status' | 'project'
+  type:
+    | 'run_started'
+    | 'message_delta'
+    | 'status'
+    | 'tool_call_started'
+    | 'tool_call_finished'
+    | 'permission_required'
+    | 'checkpoint_saved'
+    | 'run_failed'
+    | 'run_finished'
+    | 'project'
   assistantMessageID?: string
   content?: string
   status?: string

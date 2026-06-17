@@ -30,10 +30,17 @@ const (
 )
 
 func projectAssistantPermissionForTool(spec projectAssistantToolSpec) projectAssistantPermissionDecision {
+	return projectAssistantPermissionForToolWithPolicy(spec, false)
+}
+
+func projectAssistantPermissionForToolWithPolicy(spec projectAssistantToolSpec, autoApprove bool) projectAssistantPermissionDecision {
 	switch spec.Risk {
 	case projectAssistantToolRiskRead:
 		return projectAssistantPermissionAllow
 	case projectAssistantToolRiskWrite, projectAssistantToolRiskCommit, projectAssistantToolRiskRuntime:
+		if autoApprove {
+			return projectAssistantPermissionAllow
+		}
 		return projectAssistantPermissionAsk
 	default:
 		return projectAssistantPermissionDeny

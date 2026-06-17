@@ -803,6 +803,7 @@ APP_STUDIO_CATALOGENTRY_BACKEND_URL ?= $(APP_STUDIO_CATALOGENTRY_UI_URL)
 APP_STUDIO_CATALOGENTRY_RENDERED ?= /tmp/kedge-app-studio-catalogentry.yaml
 APP_STUDIO_DATABASE_URL ?=
 APP_STUDIO_IN_MEMORY_MESSAGE_STORE ?=
+APP_STUDIO_AUTO_APPROVE_ACTIONS ?= true
 APP_STUDIO_DEV_DATABASE_URL ?= postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable
 APP_STUDIO_POSTGRES_CONTAINER ?= kedge-app-studio-postgres
 APP_STUDIO_POSTGRES_IMAGE ?= postgres:16-alpine
@@ -902,8 +903,10 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
 	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
 	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
+	APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS:-$(APP_STUDIO_AUTO_APPROVE_ACTIONS)}"; \
 	if [ "$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-}" = "true" ]; then \
 		echo "  store: in-memory (non-durable)"; \
+		echo "  auto-approve actions: $${APP_STUDIO_AUTO_APPROVE_ACTIONS}"; \
 		APP_STUDIO_DATABASE_URL= \
 		PORT=$(APP_STUDIO_PORT) \
 		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
@@ -912,10 +915,12 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 		KEDGE_PROVIDER_NAME=app-studio \
 		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
+		APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 			$(BINDIR)/app-studio-provider; \
 	else \
 		echo "  store: $${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}"; \
+		echo "  auto-approve actions: $${APP_STUDIO_AUTO_APPROVE_ACTIONS}"; \
 		PORT=$(APP_STUDIO_PORT) \
 		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
 		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
@@ -923,6 +928,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 		KEDGE_PROVIDER_NAME=app-studio \
 		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
+		APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 			$(BINDIR)/app-studio-provider; \
 	fi

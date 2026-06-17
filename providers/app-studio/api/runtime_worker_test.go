@@ -19,7 +19,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,8 +34,14 @@ func TestProjectRuntimeWorkerToolsAbsentByDefault(t *testing.T) {
 	if registry.Has(projectToolRuntimeCommand) {
 		t.Fatal("runtime_command tool registered without a runtime worker")
 	}
+	if registry.Has(projectToolVerifyProjectRuntime) {
+		t.Fatal("verify_project_runtime tool registered without a runtime worker")
+	}
 	if projectLocalToolAllowed(projectToolRuntimeCommand) {
 		t.Fatal("runtime_command is globally local-allowed without a runtime worker")
+	}
+	if projectLocalToolAllowed(projectToolVerifyProjectRuntime) {
+		t.Fatal("verify_project_runtime is globally local-allowed without a runtime worker")
 	}
 	if tool := newProjectRuntimeCommandToolForRegistry(server); tool != nil {
 		t.Fatalf("runtime tool = %#v, want nil without worker", tool)
@@ -87,30 +92,19 @@ func TestProjectRuntimeWorkerRequiresApprovalWithWorker(t *testing.T) {
 		t.Fatalf("permission = %q, want ask", got)
 	}
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	_, err := server.resolveProjectToolCallsWithPermissions(
-		context.Background(),
-		projectAssistantRunRequest{
-			Identity:       id,
-			HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
-			WorkspaceScope: projectWorkspaceScope(id, "demo"),
-			MessageScope:   projectMessageScope(id.orgUUID, id.workspaceUUID, "demo"),
-		},
-		projectAssistantCheckpointState{},
-		[]chatToolCall{{
-			ID:   "call-runtime",
-			Type: "function",
-			Function: chatToolCallFunction{
-				Name:      projectToolRuntimeCommand,
-				Arguments: `{"command":["npm","test"],"timeoutSeconds":30}`,
-			},
-		}},
-	)
-	var permissionErr *projectAssistantPermissionRequiredError
+	req := projectAssistantRunRequest{
+		Identity:       id,
+		HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+		WorkspaceScope: projectWorkspaceScope(id, "demo"),
+		MessageScope:   projectMessageScope(id.orgUUID, id.workspaceUUID, "demo"),
+	}
+	adapter := newProjectEinoAssistantServerTool(server, tool, req, newProjectEinoAssistantRunState()).(projectEinoAssistantTool)
+	_, err := adapter.InvokableRun(context.Background(), `{"command":["npm","test"],"timeoutSeconds":30}`)
 	if !strings.Contains(projectAssistantPermissionReason(tool.Spec()), "runtime command") {
 		t.Fatalf("permission reason = %q, want runtime command context", projectAssistantPermissionReason(tool.Spec()))
 	}
-	if !errors.As(err, &permissionErr) {
-		t.Fatalf("resolveProjectToolCallsWithPermissions error = %v, want permission required", err)
+	if err == nil || !strings.Contains(err.Error(), "interrupt signal") {
+		t.Fatalf("InvokableRun error = %v, want Eino permission interrupt", err)
 	}
 	if worker.calls != 0 {
 		t.Fatalf("worker calls = %d, want no start before approval", worker.calls)

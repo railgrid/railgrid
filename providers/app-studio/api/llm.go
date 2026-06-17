@@ -57,10 +57,10 @@ const (
 	projectLLMGoogleCloudScope     = "https://www.googleapis.com/auth/cloud-platform"
 
 	// maxAssistantToolTurns bounds how many tool-call/round-trips a single
-	// assistant generation may take before the final turn is forced to answer
-	// in text without tools. It guards against a model that loops on
-	// failing or disallowed tool calls.
-	maxAssistantToolTurns            = 8
+	// assistant generation may take before the run returns a progress summary.
+	// It is intentionally high enough for app scaffolding that writes many
+	// files, while still guarding against models that loop on tool calls.
+	maxAssistantToolTurns            = 32
 	projectToolInfoLimit             = 1000
 	projectMCPCallTimeout            = 2 * time.Minute
 	projectCommitProjectFilesMax     = 500
@@ -68,17 +68,19 @@ const (
 )
 
 const (
-	projectToolListProjectFiles   = "list_project_files"
-	projectToolReadProjectFile    = "read_project_file"
-	projectToolSearchProjectFiles = "search_project_files"
-	projectToolPlanProjectChanges = "plan_project_changes"
-	projectToolWriteFile          = "write_file"
-	projectToolApplyPatch         = "apply_patch"
-	projectToolMkdir              = "mkdir"
-	projectToolRuntimeCommand     = "runtime_command"
-	projectToolCommitProjectFiles = "commit_project_files"
-	projectToolCommitFiles        = "commit_files"
-	projectToolCodeCommitFiles    = "code__commit_files"
+	projectToolListProjectFiles      = "list_project_files"
+	projectToolReadProjectFile       = "read_project_file"
+	projectToolSearchProjectFiles    = "search_project_files"
+	projectToolPlanProjectChanges    = "plan_project_changes"
+	projectToolCheckProjectReadiness = "check_project_readiness"
+	projectToolWriteFile             = "write_file"
+	projectToolApplyPatch            = "apply_patch"
+	projectToolMkdir                 = "mkdir"
+	projectToolVerifyProjectRuntime  = "verify_project_runtime"
+	projectToolRuntimeCommand        = "runtime_command"
+	projectToolCommitProjectFiles    = "commit_project_files"
+	projectToolCommitFiles           = "commit_files"
+	projectToolCodeCommitFiles       = "code__commit_files"
 )
 
 var (
@@ -307,6 +309,10 @@ func (s *Server) generateProjectAssistantStream(
 	if id.orgUUID == "" || id.workspaceUUID == "" {
 		return "", errors.New("tenant context missing")
 	}
+	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, p.Name)
+	ctx, finishTurn := s.projectAssistantRunManager().Begin(ctx, turn)
+	defer finishTurn()
+	r = r.WithContext(ctx)
 	recent, err := s.store.LoadRecentMessages(ctx, projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name), 24)
 	if err != nil {
 		return "", err
@@ -324,6 +330,7 @@ func (s *Server) generateProjectAssistantStream(
 		History:                  recent,
 		MCPBaseURL:               s.hubBase,
 		MCPInsecureSkipTLSVerify: s.mcpInsecureSkipTLSVerify,
+		AutoApproveActions:       s.autoApproveAssistantActions(),
 		StreamCallbacks:          callbacks,
 	}
 	result, err := s.projectAssistantEngine().StreamProjectAssistant(ctx, req, nil)
@@ -331,250 +338,6 @@ func (s *Server) generateProjectAssistantStream(
 		return "", err
 	}
 	return result.Content, nil
-}
-
-func (s *Server) runProjectAssistantChatLoop(ctx context.Context, req projectAssistantRunRequest) (string, error) {
-	settings := req.LLM
-	projectRepositoryRef := projectLinkedRepositoryRef(req.Project)
-	messages := projectPromptMessages(req.Project, req.Repository, req.History)
-	tools, toolsErr := s.loadProjectMCPTools(req.HTTPRequest, req.Identity, settings)
-	if toolsErr == nil {
-		if toolPrompt := projectMCPToolsPrompt(tools); toolPrompt != "" {
-			messages = append(messages, chatMessage{
-				Role:    "system",
-				Content: toolPrompt,
-			})
-		}
-	} else {
-		messages = append(messages, chatMessage{
-			Role:    "system",
-			Content: projectMCPToolsFailurePrompt(toolsErr),
-		})
-	}
-	state := projectAssistantCheckpointState{
-		Messages:             messages,
-		ProjectRepositoryRef: strings.TrimSpace(projectRepositoryRef),
-		SeenToolCalls:        map[string]int{},
-	}
-	return s.runProjectAssistantChatLoopWithState(ctx, req, state, tools)
-}
-
-func (s *Server) runProjectAssistantChatLoopFromCheckpoint(ctx context.Context, req projectAssistantRunRequest, state projectAssistantCheckpointState) (string, error) {
-	if len(state.Messages) == 0 {
-		return s.runProjectAssistantChatLoop(ctx, req)
-	}
-	if strings.TrimSpace(state.ProjectRepositoryRef) == "" {
-		state.ProjectRepositoryRef = projectLinkedRepositoryRef(req.Project)
-	}
-	tools, err := s.loadProjectMCPTools(req.HTTPRequest, req.Identity, req.LLM)
-	if err != nil {
-		tools = nil
-	}
-	return s.runProjectAssistantChatLoopWithState(ctx, req, state, tools)
-}
-
-func (s *Server) runProjectAssistantChatLoopWithState(ctx context.Context, req projectAssistantRunRequest, state projectAssistantCheckpointState, tools []chatTool) (string, error) {
-	settings := req.LLM
-	logger := klog.FromContext(ctx)
-
-	// seenToolCalls tracks each (name, args) signature the model has already
-	// requested. A model that re-issues an identical call is looping rather
-	// than making progress, so we stop offering tools and force a text answer
-	// instead of grinding through every turn and dying with a generic error.
-	if state.SeenToolCalls == nil {
-		state.SeenToolCalls = map[string]int{}
-	}
-	messages := cloneChatMessages(state.Messages)
-	lastToolMessages := cloneChatMessages(state.LastToolMessages)
-
-	for i := state.Turn; i < maxAssistantToolTurns; i++ {
-		// On the last allowed turn (or once we have detected a loop), stop
-		// offering tools so the model must produce a final text answer. This
-		// turns "exceeded safe turn limit" into a graceful explanation of why
-		// the assistant could not complete the request.
-		finalTurn := state.ForceTextAnswer || i == maxAssistantToolTurns-1
-
-		reqBody := chatCompletionRequest{
-			Model:       settings.Model,
-			Messages:    messages,
-			Temperature: 0.2,
-			Stream:      true,
-		}
-		if len(tools) > 0 && !finalTurn {
-			reqBody.Tools = tools
-			reqBody.ToolChoice = "auto"
-		}
-		maybeInjectGoogleThoughtSignature(settings, reqBody.Messages)
-
-		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, req.StreamCallbacks.OnChunk, req.StreamCallbacks.OnStatus)
-		if err != nil {
-			if state.RepeatedToolLoop && errors.Is(err, errProjectLLMNoStreamedChoice) {
-				return projectRepeatedToolLoopFallback(lastToolMessages), nil
-			}
-			if finalTurn && len(lastToolMessages) > 0 && errors.Is(err, errProjectLLMNoStreamedChoice) {
-				return projectToolLoopFallback(lastToolMessages, "kept requesting actions"), nil
-			}
-			return "", err
-		}
-		if len(reply.ToolCalls) > 0 && !finalTurn {
-			ensureProjectToolCallIDs(reply.ToolCalls)
-			repeated := false
-			for _, tc := range reply.ToolCalls {
-				sig := tc.Function.Name + "\x00" + tc.Function.Arguments
-				state.SeenToolCalls[sig]++
-				if state.SeenToolCalls[sig] > 1 {
-					repeated = true
-				}
-				logger.V(2).Info("project assistant requested tool call",
-					"turn", i, "tool", tc.Function.Name, "args", summarizeProjectToolArguments(tc.Function.Name, tc.Function.Arguments))
-			}
-
-			messages = append(messages, chatMessage{
-				Role:      aiv1alpha1.ProjectMessageRoleAssistant,
-				ToolCalls: reply.ToolCalls,
-			})
-			nextState := state
-			nextState.Messages = cloneChatMessages(messages)
-			nextState.SeenToolCalls = cloneProjectAssistantSeenToolCalls(state.SeenToolCalls)
-			nextState.LastToolMessages = cloneChatMessages(lastToolMessages)
-			nextState.Turn = i + 1
-			nextMessages, callErr := s.resolveProjectToolCallsWithPermissions(ctx, req, nextState, reply.ToolCalls)
-			if callErr != nil {
-				return "", callErr
-			}
-			lastToolMessages = nextMessages
-			messages = append(messages, nextMessages...)
-			state.Messages = cloneChatMessages(messages)
-			state.LastToolMessages = cloneChatMessages(lastToolMessages)
-			state.Turn = i + 1
-
-			if commitReply, ok := projectCommitToolReply(nextMessages); ok {
-				logger.Info("project assistant completed a project commit handoff attempt; forcing a final text answer",
-					"turn", i, "project", req.Project.Name)
-				return commitReply, nil
-			}
-			if repeated {
-				logger.Info("project assistant repeated an identical tool call across turns; forcing a final text answer",
-					"turn", i, "project", req.Project.Name)
-				state.ForceTextAnswer = true
-				state.RepeatedToolLoop = true
-			}
-			continue
-		}
-
-		if strings.TrimSpace(reply.Content) == "" {
-			if state.RepeatedToolLoop {
-				return projectRepeatedToolLoopFallback(lastToolMessages), nil
-			}
-			if finalTurn && len(lastToolMessages) > 0 {
-				return projectToolLoopFallback(lastToolMessages, "kept requesting actions"), nil
-			}
-			return "", errors.New("LLM API returned an empty assistant message")
-		}
-		return reply.Content, nil
-	}
-
-	return "", errors.New("LLM tool loop exceeded safe turn limit")
-}
-
-func (s *Server) resolveProjectToolCallsWithPermissions(
-	ctx context.Context,
-	req projectAssistantRunRequest,
-	state projectAssistantCheckpointState,
-	toolCalls []chatToolCall,
-) ([]chatMessage, error) {
-	if len(toolCalls) == 0 {
-		return nil, nil
-	}
-	registry := s.projectAssistantToolRegistry()
-	var toolMessages []chatMessage
-	for i, tc := range toolCalls {
-		tool, ok := registry.Get(tc.Function.Name)
-		if !ok {
-			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, state.ProjectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
-			if err != nil {
-				return nil, err
-			}
-			toolMessages = append(toolMessages, nextMessages...)
-			state.Messages = append(state.Messages, nextMessages...)
-			state.LastToolMessages = cloneChatMessages(nextMessages)
-			continue
-		}
-		args, err := projectAssistantToolCallArguments(tc)
-		if err != nil {
-			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, state.ProjectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
-			if err != nil {
-				return nil, err
-			}
-			toolMessages = append(toolMessages, nextMessages...)
-			state.Messages = append(state.Messages, nextMessages...)
-			state.LastToolMessages = cloneChatMessages(nextMessages)
-			continue
-		}
-		spec := tool.Spec()
-		switch projectAssistantPermissionForTool(spec) {
-		case projectAssistantPermissionAllow:
-			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, state.ProjectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
-			if err != nil {
-				return nil, err
-			}
-			toolMessages = append(toolMessages, nextMessages...)
-			state.Messages = append(state.Messages, nextMessages...)
-			state.LastToolMessages = cloneChatMessages(nextMessages)
-		case projectAssistantPermissionAsk:
-			if req.StreamCallbacks.OnToolCall != nil {
-				req.StreamCallbacks.OnToolCall(projectToolCallStreamEvent{
-					ID:        tc.ID,
-					Name:      tc.Function.Name,
-					Status:    "permission_required",
-					Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
-					Summary:   projectAssistantPermissionReason(spec),
-				})
-			}
-			permissionErr, permission, checkpoint, err := s.saveProjectAssistantPermissionCheckpointForState(ctx, req, tool, state, toolCalls, i)
-			if err != nil {
-				return nil, err
-			}
-			if req.StreamCallbacks.OnAssistantEvent != nil {
-				req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
-					Type:       projectAssistantEventPermissionNeeded,
-					Permission: &permission,
-				})
-				req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
-					Type:       projectAssistantEventCheckpointSaved,
-					Checkpoint: &checkpoint,
-				})
-			}
-			return nil, permissionErr
-		case projectAssistantPermissionDeny:
-			reason := "unknown tool risk"
-			if req.StreamCallbacks.OnToolCall != nil {
-				req.StreamCallbacks.OnToolCall(projectToolCallStreamEvent{
-					ID:        tc.ID,
-					Name:      tc.Function.Name,
-					Status:    "rejected",
-					Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
-					Error:     reason,
-				})
-			}
-			msg := projectAssistantPermissionDeniedToolMessage(tc, reason)
-			toolMessages = append(toolMessages, msg)
-			state.Messages = append(state.Messages, msg)
-			state.LastToolMessages = []chatMessage{msg}
-		}
-	}
-	return toolMessages, nil
-}
-
-func projectAssistantToolCallArguments(tc chatToolCall) (map[string]any, error) {
-	args := map[string]any{}
-	if strings.TrimSpace(tc.Function.Arguments) == "" {
-		return args, nil
-	}
-	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-		return nil, err
-	}
-	return args, nil
 }
 
 func projectRepeatedToolLoopFallback(toolMessages []chatMessage) string {
@@ -636,7 +399,11 @@ func projectToolLoopFallback(toolMessages []chatMessage, reason string) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("I stopped because the assistant " + reason + " and the model did not provide a final text answer.")
+	if reason == "kept requesting actions" {
+		b.WriteString("I hit the per-turn action limit before the model produced a final text answer.")
+	} else {
+		b.WriteString("I stopped because the assistant " + reason + " and the model did not provide a final text answer.")
+	}
 	if len(summaries) > 0 {
 		b.WriteString(" Last action result")
 		if len(summaries) > 1 {
@@ -646,7 +413,6 @@ func projectToolLoopFallback(toolMessages []chatMessage, reason string) string {
 		b.WriteString(strings.Join(summaries, "; "))
 		b.WriteString(".")
 	}
-	b.WriteString(" Please ask me to continue if you want the next step.")
 	return b.String()
 }
 
@@ -1357,8 +1123,10 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return summarizeProjectToolKeyValues(args, []string{"path", "maxBytes"})
 	case projectToolSearchProjectFiles:
 		return summarizeProjectToolKeyValues(args, []string{"query", "maxResults"})
-	case projectToolPlanProjectChanges:
+	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness:
 		return summarizeProjectPlanningWorkflowArgs(args)
+	case projectToolVerifyProjectRuntime:
+		return summarizeProjectRuntimeVerificationArgs(args)
 	case projectToolWriteFile:
 		return summarizeProjectMutationArgs(args, []string{"path"}, true)
 	case projectToolApplyPatch:
@@ -1411,6 +1179,10 @@ func summarizeProjectToolResult(name, result string) string {
 			return summarizeWorkspaceSearchResult(decoded)
 		case projectToolPlanProjectChanges:
 			return summarizeProjectPlanningWorkflowResult(decoded)
+		case projectToolCheckProjectReadiness:
+			return summarizeProjectReadinessWorkflowResult(decoded)
+		case projectToolVerifyProjectRuntime:
+			return summarizeProjectRuntimeVerificationResult(decoded)
 		case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
 			return summarizeWorkspaceMutationResult(decoded)
 		}
@@ -1466,6 +1238,17 @@ func summarizeProjectPlanningWorkflowArgs(args map[string]any) string {
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
 }
 
+func summarizeProjectRuntimeVerificationArgs(args map[string]any) string {
+	parts := []string{}
+	if checks := projectToolStringList(args["checks"]); len(checks) > 0 {
+		parts = append(parts, "checks "+summarizeProjectToolList(checks, 4))
+	}
+	if n, ok := projectToolNumber(args["timeoutSeconds"]); ok {
+		parts = append(parts, fmt.Sprintf("timeoutSeconds %d", n))
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
 func summarizeWorkspaceMutationResult(decoded map[string]any) string {
 	parts := []string{}
 	if op := projectToolString(decoded["operation"]); op != "" {
@@ -1498,6 +1281,58 @@ func summarizeProjectPlanningWorkflowResult(decoded map[string]any) string {
 		return ""
 	}
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectReadinessWorkflowResult(decoded map[string]any) string {
+	parts := []string{}
+	if status := projectToolString(decoded["status"]); status != "" {
+		parts = append(parts, "status "+status)
+	}
+	if checks := projectToolStringList(decoded["recommendedChecks"]); len(checks) > 0 {
+		parts = append(parts, "checks "+summarizeProjectToolList(checks, 4))
+	}
+	if files := projectToolStringList(decoded["files"]); len(files) > 0 {
+		parts = append(parts, fmt.Sprintf("%d file(s): %s", len(files), summarizeProjectToolList(files, 5)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectRuntimeVerificationResult(decoded map[string]any) string {
+	parts := []string{}
+	if status := projectToolString(decoded["status"]); status != "" {
+		parts = append(parts, "status "+status)
+	}
+	if checks, ok := decoded["checks"].([]any); ok && len(checks) > 0 {
+		parts = append(parts, fmt.Sprintf("%d check(s): %s", len(checks), summarizeProjectRuntimeCheckNames(checks, 4)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectRuntimeCheckNames(values []any, maxValues int) string {
+	if len(values) == 0 || maxValues <= 0 {
+		return ""
+	}
+	names := make([]string, 0, len(values))
+	for _, value := range values {
+		obj, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := projectToolString(obj["name"])
+		if status := projectToolString(obj["status"]); status != "" {
+			name = strings.TrimSpace(name + " " + status)
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return summarizeProjectToolList(names, maxValues)
 }
 
 func summarizeWorkspaceListResult(decoded map[string]any) string {
@@ -1550,6 +1385,19 @@ func summarizeWorkspaceSearchResult(decoded map[string]any) string {
 
 func projectToolCallResultStatus(name, result string) string {
 	baseName := projectToolBaseName(name)
+	if baseName == projectToolVerifyProjectRuntime {
+		decoded := map[string]any{}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &decoded); err == nil {
+			switch strings.ToLower(projectToolString(decoded["status"])) {
+			case "failed":
+				return "failed"
+			case "started":
+				return "running"
+			case "bounded":
+				return "failed"
+			}
+		}
+	}
 	if baseName != projectToolCommitFiles && baseName != projectToolCommitProjectFiles {
 		return "succeeded"
 	}
@@ -2256,6 +2104,7 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 			}
 			b.WriteString("Do not attempt to commit files until the user restores the missing Code repository or connection.\n")
 		} else {
+			b.WriteString("Use check_project_readiness before mutating or verifying existing work so repository, memory, workspace context, and recommended checks come from the App Studio graph workflow. ")
 			b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
 			b.WriteString("Prefer small App Studio workspace mutations with write_file, apply_patch, and mkdir instead of rewriting a whole project. ")
 			b.WriteString("After workspace mutations, commit the changed source/config files to the managed git source with commit_project_files using repositoryRef \"" + repoRef + "\". ")

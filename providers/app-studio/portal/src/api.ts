@@ -178,10 +178,13 @@ async function requestStream(
     try {
       event = JSON.parse(data) as ProjectMessageStreamEvent
     } catch {
-      onEvent({ type: 'error', error: data })
+      onEvent({ type: 'run_failed', error: data })
       return
     }
-    if (!event.type) event.type = type === 'done' || type === 'error' ? type : 'chunk'
+    if (!event.type) {
+      onEvent({ type: 'run_failed', error: `stream event missing type${type ? ` (${type})` : ''}` })
+      return
+    }
     onEvent(event)
   }
 

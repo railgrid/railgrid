@@ -127,6 +127,42 @@ func TestPostgresStoreExternalDSN(t *testing.T) {
 	}
 }
 
+func TestNormalizePostgresJSONBSanitizesNullCodePoint(t *testing.T) {
+	raw := json.RawMessage(`{
+		"message": "before\u0000after",
+		"nested": {
+			"bad\u0000key": "value\u0000"
+		},
+		"items": ["ok\u0000", {"inner": "still\u0000bad"}]
+	}`)
+
+	normalized, err := normalizePostgresJSONB(raw)
+	if err != nil {
+		t.Fatalf("normalizePostgresJSONB returned error: %v", err)
+	}
+	if strings.Contains(string(normalized), `\u0000`) {
+		t.Fatalf("normalized JSON still contains PostgreSQL-rejected null escape: %s", normalized)
+	}
+	if strings.Contains(string(normalized), "\x00") {
+		t.Fatalf("normalized JSON still contains raw null byte: %q", normalized)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(normalized, &got); err != nil {
+		t.Fatalf("normalized JSON did not unmarshal: %v", err)
+	}
+	if got["message"] != "before\ufffdafter" {
+		t.Fatalf("message = %#v, want null code point replaced", got["message"])
+	}
+	nested, ok := got["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested = %#v, want object", got["nested"])
+	}
+	if nested["bad\ufffdkey"] != "value\ufffd" {
+		t.Fatalf("nested sanitized value = %#v, want replacement in key and value", nested)
+	}
+}
+
 func postgresDSNWithSearchPath(t *testing.T, dsn, schemaName string) string {
 	t.Helper()
 	u, err := url.Parse(dsn)
