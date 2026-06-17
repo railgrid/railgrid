@@ -106,6 +106,45 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
+	registry := projectAssistantLocalToolRegistry(nil)
+	got := projectChatToolNames(registry.ChatTools(false))
+	want := []string{
+		"list_project_files",
+		"read_project_file",
+		"search_project_files",
+		"write_file",
+		"apply_patch",
+		"mkdir",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("tool names = %v, want %v", got, want)
+	}
+
+	all := projectChatToolNames(registry.ChatTools(true))
+	if len(all) != len(want)+1 || all[len(all)-1] != "commit_project_files" {
+		t.Fatalf("tool names with commit bridge = %v, want commit_project_files last", all)
+	}
+	if !registry.Has(" COMMIT_PROJECT_FILES ") {
+		t.Fatal("registry should match tool names case-insensitively")
+	}
+	tool, ok := registry.Get("write_file")
+	if !ok {
+		t.Fatal("write_file missing from registry")
+	}
+	if got := tool.Spec().Risk; got != projectAssistantToolRiskWrite {
+		t.Fatalf("write_file risk = %q, want %q", got, projectAssistantToolRiskWrite)
+	}
+}
+
+func projectChatToolNames(tools []chatTool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Function.Name)
+	}
+	return names
+}
+
 func TestLoadProjectMCPToolsExposesCommitBridgeOnly(t *testing.T) {
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope struct {

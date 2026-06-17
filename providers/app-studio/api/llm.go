@@ -1079,56 +1079,18 @@ func projectLinkedRepositoryRef(p *aiv1alpha1.Project) string {
 }
 
 func (s *Server) callProjectLocalTool(ctx context.Context, id identity, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, name string, args map[string]any) (string, error) {
-	if s.workspaces == nil {
-		return "", errors.New("project workspace store is not configured")
+	tool, ok := s.projectAssistantToolRegistry().Get(name)
+	if !ok {
+		return "", fmt.Errorf("unknown local project tool %q", name)
 	}
-	var (
-		out any
-		err error
-	)
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case projectToolListProjectFiles:
-		out, err = s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{Limit: projectToolInt(args["limit"])})
-	case projectToolReadProjectFile:
-		out, err = s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{
-			Path:     projectToolString(args["path"]),
-			MaxBytes: projectToolInt(args["maxBytes"]),
-		})
-	case projectToolSearchProjectFiles:
-		out, err = s.workspaces.SearchFiles(ctx, scope, workspace.SearchOptions{
-			Query:      projectToolString(args["query"]),
-			MaxResults: projectToolInt(args["maxResults"]),
-		})
-	case projectToolWriteFile:
-		content, _ := projectToolRawString(args["content"])
-		out, err = s.workspaces.WriteFile(ctx, scope, workspace.WriteOptions{
-			Path:    projectToolString(args["path"]),
-			Content: content,
-		})
-	case projectToolApplyPatch:
-		oldText, _ := projectToolRawString(args["oldText"])
-		newText, _ := projectToolRawString(args["newText"])
-		out, err = s.workspaces.ApplyPatch(ctx, scope, workspace.PatchOptions{
-			Path:       projectToolString(args["path"]),
-			OldText:    oldText,
-			NewText:    newText,
-			ReplaceAll: projectToolBool(args["replaceAll"]),
-		})
-	case projectToolMkdir:
-		out, err = s.workspaces.Mkdir(ctx, scope, workspace.MkdirOptions{Path: projectToolString(args["path"])})
-	case projectToolCommitProjectFiles:
-		return s.commitProjectWorkspaceFiles(ctx, id, scope, projectRepositoryRef, mcpEndpoint, r, args)
-	default:
-		err = fmt.Errorf("unknown local project tool %q", name)
-	}
-	if err != nil {
-		return "", err
-	}
-	raw, err := json.Marshal(out)
-	if err != nil {
-		return "", fmt.Errorf("encode local tool result: %w", err)
-	}
-	return string(raw), nil
+	return tool.Call(ctx, projectAssistantToolCallRequest{
+		Identity:             id,
+		WorkspaceScope:       scope,
+		ProjectRepositoryRef: projectRepositoryRef,
+		MCPEndpoint:          mcpEndpoint,
+		HTTPRequest:          r,
+		Arguments:            args,
+	})
 }
 
 func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, args map[string]any) (string, error) {
@@ -1554,7 +1516,8 @@ func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings proj
 	if id.tenantPath == "" {
 		return nil, errors.New("tenant context missing")
 	}
-	out := projectLocalChatTools(false)
+	registry := s.projectAssistantToolRegistry()
+	out := registry.ChatTools(false)
 	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
 	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify)
 	if err != nil {
@@ -1573,77 +1536,11 @@ func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings proj
 		}
 	}
 	if codeCommitAvailable {
-		out = append(out, projectCommitProjectFilesChatTool())
+		if tool, ok := registry.ChatTool(projectToolCommitProjectFiles); ok {
+			out = append(out, tool)
+		}
 	}
 	return out, nil
-}
-
-func projectLocalChatTools(includeCommitBridge bool) []chatTool {
-	tools := []chatTool{
-		{
-			Type: "function",
-			Function: chatToolFunction{
-				Name:        projectToolListProjectFiles,
-				Description: "List files in the App Studio project workspace. Use this before editing an existing project.",
-				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":%d,"description":"Maximum number of file paths to return."}}}`, workspace.MaxListLimit)),
-			},
-		},
-		{
-			Type: "function",
-			Function: chatToolFunction{
-				Name:        projectToolReadProjectFile,
-				Description: "Read a bounded UTF-8 text file from the App Studio project workspace.",
-				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative file path."},"maxBytes":{"type":"integer","minimum":1,"maximum":%d,"description":"Maximum bytes to return."}},"required":["path"]}`, workspace.MaxReadMaxBytes)),
-			},
-		},
-		{
-			Type: "function",
-			Function: chatToolFunction{
-				Name:        projectToolSearchProjectFiles,
-				Description: "Search text files in the App Studio project workspace and return bounded path/fragments results.",
-				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"query":{"type":"string","description":"Text to search for."},"maxResults":{"type":"integer","minimum":1,"maximum":%d,"description":"Maximum matching files to return."}},"required":["query"]}`, workspace.MaxSearchLimit)),
-			},
-		},
-		{
-			Type: "function",
-			Function: chatToolFunction{
-				Name:        projectToolWriteFile,
-				Description: "Write a complete UTF-8 text file into the App Studio project workspace.",
-				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative file path."},"content":{"type":"string","description":"Complete UTF-8 text content to write. Maximum %d bytes."}},"required":["path","content"]}`, workspace.MaxWriteBytes)),
-			},
-		},
-		{
-			Type: "function",
-			Function: chatToolFunction{
-				Name:        projectToolApplyPatch,
-				Description: "Apply an exact text replacement to one App Studio workspace file. oldText must match exactly once unless replaceAll is true.",
-				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative file path."},"oldText":{"type":"string","description":"Exact text to replace. Maximum patch payload %d bytes with newText."},"newText":{"type":"string","description":"Replacement text."},"replaceAll":{"type":"boolean","description":"Replace every exact match instead of requiring one match."}},"required":["path","oldText","newText"]}`, workspace.MaxPatchBytes)),
-			},
-		},
-		{
-			Type: "function",
-			Function: chatToolFunction{
-				Name:        projectToolMkdir,
-				Description: "Create a directory in the App Studio project workspace for later file writes.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative directory path."}},"required":["path"]}`),
-			},
-		},
-	}
-	if includeCommitBridge {
-		tools = append(tools, projectCommitProjectFilesChatTool())
-	}
-	return tools
-}
-
-func projectCommitProjectFilesChatTool() chatTool {
-	return chatTool{
-		Type: "function",
-		Function: chatToolFunction{
-			Name:        projectToolCommitProjectFiles,
-			Description: "Commit selected App Studio workspace text files to the managed git source through the Code provider.",
-			Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"repositoryRef":{"type":"string","description":"Managed Code provider Repository resource name."},"paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":%d,"description":"Project-relative workspace file paths to commit."},"message":{"type":"string","description":"Commit message."},"branch":{"type":"string","description":"Optional branch override."}},"required":["repositoryRef","paths"]}`, projectCommitProjectFilesMax)),
-		},
-	}
 }
 
 // mcpEndpoint returns the hub's unified MCPServer virtual-workspace endpoint for
@@ -2223,12 +2120,7 @@ func projectToolAllowed(name string) bool {
 }
 
 func projectLocalToolAllowed(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles, projectToolWriteFile, projectToolApplyPatch, projectToolMkdir, projectToolCommitProjectFiles:
-		return true
-	default:
-		return false
-	}
+	return projectAssistantLocalToolRegistry(nil).Has(name)
 }
 
 func projectMCPToolAllowed(_ string) bool {
