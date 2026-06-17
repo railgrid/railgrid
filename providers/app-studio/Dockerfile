@@ -16,11 +16,9 @@ COPY portal/ ./
 RUN npm run build
 
 # 2. Build the Go binary. assets.go //go:embeds portal/dist, overlaid from the
-#    node stage so the bundle is fresh.
-#
-# TODO(sdk-publish): depends on github.com/faroshq/kedge-provider-sdk via a
-# `replace => ../../provider-sdk` that only resolves in the monorepo (go.work).
-# Standalone image builds need the SDK published (drop the replace) or vendored.
+#    node stage so the bundle is fresh. The module depends on the published
+#    github.com/faroshq/provider-sdk (no local replace), so it resolves from the
+#    proxy in a standalone build context.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./

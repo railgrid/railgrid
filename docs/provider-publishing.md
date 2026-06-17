@@ -9,6 +9,15 @@ monorepo — the same pattern Kubernetes uses with its
 [`publishing-bot`](https://github.com/kubernetes/publishing-bot) and Symfony/Laravel
 use for their components.
 
+> **Mirrors are source-only.** Container images and Helm charts are built and
+> published **from the monorepo** ([`images.yaml`](../.github/workflows/images.yaml)
+> and [`helm-images.yaml`](../.github/workflows/helm-images.yaml)), not from the
+> mirrors. Every monorepo PR builds each provider image (single-arch,
+> build-only) and packages each provider chart, so a broken Dockerfile or chart
+> is caught **in the PR** rather than surfacing only after the split sync
+> reaches a mirror. The mirrors exist purely so the provider modules are
+> `go get`-able at their own paths and browsable in isolation.
+
 Publishing is done with [splitsh-lite](https://github.com/splitsh/lite), which
 produces a real, **history-preserving** subtree split (not a squashed
 snapshot). splitsh-lite is deterministic: the same source always splits to the
@@ -38,9 +47,11 @@ The split workflow triggers on:
   reflects the monorepo even if history is rewritten).
 - **per-provider release tags** — `providers/<name>/vX.Y.Z`. The path prefix is
   stripped on the way out, so the mirror receives a plain `vX.Y.Z` tag (which
-  then triggers the mirror's own image/chart release workflows). Pushed
-  non-force, so re-tagging fails loudly since tags are immutable. A repo-wide
-  `vX.Y.Z` tag does **not** release any mirror.
+  records the released source on the mirror). Pushed non-force, so re-tagging
+  fails loudly since tags are immutable. Note the mirror tag no longer builds
+  anything — provider images and charts are published from the monorepo (a
+  repo-wide `vX.Y.Z` tag drives those builds via `images.yaml` /
+  `helm-images.yaml`).
 - **pull requests** touching the provider's subtree (or its workflow file) —
   these only *validate* (install splitsh-lite + compute the split); the
   deploy-key and push steps are gated to non-PR events, so a PR never writes to

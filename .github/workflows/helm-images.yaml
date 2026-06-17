@@ -6,6 +6,12 @@ on:
       - main
     tags:
       - "v*"
+  # On PRs the chart is packaged but NOT pushed (no login, push gated below), so
+  # a broken Chart.yaml / template is caught in the PR before the split sync
+  # ever reaches a mirror.
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -21,7 +27,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GitHub Container Registry  
+      - name: Login to GitHub Container Registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -46,10 +53,16 @@ jobs:
       - name: Package and push Helm charts as OCI
         env:
           HELM_EXPERIMENTAL_OCI: 1
+          # PRs validate (package) only; pushes/tags publish.
+          PUSH: ${{ github.event_name != 'pull_request' }}
         run: |
-          # Login to GitHub Container Registry for Helm
-          echo "${{ github.token }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
-          
+          set -euo pipefail
+
+          # Login to GitHub Container Registry for Helm (skip on PRs — no push).
+          if [ "${PUSH}" = "true" ]; then
+            echo "${{ github.token }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
+          fi
+
           # Set chart version - use tag name if available, otherwise use semver format
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             TAG_NAME="${{ github.ref_name }}"
@@ -62,10 +75,14 @@ jobs:
             APP_VERSION="${CHART_VERSION}"
           fi
 
-          # Package and push each platform chart in deploy/charts/. Per-provider
-          # charts (providers/*/deploy/chart/) are built and published from their
-          # own synced-out repos, so they are not packaged here.
-          for chart_dir in deploy/charts/*/; do
+          # Package (and on non-PR events push) each platform chart in
+          # deploy/charts/ plus every per-provider chart in
+          # providers/*/deploy/chart/. The provider chart dirs are all named
+          # "chart", so the chart name is read from the Chart.yaml name: field
+          # rather than the directory basename. Provider charts are built here
+          # in the monorepo (not their synced-out mirrors) so a broken chart is
+          # caught in the PR that changes it.
+          for chart_dir in deploy/charts/*/ providers/*/deploy/chart/; do
             if [ -f "${chart_dir}Chart.yaml" ]; then
               chart_name=$(grep -E '^name:' "${chart_dir}Chart.yaml" | head -1 | awk '{print $2}')
               echo "Processing chart: $chart_name ($chart_dir)"
@@ -73,13 +90,25 @@ jobs:
               # Update chart version and appVersion in Chart.yaml
               sed -i "s/^version:.*/version: ${CHART_VERSION}/" "${chart_dir}Chart.yaml"
               sed -i "s/^appVersion:.*/appVersion: \"${APP_VERSION}\"/" "${chart_dir}Chart.yaml"
-              
+
+              # Lint first: `helm package` only tars the chart and does NOT
+              # render templates, so a broken template would still package
+              # cleanly. `helm lint` renders the templates against the chart's
+              # default values, so a PR fails on template errors (the whole
+              # point of building charts here). All current charts — platform
+              # and provider — lint cleanly with their defaults (the platform
+              # charts' `required` values are defaulted in values.yaml).
+              helm lint "$chart_dir"
+
               # Package the chart
               helm package "$chart_dir" --version "${CHART_VERSION}"
-              
-              # Push to GitHub Container Registry
-              helm push "${chart_name}-${CHART_VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
-              
-              echo "Helm chart pushed to oci://ghcr.io/${{ github.repository_owner }}/charts/${chart_name}:${CHART_VERSION}"
+
+              if [ "${PUSH}" = "true" ]; then
+                # Push to GitHub Container Registry
+                helm push "${chart_name}-${CHART_VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
+                echo "Helm chart pushed to oci://ghcr.io/${{ github.repository_owner }}/charts/${chart_name}:${CHART_VERSION}"
+              else
+                echo "PR build: packaged ${chart_name}-${CHART_VERSION}.tgz (not pushed)"
+              fi
             fi
           done

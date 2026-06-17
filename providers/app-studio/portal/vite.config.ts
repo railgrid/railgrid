@@ -14,7 +14,13 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': resolve(__dirname, '..', '..', '..', 'portal', 'src'),
+      // Resolve to this provider's own src so the build is self-contained:
+      // identical whether run from the monorepo (make) or a standalone Docker
+      // build context. Shared components are vendored under src/components,
+      // src/composables (kept in sync with the root portal). Pointing at the
+      // root portal would only resolve in the monorepo and silently break the
+      // image build.
+      '@': resolve(__dirname, 'src'),
       'lucide-vue-next': resolve(__dirname, 'node_modules', 'lucide-vue-next', 'dist', 'esm', 'lucide-vue-next.js'),
       vue: resolve(__dirname, 'node_modules', 'vue', 'dist', 'vue.esm-bundler.js'),
     },

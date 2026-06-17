@@ -10,8 +10,10 @@
 > against [`faroshq/kedge`](https://github.com/faroshq/kedge) instead.
 >
 > This is also the canonical "copy me" template for a standalone provider repo:
-> it ships its own `Dockerfile`, Helm chart (`deploy/chart/`), and release
-> workflows that build the image + chart on every sync/tag.
+> it ships its own `Dockerfile` and Helm chart (`deploy/chart/`). The image and
+> chart are built and published from the kedge monorepo CI (every PR builds
+> them, so breaks are caught before the sync); the mirror itself carries no
+> build workflows.
 
 A minimal reference provider proving the kedge plugin surface end-to-end.
 See [docs/providers.md](../../docs/providers.md) for the architecture this
