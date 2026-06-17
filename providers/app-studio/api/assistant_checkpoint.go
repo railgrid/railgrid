@@ -37,9 +37,10 @@ type projectAssistantCheckpointState struct {
 }
 
 type projectAssistantResumeRequest struct {
-	RequestID       string         `json:"requestID"`
-	Decision        string         `json:"decision"`
-	EditedArguments map[string]any `json:"editedArguments,omitempty"`
+	RequestID          string         `json:"requestID"`
+	Decision           string         `json:"decision"`
+	AssistantMessageID string         `json:"assistantMessageID,omitempty"`
+	EditedArguments    map[string]any `json:"editedArguments,omitempty"`
 }
 
 type projectAssistantResumeResponse struct {
@@ -206,6 +207,8 @@ func (s *Server) resumeProjectAssistantRun(
 		Decision:  decision,
 	}
 	if projectAssistantCheckpointHasStaleRepositoryBinding(state, p) {
+		staleBindingError := "Project repository binding changed after permission was requested"
+		tc := state.ToolCalls[state.CurrentIndex]
 		now := time.Now().UTC()
 		run.Status = store.AssistantRunStatusCompleted
 		run.UpdatedAt = now
@@ -213,9 +216,9 @@ func (s *Server) resumeProjectAssistantRun(
 			RequestID:  run.RequestID,
 			Decision:   decision,
 			Actor:      id.user,
-			ToolCallID: state.ToolCalls[state.CurrentIndex].ID,
-			ToolName:   state.ToolCalls[state.CurrentIndex].Function.Name,
-			Error:      "Project repository binding changed after permission was requested",
+			ToolCallID: tc.ID,
+			ToolName:   tc.Function.Name,
+			Error:      staleBindingError,
 			ResolvedAt: now,
 		})
 		if err != nil {
@@ -224,7 +227,18 @@ func (s *Server) resumeProjectAssistantRun(
 		if saveErr := s.store.SaveAssistantRun(ctx, messageScope, run); saveErr != nil {
 			return projectAssistantResumeResponse{}, saveErr
 		}
-		return projectAssistantResumeResponse{}, newValidationError("Project repository binding changed after permission was requested")
+		out.Status = run.Status
+		out.Result = staleBindingError
+		out.ToolCall = &projectToolCallStreamEvent{
+			ID:     tc.ID,
+			Name:   tc.Function.Name,
+			Status: "failed",
+			Error:  staleBindingError,
+		}
+		if err := s.updateProjectAssistantPermissionMessage(ctx, messageScope, strings.TrimSpace(req.AssistantMessageID), out); err != nil {
+			return projectAssistantResumeResponse{}, err
+		}
+		return projectAssistantResumeResponse{}, newValidationError(staleBindingError)
 	}
 
 	run, out, err = s.resolveClaimedProjectAssistantRun(ctx, r, id, p, run, state, req, decision, out)
@@ -235,6 +249,9 @@ func (s *Server) resumeProjectAssistantRun(
 		return projectAssistantResumeResponse{}, err
 	}
 	out.Status = run.Status
+	if err := s.updateProjectAssistantPermissionMessage(ctx, messageScope, strings.TrimSpace(req.AssistantMessageID), out); err != nil {
+		return projectAssistantResumeResponse{}, err
+	}
 	return out, nil
 }
 
@@ -346,6 +363,12 @@ func (s *Server) resolveClaimedProjectAssistantRun(
 		case projectAssistantPermissionDeny:
 			msg := projectAssistantPermissionDeniedToolMessage(tc, "denied by user")
 			out.Result = msg.Content
+			out.ToolCall = &projectToolCallStreamEvent{
+				ID:     tc.ID,
+				Name:   tc.Function.Name,
+				Status: "rejected",
+				Error:  msg.Content,
+			}
 			now := time.Now().UTC()
 			var err error
 			run, err = appendProjectAssistantRunAudit(run, projectAssistantPermissionAudit{

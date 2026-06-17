@@ -568,7 +568,243 @@ func TestGenerateProjectAssistantStreamRequestsPermissionForWriteTool(t *testing
 	}
 }
 
+func TestStreamProjectAssistantPersistsPermissionTimelineMessage(t *testing.T) {
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"src/App.tsx","content":"hello\n"}`)
+	}))
+	defer llm.Close()
+
+	settings := projectLLMSettings{
+		Provider: defaultProjectLLMProvider,
+		BaseURL:  llm.URL,
+		Model:    "test-model",
+		APIKey:   "test-key",
+	}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messages := store.NewMemoryStore()
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, "demo")
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "write a file"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	rr := httptest.NewRecorder()
+	flusher, ok := startProjectMessageStream(rr)
+	if !ok {
+		t.Fatal("response recorder did not support streaming")
+	}
+
+	server.streamProjectAssistant(
+		rr,
+		flusher,
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		client,
+		id,
+		project,
+		messages,
+	)
+
+	recent, err := messages.LoadRecentMessages(context.Background(), messageScope, 10)
+	if err != nil {
+		t.Fatalf("LoadRecentMessages returned error: %v", err)
+	}
+	var assistant store.Message
+	for _, msg := range recent {
+		if msg.Role == aiv1alpha1.ProjectMessageRoleAssistant {
+			assistant = msg
+		}
+	}
+	if assistant.ID == "" {
+		t.Fatalf("messages = %#v, want persisted assistant permission message", recent)
+	}
+	if assistant.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission {
+		t.Fatalf("assistant metadata = %#v, want pending permission status", assistant.Metadata)
+	}
+	rawToolCalls, ok := assistant.Metadata[projectMessageMetadataToolCalls].([]projectToolCallStreamEvent)
+	if !ok || len(rawToolCalls) != 1 {
+		t.Fatalf("tool call metadata = %#v, want one typed tool call", assistant.Metadata[projectMessageMetadataToolCalls])
+	}
+	if rawToolCalls[0].Status != "permission_required" || rawToolCalls[0].Permission == nil || rawToolCalls[0].Checkpoint == nil {
+		t.Fatalf("tool call metadata = %#v, want permission and checkpoint", rawToolCalls[0])
+	}
+	if rawToolCalls[0].Permission.Input != nil {
+		t.Fatalf("persisted permission input = %#v, want redacted", rawToolCalls[0].Permission.Input)
+	}
+	if !strings.Contains(rawToolCalls[0].Arguments, "path src/App.tsx") || !strings.Contains(rawToolCalls[0].Arguments, "6 bytes") {
+		t.Fatalf("arguments summary = %q, want redacted path and byte count", rawToolCalls[0].Arguments)
+	}
+	if strings.Contains(rawToolCalls[0].Arguments, "hello") {
+		t.Fatalf("arguments summary leaked file content: %q", rawToolCalls[0].Arguments)
+	}
+}
+
+func TestStreamProjectAssistantPersistsPermissionTimelineAfterStreamWriteFailure(t *testing.T) {
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"src/App.tsx","content":"hello\n"}`)
+	}))
+	defer llm.Close()
+
+	settings := projectLLMSettings{
+		Provider: defaultProjectLLMProvider,
+		BaseURL:  llm.URL,
+		Model:    "test-model",
+		APIKey:   "test-key",
+	}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messages := store.NewMemoryStore()
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, "demo")
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "write a file"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	stream := &failingProjectStreamResponseWriter{header: http.Header{}}
+
+	server.streamProjectAssistant(
+		stream,
+		stream,
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		client,
+		id,
+		project,
+		messages,
+	)
+
+	recent, err := messages.LoadRecentMessages(context.Background(), messageScope, 10)
+	if err != nil {
+		t.Fatalf("LoadRecentMessages returned error: %v", err)
+	}
+	var assistant store.Message
+	for _, msg := range recent {
+		if msg.Role == aiv1alpha1.ProjectMessageRoleAssistant {
+			assistant = msg
+		}
+	}
+	if assistant.ID == "" {
+		t.Fatalf("messages = %#v, want persisted assistant permission message", recent)
+	}
+	rawToolCalls, ok := assistant.Metadata[projectMessageMetadataToolCalls].([]projectToolCallStreamEvent)
+	if !ok || len(rawToolCalls) != 1 {
+		t.Fatalf("tool call metadata = %#v, want one typed tool call", assistant.Metadata[projectMessageMetadataToolCalls])
+	}
+	if assistant.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission || rawToolCalls[0].Status != "permission_required" || rawToolCalls[0].Permission == nil || rawToolCalls[0].Checkpoint == nil {
+		t.Fatalf("assistant metadata = %#v, want pending permission with checkpoint after stream write failure", assistant.Metadata)
+	}
+	if rawToolCalls[0].Permission.Input != nil {
+		t.Fatalf("persisted permission input = %#v, want redacted", rawToolCalls[0].Permission.Input)
+	}
+}
+
 func TestResumeProjectAssistantRunApprovesPendingTool(t *testing.T) {
+	messages := store.NewMemoryStore()
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	workspaceScope := projectWorkspaceScope(id, project.Name)
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolWriteFile)
+	if !ok {
+		t.Fatal("write_file tool missing from registry")
+	}
+	tc := chatToolCall{
+		ID:   "call-write",
+		Type: "function",
+		Function: chatToolCallFunction{
+			Name:      projectToolWriteFile,
+			Arguments: `{"path":"src/App.tsx","content":"approved\n"}`,
+		},
+	}
+	permissionErr, permission, checkpoint, err := server.saveProjectAssistantPermissionCheckpoint(
+		context.Background(),
+		projectAssistantRunRequest{
+			Identity:       id,
+			HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+			Project:        project,
+			WorkspaceScope: workspaceScope,
+			MessageScope:   messageScope,
+		},
+		tool,
+		tc,
+		map[string]any{"path": "src/App.tsx", "content": "approved\n"},
+		projectLinkedRepositoryRef(project),
+	)
+	if err != nil {
+		t.Fatalf("saveProjectAssistantPermissionCheckpoint returned error: %v", err)
+	}
+	assistantMessageID := "msg-assistant"
+	if err := appendProjectAssistantMessage(context.Background(), messages, messageScope, assistantMessageID, "", projectAssistantMessageMetadata(projectMessageStatusPendingPermission, []projectToolCallStreamEvent{{
+		ID:         tc.ID,
+		Name:       tc.Function.Name,
+		Status:     "permission_required",
+		Arguments:  "path src/App.tsx, 9 bytes",
+		Summary:    permission.Reason,
+		Permission: &permission,
+		Checkpoint: &checkpoint,
+	}})); err != nil {
+		t.Fatalf("appendProjectAssistantMessage returned error: %v", err)
+	}
+
+	resp, err := server.resumeProjectAssistantRun(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		project,
+		permissionErr.RunID,
+		projectAssistantResumeRequest{
+			RequestID:          permissionErr.RequestID,
+			Decision:           string(projectAssistantPermissionAllow),
+			AssistantMessageID: assistantMessageID,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resumeProjectAssistantRun returned error: %v", err)
+	}
+	if resp.Status != store.AssistantRunStatusCompleted || resp.ToolCall == nil || resp.ToolCall.Status != "succeeded" {
+		t.Fatalf("resume response = %#v, want completed succeeded tool call", resp)
+	}
+	read, err := workspaces.ReadFile(context.Background(), workspaceScope, workspace.ReadOptions{Path: "src/App.tsx"})
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if read.Content != "approved\n" {
+		t.Fatalf("content = %q, want approved write", read.Content)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), messageScope, permissionErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	if run.Status != store.AssistantRunStatusCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+	audit := decodeProjectAssistantRunAudit(t, run.Audit)
+	if len(audit.Decisions) != 1 || audit.Decisions[0].Decision != projectAssistantPermissionAllow || audit.Decisions[0].Actor != id.user || audit.Decisions[0].Result == "" {
+		t.Fatalf("audit = %#v, want allow decision with actor and result", audit)
+	}
+	updatedMessage, err := server.findProjectMessage(context.Background(), messageScope, assistantMessageID)
+	if err != nil {
+		t.Fatalf("findProjectMessage returned error: %v", err)
+	}
+	if _, ok := updatedMessage.Metadata[projectMessageMetadataStatus]; ok {
+		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMessage.Metadata)
+	}
+	updatedToolCalls := projectToolCallStreamEventsFromMetadata(updatedMessage.Metadata[projectMessageMetadataToolCalls])
+	if len(updatedToolCalls) != 1 || updatedToolCalls[0].Status != "succeeded" {
+		t.Fatalf("updated tool calls = %#v, want persisted succeeded action", updatedToolCalls)
+	}
+	if updatedToolCalls[0].Permission != nil && updatedToolCalls[0].Permission.Input != nil {
+		t.Fatalf("persisted permission input = %#v, want redacted", updatedToolCalls[0].Permission.Input)
+	}
+}
+
+func TestResumeProjectAssistantRunIgnoresStaleAssistantMessageID(t *testing.T) {
 	messages := store.NewMemoryStore()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, messages, workspaces, "", false)
@@ -614,8 +850,9 @@ func TestResumeProjectAssistantRunApprovesPendingTool(t *testing.T) {
 		project,
 		permissionErr.RunID,
 		projectAssistantResumeRequest{
-			RequestID: permissionErr.RequestID,
-			Decision:  string(projectAssistantPermissionAllow),
+			RequestID:          permissionErr.RequestID,
+			Decision:           string(projectAssistantPermissionAllow),
+			AssistantMessageID: "missing-assistant-message",
 		},
 	)
 	if err != nil {
@@ -631,16 +868,180 @@ func TestResumeProjectAssistantRunApprovesPendingTool(t *testing.T) {
 	if read.Content != "approved\n" {
 		t.Fatalf("content = %q, want approved write", read.Content)
 	}
-	run, err := messages.GetAssistantRun(context.Background(), messageScope, permissionErr.RunID)
+}
+
+func TestResumeProjectAssistantRunIgnoresMismatchedAssistantMessageID(t *testing.T) {
+	messages := store.NewMemoryStore()
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	workspaceScope := projectWorkspaceScope(id, project.Name)
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolWriteFile)
+	if !ok {
+		t.Fatal("write_file tool missing from registry")
+	}
+	tc := chatToolCall{
+		ID:   "call-write",
+		Type: "function",
+		Function: chatToolCallFunction{
+			Name:      projectToolWriteFile,
+			Arguments: `{"path":"src/App.tsx","content":"approved\n"}`,
+		},
+	}
+	permissionErr, _, _, err := server.saveProjectAssistantPermissionCheckpoint(
+		context.Background(),
+		projectAssistantRunRequest{
+			Identity:       id,
+			HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+			Project:        project,
+			WorkspaceScope: workspaceScope,
+			MessageScope:   messageScope,
+		},
+		tool,
+		tc,
+		map[string]any{"path": "src/App.tsx", "content": "approved\n"},
+		projectLinkedRepositoryRef(project),
+	)
 	if err != nil {
-		t.Fatalf("GetAssistantRun returned error: %v", err)
+		t.Fatalf("saveProjectAssistantPermissionCheckpoint returned error: %v", err)
 	}
-	if run.Status != store.AssistantRunStatusCompleted {
-		t.Fatalf("run status = %q, want completed", run.Status)
+	otherMessageID := "msg-other-assistant"
+	otherPermission := projectAssistantPermission{ID: "perm-other", ToolCallID: "call-other", ToolName: projectToolWriteFile, Reason: "other permission"}
+	otherCheckpoint := projectAssistantCheckpoint{ID: "run-other", Reason: "waiting_for_permission"}
+	otherMetadata := projectAssistantMessageMetadata(projectMessageStatusPendingPermission, []projectToolCallStreamEvent{{
+		ID:         "call-other",
+		Name:       projectToolWriteFile,
+		Status:     "permission_required",
+		Summary:    otherPermission.Reason,
+		Permission: &otherPermission,
+		Checkpoint: &otherCheckpoint,
+	}})
+	if err := appendProjectAssistantMessage(context.Background(), messages, messageScope, otherMessageID, "other pending message", otherMetadata); err != nil {
+		t.Fatalf("appendProjectAssistantMessage returned error: %v", err)
 	}
-	audit := decodeProjectAssistantRunAudit(t, run.Audit)
-	if len(audit.Decisions) != 1 || audit.Decisions[0].Decision != projectAssistantPermissionAllow || audit.Decisions[0].Actor != id.user || audit.Decisions[0].Result == "" {
-		t.Fatalf("audit = %#v, want allow decision with actor and result", audit)
+
+	resp, err := server.resumeProjectAssistantRun(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		project,
+		permissionErr.RunID,
+		projectAssistantResumeRequest{
+			RequestID:          permissionErr.RequestID,
+			Decision:           string(projectAssistantPermissionAllow),
+			AssistantMessageID: otherMessageID,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resumeProjectAssistantRun returned error: %v", err)
+	}
+	if resp.Status != store.AssistantRunStatusCompleted || resp.ToolCall == nil || resp.ToolCall.Status != "succeeded" {
+		t.Fatalf("resume response = %#v, want completed succeeded tool call", resp)
+	}
+	read, err := workspaces.ReadFile(context.Background(), workspaceScope, workspace.ReadOptions{Path: "src/App.tsx"})
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if read.Content != "approved\n" {
+		t.Fatalf("content = %q, want approved write", read.Content)
+	}
+	otherMessage, err := server.findProjectMessage(context.Background(), messageScope, otherMessageID)
+	if err != nil {
+		t.Fatalf("findProjectMessage returned error: %v", err)
+	}
+	if otherMessage.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission {
+		t.Fatalf("other message metadata = %#v, want pending status unchanged", otherMessage.Metadata)
+	}
+	toolCalls := projectToolCallStreamEventsFromMetadata(otherMessage.Metadata[projectMessageMetadataToolCalls])
+	if len(toolCalls) != 1 || toolCalls[0].ID != "call-other" || toolCalls[0].Status != "permission_required" {
+		t.Fatalf("other message tool calls = %#v, want unrelated pending call unchanged", toolCalls)
+	}
+}
+
+func TestResumeProjectAssistantRunDeniesPendingToolAndUpdatesMessage(t *testing.T) {
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	workspaceScope := projectWorkspaceScope(id, project.Name)
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolWriteFile)
+	if !ok {
+		t.Fatal("write_file tool missing from registry")
+	}
+	tc := chatToolCall{
+		ID:   "call-write",
+		Type: "function",
+		Function: chatToolCallFunction{
+			Name:      projectToolWriteFile,
+			Arguments: `{"path":"src/App.tsx","content":"denied\n"}`,
+		},
+	}
+	permissionErr, permission, checkpoint, err := server.saveProjectAssistantPermissionCheckpoint(
+		context.Background(),
+		projectAssistantRunRequest{
+			Identity:       id,
+			HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+			Project:        project,
+			WorkspaceScope: workspaceScope,
+			MessageScope:   messageScope,
+		},
+		tool,
+		tc,
+		map[string]any{"path": "src/App.tsx", "content": "denied\n"},
+		projectLinkedRepositoryRef(project),
+	)
+	if err != nil {
+		t.Fatalf("saveProjectAssistantPermissionCheckpoint returned error: %v", err)
+	}
+	assistantMessageID := "msg-assistant-denied"
+	if err := appendProjectAssistantMessage(context.Background(), messages, messageScope, assistantMessageID, "", projectAssistantMessageMetadata(projectMessageStatusPendingPermission, []projectToolCallStreamEvent{{
+		ID:         tc.ID,
+		Name:       tc.Function.Name,
+		Status:     "permission_required",
+		Arguments:  "path src/App.tsx, 7 bytes",
+		Summary:    permission.Reason,
+		Permission: &permission,
+		Checkpoint: &checkpoint,
+	}})); err != nil {
+		t.Fatalf("appendProjectAssistantMessage returned error: %v", err)
+	}
+
+	resp, err := server.resumeProjectAssistantRun(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		project,
+		permissionErr.RunID,
+		projectAssistantResumeRequest{
+			RequestID:          permissionErr.RequestID,
+			Decision:           string(projectAssistantPermissionDeny),
+			AssistantMessageID: assistantMessageID,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resumeProjectAssistantRun returned error: %v", err)
+	}
+	if resp.Status != store.AssistantRunStatusCompleted || resp.ToolCall == nil || resp.ToolCall.Status != "rejected" {
+		t.Fatalf("resume response = %#v, want completed rejected tool call", resp)
+	}
+	updatedMessage, err := server.findProjectMessage(context.Background(), messageScope, assistantMessageID)
+	if err != nil {
+		t.Fatalf("findProjectMessage returned error: %v", err)
+	}
+	if _, ok := updatedMessage.Metadata[projectMessageMetadataStatus]; ok {
+		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMessage.Metadata)
+	}
+	updatedToolCalls := projectToolCallStreamEventsFromMetadata(updatedMessage.Metadata[projectMessageMetadataToolCalls])
+	if len(updatedToolCalls) != 1 || updatedToolCalls[0].Status != "rejected" {
+		t.Fatalf("updated tool calls = %#v, want persisted rejected action", updatedToolCalls)
+	}
+	if updatedToolCalls[0].Permission != nil && updatedToolCalls[0].Permission.Input != nil {
+		t.Fatalf("persisted permission input = %#v, want redacted", updatedToolCalls[0].Permission.Input)
 	}
 }
 
@@ -831,7 +1232,7 @@ func TestResumeProjectAssistantRunRejectsStaleRepositoryBinding(t *testing.T) {
 			Arguments: `{"repositoryRef":"old-repo","paths":["src/App.tsx"],"message":"Initial app"}`,
 		},
 	}
-	permissionErr, _, _, err := server.saveProjectAssistantPermissionCheckpoint(
+	permissionErr, permission, checkpoint, err := server.saveProjectAssistantPermissionCheckpoint(
 		context.Background(),
 		projectAssistantRunRequest{Identity: id, HTTPRequest: httptest.NewRequest(http.MethodPost, "/", nil), Project: project, WorkspaceScope: workspaceScope, MessageScope: messageScope},
 		tool,
@@ -842,6 +1243,18 @@ func TestResumeProjectAssistantRunRejectsStaleRepositoryBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("saveProjectAssistantPermissionCheckpoint returned error: %v", err)
 	}
+	assistantMessageID := "msg-assistant-stale"
+	if err := appendProjectAssistantMessage(context.Background(), messages, messageScope, assistantMessageID, "", projectAssistantMessageMetadata(projectMessageStatusPendingPermission, []projectToolCallStreamEvent{{
+		ID:         tc.ID,
+		Name:       tc.Function.Name,
+		Status:     "permission_required",
+		Arguments:  "repositoryRef old-repo, 1 file(s): src/App.tsx",
+		Summary:    permission.Reason,
+		Permission: &permission,
+		Checkpoint: &checkpoint,
+	}})); err != nil {
+		t.Fatalf("appendProjectAssistantMessage returned error: %v", err)
+	}
 	project.Spec.Repository.RepositoryRef = "new-repo"
 
 	_, err = server.resumeProjectAssistantRun(
@@ -850,7 +1263,11 @@ func TestResumeProjectAssistantRunRejectsStaleRepositoryBinding(t *testing.T) {
 		id,
 		project,
 		permissionErr.RunID,
-		projectAssistantResumeRequest{RequestID: permissionErr.RequestID, Decision: string(projectAssistantPermissionAllow)},
+		projectAssistantResumeRequest{
+			RequestID:          permissionErr.RequestID,
+			Decision:           string(projectAssistantPermissionAllow),
+			AssistantMessageID: assistantMessageID,
+		},
 	)
 	if err == nil || !strings.Contains(err.Error(), "repository binding changed") {
 		t.Fatalf("resumeProjectAssistantRun error = %v, want stale repository binding", err)
@@ -868,6 +1285,17 @@ func TestResumeProjectAssistantRunRejectsStaleRepositoryBinding(t *testing.T) {
 	audit := decodeProjectAssistantRunAudit(t, run.Audit)
 	if len(audit.Decisions) != 1 || !strings.Contains(audit.Decisions[0].Error, "repository binding changed") {
 		t.Fatalf("audit = %#v, want stale binding error", audit)
+	}
+	updatedMessage, err := server.findProjectMessage(context.Background(), messageScope, assistantMessageID)
+	if err != nil {
+		t.Fatalf("findProjectMessage returned error: %v", err)
+	}
+	if _, ok := updatedMessage.Metadata[projectMessageMetadataStatus]; ok {
+		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMessage.Metadata)
+	}
+	updatedToolCalls := projectToolCallStreamEventsFromMetadata(updatedMessage.Metadata[projectMessageMetadataToolCalls])
+	if len(updatedToolCalls) != 1 || updatedToolCalls[0].Status != "failed" || !strings.Contains(updatedToolCalls[0].Error, "repository binding changed") {
+		t.Fatalf("updated tool calls = %#v, want failed stale binding action", updatedToolCalls)
 	}
 }
 
@@ -1706,6 +2134,22 @@ func codeObjectGetter(objects ...*unstructured.Unstructured) codeResourceGetter 
 		return nil, apierrors.NewNotFound(schema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}, name)
 	}
 }
+
+type failingProjectStreamResponseWriter struct {
+	header http.Header
+}
+
+func (w *failingProjectStreamResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *failingProjectStreamResponseWriter) Write([]byte) (int, error) {
+	return 0, errors.New("stream write failed")
+}
+
+func (w *failingProjectStreamResponseWriter) WriteHeader(int) {}
+
+func (w *failingProjectStreamResponseWriter) Flush() {}
 
 func codeObjectLister(objects ...*unstructured.Unstructured) codeResourceLister {
 	return func(_ context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {

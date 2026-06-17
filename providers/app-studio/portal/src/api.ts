@@ -2,6 +2,7 @@ import type {
   KedgeContext,
   ListResponse,
   Project,
+  ProjectAssistantResumeResponse,
   ProjectLLMSettings,
   ProjectMemory,
   ProjectMessage,
@@ -298,6 +299,28 @@ export const api = {
       { role: 'user', content },
       onEvent,
       signal,
+    )
+  },
+
+  async resumeAssistantRun(
+    ctx: KedgeContext | null,
+    name: string,
+    runID: string,
+    body: { requestID: string; decision: 'allow' | 'deny'; assistantMessageID?: string; editedArguments?: Record<string, unknown> },
+  ): Promise<ProjectAssistantResumeResponse> {
+    return request<ProjectAssistantResumeResponse>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/${encodeURIComponent(runID)}/resume`,
+      body,
+    )
+  },
+
+  async abortAssistantRun(ctx: KedgeContext | null, name: string, runID: string): Promise<ProjectAssistantResumeResponse> {
+    return request<ProjectAssistantResumeResponse>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/${encodeURIComponent(runID)}/abort`,
     )
   },
 

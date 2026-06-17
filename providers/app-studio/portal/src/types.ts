@@ -27,20 +27,49 @@ export interface ProjectMessage {
 export interface ProjectToolCallEvent {
   id: string
   name?: string
-  status: 'requested' | 'running' | 'succeeded' | 'failed' | 'rejected'
+  status: 'requested' | 'running' | 'permission_required' | 'succeeded' | 'failed' | 'rejected'
   arguments?: string
   summary?: string
   error?: string
+  permission?: ProjectAssistantPermission
+  checkpoint?: ProjectAssistantCheckpoint
+}
+
+export interface ProjectAssistantPermission {
+  id: string
+  toolCallID?: string
+  toolName?: string
+  reason?: string
+  input?: unknown
+}
+
+export interface ProjectAssistantCheckpoint {
+  id: string
+  reason?: string
+  createdAt?: string
+}
+
+export interface ProjectAssistantResumeResponse {
+  runID: string
+  requestID: string
+  status: 'pending_permission' | 'running' | 'completed' | 'aborted'
+  decision: 'allow' | 'deny'
+  toolCall?: ProjectToolCallEvent
+  permission?: ProjectAssistantPermission
+  checkpoint?: ProjectAssistantCheckpoint
+  result?: string
 }
 
 export interface ProjectMessageStreamEvent {
-  type: 'chunk' | 'tool_call' | 'done' | 'error' | 'status' | 'project'
+  type: 'chunk' | 'tool_call' | 'permission_required' | 'checkpoint_saved' | 'done' | 'error' | 'status' | 'project'
   assistantMessageID?: string
   content?: string
   status?: string
   error?: string
   project?: Project
   toolCall?: ProjectToolCallEvent
+  permission?: ProjectAssistantPermission
+  checkpoint?: ProjectAssistantCheckpoint
 }
 
 export interface Project {

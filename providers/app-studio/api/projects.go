@@ -115,19 +115,24 @@ type projectMessageStreamEvent struct {
 }
 
 type projectToolCallStreamEvent struct {
-	ID        string `json:"id"`
-	Name      string `json:"name,omitempty"`
-	Status    string `json:"status"`
-	Arguments string `json:"arguments,omitempty"`
-	Summary   string `json:"summary,omitempty"`
-	Error     string `json:"error,omitempty"`
+	ID         string                      `json:"id"`
+	Name       string                      `json:"name,omitempty"`
+	Status     string                      `json:"status"`
+	Arguments  string                      `json:"arguments,omitempty"`
+	Summary    string                      `json:"summary,omitempty"`
+	Error      string                      `json:"error,omitempty"`
+	Permission *projectAssistantPermission `json:"permission,omitempty"`
+	Checkpoint *projectAssistantCheckpoint `json:"checkpoint,omitempty"`
 }
 
 const projectAPIInitializingMessage = "App Studio is still initializing for this workspace. Try again shortly."
 const projectMessageMetadataStatus = "status"
 const projectMessageMetadataToolCalls = "toolCalls"
 const projectMessageStatusInterrupted = "interrupted"
+const projectMessageStatusPendingPermission = "pending_permission"
 const projectMessagePersistTimeout = 5 * time.Second
+
+var errProjectAssistantMessageNotFound = errors.New("project assistant message not found")
 
 type projectCreationStatusFunc func(string) error
 
@@ -542,6 +547,7 @@ func (s *Server) streamProjectAssistant(
 	assistantContent := &strings.Builder{}
 	var streamErr error
 	var streamedToolCalls []projectToolCallStreamEvent
+	var pendingPermissionToolCallID string
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
 	streamWriter := projectAssistantStreamWriter{
 		assistantID: assistantID,
@@ -550,6 +556,27 @@ func (s *Server) streamProjectAssistant(
 		},
 	}
 	emitAssistantEvent := func(event projectAssistantEvent) {
+		switch event.Type {
+		case projectAssistantEventPermissionNeeded:
+			if event.Permission != nil && event.Permission.ToolCallID != "" {
+				pendingPermissionToolCallID = event.Permission.ToolCallID
+				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
+					ID:         event.Permission.ToolCallID,
+					Name:       event.Permission.ToolName,
+					Status:     "permission_required",
+					Summary:    event.Permission.Reason,
+					Permission: event.Permission,
+				})
+			}
+		case projectAssistantEventCheckpointSaved:
+			if event.Checkpoint != nil && pendingPermissionToolCallID != "" {
+				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
+					ID:         pendingPermissionToolCallID,
+					Status:     "permission_required",
+					Checkpoint: event.Checkpoint,
+				})
+			}
+		}
 		if streamErr != nil {
 			return
 		}
@@ -582,13 +609,13 @@ func (s *Server) streamProjectAssistant(
 		})
 	}
 	streamToolCall := func(toolCall projectToolCallStreamEvent) {
-		if streamErr != nil {
-			return
-		}
 		if toolCall.ID == "" || toolCall.Status == "" {
 			return
 		}
 		streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, toolCall)
+		if streamErr != nil {
+			return
+		}
 		emitAssistantEvent(projectAssistantEvent{
 			Type: projectAssistantEventToolCallFinished,
 			ToolCall: &projectAssistantToolCall{
@@ -611,8 +638,15 @@ func (s *Server) streamProjectAssistant(
 	if err != nil {
 		var permissionErr *projectAssistantPermissionRequiredError
 		if errors.As(err, &permissionErr) {
-			if streamErr != nil {
-				_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
+			persistCtx, cancel := detachedProjectPersistenceContext(r.Context())
+			defer cancel()
+			if err := appendProjectAssistantMessage(persistCtx, msgStore, scope, assistantID, assistantContent.String(), projectAssistantMessageMetadata(projectMessageStatusPendingPermission, streamedToolCalls)); err != nil {
+				if streamErr == nil {
+					_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
+						Type:  projectAssistantEventRunFailed,
+						Error: "assistant persistence failed: " + err.Error(),
+					})
+				}
 			}
 			return
 		}
@@ -726,18 +760,165 @@ func appendProjectAssistantMessage(ctx context.Context, msgStore store.Store, sc
 	})
 }
 
+func (s *Server) updateProjectAssistantPermissionMessage(
+	ctx context.Context,
+	scope store.Scope,
+	assistantMessageID string,
+	response projectAssistantResumeResponse,
+) error {
+	if s == nil || s.store == nil || assistantMessageID == "" {
+		return nil
+	}
+	msg, err := s.findProjectMessage(ctx, scope, assistantMessageID)
+	if err != nil {
+		if errors.Is(err, errProjectAssistantMessageNotFound) {
+			return nil
+		}
+		return err
+	}
+	if msg.Role != aiv1alpha1.ProjectMessageRoleAssistant {
+		return nil
+	}
+	metadata := cloneAnyMap(msg.Metadata)
+	toolCalls := projectToolCallStreamEventsFromMetadata(metadata[projectMessageMetadataToolCalls])
+	if !projectAssistantPermissionMessageMatchesResume(metadata, toolCalls, response) {
+		return nil
+	}
+	if response.ToolCall != nil {
+		toolCalls = upsertProjectToolCallStreamEvent(toolCalls, *response.ToolCall)
+	}
+	if response.Permission != nil {
+		toolCalls = upsertProjectToolCallStreamEvent(toolCalls, projectToolCallStreamEvent{
+			ID:         response.Permission.ToolCallID,
+			Name:       response.Permission.ToolName,
+			Status:     "permission_required",
+			Summary:    response.Permission.Reason,
+			Permission: response.Permission,
+		})
+	}
+	if response.Checkpoint != nil && response.Permission != nil {
+		toolCalls = upsertProjectToolCallStreamEvent(toolCalls, projectToolCallStreamEvent{
+			ID:         response.Permission.ToolCallID,
+			Status:     "permission_required",
+			Checkpoint: response.Checkpoint,
+		})
+	}
+	if response.Status == store.AssistantRunStatusPendingPermission {
+		metadata[projectMessageMetadataStatus] = projectMessageStatusPendingPermission
+	} else {
+		delete(metadata, projectMessageMetadataStatus)
+	}
+	metadata[projectMessageMetadataToolCalls] = sanitizeProjectToolCallStreamEventsForMetadata(toolCalls)
+	now := time.Now().UTC()
+	return s.store.AppendMessage(ctx, scope, store.Message{
+		ID:        msg.ID,
+		Role:      msg.Role,
+		Content:   msg.Content,
+		Metadata:  metadata,
+		CreatedAt: msg.CreatedAt,
+		UpdatedAt: now,
+	})
+}
+
+func projectAssistantPermissionMessageMatchesResume(metadata map[string]any, toolCalls []projectToolCallStreamEvent, response projectAssistantResumeResponse) bool {
+	if metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission {
+		return false
+	}
+	if response.RunID == "" || len(toolCalls) == 0 {
+		return false
+	}
+	toolIDs := map[string]struct{}{}
+	if response.ToolCall != nil && response.ToolCall.ID != "" {
+		toolIDs[response.ToolCall.ID] = struct{}{}
+	}
+	if response.Permission != nil && response.Permission.ToolCallID != "" {
+		toolIDs[response.Permission.ToolCallID] = struct{}{}
+	}
+	for _, event := range toolCalls {
+		if event.Checkpoint == nil || event.Checkpoint.ID != response.RunID {
+			continue
+		}
+		if len(toolIDs) == 0 {
+			return true
+		}
+		if _, ok := toolIDs[event.ID]; ok {
+			return true
+		}
+		if event.Permission != nil {
+			if _, ok := toolIDs[event.Permission.ToolCallID]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *Server) findProjectMessage(ctx context.Context, scope store.Scope, id string) (store.Message, error) {
+	cursor := ""
+	for {
+		page, err := s.store.ListMessages(ctx, scope, 250, cursor)
+		if err != nil {
+			return store.Message{}, err
+		}
+		for _, msg := range page.Items {
+			if msg.ID == id {
+				return msg, nil
+			}
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	return store.Message{}, fmt.Errorf("%w: %q", errProjectAssistantMessageNotFound, id)
+}
+
 func projectAssistantMessageMetadata(status string, toolCalls []projectToolCallStreamEvent) map[string]any {
 	metadata := map[string]any{}
 	if status != "" {
 		metadata[projectMessageMetadataStatus] = status
 	}
 	if len(toolCalls) > 0 {
-		metadata[projectMessageMetadataToolCalls] = toolCalls
+		metadata[projectMessageMetadataToolCalls] = sanitizeProjectToolCallStreamEventsForMetadata(toolCalls)
 	}
 	if len(metadata) == 0 {
 		return nil
 	}
 	return metadata
+}
+
+func sanitizeProjectToolCallStreamEventsForMetadata(events []projectToolCallStreamEvent) []projectToolCallStreamEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]projectToolCallStreamEvent, 0, len(events))
+	for _, event := range events {
+		if event.Permission != nil {
+			permission := *event.Permission
+			permission.Input = nil
+			event.Permission = &permission
+		}
+		out = append(out, event)
+	}
+	return out
+}
+
+func projectToolCallStreamEventsFromMetadata(raw any) []projectToolCallStreamEvent {
+	if raw == nil {
+		return nil
+	}
+	if typed, ok := raw.([]projectToolCallStreamEvent); ok {
+		return append([]projectToolCallStreamEvent(nil), typed...)
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var out []projectToolCallStreamEvent
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func upsertProjectToolCallStreamEvent(events []projectToolCallStreamEvent, event projectToolCallStreamEvent) []projectToolCallStreamEvent {
@@ -762,6 +943,12 @@ func mergeProjectToolCallStreamEvent(existing, next projectToolCallStreamEvent) 
 	}
 	if next.Error == "" {
 		next.Error = existing.Error
+	}
+	if next.Permission == nil {
+		next.Permission = existing.Permission
+	}
+	if next.Checkpoint == nil {
+		next.Checkpoint = existing.Checkpoint
 	}
 	return next
 }

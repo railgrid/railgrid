@@ -33,6 +33,9 @@ import { useEscapeKey } from '@/composables/useEscapeKey'
 import type {
   KedgeContext,
   Project,
+  ProjectAssistantCheckpoint,
+  ProjectAssistantPermission,
+  ProjectAssistantResumeResponse,
   ProjectLLMSettings,
   ProjectMessage,
   ProjectRepositoryCommit,
@@ -204,6 +207,9 @@ const prompt = ref('')
 const projectQuery = ref('')
 const providerQuery = ref('')
 const conversationStatus = ref('')
+const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
+const permissionEdits = ref<Record<string, string>>({})
+const permissionErrors = ref<Record<string, string>>({})
 const selectedTool = ref<ProviderTool | null>(null)
 const toolState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const llmSettings = ref<ProjectLLMSettings | null>(null)
@@ -938,6 +944,20 @@ async function createProjectAndStartConversation(content: string) {
           assistantMessageID = event.assistantMessageID
         }
         upsertAssistantToolCall(projectName, event.assistantMessageID, event.toolCall)
+      } else if (event.type === 'permission_required') {
+        conversationStatus.value = ''
+        if (!projectName || !event.assistantMessageID || !event.permission) return
+        if (!assistantMessageID) {
+          assistantMessageID = event.assistantMessageID
+        }
+        upsertAssistantPermission(projectName, event.assistantMessageID, event.permission)
+      } else if (event.type === 'checkpoint_saved') {
+        conversationStatus.value = ''
+        if (!projectName || !event.assistantMessageID || !event.checkpoint) return
+        if (!assistantMessageID) {
+          assistantMessageID = event.assistantMessageID
+        }
+        attachAssistantCheckpoint(projectName, event.assistantMessageID, event.checkpoint)
       } else if (event.type === 'done') {
         conversationStatus.value = ''
         if (!assistantMessageID) {
@@ -1138,6 +1158,20 @@ async function sendMessage() {
           assistantMessageID = event.assistantMessageID
         }
         upsertAssistantToolCall(projectName, event.assistantMessageID, event.toolCall)
+      } else if (event.type === 'permission_required') {
+        conversationStatus.value = ''
+        if (!event.assistantMessageID || !event.permission) return
+        if (!assistantMessageID) {
+          assistantMessageID = event.assistantMessageID
+        }
+        upsertAssistantPermission(projectName, event.assistantMessageID, event.permission)
+      } else if (event.type === 'checkpoint_saved') {
+        conversationStatus.value = ''
+        if (!event.assistantMessageID || !event.checkpoint) return
+        if (!assistantMessageID) {
+          assistantMessageID = event.assistantMessageID
+        }
+        attachAssistantCheckpoint(projectName, event.assistantMessageID, event.checkpoint)
       } else if (event.type === 'done') {
         conversationStatus.value = ''
         if (!assistantMessageID) {
@@ -1210,6 +1244,44 @@ function upsertAssistantToolCall(projectName: string, assistantMessageID: string
   messages.value = [...messages.value]
 }
 
+function upsertAssistantPermission(projectName: string, assistantMessageID: string, permission: ProjectAssistantPermission) {
+  const id = permission.toolCallID || permission.id
+  const toolCall: ProjectToolCallEvent = {
+    id,
+    name: permission.toolName,
+    status: 'permission_required',
+    arguments: permissionInputLabel(permission),
+    summary: permission.reason,
+    permission,
+  }
+  upsertAssistantToolCall(projectName, assistantMessageID, toolCall)
+  const key = permissionKey(toolCall)
+  if (key && permissionEdits.value[key] === undefined) {
+    permissionEdits.value = {
+      ...permissionEdits.value,
+      [key]: prettyPermissionInput(permission.input),
+    }
+  }
+}
+
+function attachAssistantCheckpoint(projectName: string, assistantMessageID: string, checkpoint: ProjectAssistantCheckpoint) {
+  const idx = ensureAssistantMessage(projectName, assistantMessageID)
+  const message = messages.value[idx]
+  const toolCalls = [...(message.toolCalls ?? [])]
+  const targetIdx = [...toolCalls].reverse().findIndex((item) => item.status === 'permission_required' && !item.checkpoint)
+  if (targetIdx === -1) return
+  const idxFromStart = toolCalls.length - 1 - targetIdx
+  toolCalls[idxFromStart] = {
+    ...toolCalls[idxFromStart],
+    checkpoint,
+  }
+  messages.value[idx] = {
+    ...message,
+    toolCalls,
+  }
+  messages.value = [...messages.value]
+}
+
 function mergeToolCall(existing: ProjectToolCallView, next: ProjectToolCallEvent): ProjectToolCallView {
   return {
     ...existing,
@@ -1218,6 +1290,8 @@ function mergeToolCall(existing: ProjectToolCallView, next: ProjectToolCallEvent
     arguments: next.arguments || existing.arguments,
     summary: next.summary || existing.summary,
     error: next.error || existing.error,
+    permission: next.permission || existing.permission,
+    checkpoint: next.checkpoint || existing.checkpoint,
   }
 }
 
@@ -1245,6 +1319,84 @@ function markAssistantMessageInterrupted(projectName: string, assistantMessageID
       createdAt: new Date().toISOString(),
     },
   ]
+}
+
+async function resolveToolPermission(message: ProjectMessageView, toolCall: ProjectToolCallView, decision: 'allow' | 'deny') {
+  const projectName = selected.value?.name || message.projectID
+  const runID = toolCall.checkpoint?.id
+  const requestID = toolCall.permission?.id
+  const key = permissionKey(toolCall)
+  if (!projectName || !runID || !requestID || !key || permissionBusy.value[key]) return
+
+  permissionErrors.value = { ...permissionErrors.value, [key]: '' }
+  let editedArguments: Record<string, unknown> | undefined
+  if (decision === 'allow' && canEditPermission(toolCall)) {
+    const raw = (permissionEdits.value[key] ?? '').trim()
+    if (raw) {
+      try {
+        editedArguments = JSON.parse(raw) as Record<string, unknown>
+      } catch (e) {
+        permissionErrors.value = {
+          ...permissionErrors.value,
+          [key]: e instanceof Error ? e.message : 'Invalid JSON input',
+        }
+        return
+      }
+    }
+  }
+
+  permissionBusy.value = { ...permissionBusy.value, [key]: decision }
+  try {
+    const response = await api.resumeAssistantRun(props.ctx, projectName, runID, {
+      requestID,
+      decision,
+      assistantMessageID: message.id,
+      ...(editedArguments ? { editedArguments } : {}),
+    })
+    applyPermissionResponse(projectName, message.id, toolCall, response)
+  } catch (e) {
+    permissionErrors.value = {
+      ...permissionErrors.value,
+      [key]: e instanceof Error ? e.message : String(e),
+    }
+  } finally {
+    const next = { ...permissionBusy.value }
+    delete next[key]
+    permissionBusy.value = next
+  }
+}
+
+function applyPermissionResponse(
+  projectName: string,
+  assistantMessageID: string,
+  toolCall: ProjectToolCallView,
+  response: ProjectAssistantResumeResponse,
+) {
+  const key = permissionKey(toolCall)
+  if (response.toolCall) {
+    upsertAssistantToolCall(projectName, assistantMessageID, response.toolCall)
+  } else {
+    upsertAssistantToolCall(projectName, assistantMessageID, {
+      id: toolCall.id,
+      name: toolCall.name,
+      status: response.decision === 'allow' ? 'succeeded' : 'rejected',
+      summary: response.result,
+      error: response.decision === 'deny' ? response.result || 'Permission denied' : undefined,
+      permission: toolCall.permission,
+      checkpoint: toolCall.checkpoint,
+    })
+  }
+  if (key) {
+    const edits = { ...permissionEdits.value }
+    delete edits[key]
+    permissionEdits.value = edits
+  }
+  if (response.permission) {
+    upsertAssistantPermission(projectName, assistantMessageID, response.permission)
+    if (response.checkpoint) {
+      attachAssistantCheckpoint(projectName, assistantMessageID, response.checkpoint)
+    }
+  }
 }
 
 function toProjectMessageView(message: ProjectMessage): ProjectMessageView {
@@ -1496,6 +1648,8 @@ function toolCallStatusLabel(toolCall: ProjectToolCallView): string {
       return 'Preparing'
     case 'running':
       return 'Running'
+    case 'permission_required':
+      return 'Needs approval'
     case 'succeeded':
       return 'Ran'
     case 'failed':
@@ -1508,7 +1662,7 @@ function toolCallStatusLabel(toolCall: ProjectToolCallView): string {
 }
 
 function toolCallHasDetails(toolCall: ProjectToolCallView): boolean {
-  return Boolean(toolCall.arguments || toolCall.summary || toolCall.error)
+  return Boolean(toolCall.arguments || toolCall.summary || toolCall.error || toolCall.permission || toolCall.checkpoint)
 }
 
 function actionBundleLabel(toolCalls?: ProjectToolCallView[]): string {
@@ -1525,6 +1679,8 @@ function actionSummary(toolCall: ProjectToolCallView): string {
       return 'Preparing tool input'
     case 'running':
       return 'Waiting for result'
+    case 'permission_required':
+      return toolCall.permission?.reason || 'Waiting for approval'
     case 'succeeded':
       return 'Completed'
     case 'failed':
@@ -1547,11 +1703,68 @@ function toolCallStatusClass(toolCall: ProjectToolCallView): string {
     case 'failed':
     case 'rejected':
       return 'text-danger'
+    case 'permission_required':
+      return 'text-accent'
     case 'requested':
     case 'running':
     default:
       return 'text-warning'
   }
+}
+
+function permissionKey(toolCall: ProjectToolCallView): string {
+  return toolCall.permission?.id || toolCall.id
+}
+
+function permissionBusyState(toolCall: ProjectToolCallView): 'allow' | 'deny' | undefined {
+  return permissionBusy.value[permissionKey(toolCall)]
+}
+
+function permissionError(toolCall: ProjectToolCallView): string {
+  return permissionErrors.value[permissionKey(toolCall)] || ''
+}
+
+function permissionInputLabel(permission?: ProjectAssistantPermission): string {
+  if (!permission || permission.input === undefined || permission.input === null) return ''
+  if (typeof permission.input !== 'object' || Array.isArray(permission.input)) return ''
+  const input = permission.input as Record<string, unknown>
+  const parts: string[] = []
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined || value === null) continue
+    if (['content', 'oldText', 'newText'].includes(key)) {
+      const text = typeof value === 'string' ? value : JSON.stringify(value)
+      parts.push(`${key} ${new TextEncoder().encode(text).length} bytes`)
+      continue
+    }
+    if (key === 'paths' && Array.isArray(value)) {
+      parts.push(`${value.length} file(s): ${value.map((item) => String(item)).slice(0, 3).join(', ')}`)
+      continue
+    }
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      parts.push(`${key} ${value}`)
+      continue
+    }
+    if (Array.isArray(value)) {
+      parts.push(`${key} ${value.length} item(s)`)
+    }
+  }
+  return parts.join(', ')
+}
+
+function prettyPermissionInput(input: unknown): string {
+  if (input === undefined || input === null) return ''
+  if (typeof input === 'string') return input
+  try {
+    return JSON.stringify(input, null, 2)
+  } catch {
+    return ''
+  }
+}
+
+function canEditPermission(toolCall: ProjectToolCallView): boolean {
+  if (toolCall.permission?.input === undefined || toolCall.permission.input === null) return false
+  const name = displayToolName(toolCall.permission?.toolName || toolCall.name).toLowerCase()
+  return ['write_file', 'apply_patch', 'mkdir', 'commit_project_files'].includes(name)
 }
 
 function isMissingCodeConnectionError(value: string | null): boolean {
@@ -2126,6 +2339,62 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                             </div>
                           </summary>
                           <div class="grid gap-2 border-t border-border-subtle px-3 py-2.5">
+                            <div
+                              v-if="toolCall.status === 'permission_required' && toolCall.permission"
+                              class="grid gap-2 rounded-md border border-accent/20 bg-accent-subtle px-2.5 py-2"
+                            >
+                              <div class="flex min-w-0 items-start justify-between gap-3">
+                                <div class="min-w-0">
+                                  <div class="text-[11px] font-semibold text-text-primary">Approval required</div>
+                                  <div class="mt-0.5 text-[11px] leading-4 text-text-secondary">
+                                    {{ toolCall.permission.reason || 'Review this action before it runs.' }}
+                                  </div>
+                                </div>
+                                <div class="shrink-0 font-mono text-[11px] text-text-muted">
+                                  {{ toolCall.checkpoint?.id || 'Saving' }}
+                                </div>
+                              </div>
+                              <textarea
+                                v-if="canEditPermission(toolCall)"
+                                v-model="permissionEdits[permissionKey(toolCall)]"
+                                rows="4"
+                                class="min-h-[84px] resize-y rounded-md border border-border-subtle bg-surface px-2 py-1.5 font-mono text-[11px] leading-4 text-text-secondary outline-none transition focus:border-accent/50"
+                                spellcheck="false"
+                              />
+                              <div v-if="permissionError(toolCall)" class="text-[11px] leading-4 text-danger">
+                                {{ permissionError(toolCall) }}
+                              </div>
+                              <div class="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  class="inline-flex h-7 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[11px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                  :disabled="!toolCall.checkpoint || !!permissionBusyState(toolCall)"
+                                  @click="resolveToolPermission(message, toolCall, 'allow')"
+                                >
+                                  <Loader2
+                                    v-if="permissionBusyState(toolCall) === 'allow'"
+                                    class="h-3.5 w-3.5 animate-spin"
+                                    :stroke-width="1.75"
+                                  />
+                                  <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                                  Allow
+                                </button>
+                                <button
+                                  type="button"
+                                  class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-2.5 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                                  :disabled="!toolCall.checkpoint || !!permissionBusyState(toolCall)"
+                                  @click="resolveToolPermission(message, toolCall, 'deny')"
+                                >
+                                  <Loader2
+                                    v-if="permissionBusyState(toolCall) === 'deny'"
+                                    class="h-3.5 w-3.5 animate-spin"
+                                    :stroke-width="1.75"
+                                  />
+                                  <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                                  Deny
+                                </button>
+                              </div>
+                            </div>
                             <div v-if="toolCall.arguments" class="grid gap-1">
                               <div class="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Input</div>
                               <pre class="overflow-x-auto whitespace-pre-wrap rounded-md border border-border-subtle bg-surface px-2 py-1.5 font-mono text-[11px] leading-4 text-text-secondary">{{ toolCall.arguments }}</pre>
