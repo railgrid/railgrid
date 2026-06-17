@@ -511,6 +511,18 @@ func (s *Server) streamProjectAssistant(
 	var streamErr error
 	var streamedToolCalls []projectToolCallStreamEvent
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
+	streamWriter := projectAssistantStreamWriter{
+		assistantID: assistantID,
+		write: func(event projectMessageStreamEvent) error {
+			return writeProjectMessageStreamEvent(w, flusher, event)
+		},
+	}
+	emitAssistantEvent := func(event projectAssistantEvent) {
+		if streamErr != nil {
+			return
+		}
+		streamErr = streamWriter.EmitProjectAssistantEvent(r.Context(), event)
+	}
 
 	streamChunk := func(chunk string) {
 		if streamErr != nil {
@@ -520,10 +532,9 @@ func (s *Server) streamProjectAssistant(
 			return
 		}
 		assistantContent.WriteString(chunk)
-		streamErr = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-			Type:               "chunk",
-			AssistantMessageID: assistantID,
-			Content:            chunk,
+		emitAssistantEvent(projectAssistantEvent{
+			Type:  projectAssistantEventMessageDelta,
+			Delta: chunk,
 		})
 	}
 	streamStatus := func(status string) {
@@ -533,8 +544,8 @@ func (s *Server) streamProjectAssistant(
 		if status == "" {
 			return
 		}
-		streamErr = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-			Type:   "status",
+		emitAssistantEvent(projectAssistantEvent{
+			Type:   projectAssistantEventStatus,
 			Status: status,
 		})
 	}
@@ -546,10 +557,16 @@ func (s *Server) streamProjectAssistant(
 			return
 		}
 		streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, toolCall)
-		streamErr = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-			Type:               "tool_call",
-			AssistantMessageID: assistantID,
-			ToolCall:           &toolCall,
+		emitAssistantEvent(projectAssistantEvent{
+			Type: projectAssistantEventToolCallFinished,
+			ToolCall: &projectAssistantToolCall{
+				ID:        toolCall.ID,
+				Name:      toolCall.Name,
+				Status:    toolCall.Status,
+				Arguments: toolCall.Arguments,
+				Summary:   toolCall.Summary,
+				Error:     toolCall.Error,
+			},
 		})
 	}
 
@@ -562,8 +579,8 @@ func (s *Server) streamProjectAssistant(
 		if shouldPersistInterruptedProjectAssistant(r.Context(), err, streamErr, assistantContent.String()) {
 			persistErr := appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
 			if persistErr != nil && streamErr == nil {
-				_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-					Type:  "error",
+				_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
+					Type:  projectAssistantEventRunFailed,
 					Error: "assistant persistence failed: " + persistErr.Error(),
 				})
 			}
@@ -574,14 +591,14 @@ func (s *Server) streamProjectAssistant(
 			return
 		}
 		if errors.Is(err, errProjectLLMNotConfigured) {
-			_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-				Type:  "error",
+			_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
+				Type:  projectAssistantEventRunFailed,
 				Error: err.Error(),
 			})
 			return
 		}
-		_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-			Type:  "error",
+		_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
+			Type:  projectAssistantEventRunFailed,
 			Error: "assistant generation failed: " + err.Error(),
 		})
 		return
@@ -592,8 +609,8 @@ func (s *Server) streamProjectAssistant(
 	}
 	assistantReply := projectAssistantStoredContent(reply, assistantContent.String())
 	if strings.TrimSpace(assistantReply) == "" {
-		_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-			Type:  "error",
+		_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
+			Type:  projectAssistantEventRunFailed,
 			Error: "assistant generation returned an empty response",
 		})
 		return
@@ -607,16 +624,13 @@ func (s *Server) streamProjectAssistant(
 	}
 
 	if err := appendProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantReply, projectAssistantMessageMetadata("", streamedToolCalls)); err != nil {
-		_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-			Type:  "error",
+		_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
+			Type:  projectAssistantEventRunFailed,
 			Error: "assistant persistence failed: " + err.Error(),
 		})
 		return
 	}
-	if err := writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-		Type:               "done",
-		AssistantMessageID: assistantID,
-	}); err != nil {
+	if err := streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{Type: projectAssistantEventRunFinished}); err != nil {
 		return
 	}
 }
