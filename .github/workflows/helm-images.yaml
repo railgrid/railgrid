@@ -75,14 +75,18 @@ jobs:
             APP_VERSION="${CHART_VERSION}"
           fi
 
-          # Package (and on non-PR events push) each platform chart in
-          # deploy/charts/ plus every per-provider chart in
-          # providers/*/deploy/chart/. The provider chart dirs are all named
-          # "chart", so the chart name is read from the Chart.yaml name: field
-          # rather than the directory basename. Provider charts are built here
-          # in the monorepo (not their synced-out mirrors) so a broken chart is
-          # caught in the PR that changes it.
-          for chart_dir in deploy/charts/*/ providers/*/deploy/chart/; do
+          # Platform charts (deploy/charts/*) are versioned + published here with
+          # the hub version. Provider charts (providers/*/deploy/chart/) are only
+          # LINTED/PACKAGED here on PRs for validation — they are published, with
+          # each provider's OWN version, by provider-release.yaml on a
+          # `providers/<name>/v*` tag. Publishing them here would stamp them with
+          # the hub version. The provider chart dirs are all named "chart", so the
+          # chart name is read from the Chart.yaml name: field.
+          chart_dirs=(deploy/charts/*/)
+          if [ "${PUSH}" != "true" ]; then
+            chart_dirs+=(providers/*/deploy/chart/)
+          fi
+          for chart_dir in "${chart_dirs[@]}"; do
             if [ -f "${chart_dir}Chart.yaml" ]; then
               chart_name=$(grep -E '^name:' "${chart_dir}Chart.yaml" | head -1 | awk '{print $2}')
               echo "Processing chart: $chart_name ($chart_dir)"

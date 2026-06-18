@@ -63,13 +63,14 @@ jobs:
             GIT_COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.release.created_at }}
 
-  # Per-provider images are built here in the monorepo (not in the synced-out
-  # mirror repos) so a broken provider Dockerfile is caught in the PR that
-  # changes it — before the split sync ever reaches a mirror. Each provider is
-  # a self-contained module/build context (providers/<name>/), so the build is
-  # identical to what the mirror would run. The image name matches the
-  # provider chart's values.yaml image.repository so deployments resolve it.
+  # PR-only validation that every provider Dockerfile + build context still
+  # builds, before the split sync ever reaches a mirror. Each provider is a
+  # self-contained build context (providers/<name>/). These builds are NEVER
+  # pushed here — provider images are published per-provider, stamped with the
+  # provider's own version, by provider-release.yaml on a `providers/<name>/v*`
+  # tag. (Publishing here would tag provider images with the hub version.)
   build-and-push-provider-images:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

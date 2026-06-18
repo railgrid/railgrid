@@ -5,16 +5,16 @@ name: Split kuery provider
 #
 # Uses splitsh-lite (https://github.com/splitsh/lite) which is deterministic:
 # the same source always splits to the same commit sha1s, so pushes normally
-# fast-forward. Runs on every push to main (mirrors the branch) and on
-# per-provider release tags (see below). workflow_dispatch is provided for the
-# initial seed / manual re-sync. It also runs on PRs that touch the split
+# fast-forward. Runs on every push to main (mirrors the branch); workflow_dispatch
+# is provided for the initial seed / manual re-sync. It also runs on PRs that touch the split
 # surface, but those only validate (install + split) — the deploy-key and push
 # steps are gated to non-PR events, so a PR never writes to the mirror.
 #
-# Releases are tagged per-provider in the monorepo as
-# `providers/kuery/vX.Y.Z`; the prefix is stripped on the way out, so the
-# mirror receives a plain `vX.Y.Z` tag (which then triggers its own image/chart
-# release workflows). A repo-wide `vX.Y.Z` tag does NOT release the mirror.
+# This mirror is SOURCE ONLY: it tracks `main`, and does NOT receive release
+# tags. Provider images and charts are built+published from the monorepo by
+# provider-release.yaml (on a `providers/kuery/vX.Y.Z` tag), stamped with the
+# provider's own version. Pushing the tag here too would make the mirror
+# rebuild the same image/chart and collide on the published tag.
 #
 # Required secret: KUERY_DEPLOY_KEY
 #   An SSH private key whose public half is added as a *write* deploy key on
@@ -24,7 +24,6 @@ name: Split kuery provider
 on:
   push:
     branches: [main]
-    tags: ['providers/kuery/v*']
   pull_request:
     branches: [main]
     paths:
@@ -114,19 +113,8 @@ jobs:
 
           git remote add mirror "${TARGET_REPO}"
 
-          if [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
-            # Per-provider tag: refs/tags/providers/kuery/vX.Y.Z. Strip the
-            # path prefix (everything up to the last '/') so the mirror gets a
-            # plain vX.Y.Z tag.
-            FULL_TAG="${GITHUB_REF#refs/tags/}"
-            TAG="${FULL_TAG##*/}"
-            echo "Publishing tag ${FULL_TAG} -> ${TARGET_REPO} as ${TAG}"
-            # Tags are immutable; push without force so an accidental re-tag fails loudly.
-            git push mirror "${SHA}:refs/tags/${TAG}"
-          else
-            echo "Publishing branch ${TARGET_BRANCH} -> ${TARGET_REPO}"
-            # --force keeps the mirror a faithful reflection even if monorepo
-            # history is ever rewritten. The mirror is read-only, so there are
-            # no downstream commits to clobber.
-            git push --force mirror "${SHA}:refs/heads/${TARGET_BRANCH}"
-          fi
+          echo "Publishing branch ${TARGET_BRANCH} -> ${TARGET_REPO}"
+          # --force keeps the mirror a faithful reflection even if monorepo
+          # history is ever rewritten. The mirror is read-only, so there are
+          # no downstream commits to clobber.
+          git push --force mirror "${SHA}:refs/heads/${TARGET_BRANCH}"

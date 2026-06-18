@@ -11,11 +11,14 @@
 // Each component has its own tag namespace and independent version line:
 //
 //	hub             v<X.Y.Z>                          repo-wide release: goreleaser
-//	                                                  CLI + hub/agent images + all
-//	                                                  in-tree provider images & charts
-//	quickstart      providers/quickstart/v<X.Y.Z>     split → faroshq/provider-quickstart
-//	                                                  mirror, which builds its own
-//	                                                  image + chart
+//	                                                  CLI + hub/agent images +
+//	                                                  platform charts (kedge-hub,
+//	                                                  kedge-agent)
+//	quickstart      providers/quickstart/v<X.Y.Z>     provider-release.yaml builds
+//	                                                  the image + chart stamped with
+//	                                                  this version; the source is
+//	                                                  also mirrored to faroshq/
+//	                                                  provider-<name> (source only)
 //	infrastructure  providers/infrastructure/v<X.Y.Z>
 //	code            providers/code/v<X.Y.Z>
 //
@@ -67,12 +70,12 @@ var componentOrder = []string{"provider-sdk", "hub", "quickstart", "kuery", "app
 
 var components = map[string]component{
 	"provider-sdk":   {"provider-sdk/v", "split → faroshq/provider-sdk; publishes the go-gettable SDK module (providers require this version once the replace is dropped)"},
-	"hub":            {"v", "goreleaser CLI release + hub/agent/provider images + Helm charts (ghcr.io/faroshq)"},
-	"quickstart":     {"providers/quickstart/v", "split → faroshq/provider-quickstart; the mirror builds its image + chart"},
-	"kuery":          {"providers/kuery/v", "split → faroshq/provider-kuery; the mirror builds its image + chart"},
-	"app-studio":     {"providers/app-studio/v", "split → faroshq/provider-app-studio; the mirror builds its image + chart"},
-	"infrastructure": {"providers/infrastructure/v", "tag only — no split/release workflow wired up yet"},
-	"code":           {"providers/code/v", "tag only — no split/release workflow wired up yet"},
+	"hub":            {"v", "goreleaser CLI release + hub/agent images + platform Helm charts (ghcr.io/faroshq)"},
+	"quickstart":     {"providers/quickstart/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-quickstart"},
+	"kuery":          {"providers/kuery/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-kuery"},
+	"app-studio":     {"providers/app-studio/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-app-studio"},
+	"infrastructure": {"providers/infrastructure/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-infrastructure"},
+	"code":           {"providers/code/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-code"},
 }
 
 func main() {
