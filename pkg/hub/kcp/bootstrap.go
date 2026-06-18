@@ -190,6 +190,11 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	logger.Info("Bootstrapping APIResourceSchemas and APIExports in system:controllers")
 	if err := confighelpers.Bootstrap(ctx, controllersDiscovery, controllersDynamic, kcp.ProvidersFS,
 		confighelpers.ReplaceOption("__TENANCY_IDENTITY_HASH__", identityHash),
+		// apiexport-kedge.faros.sh.yaml is embedded only as input for the
+		// core.faros.sh generator (hack/gen-core-apiexport). Nothing binds the
+		// standalone kedge.faros.sh export — tenants bind core.faros.sh — so we
+		// never apply it to the cluster; its presence there is just confusing.
+		confighelpers.SkipFilesOption("apiexport-kedge.faros.sh.yaml"),
 	); err != nil {
 		return fmt.Errorf("bootstrapping platform exports: %w", err)
 	}

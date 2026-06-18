@@ -18,6 +18,8 @@ import (
 	"os"
 	"strings"
 
+	"k8s.io/klog/v2"
+
 	"github.com/faroshq/kuery/apis/query/v1alpha1"
 	"github.com/faroshq/kuery/pkg/engine"
 
@@ -74,11 +76,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	status, err := h.Engine.Execute(r.Context(), &spec)
 	if err != nil {
-		// Engine errors are caller errors (validation) or store errors;
-		// kuery wraps validation distinctly but a 400 for both keeps the
-		// store's failure modes from leaking. The message is safe — it
-		// never embeds other tenants' data.
-		http.Error(w, "query failed: "+err.Error(), http.StatusBadRequest)
+		// The engine prefixes caller-controlled validation failures with
+		// "validation:" and wraps everything else (SQL generation, query
+		// execution, scanning) under its own prefixes. Validation messages
+		// are safe and actionable, so echo them as a 400. Internal store
+		// failures, however, can leak confusing driver internals to users
+		// (e.g. "UNION types ... cannot be matched (SQLSTATE 42804)"), which
+		// are kuery engine bugs, not something the user can act on. Log the
+		// full detail server-side and return a generic message.
+		if strings.HasPrefix(err.Error(), "validation:") {
+			http.Error(w, "query failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		klog.FromContext(r.Context()).Error(err, "kuery query execution failed",
+			"tenant", id.Tenant, "user", id.User)
+		http.Error(w, "query failed: internal error", http.StatusInternalServerError)
 		return
 	}
 

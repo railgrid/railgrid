@@ -56,6 +56,17 @@ type TransformFileFunc func(bs []byte) ([]byte, error)
 type Option struct {
 	// TransformFile is a function that transforms a resource file before being applied to the cluster.
 	TransformFile TransformFileFunc
+	// SkipFiles lists base file names in the embed.FS that must NOT be applied,
+	// even though they are embedded. Used for files that are embedded for other
+	// reasons (e.g. consumed by a code generator) but whose objects should not
+	// exist in the running cluster.
+	SkipFiles []string
+}
+
+// SkipFilesOption creates an Option that excludes the named files (by base
+// name) from being applied during bootstrap.
+func SkipFilesOption(names ...string) Option {
+	return Option{SkipFiles: names}
 }
 
 // ReplaceOption creates an Option that performs string replacement on resource files.
@@ -84,14 +95,18 @@ func Bootstrap(ctx context.Context, discoveryClient discovery.DiscoveryInterface
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cache)
 
 	transformers := make([]TransformFileFunc, 0, len(opts))
+	skip := map[string]bool{}
 	for _, opt := range opts {
 		if opt.TransformFile != nil {
 			transformers = append(transformers, opt.TransformFile)
 		}
+		for _, name := range opt.SkipFiles {
+			skip[name] = true
+		}
 	}
 
 	return wait.PollUntilContextCancel(ctx, time.Second, true, func(ctx context.Context) (bool, error) {
-		if err := createResourcesFromFS(ctx, dynamicClient, mapper, embedFS, transformers...); err != nil {
+		if err := createResourcesFromFS(ctx, dynamicClient, mapper, embedFS, skip, transformers...); err != nil {
 			klog.FromContext(ctx).V(2).Info("Failed to bootstrap resources, retrying", "err", err)
 			cache.Invalidate()
 			return false, nil
@@ -117,7 +132,7 @@ func bootstrapFileOrder(name string) int {
 // createResourcesFromFS reads all YAML files from an embed.FS and applies them.
 // Files are applied in dependency order: APIResourceSchemas first, then
 // APIExports (which reference schemas), then all other resources.
-func createResourcesFromFS(ctx context.Context, client dynamic.Interface, mapper meta.RESTMapper, embedFS embed.FS, transformers ...TransformFileFunc) error {
+func createResourcesFromFS(ctx context.Context, client dynamic.Interface, mapper meta.RESTMapper, embedFS embed.FS, skip map[string]bool, transformers ...TransformFileFunc) error {
 	entries, err := embedFS.ReadDir(".")
 	if err != nil {
 		return err
@@ -125,9 +140,10 @@ func createResourcesFromFS(ctx context.Context, client dynamic.Interface, mapper
 
 	files := make([]fs.DirEntry, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() {
-			files = append(files, e)
+		if e.IsDir() || skip[e.Name()] {
+			continue
 		}
+		files = append(files, e)
 	}
 	sort.Slice(files, func(i, j int) bool {
 		oi, oj := bootstrapFileOrder(files[i].Name()), bootstrapFileOrder(files[j].Name())
