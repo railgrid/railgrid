@@ -52,10 +52,15 @@ githubOAuth:
   clientSecretRef:
     name: ""
     key: clientSecret
-  # Absolute callback URL registered on the GitHub OAuth App. The callback is a
-  # top-level redirect from GitHub (no kedge auth), so this must point at the
-  # provider's OWN externally-reachable URL, not the hub /services proxy —
-  # e.g. https://code.example.com/oauth/github/callback.
+  # Absolute callback URL registered on the GitHub OAuth App. It is a top-level
+  # redirect from GitHub (no kedge auth), so it must be publicly reachable and
+  # forward to the provider's HTTP backend. Two options — both end in /callback:
+  #   1. Reuse the hub ingress via its /services proxy (no extra ingress needed):
+  #      https://<hub-host>/services/providers/code/oauth/github/callback
+  #   2. The provider's own externally-reachable host:
+  #      https://code.example.com/oauth/github/callback
+  # The matching /start URL is derived by swapping /callback → /start under the
+  # same host+path prefix.
   redirectURL: ""
   # postMessage target origin the popup returns the token to (the hub/portal
   # origin). Empty broadcasts to "*" — set this in production.
@@ -85,9 +90,12 @@ bundleStore:
       - ReadWriteOnce
     storageClassName: ""
 
-# When true, the chart also renders the CatalogEntry that registers the provider
-# (with its four APIResourceSchemas) with the hub. Set to false to manage the
-# CatalogEntry separately (e.g. GitOps with a different rollout cadence).
+# When true, the chart renders the CatalogEntry (which registers the provider
+# with the hub) into a ConfigMap that the init container applies into the
+# provider workspace via the provider kubeconfig. The CatalogEntry is a kcp
+# resource, so it is NOT applied to the hosting cluster this chart installs into.
+# Set to false to manage the CatalogEntry separately (e.g. GitOps with a
+# different rollout cadence).
 catalogEntry:
   enabled: true
 

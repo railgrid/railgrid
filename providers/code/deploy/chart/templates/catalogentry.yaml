@@ -1,40 +1,53 @@
 {{- if .Values.catalogEntry.enabled -}}
 # CatalogEntry registers this provider with the kedge hub for routing + the
-# portal Enable flow. It only REFERENCES the APIExport (apiExport.name); the
-# APIExport, its APIResourceSchemas, the APIExportEndpointSlice, and the bind
-# grant are created by this chart's init container (provider `init`, via the
-# kedge-provider-sdk) using the onboarded kubeconfig. The hub no longer
-# provisions anything from this CatalogEntry.
-apiVersion: providers.kedge.faros.sh/v1alpha1
-kind: CatalogEntry
+# portal Enable flow. It is a kcp resource (providers.kedge.faros.sh/v1alpha1),
+# so it MUST NOT be applied to the hosting cluster where this chart installs.
+# Instead the chart renders it into a ConfigMap that the init container mounts
+# and applies into the provider workspace via the provider kubeconfig
+# (KEDGE_CATALOGENTRY_FILE -> sdkinstall.Bootstrap). The hub watches
+# CatalogEntries in every workspace bound to providers.kedge.faros.sh, including
+# the provider's own, so a self-registered entry is seen.
+#
+# It only REFERENCES the APIExport (apiExport.name); the APIExport, its
+# APIResourceSchemas, the APIExportEndpointSlice, and the bind grant are created
+# by the same init container. The hub no longer provisions anything from this
+# CatalogEntry.
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: code
+  name: {{ include "code.fullname" . }}-catalogentry
   labels:
     {{- include "code.labels" . | nindent 4 }}
-spec:
-  displayName: "Code"
-  description: "Manage source-code repositories and access across git providers (GitHub)."
-  vendor: "kedge"
-  version: {{ .Chart.AppVersion | quote }}
-  category: "Developer"
-  iconURL: "/ui/providers/code/icon.svg"
-  ui:
-    url: "http://{{ include "code.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-    indexPath: "/"
-    children:
-      - displayName: Connections
-        builtinRoute: connections
-      - displayName: Repositories
-        builtinRoute: repositories
-      - displayName: Packages
-        builtinRoute: packages
-  backend:
-    url: "http://{{ include "code.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-    healthPath: "/healthz"
-  apiExport:
-    name: "code.providers.kedge.faros.sh"
-    permissionClaims:
-      - resource: secrets
-        verbs: [get, list, watch, create, update, patch, delete]
-        tenantScoped: true
+data:
+  catalogentry.yaml: |
+    apiVersion: providers.kedge.faros.sh/v1alpha1
+    kind: CatalogEntry
+    metadata:
+      name: code
+    spec:
+      displayName: "Code"
+      description: "Manage source-code repositories and access across git providers (GitHub)."
+      vendor: "kedge"
+      version: {{ .Chart.AppVersion | quote }}
+      category: "Developer"
+      iconURL: "/ui/providers/code/icon.svg"
+      ui:
+        url: "http://{{ include "code.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        indexPath: "/"
+        children:
+          - displayName: Connections
+            builtinRoute: connections
+          - displayName: Repositories
+            builtinRoute: repositories
+          - displayName: Packages
+            builtinRoute: packages
+      backend:
+        url: "http://{{ include "code.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        healthPath: "/healthz"
+      apiExport:
+        name: "code.providers.kedge.faros.sh"
+        permissionClaims:
+          - resource: secrets
+            verbs: [get, list, watch, create, update, patch, delete]
+            tenantScoped: true
 {{- end }}

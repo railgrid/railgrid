@@ -41,6 +41,9 @@ func runInitCmd(ctx context.Context) error {
 	if schemasDir == "" {
 		schemasDir = "/etc/kedge/schemas"
 	}
+	// CatalogEntry self-registration: the provider applies its own CatalogEntry
+	// into its workspace (the hub watches it there). Empty → skip.
+	catalogEntryFile := os.Getenv("KEDGE_CATALOGENTRY_FILE")
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:        config,
@@ -51,10 +54,11 @@ func runInitCmd(ctx context.Context) error {
 		Claims: []sdkinstall.PermissionClaim{
 			{Resource: "configmaps", Verbs: []string{"get", "list", "watch"}},
 		},
+		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}
-	log.Printf("quickstart-provider init: workspace bootstrapped (export=%s path=%s schemas=%s)", apiExportName, workspacePath, schemasDir)
+	log.Printf("quickstart-provider init: workspace bootstrapped (export=%s path=%s schemas=%s catalogEntry=%s)", apiExportName, workspacePath, schemasDir, catalogEntryFile)
 	return nil
 }
 

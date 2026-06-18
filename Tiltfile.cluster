@@ -53,7 +53,7 @@ cluster_name = 'kcp-tilt'
 # silently shadow any later edit to the default here. The putenv is one-way:
 # parent (this file) → child (the included Tiltfile.static, which reads the env).
 kcp_image_repo = cfg.get('kcp-image-repo', '')
-kcp_image_tag = cfg.get('kcp-image-tag', 'fb8629abb')
+kcp_image_tag = cfg.get('kcp-image-tag', 'v0.32.0')
 # Always export (even empty) so an explicit '' override clears any inherited env.
 os.putenv('KCP_IMAGE_REPO', kcp_image_repo)
 os.putenv('KCP_IMAGE_TAG', kcp_image_tag)

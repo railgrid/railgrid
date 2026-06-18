@@ -73,7 +73,23 @@ func FromEnv() (cfg Config, enabled bool, err error) {
 	if err != nil {
 		return Config{}, false, fmt.Errorf("GITHUB_OAUTH_REDIRECT_URL: %w", err)
 	}
-	cfg.StartURL = u.Scheme + "://" + u.Host + "/oauth/github/start"
+	// Derive the start URL from the callback by swapping the trailing "/callback"
+	// path segment for "/start", preserving whatever host AND path prefix the
+	// callback carries. This lets the callback ride the hub's existing
+	// /services/providers/{name}/* proxy route (e.g.
+	// https://hub/services/providers/code/oauth/github/callback) so no extra
+	// per-provider ingress is needed — start derives to the matching
+	// .../oauth/github/start under the same prefix. A bare provider-host callback
+	// (https://code.example.com/oauth/github/callback) still derives to
+	// https://code.example.com/oauth/github/start as before.
+	if !strings.HasSuffix(u.Path, "/callback") {
+		return Config{}, false, fmt.Errorf("GITHUB_OAUTH_REDIRECT_URL path must end in /callback, got %q", u.Path)
+	}
+	startU := *u
+	startU.Path = strings.TrimSuffix(u.Path, "/callback") + "/start"
+	startU.RawQuery = ""
+	startU.Fragment = ""
+	cfg.StartURL = startU.String()
 
 	cfg.PortalOrigin = os.Getenv("GITHUB_OAUTH_PORTAL_ORIGIN")
 	if cfg.PortalOrigin == "" {

@@ -38,9 +38,12 @@ hub:
 providerKubeconfig:
   secretName: kedge-provider-kubeconfig
 
-# When true, the chart also renders the CatalogEntry that registers the
-# provider with the hub. Set to false to manage the CatalogEntry separately
-# (e.g. via GitOps with a different rollout cadence than the workload).
+# When true, the chart renders the CatalogEntry (which registers the provider
+# with the hub) into a ConfigMap that the init container applies into the
+# provider workspace via the provider kubeconfig. The CatalogEntry is a kcp
+# resource, so it is NOT applied to the hosting cluster this chart installs into.
+# Set to false to manage the CatalogEntry separately (e.g. GitOps with a
+# different rollout cadence).
 catalogEntry:
   enabled: true
 

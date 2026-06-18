@@ -16,6 +16,12 @@ service:
   type: ClusterIP
   port: 8081
 
+# When true, the chart renders the CatalogEntry (which registers the provider
+# with the hub) into a ConfigMap that the init container applies into the
+# provider workspace via the provider kubeconfig. The CatalogEntry is a kcp
+# resource, so it is NOT applied to the hosting cluster this chart installs into.
+# Set to false to manage the CatalogEntry separately (e.g. GitOps with a
+# different rollout cadence).
 catalogEntry:
   enabled: true
   uiURL: ""

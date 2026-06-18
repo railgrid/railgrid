@@ -1,44 +1,58 @@
 {{- if .Values.catalogEntry.enabled -}}
 # CatalogEntry registers this provider with the kedge hub for routing + the
-# portal Enable flow. It only REFERENCES the APIExport; the APIExport, schemas,
-# APIExportEndpointSlice, and bind grant are created by this chart's init
-# container (provider `init`, via the kedge-provider-sdk). The hub no longer
-# provisions anything from this CatalogEntry.
-apiVersion: providers.kedge.faros.sh/v1alpha1
-kind: CatalogEntry
+# portal Enable flow. It is a kcp resource (providers.kedge.faros.sh/v1alpha1),
+# so it MUST NOT be applied to the hosting cluster where this chart installs.
+# Instead the chart renders it into a ConfigMap that the init container mounts
+# and applies into the provider workspace via the provider kubeconfig
+# (KEDGE_CATALOGENTRY_FILE -> sdkinstall.Bootstrap). The hub watches
+# CatalogEntries in every workspace bound to providers.kedge.faros.sh, including
+# the provider's own, so a self-registered entry is seen.
+#
+# It only REFERENCES the APIExport (apiExport.name); the APIExport, its
+# APIResourceSchemas, the APIExportEndpointSlice, and the bind grant are created
+# by the same init container. The hub no longer provisions anything from this
+# CatalogEntry.
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: kuery
+  name: {{ include "kuery.fullname" . }}-catalogentry
   labels:
     {{- include "kuery.labels" . | nindent 4 }}
-spec:
-  displayName: "Kuery"
-  description: "Fleet-wide object search, relationships, and impact analysis across connected edge clusters."
-  vendor: "faros"
-  version: {{ .Chart.AppVersion | quote }}
-  category: "Observability"
-  iconURL: "/ui/providers/kuery/icon.svg"
-  ui:
-    url: "http://{{ include "kuery.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-    indexPath: "/"
-  backend:
-    url: "http://{{ include "kuery.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-    healthPath: "/healthz"
+data:
+  catalogentry.yaml: |
+    apiVersion: providers.kedge.faros.sh/v1alpha1
+    kind: CatalogEntry
+    metadata:
+      name: kuery
+    spec:
+      displayName: "Kuery"
+      description: "Fleet-wide object search, relationships, and impact analysis across connected edge clusters."
+      vendor: "faros"
+      version: {{ .Chart.AppVersion | quote }}
+      category: "Observability"
+      iconURL: "/ui/providers/kuery/icon.svg"
+      ui:
+        url: "http://{{ include "kuery.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        indexPath: "/"
+      backend:
+        url: "http://{{ include "kuery.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        healthPath: "/healthz"
 
-  # Kuery's engagement controller opens BACKGROUND connections to the
-  # tenant's edge clusters through the hub's edges-proxy (informer sync).
-  # On Enable the hub grants the provider SA the "proxy" verb on edges in
-  # the tenant workspace; removed again on Disable.
-  edgeProxyAccess: true
+      # Kuery's engagement controller opens BACKGROUND connections to the
+      # tenant's edge clusters through the hub's edges-proxy (informer sync).
+      # On Enable the hub grants the provider SA the "proxy" verb on edges in
+      # the tenant workspace; removed again on Disable.
+      edgeProxyAccess: true
 
-  apiExport:
-    name: "kuery.providers.kedge.faros.sh"
-    # The engagement controller watches the tenant's Edge objects (via the
-    # APIExport virtual workspace) to know which edges to engage/disengage.
-    # First-party claim: the init container stamps its identityHash from
-    # apiExport.edgesIdentityHash (Helm value, copied from /bonkers).
-    permissionClaims:
-      - resource: edges
-        group: kedge.faros.sh
-        verbs: [get, list, watch]
-        tenantScoped: true
+      apiExport:
+        name: "kuery.providers.kedge.faros.sh"
+        # The engagement controller watches the tenant's Edge objects (via the
+        # APIExport virtual workspace) to know which edges to engage/disengage.
+        # First-party claim: the init container stamps its identityHash from
+        # apiExport.edgesIdentityHash (Helm value, copied from /bonkers).
+        permissionClaims:
+          - resource: edges
+            group: kedge.faros.sh
+            verbs: [get, list, watch]
+            tenantScoped: true
 {{- end }}

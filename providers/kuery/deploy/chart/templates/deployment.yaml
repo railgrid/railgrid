@@ -39,10 +39,23 @@ spec:
               value: /etc/kedge/schemas
             - name: KUERY_EDGES_IDENTITY_HASH
               value: {{ .Values.apiExport.edgesIdentityHash | quote }}
+            {{- if .Values.catalogEntry.enabled }}
+            # The CatalogEntry is a kcp resource, so the chart cannot apply it to
+            # the hosting cluster. It is rendered into a ConfigMap (mounted below)
+            # and init self-registers it into the provider workspace via the
+            # provider kubeconfig.
+            - name: KEDGE_CATALOGENTRY_FILE
+              value: /etc/kedge/catalogentry/catalogentry.yaml
+            {{- end }}
           volumeMounts:
             - name: kedge-provider-kubeconfig
               mountPath: /var/run/secrets/kedge
               readOnly: true
+            {{- if .Values.catalogEntry.enabled }}
+            - name: catalogentry
+              mountPath: /etc/kedge/catalogentry
+              readOnly: true
+            {{- end }}
       containers:
         - name: provider
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
@@ -113,6 +126,11 @@ spec:
             items:
               - key: kubeconfig
                 path: kedge-provider-kubeconfig
+        {{- if .Values.catalogEntry.enabled }}
+        - name: catalogentry
+          configMap:
+            name: {{ include "kuery.fullname" . }}-catalogentry
+        {{- end }}
         - name: store
           {{- if .Values.store.persistence.enabled }}
           persistentVolumeClaim:

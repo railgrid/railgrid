@@ -14,10 +14,17 @@ name: Tilt E2E
 # internal retries) if the stack isn't fully settled.
 
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
+  # DISABLED on CI: the multi-shard Tilt stack over-subscribes the 2-vCPU
+  # GitHub-hosted runner — root-kcp won't schedule and the shards/proxies
+  # crash-loop on probe timeouts, so this job fails on insufficient resources
+  # rather than on the code under test. Re-enable the pull_request/push
+  # triggers once we have bigger (self-hosted / larger-runner) workers with
+  # enough CPU+memory to stand up the full operator topology. Until then it
+  # stays runnable on demand via the Actions "Run workflow" button below.
+  # pull_request:
+  #   branches: [main]
+  # push:
+  #   branches: [main]
   workflow_dispatch:
 
 permissions:

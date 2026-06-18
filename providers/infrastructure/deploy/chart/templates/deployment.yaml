@@ -53,6 +53,14 @@ spec:
             - name: KRO_KUBECONFIG
               value: /var/run/secrets/kro/kubeconfig
             {{- end }}
+            {{- if .Values.catalogEntry.enabled }}
+            # The CatalogEntry is a kcp resource, so the chart cannot apply it to
+            # the hosting cluster. It is rendered into a ConfigMap (mounted below)
+            # and init self-registers it into the provider workspace via the
+            # provider kubeconfig.
+            - name: KEDGE_CATALOGENTRY_FILE
+              value: /etc/kedge/catalogentry/catalogentry.yaml
+            {{- end }}
           volumeMounts:
             - name: kedge-provider-kubeconfig
               mountPath: /var/run/secrets/kedge
@@ -62,6 +70,11 @@ spec:
             {{- if $centralName }}
             - name: kro-kubeconfig
               mountPath: /var/run/secrets/kro
+              readOnly: true
+            {{- end }}
+            {{- if .Values.catalogEntry.enabled }}
+            - name: catalogentry
+              mountPath: /etc/kedge/catalogentry
               readOnly: true
             {{- end }}
       {{- end }}
@@ -133,6 +146,11 @@ spec:
         {{- if .Values.bootstrap.enabled }}
         - name: tmp
           emptyDir: {}
+        {{- end }}
+        {{- if and .Values.bootstrap.enabled .Values.catalogEntry.enabled }}
+        - name: catalogentry
+          configMap:
+            name: {{ include "infrastructure.fullname" . }}-catalogentry
         {{- end }}
         - name: kedge-provider-kubeconfig
           secret:

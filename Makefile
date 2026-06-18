@@ -1191,9 +1191,9 @@ helm-undeploy-provider-infrastructure: ## (experimental) helm uninstall the infr
 KRO_KIND_NAME ?= kedge-kro
 KRO_KIND_KUBECONFIG ?= $(CURDIR)/.kedge-kro.kubeconfig
 KRO_CHART ?= oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro
-KRO_CHART_VERSION ?= v0.0.1-mc.6
+KRO_CHART_VERSION ?= v0.0.1-mc.7
 KRO_IMAGE_REPO ?= ghcr.io/faroshq/kro-multicluster/kro
-KRO_IMAGE_TAG ?= v0.0.1-mc.6
+KRO_IMAGE_TAG ?= v0.0.1-mc.7
 KRO_NAMESPACE ?= kro-system
 KRO_SEED_DIR ?= providers/infrastructure/examples/rgds
 

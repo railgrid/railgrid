@@ -1,33 +1,47 @@
 {{- if .Values.catalogEntry.enabled -}}
 # CatalogEntry registers this provider with the kedge hub for routing + the
-# portal Enable flow. It only REFERENCES the APIExport; the APIExport, schemas,
-# APIExportEndpointSlice, and bind grant are created by this chart's init
-# container (provider `init`, via the kedge-provider-sdk). The hub no longer
-# provisions anything from this CatalogEntry.
-apiVersion: providers.kedge.faros.sh/v1alpha1
-kind: CatalogEntry
+# portal Enable flow. It is a kcp resource (providers.kedge.faros.sh/v1alpha1),
+# so it MUST NOT be applied to the hosting cluster where this chart installs.
+# Instead the chart renders it into a ConfigMap that the init container mounts
+# and applies into the provider workspace via the provider kubeconfig
+# (KEDGE_CATALOGENTRY_FILE -> sdkinstall.Bootstrap). The hub watches
+# CatalogEntries in every workspace bound to providers.kedge.faros.sh, including
+# the provider's own, so a self-registered entry is seen.
+#
+# It only REFERENCES the APIExport (apiExport.name); the APIExport, its
+# APIResourceSchemas, the APIExportEndpointSlice, and the bind grant are created
+# by the same init container. The hub no longer provisions anything from this
+# CatalogEntry.
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: quickstart
+  name: {{ include "quickstart.fullname" . }}-catalogentry
   labels:
     {{- include "quickstart.labels" . | nindent 4 }}
-spec:
-  displayName: "Quickstart"
-  description: "Reference provider demonstrating the kedge plugin surface."
-  vendor: "kedge"
-  version: {{ .Chart.AppVersion | quote }}
-  category: "Demo"
-  iconURL: "/ui/providers/quickstart/icon.svg"
-  ui:
-    url: "http://{{ include "quickstart.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-    indexPath: "/"
-  backend:
-    url: "http://{{ include "quickstart.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-    healthPath: "/healthz"
-  apiExport:
-    name: "quickstart.providers.kedge.faros.sh"
-    # Demo-only claim so the Enable dialog has something to render.
-    permissionClaims:
-      - resource: configmaps
-        verbs: [get, list, watch]
-        tenantScoped: true
+data:
+  catalogentry.yaml: |
+    apiVersion: providers.kedge.faros.sh/v1alpha1
+    kind: CatalogEntry
+    metadata:
+      name: quickstart
+    spec:
+      displayName: "Quickstart"
+      description: "Reference provider demonstrating the kedge plugin surface."
+      vendor: "kedge"
+      version: {{ .Chart.AppVersion | quote }}
+      category: "Demo"
+      iconURL: "/ui/providers/quickstart/icon.svg"
+      ui:
+        url: "http://{{ include "quickstart.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        indexPath: "/"
+      backend:
+        url: "http://{{ include "quickstart.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        healthPath: "/healthz"
+      apiExport:
+        name: "quickstart.providers.kedge.faros.sh"
+        # Demo-only claim so the Enable dialog has something to render.
+        permissionClaims:
+          - resource: configmaps
+            verbs: [get, list, watch]
+            tenantScoped: true
 {{- end }}

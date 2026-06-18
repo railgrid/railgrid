@@ -57,6 +57,8 @@ providers/kuery/portal/dist/
 # Data dirs
 data/
 *.kubeconfig
+# Downloaded kubeconfigs that don't end in .kubeconfig (e.g. code-kubeconfig (2).yaml)
+*kubeconfig*.yaml
 
 # Dev tools and certs
 hack/tools/

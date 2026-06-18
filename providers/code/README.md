@@ -106,9 +106,11 @@ Connection — deleting the Connection garbage-collects the Secret.
 
 ## Register with the hub
 
-The CatalogEntry is what makes the hub provision the provider's workspace,
-schemas, APIExport, and runtime kubeconfig. The Helm chart renders it
-(`catalogEntry.enabled=true`), or apply the raw manifest:
+The CatalogEntry registers the provider with the hub for routing + the portal
+Enable flow. It is a kcp resource, so it lives in the provider workspace — not
+the hosting cluster. With `catalogEntry.enabled=true` (default) the chart renders
+it into a ConfigMap and the init container self-registers it into the workspace
+via the provider kubeconfig; alternatively apply the raw manifest yourself:
 
 ```sh
 kubectl --kubeconfig kcp-admin.kubeconfig ws use root:kedge:providers
@@ -130,7 +132,8 @@ docker build -t ghcr.io/faroshq/kedge-code-provider:dev providers/code/
 ## Deploy with Helm
 
 The chart ships the provider Deployment, a ClusterIP Service, the ServiceAccount,
-and (optionally) the CatalogEntry. The runtime kubeconfig the controllers need
+and (optionally) the CatalogEntry ConfigMap the init container applies to kcp.
+The runtime kubeconfig the controllers need
 is **minted by the hub** when it reconciles the CatalogEntry and mounted from the
 `kedge-provider-kubeconfig` Secret — the volume is `optional`, so the pod serves
 portal/MCP/packages reads immediately and the controller manager engages once
@@ -148,8 +151,10 @@ helm install code providers/code/deploy/chart \
 
 ### With "Connect with GitHub" (OAuth)
 
-Create a GitHub OAuth App with callback `https://<provider-host>/oauth/github/callback`,
-store its client secret in a Secret, then:
+Create a GitHub OAuth App, store its client secret in a Secret, then enable the
+`githubOAuth.*` block. The portal probes `/services/providers/code/oauth/github/config`
+through the hub; once OAuth is enabled and the provider backend is reachable, the
+**Connect with GitHub** button appears.
 
 ```sh
 kubectl -n code create secret generic kedge-code-github-oauth \
@@ -162,14 +167,88 @@ helm install code providers/code/deploy/chart \
   --set githubOAuth.enabled=true \
   --set githubOAuth.clientId=<oauth-app-client-id> \
   --set githubOAuth.clientSecretRef.name=kedge-code-github-oauth \
-  --set githubOAuth.redirectURL=https://code.example.com/oauth/github/callback \
-  --set githubOAuth.portalOrigin=https://kedge.example.com
+  --set githubOAuth.redirectURL=https://<hub-host>/services/providers/code/oauth/github/callback \
+  --set githubOAuth.portalOrigin=https://<hub-host>
 ```
 
-The OAuth callback is a top-level redirect from GitHub (no kedge auth), so
-`redirectURL` must point at the provider's **own externally-reachable URL**, not
-the hub `/services` proxy. `portalOrigin` should be the hub origin so the popup
-returns the token only to your portal.
+#### Choosing `redirectURL`
+
+GitHub's callback is a **top-level browser redirect with no kedge auth**, so
+`redirectURL` must be publicly reachable and forward to the provider's HTTP
+backend (`:8083`). It must end in `/callback`; the matching `/start` URL is
+derived automatically by swapping `/callback` → `/start` under the **same host
+and path prefix**. Two options:
+
+1. **Reuse the hub ingress (recommended — no extra ingress object):** point at
+   the hub's existing `/services/providers/code/*` proxy:
+   ```
+   https://<hub-host>/services/providers/code/oauth/github/callback
+   ```
+   The proxy forwards these anonymous requests straight to the provider backend,
+   so the whole flow rides the single hub hostname. Set `portalOrigin` to the
+   same hub origin.
+
+2. **The provider's own external host:** if you expose the provider directly
+   (its own ingress/hostname), use:
+   ```
+   https://code.example.com/oauth/github/callback
+   ```
+
+Whichever you pick, register that **exact** callback URL on the GitHub OAuth App,
+and set `portalOrigin` to the hub origin so the popup returns the token only to
+your portal.
+
+### Full production deployment (hub-routed OAuth)
+
+Provider running in its own namespace, registered against an already-running hub,
+with OAuth routed through the hub ingress (no per-provider ingress). The runtime
+kubeconfig the controllers need is supplied as the `kedge-provider-kubeconfig`
+Secret (its key **must** be `kubeconfig`) — mint it via the admin onboarding flow
+(`/bonkers`).
+
+```sh
+# 1. Namespace.
+kubectl create namespace kedge-prod-provider-code
+
+# 2. Provider kubeconfig Secret (key MUST be "kubeconfig").
+kubectl -n kedge-prod-provider-code create secret generic kedge-provider-kubeconfig \
+  --from-file=kubeconfig=kedge/provider-code.kubeconfig
+
+# 3. GitHub OAuth App client secret.
+kubectl -n kedge-prod-provider-code create secret generic code-github-oauth \
+  --from-literal=clientSecret=<oauth-app-client-secret>
+
+# 4. Install the chart from the published OCI registry.
+helm upgrade --install code oci://ghcr.io/faroshq/charts/kedge-code-provider:0.0.82 \
+  -n kedge-prod-provider-code \
+  --set hub.url=https://kedge-kedge-hub.kedge-prod.svc.cluster.local:9443 \
+  --set hub.insecure=true \
+  --set hub.tokenSecretRef.name="" \
+  --set image.tag=v0.0.82 \
+  --set catalogEntry.enabled=false \
+  --set githubOAuth.enabled=true \
+  --set githubOAuth.clientId=<oauth-app-client-id> \
+  --set githubOAuth.clientSecretRef.name=code-github-oauth \
+  --set githubOAuth.clientSecretRef.key=clientSecret \
+  --set githubOAuth.redirectURL=https://console.faros.sh/services/providers/code/oauth/github/callback \
+  --set githubOAuth.portalOrigin=https://console.faros.sh
+```
+
+Notes:
+- `hub.insecure=true` + `hub.tokenSecretRef.name=""` suit an in-cluster hub with
+  a self-signed cert and no static heartbeat token. For a real heartbeat token,
+  create a Secret and set `hub.tokenSecretRef.name`/`.key` instead.
+- `catalogEntry.enabled=false` means the chart does **not** manage the
+  CatalogEntry — the hub uses whatever `backend.url` the existing CatalogEntry
+  declares. **Make sure that `backend.url` points at this deployment's Service**
+  (`http://code-kedge-code-provider.<namespace>.svc.cluster.local:8083`); a stale
+  namespace there makes the hub→provider proxy return **502** (and the OAuth
+  button stays hidden). Leaving `catalogEntry.enabled=true` lets the init
+  container keep `backend.url` in sync with the release namespace automatically.
+- After install, verify the OAuth probe returns `{"enabled":true}`:
+  ```sh
+  curl -s https://console.faros.sh/services/providers/code/oauth/github/config
+  ```
 
 `values.yaml` documents the full surface — image, replicas, hub URL + token
 Secret, the runtime kubeconfig Secret name, the `githubOAuth.*` block, the
@@ -225,7 +304,7 @@ the connection token's `read:packages` scope.
 | `KEDGE_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=`/`?token=` replace identity headers (dev only) |
 | `GITHUB_OAUTH_CLIENT_ID` | (unset → OAuth off) | GitHub OAuth App client ID |
 | `GITHUB_OAUTH_CLIENT_SECRET` | (unset) | GitHub OAuth App client secret |
-| `GITHUB_OAUTH_REDIRECT_URL` | (unset) | Absolute callback URL on the provider's own host |
+| `GITHUB_OAUTH_REDIRECT_URL` | (unset) | Absolute callback URL (must end in `/callback`); either the hub `/services/providers/code/oauth/github/callback` proxy route or the provider's own host. `/start` is derived from it |
 | `GITHUB_OAUTH_PORTAL_ORIGIN` | `*` | postMessage target origin (set to the hub origin in prod) |
 | `GITHUB_OAUTH_SCOPES` | `repo,read:org,admin:public_key,read:packages` | Requested OAuth scopes |
 

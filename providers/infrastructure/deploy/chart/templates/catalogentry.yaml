@@ -1,4 +1,9 @@
-{{- if .Values.catalogEntry.enabled -}}
+{{- if and .Values.bootstrap.enabled .Values.catalogEntry.enabled -}}
+# Only rendered in bootstrap mode (bootstrap.enabled): the bootstrap init
+# container mounts this ConfigMap and applies the CatalogEntry into kcp via the
+# provider kubeconfig. In hub-provisioned mode (bootstrap.enabled=false) there is
+# no init container, so the entry is registered out-of-band, not from here.
+#
 # CatalogEntry registers this provider with the kedge hub. The hub's
 # catalog controller picks it up, materializes
 # root:kedge:providers:infrastructure, mints
@@ -9,6 +14,12 @@
 # purely to grant this provider the `secrets get/list/watch`
 # permission claim — there's no kedge-side CRD for tenants to use
 # yet (the broker model puts the UI in front of the work).
+#
+# The CatalogEntry is a kcp resource (providers.kedge.faros.sh/v1alpha1),
+# so it MUST NOT be applied to the hosting cluster where this chart
+# installs. Instead the chart renders it into the ConfigMap below; the
+# init container mounts it and applies it into the provider workspace via
+# the provider kubeconfig (KEDGE_CATALOGENTRY_FILE -> sdkinstall.Bootstrap).
 #
 # ════════════════════════════════════════════════════════════════════════
 # Provider object reference — kind: CatalogEntry (providers.kedge.faros.sh)
@@ -48,42 +59,48 @@
 #     schemas[]                Inline APIResourceSchemas to install ({groupResource,
 #                              body}); [] = pure broker, no CRDs leak to tenants.
 # ════════════════════════════════════════════════════════════════════════
-apiVersion: providers.kedge.faros.sh/v1alpha1
-kind: CatalogEntry
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: infrastructure
+  name: {{ include "infrastructure.fullname" . }}-catalogentry
   labels:
     {{- include "infrastructure.labels" . | nindent 4 }}
-spec:
-  displayName: "Application Templates"
-  description: "Provision applications and infrastructure from curated templates."
-  vendor: "kedge"
-  version: {{ .Chart.AppVersion | quote }}
-  category: "Workloads"
-  iconURL: "/ui/providers/infrastructure/icon.svg"
-  ui:
-    url: "http://{{ include "infrastructure.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-    indexPath: "/"
-    # Sub-nav entries shown indented under "Application Templates" in
-    # the portal side menu. The portal composes each child URL as
-    # /providers/infrastructure/{builtinRoute}; the micro-frontend
-    # reads the trailing segment off kedgeContext.subPath and routes
-    # to the matching internal page. Mirrors kubernetes-edges → Workloads.
-    children:
-      - displayName: Templates
-        builtinRoute: templates
-      - displayName: Instances
-        builtinRoute: instances
-  backend:
-    url: "http://{{ include "infrastructure.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-    healthPath: "/healthz"
-  # Reference-only. The APIExport + its dynamically-generated schemas + the bind
-  # grant are created by this chart's init container (provider `init`); the hub
-  # no longer provisions.
-  apiExport:
-    name: "infrastructure.providers.kedge.faros.sh"
-    permissionClaims:
-      - resource: secrets
-        verbs: [get, list, watch]
-        tenantScoped: true
+data:
+  catalogentry.yaml: |
+    apiVersion: providers.kedge.faros.sh/v1alpha1
+    kind: CatalogEntry
+    metadata:
+      name: infrastructure
+    spec:
+      displayName: "Application Templates"
+      description: "Provision applications and infrastructure from curated templates."
+      vendor: "kedge"
+      version: {{ .Chart.AppVersion | quote }}
+      category: "Workloads"
+      iconURL: "/ui/providers/infrastructure/icon.svg"
+      ui:
+        url: "http://{{ include "infrastructure.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        indexPath: "/"
+        # Sub-nav entries shown indented under "Application Templates" in
+        # the portal side menu. The portal composes each child URL as
+        # /providers/infrastructure/{builtinRoute}; the micro-frontend
+        # reads the trailing segment off kedgeContext.subPath and routes
+        # to the matching internal page. Mirrors kubernetes-edges → Workloads.
+        children:
+          - displayName: Templates
+            builtinRoute: templates
+          - displayName: Instances
+            builtinRoute: instances
+      backend:
+        url: "http://{{ include "infrastructure.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        healthPath: "/healthz"
+      # Reference-only. The APIExport + its dynamically-generated schemas + the bind
+      # grant are created by this chart's init container (provider `init`); the hub
+      # no longer provisions.
+      apiExport:
+        name: "infrastructure.providers.kedge.faros.sh"
+        permissionClaims:
+          - resource: secrets
+            verbs: [get, list, watch]
+            tenantScoped: true
 {{- end }}

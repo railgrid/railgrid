@@ -1,36 +1,55 @@
 {{- if .Values.catalogEntry.enabled -}}
-apiVersion: providers.kedge.faros.sh/v1alpha1
-kind: CatalogEntry
+# CatalogEntry registers this provider with the kedge hub for routing + the
+# portal Enable flow. It is a kcp resource (providers.kedge.faros.sh/v1alpha1),
+# so it MUST NOT be applied to the hosting cluster where this chart installs.
+# Instead the chart renders it into a ConfigMap that the init container mounts
+# and applies into the provider workspace via the provider kubeconfig
+# (KEDGE_CATALOGENTRY_FILE -> sdkinstall.Bootstrap). The hub watches
+# CatalogEntries in every workspace bound to providers.kedge.faros.sh, including
+# the provider's own, so a self-registered entry is seen.
+#
+# It only REFERENCES the APIExport (apiExport.name); the APIExport, its
+# APIResourceSchemas, the APIExportEndpointSlice, and the bind grant are created
+# by the same init container. The hub no longer provisions anything from this
+# CatalogEntry.
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: app-studio
-  annotations:
-    providers.kedge.faros.sh/builtin: "false"
+  name: {{ include "appstudio.fullname" . }}-catalogentry
   labels:
     {{- include "appstudio.labels" . | nindent 4 }}
-spec:
-  displayName: "App Studio"
-  description: "Persistent AI project workspace for planning, memory, and chat."
-  vendor: "kedge"
-  version: {{ .Chart.AppVersion | quote }}
-  category: "AI"
-  iconURL: "/ui/providers/app-studio/icon.svg"
-  dependencies:
-    - name: code
-  ui:
-    url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.uiURL | quote }}
-    indexPath: "/"
-  backend:
-    # The hub backend proxy forwards /services/providers/app-studio/* here,
-    # injecting the verified X-Kedge-Tenant/X-Kedge-User headers and the
-    # caller's bearer token. The provider serves /api/projects/* + /healthz.
-    url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
-    healthPath: "/healthz"
-  # Reference-only: the APIExport, schemas, slice, and bind grant are created by
-  # this chart's init container (provider `init`, via the kedge-provider-sdk).
-  apiExport:
-    name: "ai.kedge.faros.sh"
-    permissionClaims:
-      - resource: secrets
-        verbs: ["get", "list", "watch", "create", "update", "delete"]
-        tenantScoped: true
+data:
+  catalogentry.yaml: |
+    apiVersion: providers.kedge.faros.sh/v1alpha1
+    kind: CatalogEntry
+    metadata:
+      name: app-studio
+      annotations:
+        providers.kedge.faros.sh/builtin: "false"
+    spec:
+      displayName: "App Studio"
+      description: "Persistent AI project workspace for planning, memory, and chat."
+      vendor: "kedge"
+      version: {{ .Chart.AppVersion | quote }}
+      category: "AI"
+      iconURL: "/ui/providers/app-studio/icon.svg"
+      dependencies:
+        - name: code
+      ui:
+        url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.uiURL | quote }}
+        indexPath: "/"
+      backend:
+        # The hub backend proxy forwards /services/providers/app-studio/* here,
+        # injecting the verified X-Kedge-Tenant/X-Kedge-User headers and the
+        # caller's bearer token. The provider serves /api/projects/* + /healthz.
+        url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
+        healthPath: "/healthz"
+      # Reference-only: the APIExport, schemas, slice, and bind grant are created by
+      # this chart's init container (provider `init`, via the kedge-provider-sdk).
+      apiExport:
+        name: "ai.kedge.faros.sh"
+        permissionClaims:
+          - resource: secrets
+            verbs: ["get", "list", "watch", "create", "update", "delete"]
+            tenantScoped: true
 {{- end }}
