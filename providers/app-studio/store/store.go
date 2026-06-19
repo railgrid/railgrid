@@ -56,6 +56,7 @@ type AssistantRunStatus string
 
 const (
 	AssistantRunStatusPendingPermission AssistantRunStatus = "pending_permission"
+	AssistantRunStatusPendingInput      AssistantRunStatus = "pending_input"
 	AssistantRunStatusRunning           AssistantRunStatus = "running"
 	AssistantRunStatusCompleted         AssistantRunStatus = "completed"
 	AssistantRunStatusAborted           AssistantRunStatus = "aborted"

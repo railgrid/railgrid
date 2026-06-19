@@ -30,6 +30,8 @@ type projectAssistantToolRisk string
 
 const (
 	projectAssistantToolRiskRead    projectAssistantToolRisk = "read"
+	projectAssistantToolRiskInput   projectAssistantToolRisk = "input"
+	projectAssistantToolRiskPlan    projectAssistantToolRisk = "plan"
 	projectAssistantToolRiskWrite   projectAssistantToolRisk = "write"
 	projectAssistantToolRiskCommit  projectAssistantToolRisk = "commit"
 	projectAssistantToolRiskRuntime projectAssistantToolRisk = "runtime"

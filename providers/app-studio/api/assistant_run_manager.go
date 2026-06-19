@@ -46,6 +46,9 @@ type projectAssistantTurnItem struct {
 	RunID              string                   `json:"runID,omitempty"`
 	RequestID          string                   `json:"requestID,omitempty"`
 	AssistantMessageID string                   `json:"assistantMessageID,omitempty"`
+	Decision           string                   `json:"decision,omitempty"`
+	Answer             string                   `json:"answer,omitempty"`
+	EditedArguments    map[string]any           `json:"editedArguments,omitempty"`
 	CreatedAt          time.Time                `json:"createdAt"`
 }
 

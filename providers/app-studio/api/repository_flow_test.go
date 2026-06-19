@@ -28,11 +28,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/callbacks"
+	"github.com/cloudwego/eino/components"
+	einomodel "github.com/cloudwego/eino/components/model"
+	einoschema "github.com/cloudwego/eino/schema"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8sschema "k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -96,6 +100,8 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 		"search_project_files",
 		"plan_project_changes",
 		"check_project_readiness",
+		"ask_follow_up",
+		"request_project_plan_approval",
 		"write_file",
 		"apply_patch",
 		"mkdir",
@@ -119,6 +125,8 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 		"search_project_files",
 		"plan_project_changes",
 		"check_project_readiness",
+		"ask_follow_up",
+		"request_project_plan_approval",
 		"write_file",
 		"apply_patch",
 		"mkdir",
@@ -185,6 +193,66 @@ func TestLoadProjectMCPToolsExposesCommitBridgeOnly(t *testing.T) {
 	}
 	if names["code__commit_files"] || names["code__read_repository_file"] {
 		t.Fatalf("tool names = %#v, should not expose raw provider-code tools", names)
+	}
+}
+
+func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(t *testing.T) {
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		if envelope.Method != "tools/list" {
+			t.Fatalf("method = %q, want tools/list", envelope.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit workspace files","inputSchema":{"type":"object"}}]}}`)
+	}))
+	defer mcp.Close()
+
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "ship the demo"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: einoschema.AssistantMessage("Ready.", nil),
+	}}}
+	setProjectAssistantModelForTest(server, model)
+
+	reply, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if reply != "Ready." {
+		t.Fatalf("reply = %q, want Ready.", reply)
+	}
+	if len(model.Inputs) != 1 {
+		t.Fatalf("Eino model request count = %d, want 1", len(model.Inputs))
+	}
+	var joined string
+	for _, msg := range model.Inputs[0].Messages {
+		joined += msg.Content + "\n"
+	}
+	if !strings.Contains(joined, "Available tools in this workspace") || !strings.Contains(joined, "commit_project_files") {
+		t.Fatalf("first model input missing discovered tool prompt:\n%s", joined)
+	}
+	if !projectChatToolsInclude(model.Inputs[0].Tools, projectToolCommitProjectFiles) {
+		t.Fatalf("model tools = %#v, want commit_project_files from discovered commit bridge", model.Inputs[0].Tools)
 	}
 }
 
@@ -287,11 +355,6 @@ func TestSummarizeProjectToolArgumentsWorkspaceReadTools(t *testing.T) {
 			want: []string{"includeFiles true", "maxFiles 12"},
 		},
 		{
-			name: "verify_project_runtime",
-			args: `{"checks":["build","test"],"timeoutSeconds":30}`,
-			want: []string{"checks build, test", "timeoutSeconds 30"},
-		},
-		{
 			name: "write_file",
 			args: `{"path":"src/App.tsx","content":"secret-ish file body"}`,
 			want: []string{"path src/App.tsx", "20 bytes"},
@@ -366,7 +429,7 @@ func TestSummarizeProjectToolResultWorkspaceReadTools(t *testing.T) {
 		}
 	}
 
-	readinessResult := `{"status":"ready_to_verify","recommendedChecks":["build","test"],"files":["package.json","src/App.tsx"],"trace":[{"node":"read-context","status":"ok"}]}`
+	readinessResult := `{"status":"ready_to_verify","recommendedChecks":["build","test"],"files":["package.json","src/App.tsx"]}`
 	got = summarizeProjectToolResult("check_project_readiness", readinessResult)
 	for _, want := range []string{"status ready_to_verify", "checks build, test", "2 file(s): package.json, src/App.tsx"} {
 		if !strings.Contains(got, want) {
@@ -374,31 +437,38 @@ func TestSummarizeProjectToolResultWorkspaceReadTools(t *testing.T) {
 		}
 	}
 
-	verificationResult := `{"status":"started","checks":[{"name":"build","status":"started","id":"runtime-build"},{"name":"test","status":"started","id":"runtime-test"}]}`
-	got = summarizeProjectToolResult("verify_project_runtime", verificationResult)
-	for _, want := range []string{"status started", "2 check(s): build started, test started"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("summary = %q, want %q", got, want)
-		}
-	}
 }
 
-func TestProjectAssistantMessageMetadataToolCalls(t *testing.T) {
+func TestProjectAssistantMessageMetadataSafeActions(t *testing.T) {
 	events := []projectToolCallStreamEvent{
 		{ID: "call-1", Name: "code__commit_files", Status: "running"},
 		{ID: "call-1", Status: "succeeded", Summary: "commit abc123"},
 	}
 	merged := upsertProjectToolCallStreamEvent(events[:1], events[1])
 	metadata := projectAssistantMessageMetadata("", merged)
-	raw, ok := metadata[projectMessageMetadataToolCalls].([]projectToolCallStreamEvent)
-	if !ok {
-		t.Fatalf("tool call metadata type = %T, want []projectToolCallStreamEvent", metadata[projectMessageMetadataToolCalls])
+	if _, ok := metadata[projectMessageMetadataToolCalls]; ok {
+		t.Fatalf("metadata = %#v, should not persist raw toolCalls", metadata)
 	}
-	if len(raw) != 1 {
-		t.Fatalf("tool call metadata length = %d, want 1", len(raw))
+	actions := projectAssistantUIActionsFromMetadata(metadata[projectMessageMetadataAssistantActions])
+	if len(actions) != 1 {
+		t.Fatalf("assistant actions length = %d, want 1", len(actions))
 	}
-	if raw[0].Name != "code__commit_files" || raw[0].Status != "succeeded" || raw[0].Summary != "commit abc123" {
-		t.Fatalf("unexpected merged tool call metadata: %#v", raw[0])
+	if actions[0].Kind != projectAssistantUIActionCommit || actions[0].Status != "succeeded" || actions[0].Label != "Committed changes" {
+		t.Fatalf("unexpected assistant action metadata: %#v", actions[0])
+	}
+}
+
+func assertProjectAssistantMetadataDoesNotContain(t *testing.T, metadata map[string]any, forbidden ...string) {
+	t.Helper()
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	payload := string(raw)
+	for _, value := range forbidden {
+		if strings.Contains(payload, value) {
+			t.Fatalf("assistant metadata leaked %q in %s", value, payload)
+		}
 	}
 }
 
@@ -409,15 +479,6 @@ func TestProjectToolCallResultStatusCommitFilesPending(t *testing.T) {
 	}
 	if got := projectToolCallResultStatus("code__commit_files", `{"phase":"Succeeded"}`); got != "succeeded" {
 		t.Fatalf("status = %q, want succeeded", got)
-	}
-	if got := projectToolCallResultStatus("verify_project_runtime", `{"status":"started"}`); got != "running" {
-		t.Fatalf("runtime verification started status = %q, want running", got)
-	}
-	if got := projectToolCallResultStatus("verify_project_runtime", `{"status":"failed"}`); got != "failed" {
-		t.Fatalf("runtime verification failed status = %q, want failed", got)
-	}
-	if got := projectToolCallResultStatus("verify_project_runtime", `{"status":"bounded"}`); got != "failed" {
-		t.Fatalf("runtime verification bounded status = %q, want failed", got)
 	}
 	if got := projectToolCallResultStatus("other_tool", result); got != "succeeded" {
 		t.Fatalf("non-commit status = %q, want succeeded", got)
@@ -449,7 +510,7 @@ func TestCallProjectMCPToolTreatsIsErrorAsFailure(t *testing.T) {
 	}
 }
 
-func TestResolveProjectToolCallsRunsLocalWorkspaceTools(t *testing.T) {
+func TestProjectLocalToolRunsWorkspaceReadTool(t *testing.T) {
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
 	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{
@@ -459,78 +520,53 @@ func TestResolveProjectToolCallsRunsLocalWorkspaceTools(t *testing.T) {
 	}
 	server := NewWithWorkspace(nil, nil, workspaces, "", false)
 
-	messages, err := server.resolveProjectToolCalls(
+	resp, err := server.callProjectLocalTool(
 		context.Background(),
 		identity{},
 		nil,
 		nil,
 		scope,
 		"",
-		[]chatToolCall{{
-			ID:   "call-1",
-			Type: "function",
-			Function: chatToolCallFunction{
-				Name:      "read_project_file",
-				Arguments: `{"path":"README.md"}`,
-			},
-		}},
+		"",
 		httptest.NewRequest(http.MethodPost, "/", nil),
-		nil,
+		projectToolReadProjectFile,
+		map[string]any{"path": "README.md"},
 	)
 	if err != nil {
-		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
+		t.Fatalf("callProjectLocalTool returned error: %v", err)
 	}
-	if len(messages) != 1 || !strings.Contains(messages[0].Content, "hello from App Studio workspace") {
-		t.Fatalf("tool messages = %#v, want workspace file content", messages)
+	if !strings.Contains(resp, "hello from App Studio workspace") {
+		t.Fatalf("tool response = %q, want workspace file content", resp)
 	}
 }
 
-func TestResolveProjectToolCallsRunsLocalWorkspaceMutationTools(t *testing.T) {
+func TestProjectLocalToolRunsWorkspaceMutationTools(t *testing.T) {
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
 	server := NewWithWorkspace(nil, nil, workspaces, "", false)
 
-	messages, err := server.resolveProjectToolCalls(
-		context.Background(),
-		identity{},
-		nil,
-		nil,
-		scope,
-		"",
-		[]chatToolCall{
-			{
-				ID:   "call-1",
-				Type: "function",
-				Function: chatToolCallFunction{
-					Name:      "mkdir",
-					Arguments: `{"path":"src"}`,
-				},
-			},
-			{
-				ID:   "call-2",
-				Type: "function",
-				Function: chatToolCallFunction{
-					Name:      "write_file",
-					Arguments: `{"path":"src/App.tsx","content":"hello world\n"}`,
-				},
-			},
-			{
-				ID:   "call-3",
-				Type: "function",
-				Function: chatToolCallFunction{
-					Name:      "apply_patch",
-					Arguments: `{"path":"src/App.tsx","oldText":"world","newText":"Kedge"}`,
-				},
-			},
-		},
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
-	}
-	if len(messages) != 3 {
-		t.Fatalf("tool message count = %d, want 3", len(messages))
+	for _, call := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: projectToolMkdir, args: map[string]any{"path": "src"}},
+		{name: projectToolWriteFile, args: map[string]any{"path": "src/App.tsx", "content": "hello world\n"}},
+		{name: projectToolApplyPatch, args: map[string]any{"path": "src/App.tsx", "oldText": "world", "newText": "Kedge"}},
+	} {
+		if _, err := server.callProjectLocalTool(
+			context.Background(),
+			identity{},
+			nil,
+			nil,
+			scope,
+			"",
+			"",
+			httptest.NewRequest(http.MethodPost, "/", nil),
+			call.name,
+			call.args,
+		); err != nil {
+			t.Fatalf("callProjectLocalTool(%s) returned error: %v", call.name, err)
+		}
 	}
 	read, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "src/App.tsx"})
 	if err != nil {
@@ -542,21 +578,9 @@ func TestResolveProjectToolCallsRunsLocalWorkspaceMutationTools(t *testing.T) {
 }
 
 func TestGenerateProjectAssistantStreamRequestsPermissionForWriteTool(t *testing.T) {
-	var llmRequests []chatCompletionRequest
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode LLM request: %v", err)
-		}
-		llmRequests = append(llmRequests, req)
-		w.Header().Set("Content-Type", "text/event-stream")
-		writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"src/App.tsx","content":"hello\n"}`)
-	}))
-	defer llm.Close()
-
 	settings := projectLLMSettings{
 		Provider: defaultProjectLLMProvider,
-		BaseURL:  llm.URL,
+		BaseURL:  defaultProjectLLMBaseURL,
 		Model:    "test-model",
 		APIKey:   "test-key",
 	}
@@ -568,6 +592,17 @@ func TestGenerateProjectAssistantStreamRequestsPermissionForWriteTool(t *testing
 	}
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID:   "call-write",
+			Type: "function",
+			Function: einoschema.FunctionCall{
+				Name:      projectToolWriteFile,
+				Arguments: `{"path":"src/App.tsx","content":"hello\n"}`,
+			},
+		}}),
+	}}}
+	setProjectAssistantModelForTest(server, model)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 
@@ -590,8 +625,8 @@ func TestGenerateProjectAssistantStreamRequestsPermissionForWriteTool(t *testing
 	if permissionErr.RunID == "" || permissionErr.RequestID == "" {
 		t.Fatalf("permission error missing ids: %#v", permissionErr)
 	}
-	if len(llmRequests) != 1 {
-		t.Fatalf("LLM request count = %d, want 1", len(llmRequests))
+	if len(model.Inputs) != 1 {
+		t.Fatalf("Eino model request count = %d, want 1", len(model.Inputs))
 	}
 	if _, err := workspaces.ReadFile(context.Background(), workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}, workspace.ReadOptions{Path: "src/App.tsx"}); err == nil {
 		t.Fatal("write_file ran before permission was approved")
@@ -625,15 +660,9 @@ func TestGenerateProjectAssistantStreamRequestsPermissionForWriteTool(t *testing
 }
 
 func TestStreamProjectAssistantPersistsPermissionTimelineMessage(t *testing.T) {
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"src/App.tsx","content":"hello\n"}`)
-	}))
-	defer llm.Close()
-
 	settings := projectLLMSettings{
 		Provider: defaultProjectLLMProvider,
-		BaseURL:  llm.URL,
+		BaseURL:  defaultProjectLLMBaseURL,
 		Model:    "test-model",
 		APIKey:   "test-key",
 	}
@@ -645,6 +674,16 @@ func TestStreamProjectAssistantPersistsPermissionTimelineMessage(t *testing.T) {
 		t.Fatalf("appendProjectUserMessage returned error: %v", err)
 	}
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	setProjectAssistantModelForTest(server, &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID:   "call-write",
+			Type: "function",
+			Function: einoschema.FunctionCall{
+				Name:      projectToolWriteFile,
+				Arguments: `{"path":"src/App.tsx","content":"hello\n"}`,
+			},
+		}}),
+	}}})
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	rr := httptest.NewRecorder()
@@ -679,34 +718,24 @@ func TestStreamProjectAssistantPersistsPermissionTimelineMessage(t *testing.T) {
 	if assistant.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission {
 		t.Fatalf("assistant metadata = %#v, want pending permission status", assistant.Metadata)
 	}
-	rawToolCalls, ok := assistant.Metadata[projectMessageMetadataToolCalls].([]projectToolCallStreamEvent)
-	if !ok || len(rawToolCalls) != 1 {
-		t.Fatalf("tool call metadata = %#v, want one typed tool call", assistant.Metadata[projectMessageMetadataToolCalls])
+	if _, ok := assistant.Metadata[projectMessageMetadataToolCalls]; ok {
+		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", assistant.Metadata)
 	}
-	if rawToolCalls[0].Status != "permission_required" || rawToolCalls[0].Permission == nil || rawToolCalls[0].Checkpoint == nil {
-		t.Fatalf("tool call metadata = %#v, want permission and checkpoint", rawToolCalls[0])
+	actions := projectAssistantUIActionsFromMetadata(assistant.Metadata[projectMessageMetadataAssistantActions])
+	if len(actions) != 1 || actions[0].Status != "awaiting_approval" || actions[0].Kind != projectAssistantUIActionEdit {
+		t.Fatalf("assistant actions = %#v, want pending edit disclosure", actions)
 	}
-	if rawToolCalls[0].Permission.Input != nil {
-		t.Fatalf("persisted permission input = %#v, want redacted", rawToolCalls[0].Permission.Input)
+	interrupt := projectAssistantUIInterruptFromMetadata(assistant.Metadata[projectMessageMetadataAssistantInterrupt])
+	if interrupt == nil || interrupt.Status != "pending" || interrupt.Action == nil || interrupt.Action.RunID == "" || interrupt.Action.RequestID == "" {
+		t.Fatalf("assistant interrupt = %#v, want pending resume handle", interrupt)
 	}
-	if !strings.Contains(rawToolCalls[0].Arguments, "path src/App.tsx") || !strings.Contains(rawToolCalls[0].Arguments, "6 bytes") {
-		t.Fatalf("arguments summary = %q, want redacted path and byte count", rawToolCalls[0].Arguments)
-	}
-	if strings.Contains(rawToolCalls[0].Arguments, "hello") {
-		t.Fatalf("arguments summary leaked file content: %q", rawToolCalls[0].Arguments)
-	}
+	assertProjectAssistantMetadataDoesNotContain(t, assistant.Metadata, "src/App.tsx", "hello", "permission_required", "waiting_for_permission")
 }
 
 func TestStreamProjectAssistantPersistsPermissionTimelineAfterStreamWriteFailure(t *testing.T) {
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"src/App.tsx","content":"hello\n"}`)
-	}))
-	defer llm.Close()
-
 	settings := projectLLMSettings{
 		Provider: defaultProjectLLMProvider,
-		BaseURL:  llm.URL,
+		BaseURL:  defaultProjectLLMBaseURL,
 		Model:    "test-model",
 		APIKey:   "test-key",
 	}
@@ -718,6 +747,16 @@ func TestStreamProjectAssistantPersistsPermissionTimelineAfterStreamWriteFailure
 		t.Fatalf("appendProjectUserMessage returned error: %v", err)
 	}
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	setProjectAssistantModelForTest(server, &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID:   "call-write",
+			Type: "function",
+			Function: einoschema.FunctionCall{
+				Name:      projectToolWriteFile,
+				Arguments: `{"path":"src/App.tsx","content":"hello\n"}`,
+			},
+		}}),
+	}}})
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	stream := &failingProjectStreamResponseWriter{header: http.Header{}}
@@ -745,16 +784,15 @@ func TestStreamProjectAssistantPersistsPermissionTimelineAfterStreamWriteFailure
 	if assistant.ID == "" {
 		t.Fatalf("messages = %#v, want persisted assistant permission message", recent)
 	}
-	rawToolCalls, ok := assistant.Metadata[projectMessageMetadataToolCalls].([]projectToolCallStreamEvent)
-	if !ok || len(rawToolCalls) != 1 {
-		t.Fatalf("tool call metadata = %#v, want one typed tool call", assistant.Metadata[projectMessageMetadataToolCalls])
+	if _, ok := assistant.Metadata[projectMessageMetadataToolCalls]; ok {
+		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", assistant.Metadata)
 	}
-	if assistant.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission || rawToolCalls[0].Status != "permission_required" || rawToolCalls[0].Permission == nil || rawToolCalls[0].Checkpoint == nil {
+	actions := projectAssistantUIActionsFromMetadata(assistant.Metadata[projectMessageMetadataAssistantActions])
+	interrupt := projectAssistantUIInterruptFromMetadata(assistant.Metadata[projectMessageMetadataAssistantInterrupt])
+	if assistant.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission || len(actions) != 1 || actions[0].Status != "awaiting_approval" || interrupt == nil || interrupt.Action == nil {
 		t.Fatalf("assistant metadata = %#v, want pending permission with checkpoint after stream write failure", assistant.Metadata)
 	}
-	if rawToolCalls[0].Permission.Input != nil {
-		t.Fatalf("persisted permission input = %#v, want redacted", rawToolCalls[0].Permission.Input)
-	}
+	assertProjectAssistantMetadataDoesNotContain(t, assistant.Metadata, "src/App.tsx", "hello", "permission_required", "waiting_for_permission")
 }
 
 type projectAssistantPermissionFixture struct {
@@ -763,6 +801,160 @@ type projectAssistantPermissionFixture struct {
 	Permission    projectAssistantPermission
 	Checkpoint    projectAssistantCheckpoint
 	LLMRequests   *[]chatCompletionRequest
+}
+
+type chatCompletionRequest struct {
+	Messages   []chatMessage
+	Tools      []chatTool
+	ToolChoice string
+}
+
+type chatStreamingCall struct {
+	Index        int
+	ID           string
+	Type         string
+	ExtraContent map[string]any
+	Function     struct {
+		Name      string
+		Arguments string
+	}
+}
+
+type repositoryFlowEinoModelStep struct {
+	Message *einoschema.Message
+	Err     error
+	Inspect func([]*einoschema.Message)
+}
+
+type repositoryFlowEinoChatModel struct {
+	Steps  []repositoryFlowEinoModelStep
+	Inputs []chatCompletionRequest
+}
+
+func (m *repositoryFlowEinoChatModel) Generate(ctx context.Context, input []*einoschema.Message, opts ...einomodel.Option) (*einoschema.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	common := einomodel.GetCommonOptions(nil, opts...)
+	m.Inputs = append(m.Inputs, chatCompletionRequest{
+		Messages:   projectEinoMessagesToChat(input),
+		Tools:      projectTestChatTools(common.Tools),
+		ToolChoice: projectTestToolChoice(common.ToolChoice, len(common.Tools)),
+	})
+	ctx = callbacks.EnsureRunInfo(ctx, "repository-flow-test-model", components.ComponentOfChatModel)
+	ctx = callbacks.OnStart(ctx, &einomodel.CallbackInput{
+		Messages:   input,
+		Tools:      common.Tools,
+		ToolChoice: common.ToolChoice,
+	})
+
+	index := len(m.Inputs) - 1
+	step := repositoryFlowEinoModelStep{Message: einoschema.AssistantMessage("Done.", nil)}
+	if index < len(m.Steps) {
+		step = m.Steps[index]
+	}
+	if step.Inspect != nil {
+		step.Inspect(input)
+	}
+	if step.Err != nil {
+		callbacks.OnError(ctx, step.Err)
+		return nil, step.Err
+	}
+	if step.Message == nil {
+		step.Message = einoschema.AssistantMessage("", nil)
+	}
+	callbacks.OnEnd(ctx, &einomodel.CallbackOutput{Message: step.Message})
+	return step.Message, nil
+}
+
+func (m *repositoryFlowEinoChatModel) Stream(ctx context.Context, input []*einoschema.Message, opts ...einomodel.Option) (*einoschema.StreamReader[*einoschema.Message], error) {
+	msg, err := m.Generate(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return einoschema.StreamReaderFromArray([]*einoschema.Message{msg}), nil
+}
+
+func projectTestChatTools(infos []*einoschema.ToolInfo) []chatTool {
+	out := make([]chatTool, 0, len(infos))
+	for _, info := range infos {
+		if info == nil || strings.TrimSpace(info.Name) == "" {
+			continue
+		}
+		out = append(out, chatTool{
+			Type: "function",
+			Function: chatToolFunction{
+				Name:        strings.TrimSpace(info.Name),
+				Description: strings.TrimSpace(info.Desc),
+			},
+		})
+	}
+	return out
+}
+
+func projectTestToolChoice(choice *einoschema.ToolChoice, toolCount int) string {
+	if choice == nil {
+		if toolCount > 0 {
+			return "auto"
+		}
+		return ""
+	}
+	switch *choice {
+	case einoschema.ToolChoiceForbidden:
+		return "none"
+	case einoschema.ToolChoiceForced:
+		return "required"
+	case einoschema.ToolChoiceAllowed:
+		if toolCount > 0 {
+			return "auto"
+		}
+	}
+	return ""
+}
+
+func projectEinoToolCallFromStreamingForTest(call chatStreamingCall) einoschema.ToolCall {
+	index := call.Index
+	extra := map[string]any(nil)
+	if len(call.ExtraContent) > 0 {
+		extra = map[string]any{}
+		for key, value := range call.ExtraContent {
+			extra[key] = value
+		}
+	}
+	toolType := strings.TrimSpace(call.Type)
+	if toolType == "" {
+		toolType = "function"
+	}
+	return einoschema.ToolCall{
+		Index: &index,
+		ID:    call.ID,
+		Type:  toolType,
+		Function: einoschema.FunctionCall{
+			Name:      call.Function.Name,
+			Arguments: call.Function.Arguments,
+		},
+		Extra: extra,
+	}
+}
+
+func projectEinoToolCallsFromStreamingForTest(calls []chatStreamingCall) []einoschema.ToolCall {
+	out := make([]einoschema.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		out = append(out, projectEinoToolCallFromStreamingForTest(call))
+	}
+	return out
+}
+
+func setProjectAssistantModelForTest(server *Server, model einomodel.BaseChatModel) {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	server.assistantEngine = projectEinoAssistantEngine{
+		server: server,
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return model, nil
+		},
+		newTools: newProjectEinoAssistantToolsFactory(server),
+	}
 }
 
 func startEinoPermissionForTest(
@@ -776,32 +968,16 @@ func startEinoPermissionForTest(
 	calls ...chatStreamingCall,
 ) projectAssistantPermissionFixture {
 	t.Helper()
-	var llmRequests []chatCompletionRequest
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode LLM request: %v", err)
-		}
-		llmRequests = append(llmRequests, req)
-		w.Header().Set("Content-Type", "text/event-stream")
-		switch len(llmRequests) {
-		case 1:
-			writeProjectTestToolCallChunks(t, w, calls...)
-		default:
-			if strings.TrimSpace(finalContent) == "" {
-				finalContent = "Approval completed."
-			}
-			raw, err := json.Marshal(finalContent)
-			if err != nil {
-				t.Fatalf("encode final content: %v", err)
-			}
-			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%s}}]}\n\n", raw)
-			fmt.Fprint(w, "data: [DONE]\n\n")
-		}
-	}))
-	t.Cleanup(llm.Close)
+	if strings.TrimSpace(finalContent) == "" {
+		finalContent = "Approval completed."
+	}
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+		{Message: einoschema.AssistantMessage("", projectEinoToolCallsFromStreamingForTest(calls))},
+		{Message: einoschema.AssistantMessage(finalContent, nil)},
+	}}
+	setProjectAssistantModelForTest(server, model)
 
-	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: llm.URL, Model: "test-model", APIKey: "test-key"}
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
 	if strings.TrimSpace(prompt) == "" {
@@ -844,7 +1020,7 @@ func startEinoPermissionForTest(
 		PermissionErr: permissionErr,
 		Permission:    permission,
 		Checkpoint:    checkpoint,
-		LLMRequests:   &llmRequests,
+		LLMRequests:   &model.Inputs,
 	}
 }
 
@@ -922,12 +1098,15 @@ func TestResumeProjectAssistantRunApprovesPendingTool(t *testing.T) {
 	if _, ok := updatedMessage.Metadata[projectMessageMetadataStatus]; ok {
 		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMessage.Metadata)
 	}
-	updatedToolCalls := projectToolCallStreamEventsFromMetadata(updatedMessage.Metadata[projectMessageMetadataToolCalls])
-	if len(updatedToolCalls) != 1 || updatedToolCalls[0].Status != "succeeded" {
-		t.Fatalf("updated tool calls = %#v, want persisted succeeded action", updatedToolCalls)
+	if _, ok := updatedMessage.Metadata[projectMessageMetadataToolCalls]; ok {
+		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", updatedMessage.Metadata)
 	}
-	if updatedToolCalls[0].Permission != nil && updatedToolCalls[0].Permission.Input != nil {
-		t.Fatalf("persisted permission input = %#v, want redacted", updatedToolCalls[0].Permission.Input)
+	updatedActions := projectAssistantUIActionsFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActions])
+	if len(updatedActions) != 1 || updatedActions[0].Status != "succeeded" {
+		t.Fatalf("updated actions = %#v, want persisted succeeded action", updatedActions)
+	}
+	if interrupt := projectAssistantUIInterruptFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt != nil {
+		t.Fatalf("assistant interrupt = %#v, want cleared after approval", interrupt)
 	}
 }
 
@@ -1037,9 +1216,13 @@ func TestResumeProjectAssistantRunIgnoresMismatchedAssistantMessageID(t *testing
 	if otherMessage.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission {
 		t.Fatalf("other message metadata = %#v, want pending status unchanged", otherMessage.Metadata)
 	}
-	toolCalls := projectToolCallStreamEventsFromMetadata(otherMessage.Metadata[projectMessageMetadataToolCalls])
-	if len(toolCalls) != 1 || toolCalls[0].ID != "call-other" || toolCalls[0].Status != "permission_required" {
-		t.Fatalf("other message tool calls = %#v, want unrelated pending call unchanged", toolCalls)
+	actions := projectAssistantUIActionsFromMetadata(otherMessage.Metadata[projectMessageMetadataAssistantActions])
+	if len(actions) != 1 || actions[0].ID != "call-other" || actions[0].Status != "awaiting_approval" {
+		t.Fatalf("other message actions = %#v, want unrelated pending action unchanged", actions)
+	}
+	interrupt := projectAssistantUIInterruptFromMetadata(otherMessage.Metadata[projectMessageMetadataAssistantInterrupt])
+	if interrupt == nil || interrupt.Action == nil || interrupt.Action.RunID != "run-other" {
+		t.Fatalf("other message interrupt = %#v, want unrelated pending interrupt unchanged", interrupt)
 	}
 }
 
@@ -1097,101 +1280,204 @@ func TestResumeProjectAssistantRunDeniesPendingToolAndUpdatesMessage(t *testing.
 	if _, ok := updatedMessage.Metadata[projectMessageMetadataStatus]; ok {
 		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMessage.Metadata)
 	}
-	updatedToolCalls := projectToolCallStreamEventsFromMetadata(updatedMessage.Metadata[projectMessageMetadataToolCalls])
-	if len(updatedToolCalls) != 1 || updatedToolCalls[0].Status != "rejected" {
-		t.Fatalf("updated tool calls = %#v, want persisted rejected action", updatedToolCalls)
+	if _, ok := updatedMessage.Metadata[projectMessageMetadataToolCalls]; ok {
+		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", updatedMessage.Metadata)
 	}
-	if updatedToolCalls[0].Permission != nil && updatedToolCalls[0].Permission.Input != nil {
-		t.Fatalf("persisted permission input = %#v, want redacted", updatedToolCalls[0].Permission.Input)
+	updatedActions := projectAssistantUIActionsFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActions])
+	if len(updatedActions) != 1 || updatedActions[0].Status != "rejected" {
+		t.Fatalf("updated actions = %#v, want persisted rejected action", updatedActions)
+	}
+	if interrupt := projectAssistantUIInterruptFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt != nil {
+		t.Fatalf("assistant interrupt = %#v, want cleared after denial", interrupt)
 	}
 }
 
-func TestResumeProjectAssistantRunRejectsNonEinoCheckpointWithoutClaiming(t *testing.T) {
+func TestResumeProjectAssistantRunAnswersFollowUpAndUpdatesMessage(t *testing.T) {
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+		{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID:   "call-follow-up",
+			Type: "function",
+			Function: einoschema.FunctionCall{
+				Name:      projectToolAskFollowUp,
+				Arguments: `{"questions":["What audience should this app target?"]}`,
+			},
+		}})},
+		{Message: einoschema.AssistantMessage("Thanks, I can build that.", nil)},
+	}}
+	setProjectAssistantModelForTest(server, model)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
-	legacyState := projectAssistantCheckpointState{
-		ToolCalls: []chatToolCall{{
-			ID:   "call-write",
-			Type: "function",
-			Function: chatToolCallFunction{
-				Name:      projectToolWriteFile,
-				Arguments: `{"path":"src/App.tsx","content":"legacy\n"}`,
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "build an app"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	var followUp projectAssistantFollowUp
+	var checkpoint projectAssistantCheckpoint
+	_, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{
+			OnAssistantEvent: func(event projectAssistantEvent) {
+				switch event.Type {
+				case projectAssistantEventInputNeeded:
+					if event.FollowUp != nil {
+						followUp = *event.FollowUp
+					}
+				case projectAssistantEventCheckpointSaved:
+					if event.Checkpoint != nil {
+						checkpoint = *event.Checkpoint
+					}
+				}
 			},
-		}},
-		CurrentIndex: 0,
+		},
+	)
+	var inputErr *projectAssistantInputRequiredError
+	if !errors.As(err, &inputErr) {
+		t.Fatalf("generateProjectAssistantStream error = %v, want input required", err)
 	}
-	rawCheckpoint, err := json.Marshal(legacyState)
+	if inputErr.RunID == "" || inputErr.RequestID == "" || followUp.ID == "" || checkpoint.ID == "" {
+		t.Fatalf("input error=%#v followUp=%#v checkpoint=%#v, want resumable follow-up", inputErr, followUp, checkpoint)
+	}
+	assistantMessageID := "msg-assistant-follow-up"
+	if err := appendProjectAssistantMessage(context.Background(), messages, messageScope, assistantMessageID, "", projectAssistantMessageMetadata(projectMessageStatusPendingInput, []projectToolCallStreamEvent{{
+		ID:         followUp.ToolCallID,
+		Name:       projectToolAskFollowUp,
+		Status:     "input_required",
+		Summary:    followUp.Prompt,
+		FollowUp:   &followUp,
+		Checkpoint: &checkpoint,
+	}})); err != nil {
+		t.Fatalf("appendProjectAssistantMessage returned error: %v", err)
+	}
+	pendingMsg, err := server.findProjectMessage(context.Background(), messageScope, assistantMessageID)
 	if err != nil {
-		t.Fatalf("encode legacy checkpoint returned error: %v", err)
+		t.Fatalf("GetMessage returned error: %v", err)
 	}
-	run := store.AssistantRun{
-		ID:         "run-legacy",
-		Status:     store.AssistantRunStatusPendingPermission,
-		RequestID:  "perm-legacy",
-		Checkpoint: rawCheckpoint,
+	if got := projectAssistantUIInterruptFromMetadata(pendingMsg.Metadata[projectMessageMetadataAssistantInterrupt]); got == nil || got.Kind != "follow_up" || got.Status != "pending" {
+		t.Fatalf("pending interrupt = %#v, want pending follow-up", got)
 	}
-	if err := messages.SaveAssistantRun(context.Background(), messageScope, run); err != nil {
-		t.Fatalf("SaveAssistantRun returned error: %v", err)
+
+	resp, err := server.resumeProjectAssistantRunWithRepositoryAndClient(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
+		inputErr.RunID,
+		projectAssistantResumeRequest{
+			RequestID:          inputErr.RequestID,
+			Answer:             "Solo founders.",
+			AssistantMessageID: assistantMessageID,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resumeProjectAssistantRun returned error: %v", err)
+	}
+	if resp.Status != store.AssistantRunStatusCompleted || resp.AssistantMessage == nil || resp.AssistantMessage.Content != "Thanks, I can build that." {
+		t.Fatalf("resume response = %#v, want completed assistant continuation", resp)
+	}
+	updatedMsg, err := server.findProjectMessage(context.Background(), messageScope, assistantMessageID)
+	if err != nil {
+		t.Fatalf("GetMessage after resume returned error: %v", err)
+	}
+	if interrupt := projectAssistantUIInterruptFromMetadata(updatedMsg.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt != nil {
+		t.Fatalf("updated interrupt = %#v, want resolved follow-up removed", interrupt)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), messageScope, inputErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	if run.Status != store.AssistantRunStatusCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+}
+
+func TestResumeProjectAssistantRunRejectsEmptyFollowUpBeforeClaimingRun(t *testing.T) {
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+		{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID:   "call-follow-up",
+			Type: "function",
+			Function: einoschema.FunctionCall{
+				Name:      projectToolAskFollowUp,
+				Arguments: `{"questions":["What audience should this app target?"]}`,
+			},
+		}})},
+	}}
+	setProjectAssistantModelForTest(server, model)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "build an app"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	_, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	var inputErr *projectAssistantInputRequiredError
+	if !errors.As(err, &inputErr) {
+		t.Fatalf("generateProjectAssistantStream error = %v, want input required", err)
 	}
 
 	_, err = server.resumeProjectAssistantRunWithRepositoryAndClient(
 		context.Background(),
 		httptest.NewRequest(http.MethodPost, "/", nil),
 		id,
-		nil,
+		client,
 		project,
 		&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
-		run.ID,
-		projectAssistantResumeRequest{RequestID: run.RequestID, Decision: string(projectAssistantPermissionAllow)},
+		inputErr.RunID,
+		projectAssistantResumeRequest{
+			RequestID: inputErr.RequestID,
+			Answer:    "   ",
+		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "assistant checkpoint is not resumable") {
-		t.Fatalf("resumeProjectAssistantRun error = %v, want non-resumable checkpoint", err)
+	if err == nil || !strings.Contains(err.Error(), "answer is required") {
+		t.Fatalf("resumeProjectAssistantRun error = %v, want answer required", err)
 	}
-	got, err := messages.GetAssistantRun(context.Background(), messageScope, run.ID)
+	run, err := messages.GetAssistantRun(context.Background(), messageScope, inputErr.RunID)
 	if err != nil {
 		t.Fatalf("GetAssistantRun returned error: %v", err)
 	}
-	if got.Status != store.AssistantRunStatusPendingPermission {
-		t.Fatalf("run status = %q, want pending_permission after rejected legacy checkpoint", got.Status)
-	}
-	resp, err := server.abortProjectAssistantRun(context.Background(), id, project, run.ID)
-	if err != nil {
-		t.Fatalf("abortProjectAssistantRun returned error after rejected legacy checkpoint: %v", err)
-	}
-	if resp.Status != store.AssistantRunStatusAborted {
-		t.Fatalf("abort response = %#v, want aborted", resp)
+	if run.Status != store.AssistantRunStatusPendingInput {
+		t.Fatalf("run status = %q, want pending input", run.Status)
 	}
 }
 
 func TestResumeProjectAssistantRunCompletesRunWhenContinuationLLMFailsAfterTool(t *testing.T) {
-	var llmRequests []chatCompletionRequest
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode LLM request: %v", err)
-		}
-		llmRequests = append(llmRequests, req)
-		w.Header().Set("Content-Type", "text/event-stream")
-		switch len(llmRequests) {
-		case 1:
-			writeProjectTestToolCallChunk(t, w, "call-write", projectToolWriteFile, `{"path":"src/App.tsx","content":"approved\n"}`)
-		case 2:
-			fmt.Fprint(w, "data: {not-json}\n\n")
-		default:
-			t.Fatalf("unexpected LLM request count %d", len(llmRequests))
-		}
-	}))
-	defer llm.Close()
-
-	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: llm.URL, Model: "test-model", APIKey: "test-key"}
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messages := store.NewMemoryStore()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+		{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID:   "call-write",
+			Type: "function",
+			Function: einoschema.FunctionCall{
+				Name:      projectToolWriteFile,
+				Arguments: `{"path":"src/App.tsx","content":"approved\n"}`,
+			},
+		}})},
+		{Err: errors.New("continuation model failed")},
+	}}
+	setProjectAssistantModelForTest(server, model)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
@@ -1221,7 +1507,7 @@ func TestResumeProjectAssistantRunCompletesRunWhenContinuationLLMFailsAfterTool(
 		permissionErr.RunID,
 		projectAssistantResumeRequest{RequestID: permissionErr.RequestID, Decision: string(projectAssistantPermissionAllow)},
 	)
-	if err == nil || !strings.Contains(err.Error(), "decode stream chunk") {
+	if err == nil || !strings.Contains(err.Error(), "continuation model failed") {
 		t.Fatalf("resumeProjectAssistantRun error = %v, want continuation decode failure", err)
 	}
 	read, err := workspaces.ReadFile(context.Background(), projectWorkspaceScope(id, project.Name), workspace.ReadOptions{Path: "src/App.tsx"})
@@ -1243,26 +1529,87 @@ func TestResumeProjectAssistantRunCompletesRunWhenContinuationLLMFailsAfterTool(
 		t.Fatalf("audit = %#v, want one approval decision", audit)
 	}
 	decision := audit.Decisions[0]
-	if decision.Decision != projectAssistantPermissionAllow || decision.Actor != id.user || decision.ToolName != projectToolWriteFile || !strings.Contains(decision.Error, "decode stream chunk") {
+	if decision.Decision != projectAssistantPermissionAllow || decision.Actor != id.user || decision.ToolName != projectToolWriteFile || !strings.Contains(decision.Error, "continuation model failed") {
 		t.Fatalf("audit decision = %#v, want approved write with continuation failure", decision)
 	}
 }
 
 func TestAbortProjectAssistantRunMarksPendingRunAborted(t *testing.T) {
+	for _, status := range []store.AssistantRunStatus{
+		store.AssistantRunStatusPendingPermission,
+		store.AssistantRunStatusPendingInput,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			messages := store.NewMemoryStore()
+			server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+			project := projectWithRepository("demo-repo", "demo", "github")
+			project.Name = "demo"
+			id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+			messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+			run := store.AssistantRun{
+				ID:         "run-1",
+				Status:     status,
+				RequestID:  "req-1",
+				Checkpoint: json.RawMessage(`{"toolCall":{"id":"call-1"}}`),
+			}
+			if err := messages.SaveAssistantRun(context.Background(), messageScope, run); err != nil {
+				t.Fatalf("SaveAssistantRun returned error: %v", err)
+			}
+
+			resp, err := server.abortProjectAssistantRun(context.Background(), id, project, "run-1")
+			if err != nil {
+				t.Fatalf("abortProjectAssistantRun returned error: %v", err)
+			}
+			if resp.Status != store.AssistantRunStatusAborted {
+				t.Fatalf("abort response = %#v, want aborted", resp)
+			}
+			got, err := messages.GetAssistantRun(context.Background(), messageScope, "run-1")
+			if err != nil {
+				t.Fatalf("GetAssistantRun returned error: %v", err)
+			}
+			if got.Status != store.AssistantRunStatusAborted {
+				t.Fatalf("run status = %q, want aborted", got.Status)
+			}
+			audit := decodeProjectAssistantRunAudit(t, got.Audit)
+			if len(audit.Decisions) != 1 || audit.Decisions[0].Decision != projectAssistantPermissionDeny || audit.Decisions[0].Error != "aborted by user" {
+				t.Fatalf("audit = %#v, want abort decision", audit)
+			}
+		})
+	}
+}
+
+func TestAbortProjectAssistantRunClearsPendingAssistantMessageMetadata(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
 	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	permission := projectAssistantPermission{
+		ID:       "req-1",
+		ToolName: projectToolWriteFile,
+		Reason:   "Write src/App.tsx",
+	}
+	checkpoint := projectAssistantCheckpoint{ID: "run-1", Reason: "waiting_for_permission"}
 	run := store.AssistantRun{
 		ID:         "run-1",
 		Status:     store.AssistantRunStatusPendingPermission,
-		RequestID:  "perm-1",
+		RequestID:  "req-1",
 		Checkpoint: json.RawMessage(`{"toolCall":{"id":"call-1"}}`),
 	}
 	if err := messages.SaveAssistantRun(context.Background(), messageScope, run); err != nil {
 		t.Fatalf("SaveAssistantRun returned error: %v", err)
+	}
+	assistantMessageID := "msg-pending-abort"
+	if err := appendProjectAssistantMessage(context.Background(), messages, messageScope, assistantMessageID, "", projectAssistantMessageMetadata(projectMessageStatusPendingPermission, []projectToolCallStreamEvent{{
+		ID:         "call-1",
+		Name:       projectToolWriteFile,
+		Status:     "permission_required",
+		Summary:    permission.Reason,
+		Permission: &permission,
+		Checkpoint: &checkpoint,
+	}})); err != nil {
+		t.Fatalf("appendProjectAssistantMessage returned error: %v", err)
 	}
 
 	resp, err := server.abortProjectAssistantRun(context.Background(), id, project, "run-1")
@@ -1272,16 +1619,15 @@ func TestAbortProjectAssistantRunMarksPendingRunAborted(t *testing.T) {
 	if resp.Status != store.AssistantRunStatusAborted {
 		t.Fatalf("abort response = %#v, want aborted", resp)
 	}
-	got, err := messages.GetAssistantRun(context.Background(), messageScope, "run-1")
+	updatedMessage, err := server.findProjectMessage(context.Background(), messageScope, assistantMessageID)
 	if err != nil {
-		t.Fatalf("GetAssistantRun returned error: %v", err)
+		t.Fatalf("findProjectMessage returned error: %v", err)
 	}
-	if got.Status != store.AssistantRunStatusAborted {
-		t.Fatalf("run status = %q, want aborted", got.Status)
+	if _, ok := updatedMessage.Metadata[projectMessageMetadataStatus]; ok {
+		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMessage.Metadata)
 	}
-	audit := decodeProjectAssistantRunAudit(t, got.Audit)
-	if len(audit.Decisions) != 1 || audit.Decisions[0].Decision != projectAssistantPermissionDeny || audit.Decisions[0].Error != "aborted by user" {
-		t.Fatalf("audit = %#v, want abort decision", audit)
+	if interrupt := projectAssistantUIInterruptFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt != nil {
+		t.Fatalf("assistant interrupt = %#v, want cleared after abort", interrupt)
 	}
 }
 
@@ -1381,6 +1727,121 @@ func TestResumeProjectAssistantRunClaimsBeforeCommitSideEffects(t *testing.T) {
 	}
 }
 
+func TestResumeProjectAssistantRunPersistsAssistantTextBeforeNextPause(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		staleID   bool
+		wantFresh bool
+	}{
+		{name: "valid assistant message", staleID: false, wantFresh: false},
+		{name: "stale assistant message", staleID: true, wantFresh: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			messages := store.NewMemoryStore()
+			workspaces := workspace.NewFileStore(t.TempDir())
+			server := NewWithWorkspace(nil, messages, workspaces, "", false)
+			project := projectWithRepository("demo-repo", "demo", "github")
+			project.Name = "demo"
+			id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+			messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+			firstCall := chatStreamingCall{Index: 0, ID: "call-first-write", Type: "function"}
+			firstCall.Function.Name = projectToolWriteFile
+			firstCall.Function.Arguments = `{"path":"src/App.tsx","content":"first\n"}`
+			secondCall := chatStreamingCall{Index: 0, ID: "call-second-write", Type: "function"}
+			secondCall.Function.Name = projectToolWriteFile
+			secondCall.Function.Arguments = `{"path":"src/Other.tsx","content":"second\n"}`
+			model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+				{Message: einoschema.AssistantMessage("", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{firstCall}))},
+				{Message: einoschema.AssistantMessage("First change applied. ", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{secondCall}))},
+			}}
+			setProjectAssistantModelForTest(server, model)
+			settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+			client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+			if err := appendProjectUserMessage(context.Background(), messages, messageScope, "write files"); err != nil {
+				t.Fatalf("appendProjectUserMessage returned error: %v", err)
+			}
+			var firstPermission projectAssistantPermission
+			var firstCheckpoint projectAssistantCheckpoint
+			_, err := server.generateProjectAssistantStream(
+				httptest.NewRequest(http.MethodPost, "/", nil),
+				id,
+				client,
+				project,
+				projectAssistantStreamCallbacks{
+					OnAssistantEvent: func(event projectAssistantEvent) {
+						switch event.Type {
+						case projectAssistantEventPermissionNeeded:
+							if event.Permission != nil {
+								firstPermission = *event.Permission
+							}
+						case projectAssistantEventCheckpointSaved:
+							if event.Checkpoint != nil {
+								firstCheckpoint = *event.Checkpoint
+							}
+						}
+					},
+				},
+			)
+			var permissionErr *projectAssistantPermissionRequiredError
+			if !errors.As(err, &permissionErr) {
+				t.Fatalf("generateProjectAssistantStream error = %v, want permission required", err)
+			}
+			assistantMessageID := "msg-assistant-two-step"
+			if err := appendProjectAssistantMessage(context.Background(), messages, messageScope, assistantMessageID, "", projectAssistantMessageMetadata(projectMessageStatusPendingPermission, []projectToolCallStreamEvent{{
+				ID:         firstCall.ID,
+				Name:       firstCall.Function.Name,
+				Status:     "permission_required",
+				Summary:    firstPermission.Reason,
+				Permission: &firstPermission,
+				Checkpoint: &firstCheckpoint,
+			}})); err != nil {
+				t.Fatalf("appendProjectAssistantMessage returned error: %v", err)
+			}
+			resumeAssistantMessageID := assistantMessageID
+			if tt.staleID {
+				resumeAssistantMessageID = "missing-assistant-message"
+			}
+
+			resp, err := server.resumeProjectAssistantRunWithRepositoryAndClient(
+				context.Background(),
+				httptest.NewRequest(http.MethodPost, "/", nil),
+				id,
+				client,
+				project,
+				&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
+				permissionErr.RunID,
+				projectAssistantResumeRequest{
+					RequestID:          permissionErr.RequestID,
+					Decision:           string(projectAssistantPermissionAllow),
+					AssistantMessageID: resumeAssistantMessageID,
+				},
+			)
+			if err != nil {
+				t.Fatalf("resumeProjectAssistantRun returned error: %v", err)
+			}
+			if resp.Status != store.AssistantRunStatusPendingPermission || resp.AssistantMessage == nil || resp.AssistantMessage.Content != "First change applied. " {
+				t.Fatalf("resume response = %#v, want pending permission with preserved assistant text", resp)
+			}
+			updatedMessage, err := server.findProjectMessage(context.Background(), messageScope, resp.AssistantMessage.ID)
+			if err != nil {
+				t.Fatalf("findProjectMessage returned error: %v", err)
+			}
+			if updatedMessage.Content != "First change applied. " {
+				t.Fatalf("assistant content = %q, want preserved resumed text", updatedMessage.Content)
+			}
+			if tt.wantFresh && updatedMessage.ID == assistantMessageID {
+				t.Fatalf("assistant message id = %q, want fresh message for stale resume id", updatedMessage.ID)
+			}
+			if !tt.wantFresh && updatedMessage.ID != assistantMessageID {
+				t.Fatalf("assistant message id = %q, want existing message %q", updatedMessage.ID, assistantMessageID)
+			}
+			if interrupt := projectAssistantUIInterruptFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt == nil || interrupt.Status != "pending" || interrupt.Action == nil || interrupt.Action.RunID != resp.RunID {
+				t.Fatalf("assistant interrupt = %#v, want pending next approval", interrupt)
+			}
+		})
+	}
+}
+
 func TestResumeProjectAssistantRunRejectsStaleRepositoryBinding(t *testing.T) {
 	var sawCommit bool
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1472,40 +1933,18 @@ func TestResumeProjectAssistantRunRejectsStaleRepositoryBinding(t *testing.T) {
 	if _, ok := updatedMessage.Metadata[projectMessageMetadataStatus]; ok {
 		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMessage.Metadata)
 	}
-	updatedToolCalls := projectToolCallStreamEventsFromMetadata(updatedMessage.Metadata[projectMessageMetadataToolCalls])
-	if len(updatedToolCalls) != 1 || updatedToolCalls[0].Status != "failed" || !strings.Contains(updatedToolCalls[0].Error, "repository binding changed") {
-		t.Fatalf("updated tool calls = %#v, want failed stale binding action", updatedToolCalls)
+	if _, ok := updatedMessage.Metadata[projectMessageMetadataToolCalls]; ok {
+		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", updatedMessage.Metadata)
 	}
+	updatedActions := projectAssistantUIActionsFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActions])
+	if len(updatedActions) != 1 || updatedActions[0].Status != "failed" {
+		t.Fatalf("updated actions = %#v, want failed stale binding action", updatedActions)
+	}
+	assertProjectAssistantMetadataDoesNotContain(t, updatedMessage.Metadata, "repository binding changed")
 }
 
 func TestResumeProjectAssistantRunPreemptsToolBatchAfterApprovedPermission(t *testing.T) {
-	var llmRequests []chatCompletionRequest
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode LLM request: %v", err)
-		}
-		llmRequests = append(llmRequests, req)
-		w.Header().Set("Content-Type", "text/event-stream")
-		callOne := chatStreamingCall{Index: 0, ID: "call-one", Type: "function"}
-		callOne.Function.Name = "write_file"
-		callOne.Function.Arguments = `{"path":"one.txt","content":"one\n"}`
-		callTwo := chatStreamingCall{Index: 1, ID: "call-two", Type: "function"}
-		callTwo.Function.Name = "write_file"
-		callTwo.Function.Arguments = `{"path":"two.txt","content":"two\n"}`
-		switch len(llmRequests) {
-		case 1:
-			writeProjectTestToolCallChunks(t, w, callOne, callTwo)
-		case 2:
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"First approval completed.\"}}]}\n\n")
-			fmt.Fprint(w, "data: [DONE]\n\n")
-		default:
-			t.Fatalf("unexpected LLM request count %d", len(llmRequests))
-		}
-	}))
-	defer llm.Close()
-
-	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: llm.URL, Model: "test-model", APIKey: "test-key"}
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messages := store.NewMemoryStore()
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
@@ -1515,6 +1954,27 @@ func TestResumeProjectAssistantRunPreemptsToolBatchAfterApprovedPermission(t *te
 	}
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	setProjectAssistantModelForTest(server, &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+		{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{
+			{
+				ID:   "call-one",
+				Type: "function",
+				Function: einoschema.FunctionCall{
+					Name:      projectToolWriteFile,
+					Arguments: `{"path":"one.txt","content":"one\n"}`,
+				},
+			},
+			{
+				ID:   "call-two",
+				Type: "function",
+				Function: einoschema.FunctionCall{
+					Name:      projectToolWriteFile,
+					Arguments: `{"path":"two.txt","content":"two\n"}`,
+				},
+			},
+		})},
+		{Message: einoschema.AssistantMessage("First approval completed.", nil)},
+	}})
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 
@@ -1562,39 +2022,7 @@ func TestResumeProjectAssistantRunPreemptsToolBatchAfterApprovedPermission(t *te
 }
 
 func TestResumeProjectAssistantRunContinuesLLMAfterApprovedPermission(t *testing.T) {
-	var llmRequests []chatCompletionRequest
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode LLM request: %v", err)
-		}
-		llmRequests = append(llmRequests, req)
-		w.Header().Set("Content-Type", "text/event-stream")
-		switch len(llmRequests) {
-		case 1:
-			writeProjectTestToolCallChunk(t, w, "call-write", "write_file", `{"path":"src/App.tsx","content":"approved\n"}`)
-		case 2:
-			var sawAssistantCall, sawToolResult bool
-			for _, msg := range req.Messages {
-				if msg.Role == aiv1alpha1.ProjectMessageRoleAssistant && len(msg.ToolCalls) == 1 && msg.ToolCalls[0].ID == "call-write" {
-					sawAssistantCall = true
-				}
-				if msg.Role == "tool" && msg.ToolCallID == "call-write" && strings.Contains(msg.Content, "src/App.tsx") {
-					sawToolResult = true
-				}
-			}
-			if !sawAssistantCall || !sawToolResult {
-				t.Fatalf("resume LLM messages = %#v, want approved tool call and result context", req.Messages)
-			}
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"I wrote src/App.tsx after approval.\"}}]}\n\n")
-			fmt.Fprint(w, "data: [DONE]\n\n")
-		default:
-			t.Fatalf("unexpected LLM request count %d", len(llmRequests))
-		}
-	}))
-	defer llm.Close()
-
-	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: llm.URL, Model: "test-model", APIKey: "test-key"}
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messages := store.NewMemoryStore()
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
@@ -1604,6 +2032,35 @@ func TestResumeProjectAssistantRunContinuesLLMAfterApprovedPermission(t *testing
 	}
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+		{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID:   "call-write",
+			Type: "function",
+			Function: einoschema.FunctionCall{
+				Name:      projectToolWriteFile,
+				Arguments: `{"path":"src/App.tsx","content":"approved\n"}`,
+			},
+		}})},
+		{
+			Message: einoschema.AssistantMessage("I wrote src/App.tsx after approval.", nil),
+			Inspect: func(input []*einoschema.Message) {
+				messages := projectEinoMessagesToChat(input)
+				var sawAssistantCall, sawToolResult bool
+				for _, msg := range messages {
+					if msg.Role == aiv1alpha1.ProjectMessageRoleAssistant && len(msg.ToolCalls) == 1 && msg.ToolCalls[0].ID == "call-write" {
+						sawAssistantCall = true
+					}
+					if msg.Role == "tool" && msg.ToolCallID == "call-write" && strings.Contains(msg.Content, "src/App.tsx") {
+						sawToolResult = true
+					}
+				}
+				if !sawAssistantCall || !sawToolResult {
+					t.Fatalf("resume Eino messages = %#v, want approved tool call and result context", messages)
+				}
+			},
+		},
+	}}
+	setProjectAssistantModelForTest(server, model)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 
@@ -1659,8 +2116,8 @@ func TestResumeProjectAssistantRunContinuesLLMAfterApprovedPermission(t *testing
 	if resp.AssistantMessage == nil || resp.AssistantMessage.Content != "I wrote src/App.tsx after approval." {
 		t.Fatalf("assistant message = %#v, want continuation response", resp.AssistantMessage)
 	}
-	if len(llmRequests) != 2 {
-		t.Fatalf("LLM request count = %d, want initial request plus resumed continuation", len(llmRequests))
+	if len(model.Inputs) != 2 {
+		t.Fatalf("Eino model request count = %d, want initial request plus resumed continuation", len(model.Inputs))
 	}
 	read, err := workspaces.ReadFile(context.Background(), projectWorkspaceScope(id, project.Name), workspace.ReadOptions{Path: "src/App.tsx"})
 	if err != nil {
@@ -1694,32 +2151,23 @@ func TestProjectAssistantWorkflowUsesRepositoryContext(t *testing.T) {
 	project.Spec.Memory.Requirements = []string{"Keep the implementation small."}
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	workspaceScope := projectWorkspaceScope(id, project.Name)
-	messagesOut, err := server.resolveProjectToolCalls(
+	resp, err := server.callProjectLocalTool(
 		context.Background(),
 		id,
 		project,
 		&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
 		workspaceScope,
 		projectLinkedRepositoryRef(project),
-		[]chatToolCall{{
-			ID:   "call-plan",
-			Type: "function",
-			Function: chatToolCallFunction{
-				Name:      projectToolPlanProjectChanges,
-				Arguments: `{"includeFiles":false}`,
-			},
-		}},
+		"",
 		httptest.NewRequest(http.MethodPost, "/", nil),
-		nil,
+		projectToolPlanProjectChanges,
+		map[string]any{"includeFiles": false},
 	)
 	if err != nil {
-		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
-	}
-	if len(messagesOut) != 1 || messagesOut[0].Name != projectToolPlanProjectChanges {
-		t.Fatalf("tool messages = %#v, want planning workflow result", messagesOut)
+		t.Fatalf("callProjectLocalTool returned error: %v", err)
 	}
 	var plan projectAssistantWorkflowPlan
-	if err := json.Unmarshal([]byte(messagesOut[0].Content), &plan); err != nil {
+	if err := json.Unmarshal([]byte(resp), &plan); err != nil {
 		t.Fatalf("decode planning workflow result: %v", err)
 	}
 	if plan.Repository == nil || plan.Repository.Ref != "demo-repo" || plan.Repository.Status != projectRepositoryStatusReady {
@@ -1731,55 +2179,56 @@ func TestProjectAssistantWorkflowUsesRepositoryContext(t *testing.T) {
 	}
 }
 
-func TestGenerateProjectAssistantStreamFallsBackAfterRepeatedToolLoop(t *testing.T) {
-	reply, requests, err := runRepeatedReadFileAssistantStream(t, nil)
+func TestGenerateProjectAssistantStreamSynthesizesFinalAnswerAfterRepeatedToolLoop(t *testing.T) {
+	reply, requests, err := runRepeatedReadFileAssistantStream(t, "I inspected src/App.tsx and can continue from the profile page context.")
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
 	}
-	if !strings.Contains(reply, "repeated the same action") || !strings.Contains(reply, "read_project_file") || !strings.Contains(reply, "src/App.tsx") {
-		t.Fatalf("reply = %q, want repeated action fallback", reply)
+	if reply != "I inspected src/App.tsx and can continue from the profile page context." {
+		t.Fatalf("reply = %q, want synthesized final answer", reply)
 	}
-	if len(requests) != maxAssistantToolTurns {
-		t.Fatalf("LLM request count = %d, want %d", len(requests), maxAssistantToolTurns)
+	if strings.Contains(reply, "repeated the same action") || strings.Contains(reply, "Last action result") {
+		t.Fatalf("reply = %q, should not expose internal loop fallback", reply)
 	}
-	if len(requests[len(requests)-1].Tools) == 0 || requests[len(requests)-1].ToolChoice != "auto" {
-		t.Fatalf("last Eino model request tools: tools=%d tool_choice=%q, want Eino-managed tools", len(requests[len(requests)-1].Tools), requests[len(requests)-1].ToolChoice)
+	if len(requests) != maxAssistantToolTurns+1 {
+		t.Fatalf("LLM request count = %d, want %d", len(requests), maxAssistantToolTurns+1)
+	}
+	finalRequest := requests[len(requests)-1]
+	if len(finalRequest.Tools) != 0 || finalRequest.ToolChoice != "none" {
+		t.Fatalf("final Eino model request tools: tools=%d tool_choice=%q, want no-tool final answer request", len(finalRequest.Tools), finalRequest.ToolChoice)
 	}
 }
 
-func TestGenerateProjectAssistantStreamNoLongerRequestsFinalNoToolResponse(t *testing.T) {
-	reply, requests, err := runRepeatedReadFileAssistantStream(t, func(w http.ResponseWriter) {
-		t.Fatal("Eino assistant should not make the legacy final no-tool model request")
-	})
+func TestGenerateProjectAssistantStreamFallsBackWhenFinalNoToolAnswerIsEmpty(t *testing.T) {
+	reply, requests, err := runRepeatedReadFileAssistantStream(t, "")
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
 	}
-	if !strings.Contains(reply, "repeated the same action") || !strings.Contains(reply, "read_project_file") || !strings.Contains(reply, "src/App.tsx") {
-		t.Fatalf("reply = %q, want repeated action fallback", reply)
+	if strings.Contains(reply, "repeated the same action") || strings.Contains(reply, "Last action result") {
+		t.Fatalf("reply = %q, should not expose internal loop fallback", reply)
 	}
-	if len(requests) != maxAssistantToolTurns {
-		t.Fatalf("LLM request count = %d, want %d", len(requests), maxAssistantToolTurns)
+	if !strings.Contains(reply, "I inspected") || !strings.Contains(reply, "src/App.tsx") {
+		t.Fatalf("reply = %q, want user-facing fallback from tool result", reply)
 	}
-	if len(requests[len(requests)-1].Tools) == 0 || requests[len(requests)-1].ToolChoice != "auto" {
-		t.Fatalf("last Eino model request tools: tools=%d tool_choice=%q, want Eino-managed tools", len(requests[len(requests)-1].Tools), requests[len(requests)-1].ToolChoice)
+	if len(requests) != maxAssistantToolTurns+1 {
+		t.Fatalf("LLM request count = %d, want %d", len(requests), maxAssistantToolTurns+1)
 	}
 }
 
 func TestGenerateProjectAssistantStreamFallsBackWhenFinalToolLimitResponseHasOnlyToolCalls(t *testing.T) {
-	reply, requests, err := runUniqueReadFileAssistantStream(t, func(w http.ResponseWriter) {
-		writeProjectTestToolCallChunk(t, w, "call-final", "read_project_file", `{"path":"src/final.tsx"}`)
-	})
+	reply, requests, err := runUniqueReadFileAssistantStream(t, "I inspected the requested files and can continue from the latest one.")
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
 	}
-	if !strings.Contains(reply, "per-turn action limit") || !strings.Contains(reply, "read_project_file") || !strings.Contains(reply, fmt.Sprintf("src/file-%d.tsx", maxAssistantToolTurns)) {
-		t.Fatalf("reply = %q, want tool-limit fallback", reply)
+	if reply != "I inspected the requested files and can continue from the latest one." {
+		t.Fatalf("reply = %q, want synthesized final answer", reply)
 	}
-	if len(requests) != maxAssistantToolTurns {
-		t.Fatalf("LLM request count = %d, want %d", len(requests), maxAssistantToolTurns)
+	if len(requests) != maxAssistantToolTurns+1 {
+		t.Fatalf("LLM request count = %d, want %d", len(requests), maxAssistantToolTurns+1)
 	}
-	if len(requests[len(requests)-1].Tools) == 0 || requests[len(requests)-1].ToolChoice != "auto" {
-		t.Fatalf("last Eino model request tools: tools=%d tool_choice=%q, want Eino-managed tools", len(requests[len(requests)-1].Tools), requests[len(requests)-1].ToolChoice)
+	finalRequest := requests[len(requests)-1]
+	if len(finalRequest.Tools) != 0 || finalRequest.ToolChoice != "none" {
+		t.Fatalf("final Eino model request tools: tools=%d tool_choice=%q, want no-tool final answer request", len(finalRequest.Tools), finalRequest.ToolChoice)
 	}
 }
 
@@ -1812,23 +2261,6 @@ func TestProjectPromptMessagesCollapsesConsecutiveDuplicateUserMessages(t *testi
 }
 
 func TestGenerateProjectAssistantStreamRequestsPermissionForCommitProjectFiles(t *testing.T) {
-	var llmRequests []chatCompletionRequest
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode LLM request: %v", err)
-		}
-		llmRequests = append(llmRequests, req)
-		w.Header().Set("Content-Type", "text/event-stream")
-		switch len(llmRequests) {
-		case 1:
-			writeProjectTestToolCallChunk(t, w, "call-commit", "commit_project_files", `{"repositoryRef":"demo-repo","paths":["index.html"],"message":"Initial app"}`)
-		default:
-			t.Fatalf("unexpected LLM request after commit handoff: tools=%d tool_choice=%q", len(req.Tools), req.ToolChoice)
-		}
-	}))
-	defer llm.Close()
-
 	var commitCalls int
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope struct {
@@ -1856,7 +2288,17 @@ func TestGenerateProjectAssistantStreamRequestsPermissionForCommitProjectFiles(t
 	}))
 	defer mcp.Close()
 
-	_, requests, err := runProjectAssistantStreamWithLLMAndHub(t, llm.URL, mcp.URL, &llmRequests)
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID:   "call-commit",
+			Type: "function",
+			Function: einoschema.FunctionCall{
+				Name:      projectToolCommitProjectFiles,
+				Arguments: `{"repositoryRef":"demo-repo","paths":["index.html"],"message":"Initial app"}`,
+			},
+		}}),
+	}}}
+	_, requests, err := runProjectAssistantStreamWithModel(t, model, mcp.URL)
 	var permissionErr *projectAssistantPermissionRequiredError
 	if !errors.As(err, &permissionErr) {
 		t.Fatalf("generateProjectAssistantStream error = %v, want permission required", err)
@@ -1872,8 +2314,7 @@ func TestGenerateProjectAssistantStreamRequestsPermissionForCommitProjectFiles(t
 	}
 }
 
-func TestResolveProjectToolCallsReportsCommitProjectFilesFailure(t *testing.T) {
-	var llmRequests []chatCompletionRequest
+func TestCommitProjectWorkspaceFilesReportsProviderFailure(t *testing.T) {
 	var commitCalls int
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope struct {
@@ -1886,18 +2327,14 @@ func TestResolveProjectToolCallsReportsCommitProjectFilesFailure(t *testing.T) {
 			t.Fatalf("decode MCP request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		switch envelope.Method {
-		case "tools/list":
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"commit files"}]}}`)
-		case "tools/call":
-			commitCalls++
-			if envelope.Params.Name != "code__commit_files" {
-				t.Fatalf("unexpected MCP tool call: %#v", envelope)
-			}
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"RepositoryCommit failed: bundle not found"}]}}`)
-		default:
+		if envelope.Method != "tools/call" {
 			t.Fatalf("unexpected MCP request method %q", envelope.Method)
 		}
+		commitCalls++
+		if envelope.Params.Name != "code__commit_files" {
+			t.Fatalf("unexpected MCP tool call: %#v", envelope)
+		}
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"RepositoryCommit failed: bundle not found"}]}}`)
 	}))
 	defer mcp.Close()
 
@@ -1907,39 +2344,24 @@ func TestResolveProjectToolCallsReportsCommitProjectFilesFailure(t *testing.T) {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
-	messages, err := server.resolveProjectToolCalls(
+	_, err := server.commitProjectWorkspaceFiles(
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
-		nil,
-		nil,
 		scope,
 		"demo-repo",
-		[]chatToolCall{{
-			ID:   "call-commit",
-			Type: "function",
-			Function: chatToolCallFunction{
-				Name:      "commit_project_files",
-				Arguments: `{"repositoryRef":"demo-repo","paths":["index.html"],"message":"Initial app"}`,
-			},
-		}},
+		mcp.URL,
 		httptest.NewRequest(http.MethodPost, "/", nil),
-		nil,
+		map[string]any{"repositoryRef": "demo-repo", "paths": []any{"index.html"}, "message": "Initial app"},
 	)
-	if err != nil {
-		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
-	}
-	if len(messages) != 1 || !strings.Contains(messages[0].Content, "bundle not found") {
-		t.Fatalf("tool messages = %#v, want commit failure", messages)
+	if err == nil || !strings.Contains(err.Error(), "bundle not found") {
+		t.Fatalf("commitProjectWorkspaceFiles error = %v, want commit failure", err)
 	}
 	if commitCalls != 1 {
 		t.Fatalf("commit call count = %d, want 1", commitCalls)
 	}
-	if len(llmRequests) != 0 {
-		t.Fatalf("LLM request count = %d, want none for executor test", len(llmRequests))
-	}
 }
 
-func TestResolveProjectToolCallsRejectsCommitProjectFilesRepositoryMismatch(t *testing.T) {
+func TestCommitProjectWorkspaceFilesRejectsRepositoryMismatch(t *testing.T) {
 	var sawCommit bool
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope struct {
@@ -1970,32 +2392,20 @@ func TestResolveProjectToolCallsRejectsCommitProjectFilesRepositoryMismatch(t *t
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
-	messages, err := server.resolveProjectToolCalls(
+	_, err := server.commitProjectWorkspaceFiles(
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
-		nil,
-		nil,
 		scope,
 		"demo-repo",
-		[]chatToolCall{{
-			ID:   "call-commit",
-			Type: "function",
-			Function: chatToolCallFunction{
-				Name:      "commit_project_files",
-				Arguments: `{"repositoryRef":"other-repo","paths":["index.html"],"message":"Initial app"}`,
-			},
-		}},
+		mcp.URL,
 		httptest.NewRequest(http.MethodPost, "/", nil),
-		nil,
+		map[string]any{"repositoryRef": "other-repo", "paths": []any{"index.html"}, "message": "Initial app"},
 	)
-	if err != nil {
-		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
-	}
 	if sawCommit {
 		t.Fatal("commit_project_files reached provider-code for a repository outside the Project binding")
 	}
-	if len(messages) != 1 || !strings.Contains(messages[0].Content, "does not match this Project") {
-		t.Fatalf("tool messages = %#v, want deterministic repository mismatch failure", messages)
+	if err == nil || !strings.Contains(err.Error(), "does not match this Project") {
+		t.Fatalf("commitProjectWorkspaceFiles error = %v, want deterministic repository mismatch failure", err)
 	}
 }
 
@@ -2033,90 +2443,48 @@ func TestProjectAssistantUnstreamedContentAppendsDistinctFinalReply(t *testing.T
 	}
 }
 
-func runRepeatedReadFileAssistantStream(t *testing.T, finalNoToolResponse func(http.ResponseWriter)) (string, []chatCompletionRequest, error) {
+func runRepeatedReadFileAssistantStream(t *testing.T, finalAnswer string) (string, []chatCompletionRequest, error) {
 	t.Helper()
-
-	var requests []chatCompletionRequest
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode LLM request: %v", err)
-		}
-		requests = append(requests, req)
-		w.Header().Set("Content-Type", "text/event-stream")
-		if len(requests) > 2 && len(req.Tools) == 0 && finalNoToolResponse != nil {
-			finalNoToolResponse(w)
-			return
-		}
-		callID := fmt.Sprintf("call-%d", len(requests))
-		writeProjectTestToolCallChunk(t, w, callID, "read_project_file", `{"path":"src/App.tsx"}`)
-	}))
-	defer llm.Close()
-
-	return runProjectAssistantStreamWithLLM(t, llm.URL, &requests)
-}
-
-func runUniqueReadFileAssistantStream(t *testing.T, finalNoToolResponse func(http.ResponseWriter)) (string, []chatCompletionRequest, error) {
-	t.Helper()
-
-	var requests []chatCompletionRequest
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode LLM request: %v", err)
-		}
-		requests = append(requests, req)
-		w.Header().Set("Content-Type", "text/event-stream")
-		if len(req.Tools) == 0 && finalNoToolResponse != nil {
-			finalNoToolResponse(w)
-			return
-		}
-		n := len(requests)
-		writeProjectTestToolCallChunk(t, w, fmt.Sprintf("call-%d", n), "read_project_file", fmt.Sprintf(`{"path":"src/file-%d.tsx"}`, n))
-	}))
-	defer llm.Close()
-
-	return runProjectAssistantStreamWithLLM(t, llm.URL, &requests)
-}
-
-func writeProjectTestToolCallChunk(t *testing.T, w http.ResponseWriter, id, name, arguments string) {
-	t.Helper()
-
-	call := chatStreamingCall{
-		Index: 0,
-		ID:    id,
-		Type:  "function",
+	steps := make([]repositoryFlowEinoModelStep, 0, maxAssistantToolTurns+1)
+	for i := 1; i <= maxAssistantToolTurns; i++ {
+		steps = append(steps, repositoryFlowEinoModelStep{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID:   fmt.Sprintf("call-%d", i),
+			Type: "function",
+			Function: einoschema.FunctionCall{
+				Name:      projectToolReadProjectFile,
+				Arguments: `{"path":"src/App.tsx"}`,
+			},
+		}})})
 	}
-	call.Function.Name = name
-	call.Function.Arguments = arguments
-	writeProjectTestToolCallChunks(t, w, call)
+	steps = append(steps, repositoryFlowEinoModelStep{Message: einoschema.AssistantMessage(finalAnswer, nil)})
+	model := &repositoryFlowEinoChatModel{Steps: steps}
+	return runProjectAssistantStreamWithModel(t, model, "")
 }
 
-func writeProjectTestToolCallChunks(t *testing.T, w http.ResponseWriter, calls ...chatStreamingCall) {
+func runUniqueReadFileAssistantStream(t *testing.T, finalAnswer string) (string, []chatCompletionRequest, error) {
 	t.Helper()
-
-	chunk := chatCompletionStreamResponse{
-		Choices: []chatCompletionStreamChoice{{}},
+	steps := make([]repositoryFlowEinoModelStep, 0, maxAssistantToolTurns+1)
+	for i := 1; i <= maxAssistantToolTurns; i++ {
+		steps = append(steps, repositoryFlowEinoModelStep{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID:   fmt.Sprintf("call-%d", i),
+			Type: "function",
+			Function: einoschema.FunctionCall{
+				Name:      projectToolReadProjectFile,
+				Arguments: fmt.Sprintf(`{"path":"src/file-%d.tsx"}`, i),
+			},
+		}})})
 	}
-	chunk.Choices[0].Delta.ToolCalls = calls
-	raw, err := json.Marshal(chunk)
-	if err != nil {
-		t.Fatalf("marshal LLM stream chunk: %v", err)
-	}
-	fmt.Fprintf(w, "data: %s\n\n", raw)
-	fmt.Fprint(w, "data: [DONE]\n\n")
+	steps = append(steps, repositoryFlowEinoModelStep{Message: einoschema.AssistantMessage(finalAnswer, nil)})
+	model := &repositoryFlowEinoChatModel{Steps: steps}
+	return runProjectAssistantStreamWithModel(t, model, "")
 }
 
-func runProjectAssistantStreamWithLLM(t *testing.T, llmURL string, requests *[]chatCompletionRequest) (string, []chatCompletionRequest, error) {
-	return runProjectAssistantStreamWithLLMAndHub(t, llmURL, "", requests)
-}
-
-func runProjectAssistantStreamWithLLMAndHub(t *testing.T, llmURL string, hubBase string, requests *[]chatCompletionRequest) (string, []chatCompletionRequest, error) {
+func runProjectAssistantStreamWithModel(t *testing.T, model *repositoryFlowEinoChatModel, hubBase string) (string, []chatCompletionRequest, error) {
 	t.Helper()
 
 	settings := projectLLMSettings{
 		Provider: defaultProjectLLMProvider,
-		BaseURL:  llmURL,
+		BaseURL:  defaultProjectLLMBaseURL,
 		Model:    "test-model",
 		APIKey:   "test-key",
 	}
@@ -2127,7 +2495,18 @@ func runProjectAssistantStreamWithLLMAndHub(t *testing.T, llmURL string, hubBase
 		t.Fatalf("appendProjectUserMessage returned error: %v", err)
 	}
 	workspaces := workspace.NewFileStore(t.TempDir())
+	seedFiles := []workspace.File{{Path: "src/App.tsx", Content: "export default function App() { return <main>Hello</main> }\n"}}
+	for i := 1; i <= maxAssistantToolTurns; i++ {
+		seedFiles = append(seedFiles, workspace.File{
+			Path:    fmt.Sprintf("src/file-%d.tsx", i),
+			Content: fmt.Sprintf("export const value%d = %d\n", i, i),
+		})
+	}
+	if err := workspaces.ApplyFiles(context.Background(), workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}, seedFiles); err != nil {
+		t.Fatalf("seed workspace files: %v", err)
+	}
 	server := NewWithWorkspace(nil, messages, workspaces, hubBase, false)
+	setProjectAssistantModelForTest(server, model)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.Spec.DisplayName = "Demo"
@@ -2139,7 +2518,7 @@ func runProjectAssistantStreamWithLLMAndHub(t *testing.T, llmURL string, hubBase
 		project,
 		projectAssistantStreamCallbacks{},
 	)
-	return reply, *requests, err
+	return reply, model.Inputs, err
 }
 
 func decodeProjectAssistantRunAudit(t *testing.T, raw []byte) projectAssistantRunAudit {
@@ -2157,13 +2536,15 @@ func TestProjectRepeatedToolLoopFallbackSummarizesLastToolResult(t *testing.T) {
 		Name:    "write_file",
 		Content: `{"operation":"write_file","path":"src/App.tsx","size":12}`,
 	}})
-	for _, want := range []string{"repeated the same action", "Last action result", "write_file", "src/App.tsx", "12 bytes"} {
+	for _, want := range []string{"latest project tool result", "write_file", "src/App.tsx", "12 bytes"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("fallback = %q, want %q", got, want)
 		}
 	}
-	if strings.Contains(got, "completed action") {
-		t.Fatalf("fallback = %q, should not claim the action completed", got)
+	for _, unwanted := range []string{"repeated the same action", "Last action result", "completed action"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("fallback = %q, should not contain %q", got, unwanted)
+		}
 	}
 }
 
@@ -2173,12 +2554,12 @@ func TestProjectToolLoopFallbackDoesNotAskForManualContinuation(t *testing.T) {
 		Name:    "write_file",
 		Content: `{"operation":"write_file","path":"postcss.config.js","size":80}`,
 	}}, "kept requesting actions")
-	for _, want := range []string{"hit the per-turn action limit", "Last action result", "write_file", "postcss.config.js", "80 bytes"} {
+	for _, want := range []string{"latest project tool result", "write_file", "postcss.config.js", "80 bytes"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("fallback = %q, want %q", got, want)
 		}
 	}
-	for _, unwanted := range []string{"Please ask me to continue", "I stopped because"} {
+	for _, unwanted := range []string{"Please ask me to continue", "I stopped because", "hit the per-turn action limit", "Last action result"} {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("fallback = %q, should not contain %q", got, unwanted)
 		}
@@ -2189,13 +2570,13 @@ type projectSettingsDynamicClient struct {
 	secret *unstructured.Unstructured
 }
 
-func (c projectSettingsDynamicClient) Resource(gvr schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
+func (c projectSettingsDynamicClient) Resource(gvr k8sschema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
 	return projectSettingsDynamicResource{gvr: gvr, secret: c.secret}
 }
 
 type projectSettingsDynamicResource struct {
 	dynamic.ResourceInterface
-	gvr       schema.GroupVersionResource
+	gvr       k8sschema.GroupVersionResource
 	namespace string
 	secret    *unstructured.Unstructured
 }
@@ -2209,10 +2590,10 @@ func (r projectSettingsDynamicResource) Get(_ context.Context, name string, _ me
 	if r.gvr == secretGVR && r.namespace == projectLLMSecretNamespace && name == projectLLMSecretName && r.secret != nil {
 		return r.secret.DeepCopy(), nil
 	}
-	return nil, apierrors.NewNotFound(schema.GroupResource{Group: r.gvr.Group, Resource: r.gvr.Resource}, name)
+	return nil, apierrors.NewNotFound(k8sschema.GroupResource{Group: r.gvr.Group, Resource: r.gvr.Resource}, name)
 }
 
-func TestResolveProjectToolCallsCommitsWorkspaceFilesThroughCodeProvider(t *testing.T) {
+func TestCommitProjectWorkspaceFilesCommitsThroughCodeProvider(t *testing.T) {
 	var sawCommit bool
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope struct {
@@ -2256,75 +2637,27 @@ func TestResolveProjectToolCallsCommitsWorkspaceFilesThroughCodeProvider(t *test
 	}
 	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
 
-	messages, err := server.resolveProjectToolCalls(
+	resp, err := server.commitProjectWorkspaceFiles(
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
-		nil,
-		nil,
 		scope,
 		"demo-repo",
-		[]chatToolCall{{
-			ID:   "call-1",
-			Type: "function",
-			Function: chatToolCallFunction{
-				Name:      "commit_project_files",
-				Arguments: `{"repositoryRef":"demo-repo","message":"Update app","paths":["src/App.tsx","src//App.tsx"]}`,
-			},
-		}},
+		mcp.URL,
 		httptest.NewRequest(http.MethodPost, "/", nil),
-		nil,
+		map[string]any{
+			"repositoryRef": "demo-repo",
+			"message":       "Update app",
+			"paths":         []any{"src/App.tsx", "src//App.tsx"},
+		},
 	)
 	if err != nil {
-		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
+		t.Fatalf("commitProjectWorkspaceFiles returned error: %v", err)
 	}
 	if !sawCommit {
 		t.Fatal("MCP server did not receive commit call")
 	}
-	if len(messages) != 1 || !strings.Contains(messages[0].Content, "abcdef1234567890") {
-		t.Fatalf("tool messages = %#v, want commit response", messages)
-	}
-}
-
-func TestResolveProjectToolCallsRejectsDirectCodeCommitFiles(t *testing.T) {
-	var sawMCP bool
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		sawMCP = true
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer mcp.Close()
-	workspaces := workspace.NewFileStore(t.TempDir())
-	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
-	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
-
-	messages, err := server.resolveProjectToolCalls(
-		context.Background(),
-		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
-		nil,
-		nil,
-		scope,
-		"demo",
-		[]chatToolCall{{
-			ID:   "call-1",
-			Type: "function",
-			Function: chatToolCallFunction{
-				Name:      "code__commit_files",
-				Arguments: `{"repositoryRef":"demo","files":[{"path":"README.md","content":"committed through provider-code\n"}]}`,
-			},
-		}},
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("resolveProjectToolCalls returned error: %v", err)
-	}
-	if sawMCP {
-		t.Fatal("direct code__commit_files reached provider-code MCP endpoint")
-	}
-	if len(messages) != 1 || !strings.Contains(messages[0].Content, "disallowed tool name") {
-		t.Fatalf("tool messages = %#v, want disallowed tool failure", messages)
-	}
-	if _, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "README.md"}); err == nil {
-		t.Fatal("ReadFile returned nil error, want no mirrored file")
+	if !strings.Contains(resp, "abcdef1234567890") {
+		t.Fatalf("tool response = %s, want commit response", resp)
 	}
 }
 
@@ -2381,10 +2714,7 @@ func TestCommitProjectWorkspaceFilesBoundsPayloadBeforeProviderCode(t *testing.T
 	}
 }
 
-func TestProjectStreamingTimeoutsFitLongRunningGenerations(t *testing.T) {
-	if timeout := projectLLMStreamClient().Timeout; timeout != 0 {
-		t.Fatalf("streaming HTTP client timeout = %s, want no whole-response timeout", timeout)
-	}
+func TestProjectMCPTimeoutFitsLongRunningOperations(t *testing.T) {
 	if projectMCPCallTimeout <= 75*time.Second {
 		t.Fatalf("MCP call timeout = %s, want longer than commit_files reconciliation wait", projectMCPCallTimeout)
 	}
@@ -2491,11 +2821,11 @@ func codeObjectGetter(objects ...*unstructured.Unstructured) codeResourceGetter 
 		}
 		items[codeObjectKey(gvr, obj.GetName())] = obj
 	}
-	return func(_ context.Context, gvr schema.GroupVersionResource, name string) (*unstructured.Unstructured, error) {
+	return func(_ context.Context, gvr k8sschema.GroupVersionResource, name string) (*unstructured.Unstructured, error) {
 		if obj := items[codeObjectKey(gvr, name)]; obj != nil {
 			return obj, nil
 		}
-		return nil, apierrors.NewNotFound(schema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}, name)
+		return nil, apierrors.NewNotFound(k8sschema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}, name)
 	}
 }
 
@@ -2516,7 +2846,7 @@ func (w *failingProjectStreamResponseWriter) WriteHeader(int) {}
 func (w *failingProjectStreamResponseWriter) Flush() {}
 
 func codeObjectLister(objects ...*unstructured.Unstructured) codeResourceLister {
-	return func(_ context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	return func(_ context.Context, gvr k8sschema.GroupVersionResource, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
 		selector := labels.Everything()
 		if opts.LabelSelector != "" {
 			parsed, err := labels.Parse(opts.LabelSelector)
@@ -2537,7 +2867,7 @@ func codeObjectLister(objects ...*unstructured.Unstructured) codeResourceLister 
 	}
 }
 
-func codeObjectGVR(obj *unstructured.Unstructured) (schema.GroupVersionResource, bool) {
+func codeObjectGVR(obj *unstructured.Unstructured) (k8sschema.GroupVersionResource, bool) {
 	switch obj.GetKind() {
 	case "Connection":
 		return codeConnectionsGVR, true
@@ -2546,11 +2876,11 @@ func codeObjectGVR(obj *unstructured.Unstructured) (schema.GroupVersionResource,
 	case "RepositoryCommit":
 		return codeRepositoryCommitsGVR, true
 	default:
-		return schema.GroupVersionResource{}, false
+		return k8sschema.GroupVersionResource{}, false
 	}
 }
 
-func codeObjectKey(gvr schema.GroupVersionResource, name string) string {
+func codeObjectKey(gvr k8sschema.GroupVersionResource, name string) string {
 	return gvr.Group + "/" + gvr.Resource + "/" + name
 }
 

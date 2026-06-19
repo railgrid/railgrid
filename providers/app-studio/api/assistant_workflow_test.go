@@ -19,7 +19,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -121,7 +120,7 @@ func TestProjectAssistantWorkflowPlansFromMemoryRepositoryAndWorkspace(t *testin
 	}
 }
 
-func TestProjectAssistantReadinessWorkflowReportsContextTraceAndChecks(t *testing.T) {
+func TestProjectAssistantReadinessWorkflowReportsContextWithoutTrace(t *testing.T) {
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	project := projectWithRepository("demo-repo", "demo", "github")
@@ -155,10 +154,9 @@ func TestProjectAssistantReadinessWorkflowReportsContextTraceAndChecks(t *testin
 		t.Fatalf("workflow result length = %d, want <= %d", len(raw), projectAssistantWorkflowMaxResultBytes)
 	}
 	var readiness struct {
-		Status            string               `json:"status"`
-		Summary           string               `json:"summary"`
-		RecommendedChecks []string             `json:"recommendedChecks"`
-		Trace             []workflowTraceEntry `json:"trace"`
+		Status            string   `json:"status"`
+		Summary           string   `json:"summary"`
+		RecommendedChecks []string `json:"recommendedChecks"`
 	}
 	if err := json.Unmarshal([]byte(raw), &readiness); err != nil {
 		t.Fatalf("workflow result is not JSON: %v\n%s", err, raw)
@@ -172,8 +170,8 @@ func TestProjectAssistantReadinessWorkflowReportsContextTraceAndChecks(t *testin
 	if !containsString(readiness.RecommendedChecks, "build") || !containsString(readiness.RecommendedChecks, "test") {
 		t.Fatalf("recommended checks = %#v, want build and test", readiness.RecommendedChecks)
 	}
-	if !workflowTraceContains(readiness.Trace, "read-context") || !workflowTraceContains(readiness.Trace, "format-readiness") {
-		t.Fatalf("trace = %#v, want read-context and format-readiness nodes", readiness.Trace)
+	if strings.Contains(raw, `"trace"`) {
+		t.Fatalf("raw = %s, want no user-facing workflow trace", raw)
 	}
 }
 
@@ -246,222 +244,6 @@ func TestProjectAssistantWorkflowBoundsLargeResultAsJSON(t *testing.T) {
 	}
 }
 
-func TestProjectAssistantRuntimeVerificationWorkflowRegistersWithRuntimeWorker(t *testing.T) {
-	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	worker := &fakeProjectRuntimeWorker{handle: projectRuntimeHandle{ID: "runtime-1"}}
-	server.runtimeWorker = worker
-	registry := server.projectAssistantToolRegistry()
-	tool, ok := registry.Get(projectToolVerifyProjectRuntime)
-	if !ok {
-		t.Fatal("verify_project_runtime tool missing with runtime worker")
-	}
-	spec := tool.Spec()
-	if spec.Risk != projectAssistantToolRiskRuntime {
-		t.Fatalf("risk = %q, want runtime", spec.Risk)
-	}
-	if got := projectAssistantPermissionForTool(spec); got != projectAssistantPermissionAsk {
-		t.Fatalf("permission = %q, want ask", got)
-	}
-	if strings.TrimSpace(string(spec.Parameters)) == "" {
-		t.Fatal("runtime verification workflow tool parameters are empty")
-	}
-}
-
-func TestProjectAssistantRuntimeVerificationWorkflowStartsPresetChecks(t *testing.T) {
-	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	worker := &recordingProjectRuntimeWorker{
-		handles: []projectRuntimeHandle{{ID: "runtime-build"}, {ID: "runtime-test"}},
-	}
-	server.runtimeWorker = worker
-	project := projectWithRepository("demo-repo", "demo", "github")
-	project.Name = "demo"
-	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	scope := projectWorkspaceScope(id, project.Name)
-	tool, ok := server.projectAssistantToolRegistry().Get(projectToolVerifyProjectRuntime)
-	if !ok {
-		t.Fatal("verify_project_runtime tool missing with runtime worker")
-	}
-
-	raw, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
-		Identity:       id,
-		Project:        project,
-		Repository:     &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
-		WorkspaceScope: scope,
-		Arguments: map[string]any{
-			"checks":         []any{"build", "test"},
-			"timeoutSeconds": 30,
-		},
-	})
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-	if len(raw) > projectAssistantWorkflowMaxResultBytes {
-		t.Fatalf("workflow result length = %d, want <= %d", len(raw), projectAssistantWorkflowMaxResultBytes)
-	}
-	var verification struct {
-		Status string `json:"status"`
-		Checks []struct {
-			Name    string   `json:"name"`
-			Command []string `json:"command"`
-			ID      string   `json:"id"`
-			Status  string   `json:"status"`
-		} `json:"checks"`
-		Trace []workflowTraceEntry `json:"trace"`
-	}
-	if err := json.Unmarshal([]byte(raw), &verification); err != nil {
-		t.Fatalf("workflow result is not JSON: %v\n%s", err, raw)
-	}
-	if verification.Status != "started" {
-		t.Fatalf("status = %q, want started", verification.Status)
-	}
-	if len(verification.Checks) != 2 {
-		t.Fatalf("checks = %#v, want build and test", verification.Checks)
-	}
-	if strings.Join(verification.Checks[0].Command, " ") != "npm run build" || strings.Join(verification.Checks[1].Command, " ") != "npm test" {
-		t.Fatalf("checks = %#v, want preset npm build/test commands", verification.Checks)
-	}
-	if len(worker.requests) != 2 {
-		t.Fatalf("worker requests = %#v, want 2", worker.requests)
-	}
-	if strings.Join(worker.requests[0].Command, " ") != "npm run build" || strings.Join(worker.requests[1].Command, " ") != "npm test" {
-		t.Fatalf("worker requests = %#v, want preset npm build/test commands", worker.requests)
-	}
-	if worker.requests[0].TimeoutSeconds != 30 || worker.requests[1].TimeoutSeconds != 30 {
-		t.Fatalf("worker requests = %#v, want requested timeout", worker.requests)
-	}
-	if !workflowTraceContains(verification.Trace, "start-runtime-checks") {
-		t.Fatalf("trace = %#v, want start-runtime-checks node", verification.Trace)
-	}
-}
-
-func TestProjectAssistantRuntimeVerificationWorkflowRejectsUnknownChecks(t *testing.T) {
-	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	worker := &recordingProjectRuntimeWorker{handles: []projectRuntimeHandle{{ID: "runtime-1"}}}
-	server.runtimeWorker = worker
-	tool, ok := server.projectAssistantToolRegistry().Get(projectToolVerifyProjectRuntime)
-	if !ok {
-		t.Fatal("verify_project_runtime tool missing with runtime worker")
-	}
-
-	_, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
-		Arguments: map[string]any{"checks": []any{"deploy"}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported runtime verification check") {
-		t.Fatalf("Call error = %v, want unsupported check validation", err)
-	}
-	if len(worker.requests) != 0 {
-		t.Fatalf("worker requests = %#v, want no runtime starts", worker.requests)
-	}
-}
-
-func TestProjectAssistantRuntimeVerificationWorkflowRejectsMissingOrMalformedChecks(t *testing.T) {
-	tests := []struct {
-		name string
-		args map[string]any
-		want string
-	}{
-		{
-			name: "missing",
-			args: map[string]any{},
-			want: "requires at least one check",
-		},
-		{
-			name: "empty",
-			args: map[string]any{"checks": []any{}},
-			want: "requires at least one check",
-		},
-		{
-			name: "string",
-			args: map[string]any{"checks": "test"},
-			want: "checks must be an array",
-		},
-		{
-			name: "non string",
-			args: map[string]any{"checks": []any{"build", float64(1)}},
-			want: "check 1 must be a string",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-			worker := &recordingProjectRuntimeWorker{handles: []projectRuntimeHandle{{ID: "runtime-1"}}}
-			server.runtimeWorker = worker
-			tool, ok := server.projectAssistantToolRegistry().Get(projectToolVerifyProjectRuntime)
-			if !ok {
-				t.Fatal("verify_project_runtime tool missing with runtime worker")
-			}
-
-			_, err := tool.Call(context.Background(), projectAssistantToolCallRequest{Arguments: tt.args})
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Call error = %v, want %q", err, tt.want)
-			}
-			if len(worker.requests) != 0 {
-				t.Fatalf("worker requests = %#v, want no runtime starts", worker.requests)
-			}
-		})
-	}
-}
-
-func TestProjectAssistantRuntimeVerificationWorkflowReturnsPartialResultWhenStartFails(t *testing.T) {
-	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	longWorkerError := "worker capacity exhausted " + strings.Repeat("x", projectAssistantWorkflowMaxResultBytes)
-	worker := &recordingProjectRuntimeWorker{
-		handles: []projectRuntimeHandle{{ID: "runtime-build"}},
-		errors:  []error{nil, errors.New(longWorkerError)},
-	}
-	server.runtimeWorker = worker
-	project := projectWithRepository("demo-repo", "demo", "github")
-	project.Name = "demo"
-	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	scope := projectWorkspaceScope(id, project.Name)
-	tool, ok := server.projectAssistantToolRegistry().Get(projectToolVerifyProjectRuntime)
-	if !ok {
-		t.Fatal("verify_project_runtime tool missing with runtime worker")
-	}
-
-	raw, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
-		Identity:       id,
-		Project:        project,
-		WorkspaceScope: scope,
-		Arguments: map[string]any{
-			"checks": []any{"build", "test"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-	if len(raw) > projectAssistantWorkflowMaxResultBytes {
-		t.Fatalf("workflow result length = %d, want <= %d", len(raw), projectAssistantWorkflowMaxResultBytes)
-	}
-	var verification struct {
-		Status string `json:"status"`
-		Checks []struct {
-			Name    string `json:"name"`
-			ID      string `json:"id"`
-			Status  string `json:"status"`
-			Message string `json:"message"`
-		} `json:"checks"`
-	}
-	if err := json.Unmarshal([]byte(raw), &verification); err != nil {
-		t.Fatalf("workflow result is not JSON: %v\n%s", err, raw)
-	}
-	if verification.Status != "failed" {
-		t.Fatalf("status = %q, want failed", verification.Status)
-	}
-	if len(verification.Checks) != 2 {
-		t.Fatalf("checks = %#v, want started build and failed test", verification.Checks)
-	}
-	if verification.Checks[0].Name != "build" || verification.Checks[0].ID != "runtime-build" || verification.Checks[0].Status != "started" {
-		t.Fatalf("first check = %#v, want started build handle", verification.Checks[0])
-	}
-	if verification.Checks[1].Name != "test" || verification.Checks[1].Status != "failed" || !strings.Contains(verification.Checks[1].Message, "worker capacity exhausted") {
-		t.Fatalf("second check = %#v, want failed test with worker error", verification.Checks[1])
-	}
-	if len(verification.Checks[1].Message) > 260 {
-		t.Fatalf("worker error message length = %d, want bounded message", len(verification.Checks[1].Message))
-	}
-}
-
 func workflowTestFilePaths(files []workspace.FileInfo) []string {
 	out := make([]string, 0, len(files))
 	for _, file := range files {
@@ -477,42 +259,4 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-type workflowTraceEntry struct {
-	Node     string `json:"node"`
-	Status   string `json:"status"`
-	Duration int64  `json:"durationMs"`
-}
-
-func workflowTraceContains(values []workflowTraceEntry, node string) bool {
-	for _, value := range values {
-		if value.Node == node && value.Status == "ok" {
-			return true
-		}
-	}
-	return false
-}
-
-type recordingProjectRuntimeWorker struct {
-	handles  []projectRuntimeHandle
-	errors   []error
-	requests []projectRuntimeRequest
-}
-
-func (w *recordingProjectRuntimeWorker) Start(_ context.Context, req projectRuntimeRequest) (projectRuntimeHandle, error) {
-	w.requests = append(w.requests, req)
-	if len(w.errors) > 0 {
-		err := w.errors[0]
-		w.errors = w.errors[1:]
-		if err != nil {
-			return projectRuntimeHandle{}, err
-		}
-	}
-	if len(w.handles) == 0 {
-		return projectRuntimeHandle{}, nil
-	}
-	handle := w.handles[0]
-	w.handles = w.handles[1:]
-	return handle, nil
 }

@@ -185,11 +185,12 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 		}},
 		CurrentIndex: 0,
 		Eino: &projectAssistantEinoCheckpointState{
-			CheckpointID: "run-resume",
-			Checkpoint:   []byte("fake-checkpoint"),
-			InterruptID:  "interrupt-write",
-			ToolCallID:   "call-write",
-			ToolName:     projectToolWriteFile,
+			CheckpointID:  "run-resume",
+			Checkpoint:    []byte("fake-checkpoint"),
+			InterruptID:   "interrupt-write",
+			InterruptType: projectAssistantInterruptTypePermission,
+			ToolCallID:    "call-write",
+			ToolName:      projectToolWriteFile,
 		},
 	}
 	rawCheckpoint, err := json.Marshal(state)
@@ -277,7 +278,6 @@ type preemptProbeProjectAssistantEngine struct {
 func (e *preemptProbeProjectAssistantEngine) StreamProjectAssistant(
 	ctx context.Context,
 	_ projectAssistantRunRequest,
-	_ projectAssistantEventSink,
 ) (projectAssistantRunResult, error) {
 	if e.calls.Add(1) == 1 {
 		close(e.entered)
@@ -305,7 +305,6 @@ type preemptProbeResumeAssistantEngine struct {
 func (e *preemptProbeResumeAssistantEngine) StreamProjectAssistant(
 	context.Context,
 	projectAssistantRunRequest,
-	projectAssistantEventSink,
 ) (projectAssistantRunResult, error) {
 	return projectAssistantRunResult{Content: "new turn"}, nil
 }

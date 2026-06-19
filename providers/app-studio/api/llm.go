@@ -17,7 +17,6 @@ limitations under the License.
 package api
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -29,16 +28,15 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
 
-	"golang.org/x/oauth2/google"
+	einomodel "github.com/cloudwego/eino/components/model"
+	einoschema "github.com/cloudwego/eino/schema"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -51,7 +49,7 @@ const (
 	projectLLMSecretNamespace      = "default"
 	defaultProjectLLMProvider      = "openai-compatible"
 	defaultProjectLLMBaseURL       = "https://api.openai.com/v1"
-	defaultProjectLLMGoogleBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
+	defaultProjectLLMGoogleBaseURL = "https://generativelanguage.googleapis.com"
 	defaultProjectLLMModel         = "gpt-4o-mini"
 	projectLLMProviderGoogle       = "google-ai-studio"
 	projectLLMGoogleCloudScope     = "https://www.googleapis.com/auth/cloud-platform"
@@ -68,25 +66,24 @@ const (
 )
 
 const (
-	projectToolListProjectFiles      = "list_project_files"
-	projectToolReadProjectFile       = "read_project_file"
-	projectToolSearchProjectFiles    = "search_project_files"
-	projectToolPlanProjectChanges    = "plan_project_changes"
-	projectToolCheckProjectReadiness = "check_project_readiness"
-	projectToolWriteFile             = "write_file"
-	projectToolApplyPatch            = "apply_patch"
-	projectToolMkdir                 = "mkdir"
-	projectToolVerifyProjectRuntime  = "verify_project_runtime"
-	projectToolRuntimeCommand        = "runtime_command"
-	projectToolCommitProjectFiles    = "commit_project_files"
-	projectToolCommitFiles           = "commit_files"
-	projectToolCodeCommitFiles       = "code__commit_files"
+	projectToolListProjectFiles           = "list_project_files"
+	projectToolReadProjectFile            = "read_project_file"
+	projectToolSearchProjectFiles         = "search_project_files"
+	projectToolPlanProjectChanges         = "plan_project_changes"
+	projectToolCheckProjectReadiness      = "check_project_readiness"
+	projectToolAskFollowUp                = "ask_follow_up"
+	projectToolRequestProjectPlanApproval = "request_project_plan_approval"
+	projectToolWriteFile                  = "write_file"
+	projectToolApplyPatch                 = "apply_patch"
+	projectToolMkdir                      = "mkdir"
+	projectToolCommitProjectFiles         = "commit_project_files"
+	projectToolCommitFiles                = "commit_files"
+	projectToolCodeCommitFiles            = "code__commit_files"
 )
 
 var (
-	errProjectLLMNotConfigured    = errors.New("project LLM API key is not configured")
-	errProjectLLMNoStreamedChoice = errors.New("LLM API returned no streamed choices")
-	secretGVR                     = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
+	errProjectLLMNotConfigured = errors.New("project LLM API key is not configured")
+	secretGVR                  = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 )
 
 type ProjectLLMSettingsView struct {
@@ -118,15 +115,6 @@ type googleServiceAccountCredential struct {
 	TokenURI    string `json:"token_uri"`
 }
 
-type chatCompletionRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Temperature float64       `json:"temperature,omitempty"`
-	Tools       []chatTool    `json:"tools,omitempty"`
-	ToolChoice  string        `json:"tool_choice,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
-}
-
 type chatMessage struct {
 	Role       string         `json:"role"`
 	Content    string         `json:"content,omitempty"`
@@ -147,27 +135,15 @@ type chatToolFunction struct {
 }
 
 type chatToolCall struct {
-	ID       string               `json:"id"`
-	Type     string               `json:"type"`
-	Function chatToolCallFunction `json:"function"`
-	// For Google Gemini OpenAI compatibility, function-call metadata is required
-	// to preserve thought-signature during tool-call turns.
-	ExtraContent map[string]any `json:"extra_content,omitempty"`
+	ID           string               `json:"id"`
+	Type         string               `json:"type"`
+	Function     chatToolCallFunction `json:"function"`
+	ExtraContent map[string]any       `json:"extra_content,omitempty"`
 }
 
 type chatToolCallFunction struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
-}
-
-type chatCompletionResponse struct {
-	Choices []struct {
-		Message chatMessage `json:"message"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-		Type    string `json:"type,omitempty"`
-	} `json:"error,omitempty"`
 }
 
 type projectAssistantReply struct {
@@ -185,33 +161,6 @@ type projectAssistantStreamCallbacks struct {
 type projectNamingResult struct {
 	DisplayName    string
 	RepositoryName string
-}
-
-type chatCompletionStreamChoice struct {
-	Delta struct {
-		Content   string              `json:"content"`
-		ToolCalls []chatStreamingCall `json:"tool_calls"`
-	} `json:"delta"`
-	FinishReason string `json:"finish_reason"`
-}
-
-type chatStreamingCall struct {
-	Index        int            `json:"index"`
-	ID           string         `json:"id"`
-	Type         string         `json:"type"`
-	ExtraContent map[string]any `json:"extra_content,omitempty"`
-	Function     struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
-
-type chatCompletionStreamResponse struct {
-	Choices []chatCompletionStreamChoice `json:"choices"`
-	Error   *struct {
-		Message string `json:"message"`
-		Type    string `json:"type,omitempty"`
-	} `json:"error,omitempty"`
 }
 
 type projectMCPTool struct {
@@ -333,7 +282,7 @@ func (s *Server) generateProjectAssistantStream(
 		AutoApproveActions:       s.autoApproveAssistantActions(),
 		StreamCallbacks:          callbacks,
 	}
-	result, err := s.projectAssistantEngine().StreamProjectAssistant(ctx, req, nil)
+	result, err := s.projectAssistantEngine().StreamProjectAssistant(ctx, req)
 	if err != nil {
 		return "", err
 	}
@@ -399,17 +348,27 @@ func projectToolLoopFallback(toolMessages []chatMessage, reason string) string {
 	}
 
 	var b strings.Builder
-	if reason == "kept requesting actions" {
-		b.WriteString("I hit the per-turn action limit before the model produced a final text answer.")
-	} else {
-		b.WriteString("I stopped because the assistant " + reason + " and the model did not provide a final text answer.")
-	}
 	if len(summaries) > 0 {
-		b.WriteString(" Last action result")
-		if len(summaries) > 1 {
-			b.WriteString("s")
+		if len(summaries) == 1 && strings.HasPrefix(summaries[0], projectToolReadProjectFile+": ") {
+			b.WriteString("I inspected ")
+			b.WriteString(strings.TrimPrefix(summaries[0], projectToolReadProjectFile+": "))
+		} else if len(summaries) == 1 {
+			b.WriteString("I used the latest project tool result: ")
+			b.WriteString(summaries[0])
+		} else {
+			b.WriteString("I used the latest project tool results")
 		}
-		b.WriteString(": ")
+		b.WriteString(". ")
+	} else {
+		b.WriteString("I used the available project tools. ")
+	}
+	if reason == "kept requesting actions" {
+		b.WriteString("The turn ended before I could produce a complete final answer, but I can continue from the current project state.")
+	} else {
+		b.WriteString("The turn ended before I could produce a complete final answer, but I can continue from that context.")
+	}
+	if len(summaries) > 1 {
+		b.WriteString(" Recent results: ")
 		b.WriteString(strings.Join(summaries, "; "))
 		b.WriteString(".")
 	}
@@ -432,25 +391,22 @@ func (s *Server) generateProjectNaming(ctx context.Context, c *asclient.Client, 
 		return projectNamingResult{}, errProjectLLMNotConfigured
 	}
 
-	reqBody := chatCompletionRequest{
-		Model:       settings.Model,
-		Temperature: 0.1,
-		Messages: []chatMessage{
-			{
-				Role: "system",
-				Content: "Generate concise app project names. Return only JSON with string fields displayName and repositoryName. " +
-					"displayName should be 2-5 words, human-readable, and no longer than 64 characters. " +
-					"repositoryName must be derived from displayName and must already satisfy DNS-1123 label rules: lowercase a-z, 0-9, hyphen only; starts and ends with alphanumeric; max 63 characters.",
-			},
-			{
-				Role:    "user",
-				Content: "Prompt:\n" + prompt,
-			},
-		},
-	}
-	reply, err := callProjectChatCompletion(ctx, settings, reqBody)
+	model, err := newProjectEinoChatModel(ctx, settings)
 	if err != nil {
 		return projectNamingResult{}, err
+	}
+	temperature := float32(0.1)
+	reply, err := model.Generate(ctx, []*einoschema.Message{
+		einoschema.SystemMessage("Generate concise app project names. Return only JSON with string fields displayName and repositoryName. " +
+			"displayName should be 2-5 words, human-readable, and no longer than 64 characters. " +
+			"repositoryName must be derived from displayName and must already satisfy DNS-1123 label rules: lowercase a-z, 0-9, hyphen only; starts and ends with alphanumeric; max 63 characters."),
+		einoschema.UserMessage("Prompt:\n" + prompt),
+	}, einomodel.WithTemperature(temperature))
+	if err != nil {
+		return projectNamingResult{}, err
+	}
+	if reply == nil {
+		return projectNamingResult{}, errors.New("LLM naming response was empty")
 	}
 	out, err := parseProjectNamingResult(reply.Content)
 	if err != nil {
@@ -494,485 +450,6 @@ func parseProjectNamingResult(content string) (projectNamingResult, error) {
 		DisplayName:    decoded.DisplayName,
 		RepositoryName: decoded.RepositoryName,
 	}, nil
-}
-
-const googleThoughtSignatureSkipValue = "skip_thought_signature_validator"
-
-func maybeInjectGoogleThoughtSignature(settings projectLLMSettings, messages []chatMessage) {
-	if !strings.EqualFold(strings.TrimSpace(settings.Provider), projectLLMProviderGoogle) {
-		return
-	}
-	if len(messages) == 0 {
-		return
-	}
-
-	latestUserMessageIndex := -1
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == aiv1alpha1.ProjectMessageRoleUser && strings.TrimSpace(messages[i].Content) != "" {
-			latestUserMessageIndex = i
-			break
-		}
-	}
-	if latestUserMessageIndex < 0 {
-		return
-	}
-
-	for i := latestUserMessageIndex + 1; i < len(messages); i++ {
-		if len(messages[i].ToolCalls) == 0 {
-			continue
-		}
-		ensureGoogleThoughtSignatureInToolCalls(messages[i].ToolCalls)
-	}
-}
-
-func ensureGoogleThoughtSignatureInToolCalls(toolCalls []chatToolCall) {
-	if len(toolCalls) == 0 {
-		return
-	}
-	for i := range toolCalls {
-		if hasGoogleThoughtSignature(toolCalls[i]) {
-			continue
-		}
-		setGoogleThoughtSignature(&toolCalls[i], googleThoughtSignatureSkipValue)
-	}
-}
-
-func hasGoogleThoughtSignature(toolCall chatToolCall) bool {
-	extra := toolCall.ExtraContent
-	if len(extra) == 0 {
-		return false
-	}
-	google, ok := extra["google"].(map[string]any)
-	if !ok || google == nil {
-		return false
-	}
-	rawSig, ok := google["thought_signature"]
-	if !ok {
-		return false
-	}
-	sig, ok := rawSig.(string)
-	return ok && strings.TrimSpace(sig) != ""
-}
-
-func setGoogleThoughtSignature(tc *chatToolCall, signature string) {
-	if tc == nil {
-		return
-	}
-	if tc.ExtraContent == nil {
-		tc.ExtraContent = map[string]any{}
-	}
-	google, ok := tc.ExtraContent["google"].(map[string]any)
-	if !ok || google == nil {
-		google = map[string]any{}
-	}
-	google["thought_signature"] = signature
-	tc.ExtraContent["google"] = google
-}
-
-func callProjectChatCompletionStream(
-	ctx context.Context,
-	settings projectLLMSettings,
-	reqBody chatCompletionRequest,
-	onChunk func(string),
-	onStatus func(string),
-) (projectAssistantReply, error) {
-	payload, err := json.Marshal(reqBody)
-	if err != nil {
-		return projectAssistantReply{}, fmt.Errorf("encoding request: %w", err)
-	}
-
-	endpoint := strings.TrimRight(settings.BaseURL, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return projectAssistantReply{}, fmt.Errorf("creating request: %w", err)
-	}
-	authToken, err := projectLLMAuthToken(ctx, settings)
-	if err != nil {
-		return projectAssistantReply{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+authToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-
-	client := projectLLMStreamClient()
-	resp, err := client.Do(req)
-	if err != nil {
-		return projectAssistantReply{}, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		if readErr != nil {
-			return projectAssistantReply{}, fmt.Errorf("reading response: %w", readErr)
-		}
-		var decoded chatCompletionResponse
-		if len(body) > 0 {
-			_ = json.Unmarshal(body, &decoded)
-		}
-		detail := strings.TrimSpace(string(body))
-		if decoded.Error != nil && decoded.Error.Message != "" {
-			detail = decoded.Error.Message
-		}
-		if detail == "" {
-			detail = resp.Status
-		}
-		// Surfaces upstream LLM rejections (auth, model, request-shape) so a
-		// failing chat is debuggable from the provider logs without guessing
-		// whether it's the provider or the LLM endpoint.
-		klog.FromContext(ctx).Error(nil, "LLM API returned non-2xx",
-			"endpoint", endpoint, "model", reqBody.Model, "status", resp.Status, "detail", detail)
-		return projectAssistantReply{}, fmt.Errorf("LLM API returned %s: %s", resp.Status, detail)
-	}
-
-	var toolCallByIndex = map[int]chatToolCall{}
-	var content strings.Builder
-	var sawStreamingEvents bool
-	var reportedToolPreparation bool
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if raw == "" || raw == "[DONE]" {
-			continue
-		}
-		var chunk chatCompletionStreamResponse
-		if err := json.Unmarshal([]byte(raw), &chunk); err != nil {
-			return projectAssistantReply{}, fmt.Errorf("decode stream chunk: %w", err)
-		}
-		if chunk.Error != nil {
-			detail := strings.TrimSpace(chunk.Error.Message)
-			if detail == "" {
-				detail = "unknown stream error"
-			}
-			return projectAssistantReply{}, fmt.Errorf("LLM API stream error: %s", detail)
-		}
-		sawStreamingEvents = true
-		for _, choice := range chunk.Choices {
-			if choice.Delta.Content != "" {
-				content.WriteString(choice.Delta.Content)
-				if onChunk != nil {
-					onChunk(choice.Delta.Content)
-				}
-			}
-			if len(choice.Delta.ToolCalls) > 0 && !reportedToolPreparation {
-				reportedToolPreparation = true
-				if onStatus != nil {
-					onStatus("Preparing action")
-				}
-			}
-			for _, toolCall := range choice.Delta.ToolCalls {
-				existing := toolCallByIndex[toolCall.Index]
-				if existing.ID == "" {
-					existing.ID = toolCall.ID
-				}
-				if existing.Type == "" {
-					existing.Type = toolCall.Type
-				}
-				if existing.Type == "" && toolCall.Type == "" {
-					existing.Type = "function"
-				}
-				if existing.Function.Name == "" && toolCall.Function.Name != "" {
-					existing.Function.Name = toolCall.Function.Name
-				}
-				existing.Function.Arguments += toolCall.Function.Arguments
-				if len(toolCall.ExtraContent) > 0 {
-					if existing.ExtraContent == nil {
-						existing.ExtraContent = map[string]any{}
-					}
-					for key, value := range toolCall.ExtraContent {
-						existing.ExtraContent[key] = value
-					}
-				}
-				toolCallByIndex[toolCall.Index] = existing
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return projectAssistantReply{}, fmt.Errorf("scan stream response: %w", err)
-	}
-	if !sawStreamingEvents {
-		return projectAssistantReply{}, errProjectLLMNoStreamedChoice
-	}
-	if content.Len() == 0 && len(toolCallByIndex) == 0 {
-		return projectAssistantReply{}, errProjectLLMNoStreamedChoice
-	}
-	toolCalls := make([]chatToolCall, 0, len(toolCallByIndex))
-	indices := make([]int, 0, len(toolCallByIndex))
-	for index := range toolCallByIndex {
-		indices = append(indices, index)
-	}
-	sort.Ints(indices)
-	for _, index := range indices {
-		toolCalls = append(toolCalls, toolCallByIndex[index])
-	}
-	return projectAssistantReply{
-		Content:   content.String(),
-		ToolCalls: toolCalls,
-	}, nil
-}
-
-func projectLLMStreamClient() *http.Client {
-	// Do not use http.Client.Timeout for SSE. That timeout covers reading the
-	// entire response body, so healthy long-running generations can be cut off
-	// mid-stream. The request context still handles user cancellation and server
-	// shutdown.
-	return &http.Client{}
-}
-
-func callProjectChatCompletion(
-	ctx context.Context,
-	settings projectLLMSettings,
-	reqBody chatCompletionRequest,
-) (chatMessage, error) {
-	reqBody.Stream = false
-	payload, err := json.Marshal(reqBody)
-	if err != nil {
-		return chatMessage{}, fmt.Errorf("encoding request: %w", err)
-	}
-
-	endpoint := strings.TrimRight(settings.BaseURL, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return chatMessage{}, fmt.Errorf("creating request: %w", err)
-	}
-	authToken, err := projectLLMAuthToken(ctx, settings)
-	if err != nil {
-		return chatMessage{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+authToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return chatMessage{}, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if readErr != nil {
-		return chatMessage{}, fmt.Errorf("reading response: %w", readErr)
-	}
-	var decoded chatCompletionResponse
-	if len(body) > 0 {
-		_ = json.Unmarshal(body, &decoded)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		detail := strings.TrimSpace(string(body))
-		if decoded.Error != nil && decoded.Error.Message != "" {
-			detail = decoded.Error.Message
-		}
-		if detail == "" {
-			detail = resp.Status
-		}
-		klog.FromContext(ctx).Error(nil, "LLM API returned non-2xx",
-			"endpoint", endpoint, "model", reqBody.Model, "status", resp.Status, "detail", detail)
-		return chatMessage{}, fmt.Errorf("LLM API returned %s: %s", resp.Status, detail)
-	}
-	if len(decoded.Choices) == 0 {
-		return chatMessage{}, errors.New("LLM API returned no choices")
-	}
-	return decoded.Choices[0].Message, nil
-}
-
-func projectLLMAuthToken(ctx context.Context, settings projectLLMSettings) (string, error) {
-	apiKey := strings.TrimSpace(settings.APIKey)
-	_, usesGoogleServiceAccount, err := googleServiceAccountCredentialFromJSON(apiKey)
-	if err != nil {
-		return "", err
-	}
-	if !usesGoogleServiceAccount {
-		return apiKey, nil
-	}
-	jwtConfig, err := google.JWTConfigFromJSON([]byte(apiKey), projectLLMGoogleCloudScope)
-	if err != nil {
-		return "", fmt.Errorf("loading Google service-account JSON credential: %w", err)
-	}
-	token, err := jwtConfig.TokenSource(ctx).Token()
-	if err != nil {
-		return "", fmt.Errorf("minting Google service-account access token: %w", err)
-	}
-	if strings.TrimSpace(token.AccessToken) == "" {
-		return "", errors.New("minting Google service-account access token returned an empty token")
-	}
-	return token.AccessToken, nil
-}
-
-func (s *Server) resolveProjectToolCalls(
-	ctx context.Context,
-	id identity,
-	project *aiv1alpha1.Project,
-	repository *ProjectRepositoryView,
-	scope workspace.Scope,
-	projectRepositoryRef string,
-	toolCalls []chatToolCall,
-	r *http.Request,
-	onToolCall func(projectToolCallStreamEvent),
-) ([]chatMessage, error) {
-	if len(toolCalls) == 0 {
-		return nil, nil
-	}
-
-	var toolMessages []chatMessage
-	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
-	logger := klog.FromContext(ctx)
-	registry := s.projectAssistantToolRegistry()
-
-	for _, tc := range toolCalls {
-		if onToolCall != nil {
-			onToolCall(projectToolCallStreamEvent{
-				ID:        tc.ID,
-				Name:      tc.Function.Name,
-				Status:    "requested",
-				Arguments: summarizeProjectToolArguments(tc.Function.Name, tc.Function.Arguments),
-			})
-		}
-		if tc.Function.Name == "" {
-			logger.Info("project assistant tool call rejected", "reason", "missing function name")
-			if onToolCall != nil {
-				onToolCall(projectToolCallStreamEvent{
-					ID:     tc.ID,
-					Status: "rejected",
-					Error:  "missing function name",
-				})
-			}
-			toolMessages = append(toolMessages, chatMessage{
-				Role:       "tool",
-				ToolCallID: tc.ID,
-				Content:    "Tool call failed: missing function name",
-			})
-			continue
-		}
-		localTool := registry.Has(tc.Function.Name)
-		runtimeTool := projectRuntimeToolAllowed(tc.Function.Name)
-		if !localTool && !runtimeTool && !projectMCPToolAllowed(tc.Function.Name) {
-			logger.Info("project assistant tool call rejected", "reason", "disallowed tool name", "tool", tc.Function.Name)
-			if onToolCall != nil {
-				onToolCall(projectToolCallStreamEvent{
-					ID:     tc.ID,
-					Name:   tc.Function.Name,
-					Status: "rejected",
-					Error:  "disallowed tool name",
-				})
-			}
-			toolMessages = append(toolMessages, chatMessage{
-				Role:       "tool",
-				Name:       tc.Function.Name,
-				ToolCallID: tc.ID,
-				Content:    "Tool call failed: disallowed tool name",
-			})
-			continue
-		}
-		if tc.Type == "" {
-			tc.Type = "function"
-		}
-		if tc.Type != "function" {
-			logger.Info("project assistant tool call rejected", "reason", "unsupported tool call type", "tool", tc.Function.Name, "type", tc.Type)
-			if onToolCall != nil {
-				onToolCall(projectToolCallStreamEvent{
-					ID:     tc.ID,
-					Name:   tc.Function.Name,
-					Status: "rejected",
-					Error:  "unsupported tool call type: " + tc.Type,
-				})
-			}
-			toolMessages = append(toolMessages, chatMessage{
-				Role:       "tool",
-				Name:       tc.Function.Name,
-				ToolCallID: tc.ID,
-				Content:    "Tool call failed: " + tc.Type,
-			})
-			continue
-		}
-		args := map[string]any{}
-		if strings.TrimSpace(tc.Function.Arguments) != "" {
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				logger.Info("project assistant tool call rejected", "reason", "invalid arguments", "tool", tc.Function.Name, "argsBytes", len(tc.Function.Arguments), "err", err.Error())
-				if onToolCall != nil {
-					onToolCall(projectToolCallStreamEvent{
-						ID:     tc.ID,
-						Name:   tc.Function.Name,
-						Status: "rejected",
-						Error:  "invalid arguments: " + truncateProjectToolInfo(err.Error()),
-					})
-				}
-				toolMessages = append(toolMessages, chatMessage{
-					Role:       "tool",
-					Name:       tc.Function.Name,
-					ToolCallID: tc.ID,
-					Content:    "Tool call failed: invalid arguments: " + err.Error(),
-				})
-				continue
-			}
-		}
-		if onToolCall != nil {
-			onToolCall(projectToolCallStreamEvent{
-				ID:        tc.ID,
-				Name:      tc.Function.Name,
-				Status:    "running",
-				Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
-			})
-		}
-		var resp string
-		var err error
-		if localTool {
-			resp, err = s.callProjectLocalTool(ctx, id, project, repository, scope, projectRepositoryRef, mcpEndpoint, r, tc.Function.Name, args)
-		} else if runtimeTool {
-			resp, err = newProjectRuntimeCommandTool(nil).Call(ctx, projectAssistantToolCallRequest{
-				Identity:       id,
-				WorkspaceScope: scope,
-				Arguments:      args,
-			})
-		} else {
-			resp, err = callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, tc.Function.Name, args)
-		}
-		if err != nil {
-			logger.Error(err, "project assistant tool call failed", "tool", tc.Function.Name, "endpoint", mcpEndpoint)
-			if onToolCall != nil {
-				onToolCall(projectToolCallStreamEvent{
-					ID:        tc.ID,
-					Name:      tc.Function.Name,
-					Status:    "failed",
-					Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
-					Error:     truncateProjectToolInfo(err.Error()),
-				})
-			}
-			toolMessages = append(toolMessages, chatMessage{
-				Role:       "tool",
-				Name:       tc.Function.Name,
-				ToolCallID: tc.ID,
-				Content:    "Tool call failed: " + err.Error(),
-			})
-			continue
-		}
-		logger.V(2).Info("project assistant tool call succeeded", "tool", tc.Function.Name, "responseBytes", len(resp))
-		if onToolCall != nil {
-			onToolCall(projectToolCallStreamEvent{
-				ID:        tc.ID,
-				Name:      tc.Function.Name,
-				Status:    projectToolCallResultStatus(tc.Function.Name, resp),
-				Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
-				Summary:   summarizeProjectToolResult(tc.Function.Name, resp),
-			})
-		}
-		toolMessages = append(toolMessages, chatMessage{
-			Role:       "tool",
-			Name:       tc.Function.Name,
-			ToolCallID: tc.ID,
-			Content:    resp,
-		})
-	}
-
-	return toolMessages, nil
 }
 
 func projectWorkspaceScope(id identity, projectName string) workspace.Scope {
@@ -1125,8 +602,20 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return summarizeProjectToolKeyValues(args, []string{"query", "maxResults"})
 	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness:
 		return summarizeProjectPlanningWorkflowArgs(args)
-	case projectToolVerifyProjectRuntime:
-		return summarizeProjectRuntimeVerificationArgs(args)
+	case projectToolAskFollowUp:
+		if questions := projectToolStringList(args["questions"]); len(questions) > 0 {
+			return truncateProjectToolInfo(fmt.Sprintf("%d question(s): %s", len(questions), summarizeProjectToolList(questions, 3)))
+		}
+		return ""
+	case projectToolRequestProjectPlanApproval:
+		parts := []string{}
+		if summary := projectToolString(args["summary"]); summary != "" {
+			parts = append(parts, summary)
+		}
+		if paths := projectToolStringList(args["targetPaths"]); len(paths) > 0 {
+			parts = append(parts, fmt.Sprintf("%d target path(s): %s", len(paths), summarizeProjectToolList(paths, 5)))
+		}
+		return truncateProjectToolInfo(strings.Join(parts, "; "))
 	case projectToolWriteFile:
 		return summarizeProjectMutationArgs(args, []string{"path"}, true)
 	case projectToolApplyPatch:
@@ -1179,10 +668,26 @@ func summarizeProjectToolResult(name, result string) string {
 			return summarizeWorkspaceSearchResult(decoded)
 		case projectToolPlanProjectChanges:
 			return summarizeProjectPlanningWorkflowResult(decoded)
+		case projectToolRequestProjectPlanApproval:
+			parts := []string{}
+			if status := projectToolString(decoded["status"]); status != "" {
+				parts = append(parts, "status "+status)
+			}
+			if summary := projectToolString(decoded["summary"]); summary != "" {
+				parts = append(parts, summary)
+			}
+			if paths := projectToolStringList(decoded["targetPaths"]); len(paths) > 0 {
+				parts = append(parts, fmt.Sprintf("%d target path(s): %s", len(paths), summarizeProjectToolList(paths, 5)))
+			}
+			if len(parts) > 0 {
+				return truncateProjectToolInfo(strings.Join(parts, "; "))
+			}
 		case projectToolCheckProjectReadiness:
 			return summarizeProjectReadinessWorkflowResult(decoded)
-		case projectToolVerifyProjectRuntime:
-			return summarizeProjectRuntimeVerificationResult(decoded)
+		case projectToolAskFollowUp:
+			if answer := projectToolString(decoded["answer"]); answer != "" {
+				return truncateProjectToolInfo("answered: " + answer)
+			}
 		case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
 			return summarizeWorkspaceMutationResult(decoded)
 		}
@@ -1238,17 +743,6 @@ func summarizeProjectPlanningWorkflowArgs(args map[string]any) string {
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
 }
 
-func summarizeProjectRuntimeVerificationArgs(args map[string]any) string {
-	parts := []string{}
-	if checks := projectToolStringList(args["checks"]); len(checks) > 0 {
-		parts = append(parts, "checks "+summarizeProjectToolList(checks, 4))
-	}
-	if n, ok := projectToolNumber(args["timeoutSeconds"]); ok {
-		parts = append(parts, fmt.Sprintf("timeoutSeconds %d", n))
-	}
-	return truncateProjectToolInfo(strings.Join(parts, "; "))
-}
-
 func summarizeWorkspaceMutationResult(decoded map[string]any) string {
 	parts := []string{}
 	if op := projectToolString(decoded["operation"]); op != "" {
@@ -1298,41 +792,6 @@ func summarizeProjectReadinessWorkflowResult(decoded map[string]any) string {
 		return ""
 	}
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
-}
-
-func summarizeProjectRuntimeVerificationResult(decoded map[string]any) string {
-	parts := []string{}
-	if status := projectToolString(decoded["status"]); status != "" {
-		parts = append(parts, "status "+status)
-	}
-	if checks, ok := decoded["checks"].([]any); ok && len(checks) > 0 {
-		parts = append(parts, fmt.Sprintf("%d check(s): %s", len(checks), summarizeProjectRuntimeCheckNames(checks, 4)))
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return truncateProjectToolInfo(strings.Join(parts, "; "))
-}
-
-func summarizeProjectRuntimeCheckNames(values []any, maxValues int) string {
-	if len(values) == 0 || maxValues <= 0 {
-		return ""
-	}
-	names := make([]string, 0, len(values))
-	for _, value := range values {
-		obj, ok := value.(map[string]any)
-		if !ok {
-			continue
-		}
-		name := projectToolString(obj["name"])
-		if status := projectToolString(obj["status"]); status != "" {
-			name = strings.TrimSpace(name + " " + status)
-		}
-		if name != "" {
-			names = append(names, name)
-		}
-	}
-	return summarizeProjectToolList(names, maxValues)
 }
 
 func summarizeWorkspaceListResult(decoded map[string]any) string {
@@ -1385,19 +844,6 @@ func summarizeWorkspaceSearchResult(decoded map[string]any) string {
 
 func projectToolCallResultStatus(name, result string) string {
 	baseName := projectToolBaseName(name)
-	if baseName == projectToolVerifyProjectRuntime {
-		decoded := map[string]any{}
-		if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &decoded); err == nil {
-			switch strings.ToLower(projectToolString(decoded["status"])) {
-			case "failed":
-				return "failed"
-			case "started":
-				return "running"
-			case "bounded":
-				return "failed"
-			}
-		}
-	}
 	if baseName != projectToolCommitFiles && baseName != projectToolCommitProjectFiles {
 		return "succeeded"
 	}
@@ -1885,11 +1331,7 @@ func isDefaultGoogleBaseURLCandidate(raw string) bool {
 }
 
 func defaultProjectLLMGoogleCloudBaseURL(projectID string) string {
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
-		return defaultProjectLLMGoogleBaseURL
-	}
-	return "https://aiplatform.googleapis.com/v1/projects/" + url.PathEscape(projectID) + "/locations/global/endpoints/openapi"
+	return "https://aiplatform.googleapis.com"
 }
 
 func validateProjectLLMAPIKey(provider, apiKey string) error {
@@ -2044,11 +1486,12 @@ func normalizeLLMBaseURL(raw string) (string, error) {
 func normalizeLLMBasePath(path string, host string) string {
 	path = strings.TrimRight(strings.TrimSpace(path), "/")
 	if strings.Contains(host, "generativelanguage.googleapis.com") {
-		if strings.HasSuffix(strings.ToLower(path), "/chat/completions") {
-			path = strings.TrimRight(path[:len(path)-len("/chat/completions")], "/")
-		}
-		if strings.Contains(strings.ToLower(path), "/v1beta/models/") && strings.Contains(strings.ToLower(path), ":generatecontent") {
-			return "/v1beta/openai"
+		return ""
+	}
+	if strings.Contains(host, "aiplatform.googleapis.com") {
+		lowerPath := strings.ToLower(path)
+		if strings.Contains(lowerPath, "/endpoints/openapi") {
+			return strings.TrimRight(path[:strings.Index(lowerPath, "/endpoints/openapi")], "/")
 		}
 	}
 	return path
@@ -2080,7 +1523,7 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 	b.WriteString("You are the assistant for a persistent Kedge Project workspace. ")
 	b.WriteString("Help the user reason about and build the application represented by this Project. ")
 	b.WriteString("Report tool use when you actually call tools, but do not claim that you changed files or deployed resources unless a tool result or other evidence supports it. ")
-	b.WriteString("Ask concise follow-up questions when requirements are unclear.\n\n")
+	b.WriteString("When requirements are unclear, call ask_follow_up with at most three concise questions instead of guessing.\n\n")
 	b.WriteString("Project metadata:\n")
 	b.WriteString("- Name: " + p.Name + "\n")
 	b.WriteString("- Display name: " + p.Spec.DisplayName + "\n")
@@ -2106,6 +1549,7 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 		} else {
 			b.WriteString("Use check_project_readiness before mutating or verifying existing work so repository, memory, workspace context, and recommended checks come from the App Studio graph workflow. ")
 			b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
+			b.WriteString("Before source edits, call request_project_plan_approval with a concise batch plan, target path envelope, allowed edit operations, and acceptance criteria; after approval, keep workspace edits inside that envelope. ")
 			b.WriteString("Prefer small App Studio workspace mutations with write_file, apply_patch, and mkdir instead of rewriting a whole project. ")
 			b.WriteString("After workspace mutations, commit the changed source/config files to the managed git source with commit_project_files using repositoryRef \"" + repoRef + "\". ")
 			b.WriteString("Use provider-code only as the git-source boundary; do not use provider-code tools to inspect or mutate the live App Studio workspace. ")

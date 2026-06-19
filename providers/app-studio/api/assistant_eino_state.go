@@ -19,7 +19,18 @@ package api
 import (
 	"strings"
 	"sync"
+	"time"
 )
+
+type projectAssistantApprovedPlan struct {
+	Summary            string    `json:"summary,omitempty"`
+	Steps              []string  `json:"steps,omitempty"`
+	TargetPaths        []string  `json:"targetPaths,omitempty"`
+	Operations         []string  `json:"operations,omitempty"`
+	AcceptanceCriteria []string  `json:"acceptanceCriteria,omitempty"`
+	ApprovedAt         time.Time `json:"approvedAt,omitempty"`
+	ApprovalTool       string    `json:"approvalTool,omitempty"`
+}
 
 type projectEinoAssistantRunState struct {
 	mu sync.Mutex
@@ -31,7 +42,9 @@ type projectEinoAssistantRunState struct {
 	turn                 int
 	projectRepositoryRef string
 	toolPrompt           string
+	toolDiscovery        *projectEinoAssistantToolDiscovery
 	permissionBarrier    bool
+	approvedPlan         *projectAssistantApprovedPlan
 }
 
 func newProjectEinoAssistantRunState() *projectEinoAssistantRunState {
@@ -47,6 +60,29 @@ func (s *projectEinoAssistantRunState) SetToolPrompt(prompt string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.toolPrompt = strings.TrimSpace(prompt)
+}
+
+func (s *projectEinoAssistantRunState) SetToolDiscovery(discovery projectEinoAssistantToolDiscovery) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	discovery.Prompt = strings.TrimSpace(discovery.Prompt)
+	s.toolDiscovery = &discovery
+	s.toolPrompt = discovery.Prompt
+}
+
+func (s *projectEinoAssistantRunState) ToolDiscovery() (projectEinoAssistantToolDiscovery, bool) {
+	if s == nil {
+		return projectEinoAssistantToolDiscovery{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.toolDiscovery == nil {
+		return projectEinoAssistantToolDiscovery{}, false
+	}
+	return *s.toolDiscovery, true
 }
 
 func (s *projectEinoAssistantRunState) ToolPrompt() string {
@@ -67,6 +103,21 @@ func (s *projectEinoAssistantRunState) SetProjectRepositoryRef(ref string) {
 	s.projectRepositoryRef = strings.TrimSpace(ref)
 }
 
+func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssistantCheckpointState) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = cloneChatMessages(state.Messages)
+	s.lastToolMessages = cloneChatMessages(state.LastToolMessages)
+	s.toolCalls = cloneProjectAssistantToolCalls(state.ToolCalls)
+	s.seenToolCalls = cloneProjectAssistantSeenToolCalls(state.SeenToolCalls)
+	s.turn = state.Turn
+	s.projectRepositoryRef = strings.TrimSpace(state.ProjectRepositoryRef)
+	s.approvedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
+}
+
 func (s *projectEinoAssistantRunState) ProjectRepositoryRef() string {
 	if s == nil {
 		return ""
@@ -74,6 +125,34 @@ func (s *projectEinoAssistantRunState) ProjectRepositoryRef() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.projectRepositoryRef
+}
+
+func (s *projectEinoAssistantRunState) ApprovePlan(plan projectAssistantApprovedPlan) {
+	if s == nil {
+		return
+	}
+	normalized := normalizeProjectAssistantApprovedPlan(plan)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.approvedPlan = &normalized
+}
+
+func (s *projectEinoAssistantRunState) ApprovedPlan() *projectAssistantApprovedPlan {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneProjectAssistantApprovedPlan(s.approvedPlan)
+}
+
+func (s *projectEinoAssistantRunState) ClearApprovedPlan() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.approvedPlan = nil
 }
 
 func (s *projectEinoAssistantRunState) RecordModelInput(messages []chatMessage) {
@@ -179,6 +258,7 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		SeenToolCalls:        cloneProjectAssistantSeenToolCalls(s.seenToolCalls),
 		Turn:                 s.turn,
 		ProjectRepositoryRef: strings.TrimSpace(s.projectRepositoryRef),
+		ApprovedPlan:         cloneProjectAssistantApprovedPlan(s.approvedPlan),
 	}
 }
 
@@ -188,14 +268,80 @@ func (s *projectEinoAssistantRunState) ToolLoopFallback() string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return projectToolLoopFallback(cloneChatMessages(s.lastToolMessages), s.toolLoopReasonLocked())
+}
+
+func (s *projectEinoAssistantRunState) ToolLoopFinalAnswerMessages() []chatMessage {
+	if s == nil {
+		return []chatMessage{{Role: "system", Content: projectEinoAssistantToolLoopFinalInstruction("kept requesting actions")}}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	messages := make([]chatMessage, 0, len(s.messages)+len(s.lastToolMessages)+1)
+	for _, msg := range s.messages {
+		if msg.Role == "tool" || len(msg.ToolCalls) > 0 {
+			break
+		}
+		messages = append(messages, cloneChatMessages([]chatMessage{msg})[0])
+	}
+	for _, msg := range s.lastToolMessages {
+		if context := projectEinoAssistantToolLoopFinalToolContext(msg); context != "" {
+			messages = append(messages, chatMessage{Role: "user", Content: context})
+		}
+	}
+	messages = append(messages, chatMessage{Role: "system", Content: projectEinoAssistantToolLoopFinalInstruction(s.toolLoopReasonLocked())})
+	return messages
+}
+
+func (s *projectEinoAssistantRunState) toolLoopReasonLocked() string {
 	reason := "kept requesting actions"
 	for _, count := range s.seenToolCalls {
 		if count > 1 {
-			reason = "repeated the same action"
-			break
+			return "repeated the same action"
 		}
 	}
-	return projectToolLoopFallback(cloneChatMessages(s.lastToolMessages), reason)
+	return reason
+}
+
+func cloneProjectAssistantApprovedPlan(src *projectAssistantApprovedPlan) *projectAssistantApprovedPlan {
+	if src == nil {
+		return nil
+	}
+	out := *src
+	out.Steps = append([]string(nil), src.Steps...)
+	out.TargetPaths = append([]string(nil), src.TargetPaths...)
+	out.Operations = append([]string(nil), src.Operations...)
+	out.AcceptanceCriteria = append([]string(nil), src.AcceptanceCriteria...)
+	return &out
+}
+
+func normalizeProjectAssistantApprovedPlan(plan projectAssistantApprovedPlan) projectAssistantApprovedPlan {
+	plan.Summary = strings.TrimSpace(plan.Summary)
+	plan.Steps = normalizeProjectAssistantStringList(plan.Steps)
+	plan.TargetPaths = normalizeProjectAssistantStringList(plan.TargetPaths)
+	plan.Operations = normalizeProjectAssistantStringList(plan.Operations)
+	plan.AcceptanceCriteria = normalizeProjectAssistantStringList(plan.AcceptanceCriteria)
+	plan.ApprovalTool = strings.TrimSpace(plan.ApprovalTool)
+	if plan.ApprovedAt.IsZero() {
+		plan.ApprovedAt = time.Now().UTC()
+	} else {
+		plan.ApprovedAt = plan.ApprovedAt.UTC()
+	}
+	return plan
+}
+
+func normalizeProjectAssistantStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func projectEinoAssistantFallbackToolCall(callID, name, arguments string) chatToolCall {

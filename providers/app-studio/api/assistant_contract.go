@@ -35,7 +35,6 @@ type projectAssistantEngine interface {
 	StreamProjectAssistant(
 		context.Context,
 		projectAssistantRunRequest,
-		projectAssistantEventSink,
 	) (projectAssistantRunResult, error)
 	ResumeProjectAssistant(
 		context.Context,
@@ -65,39 +64,36 @@ type projectAssistantRunRequest struct {
 }
 
 type projectAssistantRunResult struct {
-	Content   string
-	Events    []projectAssistantEvent
-	ToolCalls []projectAssistantToolCall
-}
-
-type projectAssistantEventSink interface {
-	EmitProjectAssistantEvent(context.Context, projectAssistantEvent) error
+	Content string
 }
 
 type projectAssistantEvent struct {
-	Type       projectAssistantEventType   `json:"type"`
-	ID         string                      `json:"id,omitempty"`
-	MessageID  string                      `json:"messageID,omitempty"`
-	ToolCall   *projectAssistantToolCall   `json:"toolCall,omitempty"`
-	Permission *projectAssistantPermission `json:"permission,omitempty"`
-	Checkpoint *projectAssistantCheckpoint `json:"checkpoint,omitempty"`
-	Delta      string                      `json:"delta,omitempty"`
-	Status     string                      `json:"status,omitempty"`
-	Error      string                      `json:"error,omitempty"`
-	Metadata   json.RawMessage             `json:"metadata,omitempty"`
-	CreatedAt  *time.Time                  `json:"createdAt,omitempty"`
+	Type         projectAssistantEventType   `json:"type"`
+	ID           string                      `json:"id,omitempty"`
+	MessageID    string                      `json:"messageID,omitempty"`
+	ToolCall     *projectAssistantToolCall   `json:"toolCall,omitempty"`
+	Permission   *projectAssistantPermission `json:"permission,omitempty"`
+	FollowUp     *projectAssistantFollowUp   `json:"followUp,omitempty"`
+	Checkpoint   *projectAssistantCheckpoint `json:"checkpoint,omitempty"`
+	BuilderEvent *projectBuilderEventView    `json:"builderEvent,omitempty"`
+	Delta        string                      `json:"delta,omitempty"`
+	Status       string                      `json:"status,omitempty"`
+	Error        string                      `json:"error,omitempty"`
+	Metadata     json.RawMessage             `json:"metadata,omitempty"`
+	CreatedAt    *time.Time                  `json:"createdAt,omitempty"`
 }
 
 type projectAssistantEventType string
 
 const (
-	projectAssistantEventRunStarted       projectAssistantEventType = "run_started"
 	projectAssistantEventMessageDelta     projectAssistantEventType = "message_delta"
 	projectAssistantEventStatus           projectAssistantEventType = "status"
 	projectAssistantEventToolCallStarted  projectAssistantEventType = "tool_call_started"
 	projectAssistantEventToolCallFinished projectAssistantEventType = "tool_call_finished"
 	projectAssistantEventPermissionNeeded projectAssistantEventType = "permission_required"
+	projectAssistantEventInputNeeded      projectAssistantEventType = "input_required"
 	projectAssistantEventCheckpointSaved  projectAssistantEventType = "checkpoint_saved"
+	projectAssistantEventBuilderEvent     projectAssistantEventType = "builder_event"
 	projectAssistantEventRunFailed        projectAssistantEventType = "run_failed"
 	projectAssistantEventRunFinished      projectAssistantEventType = "run_finished"
 )
@@ -119,6 +115,13 @@ type projectAssistantPermission struct {
 	ToolName   string          `json:"toolName,omitempty"`
 	Reason     string          `json:"reason,omitempty"`
 	Input      json.RawMessage `json:"input,omitempty"`
+}
+
+type projectAssistantFollowUp struct {
+	ID         string   `json:"id"`
+	ToolCallID string   `json:"toolCallID,omitempty"`
+	Questions  []string `json:"questions,omitempty"`
+	Prompt     string   `json:"prompt,omitempty"`
 }
 
 type projectAssistantCheckpoint struct {

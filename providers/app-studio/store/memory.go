@@ -184,8 +184,8 @@ func (s *MemoryStore) ClaimAssistantRun(_ context.Context, scope Scope, id strin
 	if !ok {
 		return AssistantRun{}, fmt.Errorf("assistant run %q not found", id)
 	}
-	if run.Status != AssistantRunStatusPendingPermission || run.RequestID != requestID {
-		return AssistantRun{}, fmt.Errorf("assistant run %q is not waiting for this permission request", id)
+	if !assistantRunStatusWaitsForInput(run.Status) || run.RequestID != requestID {
+		return AssistantRun{}, fmt.Errorf("assistant run %q is not waiting for this request", id)
 	}
 	run.Status = AssistantRunStatusRunning
 	run.UpdatedAt = now.UTC()
@@ -194,6 +194,15 @@ func (s *MemoryStore) ClaimAssistantRun(_ context.Context, scope Scope, id strin
 	run.Audit = cloneRawMessage(run.Audit)
 	s.assistantRuns[scope][id] = run
 	return run, nil
+}
+
+func assistantRunStatusWaitsForInput(status AssistantRunStatus) bool {
+	switch status {
+	case AssistantRunStatusPendingPermission, AssistantRunStatusPendingInput:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *MemoryStore) GetAssistantRun(_ context.Context, scope Scope, id string) (AssistantRun, error) {

@@ -17,7 +17,6 @@ limitations under the License.
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -26,11 +25,9 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/store"
 )
 
@@ -114,83 +111,4 @@ func listLimitFromRequest(r *http.Request) int {
 		limit = 250
 	}
 	return limit
-}
-
-// migrateLegacyProjectMessages moves any messages previously stored inline on
-// the Project's spec.messages into the message store, then clears them. Runs as
-// the caller against the tenant workspace.
-func (s *Server) migrateLegacyProjectMessages(ctx context.Context, c *asclient.Client, orgUUID, workspaceUUID string, p *aiv1alpha1.Project) error {
-	raw, err := c.Dynamic().Resource(asclient.ProjectGVR).Get(ctx, p.Name, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-	messages, found, err := unstructured.NestedSlice(raw.Object, "spec", "messages")
-	if err != nil {
-		return fmt.Errorf("read legacy project messages: %w", err)
-	}
-	if !found || len(messages) == 0 {
-		return nil
-	}
-	if s.store == nil {
-		return fmt.Errorf("project message store not configured")
-	}
-	scope := projectMessageScope(orgUUID, workspaceUUID, p.Name)
-	for _, item := range messages {
-		payload, err := json.Marshal(item)
-		if err != nil {
-			return fmt.Errorf("marshal legacy project message: %w", err)
-		}
-		var msg aiv1alpha1.ProjectMessage
-		if err := json.Unmarshal(payload, &msg); err != nil {
-			return fmt.Errorf("decode legacy project message: %w", err)
-		}
-		if strings.TrimSpace(msg.ID) == "" {
-			msg.ID = newMessageID()
-		}
-		if strings.TrimSpace(msg.Role) == "" {
-			msg.Role = aiv1alpha1.ProjectMessageRoleUser
-		}
-		if strings.TrimSpace(msg.ProjectID) == "" {
-			msg.ProjectID = p.Name
-		}
-		createdAt := msg.CreatedAt.UTC()
-		if createdAt.IsZero() {
-			createdAt = time.Now().UTC()
-		}
-		if err := s.store.AppendMessage(ctx, scope, store.Message{
-			ID:               msg.ID,
-			ProjectName:      p.Name,
-			Role:             msg.Role,
-			Content:          msg.Content,
-			ContentEncrypted: msg.ContentEncrypted,
-			ContentKeyID:     msg.ContentKeyID,
-			Metadata:         rawExtensionMapToAny(msg.Metadata),
-			CreatedAt:        createdAt,
-			UpdatedAt:        createdAt,
-		}); err != nil {
-			return err
-		}
-	}
-	unstructured.RemoveNestedField(raw.Object, "spec", "messages")
-	if _, err := c.Dynamic().Resource(asclient.ProjectGVR).Update(ctx, raw, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("clear legacy project messages: %w", err)
-	}
-	return nil
-}
-
-func rawExtensionMapToAny(src map[string]runtime.RawExtension) map[string]any {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(map[string]any, len(src))
-	for k, raw := range src {
-		var v any
-		if len(raw.Raw) > 0 {
-			if err := json.Unmarshal(raw.Raw, &v); err != nil {
-				v = string(raw.Raw)
-			}
-		}
-		dst[k] = v
-	}
-	return dst
 }

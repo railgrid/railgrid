@@ -19,9 +19,15 @@ package api
 import (
 	"context"
 	"encoding/gob"
+	"strings"
 	"sync"
 
 	"github.com/cloudwego/eino/schema"
+)
+
+const (
+	projectAssistantInterruptTypePermission = "permission"
+	projectAssistantInterruptTypeFollowUp   = "follow_up"
 )
 
 type projectEinoPermissionInterruptInfo struct {
@@ -43,12 +49,41 @@ type projectEinoPermissionResumeData struct {
 	EditedArguments map[string]any                     `json:"editedArguments,omitempty"`
 }
 
+type projectEinoFollowUpInterruptInfo struct {
+	ToolCallID string   `json:"toolCallID,omitempty"`
+	Questions  []string `json:"questions,omitempty"`
+	Prompt     string   `json:"prompt,omitempty"`
+}
+
+type projectEinoFollowUpInterruptState struct {
+	ToolCallID string   `json:"toolCallID,omitempty"`
+	Questions  []string `json:"questions,omitempty"`
+}
+
+type projectEinoFollowUpResumeData struct {
+	Answer string `json:"answer,omitempty"`
+}
+
 func init() {
 	gob.Register(map[string]any{})
 	gob.Register([]any{})
 	schema.RegisterName[*projectEinoPermissionInterruptInfo]("faros_app_studio_eino_permission_interrupt_info")
 	schema.RegisterName[*projectEinoPermissionInterruptState]("faros_app_studio_eino_permission_interrupt_state")
 	schema.RegisterName[*projectEinoPermissionResumeData]("faros_app_studio_eino_permission_resume_data")
+	schema.RegisterName[*projectEinoFollowUpInterruptInfo]("faros_app_studio_eino_follow_up_interrupt_info")
+	schema.RegisterName[*projectEinoFollowUpInterruptState]("faros_app_studio_eino_follow_up_interrupt_state")
+	schema.RegisterName[*projectEinoFollowUpResumeData]("faros_app_studio_eino_follow_up_resume_data")
+}
+
+func projectAssistantFollowUpPrompt(questions []string) string {
+	questions = normalizeProjectAssistantStringList(questions)
+	if len(questions) == 0 {
+		return "App Studio needs a little more information before continuing."
+	}
+	if len(questions) == 1 {
+		return strings.TrimSpace(questions[0])
+	}
+	return "App Studio needs a little more information before continuing."
 }
 
 type projectEinoAssistantCheckpointStore struct {

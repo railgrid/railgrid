@@ -185,6 +185,15 @@ async function requestStream(
       onEvent({ type: 'run_failed', error: `stream event missing type${type ? ` (${type})` : ''}` })
       return
     }
+    const rawEvent = event as ProjectMessageStreamEvent & Record<string, unknown>
+    if ('toolCall' in rawEvent || 'permission' in rawEvent || 'checkpoint' in rawEvent || 'builderEvent' in rawEvent) {
+      onEvent({ type: 'run_failed', error: 'assistant stream used a private event shape' })
+      return
+    }
+    if (event.type === 'ui' && !event.ui) {
+      onEvent({ type: 'run_failed', error: 'assistant UI event missing payload' })
+      return
+    }
     onEvent(event)
   }
 
@@ -309,7 +318,7 @@ export const api = {
     ctx: KedgeContext | null,
     name: string,
     runID: string,
-    body: { requestID: string; decision: 'allow' | 'deny'; assistantMessageID?: string; editedArguments?: Record<string, unknown> },
+    body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; assistantMessageID?: string },
   ): Promise<ProjectAssistantResumeResponse> {
     return request<ProjectAssistantResumeResponse>(
       ctx,

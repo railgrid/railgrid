@@ -159,6 +159,28 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		newProjectAssistantReadinessWorkflowTool(server),
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
+				Name:        projectToolAskFollowUp,
+				Description: "Ask the user concise follow-up questions when App Studio needs missing product or implementation details before continuing.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":3,"description":"Concise questions the user should answer before the assistant continues."}},"required":["questions"]}`),
+				Risk:        projectAssistantToolRiskInput,
+			},
+			call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
+				return "", errors.New("follow-up questions are handled by the Eino assistant interrupt")
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:        projectToolRequestProjectPlanApproval,
+				Description: "Present a batch source-edit plan for user approval. After approval, App Studio may autonomously edit only the approved target paths until commit_project_files asks for final approval.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string","description":"Short summary of the intended source changes."},"steps":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Concrete implementation steps."},"targetPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":50,"description":"Project-relative files or directories this plan is allowed to edit. Directories must end with /."},"allowedOperations":{"type":"array","items":{"type":"string","enum":["write_file","apply_patch","mkdir"]},"minItems":1,"maxItems":3,"description":"Workspace edit tools allowed by this plan."},"acceptanceCriteria":{"type":"array","items":{"type":"string"},"maxItems":12,"description":"Checks or outcomes that should be true before requesting commit."}},"required":["summary","steps","targetPaths","allowedOperations"]}`),
+				Risk:        projectAssistantToolRiskPlan,
+			},
+			call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
+				return "", errors.New("plan approval is handled by the assistant run state")
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
 				Name:        projectToolWriteFile,
 				Description: "Write a complete UTF-8 text file into the App Studio project workspace.",
 				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative file path."},"content":{"type":"string","description":"Complete UTF-8 text content to write. Maximum %d bytes."}},"required":["path","content"]}`, workspace.MaxWriteBytes)),
@@ -213,8 +235,6 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				return projectAssistantToolJSONResult(s.workspaces.Mkdir(ctx, req.WorkspaceScope, workspace.MkdirOptions{Path: projectToolString(req.Arguments["path"])}))
 			},
 		},
-		newProjectRuntimeVerificationWorkflowToolForRegistry(server),
-		newProjectRuntimeCommandToolForRegistry(server),
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolCommitProjectFiles,

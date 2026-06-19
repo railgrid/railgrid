@@ -18,138 +18,162 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 
+	"cloud.google.com/go/auth/credentials"
+	geminimodel "github.com/cloudwego/eino-ext/components/model/gemini"
+	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"google.golang.org/genai"
 )
 
-type projectEinoChatModel struct {
-	settings  projectLLMSettings
-	callbacks projectAssistantStreamCallbacks
-	runState  *projectEinoAssistantRunState
-}
+const defaultProjectLLMGoogleCloudLocation = "global"
 
 func newProjectEinoAssistantModelFactory(server *Server) projectEinoAssistantModelFactory {
-	return func(_ context.Context, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+	return func(ctx context.Context, req projectAssistantRunRequest, _ *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
 		if server == nil {
 			return nil, errors.New("server is not configured")
 		}
-		return projectEinoChatModel{
-			settings:  req.LLM,
-			callbacks: req.StreamCallbacks,
-			runState:  runState,
+		return newProjectEinoChatModel(ctx, req.LLM)
+	}
+}
+
+func newProjectEinoChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
+	if err := normalizeProjectLLMSettings(&settings); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(settings.APIKey) == "" {
+		return nil, errProjectLLMNotConfigured
+	}
+	switch strings.TrimSpace(settings.Provider) {
+	case projectLLMProviderGoogle:
+		return newProjectEinoGeminiChatModel(ctx, settings)
+	default:
+		return newProjectEinoOpenAIChatModel(ctx, settings)
+	}
+}
+
+func newProjectEinoOpenAIChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
+	temperature := float32(0.2)
+	model, err := openaimodel.NewChatModel(ctx, &openaimodel.ChatModelConfig{
+		APIKey:      strings.TrimSpace(settings.APIKey),
+		BaseURL:     strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"),
+		Model:       strings.TrimSpace(settings.Model),
+		Temperature: &temperature,
+		HTTPClient:  &http.Client{},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create native Eino OpenAI chat model: %w", err)
+	}
+	return model, nil
+}
+
+func newProjectEinoGeminiChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
+	clientConfig, err := projectEinoGeminiClientConfig(settings)
+	if err != nil {
+		return nil, err
+	}
+	client, err := genai.NewClient(ctx, clientConfig)
+	if err != nil {
+		return nil, fmt.Errorf("create Google GenAI client: %w", err)
+	}
+	temperature := float32(0.2)
+	model, err := geminimodel.NewChatModel(ctx, &geminimodel.Config{
+		Client:      client,
+		Model:       strings.TrimSpace(settings.Model),
+		Temperature: &temperature,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create native Eino Gemini chat model: %w", err)
+	}
+	return model, nil
+}
+
+func projectEinoGeminiClientConfig(settings projectLLMSettings) (*genai.ClientConfig, error) {
+	apiKey := strings.TrimSpace(settings.APIKey)
+	credential, usesServiceAccount, err := googleServiceAccountCredentialFromJSON(apiKey)
+	if err != nil {
+		return nil, err
+	}
+	httpOptions := projectEinoGeminiHTTPOptions(settings.BaseURL)
+	if !usesServiceAccount {
+		return &genai.ClientConfig{
+			APIKey:      apiKey,
+			Backend:     genai.BackendGeminiAPI,
+			HTTPOptions: httpOptions,
 		}, nil
 	}
+	authCredentials, err := credentials.DetectDefault(&credentials.DetectOptions{
+		Scopes:          []string{projectLLMGoogleCloudScope},
+		CredentialsJSON: []byte(apiKey),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("loading Google service-account JSON credential: %w", err)
+	}
+	return &genai.ClientConfig{
+		Backend:     genai.BackendVertexAI,
+		Project:     strings.TrimSpace(credential.ProjectID),
+		Location:    projectEinoGoogleCloudLocation(settings.BaseURL),
+		Credentials: authCredentials,
+		HTTPOptions: httpOptions,
+	}, nil
 }
 
-func (m projectEinoChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
-	return m.complete(ctx, input, opts...)
+func projectEinoGeminiHTTPOptions(baseURL string) genai.HTTPOptions {
+	nativeBaseURL := projectEinoGeminiNativeBaseURL(baseURL)
+	if nativeBaseURL == "" {
+		return genai.HTTPOptions{}
+	}
+	return genai.HTTPOptions{BaseURL: nativeBaseURL}
 }
 
-func (m projectEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
-	msg, err := m.complete(ctx, input, opts...)
-	if err != nil {
-		return nil, err
+func projectEinoGeminiNativeBaseURL(baseURL string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		return ""
 	}
-	return schema.StreamReaderFromArray([]*schema.Message{msg}), nil
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return baseURL
+	}
+	host := strings.ToLower(u.Host)
+	if host == "generativelanguage.googleapis.com" || strings.HasSuffix(host, ".generativelanguage.googleapis.com") {
+		return u.Scheme + "://" + u.Host
+	}
+	if strings.Contains(host, "aiplatform.googleapis.com") {
+		return u.Scheme + "://" + u.Host
+	}
+	return baseURL
 }
 
-func (m projectEinoChatModel) complete(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
-	messages, err := projectEinoMessagesToChat(input)
-	if err != nil {
-		return nil, err
-	}
-	m.runState.RecordModelInput(messages)
-
-	reqBody, err := m.requestBody(messages, opts...)
-	if err != nil {
-		return nil, err
-	}
-	maybeInjectGoogleThoughtSignature(m.settings, reqBody.Messages)
-	reply, err := callProjectChatCompletionStream(ctx, m.settings, reqBody, m.callbacks.OnChunk, m.callbacks.OnStatus)
-	if err != nil {
-		return nil, err
-	}
-	m.runState.RecordAssistantReply(reply)
-	return schema.AssistantMessage(reply.Content, projectChatToolCallsToEino(reply.ToolCalls)), nil
-}
-
-func (m projectEinoChatModel) requestBody(messages []chatMessage, opts ...einomodel.Option) (chatCompletionRequest, error) {
-	modelName := strings.TrimSpace(m.settings.Model)
-	temperature := float64(0.2)
-	common := einomodel.GetCommonOptions(nil, opts...)
-	if common.Model != nil && strings.TrimSpace(*common.Model) != "" {
-		modelName = strings.TrimSpace(*common.Model)
-	}
-	if common.Temperature != nil {
-		temperature = float64(*common.Temperature)
-	}
-	reqBody := chatCompletionRequest{
-		Model:       modelName,
-		Messages:    messages,
-		Temperature: temperature,
-		Stream:      true,
-	}
-	tools, err := projectEinoToolInfosToChat(common.Tools)
-	if err != nil {
-		return chatCompletionRequest{}, err
-	}
-	if len(tools) > 0 {
-		reqBody.Tools = tools
-		reqBody.ToolChoice = "auto"
-	}
-	if common.ToolChoice != nil {
-		switch *common.ToolChoice {
-		case schema.ToolChoiceForbidden:
-			reqBody.Tools = nil
-			reqBody.ToolChoice = "none"
-		case schema.ToolChoiceForced:
-			reqBody.ToolChoice = "required"
-		case schema.ToolChoiceAllowed:
-			if len(reqBody.Tools) > 0 {
-				reqBody.ToolChoice = "auto"
+func projectEinoGoogleCloudLocation(baseURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL != "" {
+		if u, err := url.Parse(baseURL); err == nil {
+			parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+			for i, part := range parts {
+				if part == "locations" && i+1 < len(parts) && strings.TrimSpace(parts[i+1]) != "" {
+					return strings.TrimSpace(parts[i+1])
+				}
+			}
+			host := strings.ToLower(u.Host)
+			if suffix := "-aiplatform.googleapis.com"; strings.HasSuffix(host, suffix) {
+				location := strings.TrimSuffix(host, suffix)
+				if strings.TrimSpace(location) != "" {
+					return strings.TrimSpace(location)
+				}
 			}
 		}
 	}
-	return reqBody, nil
+	return defaultProjectLLMGoogleCloudLocation
 }
 
-func projectEinoToolInfosToChat(infos []*schema.ToolInfo) ([]chatTool, error) {
-	out := make([]chatTool, 0, len(infos))
-	for _, info := range infos {
-		if info == nil || strings.TrimSpace(info.Name) == "" {
-			continue
-		}
-		var params json.RawMessage
-		if info.Extra != nil {
-			if raw, ok := info.Extra["parametersJSON"].(string); ok && strings.TrimSpace(raw) != "" {
-				params = json.RawMessage(raw)
-			}
-		}
-		if len(params) == 0 && info.ParamsOneOf != nil {
-			raw, err := json.Marshal(info.ParamsOneOf)
-			if err != nil {
-				return nil, fmt.Errorf("encode eino tool schema %q: %w", info.Name, err)
-			}
-			params = raw
-		}
-		out = append(out, chatTool{
-			Type: "function",
-			Function: chatToolFunction{
-				Name:        strings.TrimSpace(info.Name),
-				Description: strings.TrimSpace(info.Desc),
-				Parameters:  params,
-			},
-		})
-	}
-	return out, nil
-}
-
-func projectEinoMessagesToChat(messages []*schema.Message) ([]chatMessage, error) {
+func projectEinoMessagesToChat(messages []*schema.Message) []chatMessage {
 	out := make([]chatMessage, 0, len(messages))
 	for _, msg := range messages {
 		if msg == nil {
@@ -166,7 +190,7 @@ func projectEinoMessagesToChat(messages []*schema.Message) ([]chatMessage, error
 			out[len(out)-1].Name = msg.ToolName
 		}
 	}
-	return out, nil
+	return out
 }
 
 func projectChatMessagesToEino(messages []chatMessage) ([]*schema.Message, error) {
@@ -205,7 +229,7 @@ func projectChatToolCallsToEino(toolCalls []chatToolCall) []schema.ToolCall {
 		out = append(out, schema.ToolCall{
 			Index: &index,
 			ID:    tc.ID,
-			Type:  tc.Type,
+			Type:  projectEinoToolCallType(tc.Type),
 			Function: schema.FunctionCall{
 				Name:      tc.Function.Name,
 				Arguments: tc.Function.Arguments,
@@ -229,13 +253,9 @@ func projectEinoToolCallsToChat(toolCalls []schema.ToolCall) []chatToolCall {
 				extra[key] = value
 			}
 		}
-		toolType := strings.TrimSpace(tc.Type)
-		if toolType == "" {
-			toolType = "function"
-		}
 		out = append(out, chatToolCall{
 			ID:           tc.ID,
-			Type:         toolType,
+			Type:         projectEinoToolCallType(tc.Type),
 			ExtraContent: extra,
 			Function: chatToolCallFunction{
 				Name:      tc.Function.Name,
@@ -244,4 +264,12 @@ func projectEinoToolCallsToChat(toolCalls []schema.ToolCall) []chatToolCall {
 		})
 	}
 	return out
+}
+
+func projectEinoToolCallType(toolType string) string {
+	toolType = strings.TrimSpace(toolType)
+	if toolType == "" {
+		return "function"
+	}
+	return toolType
 }

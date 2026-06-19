@@ -18,11 +18,13 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
-func TestProjectAssistantStreamWriterMapsDeltaToTypedEvent(t *testing.T) {
+func TestProjectAssistantStreamWriterMapsDeltaToUIDataModelUpdate(t *testing.T) {
 	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
 		Type:  projectAssistantEventMessageDelta,
 		Delta: "hello",
@@ -30,12 +32,22 @@ func TestProjectAssistantStreamWriterMapsDeltaToTypedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
 	}
-	if len(got) != 1 || got[0].Type != string(projectAssistantEventMessageDelta) || got[0].Content != "hello" || got[0].AssistantMessageID != "assistant-1" {
-		t.Fatalf("events = %#v, want one assistant message_delta event", got)
+	if len(got) != 2 {
+		t.Fatalf("events = %#v, want beginRendering and dataModelUpdate", got)
+	}
+	if got[0].Type != "ui" || got[0].AssistantMessageID != "assistant-1" || got[0].UI == nil || got[0].UI.BeginRendering == nil {
+		t.Fatalf("first event = %#v, want beginRendering UI event", got[0])
+	}
+	if got[1].Type != "ui" || got[1].AssistantMessageID != "assistant-1" || got[1].UI == nil || got[1].UI.DataModelUpdate == nil {
+		t.Fatalf("second event = %#v, want dataModelUpdate UI event", got[1])
+	}
+	contents := got[1].UI.DataModelUpdate.Contents
+	if len(contents) != 1 || contents[0].Key != "assistant.content" || contents[0].ValueString != "hello" || !contents[0].Append {
+		t.Fatalf("data model contents = %#v, want assistant content append", contents)
 	}
 }
 
-func TestProjectAssistantStreamWriterMapsStatus(t *testing.T) {
+func TestProjectAssistantStreamWriterMapsStatusToUIDataModelUpdate(t *testing.T) {
 	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
 		Type:   projectAssistantEventStatus,
 		Status: "Preparing action",
@@ -43,12 +55,16 @@ func TestProjectAssistantStreamWriterMapsStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
 	}
-	if len(got) != 1 || got[0].Type != "status" || got[0].Status != "Preparing action" || got[0].AssistantMessageID != "" {
-		t.Fatalf("events = %#v, want one status event without assistant id", got)
+	if len(got) != 1 || got[0].Type != "ui" || got[0].UI == nil || got[0].UI.DataModelUpdate == nil {
+		t.Fatalf("events = %#v, want one status dataModelUpdate", got)
+	}
+	contents := got[0].UI.DataModelUpdate.Contents
+	if len(contents) != 1 || contents[0].Key != "assistant.status" || contents[0].ValueString != "Preparing action" {
+		t.Fatalf("data model contents = %#v, want assistant status", contents)
 	}
 }
 
-func TestProjectAssistantStreamWriterMapsToolCall(t *testing.T) {
+func TestProjectAssistantStreamWriterMapsToolCallToSafeDisclosure(t *testing.T) {
 	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
 		Type: projectAssistantEventToolCallFinished,
 		ToolCall: &projectAssistantToolCall{
@@ -63,14 +79,92 @@ func TestProjectAssistantStreamWriterMapsToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
 	}
-	if len(got) != 1 || got[0].Type != string(projectAssistantEventToolCallFinished) || got[0].AssistantMessageID != "assistant-1" {
-		t.Fatalf("events = %#v, want one assistant tool_call_finished event", got)
+	if len(got) != 2 {
+		t.Fatalf("events = %#v, want beginRendering and safe surfaceUpdate", got)
 	}
-	if got[0].ToolCall == nil {
-		t.Fatalf("tool call event omitted payload: %#v", got[0])
+	event := got[1]
+	if event.Type != "ui" || event.AssistantMessageID != "assistant-1" || event.UI == nil || event.UI.SurfaceUpdate == nil {
+		t.Fatalf("event = %#v, want safe surfaceUpdate UI event", event)
 	}
-	if got[0].ToolCall.ID != "tool-1" || got[0].ToolCall.Name != "write_file" || got[0].ToolCall.Status != "succeeded" || got[0].ToolCall.Arguments != `{"path":"src/App.tsx"}` || got[0].ToolCall.Error != "warning only" {
-		t.Fatalf("tool call = %#v, want preserved current SSE payload", got[0].ToolCall)
+	components := event.UI.SurfaceUpdate.Components
+	if len(components) != 1 || components[0].ToolDisclosure == nil {
+		t.Fatalf("components = %#v, want one tool disclosure", components)
+	}
+	disclosure := components[0].ToolDisclosure
+	if disclosure.ID != "tool-1" || disclosure.Kind != "edit" || disclosure.Status != "succeeded" || disclosure.Label != "Edited files" {
+		t.Fatalf("disclosure = %#v, want safe edit disclosure", disclosure)
+	}
+	assertNoRawAssistantTrace(t, got, "src/App.tsx", "warning only", "write_file")
+}
+
+func TestProjectAssistantStreamWriterMapsPermissionCheckpointToInterruptRequest(t *testing.T) {
+	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
+		Type: projectAssistantEventPermissionNeeded,
+		Permission: &projectAssistantPermission{
+			ID:         "perm-1",
+			ToolCallID: "tool-1",
+			ToolName:   "write_file",
+			Reason:     "will write files",
+			Input:      json.RawMessage(`{"path":"src/App.tsx","content":"secret"}`),
+		},
+	}, projectAssistantEvent{
+		Type:       projectAssistantEventCheckpointSaved,
+		Checkpoint: &projectAssistantCheckpoint{ID: "run-1", Reason: "waiting_for_permission"},
+	})
+	if err != nil {
+		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("events = %#v, want beginRendering, disclosure, interruptRequest", got)
+	}
+	interrupt := got[2].UI.InterruptRequest
+	if got[2].Type != "ui" || got[2].AssistantMessageID != "assistant-1" || interrupt == nil {
+		t.Fatalf("event = %#v, want interruptRequest UI event", got[2])
+	}
+	if interrupt.InterruptID != "perm-1" || interrupt.Description != "will write files" || interrupt.Status != "pending" {
+		t.Fatalf("interrupt = %#v, want pending permission request", interrupt)
+	}
+	if interrupt.Action == nil || interrupt.Action.RunID != "run-1" || interrupt.Action.RequestID != "perm-1" {
+		t.Fatalf("interrupt action = %#v, want opaque resume handle", interrupt.Action)
+	}
+	assertNoRawAssistantTrace(t, got, "src/App.tsx", "secret", "waiting_for_permission", "checkpoint_saved", "permission_required")
+}
+
+func TestProjectAssistantMessageMetadataStoresSafeUIModel(t *testing.T) {
+	metadata := projectAssistantMessageMetadata(projectMessageStatusPendingPermission, []projectToolCallStreamEvent{{
+		ID:        "tool-1",
+		Name:      "write_file",
+		Status:    "permission_required",
+		Arguments: `{"path":"src/App.tsx","content":"secret"}`,
+		Summary:   "Wrote src/App.tsx",
+		Error:     "raw tool failure",
+		Permission: &projectAssistantPermission{
+			ID:         "perm-1",
+			ToolCallID: "tool-1",
+			ToolName:   "write_file",
+			Reason:     "will write files",
+			Input:      json.RawMessage(`{"path":"src/App.tsx","content":"secret"}`),
+		},
+		Checkpoint: &projectAssistantCheckpoint{ID: "run-1", Reason: "waiting_for_permission"},
+	}})
+	if _, ok := metadata["toolCalls"]; ok {
+		t.Fatalf("metadata = %#v, should not persist raw toolCalls", metadata)
+	}
+	if _, ok := metadata["assistantActions"]; !ok {
+		t.Fatalf("metadata = %#v, want safe assistantActions", metadata)
+	}
+	if _, ok := metadata["assistantInterrupt"]; !ok {
+		t.Fatalf("metadata = %#v, want safe assistantInterrupt", metadata)
+	}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	payload := string(raw)
+	for _, value := range []string{"src/App.tsx", "secret", "raw tool failure", "waiting_for_permission", "permission_required"} {
+		if strings.Contains(payload, value) {
+			t.Fatalf("metadata leaked %q in %s", value, payload)
+		}
 	}
 }
 
@@ -96,33 +190,6 @@ func TestProjectAssistantEventTypeForToolCallStatus(t *testing.T) {
 	}
 }
 
-func TestProjectAssistantStreamWriterMapsPermissionAndCheckpoint(t *testing.T) {
-	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
-		Type: projectAssistantEventPermissionNeeded,
-		Permission: &projectAssistantPermission{
-			ID:         "perm-1",
-			ToolCallID: "tool-1",
-			ToolName:   "write_file",
-			Reason:     "will write files",
-		},
-	}, projectAssistantEvent{
-		Type:       projectAssistantEventCheckpointSaved,
-		Checkpoint: &projectAssistantCheckpoint{ID: "run-1", Reason: "waiting_for_permission"},
-	})
-	if err != nil {
-		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("events = %#v, want permission and checkpoint", got)
-	}
-	if got[0].Type != "permission_required" || got[0].Permission == nil || got[0].Permission.ID != "perm-1" || got[0].AssistantMessageID != "assistant-1" {
-		t.Fatalf("permission event = %#v, want assistant permission payload", got[0])
-	}
-	if got[1].Type != "checkpoint_saved" || got[1].Checkpoint == nil || got[1].Checkpoint.ID != "run-1" || got[1].AssistantMessageID != "assistant-1" {
-		t.Fatalf("checkpoint event = %#v, want assistant checkpoint payload", got[1])
-	}
-}
-
 func TestProjectAssistantStreamWriterMapsTerminalEvents(t *testing.T) {
 	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
 		Type:  projectAssistantEventRunFailed,
@@ -141,6 +208,18 @@ func TestProjectAssistantStreamWriterMapsTerminalEvents(t *testing.T) {
 	}
 	if got[1].Type != string(projectAssistantEventRunFinished) || got[1].AssistantMessageID != "assistant-1" {
 		t.Fatalf("second event = %#v, want assistant run_finished", got[1])
+	}
+}
+
+func TestProjectAssistantGenerationFailureMessageHidesEinoTraceForRateLimit(t *testing.T) {
+	got := projectAssistantGenerationFailureMessage(errors.New(`[NodeRunError] LLM API returned 429 Too Many Requests: Resource exhausted. Please try again later.
+------------------------
+node path: [node_1, ChatModel]`))
+	if strings.Contains(got, "NodeRunError") || strings.Contains(got, "node path") || strings.Contains(got, "ChatModel") {
+		t.Fatalf("message = %q, want no raw Eino trace", got)
+	}
+	if !strings.Contains(got, "rate limited") {
+		t.Fatalf("message = %q, want rate limit explanation", got)
 	}
 }
 
@@ -174,4 +253,18 @@ func collectProjectAssistantStreamEvents(events ...projectAssistantEvent) ([]pro
 		}
 	}
 	return got, nil
+}
+
+func assertNoRawAssistantTrace(t *testing.T, events []projectMessageStreamEvent, forbidden ...string) {
+	t.Helper()
+	raw, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("marshal events: %v", err)
+	}
+	payload := string(raw)
+	for _, value := range forbidden {
+		if strings.Contains(payload, value) {
+			t.Fatalf("public UI events leaked %q in %s", value, payload)
+		}
+	}
 }

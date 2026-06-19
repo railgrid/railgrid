@@ -24,63 +24,78 @@ export interface ProjectMessage {
   createdAt: string
 }
 
-export interface ProjectToolCallEvent {
+export type ProjectAssistantActionStatus = 'requested' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'succeeded' | 'failed' | 'rejected'
+
+export interface ProjectAssistantUIAction {
   id: string
-  name?: string
-  status: 'requested' | 'running' | 'permission_required' | 'succeeded' | 'failed' | 'rejected'
-  arguments?: string
+  kind: 'inspect' | 'clarify' | 'edit' | 'run' | 'commit' | 'plan' | 'other'
+  status: ProjectAssistantActionStatus
+  label: string
   summary?: string
-  error?: string
-  permission?: ProjectAssistantPermission
-  checkpoint?: ProjectAssistantCheckpoint
+  count?: number
 }
 
-export interface ProjectAssistantPermission {
+export interface ProjectAssistantUIComponent {
   id: string
-  toolCallID?: string
-  toolName?: string
-  reason?: string
-  input?: unknown
+  type: string
+  toolDisclosure?: ProjectAssistantUIAction
 }
 
-export interface ProjectAssistantCheckpoint {
-  id: string
-  reason?: string
-  createdAt?: string
+export interface ProjectAssistantUIDataContent {
+  key: string
+  valueString?: string
+  append?: boolean
+}
+
+export interface ProjectAssistantUIEvent {
+  beginRendering?: {
+    surfaceId: string
+    root: string
+  }
+  surfaceUpdate?: {
+    surfaceId: string
+    components?: ProjectAssistantUIComponent[]
+  }
+  dataModelUpdate?: {
+    surfaceId: string
+    contents?: ProjectAssistantUIDataContent[]
+  }
+  interruptRequest?: ProjectAssistantUIInterruptRequest
+}
+
+export interface ProjectAssistantUIInterruptRequest {
+  interruptId: string
+  kind?: 'permission' | 'follow_up'
+  surfaceId?: string
+  description?: string
+  questions?: string[]
+  status?: 'pending' | 'resolved'
+  action?: {
+    runId: string
+    requestId: string
+    assistantMessageId?: string
+  }
 }
 
 export interface ProjectAssistantResumeResponse {
   runID: string
   requestID: string
-  status: 'pending_permission' | 'running' | 'completed' | 'aborted'
-  decision: 'allow' | 'deny'
-  toolCall?: ProjectToolCallEvent
-  permission?: ProjectAssistantPermission
-  checkpoint?: ProjectAssistantCheckpoint
-  result?: string
+  status: 'pending_permission' | 'pending_input' | 'running' | 'completed' | 'aborted'
+  decision?: 'allow' | 'deny'
+  uiEvents?: ProjectAssistantUIEvent[]
   assistantMessage?: ProjectMessage
 }
 
 export interface ProjectMessageStreamEvent {
   type:
-    | 'run_started'
-    | 'message_delta'
-    | 'status'
-    | 'tool_call_started'
-    | 'tool_call_finished'
-    | 'permission_required'
-    | 'checkpoint_saved'
+    | 'ui'
     | 'run_failed'
     | 'run_finished'
     | 'project'
   assistantMessageID?: string
-  content?: string
-  status?: string
   error?: string
   project?: Project
-  toolCall?: ProjectToolCallEvent
-  permission?: ProjectAssistantPermission
-  checkpoint?: ProjectAssistantCheckpoint
+  ui?: ProjectAssistantUIEvent
 }
 
 export interface Project {

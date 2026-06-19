@@ -18,6 +18,7 @@ package api
 
 import (
 	"fmt"
+	pathpkg "path"
 	"strings"
 )
 
@@ -34,10 +35,26 @@ func projectAssistantPermissionForTool(spec projectAssistantToolSpec) projectAss
 }
 
 func projectAssistantPermissionForToolWithPolicy(spec projectAssistantToolSpec, autoApprove bool) projectAssistantPermissionDecision {
+	return projectAssistantPermissionForToolWithRunState(spec, autoApprove, nil, nil)
+}
+
+func projectAssistantPermissionForToolWithRunState(spec projectAssistantToolSpec, autoApprove bool, runState *projectEinoAssistantRunState, args map[string]any) projectAssistantPermissionDecision {
 	switch spec.Risk {
-	case projectAssistantToolRiskRead:
+	case projectAssistantToolRiskRead, projectAssistantToolRiskInput:
 		return projectAssistantPermissionAllow
-	case projectAssistantToolRiskWrite, projectAssistantToolRiskCommit, projectAssistantToolRiskRuntime:
+	case projectAssistantToolRiskPlan:
+		if autoApprove {
+			return projectAssistantPermissionAllow
+		}
+		return projectAssistantPermissionAsk
+	case projectAssistantToolRiskWrite:
+		if autoApprove || projectAssistantApprovedPlanAllowsWrite(runState.ApprovedPlan(), spec.Name, args) {
+			return projectAssistantPermissionAllow
+		}
+		return projectAssistantPermissionAsk
+	case projectAssistantToolRiskCommit:
+		return projectAssistantPermissionAsk
+	case projectAssistantToolRiskRuntime:
 		if autoApprove {
 			return projectAssistantPermissionAllow
 		}
@@ -45,6 +62,82 @@ func projectAssistantPermissionForToolWithPolicy(spec projectAssistantToolSpec, 
 	default:
 		return projectAssistantPermissionDeny
 	}
+}
+
+func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan, toolName string, args map[string]any) bool {
+	if plan == nil {
+		return false
+	}
+	toolName = projectToolBaseName(toolName)
+	switch toolName {
+	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	default:
+		return false
+	}
+	if !projectAssistantApprovedPlanAllowsOperation(plan, toolName) {
+		return false
+	}
+	targetPath := projectAssistantWriteTargetPath(toolName, args)
+	if targetPath == "" {
+		return false
+	}
+	for _, approved := range plan.TargetPaths {
+		if projectAssistantPathWithinApprovedTarget(targetPath, approved) {
+			return true
+		}
+	}
+	return false
+}
+
+func projectAssistantApprovedPlanAllowsOperation(plan *projectAssistantApprovedPlan, toolName string) bool {
+	if plan == nil {
+		return false
+	}
+	if len(plan.Operations) == 0 {
+		return false
+	}
+	for _, op := range plan.Operations {
+		if projectToolBaseName(op) == toolName {
+			return true
+		}
+	}
+	return false
+}
+
+func projectAssistantWriteTargetPath(toolName string, args map[string]any) string {
+	switch projectToolBaseName(toolName) {
+	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+		return normalizeProjectAssistantRelativePath(projectToolString(args["path"]))
+	default:
+		return ""
+	}
+}
+
+func projectAssistantPathWithinApprovedTarget(candidate, approved string) bool {
+	candidate = normalizeProjectAssistantRelativePath(candidate)
+	approved = strings.TrimSpace(approved)
+	if approved == "" || candidate == "" {
+		return false
+	}
+	directory := strings.HasSuffix(approved, "/")
+	approved = normalizeProjectAssistantRelativePath(approved)
+	if approved == "" {
+		return false
+	}
+	if directory {
+		return candidate == approved || strings.HasPrefix(candidate, approved+"/")
+	}
+	return candidate == approved
+}
+
+func normalizeProjectAssistantRelativePath(value string) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	value = strings.TrimPrefix(value, "/")
+	value = pathpkg.Clean(value)
+	if value == "." || strings.HasPrefix(value, "../") || value == ".." {
+		return ""
+	}
+	return value
 }
 
 func parseProjectAssistantPermissionDecision(value string) (projectAssistantPermissionDecision, error) {
@@ -71,6 +164,15 @@ func (e *projectAssistantPermissionRequiredError) Error() string {
 		return fmt.Sprintf("assistant tool %q requires permission", e.ToolName)
 	}
 	return "assistant tool permission required"
+}
+
+type projectAssistantInputRequiredError struct {
+	RunID     string
+	RequestID string
+}
+
+func (e *projectAssistantInputRequiredError) Error() string {
+	return "assistant needs follow-up input"
 }
 
 func projectAssistantPermissionDeniedToolMessage(tc chatToolCall, reason string) chatMessage {

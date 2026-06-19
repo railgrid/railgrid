@@ -93,13 +93,6 @@ tool.
 ## Runtime workers
 
 App Studio does not run build, test, preview, or log commands inside the
-provider pod. Runtime commands are modeled behind an internal worker boundary so
-future implementations can use isolated tenant/project-scoped workers with their
-own resource limits, audit trail, and cancellation model.
-
-By default no runtime worker is configured, so runtime tools are not advertised
-to the assistant. If a deployment injects a worker, both `verify_project_runtime`
-and `runtime_command` still require explicit user approval before the worker is
-started. `verify_project_runtime` uses fixed App Studio verification presets and
-routes them through the same worker boundary instead of running commands in the
-provider pod.
+provider pod. The assistant can recommend build and test checks from project
+context, but App Studio no longer advertises runtime execution tools until a
+tenant-isolated worker implementation is productized.

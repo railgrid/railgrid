@@ -103,15 +103,11 @@ type ProjectMessagesResponse struct {
 }
 
 type projectMessageStreamEvent struct {
-	Type               string                      `json:"type"`
-	AssistantMessageID string                      `json:"assistantMessageID,omitempty"`
-	Content            string                      `json:"content,omitempty"`
-	Status             string                      `json:"status,omitempty"`
-	Error              string                      `json:"error,omitempty"`
-	Project            *ProjectView                `json:"project,omitempty"`
-	ToolCall           *projectToolCallStreamEvent `json:"toolCall,omitempty"`
-	Permission         *projectAssistantPermission `json:"permission,omitempty"`
-	Checkpoint         *projectAssistantCheckpoint `json:"checkpoint,omitempty"`
+	Type               string                   `json:"type"`
+	AssistantMessageID string                   `json:"assistantMessageID,omitempty"`
+	Error              string                   `json:"error,omitempty"`
+	Project            *ProjectView             `json:"project,omitempty"`
+	UI                 *projectAssistantUIEvent `json:"ui,omitempty"`
 }
 
 type projectToolCallStreamEvent struct {
@@ -122,14 +118,18 @@ type projectToolCallStreamEvent struct {
 	Summary    string                      `json:"summary,omitempty"`
 	Error      string                      `json:"error,omitempty"`
 	Permission *projectAssistantPermission `json:"permission,omitempty"`
+	FollowUp   *projectAssistantFollowUp   `json:"followUp,omitempty"`
 	Checkpoint *projectAssistantCheckpoint `json:"checkpoint,omitempty"`
 }
 
 const projectAPIInitializingMessage = "App Studio is still initializing for this workspace. Try again shortly."
 const projectMessageMetadataStatus = "status"
 const projectMessageMetadataToolCalls = "toolCalls"
+const projectMessageMetadataAssistantActions = "assistantActions"
+const projectMessageMetadataAssistantInterrupt = "assistantInterrupt"
 const projectMessageStatusInterrupted = "interrupted"
 const projectMessageStatusPendingPermission = "pending_permission"
+const projectMessageStatusPendingInput = "pending_input"
 const projectMessagePersistTimeout = 5 * time.Second
 
 var errProjectAssistantMessageNotFound = errors.New("project assistant message not found")
@@ -350,7 +350,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listProjectMessages(w http.ResponseWriter, r *http.Request) {
-	c, id, p, ok := s.requireProjectWithClient(w, r)
+	_, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
@@ -360,10 +360,6 @@ func (s *Server) listProjectMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	limit := listLimitFromRequest(r)
 	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
-	if err := s.migrateLegacyProjectMessages(r.Context(), c, id.orgUUID, id.workspaceUUID, p); err != nil {
-		writeProjectError(w, err)
-		return
-	}
 	page, err := msgStore.ListMessages(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name), limit, cursor)
 	if err != nil {
 		writeProjectError(w, err)
@@ -404,9 +400,10 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 		})
 	}
 	writeStatus := func(status string) error {
+		ui := projectAssistantUIStatusEvent(status)
 		return writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-			Type:   "status",
-			Status: status,
+			Type: projectAssistantUIEventType,
+			UI:   &ui,
 		})
 	}
 
@@ -426,7 +423,6 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 	view := projectView(r.Context(), c, created)
 	if err := writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
 		Type:    "project",
-		Status:  "Project ready",
 		Project: &view,
 	}); err != nil {
 		return
@@ -462,10 +458,6 @@ func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Reque
 
 	msgStore, ok := s.requireStore(w)
 	if !ok {
-		return
-	}
-	if err := s.migrateLegacyProjectMessages(r.Context(), c, id.orgUUID, id.workspaceUUID, p); err != nil {
-		writeProjectError(w, err)
 		return
 	}
 	if err := appendProjectUserMessage(r.Context(), msgStore, projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name), req.Content); err != nil {
@@ -548,6 +540,7 @@ func (s *Server) streamProjectAssistant(
 	var streamErr error
 	var streamedToolCalls []projectToolCallStreamEvent
 	var pendingPermissionToolCallID string
+	var pendingFollowUpToolCallID string
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
 	streamWriter := projectAssistantStreamWriter{
 		assistantID: assistantID,
@@ -574,6 +567,24 @@ func (s *Server) streamProjectAssistant(
 					ID:         pendingPermissionToolCallID,
 					Status:     "permission_required",
 					Checkpoint: event.Checkpoint,
+				})
+			}
+			if event.Checkpoint != nil && pendingFollowUpToolCallID != "" {
+				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
+					ID:         pendingFollowUpToolCallID,
+					Status:     "input_required",
+					Checkpoint: event.Checkpoint,
+				})
+			}
+		case projectAssistantEventInputNeeded:
+			if event.FollowUp != nil && event.FollowUp.ToolCallID != "" {
+				pendingFollowUpToolCallID = event.FollowUp.ToolCallID
+				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
+					ID:       event.FollowUp.ToolCallID,
+					Name:     projectToolAskFollowUp,
+					Status:   "input_required",
+					Summary:  event.FollowUp.Prompt,
+					FollowUp: event.FollowUp,
 				})
 			}
 		}
@@ -650,6 +661,21 @@ func (s *Server) streamProjectAssistant(
 			}
 			return
 		}
+		var inputErr *projectAssistantInputRequiredError
+		if errors.As(err, &inputErr) {
+			persistCtx, cancel := detachedProjectPersistenceContext(r.Context())
+			defer cancel()
+			if err := appendProjectAssistantMessage(persistCtx, msgStore, scope, assistantID, assistantContent.String(), projectAssistantMessageMetadata(projectMessageStatusPendingInput, streamedToolCalls)); err != nil {
+				if streamErr == nil {
+					_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
+						Type:  projectAssistantEventRunFailed,
+						Error: "assistant persistence failed: " + err.Error(),
+					})
+				}
+			}
+			_ = inputErr
+			return
+		}
 		if shouldPersistInterruptedProjectAssistant(r.Context(), err, streamErr, assistantContent.String()) {
 			persistErr := appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
 			if persistErr != nil && streamErr == nil {
@@ -673,7 +699,7 @@ func (s *Server) streamProjectAssistant(
 		}
 		_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
 			Type:  projectAssistantEventRunFailed,
-			Error: "assistant generation failed: " + err.Error(),
+			Error: projectAssistantGenerationFailureMessage(err),
 		})
 		return
 	}
@@ -731,6 +757,41 @@ func projectAssistantUnstreamedContent(reply, streamed string) string {
 	return "\n\n" + reply
 }
 
+func projectAssistantGenerationFailureMessage(err error) string {
+	detail := "assistant generation failed"
+	if err != nil {
+		detail = strings.TrimSpace(err.Error())
+	}
+	if projectAssistantLLMRateLimitError(detail) {
+		return "assistant generation failed: The LLM provider is rate limited. Please wait a moment and try again."
+	}
+	detail = projectAssistantStripEinoTrace(detail)
+	if detail == "" {
+		detail = "assistant generation failed"
+	}
+	if strings.HasPrefix(detail, "assistant generation failed") {
+		return detail
+	}
+	return "assistant generation failed: " + detail
+}
+
+func projectAssistantLLMRateLimitError(detail string) bool {
+	detail = strings.ToLower(detail)
+	return strings.Contains(detail, "429") ||
+		strings.Contains(detail, "too many requests") ||
+		strings.Contains(detail, "resource_exhausted") ||
+		strings.Contains(detail, "resource exhausted")
+}
+
+func projectAssistantStripEinoTrace(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if before, _, found := strings.Cut(detail, "------------------------"); found {
+		detail = strings.TrimSpace(before)
+	}
+	detail = strings.TrimPrefix(detail, "[NodeRunError]")
+	return strings.TrimSpace(detail)
+}
+
 func shouldPersistInterruptedProjectAssistant(ctx context.Context, err, streamErr error, streamed string) bool {
 	return strings.TrimSpace(streamed) != "" && (streamErr != nil || errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled))
 }
@@ -780,75 +841,74 @@ func (s *Server) updateProjectAssistantPermissionMessage(
 		return nil
 	}
 	metadata := cloneAnyMap(msg.Metadata)
-	toolCalls := projectToolCallStreamEventsFromMetadata(metadata[projectMessageMetadataToolCalls])
-	if !projectAssistantPermissionMessageMatchesResume(metadata, toolCalls, response) {
+	actions := projectAssistantUIActionsFromMetadata(metadata[projectMessageMetadataAssistantActions])
+	interrupt := projectAssistantUIInterruptFromMetadata(metadata[projectMessageMetadataAssistantInterrupt])
+	if !projectAssistantPermissionMessageMatchesResume(metadata, interrupt, response) {
 		return nil
 	}
 	if response.ToolCall != nil {
-		toolCalls = upsertProjectToolCallStreamEvent(toolCalls, *response.ToolCall)
+		actions = upsertProjectAssistantUIAction(actions, projectAssistantUIActionFromToolCall(*response.ToolCall))
 	}
 	if response.Permission != nil {
-		toolCalls = upsertProjectToolCallStreamEvent(toolCalls, projectToolCallStreamEvent{
-			ID:         response.Permission.ToolCallID,
-			Name:       response.Permission.ToolName,
-			Status:     "permission_required",
-			Summary:    response.Permission.Reason,
-			Permission: response.Permission,
-		})
+		actions = upsertProjectAssistantUIAction(actions, projectAssistantUIActionFromPermission(*response.Permission))
+	}
+	if response.FollowUp != nil {
+		actions = upsertProjectAssistantUIAction(actions, projectAssistantUIActionFromFollowUp(*response.FollowUp))
 	}
 	if response.Checkpoint != nil && response.Permission != nil {
-		toolCalls = upsertProjectToolCallStreamEvent(toolCalls, projectToolCallStreamEvent{
-			ID:         response.Permission.ToolCallID,
-			Status:     "permission_required",
-			Checkpoint: response.Checkpoint,
-		})
+		interrupt = projectAssistantUIInterruptRequestFromPermissionCheckpoint("", *response.Permission, *response.Checkpoint)
+	}
+	if response.Checkpoint != nil && response.FollowUp != nil {
+		interrupt = projectAssistantUIInterruptRequestFromFollowUpCheckpoint("", *response.FollowUp, *response.Checkpoint)
 	}
 	if response.Status == store.AssistantRunStatusPendingPermission {
 		metadata[projectMessageMetadataStatus] = projectMessageStatusPendingPermission
+		if interrupt != nil {
+			metadata[projectMessageMetadataAssistantInterrupt] = interrupt
+		}
+	} else if response.Status == store.AssistantRunStatusPendingInput {
+		metadata[projectMessageMetadataStatus] = projectMessageStatusPendingInput
+		if interrupt != nil {
+			metadata[projectMessageMetadataAssistantInterrupt] = interrupt
+		}
 	} else {
 		delete(metadata, projectMessageMetadataStatus)
+		delete(metadata, projectMessageMetadataAssistantInterrupt)
 	}
-	metadata[projectMessageMetadataToolCalls] = sanitizeProjectToolCallStreamEventsForMetadata(toolCalls)
+	content := msg.Content
+	if strings.TrimSpace(response.AssistantContent) != "" {
+		content = response.AssistantContent
+	}
+	delete(metadata, projectMessageMetadataToolCalls)
+	if len(actions) > 0 {
+		metadata[projectMessageMetadataAssistantActions] = actions
+	} else {
+		delete(metadata, projectMessageMetadataAssistantActions)
+	}
 	now := time.Now().UTC()
 	return s.store.AppendMessage(ctx, scope, store.Message{
 		ID:        msg.ID,
 		Role:      msg.Role,
-		Content:   msg.Content,
+		Content:   content,
 		Metadata:  metadata,
 		CreatedAt: msg.CreatedAt,
 		UpdatedAt: now,
 	})
 }
 
-func projectAssistantPermissionMessageMatchesResume(metadata map[string]any, toolCalls []projectToolCallStreamEvent, response projectAssistantResumeResponse) bool {
-	if metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission {
+func projectAssistantPermissionMessageMatchesResume(metadata map[string]any, interrupt *projectAssistantUIInterruptRequest, response projectAssistantResumeResponse) bool {
+	status := metadata[projectMessageMetadataStatus]
+	if status != projectMessageStatusPendingPermission && status != projectMessageStatusPendingInput {
 		return false
 	}
-	if response.RunID == "" || len(toolCalls) == 0 {
+	if response.RunID == "" || interrupt == nil || interrupt.Action == nil {
 		return false
 	}
-	toolIDs := map[string]struct{}{}
-	if response.ToolCall != nil && response.ToolCall.ID != "" {
-		toolIDs[response.ToolCall.ID] = struct{}{}
+	if interrupt.Action.RunID == response.RunID {
+		return true
 	}
-	if response.Permission != nil && response.Permission.ToolCallID != "" {
-		toolIDs[response.Permission.ToolCallID] = struct{}{}
-	}
-	for _, event := range toolCalls {
-		if event.Checkpoint == nil || event.Checkpoint.ID != response.RunID {
-			continue
-		}
-		if len(toolIDs) == 0 {
-			return true
-		}
-		if _, ok := toolIDs[event.ID]; ok {
-			return true
-		}
-		if event.Permission != nil {
-			if _, ok := toolIDs[event.Permission.ToolCallID]; ok {
-				return true
-			}
-		}
+	if response.RequestID != "" && interrupt.Action.RequestID == response.RequestID {
+		return true
 	}
 	return false
 }
@@ -878,13 +938,125 @@ func projectAssistantMessageMetadata(status string, toolCalls []projectToolCallS
 	if status != "" {
 		metadata[projectMessageMetadataStatus] = status
 	}
-	if len(toolCalls) > 0 {
-		metadata[projectMessageMetadataToolCalls] = sanitizeProjectToolCallStreamEventsForMetadata(toolCalls)
+	if actions := projectAssistantUIActionsFromToolCalls(toolCalls); len(actions) > 0 {
+		metadata[projectMessageMetadataAssistantActions] = actions
+	}
+	if interrupt := projectAssistantUIInterruptFromToolCalls(toolCalls); interrupt != nil {
+		metadata[projectMessageMetadataAssistantInterrupt] = interrupt
 	}
 	if len(metadata) == 0 {
 		return nil
 	}
 	return metadata
+}
+
+func projectAssistantUIActionsFromToolCalls(events []projectToolCallStreamEvent) []projectAssistantUIAction {
+	if len(events) == 0 {
+		return nil
+	}
+	actions := make([]projectAssistantUIAction, 0, len(events))
+	for _, event := range events {
+		if event.ID == "" || event.Status == "" {
+			continue
+		}
+		actions = upsertProjectAssistantUIAction(actions, projectAssistantUIActionFromToolCall(event))
+	}
+	if len(actions) == 0 {
+		return nil
+	}
+	return actions
+}
+
+func projectAssistantUIInterruptFromToolCalls(events []projectToolCallStreamEvent) *projectAssistantUIInterruptRequest {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Status == "input_required" && event.FollowUp != nil && event.Checkpoint != nil {
+			return projectAssistantUIInterruptRequestFromFollowUpCheckpoint("", *event.FollowUp, *event.Checkpoint)
+		}
+		if event.Status != "permission_required" || event.Permission == nil || event.Checkpoint == nil {
+			continue
+		}
+		return projectAssistantUIInterruptRequestFromPermissionCheckpoint("", *event.Permission, *event.Checkpoint)
+	}
+	return nil
+}
+
+func projectAssistantUIActionsFromMetadata(raw any) []projectAssistantUIAction {
+	if raw == nil {
+		return nil
+	}
+	if typed, ok := raw.([]projectAssistantUIAction); ok {
+		return append([]projectAssistantUIAction(nil), typed...)
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var out []projectAssistantUIAction
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func projectAssistantUIInterruptFromMetadata(raw any) *projectAssistantUIInterruptRequest {
+	if raw == nil {
+		return nil
+	}
+	if typed, ok := raw.(*projectAssistantUIInterruptRequest); ok {
+		if typed == nil {
+			return nil
+		}
+		copy := *typed
+		return &copy
+	}
+	if typed, ok := raw.(projectAssistantUIInterruptRequest); ok {
+		return &typed
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var out projectAssistantUIInterruptRequest
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	if out.InterruptID == "" && out.Action == nil {
+		return nil
+	}
+	return &out
+}
+
+func upsertProjectAssistantUIAction(actions []projectAssistantUIAction, action projectAssistantUIAction) []projectAssistantUIAction {
+	if action.ID == "" {
+		return actions
+	}
+	for i := range actions {
+		if actions[i].ID == action.ID {
+			actions[i] = mergeProjectAssistantUIAction(actions[i], action)
+			return actions
+		}
+	}
+	return append(actions, action)
+}
+
+func mergeProjectAssistantUIAction(existing, next projectAssistantUIAction) projectAssistantUIAction {
+	if next.Kind == "" {
+		next.Kind = existing.Kind
+	}
+	if next.Status == "" {
+		next.Status = existing.Status
+	}
+	if next.Label == "" {
+		next.Label = existing.Label
+	}
+	if next.Summary == "" {
+		next.Summary = existing.Summary
+	}
+	if next.Count == 0 {
+		next.Count = existing.Count
+	}
+	return next
 }
 
 func sanitizeProjectToolCallStreamEventsForMetadata(events []projectToolCallStreamEvent) []projectToolCallStreamEvent {
@@ -946,6 +1118,9 @@ func mergeProjectToolCallStreamEvent(existing, next projectToolCallStreamEvent) 
 	}
 	if next.Permission == nil {
 		next.Permission = existing.Permission
+	}
+	if next.FollowUp == nil {
+		next.FollowUp = existing.FollowUp
 	}
 	if next.Checkpoint == nil {
 		next.Checkpoint = existing.Checkpoint

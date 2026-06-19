@@ -33,14 +33,15 @@ import { useEscapeKey } from '@/composables/useEscapeKey'
 import type {
   KedgeContext,
   Project,
-  ProjectAssistantCheckpoint,
-  ProjectAssistantPermission,
+  ProjectAssistantActionStatus,
   ProjectAssistantResumeResponse,
+  ProjectAssistantUIAction,
+  ProjectAssistantUIEvent,
+  ProjectAssistantUIInterruptRequest,
   ProjectLLMSettings,
   ProjectMessage,
   ProjectRepositoryCommit,
   ProjectMessageStreamEvent,
-  ProjectToolCallEvent,
   ProviderItem,
 } from './types'
 
@@ -70,15 +71,24 @@ interface LandingCategoryTile {
 
 type LLMCredentialMode = 'api-key' | 'service-account-json'
 type ProjectMessageViewStatus = 'interrupted'
-type ProjectToolCallView = ProjectToolCallEvent
+type ProjectAssistantActionView = ProjectAssistantUIAction
 type ProjectMessageView = ProjectMessage & {
   viewStatus?: ProjectMessageViewStatus
-  toolCalls?: ProjectToolCallView[]
+  actions?: ProjectAssistantActionView[]
+  interrupt?: ProjectAssistantUIInterruptRequest
 }
+type WorkbenchTab = 'review' | 'providers'
 interface PendingApprovalView {
   message: ProjectMessageView
-  toolCall: ProjectToolCallView
+  interrupt: ProjectAssistantUIInterruptRequest
 }
+
+interface PendingFollowUpView {
+  message: ProjectMessageView
+  interrupt: ProjectAssistantUIInterruptRequest
+}
+
+type LegacyProjectAssistantToolCall = Record<string, unknown>
 
 const SPLIT_WIDTH_KEY = 'kedge:projects:split-width'
 const OPENAI_COMPATIBLE_PROVIDER = 'openai-compatible'
@@ -86,13 +96,22 @@ const GOOGLE_AI_STUDIO_PROVIDER = 'google-ai-studio'
 const OPENAI_DEFAULT_MODEL = 'gpt-4o-mini'
 const GEMINI_DEFAULT_MODEL = 'gemini-3.5-flash'
 const GOOGLE_CLOUD_DEFAULT_MODEL = 'google/gemini-3.5-flash'
-const GEMINI_OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai'
-const GOOGLE_CLOUD_OPENAI_BASE_URL = 'https://aiplatform.googleapis.com/v1/projects/<project-id>/locations/global/endpoints/openapi'
+const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com'
+const GOOGLE_CLOUD_BASE_URL = 'https://aiplatform.googleapis.com'
 const CREATE_PROJECT_ROUTE = '~new'
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
 const CODE_REPOSITORIES_URL = '/ui/providers/code/repositories'
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
+const PROJECT_ASSISTANT_ACTION_STATUSES = new Set<ProjectAssistantActionStatus>([
+  'requested',
+  'running',
+  'awaiting_approval',
+  'awaiting_input',
+  'succeeded',
+  'failed',
+  'rejected',
+])
 const assistantMarkdown = new MarkdownIt({
   html: false,
   breaks: true,
@@ -193,10 +212,19 @@ const messages = ref<ProjectMessageView[]>([])
 const pendingApproval = computed<PendingApprovalView | null>(() => {
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const message = messages.value[i]
-    for (const toolCall of message.toolCalls ?? []) {
-      if (toolCall.status === 'permission_required' && toolCall.permission) {
-        return { message, toolCall }
-      }
+    const interrupt = message.interrupt
+    if (interrupt?.status === 'pending' && interrupt.kind !== 'follow_up' && interrupt.action?.runId && interrupt.action.requestId) {
+      return { message, interrupt }
+    }
+  }
+  return null
+})
+const pendingFollowUp = computed<PendingFollowUpView | null>(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const message = messages.value[i]
+    const interrupt = message.interrupt
+    if (interrupt?.status === 'pending' && interrupt.kind === 'follow_up' && interrupt.action?.runId && interrupt.action.requestId) {
+      return { message, interrupt }
     }
   }
   return null
@@ -223,10 +251,13 @@ const projectQuery = ref('')
 const providerQuery = ref('')
 const conversationStatus = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
-const permissionEdits = ref<Record<string, string>>({})
 const permissionErrors = ref<Record<string, string>>({})
+const followUpAnswers = ref<Record<string, string>>({})
+const followUpBusy = ref<Record<string, boolean>>({})
+const followUpErrors = ref<Record<string, string>>({})
 const selectedTool = ref<ProviderTool | null>(null)
 const toolState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+const workbenchTab = ref<WorkbenchTab>('providers')
 const llmSettings = ref<ProjectLLMSettings | null>(null)
 const llmProvider = ref(OPENAI_COMPATIBLE_PROVIDER)
 const llmBaseURL = ref('https://api.openai.com/v1')
@@ -264,8 +295,9 @@ const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCr
 const isBuilderVisible = computed(() => !isAppStudioLandingRoute.value || selected.value !== null)
 const showNewProjectComposer = computed(() => isCreateRoute.value)
 const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
+const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).length > 0 || Object.keys(followUpBusy.value).length > 0)
 const canStartProjectFromPrompt = computed(() => prompt.value.trim().length > 0)
-const canSendPrompt = computed(() => (llmSettings.value?.configured ?? false) && prompt.value.trim().length > 0)
+const canSendPrompt = computed(() => (llmSettings.value?.configured ?? false) && prompt.value.trim().length > 0 && !messageStreaming.value && !assistantResumeBusy.value)
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
 const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'LLM settings'))
 const settingsDescription = computed(() =>
@@ -277,10 +309,6 @@ const conversationWorkingLabel = computed(() => {
   if (conversationStatus.value) return conversationStatus.value
   if (!messageStreaming.value) return ''
   const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
-  const activeGroup = activeToolActionGroup(lastAssistant?.toolCalls)
-  if (activeGroup) return toolActionGroupLabel(activeGroup)
-  const activeTool = lastAssistant?.toolCalls?.find((toolCall) => toolCall.status === 'requested' || toolCall.status === 'running')
-  if (activeTool?.name) return `${toolCallStatusLabel(activeTool)} ${displayToolName(activeTool.name)}`
   if (lastAssistant?.content.trim()) return 'Writing'
   return 'Working'
 })
@@ -297,7 +325,7 @@ const isGoogleServiceAccountMode = computed(() =>
   isGoogleGeminiProvider.value && llmCredentialMode.value === 'service-account-json',
 )
 const llmBaseURLPlaceholder = computed(() =>
-  isGoogleServiceAccountMode.value ? GOOGLE_CLOUD_OPENAI_BASE_URL : isGoogleGeminiProvider.value ? GEMINI_OPENAI_BASE_URL : 'Base URL',
+  isGoogleServiceAccountMode.value ? GOOGLE_CLOUD_BASE_URL : isGoogleGeminiProvider.value ? GEMINI_BASE_URL : 'Base URL',
 )
 const llmApiKeyPlaceholder = computed(() =>
   isGoogleServiceAccountMode.value ? 'Service account JSON' : isGoogleGeminiProvider.value ? 'Gemini API key' : 'API key',
@@ -640,7 +668,7 @@ function applyLLMSettings(settings: ProjectLLMSettings) {
   llmSettings.value = settings
   const provider = inferLLMProvider(settings.provider, settings.baseURL)
   llmProvider.value = provider
-  llmCredentialMode.value = isGoogleCloudOpenAIBaseURL(settings.baseURL) ? 'service-account-json' : 'api-key'
+  llmCredentialMode.value = isGoogleCloudBaseURL(settings.baseURL) ? 'service-account-json' : 'api-key'
   llmBaseURL.value = normalizeLLMBaseURLInput(provider, settings.baseURL, llmCredentialMode.value)
   llmModel.value = normalizeLLMModelInput(provider, settings.model, llmCredentialMode.value)
   llmApiKey.value = ''
@@ -648,18 +676,18 @@ function applyLLMSettings(settings: ProjectLLMSettings) {
 
 function inferLLMProvider(provider: string, baseURL: string): string {
   const normalizedProvider = provider.trim().toLowerCase()
-  if ((normalizedProvider === '' || normalizedProvider === OPENAI_COMPATIBLE_PROVIDER) && isGoogleOpenAIBaseURL(baseURL)) {
+  if ((normalizedProvider === '' || normalizedProvider === OPENAI_COMPATIBLE_PROVIDER) && isGoogleBaseURL(baseURL)) {
     return GOOGLE_AI_STUDIO_PROVIDER
   }
   return provider
 }
 
-function isGoogleOpenAIBaseURL(baseURL: string): boolean {
+function isGoogleBaseURL(baseURL: string): boolean {
   const normalizedBaseURL = baseURL.trim().toLowerCase().replace(/\/+$/, '')
-  return normalizedBaseURL.startsWith('https://generativelanguage.googleapis.com/') || isGoogleCloudOpenAIBaseURL(baseURL)
+  return normalizedBaseURL === GEMINI_BASE_URL || normalizedBaseURL.startsWith(`${GEMINI_BASE_URL}/`) || isGoogleCloudBaseURL(baseURL)
 }
 
-function isGoogleCloudOpenAIBaseURL(baseURL: string): boolean {
+function isGoogleCloudBaseURL(baseURL: string): boolean {
   return baseURL.trim().toLowerCase().replace(/\/+$/, '').startsWith('https://aiplatform.googleapis.com/')
 }
 
@@ -810,15 +838,15 @@ function normalizeLLMBaseURLInput(provider: string, baseURL: string, credentialM
   if (
     normalizedProvider === GOOGLE_AI_STUDIO_PROVIDER &&
     credentialMode === 'service-account-json' &&
-    (normalizedBaseURL === 'https://api.openai.com/v1' || normalizedBaseURL === GEMINI_OPENAI_BASE_URL)
+    (normalizedBaseURL === 'https://api.openai.com/v1' || normalizedBaseURL === GEMINI_BASE_URL)
   ) {
     return ''
   }
   if (normalizedProvider === GOOGLE_AI_STUDIO_PROVIDER && !normalizedBaseURL) {
-    return GEMINI_OPENAI_BASE_URL
+    return GEMINI_BASE_URL
   }
   if (normalizedProvider === GOOGLE_AI_STUDIO_PROVIDER && normalizedBaseURL === 'https://api.openai.com/v1') {
-    return GEMINI_OPENAI_BASE_URL
+    return GEMINI_BASE_URL
   }
   return normalizedBaseURL || 'https://api.openai.com/v1'
 }
@@ -918,6 +946,7 @@ async function createProjectAndStartConversation(content: string) {
     phase: 'Creating',
     createdAt: now,
   }
+  workbenchTab.value = 'providers'
   messages.value = [
     {
       id: `temp-${Date.now()}-user`,
@@ -931,50 +960,17 @@ async function createProjectAndStartConversation(content: string) {
   try {
     await nextTick()
     await api.createProjectStream(props.ctx, { description: description || undefined, prompt: content }, (event: ProjectMessageStreamEvent) => {
-      if (event.type === 'status') {
-        conversationStatus.value = event.status || 'Working'
+      if (event.type === 'ui') {
+        const nextAssistantMessageID = applyAssistantUIEvent(projectName, event.assistantMessageID, event.ui)
+        if (!assistantMessageID && nextAssistantMessageID) {
+          assistantMessageID = nextAssistantMessageID
+        }
       } else if (event.type === 'project') {
         if (!event.project) return
         projectName = event.project.name
         selected.value = event.project
         messages.value = messages.value.map((message) => ({ ...message, projectID: projectName }))
         props.navigate(encodeURIComponent(projectName))
-      } else if (event.type === 'message_delta') {
-        conversationStatus.value = ''
-        if (!projectName || !event.assistantMessageID) return
-        if (!assistantMessageID) {
-          assistantMessageID = event.assistantMessageID
-        }
-
-        if (event.content === undefined) return
-        const idx = ensureAssistantMessage(projectName, event.assistantMessageID)
-        const existing = messages.value[idx]
-        messages.value[idx] = {
-          ...existing,
-          content: `${existing.content}${event.content ?? ''}`,
-        }
-        messages.value = [...messages.value]
-      } else if (event.type === 'tool_call_started' || event.type === 'tool_call_finished') {
-        conversationStatus.value = ''
-        if (!projectName || !event.assistantMessageID || !event.toolCall) return
-        if (!assistantMessageID) {
-          assistantMessageID = event.assistantMessageID
-        }
-        upsertAssistantToolCall(projectName, event.assistantMessageID, event.toolCall)
-      } else if (event.type === 'permission_required') {
-        conversationStatus.value = ''
-        if (!projectName || !event.assistantMessageID || !event.permission) return
-        if (!assistantMessageID) {
-          assistantMessageID = event.assistantMessageID
-        }
-        upsertAssistantPermission(projectName, event.assistantMessageID, event.permission)
-      } else if (event.type === 'checkpoint_saved') {
-        conversationStatus.value = ''
-        if (!projectName || !event.assistantMessageID || !event.checkpoint) return
-        if (!assistantMessageID) {
-          assistantMessageID = event.assistantMessageID
-        }
-        attachAssistantCheckpoint(projectName, event.assistantMessageID, event.checkpoint)
       } else if (event.type === 'run_finished') {
         conversationStatus.value = ''
         if (!assistantMessageID) {
@@ -1092,6 +1088,25 @@ async function openProject(name: string, updateURL = true) {
   }
 }
 
+async function refreshSelectedProjectConversation(projectName: string) {
+  if (!projectName || selected.value?.name !== projectName) return
+  const [project, loadedMessages, projectList] = await Promise.all([
+    api.getProject(props.ctx, projectName),
+    api.listAllMessages(props.ctx, projectName),
+    api.listProjects(props.ctx),
+  ])
+  if (selected.value?.name !== projectName) return
+  selected.value = project
+  messages.value = loadedMessages.map(toProjectMessageView)
+  projects.value = projectList
+}
+
+function workbenchTabButtonClass(tab: WorkbenchTab): string {
+  return workbenchTab.value === tab
+    ? 'border-accent/40 bg-accent/10 text-accent'
+    : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary'
+}
+
 function requestDeleteProject(project: Project) {
   deleteProjectTarget.value = project
 }
@@ -1130,7 +1145,7 @@ async function confirmDeleteProject() {
 
 async function sendMessage() {
   const content = prompt.value.trim()
-  if (!content || !selected.value || !llmSettings.value?.configured || messageStreaming.value) return
+  if (!content || !selected.value || !llmSettings.value?.configured || messageStreaming.value || assistantResumeBusy.value) return
   const projectName = selected.value.name
   prompt.value = ''
   busy.value = true
@@ -1151,44 +1166,11 @@ async function sendMessage() {
   messages.value = optimisticMessages
   try {
     await api.createMessageStream(props.ctx, projectName, content, (event: ProjectMessageStreamEvent) => {
-      if (event.type === 'status') {
-        conversationStatus.value = event.status || 'Working'
-      } else if (event.type === 'message_delta') {
-        conversationStatus.value = ''
-        if (!event.assistantMessageID) return
-        if (!assistantMessageID) {
-          assistantMessageID = event.assistantMessageID
+      if (event.type === 'ui') {
+        const nextAssistantMessageID = applyAssistantUIEvent(projectName, event.assistantMessageID, event.ui)
+        if (!assistantMessageID && nextAssistantMessageID) {
+          assistantMessageID = nextAssistantMessageID
         }
-
-        if (event.content === undefined) return
-        const idx = ensureAssistantMessage(projectName, event.assistantMessageID)
-        const existing = messages.value[idx]
-        messages.value[idx] = {
-          ...existing,
-          content: `${existing.content}${event.content ?? ''}`,
-        }
-        messages.value = [...messages.value]
-      } else if (event.type === 'tool_call_started' || event.type === 'tool_call_finished') {
-        conversationStatus.value = ''
-        if (!event.assistantMessageID || !event.toolCall) return
-        if (!assistantMessageID) {
-          assistantMessageID = event.assistantMessageID
-        }
-        upsertAssistantToolCall(projectName, event.assistantMessageID, event.toolCall)
-      } else if (event.type === 'permission_required') {
-        conversationStatus.value = ''
-        if (!event.assistantMessageID || !event.permission) return
-        if (!assistantMessageID) {
-          assistantMessageID = event.assistantMessageID
-        }
-        upsertAssistantPermission(projectName, event.assistantMessageID, event.permission)
-      } else if (event.type === 'checkpoint_saved') {
-        conversationStatus.value = ''
-        if (!event.assistantMessageID || !event.checkpoint) return
-        if (!assistantMessageID) {
-          assistantMessageID = event.assistantMessageID
-        }
-        attachAssistantCheckpoint(projectName, event.assistantMessageID, event.checkpoint)
       } else if (event.type === 'run_finished') {
         conversationStatus.value = ''
         if (!assistantMessageID) {
@@ -1244,71 +1226,111 @@ function ensureAssistantMessage(projectName: string, assistantMessageID: string)
   return messages.value.length - 1
 }
 
-function upsertAssistantToolCall(projectName: string, assistantMessageID: string, toolCall: ProjectToolCallEvent) {
-  const idx = ensureAssistantMessage(projectName, assistantMessageID)
-  const message = messages.value[idx]
-  const toolCalls = [...(message.toolCalls ?? [])]
-  const existingIdx = toolCalls.findIndex((item) => item.id === toolCall.id)
-  if (existingIdx === -1) {
-    toolCalls.push(toolCall)
-  } else {
-    toolCalls[existingIdx] = mergeToolCall(toolCalls[existingIdx], toolCall)
-  }
-  messages.value[idx] = {
-    ...message,
-    toolCalls,
-  }
-  messages.value = [...messages.value]
-}
+function applyAssistantUIEvent(projectName: string, assistantMessageID: string | undefined, ui?: ProjectAssistantUIEvent): string | undefined {
+  if (!ui) return undefined
+  let touchedAssistantMessageID: string | undefined
 
-function upsertAssistantPermission(projectName: string, assistantMessageID: string, permission: ProjectAssistantPermission) {
-  const id = permission.toolCallID || permission.id
-  const toolCall: ProjectToolCallEvent = {
-    id,
-    name: permission.toolName,
-    status: 'permission_required',
-    arguments: permissionInputLabel(permission),
-    summary: permission.reason,
-    permission,
-  }
-  upsertAssistantToolCall(projectName, assistantMessageID, toolCall)
-  const key = permissionKey(toolCall)
-  if (key && permissionEdits.value[key] === undefined) {
-    permissionEdits.value = {
-      ...permissionEdits.value,
-      [key]: prettyPermissionInput(permission.input),
+  if (ui.dataModelUpdate?.contents?.length) {
+    for (const content of ui.dataModelUpdate.contents) {
+      if (content.key === 'assistant.status') {
+        conversationStatus.value = content.valueString || 'Working'
+        continue
+      }
+      if (content.key === 'builder.event') {
+        conversationStatus.value = builderEventStatus(content.valueString)
+        continue
+      }
+      if (content.key !== 'assistant.content' || !projectName || !assistantMessageID) continue
+      conversationStatus.value = ''
+      touchedAssistantMessageID = assistantMessageID
+      const idx = ensureAssistantMessage(projectName, assistantMessageID)
+      const existing = messages.value[idx]
+      messages.value[idx] = {
+        ...existing,
+        content: content.append ? `${existing.content}${content.valueString ?? ''}` : (content.valueString ?? ''),
+      }
+      messages.value = [...messages.value]
     }
   }
+
+  if (ui.beginRendering && projectName && assistantMessageID) {
+    touchedAssistantMessageID = assistantMessageID
+    ensureAssistantMessage(projectName, assistantMessageID)
+  }
+
+  if (ui.surfaceUpdate?.components?.length && projectName && assistantMessageID) {
+    conversationStatus.value = ''
+    touchedAssistantMessageID = assistantMessageID
+    for (const component of ui.surfaceUpdate.components) {
+      if (component.toolDisclosure) {
+        upsertAssistantAction(projectName, assistantMessageID, component.toolDisclosure)
+      }
+    }
+  }
+
+  if (ui.interruptRequest && projectName && assistantMessageID) {
+    conversationStatus.value = ''
+    touchedAssistantMessageID = assistantMessageID
+    applyAssistantInterrupt(projectName, assistantMessageID, ui.interruptRequest)
+  }
+
+  return touchedAssistantMessageID
 }
 
-function attachAssistantCheckpoint(projectName: string, assistantMessageID: string, checkpoint: ProjectAssistantCheckpoint) {
+function builderEventStatus(eventType?: string): string {
+  switch ((eventType || '').trim()) {
+    case 'plan_ready':
+      return 'Plan ready'
+    case 'plan_approved':
+      return 'Applying plan'
+    case 'workspace_changed':
+      return 'Updating workspace'
+    default:
+      return 'Working'
+  }
+}
+
+function upsertAssistantAction(projectName: string, assistantMessageID: string, action: ProjectAssistantActionView) {
   const idx = ensureAssistantMessage(projectName, assistantMessageID)
   const message = messages.value[idx]
-  const toolCalls = [...(message.toolCalls ?? [])]
-  const targetIdx = [...toolCalls].reverse().findIndex((item) => item.status === 'permission_required' && !item.checkpoint)
-  if (targetIdx === -1) return
-  const idxFromStart = toolCalls.length - 1 - targetIdx
-  toolCalls[idxFromStart] = {
-    ...toolCalls[idxFromStart],
-    checkpoint,
+  const actions = [...(message.actions ?? [])]
+  const existingIdx = actions.findIndex((item) => item.id === action.id)
+  if (existingIdx === -1) {
+    actions.push(action)
+  } else {
+    actions[existingIdx] = mergeAssistantAction(actions[existingIdx], action)
   }
   messages.value[idx] = {
     ...message,
-    toolCalls,
+    actions,
   }
   messages.value = [...messages.value]
 }
 
-function mergeToolCall(existing: ProjectToolCallView, next: ProjectToolCallEvent): ProjectToolCallView {
+function applyAssistantInterrupt(projectName: string, assistantMessageID: string, interrupt: ProjectAssistantUIInterruptRequest) {
+  const idx = ensureAssistantMessage(projectName, assistantMessageID)
+  const message = messages.value[idx]
+  const next: ProjectMessageView = { ...message }
+  if (interrupt.status === 'resolved') {
+    if (next.interrupt?.interruptId === interrupt.interruptId) {
+      delete next.interrupt
+    }
+  } else {
+    next.interrupt = interrupt
+  }
+  messages.value[idx] = next
+  messages.value = [...messages.value]
+}
+
+function mergeAssistantAction(existing: ProjectAssistantActionView, next: ProjectAssistantActionView): ProjectAssistantActionView {
   return {
     ...existing,
     ...next,
-    name: next.name || existing.name,
-    arguments: next.arguments || existing.arguments,
     summary: next.summary || existing.summary,
-    error: next.error || existing.error,
-    permission: next.permission || existing.permission,
-    checkpoint: next.checkpoint || existing.checkpoint,
+    label: next.label || existing.label,
+    kind: next.kind || existing.kind,
+    status: next.status || existing.status,
+    count: next.count || existing.count,
   }
 }
 
@@ -1338,47 +1360,35 @@ function markAssistantMessageInterrupted(projectName: string, assistantMessageID
   ]
 }
 
-async function resolveToolPermission(message: ProjectMessageView, toolCall: ProjectToolCallView, decision: 'allow' | 'deny') {
+async function resolveToolPermission(message: ProjectMessageView, interrupt: ProjectAssistantUIInterruptRequest, decision: 'allow' | 'deny') {
   const projectName = selected.value?.name || message.projectID
-  const runID = toolCall.checkpoint?.id
-  const requestID = toolCall.permission?.id
-  const key = permissionKey(toolCall)
+  const runID = interrupt.action?.runId
+  const requestID = interrupt.action?.requestId
+  const key = permissionKey(interrupt)
   if (!projectName || !runID || !requestID || !key || permissionBusy.value[key]) return
 
   permissionErrors.value = { ...permissionErrors.value, [key]: '' }
-  let editedArguments: Record<string, unknown> | undefined
-  if (decision === 'allow' && canEditPermission(toolCall)) {
-    const raw = (permissionEdits.value[key] ?? '').trim()
-    if (raw) {
-      try {
-        editedArguments = JSON.parse(raw) as Record<string, unknown>
-      } catch (e) {
-        permissionErrors.value = {
-          ...permissionErrors.value,
-          [key]: e instanceof Error ? e.message : 'Invalid JSON input',
-        }
-        return
-      }
-    }
-  }
-
   permissionBusy.value = { ...permissionBusy.value, [key]: decision }
-  if (decision === 'allow') {
-    conversationStatus.value = 'Working'
-  }
+  conversationStatus.value = 'Working'
+  let responseApplied = false
   try {
+    markInterruptResolvedLocally(projectName, message.id, interrupt)
     const response = await api.resumeAssistantRun(props.ctx, projectName, runID, {
       requestID,
       decision,
       assistantMessageID: message.id,
-      ...(editedArguments ? { editedArguments } : {}),
     })
-    applyPermissionResponse(projectName, message.id, toolCall, response)
+    applyPermissionResponse(projectName, message.id, interrupt, response)
+    responseApplied = true
+    await refreshSelectedProjectConversation(projectName)
   } catch (e) {
-    permissionErrors.value = {
-      ...permissionErrors.value,
-      [key]: e instanceof Error ? e.message : String(e),
-    }
+    await handleResumeFailure(projectName, key, e, {
+      panelMessage: responseApplied ? 'Approval updated, but the conversation did not refresh. Reopen this project.' : 'Could not update approval. Try again.',
+      setPanelError: (message) => {
+        permissionErrors.value = { ...permissionErrors.value, [key]: message }
+      },
+      restorePending: responseApplied ? undefined : () => markInterruptPendingLocally(projectName, message.id, interrupt),
+    })
   } finally {
     const next = { ...permissionBusy.value }
     delete next[key]
@@ -1387,36 +1397,106 @@ async function resolveToolPermission(message: ProjectMessageView, toolCall: Proj
   }
 }
 
+async function submitFollowUpAnswer(message: ProjectMessageView, interrupt: ProjectAssistantUIInterruptRequest) {
+  const projectName = selected.value?.name || message.projectID
+  const runID = interrupt.action?.runId
+  const requestID = interrupt.action?.requestId
+  const key = followUpKey(interrupt)
+  const answer = (followUpAnswers.value[key] || '').trim()
+  if (!projectName || !runID || !requestID || !key || followUpBusy.value[key]) return
+  if (!answer) {
+    followUpErrors.value = { ...followUpErrors.value, [key]: 'Add an answer before continuing.' }
+    return
+  }
+
+  followUpErrors.value = { ...followUpErrors.value, [key]: '' }
+  followUpBusy.value = { ...followUpBusy.value, [key]: true }
+  conversationStatus.value = 'Working'
+  let responseApplied = false
+  try {
+    markInterruptResolvedLocally(projectName, message.id, interrupt)
+    const response = await api.resumeAssistantRun(props.ctx, projectName, runID, {
+      requestID,
+      answer,
+      assistantMessageID: message.id,
+    })
+    applyPermissionResponse(projectName, message.id, interrupt, response)
+    responseApplied = true
+    await refreshSelectedProjectConversation(projectName)
+    const answers = { ...followUpAnswers.value }
+    delete answers[key]
+    followUpAnswers.value = answers
+  } catch (e) {
+    await handleResumeFailure(projectName, key, e, {
+      panelMessage: responseApplied ? 'Answer sent, but the conversation did not refresh. Reopen this project.' : 'Could not send answer. Try again.',
+      setPanelError: (message) => {
+        followUpErrors.value = { ...followUpErrors.value, [key]: message }
+      },
+      restorePending: responseApplied ? undefined : () => markInterruptPendingLocally(projectName, message.id, interrupt),
+    })
+  } finally {
+    const next = { ...followUpBusy.value }
+    delete next[key]
+    followUpBusy.value = next
+    conversationStatus.value = ''
+  }
+}
+
+function updateFollowUpAnswer(interrupt: ProjectAssistantUIInterruptRequest, value: string) {
+  followUpAnswers.value = {
+    ...followUpAnswers.value,
+    [followUpKey(interrupt)]: value,
+  }
+}
+
+function markInterruptResolvedLocally(projectName: string, assistantMessageID: string, interrupt: ProjectAssistantUIInterruptRequest) {
+  applyAssistantInterrupt(projectName, assistantMessageID, { ...interrupt, status: 'resolved' })
+}
+
+function markInterruptPendingLocally(projectName: string, assistantMessageID: string, interrupt: ProjectAssistantUIInterruptRequest) {
+  applyAssistantInterrupt(projectName, assistantMessageID, { ...interrupt, status: 'pending' })
+}
+
+async function handleResumeFailure(
+  projectName: string,
+  key: string,
+  e: unknown,
+  options: { panelMessage: string; setPanelError: (message: string) => void; restorePending?: () => void },
+) {
+  try {
+    await refreshSelectedProjectConversation(projectName)
+  } catch {
+    options.restorePending?.()
+    // Keep the original resume failure visible below.
+  }
+  if (hasPendingInterruptKey(key)) {
+    options.setPanelError(options.panelMessage)
+    return
+  }
+  error.value = e instanceof Error ? e.message : String(e)
+}
+
 function applyPermissionResponse(
   projectName: string,
   assistantMessageID: string,
-  toolCall: ProjectToolCallView,
+  interrupt: ProjectAssistantUIInterruptRequest,
   response: ProjectAssistantResumeResponse,
 ) {
-  const key = permissionKey(toolCall)
-  if (response.toolCall) {
-    upsertAssistantToolCall(projectName, assistantMessageID, response.toolCall)
+  const key = permissionKey(interrupt)
+  if (response.uiEvents?.length) {
+    for (const uiEvent of response.uiEvents) {
+      applyAssistantUIEvent(projectName, assistantMessageID, uiEvent)
+    }
   } else {
-    upsertAssistantToolCall(projectName, assistantMessageID, {
-      id: toolCall.id,
-      name: toolCall.name,
-      status: response.decision === 'allow' ? 'succeeded' : 'rejected',
-      summary: response.result,
-      error: response.decision === 'deny' ? response.result || 'Permission denied' : undefined,
-      permission: toolCall.permission,
-      checkpoint: toolCall.checkpoint,
-    })
+    applyAssistantInterrupt(projectName, assistantMessageID, { ...interrupt, status: 'resolved' })
   }
   if (key) {
-    const edits = { ...permissionEdits.value }
-    delete edits[key]
-    permissionEdits.value = edits
-  }
-  if (response.permission) {
-    upsertAssistantPermission(projectName, assistantMessageID, response.permission)
-    if (response.checkpoint) {
-      attachAssistantCheckpoint(projectName, assistantMessageID, response.checkpoint)
-    }
+    const errors = { ...permissionErrors.value }
+    delete errors[key]
+    permissionErrors.value = errors
+    const followErrors = { ...followUpErrors.value }
+    delete followErrors[key]
+    followUpErrors.value = followErrors
   }
   if (response.assistantMessage) {
     upsertProjectMessage(response.assistantMessage)
@@ -1437,12 +1517,14 @@ function upsertProjectMessage(message: ProjectMessage) {
 
 function toProjectMessageView(message: ProjectMessage): ProjectMessageView {
   const viewStatus = projectMessageViewStatus(message)
-  const toolCalls = projectMessageToolCalls(message)
-  if (!viewStatus && toolCalls.length === 0) return message
+  const actions = projectMessageActions(message)
+  const interrupt = projectMessageInterrupt(message)
+  if (!viewStatus && actions.length === 0 && !interrupt) return message
   return {
     ...message,
     ...(viewStatus ? { viewStatus } : {}),
-    ...(toolCalls.length > 0 ? { toolCalls } : {}),
+    ...(actions.length > 0 ? { actions } : {}),
+    ...(interrupt ? { interrupt } : {}),
   }
 }
 
@@ -1450,17 +1532,177 @@ function projectMessageViewStatus(message: ProjectMessage): ProjectMessageViewSt
   return message.role === 'assistant' && message.metadata?.status === 'interrupted' ? 'interrupted' : undefined
 }
 
-function projectMessageToolCalls(message: ProjectMessage): ProjectToolCallView[] {
+function projectMessageActions(message: ProjectMessage): ProjectAssistantActionView[] {
   if (message.role !== 'assistant') return []
-  const raw = message.metadata?.toolCalls
-  if (!Array.isArray(raw)) return []
-  return raw.filter(isProjectToolCallEvent)
+  const raw = message.metadata?.assistantActions
+  if (Array.isArray(raw)) {
+    const actions = raw.filter(isProjectAssistantAction)
+    if (actions.length > 0) return actions
+  }
+  return legacyProjectMessageActions(message)
 }
 
-function isProjectToolCallEvent(value: unknown): value is ProjectToolCallEvent {
+function projectMessageInterrupt(message: ProjectMessage): ProjectAssistantUIInterruptRequest | undefined {
+  if (message.role !== 'assistant') return undefined
+  const raw = message.metadata?.assistantInterrupt
+  return isProjectAssistantInterrupt(raw) ? raw : legacyProjectMessageInterrupt(message)
+}
+
+function isProjectAssistantAction(value: unknown): value is ProjectAssistantActionView {
   if (!value || typeof value !== 'object') return false
-  const item = value as Partial<ProjectToolCallEvent>
-  return typeof item.id === 'string' && typeof item.status === 'string'
+  const item = value as Partial<ProjectAssistantActionView>
+  return typeof item.id === 'string' && typeof item.status === 'string' && typeof item.kind === 'string'
+}
+
+function isProjectAssistantInterrupt(value: unknown): value is ProjectAssistantUIInterruptRequest {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<ProjectAssistantUIInterruptRequest>
+  return typeof item.interruptId === 'string'
+}
+
+function legacyProjectMessageActions(message: ProjectMessage): ProjectAssistantActionView[] {
+  const actions: ProjectAssistantActionView[] = []
+  for (const toolCall of legacyProjectMessageToolCalls(message)) {
+    const status = legacyAssistantActionStatus(legacyString(toolCall.status), legacyString(toolCall.error))
+    const id = legacyString(toolCall.id)
+      || legacyString(legacyObject(toolCall.permission)?.toolCallID)
+      || legacyString(legacyObject(toolCall.followUp)?.toolCallID)
+    if (!id || !status) continue
+    const kind = legacyAssistantActionKind(
+      legacyString(toolCall.name)
+      || legacyString(legacyObject(toolCall.permission)?.toolName)
+      || (legacyObject(toolCall.followUp) ? 'ask_follow_up' : ''),
+    )
+    const next: ProjectAssistantActionView = {
+      id,
+      kind,
+      status,
+      label: toolActionGroupLabel({ id: `tool-action-${kind}`, kind, status, count: 1 }),
+      summary: toolActionGroupSummary({ id: `tool-action-${kind}`, kind, status, count: 1 }),
+      count: 1,
+    }
+    const existingIdx = actions.findIndex((item) => item.id === next.id)
+    if (existingIdx === -1) {
+      actions.push(next)
+    } else {
+      actions[existingIdx] = mergeAssistantAction(actions[existingIdx], next)
+    }
+  }
+  return actions
+}
+
+function legacyProjectMessageInterrupt(message: ProjectMessage): ProjectAssistantUIInterruptRequest | undefined {
+  if (message.metadata?.status !== 'pending_permission' && message.metadata?.status !== 'pending_input') return undefined
+  const toolCalls = legacyProjectMessageToolCalls(message)
+  for (let i = toolCalls.length - 1; i >= 0; i -= 1) {
+    const toolCall = toolCalls[i]
+    const status = legacyString(toolCall.status)
+    const checkpoint = legacyObject(toolCall.checkpoint)
+    const runId = legacyString(checkpoint?.id)
+    if (!runId) continue
+    if (status === 'input_required') {
+      const followUp = legacyObject(toolCall.followUp)
+      const requestId = legacyString(followUp?.id)
+      if (!requestId) continue
+      return {
+        interruptId: requestId,
+        kind: 'follow_up',
+        description: legacyString(followUp?.prompt),
+        questions: legacyStringArray(followUp?.questions),
+        status: 'pending',
+        action: {
+          runId,
+          requestId,
+          assistantMessageId: message.id,
+        },
+      }
+    }
+    if (status === 'permission_required') {
+      const permission = legacyObject(toolCall.permission)
+      const requestId = legacyString(permission?.id)
+      if (!requestId) continue
+      return {
+        interruptId: requestId,
+        kind: 'permission',
+        description: legacyString(permission?.reason),
+        status: 'pending',
+        action: {
+          runId,
+          requestId,
+          assistantMessageId: message.id,
+        },
+      }
+    }
+  }
+  return undefined
+}
+
+function legacyProjectMessageToolCalls(message: ProjectMessage): LegacyProjectAssistantToolCall[] {
+  const raw = message.metadata?.toolCalls
+  if (!Array.isArray(raw)) return []
+  return raw.filter(isRecord)
+}
+
+function legacyAssistantActionStatus(status?: string, error?: string): ProjectAssistantActionStatus | undefined {
+  switch (status) {
+    case 'permission_required':
+      return 'awaiting_approval'
+    case 'input_required':
+      return 'awaiting_input'
+    default:
+      if (status && PROJECT_ASSISTANT_ACTION_STATUSES.has(status as ProjectAssistantActionStatus)) {
+        return status as ProjectAssistantActionStatus
+      }
+      return error ? 'failed' : undefined
+  }
+}
+
+function legacyAssistantActionKind(name?: string): ProjectAssistantActionView['kind'] {
+  const base = legacyToolBaseName(name)
+  switch (base) {
+    case 'ask_follow_up':
+      return 'clarify'
+    case 'request_project_plan_approval':
+      return 'plan'
+    case 'commit_project_files':
+    case 'commit_files':
+      return 'commit'
+    case 'write_file':
+    case 'apply_patch':
+    case 'mkdir':
+      return 'edit'
+    case 'list_project_files':
+    case 'read_project_file':
+    case 'search_project_files':
+      return 'inspect'
+    default:
+      return 'other'
+  }
+}
+
+function legacyToolBaseName(name?: string): string {
+  const value = (name || '').trim()
+  if (!value) return ''
+  const parts = value.split('__')
+  return parts[parts.length - 1] || value
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object'
+}
+
+function legacyObject(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined
+}
+
+function legacyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function legacyStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const strings = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+  return strings.length > 0 ? strings : undefined
 }
 
 function isAbortError(err: unknown): boolean {
@@ -1672,125 +1914,57 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
   return assistantMarkdown.render(normalizeAssistantMarkdown(content))
 }
 
-function displayToolName(name?: string): string {
-  const value = (name || 'tool').trim()
-  const scoped = value.includes('__') ? value.split('__').pop() || value : value
-  return scoped
-}
-
-function toolCallStatusLabel(toolCall: ProjectToolCallView): string {
-  switch (toolCall.status) {
-    case 'requested':
-      return 'Preparing'
-    case 'running':
-      return 'Running'
-    case 'permission_required':
-      return 'Needs approval'
-    case 'succeeded':
-      return 'Ran'
-    case 'failed':
-      return 'Failed'
-    case 'rejected':
-      return 'Rejected'
-    default:
-      return 'Tool'
-  }
-}
-
-function toolCallHasDetails(toolCall: ProjectToolCallView): boolean {
-  return Boolean(toolCall.arguments || toolCall.summary || toolCall.error || toolCall.permission || toolCall.checkpoint)
-}
-
-type ToolActionGroupKind = 'inspect' | 'edit' | 'run' | 'commit' | 'other'
+type ToolActionGroupKind = ProjectAssistantActionView['kind']
 
 interface ToolActionGroup {
   id: string
   kind: ToolActionGroupKind
-  status: ProjectToolCallView['status']
-  calls: ProjectToolCallView[]
+  status: ProjectAssistantActionStatus
+  count: number
 }
 
-function activeToolActionGroup(toolCalls?: ProjectToolCallView[]): ToolActionGroup | null {
-  return (
-    toolActionGroups(toolCalls).find((group) =>
-      group.calls.some((toolCall) =>
-        toolCall.status === 'requested' ||
-        toolCall.status === 'running' ||
-        toolCall.status === 'permission_required',
-      ),
-    ) || null
-  )
-}
-
-function toolActionGroups(toolCalls?: ProjectToolCallView[]): ToolActionGroup[] {
+function toolActionGroups(actions?: ProjectAssistantActionView[]): ToolActionGroup[] {
   const groups: ToolActionGroup[] = []
-  for (const toolCall of toolCalls ?? []) {
-    const kind = toolActionKind(toolCall)
+  for (const action of actions ?? []) {
+    const kind = action.kind || 'other'
     let group = groups.find((candidate) => candidate.kind === kind)
     if (!group) {
       group = {
         id: `tool-action-${kind}`,
         kind,
-        status: toolCall.status,
-        calls: [],
+        status: action.status,
+        count: 0,
       }
       groups.push(group)
     }
-    group.calls.push(toolCall)
-    group.status = toolActionGroupStatus(group.calls)
+    group.count += action.count ?? 1
+    group.status = toolActionGroupStatus(group.status, action.status)
   }
   return groups
 }
 
-function toolActionKind(toolCall: ProjectToolCallView): ToolActionGroupKind {
-  const name = displayToolName(toolCall.name).toLowerCase()
-  if (
-    name.includes('read') ||
-    name.includes('list') ||
-    name.includes('search') ||
-    name.includes('inspect') ||
-    name.includes('check_project')
-  ) {
-    return 'inspect'
+function toolActionGroupStatus(
+  current: ProjectAssistantActionStatus,
+  next: ProjectAssistantActionStatus,
+): ProjectAssistantActionStatus {
+  const rank: Record<ProjectAssistantActionStatus, number> = {
+    failed: 6,
+    rejected: 5,
+    awaiting_approval: 4,
+    awaiting_input: 4,
+    running: 3,
+    requested: 2,
+    succeeded: 1,
   }
-  if (
-    name.includes('write') ||
-    name.includes('patch') ||
-    name.includes('edit') ||
-    name.includes('mkdir') ||
-    name.includes('delete')
-  ) {
-    return 'edit'
-  }
-  if (
-    name.includes('runtime') ||
-    name.includes('command') ||
-    name.includes('build') ||
-    name.includes('test') ||
-    name.includes('verify') ||
-    name.includes('run')
-  ) {
-    return 'run'
-  }
-  if (name.includes('commit')) {
-    return 'commit'
-  }
-  return 'other'
-}
-
-function toolActionGroupStatus(toolCalls: ProjectToolCallView[]): ProjectToolCallView['status'] {
-  if (toolCalls.some((toolCall) => toolCall.status === 'failed')) return 'failed'
-  if (toolCalls.some((toolCall) => toolCall.status === 'rejected')) return 'rejected'
-  if (toolCalls.some((toolCall) => toolCall.status === 'permission_required')) return 'permission_required'
-  if (toolCalls.some((toolCall) => toolCall.status === 'running')) return 'running'
-  if (toolCalls.some((toolCall) => toolCall.status === 'requested')) return 'requested'
-  return 'succeeded'
+  return rank[next] > rank[current] ? next : current
 }
 
 function toolActionGroupLabel(group: ToolActionGroup): string {
-  const active = group.status === 'requested' || group.status === 'running' || group.status === 'permission_required'
+  const active = group.status === 'requested' || group.status === 'running' || group.status === 'awaiting_approval' || group.status === 'awaiting_input'
   const failed = group.status === 'failed' || group.status === 'rejected'
   switch (group.kind) {
+    case 'clarify':
+      return failed ? 'Clarification failed' : active ? 'Clarifying requirements' : 'Clarified requirements'
     case 'inspect':
       return failed ? 'Inspection failed' : active ? 'Inspecting project' : 'Inspected project'
     case 'edit':
@@ -1798,54 +1972,30 @@ function toolActionGroupLabel(group: ToolActionGroup): string {
     case 'run':
       return failed ? 'Run failed' : active ? 'Running checks' : 'Ran checks'
     case 'commit':
-      return failed ? 'Commit failed' : active ? 'Committing changes' : 'Committed changes'
+      return failed ? 'Commit failed' : active ? 'Preparing commit' : 'Committed changes'
+    case 'plan':
+      return failed ? 'Plan rejected' : active ? 'Reviewing plan' : 'Reviewed plan'
     default:
-      return failed ? 'Action failed' : active ? 'Using tools' : 'Used tools'
+      return failed ? 'Action failed' : active ? 'Working' : 'Completed actions'
   }
 }
 
 function toolActionGroupSummary(group: ToolActionGroup): string {
-  const count = group.calls.length
   const noun =
     group.kind === 'inspect'
-      ? count === 1 ? 'read/search' : 'reads/searches'
-      : group.kind === 'edit'
-        ? count === 1 ? 'file change' : 'file changes'
-        : group.kind === 'run'
-          ? count === 1 ? 'run/check' : 'runs/checks'
-          : group.kind === 'commit'
-            ? count === 1 ? 'commit step' : 'commit steps'
-            : count === 1 ? 'tool action' : 'tool actions'
-  const targets = toolActionGroupTargets(group)
-  return `${count} ${noun}${targets ? ` · ${targets}` : ''}`
-}
-
-function toolActionGroupTargets(group: ToolActionGroup): string {
-  const targets = group.calls
-    .map((toolCall) => toolActionTarget(toolCall))
-    .filter((target): target is string => Boolean(target))
-  const uniqueTargets = Array.from(new Set(targets))
-  if (!uniqueTargets.length) return ''
-  const visibleTargets = uniqueTargets.slice(0, 3)
-  const remainder = uniqueTargets.length - visibleTargets.length
-  return `${visibleTargets.join(', ')}${remainder > 0 ? ` +${remainder}` : ''}`
-}
-
-function toolActionTarget(toolCall: ProjectToolCallView): string {
-  if (!toolCall.arguments) return ''
-  try {
-    const parsed = JSON.parse(toolCall.arguments) as Record<string, unknown>
-    const value =
-      parsed.path ||
-      parsed.file ||
-      parsed.filePath ||
-      parsed.filename ||
-      parsed.command ||
-      parsed.query
-    return typeof value === 'string' ? value : ''
-  } catch {
-    return ''
-  }
+      ? group.count === 1 ? 'inspection' : 'inspections'
+      : group.kind === 'clarify'
+        ? group.count === 1 ? 'question' : 'questions'
+        : group.kind === 'edit'
+          ? group.count === 1 ? 'edit action' : 'edit actions'
+          : group.kind === 'run'
+            ? group.count === 1 ? 'check' : 'checks'
+            : group.kind === 'commit'
+              ? group.count === 1 ? 'commit step' : 'commit steps'
+              : group.kind === 'plan'
+                ? group.count === 1 ? 'plan step' : 'plan steps'
+                : group.count === 1 ? 'tool action' : 'tool actions'
+  return `${group.count} ${noun}`
 }
 
 function toolActionGroupStatusClass(group: ToolActionGroup): string {
@@ -1855,7 +2005,8 @@ function toolActionGroupStatusClass(group: ToolActionGroup): string {
     case 'failed':
     case 'rejected':
       return 'text-danger'
-    case 'permission_required':
+    case 'awaiting_approval':
+    case 'awaiting_input':
       return 'text-accent'
     case 'requested':
     case 'running':
@@ -1864,109 +2015,40 @@ function toolActionGroupStatusClass(group: ToolActionGroup): string {
   }
 }
 
-function actionBundleLabel(toolCalls?: ProjectToolCallView[]): string {
-  const groups = toolActionGroups(toolCalls)
-  if (!groups.length) return 'No actions'
-  const firstGroup = groups[0]
-  if (groups.length === 1 && firstGroup) return toolActionGroupLabel(firstGroup)
-  return groups.map((group) => toolActionGroupLabel(group)).join(' · ')
+function permissionKey(interrupt: ProjectAssistantUIInterruptRequest): string {
+  return interrupt.action?.requestId || interrupt.interruptId
 }
 
-function actionSummary(toolCall: ProjectToolCallView): string {
-  if (toolCall.error) return toolCall.error
-  if (toolCall.summary) return toolCall.summary
-  if (toolCall.arguments) return toolCall.arguments
-  switch (toolCall.status) {
-    case 'requested':
-      return 'Preparing tool input'
-    case 'running':
-      return 'Waiting for result'
-    case 'permission_required':
-      return toolCall.permission?.reason || 'Waiting for approval'
-    case 'succeeded':
-      return 'Completed'
-    case 'failed':
-      return 'Tool call failed'
-    case 'rejected':
-      return 'Tool call rejected'
-    default:
-      return ''
-  }
+function permissionBusyState(interrupt: ProjectAssistantUIInterruptRequest): 'allow' | 'deny' | undefined {
+  return permissionBusy.value[permissionKey(interrupt)]
 }
 
-function actionSummaryClass(toolCall: ProjectToolCallView): string {
-  return toolCall.error ? 'text-danger' : 'text-text-muted'
+function permissionError(interrupt: ProjectAssistantUIInterruptRequest): string {
+  return permissionErrors.value[permissionKey(interrupt)] || ''
 }
 
-function toolCallStatusClass(toolCall: ProjectToolCallView): string {
-  switch (toolCall.status) {
-    case 'succeeded':
-      return 'text-success'
-    case 'failed':
-    case 'rejected':
-      return 'text-danger'
-    case 'permission_required':
-      return 'text-accent'
-    case 'requested':
-    case 'running':
-    default:
-      return 'text-warning'
-  }
+function followUpKey(interrupt: ProjectAssistantUIInterruptRequest): string {
+  return interrupt.action?.requestId || interrupt.interruptId
 }
 
-function permissionKey(toolCall: ProjectToolCallView): string {
-  return toolCall.permission?.id || toolCall.id
+function followUpAnswer(interrupt: ProjectAssistantUIInterruptRequest): string {
+  return followUpAnswers.value[followUpKey(interrupt)] || ''
 }
 
-function permissionBusyState(toolCall: ProjectToolCallView): 'allow' | 'deny' | undefined {
-  return permissionBusy.value[permissionKey(toolCall)]
+function followUpBusyState(interrupt: ProjectAssistantUIInterruptRequest): boolean {
+  return !!followUpBusy.value[followUpKey(interrupt)]
 }
 
-function permissionError(toolCall: ProjectToolCallView): string {
-  return permissionErrors.value[permissionKey(toolCall)] || ''
+function followUpError(interrupt: ProjectAssistantUIInterruptRequest): string {
+  return followUpErrors.value[followUpKey(interrupt)] || ''
 }
 
-function permissionInputLabel(permission?: ProjectAssistantPermission): string {
-  if (!permission || permission.input === undefined || permission.input === null) return ''
-  if (typeof permission.input !== 'object' || Array.isArray(permission.input)) return ''
-  const input = permission.input as Record<string, unknown>
-  const parts: string[] = []
-  for (const [key, value] of Object.entries(input)) {
-    if (value === undefined || value === null) continue
-    if (['content', 'oldText', 'newText'].includes(key)) {
-      const text = typeof value === 'string' ? value : JSON.stringify(value)
-      parts.push(`${key} ${new TextEncoder().encode(text).length} bytes`)
-      continue
-    }
-    if (key === 'paths' && Array.isArray(value)) {
-      parts.push(`${value.length} file(s): ${value.map((item) => String(item)).slice(0, 3).join(', ')}`)
-      continue
-    }
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-      parts.push(`${key} ${value}`)
-      continue
-    }
-    if (Array.isArray(value)) {
-      parts.push(`${key} ${value.length} item(s)`)
-    }
-  }
-  return parts.join(', ')
-}
-
-function prettyPermissionInput(input: unknown): string {
-  if (input === undefined || input === null) return ''
-  if (typeof input === 'string') return input
-  try {
-    return JSON.stringify(input, null, 2)
-  } catch {
-    return ''
-  }
-}
-
-function canEditPermission(toolCall: ProjectToolCallView): boolean {
-  if (toolCall.permission?.input === undefined || toolCall.permission.input === null) return false
-  const name = displayToolName(toolCall.permission?.toolName || toolCall.name).toLowerCase()
-  return ['write_file', 'apply_patch', 'mkdir', 'commit_project_files'].includes(name)
+function hasPendingInterruptKey(key: string): boolean {
+  if (!key) return false
+  return messages.value.some((message) => {
+    const interrupt = message.interrupt
+    return interrupt?.status === 'pending' && (interrupt.action?.requestId || interrupt.interruptId) === key
+  })
 }
 
 function isMissingCodeConnectionError(value: string | null): boolean {
@@ -2361,7 +2443,49 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
 
       <template v-if="selected">
         <div
-          v-if="pendingApproval"
+          v-if="pendingFollowUp"
+          class="mx-4 mt-3 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
+        >
+          <div class="flex min-w-0 items-start gap-3">
+            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
+              <MessageSquare class="h-4 w-4" :stroke-width="1.75" />
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="text-[13px] font-semibold text-text-primary">Clarification needed</div>
+              <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
+                {{ pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.' }}
+              </div>
+              <ul v-if="pendingFollowUp.interrupt.questions?.length" class="mt-2 list-disc space-y-1 pl-4 text-[12px] leading-5 text-text-secondary">
+                <li v-for="question in pendingFollowUp.interrupt.questions" :key="question">{{ question }}</li>
+              </ul>
+              <textarea
+                class="mt-3 min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                aria-label="Clarification response"
+                placeholder="Answer here..."
+                :value="followUpAnswer(pendingFollowUp.interrupt)"
+                :disabled="followUpBusyState(pendingFollowUp.interrupt)"
+                @input="updateFollowUpAnswer(pendingFollowUp.interrupt, ($event.target as HTMLTextAreaElement).value)"
+              />
+              <div v-if="followUpError(pendingFollowUp.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
+                {{ followUpError(pendingFollowUp.interrupt) }}
+              </div>
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
+                  @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
+                >
+                  <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                  <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  Continue
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          v-else-if="pendingApproval"
           class="mx-4 mt-3 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
         >
           <div class="flex min-w-0 items-start gap-3">
@@ -2373,38 +2497,22 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 <div class="min-w-0">
                   <div class="text-[13px] font-semibold text-text-primary">Approval required</div>
                   <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
-                    {{ pendingApproval.toolCall.permission?.reason || 'Review this action before it runs.' }}
+                    {{ pendingApproval.interrupt.description || 'Review this action before it runs.' }}
                   </div>
                 </div>
-                <div class="shrink-0 rounded-md border border-border-subtle bg-surface px-2 py-1 font-mono text-[11px] text-text-muted">
-                  {{ pendingApproval.toolCall.checkpoint?.id || 'Saving' }}
-                </div>
               </div>
-              <div class="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-text-muted">
-                <span class="rounded-md border border-border-subtle bg-surface px-2 py-1 font-mono text-text-primary">
-                  {{ displayToolName(pendingApproval.toolCall.permission?.toolName || pendingApproval.toolCall.name) }}
-                </span>
-                <span class="min-w-0 truncate">{{ actionSummary(pendingApproval.toolCall) }}</span>
-              </div>
-              <textarea
-                v-if="canEditPermission(pendingApproval.toolCall)"
-                v-model="permissionEdits[permissionKey(pendingApproval.toolCall)]"
-                rows="4"
-                class="mt-3 min-h-[92px] w-full resize-y rounded-md border border-border-subtle bg-surface px-2 py-1.5 font-mono text-[11px] leading-4 text-text-secondary outline-none transition focus:border-accent/50"
-                spellcheck="false"
-              />
-              <div v-if="permissionError(pendingApproval.toolCall)" class="mt-2 text-[11px] leading-4 text-danger">
-                {{ permissionError(pendingApproval.toolCall) }}
+              <div v-if="permissionError(pendingApproval.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
+                {{ permissionError(pendingApproval.interrupt) }}
               </div>
               <div class="mt-3 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                  :disabled="!pendingApproval.toolCall.checkpoint || !!permissionBusyState(pendingApproval.toolCall)"
-                  @click="resolveToolPermission(pendingApproval.message, pendingApproval.toolCall, 'allow')"
+                  :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
+                  @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
                 >
                   <Loader2
-                    v-if="permissionBusyState(pendingApproval.toolCall) === 'allow'"
+                    v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'"
                     class="h-3.5 w-3.5 animate-spin"
                     :stroke-width="1.75"
                   />
@@ -2414,11 +2522,11 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 <button
                   type="button"
                   class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                  :disabled="!pendingApproval.toolCall.checkpoint || !!permissionBusyState(pendingApproval.toolCall)"
-                  @click="resolveToolPermission(pendingApproval.message, pendingApproval.toolCall, 'deny')"
+                  :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
+                  @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
                 >
                   <Loader2
-                    v-if="permissionBusyState(pendingApproval.toolCall) === 'deny'"
+                    v-if="permissionBusyState(pendingApproval.interrupt) === 'deny'"
                     class="h-3.5 w-3.5 animate-spin"
                     :stroke-width="1.75"
                   />
@@ -2523,7 +2631,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 class="w-full min-w-0 py-1 text-[13px] leading-6 text-text-secondary"
               >
                 <div
-                  v-if="message.toolCalls?.length"
+                  v-if="message.actions?.length"
                   class="mb-3"
                 >
                   <details
@@ -2536,7 +2644,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                       />
                       <div class="flex min-w-0 items-center -space-x-1">
                         <span
-                          v-for="group in toolActionGroups(message.toolCalls).slice(0, 4)"
+                          v-for="group in toolActionGroups(message.actions).slice(0, 4)"
                           :key="`bundle-${group.id}`"
                           class="flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-muted shadow-sm"
                         >
@@ -2561,202 +2669,46 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                           <Wrench v-else class="h-4 w-4" :stroke-width="1.75" />
                         </span>
                         <span
-                          v-if="toolActionGroups(message.toolCalls).length > 4"
+                          v-if="toolActionGroups(message.actions).length > 4"
                           class="flex h-8 min-w-8 items-center justify-center rounded-md border border-border-subtle bg-surface px-1.5 text-[11px] font-medium text-text-muted shadow-sm"
                         >
-                          +{{ toolActionGroups(message.toolCalls).length - 4 }}
+                          +{{ toolActionGroups(message.actions).length - 4 }}
                         </span>
                       </div>
-                      <span class="truncate text-[13px] font-medium text-text-secondary">{{ actionBundleLabel(message.toolCalls) }}</span>
+                      <span class="truncate text-[13px] font-medium text-text-secondary">
+                        {{ toolActionGroups(message.actions).map((group) => toolActionGroupLabel(group)).join(' · ') }}
+                      </span>
                     </summary>
                     <div class="grid gap-1.5 border-t border-border-subtle px-2 py-2">
-                      <div class="grid gap-1.5">
-                        <div
-                          v-for="group in toolActionGroups(message.toolCalls)"
-                          :key="`group-${group.id}`"
-                          class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface/80 px-2.5 py-2"
-                        >
-                          <Loader2
-                            v-if="group.status === 'running' || group.status === 'requested'"
-                            class="h-3.5 w-3.5 shrink-0 animate-spin"
-                            :class="toolActionGroupStatusClass(group)"
-                            :stroke-width="1.75"
-                          />
-                          <Check
-                            v-else-if="group.status === 'succeeded'"
-                            class="h-3.5 w-3.5 shrink-0"
-                            :class="toolActionGroupStatusClass(group)"
-                            :stroke-width="1.75"
-                          />
-                          <X
-                            v-else-if="group.status === 'failed' || group.status === 'rejected'"
-                            class="h-3.5 w-3.5 shrink-0"
-                            :class="toolActionGroupStatusClass(group)"
-                            :stroke-width="1.75"
-                          />
-                          <Wrench v-else class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-                          <div class="min-w-0 flex-1">
-                            <div class="flex min-w-0 items-center gap-1.5">
-                              <span class="truncate text-[12px] font-medium text-text-secondary">{{ toolActionGroupLabel(group) }}</span>
-                              <span class="shrink-0 rounded-full border border-border-subtle bg-surface px-1.5 py-0.5 font-mono text-[10px] text-text-muted">
-                                {{ group.calls.length }}
-                              </span>
-                            </div>
-                            <div class="truncate text-[11px] text-text-muted">
-                              {{ toolActionGroupSummary(group) }}
-                            </div>
-                          </div>
+                      <div
+                        v-for="group in toolActionGroups(message.actions)"
+                        :key="`group-${group.id}`"
+                        class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface/80 px-2.5 py-2"
+                      >
+                        <Loader2
+                          v-if="group.status === 'running' || group.status === 'requested'"
+                          class="h-3.5 w-3.5 shrink-0 animate-spin"
+                          :class="toolActionGroupStatusClass(group)"
+                          :stroke-width="1.75"
+                        />
+                        <Check
+                          v-else-if="group.status === 'succeeded'"
+                          class="h-3.5 w-3.5 shrink-0"
+                          :class="toolActionGroupStatusClass(group)"
+                          :stroke-width="1.75"
+                        />
+                        <X
+                          v-else-if="group.status === 'failed' || group.status === 'rejected'"
+                          class="h-3.5 w-3.5 shrink-0"
+                          :class="toolActionGroupStatusClass(group)"
+                          :stroke-width="1.75"
+                        />
+                        <Wrench v-else class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
+                        <div class="min-w-0 flex-1">
+                          <div class="truncate text-[12px] font-medium text-text-secondary">{{ toolActionGroupLabel(group) }}</div>
+                          <div class="truncate text-[11px] text-text-muted">{{ toolActionGroupSummary(group) }}</div>
                         </div>
                       </div>
-                      <div class="pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Trace</div>
-                      <template v-for="toolCall in message.toolCalls" :key="toolCall.id">
-                        <details
-                          v-if="toolCallHasDetails(toolCall)"
-                          class="group/action overflow-hidden rounded-md border border-border-subtle bg-surface/80"
-                        >
-                          <summary class="flex min-w-0 cursor-pointer list-none items-center gap-2 px-2.5 py-2 [&::-webkit-details-marker]:hidden">
-                            <ChevronRight
-                              class="h-3.5 w-3.5 shrink-0 text-text-muted transition group-open/action:rotate-90"
-                              :stroke-width="1.75"
-                            />
-                            <Loader2
-                              v-if="toolCall.status === 'running' || toolCall.status === 'requested'"
-                              class="h-3.5 w-3.5 shrink-0 animate-spin"
-                              :class="toolCallStatusClass(toolCall)"
-                              :stroke-width="1.75"
-                            />
-                            <Check
-                              v-else-if="toolCall.status === 'succeeded'"
-                              class="h-3.5 w-3.5 shrink-0"
-                              :class="toolCallStatusClass(toolCall)"
-                              :stroke-width="1.75"
-                            />
-                            <X
-                              v-else-if="toolCall.status === 'failed' || toolCall.status === 'rejected'"
-                              class="h-3.5 w-3.5 shrink-0"
-                              :class="toolCallStatusClass(toolCall)"
-                              :stroke-width="1.75"
-                            />
-                            <Wrench v-else class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-                            <div class="min-w-0 flex-1">
-                              <div class="flex min-w-0 items-center gap-1.5">
-                                <span class="shrink-0 font-medium text-text-secondary">{{ toolCallStatusLabel(toolCall) }}</span>
-                                <span class="truncate font-mono text-[12px] text-text-primary">{{ displayToolName(toolCall.name) }}</span>
-                              </div>
-                              <div class="truncate text-[11px]" :class="actionSummaryClass(toolCall)">
-                                {{ actionSummary(toolCall) }}
-                              </div>
-                            </div>
-                          </summary>
-                          <div class="grid gap-2 border-t border-border-subtle px-3 py-2.5">
-                            <div
-                              v-if="toolCall.status === 'permission_required' && toolCall.permission"
-                              class="grid gap-2 rounded-md border border-accent/20 bg-accent-subtle px-2.5 py-2"
-                            >
-                              <div class="flex min-w-0 items-start justify-between gap-3">
-                                <div class="min-w-0">
-                                  <div class="text-[11px] font-semibold text-text-primary">Approval required</div>
-                                  <div class="mt-0.5 text-[11px] leading-4 text-text-secondary">
-                                    {{ toolCall.permission.reason || 'Review this action before it runs.' }}
-                                  </div>
-                                </div>
-                                <div class="shrink-0 font-mono text-[11px] text-text-muted">
-                                  {{ toolCall.checkpoint?.id || 'Saving' }}
-                                </div>
-                              </div>
-                              <textarea
-                                v-if="canEditPermission(toolCall)"
-                                v-model="permissionEdits[permissionKey(toolCall)]"
-                                rows="4"
-                                class="min-h-[84px] resize-y rounded-md border border-border-subtle bg-surface px-2 py-1.5 font-mono text-[11px] leading-4 text-text-secondary outline-none transition focus:border-accent/50"
-                                spellcheck="false"
-                              />
-                              <div v-if="permissionError(toolCall)" class="text-[11px] leading-4 text-danger">
-                                {{ permissionError(toolCall) }}
-                              </div>
-                              <div class="flex flex-wrap items-center gap-2">
-                                <button
-                                  type="button"
-                                  class="inline-flex h-7 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[11px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                                  :disabled="!toolCall.checkpoint || !!permissionBusyState(toolCall)"
-                                  @click="resolveToolPermission(message, toolCall, 'allow')"
-                                >
-                                  <Loader2
-                                    v-if="permissionBusyState(toolCall) === 'allow'"
-                                    class="h-3.5 w-3.5 animate-spin"
-                                    :stroke-width="1.75"
-                                  />
-                                  <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                                  Allow
-                                </button>
-                                <button
-                                  type="button"
-                                  class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-2.5 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                                  :disabled="!toolCall.checkpoint || !!permissionBusyState(toolCall)"
-                                  @click="resolveToolPermission(message, toolCall, 'deny')"
-                                >
-                                  <Loader2
-                                    v-if="permissionBusyState(toolCall) === 'deny'"
-                                    class="h-3.5 w-3.5 animate-spin"
-                                    :stroke-width="1.75"
-                                  />
-                                  <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                                  Deny
-                                </button>
-                              </div>
-                            </div>
-                            <div v-if="toolCall.arguments" class="grid gap-1">
-                              <div class="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Input</div>
-                              <pre class="overflow-x-auto whitespace-pre-wrap rounded-md border border-border-subtle bg-surface px-2 py-1.5 font-mono text-[11px] leading-4 text-text-secondary">{{ toolCall.arguments }}</pre>
-                            </div>
-                            <div v-if="toolCall.summary" class="grid gap-1">
-                              <div class="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Result</div>
-                              <div class="rounded-md border border-border-subtle bg-surface px-2 py-1.5 text-[11px] leading-4 text-text-secondary">
-                                {{ toolCall.summary }}
-                              </div>
-                            </div>
-                            <div v-if="toolCall.error" class="grid gap-1">
-                              <div class="text-[10px] font-semibold uppercase tracking-[0.12em] text-danger">Error</div>
-                              <div class="rounded-md border border-danger/30 bg-danger-subtle px-2 py-1.5 text-[11px] leading-4 text-danger">
-                                {{ toolCall.error }}
-                              </div>
-                            </div>
-                          </div>
-                        </details>
-                        <div
-                          v-else
-                          class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface/80 px-2.5 py-2"
-                        >
-                          <Loader2
-                            v-if="toolCall.status === 'running' || toolCall.status === 'requested'"
-                            class="h-3.5 w-3.5 shrink-0 animate-spin"
-                            :class="toolCallStatusClass(toolCall)"
-                            :stroke-width="1.75"
-                          />
-                          <Check
-                            v-else-if="toolCall.status === 'succeeded'"
-                            class="h-3.5 w-3.5 shrink-0"
-                            :class="toolCallStatusClass(toolCall)"
-                            :stroke-width="1.75"
-                          />
-                          <X
-                            v-else-if="toolCall.status === 'failed' || toolCall.status === 'rejected'"
-                            class="h-3.5 w-3.5 shrink-0"
-                            :class="toolCallStatusClass(toolCall)"
-                            :stroke-width="1.75"
-                          />
-                          <Wrench v-else class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-                          <div class="min-w-0 flex-1">
-                            <div class="flex min-w-0 items-center gap-1.5">
-                              <span class="shrink-0 font-medium text-text-secondary">{{ toolCallStatusLabel(toolCall) }}</span>
-                              <span class="truncate font-mono text-[12px] text-text-primary">{{ displayToolName(toolCall.name) }}</span>
-                            </div>
-                            <div class="truncate text-[11px]" :class="actionSummaryClass(toolCall)">
-                              {{ actionSummary(toolCall) }}
-                            </div>
-                          </div>
-                        </div>
-                      </template>
                     </div>
                   </details>
                 </div>
@@ -2789,30 +2741,32 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
         </div>
 
         <form class="shrink-0 border-t border-border-subtle p-3" @submit.prevent="sendMessage">
-          <div class="flex gap-2">
+          <div class="relative min-h-[58px] rounded-md border border-border-subtle bg-surface shadow-sm transition focus-within:border-accent/50">
             <textarea
               ref="promptRef"
               v-model="prompt"
               rows="2"
-              class="min-h-[46px] flex-1 resize-none rounded-md border border-border-subtle bg-surface px-3 py-2 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
+              class="min-h-[58px] w-full resize-none rounded-md border-0 bg-transparent px-3 py-2.5 pb-12 pr-14 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-muted"
               placeholder="Message this project"
-              :disabled="busy"
+              :disabled="busy || assistantResumeBusy"
               @keydown.enter.exact.prevent="sendMessage"
             />
             <button
               v-if="messageStreaming"
               type="button"
-              class="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-md border border-danger/30 bg-danger-subtle text-danger transition hover:bg-danger-subtle/80"
+              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-danger/30 bg-danger-subtle text-danger transition hover:bg-danger-subtle/80"
               title="Stop generating"
+              aria-label="Stop generating"
               @click="cancelMessageStream"
             >
               <Square class="h-4 w-4 fill-current" :stroke-width="2" />
             </button>
             <button
               v-else
-              class="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
               :disabled="busy || !canSendPrompt"
               :title="llmSettings?.configured ? 'Send' : 'Configure LLM settings before sending'"
+              :aria-label="llmSettings?.configured ? 'Send' : 'Configure LLM settings before sending'"
             >
               <Send class="h-4 w-4" :stroke-width="2" />
             </button>
@@ -2859,26 +2813,126 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
           <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
             <PanelRight class="h-4 w-4 text-accent" :stroke-width="1.75" />
           </div>
-          <div class="relative min-w-0 flex-1">
-            <Search class="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-text-muted" :stroke-width="1.75" />
-            <input
-              v-model="providerQuery"
-              class="h-8 w-full rounded-md border border-border-subtle bg-surface py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
-              placeholder="Search provider views..."
-            />
+          <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
             <button
-              v-if="providerQuery"
-              class="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary"
-              title="Clear search"
-              @click="providerQuery = ''"
+              type="button"
+              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition"
+              :class="workbenchTabButtonClass('review')"
+              title="Review"
+              @click="workbenchTab = 'review'"
             >
-              <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+              <Check class="h-3.5 w-3.5" :stroke-width="1.75" />
+              Review
+            </button>
+            <button
+              type="button"
+              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition"
+              :class="workbenchTabButtonClass('providers')"
+              title="Providers"
+              @click="workbenchTab = 'providers'"
+            >
+              <PanelRight class="h-3.5 w-3.5" :stroke-width="1.75" />
+              Providers
             </button>
           </div>
         </template>
       </header>
 
       <div v-if="!selectedTool" class="min-h-0 flex-1 overflow-auto p-3">
+        <div v-if="workbenchTab === 'review'" class="grid gap-3">
+          <div v-if="pendingFollowUp" class="grid gap-2 rounded-md border border-accent/25 bg-accent-subtle p-3">
+            <div class="flex min-w-0 items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="text-[13px] font-semibold text-text-primary">Clarification needed</div>
+                <div class="mt-1 text-[12px] leading-5 text-text-secondary">
+                  {{ pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.' }}
+                </div>
+              </div>
+            </div>
+            <ul v-if="pendingFollowUp.interrupt.questions?.length" class="list-disc space-y-1 pl-4 text-[12px] leading-5 text-text-secondary">
+              <li v-for="question in pendingFollowUp.interrupt.questions" :key="question">{{ question }}</li>
+            </ul>
+            <textarea
+              class="min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+              aria-label="Clarification response"
+              placeholder="Answer here..."
+              :value="followUpAnswer(pendingFollowUp.interrupt)"
+              :disabled="followUpBusyState(pendingFollowUp.interrupt)"
+              @input="updateFollowUpAnswer(pendingFollowUp.interrupt, ($event.target as HTMLTextAreaElement).value)"
+            />
+            <div v-if="followUpError(pendingFollowUp.interrupt)" class="text-[11px] leading-4 text-danger">
+              {{ followUpError(pendingFollowUp.interrupt) }}
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
+                title="Continue"
+                @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
+              >
+                <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Continue
+              </button>
+            </div>
+          </div>
+          <div v-else-if="pendingApproval" class="grid gap-2 rounded-md border border-accent/25 bg-accent-subtle p-3">
+            <div class="flex min-w-0 items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="text-[13px] font-semibold text-text-primary">Approval required</div>
+                <div class="mt-1 text-[12px] leading-5 text-text-secondary">
+                  {{ pendingApproval.interrupt.description || 'Review this action before it runs.' }}
+                </div>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
+                title="Allow"
+                @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
+              >
+                <Loader2 v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Allow
+              </button>
+              <button
+                type="button"
+                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
+                title="Deny"
+                @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
+              >
+                <Loader2 v-if="permissionBusyState(pendingApproval.interrupt) === 'deny'" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Deny
+              </button>
+            </div>
+          </div>
+          <div v-else class="rounded-md border border-border-subtle bg-surface/80 p-3 text-[12px] text-text-muted">
+            No reviews are waiting.
+          </div>
+        </div>
+
+        <template v-else>
+        <div class="relative mb-3 min-w-0">
+          <Search class="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-text-muted" :stroke-width="1.75" />
+          <input
+            v-model="providerQuery"
+            class="h-8 w-full rounded-md border border-border-subtle bg-surface py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
+            placeholder="Search provider views..."
+          />
+          <button
+            v-if="providerQuery"
+            class="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary"
+            title="Clear search"
+            @click="providerQuery = ''"
+          >
+            <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </button>
+        </div>
         <div v-if="toolError" class="mb-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
           {{ toolError }}
         </div>
@@ -2907,6 +2961,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             No provider views found.
           </div>
         </div>
+        </template>
       </div>
 
       <div v-else class="relative min-h-0 flex-1 overflow-hidden bg-surface">

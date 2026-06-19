@@ -25,7 +25,7 @@ import (
 	_ "github.com/lib/pq"
 )
 
-const messageSchemaVersion = "v2"
+const messageSchemaVersion = "v3"
 
 const createMessageSchemaMigrationsTable = `CREATE TABLE IF NOT EXISTS app_studio_message_schema_migrations (
 	version text PRIMARY KEY,
@@ -424,17 +424,18 @@ func (s *PostgresStore) ClaimAssistantRun(ctx context.Context, scope Scope, id s
 		  AND project_name = $5
 		  AND run_id = $6
 		  AND request_id = $7
-		  AND status = $8
+		  AND status IN ($8, $9)
 		RETURNING run_id, status, request_id, checkpoint, audit, created_at, updated_at
 	`,
 		AssistantRunStatusRunning, now.UTC(),
-		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, id, requestID, AssistantRunStatusPendingPermission,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, id, requestID,
+		AssistantRunStatusPendingPermission, AssistantRunStatusPendingInput,
 	)
 
 	run, err := scanAssistantRun(row, scope.ProjectName)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return AssistantRun{}, fmt.Errorf("assistant run %q is not waiting for this permission request", id)
+			return AssistantRun{}, fmt.Errorf("assistant run %q is not waiting for this request", id)
 		}
 		return AssistantRun{}, fmt.Errorf("claim assistant run: %w", err)
 	}

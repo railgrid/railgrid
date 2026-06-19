@@ -23,17 +23,24 @@ import (
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/middlewares/dynamictool/toolsearch"
+	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	einomodel "github.com/cloudwego/eino/components/model"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
 
+const (
+	projectEinoAssistantSummaryContextMessages = 128
+	projectEinoAssistantSummaryContextTokens   = 24000
+	projectEinoAssistantSummaryInstruction     = "Summarize this App Studio project session for the next builder turn. Preserve user requirements, accepted plans, files touched or inspected, unresolved questions, repository/runtime state, and any constraints. Keep it concise and operational."
+)
+
 type projectEinoAssistantEngine struct {
-	server    *Server
-	newModel  projectEinoAssistantModelFactory
-	newTools  projectEinoAssistantToolsFactory
-	newRunner projectEinoAssistantRunnerFactory
+	server   *Server
+	newModel projectEinoAssistantModelFactory
+	newTools projectEinoAssistantToolsFactory
 }
 
 type projectEinoAssistantModelFactory func(
@@ -48,37 +55,20 @@ type projectEinoAssistantToolsFactory func(
 	*projectEinoAssistantRunState,
 ) ([]einotool.BaseTool, error)
 
-type projectEinoAssistantRunner interface {
-	Run(context.Context, []adk.Message, ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent]
-	ResumeWithParams(context.Context, string, *adk.ResumeParams, ...adk.AgentRunOption) (*adk.AsyncIterator[*adk.AgentEvent], error)
-}
-
-type projectEinoAssistantRunnerFactory func(context.Context, adk.Agent, adk.CheckPointStore) projectEinoAssistantRunner
-
 // NewEinoAssistantEngine returns the Eino-backed assistant engine. The App
 // Studio assistant uses Eino's ChatModelAgent as the only chat/tool execution
 // loop; App Studio adapters stay at model, tool, storage, and event boundaries.
 func NewEinoAssistantEngine(server *Server) projectAssistantEngine {
 	return projectEinoAssistantEngine{
-		server:    server,
-		newModel:  newProjectEinoAssistantModelFactory(server),
-		newTools:  newProjectEinoAssistantToolsFactory(server),
-		newRunner: newProjectEinoAssistantRunner,
+		server:   server,
+		newModel: newProjectEinoAssistantModelFactory(server),
+		newTools: newProjectEinoAssistantToolsFactory(server),
 	}
-}
-
-func newProjectEinoAssistantRunner(ctx context.Context, agent adk.Agent, checkpointStore adk.CheckPointStore) projectEinoAssistantRunner {
-	return adk.NewRunner(ctx, adk.RunnerConfig{
-		Agent:           agent,
-		EnableStreaming: true,
-		CheckPointStore: checkpointStore,
-	})
 }
 
 func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	ctx context.Context,
 	req projectAssistantRunRequest,
-	sink projectAssistantEventSink,
 ) (projectAssistantRunResult, error) {
 	if req.Project == nil {
 		return projectAssistantRunResult{}, errors.New("project is required")
@@ -89,30 +79,14 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	if e.newTools == nil {
 		return projectAssistantRunResult{}, errors.New("eino tool factory is not configured")
 	}
-	if e.newRunner == nil {
-		return projectAssistantRunResult{}, errors.New("eino runner is not configured")
-	}
-	_ = sink
 
 	runState := newProjectEinoAssistantRunState()
 	runState.SetProjectRepositoryRef(projectEinoAssistantProjectRepositoryRef(req))
 
-	agent, err := e.newAgent(ctx, req, runState)
-	if err != nil {
-		return projectAssistantRunResult{}, err
-	}
-	input, err := projectEinoAssistantInputMessages(req, runState)
-	if err != nil {
-		return projectAssistantRunResult{}, err
-	}
 	checkpointID := newProjectAssistantRunID()
 	checkpointStore := newProjectEinoAssistantCheckpointStore()
-	runner := e.newRunner(ctx, agent, checkpointStore)
-	if runner == nil {
-		return projectAssistantRunResult{}, errors.New("eino runner is not configured")
-	}
-	iter := runner.Run(ctx, input, adk.WithCheckPointID(checkpointID))
-	return e.drainProjectAssistantEvents(ctx, req, runState, checkpointStore, checkpointID, iter)
+	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, req.Identity, req.Project.Name)
+	return e.runProjectAssistantTurnLoop(ctx, req, runState, checkpointStore, checkpointID, []projectAssistantTurnItem{turn})
 }
 
 func (e projectEinoAssistantEngine) ResumeProjectAssistant(
@@ -133,40 +107,22 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	if e.newTools == nil {
 		return projectAssistantRunResult{}, errors.New("eino tool factory is not configured")
 	}
-	if e.newRunner == nil {
-		return projectAssistantRunResult{}, errors.New("eino runner is not configured")
-	}
 
 	runState := newProjectEinoAssistantRunState()
+	runState.RestoreCheckpointState(state)
 	runState.SetProjectRepositoryRef(projectEinoAssistantProjectRepositoryRef(projectAssistantRunRequest{
 		Project:      req.Project,
 		Continuation: &state,
 	}))
-	agent, err := e.newAgent(ctx, req, runState)
-	if err != nil {
-		return projectAssistantRunResult{}, err
-	}
-	decision, err := parseProjectAssistantPermissionDecision(resumeReq.Decision)
-	if err != nil {
-		return projectAssistantRunResult{}, err
-	}
+	resumeRunReq := req
+	resumeRunReq.Continuation = &state
 	checkpointStore := newProjectEinoAssistantCheckpointStoreWithCheckpoint(state.Eino.CheckpointID, state.Eino.Checkpoint)
-	runner := e.newRunner(ctx, agent, checkpointStore)
-	if runner == nil {
-		return projectAssistantRunResult{}, errors.New("eino runner is not configured")
-	}
-	iter, err := runner.ResumeWithParams(ctx, state.Eino.CheckpointID, &adk.ResumeParams{
-		Targets: map[string]any{
-			state.Eino.InterruptID: &projectEinoPermissionResumeData{
-				Decision:        decision,
-				EditedArguments: cloneProjectAssistantToolArguments(resumeReq.EditedArguments),
-			},
-		},
-	})
-	if err != nil {
-		return projectAssistantRunResult{}, err
-	}
-	return e.drainProjectAssistantEvents(ctx, req, runState, checkpointStore, state.Eino.CheckpointID, iter)
+	turn := newProjectAssistantTurnItem(projectAssistantTurnResume, req.Identity, req.Project.Name)
+	turn.RequestID = strings.TrimSpace(resumeReq.RequestID)
+	turn.Decision = strings.TrimSpace(resumeReq.Decision)
+	turn.Answer = strings.TrimSpace(resumeReq.Answer)
+	turn.EditedArguments = cloneProjectAssistantToolArguments(resumeReq.EditedArguments)
+	return e.runProjectAssistantTurnLoop(ctx, resumeRunReq, runState, checkpointStore, state.Eino.CheckpointID, []projectAssistantTurnItem{turn})
 }
 
 func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) (adk.Agent, error) {
@@ -178,13 +134,40 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 	if err != nil {
 		return nil, err
 	}
+	staticTools, dynamicTools, err := projectEinoAssistantToolSearchSets(ctx, tools)
+	if err != nil {
+		return nil, err
+	}
+	var handlers []adk.ChatModelAgentMiddleware
+	summaryMiddleware, err := summarization.New(ctx, &summarization.Config{
+		Model: chatModel,
+		Trigger: &summarization.TriggerCondition{
+			ContextMessages: projectEinoAssistantSummaryContextMessages,
+			ContextTokens:   projectEinoAssistantSummaryContextTokens,
+		},
+		UserInstruction: projectEinoAssistantSummaryInstruction,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create eino summarization middleware: %w", err)
+	}
+	handlers = append(handlers, summaryMiddleware)
+	if len(dynamicTools) > 0 {
+		searchMiddleware, err := toolsearch.New(ctx, &toolsearch.Config{
+			DynamicTools: dynamicTools,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create eino tool search middleware: %w", err)
+		}
+		handlers = append(handlers, searchMiddleware)
+	}
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "app-studio-project-assistant",
 		Description: "Runs App Studio project assistant turns.",
 		Model:       chatModel,
+		Handlers:    handlers,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools:               tools,
+				Tools:               staticTools,
 				UnknownToolsHandler: projectEinoUnknownToolHandler(req, runState),
 				ExecuteSequentially: true,
 			},
@@ -197,19 +180,173 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 	return agent, nil
 }
 
-func (e projectEinoAssistantEngine) drainProjectAssistantEvents(
+func projectEinoAssistantToolSearchSets(ctx context.Context, tools []einotool.BaseTool) ([]einotool.BaseTool, []einotool.BaseTool, error) {
+	staticTools := make([]einotool.BaseTool, 0, len(tools))
+	dynamicTools := make([]einotool.BaseTool, 0, len(tools))
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		info, err := tool.Info(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if projectEinoAssistantToolUsesSearch(info) {
+			dynamicTools = append(dynamicTools, tool)
+			continue
+		}
+		staticTools = append(staticTools, tool)
+	}
+	return staticTools, dynamicTools, nil
+}
+
+func projectEinoAssistantToolUsesSearch(info *schema.ToolInfo) bool {
+	if info == nil || info.Extra == nil {
+		return false
+	}
+	risk, _ := info.Extra["risk"].(string)
+	return projectAssistantToolRisk(risk) == projectAssistantToolRiskRead
+}
+
+type projectEinoAssistantTurnOutcome struct {
+	result         projectAssistantRunResult
+	receivedOutput bool
+	interrupt      *adk.InterruptInfo
+}
+
+func (e projectEinoAssistantEngine) runProjectAssistantTurnLoop(
 	ctx context.Context,
 	req projectAssistantRunRequest,
 	runState *projectEinoAssistantRunState,
 	checkpointStore *projectEinoAssistantCheckpointStore,
 	checkpointID string,
-	iter *adk.AsyncIterator[*adk.AgentEvent],
+	items []projectAssistantTurnItem,
 ) (projectAssistantRunResult, error) {
-	if iter == nil {
-		return projectAssistantRunResult{}, errors.New("eino runner returned no event stream")
+	outcome := &projectEinoAssistantTurnOutcome{}
+	if e.server != nil {
+		projectEinoAssistantEnsureToolDiscovery(ctx, e.server, req, runState)
 	}
-	var result projectAssistantRunResult
-	receivedOutput := false
+	loop := adk.NewTurnLoop[projectAssistantTurnItem, *schema.Message](adk.TurnLoopConfig[projectAssistantTurnItem, *schema.Message]{
+		GenInput: func(loopCtx context.Context, _ *adk.TurnLoop[projectAssistantTurnItem, *schema.Message], items []projectAssistantTurnItem) (*adk.GenInputResult[projectAssistantTurnItem, *schema.Message], error) {
+			if len(items) == 0 {
+				return nil, errors.New("eino turn loop received no work")
+			}
+			input, err := projectEinoAssistantInputMessages(req, runState)
+			if err != nil {
+				return nil, err
+			}
+			return &adk.GenInputResult[projectAssistantTurnItem, *schema.Message]{
+				RunCtx: loopCtx,
+				Input: &adk.TypedAgentInput[*schema.Message]{
+					Messages:        input,
+					EnableStreaming: true,
+				},
+				Consumed:  append([]projectAssistantTurnItem(nil), items[:1]...),
+				Remaining: append([]projectAssistantTurnItem(nil), items[1:]...),
+				RunOpts:   projectEinoAssistantRunOptions(req, runState),
+			}, nil
+		},
+		GenResume: func(loopCtx context.Context, _ *adk.TurnLoop[projectAssistantTurnItem, *schema.Message], interruptedItems, unhandledItems, newItems []projectAssistantTurnItem) (*adk.GenResumeResult[projectAssistantTurnItem, *schema.Message], error) {
+			resumeItem, remainingNewItems, ok := projectEinoAssistantResumeTurnItem(newItems)
+			if !ok {
+				return nil, errors.New("eino turn loop resume requires an approval decision")
+			}
+			if strings.TrimSpace(req.Continuation.Eino.InterruptID) == "" {
+				return nil, errors.New("eino interrupt id is required for resume")
+			}
+			resumeData, err := projectEinoAssistantResumeData(req.Continuation.Eino.InterruptType, resumeItem)
+			if err != nil {
+				return nil, err
+			}
+			remaining := make([]projectAssistantTurnItem, 0, len(unhandledItems)+len(remainingNewItems))
+			remaining = append(remaining, unhandledItems...)
+			remaining = append(remaining, remainingNewItems...)
+			return &adk.GenResumeResult[projectAssistantTurnItem, *schema.Message]{
+				RunCtx: loopCtx,
+				ResumeParams: &adk.ResumeParams{
+					Targets: map[string]any{
+						req.Continuation.Eino.InterruptID: resumeData,
+					},
+				},
+				Consumed:  append([]projectAssistantTurnItem(nil), interruptedItems...),
+				Remaining: remaining,
+				RunOpts:   projectEinoAssistantRunOptions(req, runState),
+			}, nil
+		},
+		PrepareAgent: func(agentCtx context.Context, _ *adk.TurnLoop[projectAssistantTurnItem, *schema.Message], _ []projectAssistantTurnItem) (adk.TypedAgent[*schema.Message], error) {
+			return e.newAgent(agentCtx, req, runState)
+		},
+		OnAgentEvents: func(eventCtx context.Context, tc *adk.TurnContext[projectAssistantTurnItem, *schema.Message], iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.Message]]) error {
+			return e.collectProjectAssistantTurnEvents(eventCtx, tc, iter, req, runState, outcome)
+		},
+		Store:        checkpointStore,
+		CheckpointID: checkpointID,
+	})
+	for _, item := range items {
+		loop.Push(item)
+	}
+	loop.Run(ctx)
+	exit := loop.Wait()
+	if exit.CheckpointErr != nil {
+		return projectAssistantRunResult{}, exit.CheckpointErr
+	}
+	if outcome.interrupt != nil {
+		return projectAssistantRunResult{}, e.saveProjectAssistantInterrupt(ctx, req, runState, checkpointStore, checkpointID, outcome.interrupt)
+	}
+	if exit.ExitReason != nil {
+		return projectAssistantRunResult{}, exit.ExitReason
+	}
+	if !outcome.receivedOutput {
+		return projectAssistantRunResult{}, errors.New("eino turn loop completed without assistant output")
+	}
+	return outcome.result, nil
+}
+
+func projectEinoAssistantResumeTurnItem(items []projectAssistantTurnItem) (projectAssistantTurnItem, []projectAssistantTurnItem, bool) {
+	remaining := make([]projectAssistantTurnItem, 0, len(items))
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].Kind == projectAssistantTurnResume {
+			remaining = append(remaining, items[:i]...)
+			remaining = append(remaining, items[i+1:]...)
+			return items[i], remaining, true
+		}
+	}
+	return projectAssistantTurnItem{}, items, false
+}
+
+func projectEinoAssistantResumeData(interruptType string, item projectAssistantTurnItem) (any, error) {
+	switch strings.TrimSpace(interruptType) {
+	case projectAssistantInterruptTypePermission:
+		decision, err := parseProjectAssistantPermissionDecision(item.Decision)
+		if err != nil {
+			return nil, err
+		}
+		return &projectEinoPermissionResumeData{
+			Decision:        decision,
+			EditedArguments: cloneProjectAssistantToolArguments(item.EditedArguments),
+		}, nil
+	case projectAssistantInterruptTypeFollowUp:
+		answer := strings.TrimSpace(item.Answer)
+		if answer == "" {
+			return nil, newValidationError("answer is required")
+		}
+		return &projectEinoFollowUpResumeData{Answer: answer}, nil
+	default:
+		return nil, fmt.Errorf("unsupported eino interrupt type %q", interruptType)
+	}
+}
+
+func (e projectEinoAssistantEngine) collectProjectAssistantTurnEvents(
+	eventCtx context.Context,
+	tc *adk.TurnContext[projectAssistantTurnItem, *schema.Message],
+	iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.Message]],
+	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
+	outcome *projectEinoAssistantTurnOutcome,
+) error {
+	if iter == nil {
+		return errors.New("eino turn loop returned no event stream")
+	}
 	for {
 		event, ok := iter.Next()
 		if !ok {
@@ -220,19 +357,23 @@ func (e projectEinoAssistantEngine) drainProjectAssistantEvents(
 		}
 		if event.Err != nil {
 			if projectEinoAssistantMaxIterationsExceeded(event.Err) {
-				return projectAssistantRunResult{Content: runState.ToolLoopFallback()}, nil
+				outcome.result = projectAssistantRunResult{Content: e.projectAssistantToolLoopFinalAnswer(eventCtx, req, runState)}
+				outcome.receivedOutput = true
+				tc.Loop.Stop()
+				return nil
 			}
-			return projectAssistantRunResult{}, event.Err
+			return event.Err
 		}
 		if event.Action != nil && event.Action.Interrupted != nil {
-			return projectAssistantRunResult{}, e.saveProjectAssistantInterrupt(ctx, req, runState, checkpointStore, checkpointID, event.Action.Interrupted)
+			outcome.interrupt = event.Action.Interrupted
+			return nil
 		}
 		if event.Output == nil {
 			continue
 		}
 		if runResult, ok := event.Output.CustomizedOutput.(projectAssistantRunResult); ok {
-			result = runResult
-			receivedOutput = true
+			outcome.result = runResult
+			outcome.receivedOutput = true
 			continue
 		}
 		if event.Output.MessageOutput == nil {
@@ -240,17 +381,44 @@ func (e projectEinoAssistantEngine) drainProjectAssistantEvents(
 		}
 		msg, err := event.Output.MessageOutput.GetMessage()
 		if err != nil {
-			return projectAssistantRunResult{}, err
+			return err
 		}
 		if msg != nil && msg.Role == schema.Assistant && strings.TrimSpace(msg.Content) != "" {
-			result.Content = msg.Content
-			receivedOutput = true
+			outcome.result.Content = msg.Content
+			outcome.receivedOutput = true
 		}
 	}
-	if !receivedOutput {
-		return projectAssistantRunResult{}, errors.New("eino runner completed without assistant output")
+	if outcome.interrupt == nil {
+		tc.Loop.Stop()
 	}
-	return result, nil
+	return nil
+}
+
+func (e projectEinoAssistantEngine) projectAssistantToolLoopFinalAnswer(
+	ctx context.Context,
+	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
+) string {
+	fallback := runState.ToolLoopFallback()
+	if e.newModel == nil {
+		return fallback
+	}
+	input, err := projectChatMessagesToEino(runState.ToolLoopFinalAnswerMessages())
+	if err != nil {
+		return fallback
+	}
+	chatModel, err := e.newModel(ctx, req, runState)
+	if err != nil {
+		return fallback
+	}
+	msg, err := chatModel.Generate(ctx, input, einomodel.WithToolChoice(schema.ToolChoiceForbidden))
+	if err != nil || msg == nil {
+		return fallback
+	}
+	if strings.TrimSpace(msg.Content) == "" || len(msg.ToolCalls) > 0 {
+		return fallback
+	}
+	return msg.Content
 }
 
 func (e projectEinoAssistantEngine) saveProjectAssistantInterrupt(
@@ -264,10 +432,6 @@ func (e projectEinoAssistantEngine) saveProjectAssistantInterrupt(
 	if e.server == nil {
 		return errors.New("server is not configured for permission checkpoints")
 	}
-	info, interruptID, err := projectEinoPermissionInterruptInfoFromEvent(interrupted)
-	if err != nil {
-		return err
-	}
 	checkpoint, ok, err := checkpointStore.Get(ctx, checkpointID)
 	if err != nil {
 		return err
@@ -275,6 +439,24 @@ func (e projectEinoAssistantEngine) saveProjectAssistantInterrupt(
 	if !ok || len(checkpoint) == 0 {
 		return errors.New("eino checkpoint was not saved for permission interrupt")
 	}
+	if info, interruptID, ok := projectEinoPermissionInterruptInfoFromEvent(interrupted); ok {
+		return e.saveProjectAssistantPermissionInterrupt(ctx, req, runState, checkpoint, checkpointID, interruptID, info)
+	}
+	if info, interruptID, ok := projectEinoFollowUpInterruptInfoFromEvent(interrupted); ok {
+		return e.saveProjectAssistantFollowUpInterrupt(ctx, req, runState, checkpoint, checkpointID, interruptID, info)
+	}
+	return errors.New("eino interrupt did not include App Studio metadata")
+}
+
+func (e projectEinoAssistantEngine) saveProjectAssistantPermissionInterrupt(
+	ctx context.Context,
+	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
+	checkpoint []byte,
+	checkpointID string,
+	interruptID string,
+	info *projectEinoPermissionInterruptInfo,
+) error {
 	_, index, toolCalls := runState.ToolCallByID(info.ToolCallID, info.ToolName, info.ArgumentsInJSON)
 	state := runState.CheckpointState()
 	if len(state.ToolCalls) == 0 {
@@ -282,11 +464,12 @@ func (e projectEinoAssistantEngine) saveProjectAssistantInterrupt(
 	}
 	state.CurrentIndex = index
 	state.Eino = &projectAssistantEinoCheckpointState{
-		CheckpointID: strings.TrimSpace(checkpointID),
-		Checkpoint:   checkpoint,
-		InterruptID:  interruptID,
-		ToolCallID:   info.ToolCallID,
-		ToolName:     info.ToolName,
+		CheckpointID:  strings.TrimSpace(checkpointID),
+		Checkpoint:    checkpoint,
+		InterruptID:   interruptID,
+		InterruptType: projectAssistantInterruptTypePermission,
+		ToolCallID:    info.ToolCallID,
+		ToolName:      info.ToolName,
 	}
 	permissionErr, permission, checkpointEvent, err := e.server.saveProjectAssistantEinoPermissionCheckpoint(ctx, req, state, info)
 	if err != nil {
@@ -302,12 +485,55 @@ func (e projectEinoAssistantEngine) saveProjectAssistantInterrupt(
 			Checkpoint: &checkpointEvent,
 		})
 	}
+	if info.Risk == projectAssistantToolRiskPlan {
+		emitProjectAssistantBuilderEvent(req.StreamCallbacks, projectAssistantBuilderEventView(projectBuilderEventPlanReady))
+	}
 	return permissionErr
 }
 
-func projectEinoPermissionInterruptInfoFromEvent(interrupted *adk.InterruptInfo) (*projectEinoPermissionInterruptInfo, string, error) {
+func (e projectEinoAssistantEngine) saveProjectAssistantFollowUpInterrupt(
+	ctx context.Context,
+	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
+	checkpoint []byte,
+	checkpointID string,
+	interruptID string,
+	info *projectEinoFollowUpInterruptInfo,
+) error {
+	_, index, toolCalls := runState.ToolCallByID(info.ToolCallID, projectToolAskFollowUp, projectEinoToolArgumentsString(map[string]any{"questions": info.Questions}))
+	state := runState.CheckpointState()
+	if len(state.ToolCalls) == 0 {
+		state.ToolCalls = cloneProjectAssistantToolCalls(toolCalls)
+	}
+	state.CurrentIndex = index
+	state.Eino = &projectAssistantEinoCheckpointState{
+		CheckpointID:  strings.TrimSpace(checkpointID),
+		Checkpoint:    checkpoint,
+		InterruptID:   interruptID,
+		InterruptType: projectAssistantInterruptTypeFollowUp,
+		ToolCallID:    info.ToolCallID,
+		ToolName:      projectToolAskFollowUp,
+	}
+	inputErr, followUp, checkpointEvent, err := e.server.saveProjectAssistantEinoFollowUpCheckpoint(ctx, req, state, info)
+	if err != nil {
+		return err
+	}
+	if req.StreamCallbacks.OnAssistantEvent != nil {
+		req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
+			Type:     projectAssistantEventInputNeeded,
+			FollowUp: &followUp,
+		})
+		req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
+			Type:       projectAssistantEventCheckpointSaved,
+			Checkpoint: &checkpointEvent,
+		})
+	}
+	return inputErr
+}
+
+func projectEinoPermissionInterruptInfoFromEvent(interrupted *adk.InterruptInfo) (*projectEinoPermissionInterruptInfo, string, bool) {
 	if interrupted == nil {
-		return nil, "", errors.New("eino interrupt is missing")
+		return nil, "", false
 	}
 	for _, interruptCtx := range interrupted.InterruptContexts {
 		if interruptCtx == nil {
@@ -316,13 +542,33 @@ func projectEinoPermissionInterruptInfoFromEvent(interrupted *adk.InterruptInfo)
 		switch info := interruptCtx.Info.(type) {
 		case *projectEinoPermissionInterruptInfo:
 			if info != nil {
-				return info, strings.TrimSpace(interruptCtx.ID), nil
+				return info, strings.TrimSpace(interruptCtx.ID), true
 			}
 		case projectEinoPermissionInterruptInfo:
-			return &info, strings.TrimSpace(interruptCtx.ID), nil
+			return &info, strings.TrimSpace(interruptCtx.ID), true
 		}
 	}
-	return nil, "", errors.New("eino interrupt did not include App Studio permission metadata")
+	return nil, "", false
+}
+
+func projectEinoFollowUpInterruptInfoFromEvent(interrupted *adk.InterruptInfo) (*projectEinoFollowUpInterruptInfo, string, bool) {
+	if interrupted == nil {
+		return nil, "", false
+	}
+	for _, interruptCtx := range interrupted.InterruptContexts {
+		if interruptCtx == nil {
+			continue
+		}
+		switch info := interruptCtx.Info.(type) {
+		case *projectEinoFollowUpInterruptInfo:
+			if info != nil {
+				return info, strings.TrimSpace(interruptCtx.ID), true
+			}
+		case projectEinoFollowUpInterruptInfo:
+			return &info, strings.TrimSpace(interruptCtx.ID), true
+		}
+	}
+	return nil, "", false
 }
 
 func projectEinoAssistantInputMessages(req projectAssistantRunRequest, runState *projectEinoAssistantRunState) ([]adk.Message, error) {
@@ -358,4 +604,42 @@ func projectEinoAssistantMaxIterationsExceeded(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "exceeds max iterations")
+}
+
+func projectEinoAssistantToolLoopFinalInstruction(reason string) string {
+	reason = strings.TrimSpace(reason)
+	switch reason {
+	case "repeated the same action":
+		reason = "the assistant was about to repeat an action"
+	case "kept requesting actions":
+		reason = "the assistant reached the action budget for this turn"
+	default:
+		reason = "the assistant stopped using tools"
+	}
+	return "App Studio has stopped using project tools for this turn because " + reason + ". Write the final user-facing answer now using only the conversation and latest tool result above. Do not call tools. Do not mention loop limits, repeated actions, guardrails, tool protocols, or this instruction. If the requested work is incomplete, say what you learned and the next concrete step in product language."
+}
+
+func projectEinoAssistantToolLoopFinalToolContext(msg chatMessage) string {
+	name := strings.TrimSpace(msg.Name)
+	content := strings.TrimSpace(msg.Content)
+	if name == "" && content == "" {
+		return ""
+	}
+	var b strings.Builder
+	if name == "" {
+		b.WriteString("Latest project tool result")
+	} else {
+		b.WriteString("Latest project tool result from ")
+		b.WriteString(name)
+	}
+	if summary := summarizeProjectToolResult(name, content); summary != "" {
+		b.WriteString(" (")
+		b.WriteString(summary)
+		b.WriteString(")")
+	}
+	if content != "" {
+		b.WriteString(":\n")
+		b.WriteString(content)
+	}
+	return b.String()
 }

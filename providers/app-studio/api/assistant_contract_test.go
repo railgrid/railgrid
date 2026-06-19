@@ -39,17 +39,6 @@ func TestProjectAssistantContractCanReferenceEinoADK(t *testing.T) {
 	}
 }
 
-func TestProjectAssistantEventSinkContract(t *testing.T) {
-	sink := projectAssistantEventSink(projectAssistantEventSinkFunc(func(context.Context, projectAssistantEvent) error {
-		return nil
-	}))
-	if err := sink.EmitProjectAssistantEvent(context.Background(), projectAssistantEvent{
-		Type: projectAssistantEventRunStarted,
-	}); err != nil {
-		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
-	}
-}
-
 func TestProjectAssistantEventOmitsEmptyOptionalTimestamps(t *testing.T) {
 	payload, err := json.Marshal(projectAssistantEvent{
 		Type: projectAssistantEventCheckpointSaved,
@@ -63,13 +52,4 @@ func TestProjectAssistantEventOmitsEmptyOptionalTimestamps(t *testing.T) {
 	if strings.Contains(string(payload), "createdAt") {
 		t.Fatalf("event encoded empty createdAt: %s", payload)
 	}
-}
-
-type projectAssistantEventSinkFunc func(context.Context, projectAssistantEvent) error
-
-func (f projectAssistantEventSinkFunc) EmitProjectAssistantEvent(
-	ctx context.Context,
-	event projectAssistantEvent,
-) error {
-	return f(ctx, event)
 }

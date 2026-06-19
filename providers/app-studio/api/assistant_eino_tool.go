@@ -31,6 +31,11 @@ import (
 
 const projectEinoToolParametersExtraKey = "parametersJSON"
 
+type projectEinoAssistantToolDiscovery struct {
+	IncludeCommitBridge bool
+	Prompt              string
+}
+
 type projectEinoAssistantTool struct {
 	server   *Server
 	tool     projectAssistantTool
@@ -44,30 +49,45 @@ func newProjectEinoAssistantToolsFactory(server *Server) projectEinoAssistantToo
 			return nil, errors.New("server is not configured")
 		}
 		registry := server.projectAssistantToolRegistry()
-		chatTools := registry.ChatTools(false)
-		includeCommitBridge := false
-		if req.HTTPRequest != nil {
-			discovered, err := server.loadProjectMCPTools(req.HTTPRequest, req.Identity, req.LLM)
-			if err == nil {
-				chatTools = discovered
-				includeCommitBridge = projectChatToolsInclude(chatTools, projectToolCommitProjectFiles)
-				if prompt := projectMCPToolsPrompt(chatTools); prompt != "" {
-					runState.SetToolPrompt(prompt)
-				}
-			} else {
-				runState.SetToolPrompt(projectMCPToolsFailurePrompt(err))
-			}
-		} else if prompt := projectMCPToolsPrompt(chatTools); prompt != "" {
-			runState.SetToolPrompt(prompt)
-		}
-
-		tools := registry.Tools(includeCommitBridge)
+		discovery := projectEinoAssistantEnsureToolDiscovery(ctx, server, req, runState)
+		tools := registry.Tools(discovery.IncludeCommitBridge)
 		out := make([]einotool.BaseTool, 0, len(tools))
 		for _, tool := range tools {
 			out = append(out, newProjectEinoAssistantServerTool(server, tool, req, runState))
 		}
 		return out, nil
 	}
+}
+
+func projectEinoAssistantEnsureToolDiscovery(ctx context.Context, server *Server, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) projectEinoAssistantToolDiscovery {
+	if discovery, ok := runState.ToolDiscovery(); ok {
+		return discovery
+	}
+	discovery := projectEinoAssistantDiscoverTools(ctx, server, req)
+	runState.SetToolDiscovery(discovery)
+	return discovery
+}
+
+func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req projectAssistantRunRequest) projectEinoAssistantToolDiscovery {
+	if server == nil {
+		return projectEinoAssistantToolDiscovery{}
+	}
+	registry := server.projectAssistantToolRegistry()
+	chatTools := registry.ChatTools(false)
+	discovery := projectEinoAssistantToolDiscovery{
+		Prompt: projectMCPToolsPrompt(chatTools),
+	}
+	if req.HTTPRequest == nil {
+		return discovery
+	}
+	discovered, err := server.loadProjectMCPTools(req.HTTPRequest.WithContext(ctx), req.Identity, req.LLM)
+	if err != nil {
+		discovery.Prompt = projectMCPToolsFailurePrompt(err)
+		return discovery
+	}
+	discovery.IncludeCommitBridge = projectChatToolsInclude(discovered, projectToolCommitProjectFiles)
+	discovery.Prompt = projectMCPToolsPrompt(discovered)
+	return discovery
 }
 
 func newProjectEinoAssistantTool(tool projectAssistantTool, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) einotool.BaseTool {
@@ -112,6 +132,9 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 	}
 	spec := t.tool.Spec()
 	callID := compose.GetToolCallID(ctx)
+	if wasInterrupted, hasState, state := einotool.GetInterruptState[*projectEinoFollowUpInterruptState](ctx); wasInterrupted && hasState && state != nil {
+		return t.resumeFollowUp(ctx, callID, spec, state)
+	}
 	if wasInterrupted, hasState, state := einotool.GetInterruptState[*projectEinoPermissionInterruptState](ctx); wasInterrupted && hasState && state != nil {
 		return t.resumePermission(ctx, callID, spec, state)
 	}
@@ -128,8 +151,11 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 		Status:    "requested",
 		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
 	})
+	if projectToolBaseName(spec.Name) == projectToolAskFollowUp {
+		return t.requestFollowUp(ctx, callID, spec, args)
+	}
 
-	switch projectAssistantPermissionForToolWithPolicy(spec, t.req.AutoApproveActions) {
+	switch projectAssistantPermissionForToolWithRunState(spec, t.req.AutoApproveActions, t.runState, args) {
 	case projectAssistantPermissionAllow:
 		return t.invokeAllowedTool(ctx, callID, spec, args)
 	case projectAssistantPermissionAsk:
@@ -151,6 +177,9 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 		Status:    "running",
 		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
 	})
+	if projectToolBaseName(spec.Name) == projectToolRequestProjectPlanApproval {
+		return t.invokeApprovedPlanTool(ctx, callID, spec, args), nil
+	}
 	result, err := t.tool.Call(ctx, projectAssistantToolCallRequest{
 		Identity:             t.req.Identity,
 		Project:              t.req.Project,
@@ -172,10 +201,103 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 		Summary:   summarizeProjectToolResult(spec.Name, result),
 	})
 	t.recordToolMessage(callID, spec.Name, result)
+	if spec.Risk == projectAssistantToolRiskWrite {
+		t.appendBuilderEvent(projectBuilderEventWorkspaceChanged)
+	}
 	return result, nil
 }
 
+func (t projectEinoAssistantTool) requestFollowUp(ctx context.Context, callID string, spec projectAssistantToolSpec, args map[string]any) (string, error) {
+	questions := normalizeProjectAssistantStringList(projectToolStringList(args["questions"]))
+	if len(questions) == 0 {
+		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), "follow-up requires at least one question"), nil
+	}
+	if len(questions) > 3 {
+		questions = questions[:3]
+	}
+	prompt := projectAssistantFollowUpPrompt(questions)
+	t.emitToolCall(projectToolCallStreamEvent{
+		ID:        callID,
+		Name:      spec.Name,
+		Status:    "input_required",
+		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
+		Summary:   prompt,
+	})
+	return "", einotool.StatefulInterrupt(ctx, &projectEinoFollowUpInterruptInfo{
+		ToolCallID: callID,
+		Questions:  append([]string(nil), questions...),
+		Prompt:     prompt,
+	}, &projectEinoFollowUpInterruptState{
+		ToolCallID: callID,
+		Questions:  append([]string(nil), questions...),
+	})
+}
+
+func (t projectEinoAssistantTool) resumeFollowUp(ctx context.Context, callID string, spec projectAssistantToolSpec, state *projectEinoFollowUpInterruptState) (string, error) {
+	if strings.TrimSpace(callID) == "" {
+		callID = strings.TrimSpace(state.ToolCallID)
+	}
+	questions := normalizeProjectAssistantStringList(state.Questions)
+	isResumeTarget, hasData, data := einotool.GetResumeContext[*projectEinoFollowUpResumeData](ctx)
+	if !isResumeTarget {
+		return "", einotool.StatefulInterrupt(ctx, &projectEinoFollowUpInterruptInfo{
+			ToolCallID: callID,
+			Questions:  append([]string(nil), questions...),
+			Prompt:     projectAssistantFollowUpPrompt(questions),
+		}, state)
+	}
+	if !hasData || data == nil || strings.TrimSpace(data.Answer) == "" {
+		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(map[string]any{"questions": questions}), "follow-up answer is required"), nil
+	}
+	result := projectEinoFollowUpToolResult(data.Answer)
+	t.emitToolCall(projectToolCallStreamEvent{
+		ID:        callID,
+		Name:      spec.Name,
+		Status:    "succeeded",
+		Arguments: summarizeProjectToolArgumentsMap(spec.Name, map[string]any{"questions": questions}),
+		Summary:   summarizeProjectToolResult(spec.Name, result),
+	})
+	t.recordToolMessage(callID, spec.Name, result)
+	return result, nil
+}
+
+func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, callID string, spec projectAssistantToolSpec, args map[string]any) string {
+	plan := projectAssistantApprovedPlanFromArguments(args)
+	if len(plan.Operations) == 0 {
+		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), "allowedOperations is required")
+	}
+	t.runState.ApprovePlan(plan)
+	resultPayload := map[string]any{
+		"status":      "approved",
+		"summary":     plan.Summary,
+		"targetPaths": plan.TargetPaths,
+		"operations":  plan.Operations,
+	}
+	raw, err := json.Marshal(resultPayload)
+	if err != nil {
+		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), err.Error())
+	}
+	result := string(raw)
+	t.emitToolCall(projectToolCallStreamEvent{
+		ID:        callID,
+		Name:      spec.Name,
+		Status:    "succeeded",
+		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
+		Summary:   summarizeProjectToolResult(spec.Name, result),
+	})
+	t.recordToolMessage(callID, spec.Name, result)
+	t.appendBuilderEvent(projectBuilderEventPlanApproved)
+	return result
+}
+
+func (t projectEinoAssistantTool) appendBuilderEvent(eventType string) {
+	emitProjectAssistantBuilderEvent(t.req.StreamCallbacks, projectAssistantBuilderEventView(eventType))
+}
+
 func (t projectEinoAssistantTool) requestPermission(ctx context.Context, callID string, spec projectAssistantToolSpec, args map[string]any, argumentsInJSON string) error {
+	if spec.Risk == projectAssistantToolRiskCommit {
+		t.runState.ClearApprovedPlan()
+	}
 	t.emitToolCall(projectToolCallStreamEvent{
 		ID:        callID,
 		Name:      spec.Name,
@@ -300,6 +422,16 @@ func projectEinoToolArguments(argumentsInJSON string) (map[string]any, error) {
 	return args, nil
 }
 
+func projectEinoFollowUpToolResult(answer string) string {
+	raw, err := json.Marshal(map[string]any{
+		"answer": strings.TrimSpace(answer),
+	})
+	if err != nil {
+		return strings.TrimSpace(answer)
+	}
+	return string(raw)
+}
+
 func projectEinoToolArgumentsString(args map[string]any) string {
 	raw, err := json.Marshal(args)
 	if err != nil {
@@ -347,4 +479,15 @@ func projectEinoUnknownToolHandler(req projectAssistantRunRequest, runState *pro
 
 func projectEinoPermissionBarrierToolResult() string {
 	return "Tool call skipped: waiting for approval of a previous tool call"
+}
+
+func projectAssistantApprovedPlanFromArguments(args map[string]any) projectAssistantApprovedPlan {
+	return normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
+		Summary:            projectToolString(args["summary"]),
+		Steps:              projectToolStringList(args["steps"]),
+		TargetPaths:        projectToolStringList(args["targetPaths"]),
+		Operations:         projectToolStringList(args["allowedOperations"]),
+		AcceptanceCriteria: projectToolStringList(args["acceptanceCriteria"]),
+		ApprovalTool:       projectToolRequestProjectPlanApproval,
+	})
 }

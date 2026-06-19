@@ -39,9 +39,8 @@ import (
 // Server holds the dependencies the project handlers need. clients builds a
 // per-(tenant, caller) dynamic client; store persists chat transcripts; hubBase
 // locates the hub's MCP virtual workspace; mcpInsecureSkipTLSVerify relaxes TLS
-// for dev MCP calls; workspaces stores project files owned by App Studio;
-// assistantEngine runs project assistant turns; runtimeWorker is an optional
-// boundary for future sandboxed checks and previews.
+// for dev MCP calls; workspaces stores project files owned by App Studio; and
+// assistantEngine runs project assistant turns.
 type Server struct {
 	clients                  *tenant.ClientFactory
 	store                    store.Store
@@ -51,7 +50,6 @@ type Server struct {
 	autoApproveActions       bool
 	assistantEngine          projectAssistantEngine
 	assistantRunManager      *projectAssistantRunManager
-	runtimeWorker            projectRuntimeWorker
 	mu                       sync.Mutex
 }
 
