@@ -552,7 +552,11 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 	if branch := projectToolString(args["branch"]); branch != "" {
 		commitArgs["branch"] = branch
 	}
-	return callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeCommitFiles, commitArgs)
+	resp, err := callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeCommitFiles, commitArgs)
+	if err != nil {
+		return "", err
+	}
+	return s.reconcileProjectBuildConfigAfterCommit(ctx, id, scope, projectRepositoryRef, mcpEndpoint, r, args, resp)
 }
 
 func ensureProjectToolCallIDs(toolCalls []chatToolCall) {

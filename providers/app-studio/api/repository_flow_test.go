@@ -2634,7 +2634,13 @@ func (r projectSettingsDynamicResource) Get(_ context.Context, name string, _ me
 }
 
 func TestCommitProjectWorkspaceFilesCommitsThroughCodeProvider(t *testing.T) {
-	var sawCommit bool
+	var calls []struct {
+		message string
+		files   []struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+	}
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope struct {
 			Method string `json:"method"`
@@ -2656,21 +2662,53 @@ func TestCommitProjectWorkspaceFilesCommitsThroughCodeProvider(t *testing.T) {
 		if envelope.Method != "tools/call" || envelope.Params.Name != "code__commit_files" {
 			t.Fatalf("unexpected MCP request: %#v", envelope)
 		}
-		if envelope.Params.Arguments.RepositoryRef != "demo-repo" || envelope.Params.Arguments.Message != "Update app" {
+		if envelope.Params.Arguments.RepositoryRef != "demo-repo" {
 			t.Fatalf("unexpected commit args: %#v", envelope.Params.Arguments)
 		}
-		if len(envelope.Params.Arguments.Files) != 1 || envelope.Params.Arguments.Files[0].Path != "src/App.tsx" || envelope.Params.Arguments.Files[0].Content != "committed from workspace\n" {
-			t.Fatalf("unexpected commit files: %#v", envelope.Params.Arguments.Files)
+		calls = append(calls, struct {
+			message string
+			files   []struct {
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+		}{message: envelope.Params.Arguments.Message, files: envelope.Params.Arguments.Files})
+		switch len(calls) {
+		case 1:
+			if envelope.Params.Arguments.Message != "Update app" {
+				t.Fatalf("first commit message = %q, want Update app", envelope.Params.Arguments.Message)
+			}
+			if len(envelope.Params.Arguments.Files) != 1 || envelope.Params.Arguments.Files[0].Path != "src/App.tsx" || envelope.Params.Arguments.Files[0].Content != "committed from workspace\n" {
+				t.Fatalf("unexpected source commit files: %#v", envelope.Params.Arguments.Files)
+			}
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["src/App.tsx"],"commitSHA":"abcdef1234567890"}}}`)
+		case 2:
+			if envelope.Params.Arguments.Message != projectBuildConfigCommitMessage {
+				t.Fatalf("second commit message = %q, want build config message", envelope.Params.Arguments.Message)
+			}
+			if len(envelope.Params.Arguments.Files) != 2 {
+				t.Fatalf("build config commit files = %#v, want build config and workflow", envelope.Params.Arguments.Files)
+			}
+			seen := map[string]string{}
+			for _, f := range envelope.Params.Arguments.Files {
+				seen[f.Path] = f.Content
+			}
+			if !strings.Contains(seen[projectBuildConfigPath], `"builder": "railpack"`) {
+				t.Fatalf("build config content = %q, want railpack builder", seen[projectBuildConfigPath])
+			}
+			if !strings.Contains(seen[projectBuildWorkflowPath], projectBuildRailpackAction) {
+				t.Fatalf("workflow content = %q, want railpack action", seen[projectBuildWorkflowPath])
+			}
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":[".kedge/build.json",".github/workflows/kedge-app-studio-build.yml"],"commitSHA":"buildabcdef123456"}}}`)
+		default:
+			t.Fatalf("unexpected extra commit call: %#v", envelope.Params.Arguments)
 		}
-		sawCommit = true
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["src/App.tsx"],"commitSHA":"abcdef1234567890"}}}`)
 	}))
 	defer mcp.Close()
 
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
 	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{
+		{Path: "package.json", Content: `{"scripts":{"build":"vite build"}}` + "\n"},
 		{Path: "src/App.tsx", Content: "committed from workspace\n"},
 	}); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
@@ -2693,11 +2731,159 @@ func TestCommitProjectWorkspaceFilesCommitsThroughCodeProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("commitProjectWorkspaceFiles returned error: %v", err)
 	}
-	if !sawCommit {
-		t.Fatal("MCP server did not receive commit call")
+	if len(calls) != 2 {
+		t.Fatalf("MCP commit calls = %d, want source commit plus build config commit", len(calls))
 	}
-	if !strings.Contains(resp, "abcdef1234567890") {
-		t.Fatalf("tool response = %s, want commit response", resp)
+	if !strings.Contains(resp, "abcdef1234567890") || !strings.Contains(resp, "buildConfiguration") || !strings.Contains(resp, "buildabcdef123456") {
+		t.Fatalf("tool response = %s, want source commit and build configuration evidence", resp)
+	}
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(resp), &decoded); err != nil {
+		t.Fatalf("decode tool response: %v", err)
+	}
+	if decoded["commitSHA"] != "abcdef1234567890" {
+		t.Fatalf("commitSHA = %#v, want original source commit SHA preserved at top level", decoded["commitSHA"])
+	}
+	if _, ok := decoded["commitResult"]; ok {
+		t.Fatalf("tool response includes nested commitResult = %#v, want original commit response shape preserved", decoded["commitResult"])
+	}
+	read, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: projectBuildWorkflowPath, MaxBytes: workspace.MaxWriteBytes})
+	if err != nil {
+		t.Fatalf("generated workflow read returned error: %v", err)
+	}
+	if !strings.Contains(read.Content, "Railpack") {
+		t.Fatalf("generated workflow = %q, want Railpack workflow", read.Content)
+	}
+}
+
+func TestCommitProjectWorkspaceFilesSkipsBuildConfigCommitWhenCurrent(t *testing.T) {
+	var commitCalls int
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope struct {
+			Method string `json:"method"`
+			Params struct {
+				Name      string `json:"name"`
+				Arguments struct {
+					Message string `json:"message"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		if envelope.Method != "tools/call" || envelope.Params.Name != "code__commit_files" {
+			t.Fatalf("unexpected MCP request: %#v", envelope)
+		}
+		if envelope.Params.Arguments.Message == projectBuildConfigCommitMessage {
+			t.Fatal("build config was committed even though managed files were current")
+		}
+		commitCalls++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["src/App.tsx"],"commitSHA":"abcdef1234567890"}}}`)
+	}))
+	defer mcp.Close()
+
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	files := []workspace.File{
+		{Path: "package.json", Content: `{"scripts":{"build":"vite build"}}` + "\n"},
+		{Path: "src/App.tsx", Content: "committed from workspace\n"},
+	}
+	files = append(files, projectManagedBuildFiles("node")...)
+	if err := workspaces.ApplyFiles(context.Background(), scope, files); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
+
+	resp, err := server.commitProjectWorkspaceFiles(
+		context.Background(),
+		identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+		scope,
+		"demo-repo",
+		mcp.URL,
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		map[string]any{
+			"repositoryRef": "demo-repo",
+			"message":       "Update app",
+			"paths":         []any{"src/App.tsx"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("commitProjectWorkspaceFiles returned error: %v", err)
+	}
+	if commitCalls != 1 {
+		t.Fatalf("MCP commit calls = %d, want only the source commit", commitCalls)
+	}
+	if !strings.Contains(resp, `"status":"current"`) {
+		t.Fatalf("tool response = %s, want current build configuration status", resp)
+	}
+}
+
+func TestCommitProjectWorkspaceFilesRetriesBuildConfigWhenBuildCommitFails(t *testing.T) {
+	var buildCommitCalls int
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope struct {
+			Method string `json:"method"`
+			Params struct {
+				Name      string `json:"name"`
+				Arguments struct {
+					Message string `json:"message"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		if envelope.Method != "tools/call" || envelope.Params.Name != "code__commit_files" {
+			t.Fatalf("unexpected MCP request: %#v", envelope)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if envelope.Params.Arguments.Message == projectBuildConfigCommitMessage {
+			buildCommitCalls++
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Failed","message":"registry denied"}}}`)
+			return
+		}
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["src/App.tsx"],"commitSHA":"abcdef1234567890"}}}`)
+	}))
+	defer mcp.Close()
+
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{
+		{Path: "package.json", Content: `{"scripts":{"build":"vite build"}}` + "\n"},
+		{Path: "src/App.tsx", Content: "committed from workspace\n"},
+	}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
+	args := map[string]any{
+		"repositoryRef": "demo-repo",
+		"message":       "Update app",
+		"paths":         []any{"src/App.tsx"},
+	}
+
+	for i := 0; i < 2; i++ {
+		resp, err := server.commitProjectWorkspaceFiles(
+			context.Background(),
+			identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
+			scope,
+			"demo-repo",
+			mcp.URL,
+			httptest.NewRequest(http.MethodPost, "/", nil),
+			args,
+		)
+		if err != nil {
+			t.Fatalf("commitProjectWorkspaceFiles run %d returned error: %v", i+1, err)
+		}
+		if !strings.Contains(resp, `"status":"failed"`) {
+			t.Fatalf("tool response = %s, want failed build configuration status", resp)
+		}
+		if _, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: projectBuildConfigPath, MaxBytes: workspace.MaxWriteBytes}); err == nil {
+			t.Fatalf("managed build config was written to workspace after failed build commit on run %d", i+1)
+		}
+	}
+	if buildCommitCalls != 2 {
+		t.Fatalf("build commit calls = %d, want retry after failed build commit", buildCommitCalls)
 	}
 }
 
