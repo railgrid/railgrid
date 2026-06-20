@@ -44,6 +44,7 @@ import (
 	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	kuerystore "github.com/faroshq/kuery/pkg/store"
@@ -300,7 +301,7 @@ func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName, t
 		return fmt.Errorf("cache sync failed for edge %s", storeName)
 	}
 
-	if err := c.cfg.Sync.Engage(clusterCtx, storeName, cl); err != nil {
+	if err := c.cfg.Sync.Engage(clusterCtx, multicluster.ClusterName(storeName), cl); err != nil {
 		cancel()
 		return fmt.Errorf("kuery engage: %w", err)
 	}
