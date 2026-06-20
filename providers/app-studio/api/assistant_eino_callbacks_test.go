@@ -73,8 +73,8 @@ func TestProjectEinoAssistantModelCallbackRecordsStreamedToolCalls(t *testing.T)
 	handler.OnEndWithStreamOutput(ctx, nil, stream)
 
 	state := runState.CheckpointState()
-	if len(chunks) != 1 || chunks[0] != "Working " {
-		t.Fatalf("chunks = %#v, want streamed content chunk", chunks)
+	if len(chunks) != 0 {
+		t.Fatalf("chunks = %#v, want model callback to avoid publishing public content chunks", chunks)
 	}
 	if len(statuses) != 1 || statuses[0] != "Preparing action" {
 		t.Fatalf("statuses = %#v, want one preparation status", statuses)
@@ -88,5 +88,29 @@ func TestProjectEinoAssistantModelCallbackRecordsStreamedToolCalls(t *testing.T)
 	call := state.ToolCalls[0]
 	if call.ID != "call-write" || call.Function.Name != projectToolWriteFile || call.Function.Arguments != `{"path":"src/App.tsx","content":"hi"}` {
 		t.Fatalf("tool call = %#v, want merged streamed function call", call)
+	}
+}
+
+func TestProjectEinoAssistantModelCallbackDoesNotPublishPublicContentChunks(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	var chunks []string
+	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{
+		OnChunk: func(chunk string) { chunks = append(chunks, chunk) },
+	}, runState)
+
+	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{
+		Messages: []*schema.Message{schema.UserMessage("say thanks")},
+	})
+	stream := schema.StreamReaderFromArray([]callbacks.CallbackOutput{
+		&einomodel.CallbackOutput{Message: schema.AssistantMessage("You are welcome.", nil)},
+	})
+	handler.OnEndWithStreamOutput(ctx, nil, stream)
+
+	if len(chunks) != 0 {
+		t.Fatalf("chunks = %#v, want model callback to avoid publishing public content chunks", chunks)
+	}
+	state := runState.CheckpointState()
+	if len(state.Messages) != 2 || state.Messages[1].Content != "You are welcome." {
+		t.Fatalf("checkpoint messages = %#v, want streamed assistant reply recorded", state.Messages)
 	}
 }

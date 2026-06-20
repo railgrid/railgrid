@@ -43,6 +43,7 @@ type projectEinoAssistantRunState struct {
 	projectRepositoryRef string
 	toolPrompt           string
 	toolDiscovery        *projectEinoAssistantToolDiscovery
+	sessionSnapshot      *projectEinoAssistantSessionSnapshot
 	permissionBarrier    bool
 	approvedPlan         *projectAssistantApprovedPlan
 }
@@ -94,6 +95,24 @@ func (s *projectEinoAssistantRunState) ToolPrompt() string {
 	return s.toolPrompt
 }
 
+func (s *projectEinoAssistantRunState) SetSessionSnapshot(snapshot projectEinoAssistantSessionSnapshot) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionSnapshot = cloneProjectEinoAssistantSessionSnapshot(&snapshot)
+}
+
+func (s *projectEinoAssistantRunState) SessionSnapshot() *projectEinoAssistantSessionSnapshot {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneProjectEinoAssistantSessionSnapshot(s.sessionSnapshot)
+}
+
 func (s *projectEinoAssistantRunState) SetProjectRepositoryRef(ref string) {
 	if s == nil {
 		return
@@ -116,6 +135,7 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.turn = state.Turn
 	s.projectRepositoryRef = strings.TrimSpace(state.ProjectRepositoryRef)
 	s.approvedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
+	s.sessionSnapshot = cloneProjectEinoAssistantSessionSnapshot(state.SessionSnapshot)
 }
 
 func (s *projectEinoAssistantRunState) ProjectRepositoryRef() string {
@@ -259,6 +279,7 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		Turn:                 s.turn,
 		ProjectRepositoryRef: strings.TrimSpace(s.projectRepositoryRef),
 		ApprovedPlan:         cloneProjectAssistantApprovedPlan(s.approvedPlan),
+		SessionSnapshot:      cloneProjectEinoAssistantSessionSnapshot(s.sessionSnapshot),
 	}
 }
 

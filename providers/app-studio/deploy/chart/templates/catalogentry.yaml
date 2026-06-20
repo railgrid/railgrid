@@ -1,4 +1,40 @@
+{{- define "appstudio.catalogEntry" -}}
+apiVersion: providers.kedge.faros.sh/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: app-studio
+  annotations:
+    providers.kedge.faros.sh/builtin: "false"
+spec:
+  displayName: "App Studio"
+  description: "Persistent AI project workspace for planning, memory, and chat."
+  vendor: "kedge"
+  version: {{ .Chart.AppVersion | quote }}
+  category: "AI"
+  iconURL: "/ui/providers/app-studio/icon.svg"
+  dependencies:
+    - name: code
+  ui:
+    url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.uiURL | quote }}
+    indexPath: "/"
+  backend:
+    # The hub backend proxy forwards /services/providers/app-studio/* here,
+    # injecting the verified X-Kedge-Tenant/X-Kedge-User headers and the
+    # caller's bearer token. The provider serves /api/projects/* + /healthz.
+    url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
+    healthPath: "/healthz"
+  # Reference-only: the APIExport, schemas, slice, and bind grant are created by
+  # this chart's init container (provider `init`, via the kedge-provider-sdk).
+  apiExport:
+    name: "ai.kedge.faros.sh"
+    permissionClaims:
+      - resource: secrets
+        verbs: ["get", "list", "watch", "create", "update", "delete"]
+        tenantScoped: true
+{{- end -}}
+
 {{- if .Values.catalogEntry.enabled -}}
+{{- if .Values.catalogEntry.renderAsConfigMap }}
 # CatalogEntry registers this provider with the kedge hub for routing + the
 # portal Enable flow. It is a kcp resource (providers.kedge.faros.sh/v1alpha1),
 # so it MUST NOT be applied to the hosting cluster where this chart installs.
@@ -20,36 +56,6 @@ metadata:
     {{- include "appstudio.labels" . | nindent 4 }}
 data:
   catalogentry.yaml: |
-    apiVersion: providers.kedge.faros.sh/v1alpha1
-    kind: CatalogEntry
-    metadata:
-      name: app-studio
-      annotations:
-        providers.kedge.faros.sh/builtin: "false"
-    spec:
-      displayName: "App Studio"
-      description: "Persistent AI project workspace for planning, memory, and chat."
-      vendor: "kedge"
-      version: {{ .Chart.AppVersion | quote }}
-      category: "AI"
-      iconURL: "/ui/providers/app-studio/icon.svg"
-      dependencies:
-        - name: code
-      ui:
-        url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.uiURL | quote }}
-        indexPath: "/"
-      backend:
-        # The hub backend proxy forwards /services/providers/app-studio/* here,
-        # injecting the verified X-Kedge-Tenant/X-Kedge-User headers and the
-        # caller's bearer token. The provider serves /api/projects/* + /healthz.
-        url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
-        healthPath: "/healthz"
-      # Reference-only: the APIExport, schemas, slice, and bind grant are created by
-      # this chart's init container (provider `init`, via the kedge-provider-sdk).
-      apiExport:
-        name: "ai.kedge.faros.sh"
-        permissionClaims:
-          - resource: secrets
-            verbs: ["get", "list", "watch", "create", "update", "delete"]
-            tenantScoped: true
+{{ include "appstudio.catalogEntry" . | indent 4 }}
+{{- end }}
 {{- end }}

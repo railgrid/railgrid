@@ -24,6 +24,7 @@ service:
 # different rollout cadence).
 catalogEntry:
   enabled: true
+  renderAsConfigMap: true
   uiURL: ""
   backendURL: ""
 

@@ -65,6 +65,61 @@ func TestProjectAssistantReadinessWorkflowRegisteredReadOnly(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantPrepareDeploymentWorkflowRegisteredReadOnly(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	registry := server.projectAssistantToolRegistry()
+	tool, ok := registry.Get(projectToolPrepareProjectDeployment)
+	if !ok {
+		t.Fatal("prepare_project_deployment tool missing from registry")
+	}
+	spec := tool.Spec()
+	if spec.Risk != projectAssistantToolRiskRead {
+		t.Fatalf("risk = %q, want read", spec.Risk)
+	}
+	if got := projectAssistantPermissionForTool(spec); got != projectAssistantPermissionAllow {
+		t.Fatalf("permission = %q, want allow", got)
+	}
+	if strings.TrimSpace(string(spec.Parameters)) == "" {
+		t.Fatal("prepare deployment workflow tool parameters are empty")
+	}
+}
+
+func TestProjectAssistantRuntimeWorkflowToolsRegistered(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	registry := server.projectAssistantToolRegistry()
+	tests := []struct {
+		name       string
+		wantRisk   projectAssistantToolRisk
+		wantPerm   projectAssistantPermissionDecision
+		wantBundle projectAssistantToolBundle
+	}{
+		{name: "deploy_project_runtime", wantRisk: projectAssistantToolRiskRuntime, wantPerm: projectAssistantPermissionAsk, wantBundle: projectAssistantToolBundleRuntime},
+		{name: "get_runtime_status", wantRisk: projectAssistantToolRiskRead, wantPerm: projectAssistantPermissionAllow, wantBundle: projectAssistantToolBundleRuntime},
+		{name: "get_preview_url", wantRisk: projectAssistantToolRiskRead, wantPerm: projectAssistantPermissionAllow, wantBundle: projectAssistantToolBundleRuntime},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool, ok := registry.Get(tt.name)
+			if !ok {
+				t.Fatalf("%s tool missing from registry", tt.name)
+			}
+			spec := tool.Spec()
+			if spec.Risk != tt.wantRisk {
+				t.Fatalf("risk = %q, want %q", spec.Risk, tt.wantRisk)
+			}
+			if got := projectAssistantPermissionForTool(spec); got != tt.wantPerm {
+				t.Fatalf("permission = %q, want %q", got, tt.wantPerm)
+			}
+			if got := projectAssistantToolBundleForSpec(spec); got != tt.wantBundle {
+				t.Fatalf("bundle = %q, want %q", got, tt.wantBundle)
+			}
+			if strings.TrimSpace(string(spec.Parameters)) == "" {
+				t.Fatalf("%s parameters are empty", tt.name)
+			}
+		})
+	}
+}
+
 func TestProjectAssistantWorkflowPlansFromMemoryRepositoryAndWorkspace(t *testing.T) {
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
@@ -175,6 +230,94 @@ func TestProjectAssistantReadinessWorkflowReportsContextWithoutTrace(t *testing.
 	}
 }
 
+func TestProjectAssistantPrepareDeploymentWorkflowReportsBuildAndRuntimeReadiness(t *testing.T) {
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	project.Spec.DisplayName = "Demo App"
+	project.Spec.Memory.Requirements = []string{"ship a tested build"}
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+	scope := projectWorkspaceScope(id, project.Name)
+	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "package.json", Content: `{"scripts":{"build":"vite build","test":"vitest"}}`}); err != nil {
+		t.Fatalf("WriteFile package.json returned error: %v", err)
+	}
+	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "src/App.tsx", Content: "export function App() { return null }\n"}); err != nil {
+		t.Fatalf("WriteFile src/App.tsx returned error: %v", err)
+	}
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolPrepareProjectDeployment)
+	if !ok {
+		t.Fatal("prepare_project_deployment tool missing from registry")
+	}
+
+	raw, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
+		Identity:       id,
+		Project:        project,
+		Repository:     &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
+		WorkspaceScope: scope,
+		Arguments:      map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if len(raw) > projectAssistantWorkflowMaxResultBytes {
+		t.Fatalf("workflow result length = %d, want <= %d", len(raw), projectAssistantWorkflowMaxResultBytes)
+	}
+	var prepared projectAssistantDeploymentPreparationResult
+	if err := json.Unmarshal([]byte(raw), &prepared); err != nil {
+		t.Fatalf("workflow result is not JSON: %v\n%s", err, raw)
+	}
+	if prepared.Status != "ready_for_build" {
+		t.Fatalf("status = %q, want ready_for_build", prepared.Status)
+	}
+	if prepared.Artifact == nil || prepared.Artifact.Type != "oci-image" || prepared.Artifact.Source != "app-studio-build" || prepared.Artifact.Status != "required" {
+		t.Fatalf("artifact = %#v, want required App Studio OCI image build artifact", prepared.Artifact)
+	}
+	if prepared.Runtime == nil || prepared.Runtime.Status != "not_configured" {
+		t.Fatalf("runtime = %#v, want not_configured runtime handoff", prepared.Runtime)
+	}
+	if !containsString(prepared.RecommendedChecks, "build") || !containsString(prepared.RecommendedChecks, "test") {
+		t.Fatalf("recommended checks = %#v, want build and test", prepared.RecommendedChecks)
+	}
+	if !containsString(prepared.Files, "package.json") || !containsString(prepared.Files, "src/App.tsx") {
+		t.Fatalf("files = %#v, want workspace files", prepared.Files)
+	}
+	if len(prepared.Blockers) != 0 {
+		t.Fatalf("blockers = %#v, want none before runtime handoff", prepared.Blockers)
+	}
+	if !containsString(prepared.NextSteps, "Build an OCI image for the current workspace before runtime deployment.") {
+		t.Fatalf("next steps = %#v, want OCI build step", prepared.NextSteps)
+	}
+}
+
+func TestProjectAssistantPrepareDeploymentWorkflowReportsBlockers(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolPrepareProjectDeployment)
+	if !ok {
+		t.Fatal("prepare_project_deployment tool missing from registry")
+	}
+
+	raw, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
+		Project:   project,
+		Arguments: map[string]any{"includeFiles": false},
+	})
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	var prepared projectAssistantDeploymentPreparationResult
+	if err := json.Unmarshal([]byte(raw), &prepared); err != nil {
+		t.Fatalf("workflow result is not JSON: %v\n%s", err, raw)
+	}
+	if prepared.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", prepared.Status)
+	}
+	if !containsString(prepared.Blockers, "Project requirements are missing.") || !containsString(prepared.Blockers, "Managed repository is not ready.") {
+		t.Fatalf("blockers = %#v, want requirements and repository blockers", prepared.Blockers)
+	}
+}
+
 func TestProjectAssistantWorkflowDoesNotMutateWorkspace(t *testing.T) {
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
@@ -207,6 +350,123 @@ func TestProjectAssistantWorkflowDoesNotMutateWorkspace(t *testing.T) {
 	}
 	if strings.Join(workflowTestFilePaths(before.Files), "\n") != strings.Join(workflowTestFilePaths(after.Files), "\n") {
 		t.Fatalf("files changed from %#v to %#v", before.Files, after.Files)
+	}
+}
+
+func TestProjectAssistantPrepareDeploymentWorkflowDoesNotMutateWorkspace(t *testing.T) {
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+	scope := projectWorkspaceScope(id, project.Name)
+	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "README.md", Content: "# Demo\n"}); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	before, err := workspaces.ListFiles(context.Background(), scope, workspace.ListOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListFiles before returned error: %v", err)
+	}
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolPrepareProjectDeployment)
+	if !ok {
+		t.Fatal("prepare_project_deployment tool missing from registry")
+	}
+	if _, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
+		Identity:       id,
+		Project:        project,
+		WorkspaceScope: scope,
+		Arguments:      map[string]any{},
+	}); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	after, err := workspaces.ListFiles(context.Background(), scope, workspace.ListOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListFiles after returned error: %v", err)
+	}
+	if strings.Join(workflowTestFilePaths(before.Files), "\n") != strings.Join(workflowTestFilePaths(after.Files), "\n") {
+		t.Fatalf("files changed from %#v to %#v", before.Files, after.Files)
+	}
+}
+
+func TestProjectAssistantDeployRuntimeWorkflowReportsMissingRuntimeProvider(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	tool, ok := server.projectAssistantToolRegistry().Get("deploy_project_runtime")
+	if !ok {
+		t.Fatal("deploy_project_runtime tool missing from registry")
+	}
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	project.Spec.DisplayName = "Demo App"
+	result, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
+		Project:    project,
+		Repository: &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
+		Arguments: map[string]any{
+			"targetRef": "default-web",
+			"image":     "registry.example.com/demo/app:abc123",
+			"port":      8080,
+			"intent":    "preview",
+		},
+	})
+	if err != nil {
+		t.Fatalf("deploy runtime workflow returned error: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, result)
+	}
+	if got := projectToolString(decoded["status"]); got != "blocked" {
+		t.Fatalf("status = %q, want blocked", got)
+	}
+	if !containsString(projectToolStringList(decoded["blockers"]), "Runtime provider is not configured.") {
+		t.Fatalf("blockers = %#v, want runtime provider blocker", decoded["blockers"])
+	}
+	deployment, ok := decoded["appDeployment"].(map[string]any)
+	if !ok {
+		t.Fatalf("appDeployment = %#v, want object", decoded["appDeployment"])
+	}
+	if got := projectToolString(deployment["targetRef"]); got != "default-web" {
+		t.Fatalf("targetRef = %q, want default-web", got)
+	}
+	if got := projectToolString(deployment["image"]); got != "registry.example.com/demo/app:abc123" {
+		t.Fatalf("image = %q, want requested image", got)
+	}
+	if got, _ := projectToolNumber(deployment["port"]); got != 8080 {
+		t.Fatalf("port = %d, want 8080", got)
+	}
+	runtime, ok := decoded["runtime"].(map[string]any)
+	if !ok || projectToolString(runtime["status"]) != "not_configured" {
+		t.Fatalf("runtime = %#v, want not_configured object", decoded["runtime"])
+	}
+}
+
+func TestProjectAssistantRuntimeStatusAndPreviewWorkflowsReportNotConfiguredWithoutSessionRuntime(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	for _, name := range []string{"get_runtime_status", "get_preview_url"} {
+		t.Run(name, func(t *testing.T) {
+			tool, ok := server.projectAssistantToolRegistry().Get(name)
+			if !ok {
+				t.Fatalf("%s tool missing from registry", name)
+			}
+			result, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
+				Project: projectWithRepository("demo-repo", "demo", "github"),
+			})
+			if err != nil {
+				t.Fatalf("%s returned error: %v", name, err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal([]byte(result), &decoded); err != nil {
+				t.Fatalf("decode result: %v\n%s", err, result)
+			}
+			if got := projectToolString(decoded["status"]); got != "not_configured" {
+				t.Fatalf("status = %q, want not_configured", got)
+			}
+			if got := projectToolString(decoded["previewURL"]); got != "" {
+				t.Fatalf("previewURL = %q, want empty without runtime session", got)
+			}
+			if !containsString(projectToolStringList(decoded["blockers"]), "Runtime provider is not configured.") {
+				t.Fatalf("blockers = %#v, want runtime provider blocker", decoded["blockers"])
+			}
+		})
 	}
 }
 

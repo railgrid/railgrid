@@ -81,6 +81,31 @@ func TestFailAndDeleteBundleRemovesStoredBundle(t *testing.T) {
 	}
 }
 
+func TestFailUpdatesCurrentObjectStatus(t *testing.T) {
+	ctx := context.Background()
+	current := &codev1alpha1.RepositoryCommit{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-commit", ResourceVersion: "2"},
+		Status:     codev1alpha1.RepositoryCommitStatus{Phase: codev1alpha1.RepositoryCommitPhaseRunning},
+	}
+	c := &recordingStatusClient{Client: fake.NewClientBuilder().
+		WithScheme(codescheme.NewScheme()).
+		WithStatusSubresource(&codev1alpha1.RepositoryCommit{}).
+		WithObjects(current).
+		Build()}
+	stale := current.DeepCopy()
+	stale.ResourceVersion = "1"
+
+	if err := (&Reconciler{}).fail(ctx, c, stale, "github failed"); err != nil {
+		t.Fatalf("fail returned error: %v", err)
+	}
+	if c.updated == nil {
+		t.Fatal("Status().Update was not called")
+	}
+	if got := c.updated.GetResourceVersion(); got != "2" {
+		t.Fatalf("updated object resourceVersion = %q, want 2", got)
+	}
+}
+
 func TestUpdateStatusIfChangedUpdatesCurrentObject(t *testing.T) {
 	ctx := context.Background()
 	current := &codev1alpha1.RepositoryCommit{

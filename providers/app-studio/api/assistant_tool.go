@@ -27,6 +27,7 @@ import (
 )
 
 type projectAssistantToolRisk string
+type projectAssistantToolBundle string
 
 const (
 	projectAssistantToolRiskRead    projectAssistantToolRisk = "read"
@@ -35,6 +36,15 @@ const (
 	projectAssistantToolRiskWrite   projectAssistantToolRisk = "write"
 	projectAssistantToolRiskCommit  projectAssistantToolRisk = "commit"
 	projectAssistantToolRiskRuntime projectAssistantToolRisk = "runtime"
+)
+
+const (
+	projectAssistantToolBundleWorkflow      projectAssistantToolBundle = "workflow"
+	projectAssistantToolBundleWorkspaceRead projectAssistantToolBundle = "workspace_read"
+	projectAssistantToolBundleEdit          projectAssistantToolBundle = "edit"
+	projectAssistantToolBundleRepo          projectAssistantToolBundle = "repo"
+	projectAssistantToolBundleRuntime       projectAssistantToolBundle = "runtime"
+	projectAssistantToolBundleCollaboration projectAssistantToolBundle = "collaboration"
 )
 
 type projectAssistantToolSpec struct {
@@ -55,6 +65,38 @@ func (s projectAssistantToolSpec) chatTool() chatTool {
 	}
 }
 
+func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAssistantToolBundle {
+	switch projectToolBaseName(spec.Name) {
+	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment:
+		return projectAssistantToolBundleWorkflow
+	case projectToolDeployProjectRuntime, projectToolGetRuntimeStatus, projectToolGetPreviewURL:
+		return projectAssistantToolBundleRuntime
+	case projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles:
+		return projectAssistantToolBundleWorkspaceRead
+	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+		return projectAssistantToolBundleEdit
+	case projectToolCommitProjectFiles, projectToolCommitFiles:
+		return projectAssistantToolBundleRepo
+	case projectToolAskFollowUp, projectToolRequestProjectPlanApproval:
+		return projectAssistantToolBundleCollaboration
+	}
+	switch spec.Risk {
+	case projectAssistantToolRiskPlan:
+		return projectAssistantToolBundleWorkflow
+	case projectAssistantToolRiskRead:
+		return projectAssistantToolBundleWorkspaceRead
+	case projectAssistantToolRiskWrite:
+		return projectAssistantToolBundleEdit
+	case projectAssistantToolRiskCommit:
+		return projectAssistantToolBundleRepo
+	case projectAssistantToolRiskRuntime:
+		return projectAssistantToolBundleRuntime
+	case projectAssistantToolRiskInput:
+		return projectAssistantToolBundleCollaboration
+	}
+	return projectAssistantToolBundleWorkflow
+}
+
 type projectAssistantToolCallRequest struct {
 	Identity             identity
 	Project              *aiv1alpha1.Project
@@ -63,6 +105,7 @@ type projectAssistantToolCallRequest struct {
 	ProjectRepositoryRef string
 	MCPEndpoint          string
 	HTTPRequest          *http.Request
+	SessionSnapshot      *projectEinoAssistantSessionSnapshot
 	Arguments            map[string]any
 }
 

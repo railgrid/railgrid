@@ -777,9 +777,9 @@ KROMC_MANIFEST ?= providers/infrastructure/manifest.yaml
 KROMC_PROVIDER_MANIFEST ?= providers/infrastructure/provider.yaml
 
 # --- App Studio provider (local dev) ---
-# Same pattern as quickstart/infrastructure, but the CatalogEntry template
-# defaults to the cluster Service DNS and the helper target below overrides
-# only the UI URL for local host access.
+# Same pattern as quickstart/infrastructure/code: local dev applies the
+# checked-in manifest.yaml; the Helm chart's CatalogEntry is for in-cluster
+# self-registration via ConfigMap.
 APP_STUDIO_PORT ?= 8085
 APP_STUDIO_HUB_URL ?= https://localhost:9443
 APP_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
@@ -788,19 +788,8 @@ APP_STUDIO_KCP_SERVER ?= https://localhost:6443
 APP_STUDIO_WORKSPACE_PATH ?= root:kedge:providers:app-studio
 APP_STUDIO_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/app-studio-runtime.kubeconfig
 APP_STUDIO_SCHEMAS_DIR ?= providers/app-studio/deploy/chart/files/schemas
-APP_STUDIO_HELM_RELEASE ?= app-studio
-APP_STUDIO_HELM_NAMESPACE ?= app-studio
-APP_STUDIO_CHART ?= providers/app-studio/deploy/chart
+APP_STUDIO_MANIFEST ?= providers/app-studio/manifest.yaml
 APP_STUDIO_PROVIDER_MANIFEST ?= providers/app-studio/provider.yaml
-APP_STUDIO_CATALOGENTRY_UI_URL ?= http://localhost:$(APP_STUDIO_PORT)
-# The backend (REST/LLM API) is reverse-proxied by the hub too, to the SAME
-# host:port as the UI (one provider process serves both). It must point at the
-# running provider — loopback for the all-host flow, host.docker.internal for
-# the in-cluster hub flow — not the chart's Service DNS, or
-# /services/providers/app-studio/* returns 502. Tracking UI_URL makes both
-# Tiltfiles work without a separate override.
-APP_STUDIO_CATALOGENTRY_BACKEND_URL ?= $(APP_STUDIO_CATALOGENTRY_UI_URL)
-APP_STUDIO_CATALOGENTRY_RENDERED ?= /tmp/kedge-app-studio-catalogentry.yaml
 APP_STUDIO_DATABASE_URL ?=
 APP_STUDIO_IN_MEMORY_MESSAGE_STORE ?=
 APP_STUDIO_AUTO_APPROVE_ACTIONS ?= true
@@ -934,24 +923,16 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 	fi
 
 ## Apply the App Studio CatalogEntry into root:kedge:providers. Idempotent.
-## Renders only the CatalogEntry from the Helm chart so host-cluster objects
-## from the full chart never touch the KCP workspace.
-install-provider-app-studio: ## Apply App Studio CatalogEntry into root:kedge:providers
+install-provider-app-studio: ## Apply App Studio Provider + CatalogEntry into root:kedge:providers
 	@test -f $(APP_STUDIO_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(APP_STUDIO_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
-	helm template $(APP_STUDIO_HELM_RELEASE) $(APP_STUDIO_CHART) \
-		--namespace $(APP_STUDIO_HELM_NAMESPACE) \
-		--set-string catalogEntry.uiURL=$(APP_STUDIO_CATALOGENTRY_UI_URL) \
-		--set-string catalogEntry.backendURL=$(APP_STUDIO_CATALOGENTRY_BACKEND_URL) \
-		--show-only templates/catalogentry.yaml \
-		> $(APP_STUDIO_CATALOGENTRY_RENDERED)
 	kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
 		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		apply -f $(APP_STUDIO_PROVIDER_MANIFEST) -f $(APP_STUDIO_CATALOGENTRY_RENDERED)
+		apply -f $(APP_STUDIO_PROVIDER_MANIFEST) -f $(APP_STUDIO_MANIFEST)
 
 ## Create App Studio's APIExport (+ schemas + endpoint slice + bind grant) in
 ## its provider workspace so tenants can Enable it. Reads the provider-token the
@@ -988,16 +969,10 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
-	helm template $(APP_STUDIO_HELM_RELEASE) $(APP_STUDIO_CHART) \
-		--namespace $(APP_STUDIO_HELM_NAMESPACE) \
-		--set-string catalogEntry.uiURL=$(APP_STUDIO_CATALOGENTRY_UI_URL) \
-		--set-string catalogEntry.backendURL=$(APP_STUDIO_CATALOGENTRY_BACKEND_URL) \
-		--show-only templates/catalogentry.yaml \
-		> $(APP_STUDIO_CATALOGENTRY_RENDERED)
 	-kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
 		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		delete -f $(APP_STUDIO_CATALOGENTRY_RENDERED) -f $(APP_STUDIO_PROVIDER_MANIFEST)
+		delete -f $(APP_STUDIO_MANIFEST) -f $(APP_STUDIO_PROVIDER_MANIFEST)
 
 ## Apply the infrastructure CatalogEntry into root:kedge:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.

@@ -1,3 +1,4 @@
+{{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,7 +40,7 @@ spec:
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
             - name: KEDGE_SCHEMAS_DIR
               value: /etc/kedge/schemas
-            {{- if .Values.catalogEntry.enabled }}
+            {{- if $catalogEntryConfigMap }}
             # The CatalogEntry is a kcp resource, so the chart cannot apply it to
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)
             # and init self-registers it into the provider workspace via the
@@ -51,7 +52,7 @@ spec:
             - name: kedge-provider-kubeconfig
               mountPath: /var/run/secrets/kedge
               readOnly: true
-            {{- if .Values.catalogEntry.enabled }}
+            {{- if $catalogEntryConfigMap }}
             - name: catalogentry
               mountPath: /etc/kedge/catalogentry
               readOnly: true
@@ -142,7 +143,7 @@ spec:
             items:
               - key: kubeconfig
                 path: kedge-provider-kubeconfig
-        {{- if .Values.catalogEntry.enabled }}
+        {{- if $catalogEntryConfigMap }}
         - name: catalogentry
           configMap:
             name: {{ include "appstudio.fullname" . }}-catalogentry

@@ -112,6 +112,7 @@ func (t projectEinoAssistantTool) Info(context.Context) (*schema.ToolInfo, error
 		Name: strings.TrimSpace(spec.Name),
 		Desc: strings.TrimSpace(spec.Description),
 		Extra: map[string]any{
+			"bundle":                          string(projectAssistantToolBundleForSpec(spec)),
 			"risk":                            string(spec.Risk),
 			projectEinoToolParametersExtraKey: string(spec.Parameters),
 		},
@@ -188,6 +189,7 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 		ProjectRepositoryRef: t.runState.ProjectRepositoryRef(),
 		MCPEndpoint:          mcpServerURL(t.req.MCPBaseURL, t.req.Identity.tenantPath, "default"),
 		HTTPRequest:          t.req.HTTPRequest,
+		SessionSnapshot:      t.runState.SessionSnapshot(),
 		Arguments:            args,
 	})
 	if err != nil {

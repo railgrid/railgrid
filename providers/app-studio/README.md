@@ -94,5 +94,8 @@ tool.
 
 App Studio does not run build, test, preview, or log commands inside the
 provider pod. The assistant can recommend build and test checks from project
-context, but App Studio no longer advertises runtime execution tools until a
-tenant-isolated worker implementation is productized.
+context. Runtime deployment, status, and preview URL requests are exposed as
+App Studio graph workflow tools so the model gets structured handoff results and
+blockers. Until a tenant-isolated `RuntimeTarget` implementation is productized,
+those workflows return a clear not-configured result instead of executing
+provider-pod commands.

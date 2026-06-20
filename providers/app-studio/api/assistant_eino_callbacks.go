@@ -32,10 +32,16 @@ import (
 
 func projectEinoAssistantRunOptions(req projectAssistantRunRequest, runState *projectEinoAssistantRunState) []adk.AgentRunOption {
 	handler := newProjectEinoAssistantModelCallbackHandler(req.StreamCallbacks, runState)
-	if handler == nil {
-		return nil
+	opts := []adk.AgentRunOption{}
+	if handler != nil {
+		opts = append(opts, adk.WithCallbacks(handler))
 	}
-	return []adk.AgentRunOption{adk.WithCallbacks(handler)}
+	if snapshot := runState.SessionSnapshot(); snapshot != nil {
+		opts = append(opts, adk.WithSessionValues(map[string]any{
+			projectEinoAssistantSessionSnapshotKey: *snapshot,
+		}))
+	}
+	return opts
 }
 
 func newProjectEinoAssistantModelCallbackHandler(streamCallbacks projectAssistantStreamCallbacks, runState *projectEinoAssistantRunState) callbacks.Handler {
@@ -110,9 +116,6 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(output *sc
 		msg := modelOutput.Message
 		if msg.Content != "" {
 			content.WriteString(msg.Content)
-			if r.streamCallbacks.OnChunk != nil {
-				r.streamCallbacks.OnChunk(msg.Content)
-			}
 		}
 		if len(msg.ToolCalls) > 0 {
 			r.reportToolPreparation()

@@ -258,6 +258,13 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 		_, resp, err = c.Git.UpdateRef(ctx, org, repo.Spec.Name, nextRef, false)
 	}
 	if err != nil {
+		if isRecoverableRefRace(resp, err) {
+			if res, ok, retryErr := recoverOrRetryConcurrentCommit(ctx, c, org, repo, branch, commit.GetSHA(), input.IdempotencyKey, message, entries, files); retryErr != nil {
+				return backend.RepositoryCommitResult{}, retryErr
+			} else if ok {
+				return res, nil
+			}
+		}
 		return backend.RepositoryCommitResult{}, classify(resp, err)
 	}
 	return backend.RepositoryCommitResult{
@@ -270,6 +277,101 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 
 func shouldReuseHeadCommit(parent *gogithub.Commit, tree *gogithub.Tree, baseTree string) bool {
 	return parent != nil && tree != nil && tree.GetSHA() != "" && tree.GetSHA() == baseTree
+}
+
+func recoverOrRetryConcurrentCommit(ctx context.Context, c *gogithub.Client, org string, repo *codev1alpha1.Repository, branch, attemptedCommitSHA, idempotencyKey, message string, entries []*gogithub.TreeEntry, files []string) (backend.RepositoryCommitResult, bool, error) {
+	head, ok, err := currentBranchHead(ctx, c, org, repo, branch)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, false, err
+	}
+	if !ok {
+		return backend.RepositoryCommitResult{}, false, nil
+	}
+	baseTree := ""
+	if head.GetTree() != nil {
+		baseTree = head.GetTree().GetSHA()
+	}
+	if concurrentHeadMatchesCommitRequest(head, attemptedCommitSHA, idempotencyKey) {
+		return backend.RepositoryCommitResult{
+			CommitSHA: head.GetSHA(),
+			CommitURL: commitURL(org, repo, head),
+			Branch:    branch,
+			Files:     files,
+		}, true, nil
+	}
+	tree, resp, err := c.Git.CreateTree(ctx, org, repo.Spec.Name, baseTree, entries)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, false, classify(resp, err)
+	}
+	commit, resp, err := c.Git.CreateCommit(ctx, org, repo.Spec.Name, &gogithub.Commit{
+		Message: gogithub.String(message),
+		Tree:    tree,
+		Parents: []*gogithub.Commit{{SHA: gogithub.String(head.GetSHA())}},
+	}, nil)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, false, classify(resp, err)
+	}
+	nextRef := &gogithub.Reference{
+		Ref: gogithub.String("refs/heads/" + branch),
+		Object: &gogithub.GitObject{
+			SHA: commit.SHA,
+		},
+	}
+	if _, resp, err = c.Git.UpdateRef(ctx, org, repo.Spec.Name, nextRef, false); err != nil {
+		return backend.RepositoryCommitResult{}, false, classify(resp, err)
+	}
+	return backend.RepositoryCommitResult{
+		CommitSHA: commit.GetSHA(),
+		CommitURL: commitURL(org, repo, commit),
+		Branch:    branch,
+		Files:     files,
+	}, true, nil
+}
+
+func concurrentHeadMatchesCommitRequest(head *gogithub.Commit, attemptedCommitSHA, idempotencyKey string) bool {
+	if head == nil {
+		return false
+	}
+	if attemptedCommitSHA != "" && head.GetSHA() == attemptedCommitSHA {
+		return true
+	}
+	return commitMessageHasIdempotencyKey(head.GetMessage(), idempotencyKey)
+}
+
+func currentBranchHead(ctx context.Context, c *gogithub.Client, org string, repo *codev1alpha1.Repository, branch string) (*gogithub.Commit, bool, error) {
+	ref, resp, err := c.Git.GetRef(ctx, org, repo.Spec.Name, "heads/"+branch)
+	if err != nil {
+		return nil, false, classify(resp, err)
+	}
+	if ref == nil || ref.GetObject() == nil || ref.GetObject().GetSHA() == "" {
+		return nil, false, nil
+	}
+	head, resp, err := c.Git.GetCommit(ctx, org, repo.Spec.Name, ref.GetObject().GetSHA())
+	if err != nil {
+		return nil, false, classify(resp, err)
+	}
+	if head == nil {
+		return nil, false, nil
+	}
+	return head, true, nil
+}
+
+func isRecoverableRefRace(resp *gogithub.Response, err error) bool {
+	return isNotFastForward(resp, err) || isReferenceAlreadyExists(resp, err)
+}
+
+func isNotFastForward(resp *gogithub.Response, err error) bool {
+	if resp == nil || resp.StatusCode != http.StatusUnprocessableEntity || err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "not a fast forward")
+}
+
+func isReferenceAlreadyExists(resp *gogithub.Response, err error) bool {
+	if resp == nil || resp.StatusCode != http.StatusUnprocessableEntity || err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "reference already exists")
 }
 
 func commitMessageWithIdempotencyKey(message, key string) string {

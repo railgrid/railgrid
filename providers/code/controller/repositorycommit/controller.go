@@ -163,7 +163,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	next.Status.Files = fileStatus
 	shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionTrue, codev1alpha1.ReasonReady, "Commit succeeded.", commit.Generation)
-	if err := c.Status().Update(ctx, next); err != nil {
+	if err := updateStatusIfChanged(ctx, c, next); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update repositorycommit %q status: %w", commit.Name, err)
 	}
 	if err := r.Bundles.Delete(ctx, bundleScope, bundleRef.Name, bundleRef.Digest); err != nil {
@@ -183,7 +183,7 @@ func (r *Reconciler) fail(ctx context.Context, c client.Client, commit *codev1al
 	next.Status.ObservedGeneration = commit.Generation
 	next.Status.Phase = codev1alpha1.RepositoryCommitPhaseFailed
 	shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonError, message, commit.Generation)
-	if err := c.Status().Update(ctx, next); err != nil {
+	if err := updateStatusIfChanged(ctx, c, next); err != nil {
 		return fmt.Errorf("update repositorycommit %q failure status: %w", commit.Name, err)
 	}
 	return nil

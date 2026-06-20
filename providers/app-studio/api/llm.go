@@ -71,6 +71,10 @@ const (
 	projectToolSearchProjectFiles         = "search_project_files"
 	projectToolPlanProjectChanges         = "plan_project_changes"
 	projectToolCheckProjectReadiness      = "check_project_readiness"
+	projectToolPrepareProjectDeployment   = "prepare_project_deployment"
+	projectToolDeployProjectRuntime       = "deploy_project_runtime"
+	projectToolGetRuntimeStatus           = "get_runtime_status"
+	projectToolGetPreviewURL              = "get_preview_url"
 	projectToolAskFollowUp                = "ask_follow_up"
 	projectToolRequestProjectPlanApproval = "request_project_plan_approval"
 	projectToolWriteFile                  = "write_file"
@@ -600,8 +604,12 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return summarizeProjectToolKeyValues(args, []string{"path", "maxBytes"})
 	case projectToolSearchProjectFiles:
 		return summarizeProjectToolKeyValues(args, []string{"query", "maxResults"})
-	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness:
+	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment:
 		return summarizeProjectPlanningWorkflowArgs(args)
+	case projectToolDeployProjectRuntime:
+		return summarizeProjectToolKeyValues(args, []string{"targetRef", "appName", "image", "port", "intent"})
+	case projectToolGetRuntimeStatus, projectToolGetPreviewURL:
+		return ""
 	case projectToolAskFollowUp:
 		if questions := projectToolStringList(args["questions"]); len(questions) > 0 {
 			return truncateProjectToolInfo(fmt.Sprintf("%d question(s): %s", len(questions), summarizeProjectToolList(questions, 3)))
@@ -682,8 +690,10 @@ func summarizeProjectToolResult(name, result string) string {
 			if len(parts) > 0 {
 				return truncateProjectToolInfo(strings.Join(parts, "; "))
 			}
-		case projectToolCheckProjectReadiness:
+		case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment:
 			return summarizeProjectReadinessWorkflowResult(decoded)
+		case projectToolDeployProjectRuntime, projectToolGetRuntimeStatus, projectToolGetPreviewURL:
+			return summarizeProjectRuntimeWorkflowResult(decoded)
 		case projectToolAskFollowUp:
 			if answer := projectToolString(decoded["answer"]); answer != "" {
 				return truncateProjectToolInfo("answered: " + answer)
@@ -787,6 +797,23 @@ func summarizeProjectReadinessWorkflowResult(decoded map[string]any) string {
 	}
 	if files := projectToolStringList(decoded["files"]); len(files) > 0 {
 		parts = append(parts, fmt.Sprintf("%d file(s): %s", len(files), summarizeProjectToolList(files, 5)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectRuntimeWorkflowResult(decoded map[string]any) string {
+	parts := []string{}
+	if status := projectToolString(decoded["status"]); status != "" {
+		parts = append(parts, "status "+status)
+	}
+	if previewURL := projectToolString(decoded["previewURL"]); previewURL != "" {
+		parts = append(parts, "preview "+previewURL)
+	}
+	if blockers := projectToolStringList(decoded["blockers"]); len(blockers) > 0 {
+		parts = append(parts, "blockers "+summarizeProjectToolList(blockers, 3))
 	}
 	if len(parts) == 0 {
 		return ""
@@ -1522,7 +1549,8 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 	var b strings.Builder
 	b.WriteString("You are the assistant for a persistent Kedge Project workspace. ")
 	b.WriteString("Help the user reason about and build the application represented by this Project. ")
-	b.WriteString("Report tool use when you actually call tools, but do not claim that you changed files or deployed resources unless a tool result or other evidence supports it. ")
+	b.WriteString("Do not narrate tool calls or say what tool you will call next in assistant prose; App Studio shows tool progress through its status and tool summary UI. ")
+	b.WriteString("Do not claim that you changed files or deployed resources unless a tool result or other evidence supports it. ")
 	b.WriteString("When requirements are unclear, call ask_follow_up with at most three concise questions instead of guessing.\n\n")
 	b.WriteString("Project metadata:\n")
 	b.WriteString("- Name: " + p.Name + "\n")
@@ -1548,6 +1576,9 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 			b.WriteString("Do not attempt to commit files until the user restores the missing Code repository or connection.\n")
 		} else {
 			b.WriteString("Use check_project_readiness before mutating or verifying existing work so repository, memory, workspace context, and recommended checks come from the App Studio graph workflow. ")
+			b.WriteString("When a named App Studio tool is deferred, load it first with tool_search using select:<tool_name>, then call the loaded tool. ")
+			b.WriteString("Use prepare_project_deployment before discussing deployment handoff so build artifact readiness, blockers, and runtime handoff constraints come from the App Studio graph workflow. ")
+			b.WriteString("Use deploy_project_runtime, get_runtime_status, and get_preview_url only as App Studio runtime graph workflows; they return structured not_configured blockers until a tenant RuntimeTarget exists. ")
 			b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
 			b.WriteString("Before source edits, call request_project_plan_approval with a concise batch plan, target path envelope, allowed edit operations, and acceptance criteria; after approval, keep workspace edits inside that envelope. ")
 			b.WriteString("Prefer small App Studio workspace mutations with write_file, apply_patch, and mkdir instead of rewriting a whole project. ")

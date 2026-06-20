@@ -43,6 +43,7 @@ type projectAssistantCheckpointState struct {
 	RepeatedToolLoop     bool                                 `json:"repeatedToolLoop,omitempty"`
 	LastToolMessages     []chatMessage                        `json:"lastToolMessages,omitempty"`
 	ApprovedPlan         *projectAssistantApprovedPlan        `json:"approvedPlan,omitempty"`
+	SessionSnapshot      *projectEinoAssistantSessionSnapshot `json:"sessionSnapshot,omitempty"`
 	Eino                 *projectAssistantEinoCheckpointState `json:"eino,omitempty"`
 }
 
@@ -300,7 +301,7 @@ func projectAssistantPermissionReason(spec projectAssistantToolSpec) string {
 	case projectAssistantToolRiskCommit:
 		return "This action will commit App Studio workspace changes to the linked repository."
 	case projectAssistantToolRiskRuntime:
-		return "This action will start a sandboxed App Studio runtime command."
+		return "This action will request an App Studio runtime deployment handoff."
 	default:
 		return "This action requires approval."
 	}

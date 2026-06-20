@@ -100,6 +100,10 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 		"search_project_files",
 		"plan_project_changes",
 		"check_project_readiness",
+		"prepare_project_deployment",
+		"deploy_project_runtime",
+		"get_runtime_status",
+		"get_preview_url",
 		"ask_follow_up",
 		"request_project_plan_approval",
 		"write_file",
@@ -125,6 +129,10 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 		"search_project_files",
 		"plan_project_changes",
 		"check_project_readiness",
+		"prepare_project_deployment",
+		"deploy_project_runtime",
+		"get_runtime_status",
+		"get_preview_url",
 		"ask_follow_up",
 		"request_project_plan_approval",
 		"write_file",
@@ -251,8 +259,11 @@ func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(
 	if !strings.Contains(joined, "Available tools in this workspace") || !strings.Contains(joined, "commit_project_files") {
 		t.Fatalf("first model input missing discovered tool prompt:\n%s", joined)
 	}
-	if !projectChatToolsInclude(model.Inputs[0].Tools, projectToolCommitProjectFiles) {
-		t.Fatalf("model tools = %#v, want commit_project_files from discovered commit bridge", model.Inputs[0].Tools)
+	if projectChatToolsInclude(model.Inputs[0].Tools, projectToolCommitProjectFiles) {
+		t.Fatalf("model tools = %#v, want commit_project_files deferred behind tool_search", model.Inputs[0].Tools)
+	}
+	if !projectChatToolsInclude(model.Inputs[0].Tools, "tool_search") {
+		t.Fatalf("model tools = %#v, want tool_search for deferred commit bridge", model.Inputs[0].Tools)
 	}
 }
 
@@ -268,7 +279,7 @@ func TestProjectSystemPromptRequiresWorkspaceInspectBeforeEdit(t *testing.T) {
 	}
 
 	prompt := projectSystemPrompt(project, repository)
-	for _, want := range []string{"check_project_readiness", "list_project_files", "read_project_file", "search_project_files", "write_file", "apply_patch", "mkdir", "commit_project_files"} {
+	for _, want := range []string{"check_project_readiness", "prepare_project_deployment", "deploy_project_runtime", "get_runtime_status", "get_preview_url", "list_project_files", "read_project_file", "search_project_files", "write_file", "apply_patch", "mkdir", "commit_project_files"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
@@ -281,8 +292,37 @@ func TestProjectSystemPromptRequiresWorkspaceInspectBeforeEdit(t *testing.T) {
 	if !strings.Contains(prompt, "provider-code only as the git-source boundary") {
 		t.Fatalf("prompt missing provider-code boundary guidance:\n%s", prompt)
 	}
+	if !strings.Contains(prompt, "Do not narrate tool calls") {
+		t.Fatalf("prompt missing tool-call narration guidance:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "tool_search") || !strings.Contains(prompt, "select:") {
+		t.Fatalf("prompt missing deferred tool_search guidance:\n%s", prompt)
+	}
 	if !strings.Contains(strings.ToLower(prompt), "before") || !strings.Contains(strings.ToLower(prompt), "inspect") {
 		t.Fatalf("prompt does not require inspect-before-edit guidance:\n%s", prompt)
+	}
+}
+
+func TestProjectAssistantDoesNotAdvertiseLegacyRuntimeCommandTools(t *testing.T) {
+	registry := projectAssistantLocalToolRegistry(nil)
+	toolNames := strings.Join(projectChatToolNames(registry.ChatTools(true)), "\n")
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo-project"
+	prompt := projectSystemPrompt(project, &ProjectRepositoryView{
+		Ref:    "demo-repo",
+		Name:   "demo",
+		Status: projectRepositoryStatusReady,
+		Ready:  true,
+	})
+	combined := toolNames + "\n" + prompt
+	for _, unwanted := range []string{
+		"runtime_command",
+		"verify_project_runtime",
+		"preview_project_runtime",
+	} {
+		if strings.Contains(combined, unwanted) {
+			t.Fatalf("App Studio should not advertise legacy runtime command tool %q:\n%s", unwanted, combined)
+		}
 	}
 }
 

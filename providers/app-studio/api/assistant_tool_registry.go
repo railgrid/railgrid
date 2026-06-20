@@ -157,6 +157,10 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		newProjectAssistantWorkflowTool(server),
 		newProjectAssistantReadinessWorkflowTool(server),
+		newProjectAssistantPrepareDeploymentWorkflowTool(server),
+		newProjectAssistantDeployRuntimeWorkflowTool(),
+		newProjectAssistantRuntimeStatusWorkflowTool(),
+		newProjectAssistantPreviewURLWorkflowTool(),
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolAskFollowUp,

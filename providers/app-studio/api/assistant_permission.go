@@ -55,9 +55,6 @@ func projectAssistantPermissionForToolWithRunState(spec projectAssistantToolSpec
 	case projectAssistantToolRiskCommit:
 		return projectAssistantPermissionAsk
 	case projectAssistantToolRiskRuntime:
-		if autoApprove {
-			return projectAssistantPermissionAllow
-		}
 		return projectAssistantPermissionAsk
 	default:
 		return projectAssistantPermissionDeny

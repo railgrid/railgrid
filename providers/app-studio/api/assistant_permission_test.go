@@ -48,6 +48,16 @@ func TestProjectAssistantPermissionPolicy(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantRuntimePermissionIgnoresAutoApprove(t *testing.T) {
+	decision := projectAssistantPermissionForToolWithPolicy(projectAssistantToolSpec{
+		Name: projectToolDeployProjectRuntime,
+		Risk: projectAssistantToolRiskRuntime,
+	}, true)
+	if decision != projectAssistantPermissionAsk {
+		t.Fatalf("auto-approved runtime permission = %q, want %q", decision, projectAssistantPermissionAsk)
+	}
+}
+
 func TestProjectAssistantPlanApprovalAllowsScopedWritesButNotCommit(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.ApprovePlan(projectAssistantApprovedPlan{

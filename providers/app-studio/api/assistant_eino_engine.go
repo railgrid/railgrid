@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
@@ -35,6 +36,10 @@ const (
 	projectEinoAssistantSummaryContextMessages = 128
 	projectEinoAssistantSummaryContextTokens   = 24000
 	projectEinoAssistantSummaryInstruction     = "Summarize this App Studio project session for the next builder turn. Preserve user requirements, accepted plans, files touched or inspected, unresolved questions, repository/runtime state, and any constraints. Keep it concise and operational."
+
+	// Bundle search is for App Studio's full product toolbox. Smaller injected
+	// tool sets stay direct so focused permission/resume flows keep their shape.
+	projectEinoAssistantBundleSearchMinTools = 4
 )
 
 type projectEinoAssistantEngine struct {
@@ -181,6 +186,8 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 }
 
 func projectEinoAssistantToolSearchSets(ctx context.Context, tools []einotool.BaseTool) ([]einotool.BaseTool, []einotool.BaseTool, error) {
+	infos := make([]*schema.ToolInfo, 0, len(tools))
+	searchCandidateCount := 0
 	staticTools := make([]einotool.BaseTool, 0, len(tools))
 	dynamicTools := make([]einotool.BaseTool, 0, len(tools))
 	for _, tool := range tools {
@@ -191,7 +198,20 @@ func projectEinoAssistantToolSearchSets(ctx context.Context, tools []einotool.Ba
 		if err != nil {
 			return nil, nil, err
 		}
-		if projectEinoAssistantToolUsesSearch(info) {
+		infos = append(infos, info)
+		if projectEinoAssistantToolCanUseSearch(info) {
+			searchCandidateCount++
+		}
+	}
+	useBundleSearch := searchCandidateCount >= projectEinoAssistantBundleSearchMinTools
+	infoIndex := 0
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		info := infos[infoIndex]
+		infoIndex++
+		if projectEinoAssistantToolUsesSearch(info, useBundleSearch) {
 			dynamicTools = append(dynamicTools, tool)
 			continue
 		}
@@ -200,9 +220,20 @@ func projectEinoAssistantToolSearchSets(ctx context.Context, tools []einotool.Ba
 	return staticTools, dynamicTools, nil
 }
 
-func projectEinoAssistantToolUsesSearch(info *schema.ToolInfo) bool {
+func projectEinoAssistantToolCanUseSearch(info *schema.ToolInfo) bool {
 	if info == nil || info.Extra == nil {
 		return false
+	}
+	bundle, _ := info.Extra["bundle"].(string)
+	return projectAssistantToolBundle(bundle) != projectAssistantToolBundleCollaboration
+}
+
+func projectEinoAssistantToolUsesSearch(info *schema.ToolInfo, useBundleSearch bool) bool {
+	if info == nil || info.Extra == nil {
+		return false
+	}
+	if useBundleSearch && projectEinoAssistantToolCanUseSearch(info) {
+		return true
 	}
 	risk, _ := info.Extra["risk"].(string)
 	return projectAssistantToolRisk(risk) == projectAssistantToolRiskRead
@@ -231,7 +262,7 @@ func (e projectEinoAssistantEngine) runProjectAssistantTurnLoop(
 			if len(items) == 0 {
 				return nil, errors.New("eino turn loop received no work")
 			}
-			input, err := projectEinoAssistantInputMessages(req, runState)
+			input, err := projectEinoAssistantInputMessages(loopCtx, req, runState)
 			if err != nil {
 				return nil, err
 			}
@@ -376,14 +407,19 @@ func (e projectEinoAssistantEngine) collectProjectAssistantTurnEvents(
 			outcome.receivedOutput = true
 			continue
 		}
-		if event.Output.MessageOutput == nil {
+		messageOutput := event.Output.MessageOutput
+		if messageOutput == nil {
 			continue
 		}
-		msg, err := event.Output.MessageOutput.GetMessage()
+		msg, err := projectEinoAssistantMessageOutput(eventCtx, messageOutput, req.StreamCallbacks)
 		if err != nil {
 			return err
 		}
-		if msg != nil && msg.Role == schema.Assistant && strings.TrimSpace(msg.Content) != "" {
+		role := messageOutput.Role
+		if role == "" && msg != nil {
+			role = msg.Role
+		}
+		if msg != nil && role == schema.Assistant && strings.TrimSpace(msg.Content) != "" {
 			outcome.result.Content = msg.Content
 			outcome.receivedOutput = true
 		}
@@ -392,6 +428,49 @@ func (e projectEinoAssistantEngine) collectProjectAssistantTurnEvents(
 		tc.Loop.Stop()
 	}
 	return nil
+}
+
+func projectEinoAssistantMessageOutput(
+	ctx context.Context,
+	output *adk.TypedMessageVariant[*schema.Message],
+	streamCallbacks projectAssistantStreamCallbacks,
+) (*schema.Message, error) {
+	if output == nil {
+		return nil, nil
+	}
+	if !output.IsStreaming {
+		return output.Message, nil
+	}
+	if output.MessageStream == nil {
+		return nil, errors.New("eino assistant stream event missing message stream")
+	}
+	defer output.MessageStream.Close()
+
+	var chunks []*schema.Message
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		msg, err := output.MessageStream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if msg == nil {
+			continue
+		}
+		chunks = append(chunks, msg)
+		if output.Role == schema.Assistant && streamCallbacks.OnChunk != nil && msg.Content != "" {
+			streamCallbacks.OnChunk(msg.Content)
+		}
+	}
+	msg, err := schema.ConcatMessages(chunks)
+	if err != nil {
+		return nil, err
+	}
+	return msg, nil
 }
 
 func (e projectEinoAssistantEngine) projectAssistantToolLoopFinalAnswer(
@@ -571,12 +650,15 @@ func projectEinoFollowUpInterruptInfoFromEvent(interrupted *adk.InterruptInfo) (
 	return nil, "", false
 }
 
-func projectEinoAssistantInputMessages(req projectAssistantRunRequest, runState *projectEinoAssistantRunState) ([]adk.Message, error) {
+func projectEinoAssistantInputMessages(ctx context.Context, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) ([]adk.Message, error) {
 	var chatMessages []chatMessage
 	if req.Continuation != nil && len(req.Continuation.Messages) > 0 {
 		chatMessages = cloneChatMessages(req.Continuation.Messages)
 	} else {
 		chatMessages = projectPromptMessages(req.Project, req.Repository, req.History)
+		if snapshot, ok := projectEinoAssistantSessionContextMessage(ctx, req, runState); ok {
+			chatMessages = append(chatMessages, snapshot)
+		}
 		if prompt := runState.ToolPrompt(); prompt != "" {
 			chatMessages = append(chatMessages, chatMessage{Role: "system", Content: prompt})
 		}
