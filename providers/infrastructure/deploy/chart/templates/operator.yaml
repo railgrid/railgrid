@@ -1,0 +1,75 @@
+{{- if .Values.operator.enabled -}}
+# CRD-driven operator: a controller-manager that reconciles
+# InfrastructureProvider CRs — bootstraps the provider kcp workspace,
+# lifecycles the kro Helm release, and owns the provider serve Deployment.
+# It reads the provider + runtime kubeconfigs from Secrets referenced by the CR.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "infrastructure.fullname" . }}-operator
+  labels:
+    {{- include "infrastructure.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "infrastructure.fullname" . }}-operator
+  labels:
+    {{- include "infrastructure.labels" . | nindent 4 }}
+rules:
+  # Watch + status the CRs.
+  - apiGroups: ["infrastructure.kedge.faros.sh"]
+    resources: ["infrastructureproviders"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["infrastructure.kedge.faros.sh"]
+    resources: ["infrastructureproviders/status"]
+    verbs: ["get", "update", "patch"]
+  # Read the kubeconfig / hub-token Secrets the CR references.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "infrastructure.fullname" . }}-operator
+  labels:
+    {{- include "infrastructure.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "infrastructure.fullname" . }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "infrastructure.fullname" . }}-operator
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "infrastructure.fullname" . }}-operator
+  labels:
+    {{- include "infrastructure.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "infrastructure.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        {{- include "infrastructure.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: {{ include "infrastructure.fullname" . }}-operator
+      containers:
+        - name: operator
+          image: "{{ .Values.operator.image.repository | default .Values.image.repository }}:{{ .Values.operator.image.tag | default .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["controller"]
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+{{- end }}

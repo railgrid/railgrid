@@ -1,3 +1,7 @@
+{{- if not .Values.operator.enabled }}
+# Legacy single-Deployment serve (bootstrap.* init-container flow). When
+# operator.enabled=true the operator owns the provider serve Deployment on the
+# runtime cluster instead, so this is skipped.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -195,3 +199,4 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

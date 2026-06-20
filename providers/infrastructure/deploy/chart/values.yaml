@@ -127,3 +127,64 @@ podAnnotations: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# CRD-driven operator mode. When enabled, the chart installs the operator
+# (a controller-manager running `infrastructure-provider controller`), the
+# InfrastructureProvider CRD, RBAC, the two kubeconfig Secrets, and one CR
+# rendered from the values below. The operator then reconciles that CR:
+# bootstraps the provider kcp workspace, lifecycles the kro Helm release via the
+# helm CLI (image/version below), and owns the provider serve Deployment
+# (image/version below). This supersedes the bootstrap.* init-container flow.
+operator:
+  enabled: false
+
+  # Operator (controller) image. Defaults to the provider image above.
+  image:
+    repository: ""
+    tag: ""
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+  # kcp workspace the provider is bootstrapped into.
+  providerWorkspace: root:kedge:providers:infrastructure
+
+  # Provider (kcp) kubeconfig. Either set it inline via
+  #   --set-file operator.providerKubeconfig=./provider-infrastructure.kubeconfig
+  # (rendered into a Secret), OR reference an existing Secret by name and leave
+  # the inline value empty.
+  providerKubeconfig: ""
+  providerKubeconfigSecret:
+    name: ""        # empty → chart-rendered "<release>-provider-kubeconfig"
+    key: kubeconfig
+
+  # Runtime-cluster kubeconfig (where kro + the provider serve Deployment run).
+  runtimeKubeconfig: ""
+  runtimeKubeconfigSecret:
+    name: ""        # empty → chart-rendered "<release>-runtime-kubeconfig"
+    key: kubeconfig
+
+  # kro Helm release the operator lifecycles on the runtime cluster.
+  kro:
+    chart: oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro
+    version: v0.0.1-mc.7
+    namespace: kro-system
+    releaseName: kro
+    apiExportEndpointSlice: infrastructure
+    image:
+      repository: ghcr.io/faroshq/kro-multicluster/kro
+      tag: ""       # empty → defaults to kro.version
+    extraValues: {}
+
+  # Provider serve Deployment the operator owns on the runtime cluster.
+  provider:
+    image:
+      repository: ""   # empty → chart image.repository
+      tag: ""          # empty → chart image.tag / appVersion
+    replicas: 2
+    port: 8081

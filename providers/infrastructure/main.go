@@ -35,6 +35,8 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/client-go/rest"
+
 	"github.com/faroshq/provider-infrastructure/mcpserver"
 	"github.com/faroshq/provider-infrastructure/server"
 	"github.com/faroshq/provider-infrastructure/tenant"
@@ -67,11 +69,23 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "operator":
+			if err := runOperator(); err != nil {
+				fmt.Fprintln(os.Stderr, "operator:", err)
+				os.Exit(1)
+			}
+			return
+		case "controller":
+			if err := runController(); err != nil {
+				fmt.Fprintln(os.Stderr, "controller:", err)
+				os.Exit(1)
+			}
+			return
 		case "serve":
 			// Fall through to runServe below.
 		default:
 			fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
-			fmt.Fprintln(os.Stderr, "usage: infrastructure-provider [init|serve]")
+			fmt.Fprintln(os.Stderr, "usage: infrastructure-provider [init|operator|controller|serve]")
 			os.Exit(2)
 		}
 	}
@@ -98,11 +112,6 @@ func runInit() error {
 // runServe is the existing main loop, moved into its own function so
 // runInit can short-circuit without touching it.
 func runServe() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8081"
-	}
-
 	// Load the provider's kcp connection once and share it: the controller
 	// manager uses it directly, and the MCP tenant client borrows only its
 	// host + TLS (every tenant request authenticates with the CALLER's own
@@ -110,6 +119,21 @@ func runServe() {
 	kcpConfig, kcpErr := loadControllerConfig()
 	if kcpErr != nil {
 		log.Printf("kcp config unavailable (%v); tenant MCP tools + controller manager disabled", kcpErr)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	serveWithConfig(ctx, kcpConfig)
+}
+
+// serveWithConfig runs the HTTP/MCP server + controller manager + heartbeat
+// against the supplied kcp config, blocking until ctx is cancelled. The caller
+// owns ctx (runServe wires signals; the operator shares its own ctx with the
+// bootstrap loop). A nil kcpConfig keeps the REST-only/stub flow.
+func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8081"
 	}
 
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
@@ -133,9 +157,6 @@ func runServe() {
 		Handler:           srv,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		log.Printf("infrastructure provider listening on :%s (tenant=%v mcp=true)", port, kcpConfig != nil)

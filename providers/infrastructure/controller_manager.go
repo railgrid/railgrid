@@ -164,6 +164,26 @@ func startControllerManager(ctx context.Context, config *rest.Config) error {
 // Returns errControllerDisabled when none of the four resolve; the
 // caller logs + continues without the controller.
 func loadControllerConfig() (*rest.Config, error) {
+	c, err := loadControllerConfigRaw()
+	if err != nil {
+		return nil, err
+	}
+	// When INFRASTRUCTURE_WORKSPACE_PATH is set, retarget the config host at
+	// /clusters/<path>. This lets serve run with a root-scoped (admin)
+	// kubeconfig pointed at the provider workspace — so the operator-driven
+	// flow no longer needs `init` to mint a workspace-scoped kubeconfig.
+	// Idempotent: an already workspace-scoped kubeconfig (prod) is unchanged.
+	if ws := os.Getenv("INFRASTRUCTURE_WORKSPACE_PATH"); ws != "" {
+		host, herr := retargetHostToWorkspace(c.Host, ws)
+		if herr != nil {
+			return nil, fmt.Errorf("retarget controller kubeconfig to workspace %q: %w", ws, herr)
+		}
+		c.Host = host
+	}
+	return c, nil
+}
+
+func loadControllerConfigRaw() (*rest.Config, error) {
 	if p := os.Getenv("INFRASTRUCTURE_KUBECONFIG"); p != "" {
 		c, err := clientcmd.BuildConfigFromFlags("", p)
 		if err != nil {

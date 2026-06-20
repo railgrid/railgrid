@@ -1,0 +1,79 @@
+{{- if .Values.operator.enabled -}}
+{{- $providerSecret := .Values.operator.providerKubeconfigSecret.name | default (printf "%s-provider-kubeconfig" (include "infrastructure.fullname" .)) -}}
+{{- $runtimeSecret := .Values.operator.runtimeKubeconfigSecret.name | default (printf "%s-runtime-kubeconfig" (include "infrastructure.fullname" .)) -}}
+{{- if .Values.operator.providerKubeconfig }}
+# Provider (kcp) kubeconfig Secret, rendered from --set-file
+# operator.providerKubeconfig=... . Omit to reference an existing Secret via
+# operator.providerKubeconfigSecret.name instead.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $providerSecret }}
+  labels:
+    {{- include "infrastructure.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  kubeconfig: |
+{{ .Values.operator.providerKubeconfig | indent 4 }}
+---
+{{- end }}
+{{- if .Values.operator.runtimeKubeconfig }}
+# Runtime-cluster kubeconfig Secret (where kro + provider serve run).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $runtimeSecret }}
+  labels:
+    {{- include "infrastructure.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  kubeconfig: |
+{{ .Values.operator.runtimeKubeconfig | indent 4 }}
+---
+{{- end }}
+# The InfrastructureProvider CR the operator reconciles. Image versions and the
+# kro release config live here so upgrades are a CR edit (or a helm value bump).
+apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+kind: InfrastructureProvider
+metadata:
+  name: {{ include "infrastructure.fullname" . }}
+  labels:
+    {{- include "infrastructure.labels" . | nindent 4 }}
+spec:
+  providerWorkspace: {{ .Values.operator.providerWorkspace | quote }}
+  providerKubeconfigSecret:
+    name: {{ $providerSecret }}
+    key: {{ .Values.operator.providerKubeconfigSecret.key | default "kubeconfig" }}
+  runtimeKubeconfigSecret:
+    name: {{ $runtimeSecret }}
+    key: {{ .Values.operator.runtimeKubeconfigSecret.key | default "kubeconfig" }}
+  {{- with .Values.hub }}
+  hub:
+    url: {{ .url | quote }}
+    insecure: {{ .insecure }}
+    {{- if .tokenSecretRef.name }}
+    tokenSecret:
+      name: {{ .tokenSecretRef.name }}
+      key: {{ .tokenSecretRef.key | default "token" }}
+    {{- end }}
+  {{- end }}
+  kro:
+    chart: {{ .Values.operator.kro.chart | quote }}
+    version: {{ .Values.operator.kro.version | quote }}
+    namespace: {{ .Values.operator.kro.namespace | quote }}
+    releaseName: {{ .Values.operator.kro.releaseName | quote }}
+    apiExportEndpointSlice: {{ .Values.operator.kro.apiExportEndpointSlice | quote }}
+    image:
+      repository: {{ .Values.operator.kro.image.repository | quote }}
+      tag: {{ .Values.operator.kro.image.tag | quote }}
+    {{- with .Values.operator.kro.extraValues }}
+    extraValues:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  provider:
+    image:
+      repository: {{ .Values.operator.provider.image.repository | default .Values.image.repository | quote }}
+      tag: {{ .Values.operator.provider.image.tag | default .Values.image.tag | default .Chart.AppVersion | quote }}
+    replicas: {{ .Values.operator.provider.replicas }}
+    port: {{ .Values.operator.provider.port }}
+{{- end }}

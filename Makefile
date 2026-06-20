@@ -828,9 +828,61 @@ run-provider-infrastructure: build-infrastructure-provider ## Run the infrastruc
 	KEDGE_HUB_INSECURE=true \
 	KEDGE_PROVIDER_NAME=infrastructure \
 	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+	INFRASTRUCTURE_WORKSPACE_PATH=$${INFRASTRUCTURE_WORKSPACE_PATH:-$(INFRASTRUCTURE_WORKSPACE_PATH)} \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 	INFRASTRUCTURE_KUBECONFIG=$${INFRASTRUCTURE_KUBECONFIG:-$$( [ -f "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" ] && echo "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" )} \
 		$(BINDIR)/infrastructure-provider
+
+run-provider-infrastructure-operator: build-infrastructure-provider ## Run the infrastructure provider in OPERATOR mode (bootstrap reconcile + serve from a provider + runtime kubeconfig)
+	@echo "Starting infrastructure provider (operator) on :$(KROMC_PORT)"
+	@echo "  hub:      $(KROMC_HUB_URL)"
+	@echo "  provider: $${INFRASTRUCTURE_PROVIDER_KUBECONFIG:-$(KROMC_KCP_KUBECONFIG)} (kcp)"
+	@echo "  runtime:  $${INFRASTRUCTURE_RUNTIME_KUBECONFIG:-$(KRO_KIND_KUBECONFIG)} (kro cluster)"
+	@echo "  ws:       $(INFRASTRUCTURE_WORKSPACE_PATH)"
+	@# The operator needs the provider workspace to already exist — run
+	@# `make install-provider-infrastructure` (admin-portal onboarding in prod)
+	@# first. It then reconciles the in-workspace bootstrap and seeds kro itself.
+	PORT=$(KROMC_PORT) \
+	KEDGE_HUB_URL=$(KROMC_HUB_URL) \
+	KEDGE_HUB_TOKEN=$(KROMC_TOKEN) \
+	KEDGE_HUB_INSECURE=true \
+	KEDGE_PROVIDER_NAME=infrastructure \
+	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
+	INFRASTRUCTURE_PROVIDER_KUBECONFIG=$${INFRASTRUCTURE_PROVIDER_KUBECONFIG:-$(KROMC_KCP_KUBECONFIG)} \
+	INFRASTRUCTURE_RUNTIME_KUBECONFIG=$${INFRASTRUCTURE_RUNTIME_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
+		$(BINDIR)/infrastructure-provider operator
+
+# ── CRD-driven operator (controller) dev flow ───────────────────────────────
+# Replaces kro-mgmt-up + infrastructure-init: one host-binary controller that
+# bootstraps the workspace, helm-installs kro (with the kind hostAliases +
+# self-cluster patches), and (skip-serve in dev) leaves serve to the host binary.
+INFRA_OPERATOR_NS ?= kedge-infrastructure-operator
+INFRA_OPERATOR_PROVIDER_KC ?= $(KROMC_KCP_KUBECONFIG)
+INFRA_OPERATOR_RUNTIME_KC ?= $(KRO_KIND_KUBECONFIG)
+INFRA_OPERATOR_KIND_NAME ?= $(KRO_KIND_NAME)
+INFRA_OPERATOR_SELF_KC ?= $(KCP_DATA_DIR)/kro-self.kubeconfig
+INFRA_OPERATOR_HOSTALIASES_IP ?= 10.96.2.2
+INFRA_OPERATOR_HOSTALIASES_NAMES ?= kcp.localhost,root.kcp.localhost,theseus.kcp.localhost
+INFRA_OPERATOR_CRD ?= providers/infrastructure/config/crds/infrastructure.kedge.faros.sh_infrastructureproviders.yaml
+
+run-provider-infrastructure-controller: build-infrastructure-provider ## Apply the operator CRD/Secrets/CR into the runtime cluster and run the controller (dev)
+	@echo "Applying operator CRD + Secrets + CR into runtime cluster ($(INFRA_OPERATOR_RUNTIME_KC))"
+	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f $(INFRA_OPERATOR_CRD)
+	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl create namespace $(INFRA_OPERATOR_NS) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
+	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl -n $(INFRA_OPERATOR_NS) create secret generic provider-kubeconfig --from-file=kubeconfig=$(INFRA_OPERATOR_PROVIDER_KC) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
+	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl -n $(INFRA_OPERATOR_NS) create secret generic runtime-kubeconfig --from-file=kubeconfig=$(INFRA_OPERATOR_RUNTIME_KC) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
+	@# kind-internal kubeconfig for the kro local-runtime self-member.
+	kind get kubeconfig --internal --name $(INFRA_OPERATOR_KIND_NAME) > $(INFRA_OPERATOR_SELF_KC)
+	@printf 'apiVersion: infrastructure.kedge.faros.sh/v1alpha1\nkind: InfrastructureProvider\nmetadata:\n  name: infrastructure\n  namespace: %s\nspec:\n  providerWorkspace: %s\n  providerKubeconfigSecret:\n    name: provider-kubeconfig\n  runtimeKubeconfigSecret:\n    name: runtime-kubeconfig\n  kro:\n    chart: %s\n    version: %s\n    image:\n      repository: %s\n      tag: %s\n  provider:\n    image:\n      repository: ghcr.io/faroshq/kedge-infrastructure-provider\n      tag: dev\n' "$(INFRA_OPERATOR_NS)" "$(INFRASTRUCTURE_WORKSPACE_PATH)" "$(KRO_CHART)" "$(KRO_CHART_VERSION)" "$(KRO_IMAGE_REPO)" "$(KRO_IMAGE_TAG)" | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
+	@echo "Running infrastructure operator controller (KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC), skip-serve)"
+	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) \
+	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
+	INFRASTRUCTURE_OPERATOR_SKIP_SERVE=true \
+	INFRASTRUCTURE_KRO_HOSTALIASES_IP=$(INFRA_OPERATOR_HOSTALIASES_IP) \
+	INFRASTRUCTURE_KRO_HOSTALIASES_NAMES=$(INFRA_OPERATOR_HOSTALIASES_NAMES) \
+	INFRASTRUCTURE_KRO_SELF_CLUSTER_KUBECONFIG=$(INFRA_OPERATOR_SELF_KC) \
+		$(BINDIR)/infrastructure-provider controller
 
 ## Run the App Studio provider binary locally. Mirrors the other external
 ## providers so the heartbeat path is consistent and the UI runs on :8085.
@@ -985,7 +1037,7 @@ install-provider-infrastructure: ## Apply infrastructure Provider + CatalogEntry
 	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
 		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
-		apply -f $(KROMC_PROVIDER_MANIFEST) -f $(KROMC_MANIFEST)
+		apply --validate=false -f $(KROMC_PROVIDER_MANIFEST) -f $(KROMC_MANIFEST)
 
 ## Delete the infrastructure CatalogEntry + Provider (Provider delete triggers
 ## full teardown of the sub-workspace via the controller's finalizer).

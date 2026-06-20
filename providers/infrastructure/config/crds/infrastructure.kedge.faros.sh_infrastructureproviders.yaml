@@ -1,0 +1,295 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: infrastructureproviders.infrastructure.kedge.faros.sh
+spec:
+  group: infrastructure.kedge.faros.sh
+  names:
+    categories:
+    - kedge
+    kind: InfrastructureProvider
+    listKind: InfrastructureProviderList
+    plural: infrastructureproviders
+    shortNames:
+    - infraprovider
+    singular: infrastructureprovider
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.providerWorkspace
+      name: Workspace
+      type: string
+    - jsonPath: .spec.kro.version
+      name: kro
+      type: string
+    - jsonPath: .spec.provider.image.tag
+      name: Provider
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          InfrastructureProvider is the desired-state config for the kedge
+          infrastructure operator. One CR drives the whole runtime: the operator reads
+          two kubeconfigs (the kcp provider kubeconfig and the runtime-cluster
+          kubeconfig) from the referenced Secrets, continuously bootstraps the provider
+          kcp workspace, lifecycles the kro Helm release (image/version from spec.kro),
+          seeds kro's kcp-kubeconfig, and owns the provider serve Deployment
+          (image/version from spec.provider).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: InfrastructureProviderSpec is the operator's input.
+            properties:
+              hub:
+                description: Hub configures the provider's heartbeat target. Optional.
+                properties:
+                  insecure:
+                    description: Insecure skips TLS verification on heartbeats (dev).
+                    type: boolean
+                  tokenSecret:
+                    description: TokenSecret references the bearer token Secret used
+                      for heartbeats.
+                    properties:
+                      key:
+                        default: kubeconfig
+                        description: Key within the Secret's data. Defaults to "kubeconfig".
+                        type: string
+                      name:
+                        description: Name of the Secret.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  url:
+                    description: URL is the kedge hub base URL.
+                    type: string
+                type: object
+              kro:
+                description: Kro is the kro Helm release the operator lifecycles on
+                  the runtime cluster.
+                properties:
+                  apiExportEndpointSlice:
+                    default: infrastructure
+                    description: |-
+                      APIExportEndpointSlice is the slice name in the provider workspace kro's
+                      kcp-apiexport provider watches. Must match what the bootstrap creates.
+                    type: string
+                  chart:
+                    default: oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro
+                    description: Chart is the OCI Helm chart reference for kro-multicluster.
+                    type: string
+                  extraValues:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ExtraValues are additional `helm --set key=value` overrides applied
+                      verbatim, for chart settings the spec doesn't model first-class.
+                    type: object
+                  image:
+                    description: |-
+                      Image overrides the kro controller image. When unset the operator points
+                      it at the fork image matching the chart version.
+                    properties:
+                      repository:
+                        description: Repository is the image repository, e.g. ghcr.io/faroshq/...
+                        type: string
+                      tag:
+                        description: Tag is the image tag, e.g. v0.1.0.
+                        type: string
+                    type: object
+                  namespace:
+                    default: kro-system
+                    description: Namespace is the release namespace on the runtime
+                      cluster.
+                    type: string
+                  releaseName:
+                    default: kro
+                    description: ReleaseName is the Helm release name.
+                    type: string
+                  version:
+                    description: Version is the chart version (release tag), e.g.
+                      v0.0.1-mc.7.
+                    type: string
+                required:
+                - version
+                type: object
+              provider:
+                description: |-
+                  Provider is the provider serve Deployment the operator owns on the runtime
+                  cluster.
+                properties:
+                  image:
+                    description: Image is the provider serve container image.
+                    properties:
+                      repository:
+                        description: Repository is the image repository, e.g. ghcr.io/faroshq/...
+                        type: string
+                      tag:
+                        description: Tag is the image tag, e.g. v0.1.0.
+                        type: string
+                    type: object
+                  port:
+                    default: 8081
+                    description: Port the serve container listens on.
+                    format: int32
+                    type: integer
+                  replicas:
+                    default: 2
+                    description: Replicas of the serve Deployment.
+                    format: int32
+                    type: integer
+                required:
+                - image
+                type: object
+              providerKubeconfigSecret:
+                description: |-
+                  ProviderKubeconfigSecret references a Secret holding the kcp provider
+                  kubeconfig (the credential the admin portal issues for the provider
+                  workspace). The operator uses it for the workspace bootstrap and copies it
+                  into kro's kcp-kubeconfig Secret.
+                properties:
+                  key:
+                    default: kubeconfig
+                    description: Key within the Secret's data. Defaults to "kubeconfig".
+                    type: string
+                  name:
+                    description: Name of the Secret.
+                    type: string
+                required:
+                - name
+                type: object
+              providerWorkspace:
+                description: |-
+                  ProviderWorkspace is the kcp workspace path the provider is bootstrapped
+                  into, e.g. "root:kedge:providers:infrastructure". The provider kubeconfig
+                  is retargeted at this workspace.
+                type: string
+              runtimeKubeconfigSecret:
+                description: |-
+                  RuntimeKubeconfigSecret references a Secret holding the kubeconfig of the
+                  cluster where kro and the provider serve Deployment run.
+                properties:
+                  key:
+                    default: kubeconfig
+                    description: Key within the Secret's data. Defaults to "kubeconfig".
+                    type: string
+                  name:
+                    description: Name of the Secret.
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - kro
+            - provider
+            - providerKubeconfigSecret
+            - providerWorkspace
+            - runtimeKubeconfigSecret
+            type: object
+          status:
+            description: InfrastructureProviderStatus reports the operator's reconcile
+              state.
+            properties:
+              conditions:
+                description: |-
+                  Conditions track the reconcile sub-steps (Bootstrapped, KroReleased,
+                  ProviderDeployed).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the spec generation the status
+                  reflects.
+                format: int64
+                type: integer
+              phase:
+                description: 'Phase is a coarse summary: Pending, Bootstrapping, Ready,
+                  Error.'
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -126,8 +126,11 @@ docker build -t kedge-infrastructure-provider:dev .
 
 ## kro runtime (prerequisite)
 
-The provider brokers templates from a kro runtime. In production — and in **both
-Tiltfiles** (via `make dev-kro-up` / `dev-kro-up-into`) — kro runs in
+> If you deploy via the **operator** (recommended, below), it installs and
+> lifecycles kro for you — skip this section. The manual steps here are for the
+> non-operator paths.
+
+The provider brokers templates from a kro runtime running in
 **`kcp-apiexport`** mode:
 
 - The provider creates instance CRs **in the tenant's kcp workspace**, through
@@ -143,8 +146,7 @@ With no kro wired up the provider runs in stub mode (three baked-in templates).
 
 ### How it's wired — and the ordering
 
-kro and the provider are mutually dependent, so bring-up is a two-step dance
-(exactly what Tilt automates as `kro-mgmt-up` → `infrastructure-init`):
+kro and the provider are mutually dependent, so bring-up is a two-step dance:
 
 1. **kro chart installs first, with a _placeholder_ kubeconfig.** The chart
    mounts the `kcp-kubeconfig` Secret (key `kubeconfig`) at
@@ -326,56 +328,108 @@ kubectl -n kedge-prod-provider-infrastructure create secret generic central-kro-
   --from-file=kubeconfig=central-kro.kubeconfig
 ```
 
-## Deploy with Helm
+## Deploy as an operator (recommended)
 
-There are two ways the provider gets its runtime kubeconfig (the
-`kedge-provider-kubeconfig` Secret it mounts to reach kcp).
+The cleanest way to run the whole stack is the **CRD-driven operator**. You give
+it two kubeconfigs (as Secrets) and one `InfrastructureProvider` CR that declares
+the kro + provider image versions; the operator does the rest — continuously:
 
-### A. Hub-provisioned (default)
+- bootstraps the provider kcp workspace (CRDs, APIExport, CachedResource,
+  EndpointSlice, the `infrastructure` APIExportEndpointSlice, schemas, Templates);
+- **lifecycles the kro Helm release** via the helm CLI (our multicluster fork
+  chart + image, `kcp-apiexport` mode), and seeds kro's `kcp-kubeconfig`;
+- owns the **provider serve Deployment** (image/replicas/port from the CR).
 
-The hub catalog controller mints the runtime kubeconfig when it
-reconciles the `CatalogEntry`. The chart just deploys the workload:
+It is the same `infrastructure-provider` binary (`controller` subcommand); the
+runtime image bundles the `helm` CLI so the operator pod can drive kro.
+
+### Install
+
+The chart installs the operator + the `InfrastructureProvider` CRD + RBAC + the
+two kubeconfig Secrets + one CR, all from values, when `operator.enabled=true`:
+
+```sh
+helm install infrastructure \
+  oci://ghcr.io/faroshq/charts/kedge-infrastructure-provider --version <X.Y.Z> \
+  -n kedge-infra-operator --create-namespace \
+  --set operator.enabled=true \
+  --set operator.providerWorkspace=root:kedge:providers:infrastructure \
+  --set-file operator.providerKubeconfig=./provider-infrastructure.kubeconfig \
+  --set-file operator.runtimeKubeconfig=./runtime-cluster.kubeconfig \
+  --set operator.kro.version=v0.0.1-mc.7
+```
+
+- `operator.providerKubeconfig` — the kcp provider kubeconfig (admin-portal
+  issued / workspace-scoped). Or reference an existing Secret via
+  `operator.providerKubeconfigSecret.name` and omit the inline value.
+- `operator.runtimeKubeconfig` — the cluster where kro + the provider serve run.
+- `operator.kro.*` — chart/version/image of the kro release (defaults to the
+  multicluster fork: `oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro` +
+  `ghcr.io/faroshq/kro-multicluster/kro`). Bump `operator.kro.version` (or edit
+  the CR) to upgrade kro.
+- `operator.provider.image.*` — the provider serve image (defaults to the chart
+  image/appVersion).
+
+Upgrades are a values/CR edit: change `operator.kro.version` or
+`operator.provider.image.tag` and the operator reconciles the new versions.
+
+### Image + chart publishing
+
+[`.github/workflows/provider-release.yaml`](../../.github/workflows/provider-release.yaml)
+is the sole publisher: an `infrastructure/vX.Y.Z` tag builds + pushes the
+provider image (operator binary **and** the helm CLI baked in) and packages +
+pushes the chart to `oci://ghcr.io/faroshq/charts/kedge-infrastructure-provider`.
+(`images.yaml` only build-validates the image on PRs; it does not publish.)
+
+## Deploy with Helm (init-container bootstrap)
+
+This is the non-operator path: a single provider Deployment that self-bootstraps
+via an init container. The provider needs a runtime kubeconfig to reach kcp,
+mounted as the `kedge-provider-kubeconfig` Secret. You get that kubeconfig by
+onboarding the provider in the kedge **admin portal**, then create the Secret
+from it and deploy.
+
+### 1. Onboard the provider in the admin portal
+
+Onboard the infrastructure provider in the kedge admin portal. It provisions the
+provider workspace and issues a **provider kubeconfig** scoped to that workspace.
+Download it (e.g. `provider-infrastructure.kubeconfig`).
+
+### 2. Create the Secret from the download
+
+The Secret name must be `kedge-provider-kubeconfig` and the key must be
+`kubeconfig` (the chart defaults — `providerKubeconfig.secretName`):
+
+```sh
+kubectl create namespace infrastructure
+
+kubectl -n infrastructure create secret generic kedge-provider-kubeconfig \
+  --from-file=kubeconfig=provider-infrastructure.kubeconfig
+```
+
+(If the portal hands you a ready-made Secret manifest instead of a raw
+kubeconfig, `kubectl apply` it into the `infrastructure` namespace — just make
+sure the name/key match the above.)
+
+### 3. Deploy the chart
 
 ```sh
 helm install infrastructure deploy/chart \
   -n infrastructure --create-namespace \
   --set hub.url=https://kedge-hub.kedge.svc.cluster.local:9443 \
   --set hub.tokenSecretRef.name=kedge-infrastructure-hub-token \
-  --set centralKro.kubeconfigSecretRef.name=central-kro-kubeconfig
+  --set bootstrap.enabled=true
 ```
 
-### B. Self-bootstrap with an init container (`bootstrap.enabled=true`)
+With `bootstrap.enabled=true`, an init container runs `infrastructure init`
+— installing the CRDs / CachedResource / APIExport (and the `infrastructure`
+APIExportEndpointSlice kro watches) into the provider workspace. The serve
+container then reuses the same kubeconfig. The init/serve volume is **not**
+`optional`, so the pod waits in `ContainerCreating` until the
+`kedge-provider-kubeconfig` Secret exists — create it (step 2) before or shortly
+after deploying.
 
-An init container runs `infrastructure init` before the serve container,
-installing the CRDs / CachedResource / APIExport into the provider
-workspace. **Both containers share one kubeconfig** — no separately
-minted runtime token. Where that kubeconfig comes from is set by
-`bootstrap.kubeconfigSource`:
-
-#### `hubMinted` (default) — the platform mints, the provider consumes
-
-This is the recommended split. A **platform admin** applies the
-`CatalogEntry`; the hub creates the provider workspace, mints a
-kubeconfig that is **cluster-admin within that workspace**, and writes it
-as the `kedge-provider-kubeconfig` Secret (the hub must run with
-`--kubeconfig` so its `HostSecretWriter` can write into this cluster).
-The **provider owner** just deploys the chart:
-
-```sh
-helm install infrastructure deploy/chart \
-  -n infrastructure --create-namespace \
-  --set hub.url=https://kedge-hub.kedge.svc.cluster.local:9443 \
-  --set hub.tokenSecretRef.name=kedge-infrastructure-hub-token \
-  --set bootstrap.enabled=true            # kubeconfigSource=hubMinted is the default
-```
-
-The init/serve volume is **not** `optional` — the pod waits in
-`ContainerCreating` until the hub delivers `kedge-provider-kubeconfig`,
-which is exactly the bootstrap ordering we want. No `kubectl ws create`,
-no separate admin kubeconfig: the hub already created the workspace when
-it reconciled the CatalogEntry.
-
-#### `supplied` — fully standalone, no hub
+### Alternative: `supplied` — fully standalone, no hub
 
 Install into any cluster with only a kcp kubeconfig (no hub provisioning):
 
@@ -392,16 +446,16 @@ Here you own the prerequisites: the kubeconfig must be admin of
 (`kubectl ws create`). Prefer `bootstrap.kcpKubeconfigSecretRef` to an
 inline kubeconfig in production.
 
-Trade-off (both sources): the serve container runs with
-cluster-admin-in-workspace rather than a narrow scoped SA. For
-least-privilege, use the hub-provisioned model (A) with a manual init.
-The init container re-runs on every pod (re)start; every step is
-idempotent, so that's safe.
+Trade-off: with `bootstrap.enabled=true` the serve container runs with
+cluster-admin-in-workspace (the bootstrap kubeconfig) rather than a narrow scoped
+SA. The init container re-runs on every pod (re)start; every step is idempotent,
+so that's safe.
 
 `values.yaml` has the full configuration surface — image, replicas,
 hub URL, the Secret references (central kro + runtime
-kedge-provider-kubeconfig), the `bootstrap.*` block, and the toggle for
-whether the chart should also render the `CatalogEntry`.
+kedge-provider-kubeconfig), the `bootstrap.*` block, the `operator.*` block
+(operator mode above), and the toggle for whether the chart should also render
+the `CatalogEntry`.
 
 ## MCP integration
 

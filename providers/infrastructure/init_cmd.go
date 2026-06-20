@@ -31,9 +31,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
-	"strings"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -281,16 +279,8 @@ func storageLabel(hash string) string {
 }
 
 // retargetHostToWorkspace rewrites a kcp host URL so it terminates at
-// /clusters/<workspacePath>. Idempotent — if host already has a
-// /clusters/… segment, it's replaced rather than appended.
+// /clusters/<workspacePath>. Thin wrapper over install.RetargetHostToWorkspace
+// so the init and operator paths share one implementation.
 func retargetHostToWorkspace(host, workspacePath string) (string, error) {
-	u, err := url.Parse(host)
-	if err != nil {
-		return "", fmt.Errorf("parse host %q: %w", host, err)
-	}
-	if idx := strings.Index(u.Path, "/clusters/"); idx >= 0 {
-		u.Path = u.Path[:idx]
-	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/clusters/" + workspacePath
-	return u.String(), nil
+	return install.RetargetHostToWorkspace(host, workspacePath)
 }
