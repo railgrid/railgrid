@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { STORAGE_KEYS } from '@/lib/constants'
+import { authFetch } from '@/auth/session'
 
 // ProviderDTO is the wire shape returned by the hub's GET /api/providers.
 // Keep it aligned with pkg/hub/providers/api.go:providerDTO.
@@ -228,10 +228,7 @@ export const useProvidersStore = defineStore('providers', () => {
     loading.value = true
     error.value = null
     try {
-      const res = await fetch('/api/providers', {
-        headers: authHeaders(),
-        credentials: 'same-origin',
-      })
+      const res = await authFetch('/api/providers', { tenant: true })
       if (!res.ok) {
         throw new Error(`provider list failed: ${res.status} ${res.statusText}`)
       }
@@ -267,10 +264,7 @@ export const useProvidersStore = defineStore('providers', () => {
     const t = readTenantSelection()
     if (!t.orgUUID || !t.workspaceUUID) return
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/enabled`
-    const res = await fetch(url, {
-      headers: authHeaders(),
-      credentials: 'same-origin',
-    })
+    const res = await authFetch(url, { tenant: true })
     if (!res.ok) throw new Error(`list enabled providers: ${res.status}`)
     const body = (await res.json()) as { bindingNamesByProvider?: Record<string, string> }
     bindingNamesByProvider.value = body.bindingNamesByProvider ?? {}
@@ -312,10 +306,10 @@ export const useProvidersStore = defineStore('providers', () => {
       acceptedClaims: accept.map((c) => ({ group: c.group ?? '', resource: c.resource })),
     }
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/enable`
-    const res = await fetch(url, {
+    const res = await authFetch(url, {
       method: 'POST',
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
+      tenant: true,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
     if (!res.ok) {
@@ -327,7 +321,8 @@ export const useProvidersStore = defineStore('providers', () => {
 
   // readTenantSelection mirrors the storage shape written by
   // tenant.ts's savePersisted — kept inline to avoid an import cycle
-  // with @/stores/tenant (same pattern as authHeaders above).
+  // with @/stores/tenant. Used for the enable/disable request *body*;
+  // the org/workspace request *headers* come from authFetch({tenant:true}).
   function readTenantSelection(): { orgUUID: string | null; workspaceUUID: string | null } {
     try {
       const raw = localStorage.getItem('kedge:portal:tenant')
@@ -351,11 +346,7 @@ export const useProvidersStore = defineStore('providers', () => {
       throw new Error('select an organization and workspace before disabling a provider')
     }
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/disable`
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: authHeaders(),
-      credentials: 'same-origin',
-    })
+    const res = await authFetch(url, { method: 'POST', tenant: true })
     // Idempotent server-side; 404 means the route target is already gone.
     if (!res.ok && res.status !== 404) {
       const detail = await res.text().catch(() => '')
@@ -391,43 +382,3 @@ export const useProvidersStore = defineStore('providers', () => {
     byName,
   }
 })
-
-// authHeaders reads the same localStorage slots the rest of the portal
-// uses — kept inline (not imported from @/stores/auth or @/stores/tenant)
-// to avoid an import cycle with stores that themselves import providers.
-//
-// Returns:
-//   Authorization      — OIDC bearer the hub authenticates
-//   X-Kedge-Org        — sidebar-selected org (so /services/providers/*
-//                        scopes operations to the workspace the user is
-//                        viewing instead of always landing in the
-//                        personal-org default)
-//   X-Kedge-Workspace  — sidebar-selected child workspace (optional;
-//                        omitted = org-scope)
-//
-// Hub resolver verifies the org/workspace headers against the
-// authenticated user's UserMembershipIndex before honoring them, so a
-// client can't spoof workspace access just by setting these.
-function authHeaders(): Record<string, string> {
-  const h: Record<string, string> = {}
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.auth)
-    if (raw) {
-      const parsed = JSON.parse(raw) as { idToken?: string }
-      if (parsed.idToken) h['Authorization'] = `Bearer ${parsed.idToken}`
-    }
-  } catch {
-    /* ignore */
-  }
-  try {
-    const raw = localStorage.getItem('kedge:portal:tenant')
-    if (raw) {
-      const t = JSON.parse(raw) as { orgUUID?: string | null; workspaceUUID?: string | null }
-      if (t.orgUUID) h['X-Kedge-Org'] = t.orgUUID
-      if (t.workspaceUUID) h['X-Kedge-Workspace'] = t.workspaceUUID
-    }
-  } catch {
-    /* ignore */
-  }
-  return h
-}

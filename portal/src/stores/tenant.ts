@@ -26,7 +26,7 @@ limitations under the License.
 
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
-import { STORAGE_KEYS } from '@/lib/constants'
+import { authFetch } from '@/auth/session'
 
 const STORAGE_KEY = 'kedge:portal:tenant'
 
@@ -103,23 +103,6 @@ function savePersisted(value: PersistedTenant) {
   }
 }
 
-// authHeader pulls the OIDC token out of the existing auth storage
-// slot. Reads via the shared STORAGE_KEYS constant so the key stays
-// in lockstep with @/auth/token + the providers store. Kept inline
-// (no @/stores/auth import) to avoid an import cycle with the auth
-// store, which already depends on transitive Pinia state.
-function authHeader(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.auth)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as { idToken?: string }
-    if (parsed.idToken) return { Authorization: `Bearer ${parsed.idToken}` }
-  } catch {
-    /* ignore */
-  }
-  return {}
-}
-
 export const useTenantStore = defineStore('tenant', () => {
   const persisted = loadPersisted()
   const orgUUID = ref<string | null>(persisted.orgUUID)
@@ -183,9 +166,7 @@ export const useTenantStore = defineStore('tenant', () => {
     loading.value = true
     error.value = null
     try {
-      const resp = await fetch('/api/orgs', {
-        headers: { ...authHeader() },
-      })
+      const resp = await authFetch('/api/orgs')
       if (!resp.ok) {
         error.value = `failed to list orgs: ${resp.status}`
         orgs.value = []
@@ -215,8 +196,8 @@ export const useTenantStore = defineStore('tenant', () => {
     loading.value = true
     error.value = null
     try {
-      const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces`, {
-        headers: { ...authHeader(), 'X-Kedge-Org': targetOrgUUID },
+      const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces`, {
+        headers: { 'X-Kedge-Org': targetOrgUUID },
       })
       if (!resp.ok) {
         error.value = `failed to list workspaces: ${resp.status}`
@@ -260,9 +241,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function createOrg(displayName: string): Promise<OrgRow | null> {
-    const resp = await fetch('/api/orgs', {
+    const resp = await authFetch('/api/orgs', {
       method: 'POST',
-      headers: { ...authHeader(), 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ displayName }),
     })
     if (!resp.ok) {
@@ -276,10 +257,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function createWorkspace(targetOrgUUID: string, displayName: string): Promise<WorkspaceRow | null> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces`, {
       method: 'POST',
       headers: {
-        ...authHeader(),
         'Content-Type': 'application/json',
         'X-Kedge-Org': targetOrgUUID,
       },
@@ -370,9 +350,9 @@ export const useTenantStore = defineStore('tenant', () => {
   // ===== org-level CRUD =====
 
   async function patchOrgDisplayName(targetOrgUUID: string, displayName: string): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}`, {
       method: 'PATCH',
-      headers: { ...authHeader(), 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
       body: JSON.stringify({ displayName }),
     })
     if (!resp.ok) {
@@ -384,9 +364,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function deleteOrg(targetOrgUUID: string): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}`, {
       method: 'DELETE',
-      headers: { ...authHeader(), 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'X-Kedge-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       error.value = `failed to delete org: ${resp.status}`
@@ -397,9 +377,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function undeleteOrg(targetOrgUUID: string): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/undelete`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/undelete`, {
       method: 'POST',
-      headers: { ...authHeader(), 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'X-Kedge-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       error.value = `failed to undelete org: ${resp.status}`
@@ -412,10 +392,9 @@ export const useTenantStore = defineStore('tenant', () => {
   // ===== workspace CRUD =====
 
   async function patchWorkspaceDisplayName(targetOrgUUID: string, wsUUID: string, displayName: string): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}`, {
       method: 'PATCH',
       headers: {
-        ...authHeader(),
         'Content-Type': 'application/json',
         'X-Kedge-Org': targetOrgUUID,
         'X-Kedge-Workspace': wsUUID,
@@ -431,10 +410,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function deleteWorkspace(targetOrgUUID: string, wsUUID: string): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}`, {
       method: 'DELETE',
       headers: {
-        ...authHeader(),
         'X-Kedge-Org': targetOrgUUID,
         'X-Kedge-Workspace': wsUUID,
       },
@@ -448,10 +426,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function undeleteWorkspace(targetOrgUUID: string, wsUUID: string): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/undelete`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/undelete`, {
       method: 'POST',
       headers: {
-        ...authHeader(),
         'X-Kedge-Org': targetOrgUUID,
         'X-Kedge-Workspace': wsUUID,
       },
@@ -467,8 +444,8 @@ export const useTenantStore = defineStore('tenant', () => {
   // ===== Org membership =====
 
   async function listOrgMembers(targetOrgUUID: string): Promise<MemberRow[]> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/memberships`, {
-      headers: { ...authHeader(), 'X-Kedge-Org': targetOrgUUID },
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships`, {
+      headers: { 'X-Kedge-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       error.value = `failed to list org members: ${resp.status}`
@@ -479,9 +456,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function addOrgMember(targetOrgUUID: string, user: string, role: 'admin' | 'member'): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/memberships`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships`, {
       method: 'POST',
-      headers: { ...authHeader(), 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
       body: JSON.stringify({ user, role }),
     })
     if (!resp.ok) {
@@ -492,9 +469,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function patchOrgMemberRole(targetOrgUUID: string, user: string, role: 'admin' | 'member'): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/memberships/${user}`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships/${user}`, {
       method: 'PATCH',
-      headers: { ...authHeader(), 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
       body: JSON.stringify({ role }),
     })
     if (!resp.ok) {
@@ -506,9 +483,9 @@ export const useTenantStore = defineStore('tenant', () => {
 
   async function removeOrgMember(targetOrgUUID: string, user: string, cascade = false): Promise<boolean> {
     const url = `/api/orgs/${targetOrgUUID}/memberships/${user}${cascade ? '?cascade=true' : ''}`
-    const resp = await fetch(url, {
+    const resp = await authFetch(url, {
       method: 'DELETE',
-      headers: { ...authHeader(), 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'X-Kedge-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       error.value = `failed to remove member: ${resp.status}`
@@ -518,9 +495,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function leaveOrg(targetOrgUUID: string): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/memberships/me`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships/me`, {
       method: 'DELETE',
-      headers: { ...authHeader(), 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'X-Kedge-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       error.value = `failed to leave org: ${resp.status}`
@@ -533,9 +510,8 @@ export const useTenantStore = defineStore('tenant', () => {
   // ===== Service Accounts =====
 
   async function listServiceAccounts(targetOrgUUID: string, wsUUID: string): Promise<SARow[]> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts`, {
       headers: {
-        ...authHeader(),
         'X-Kedge-Org': targetOrgUUID,
         'X-Kedge-Workspace': wsUUID,
       },
@@ -554,10 +530,9 @@ export const useTenantStore = defineStore('tenant', () => {
     displayName: string,
     role: 'admin' | 'member',
   ): Promise<SARow | null> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts`, {
       method: 'POST',
       headers: {
-        ...authHeader(),
         'Content-Type': 'application/json',
         'X-Kedge-Org': targetOrgUUID,
         'X-Kedge-Workspace': wsUUID,
@@ -572,10 +547,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function deleteServiceAccount(targetOrgUUID: string, wsUUID: string, saUUID: string): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}`, {
       method: 'DELETE',
       headers: {
-        ...authHeader(),
         'X-Kedge-Org': targetOrgUUID,
         'X-Kedge-Workspace': wsUUID,
       },
@@ -588,10 +562,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function issueSAToken(targetOrgUUID: string, wsUUID: string, saUUID: string): Promise<TokenResponse | null> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
       method: 'POST',
       headers: {
-        ...authHeader(),
         'X-Kedge-Org': targetOrgUUID,
         'X-Kedge-Workspace': wsUUID,
       },
@@ -621,9 +594,8 @@ export const useTenantStore = defineStore('tenant', () => {
     install: 'kedge' | 'krew' = 'kedge',
   ): Promise<boolean> {
     const url = `/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/kubeconfig?install=${encodeURIComponent(install)}`
-    const resp = await fetch(url, {
+    const resp = await authFetch(url, {
       headers: {
-        ...authHeader(),
         'X-Kedge-Org': targetOrgUUID,
         'X-Kedge-Workspace': wsUUID,
       },
@@ -651,10 +623,9 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function revokeSATokens(targetOrgUUID: string, wsUUID: string, saUUID: string): Promise<boolean> {
-    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
       method: 'DELETE',
       headers: {
-        ...authHeader(),
         'X-Kedge-Org': targetOrgUUID,
         'X-Kedge-Workspace': wsUUID,
       },

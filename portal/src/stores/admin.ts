@@ -4,21 +4,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-import { STORAGE_KEYS } from '@/lib/constants'
-
-// authHeader mirrors the tenant store: read the bearer from the persisted auth
-// blob directly to avoid an import cycle with the auth store.
-function authHeader(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.auth)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as { idToken?: string }
-    if (parsed.idToken) return { Authorization: `Bearer ${parsed.idToken}` }
-  } catch {
-    /* ignore */
-  }
-  return {}
-}
+import { authFetch } from '@/auth/session'
 
 export interface AdminUser {
   name: string
@@ -77,7 +63,7 @@ export const useAdminStore = defineStore('admin', () => {
   // sessions stay quiet.
   async function checkAccess(): Promise<boolean> {
     try {
-      const resp = await fetch('/api/admin/access', { headers: { ...authHeader() } })
+      const resp = await authFetch('/api/admin/access')
       isAdmin.value = resp.ok
     } catch {
       isAdmin.value = false
@@ -86,7 +72,7 @@ export const useAdminStore = defineStore('admin', () => {
   }
 
   async function get<T>(path: string): Promise<T[]> {
-    const resp = await fetch(path, { headers: { ...authHeader() } })
+    const resp = await authFetch(path)
     if (resp.status === 403) {
       forbidden.value = true
       throw new Error('forbidden')
@@ -124,9 +110,9 @@ export const useAdminStore = defineStore('admin', () => {
   // The hub's Provider controller then provisions the sub-workspace +
   // ServiceAccount + kubeconfig Secret. Declarative — no imperative onboard.
   async function createProvider(name: string, displayName: string): Promise<void> {
-    const resp = await fetch('/api/admin/providers', {
+    const resp = await authFetch('/api/admin/providers', {
       method: 'POST',
-      headers: { ...authHeader(), 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, displayName }),
     })
     if (resp.status === 403) {
@@ -139,9 +125,8 @@ export const useAdminStore = defineStore('admin', () => {
   // deleteProvider removes the Provider object; the controller's finalizer
   // tears down the provisioned sub-workspace.
   async function deleteProvider(name: string): Promise<void> {
-    const resp = await fetch(`/api/admin/providers/${encodeURIComponent(name)}`, {
+    const resp = await authFetch(`/api/admin/providers/${encodeURIComponent(name)}`, {
       method: 'DELETE',
-      headers: { ...authHeader() },
     })
     if (resp.status === 403) {
       forbidden.value = true
@@ -156,9 +141,7 @@ export const useAdminStore = defineStore('admin', () => {
   // Secret the Provider controller wrote into root:kedge:system:providers) and
   // triggers a browser download.
   async function downloadProviderKubeconfig(name: string): Promise<void> {
-    const resp = await fetch(`/api/admin/providers/${encodeURIComponent(name)}/kubeconfig`, {
-      headers: { ...authHeader() },
-    })
+    const resp = await authFetch(`/api/admin/providers/${encodeURIComponent(name)}/kubeconfig`)
     if (resp.status === 403) {
       forbidden.value = true
       throw new Error('forbidden')

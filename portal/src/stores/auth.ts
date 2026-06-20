@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { AuthMode, HealthzResponse, StoredAuth } from '@/auth/types'
-import { loadAuth, saveAuth, clearAuth, isExpired, refreshToken, parseClusterName } from '@/auth/token'
+import { loadAuth, saveAuth, clearAuth, parseClusterName } from '@/auth/token'
+import { getBearerToken, resetSessionExpired } from '@/auth/session'
 import { fetchHealthz, loginWithToken } from '@/lib/api'
 import { STORAGE_KEYS } from '@/lib/constants'
 
@@ -53,6 +54,7 @@ export const useAuthStore = defineStore('auth', () => {
       token.value = auth.idToken
       user.value = { email: auth.email, userId: auth.userId }
       clusterName.value = auth.clusterName
+      resetSessionExpired()
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Login failed'
       throw e
@@ -66,21 +68,19 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = auth.idToken
     user.value = { email: auth.email, userId: auth.userId }
     clusterName.value = auth.clusterName
+    resetSessionExpired()
   }
 
   async function getValidToken(): Promise<string> {
-    const stored = loadAuth()
-    if (!stored) throw new Error('Not authenticated')
-
-    if (!isExpired(stored)) return stored.idToken
-
-    const refreshed = await refreshToken(stored)
-    if (refreshed) {
-      token.value = refreshed.idToken
-      return refreshed.idToken
+    // Shared load/refresh core (also used by REST authFetch). It fires
+    // SESSION_EXPIRED_EVENT itself when an expired token can't be
+    // refreshed, so the shell already redirects; we still clear local
+    // state and throw so in-flight callers stop.
+    const valid = await getBearerToken()
+    if (valid) {
+      token.value = valid
+      return valid
     }
-
-    // Token expired and refresh failed — force re-login
     logout()
     throw new Error('Session expired')
   }
