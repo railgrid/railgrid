@@ -68,6 +68,96 @@ portal/          Vite + TS micro-frontend (custom element)
 deploy/chart/    Helm chart (host cluster only; PVC for the SQLite store)
 ```
 
+## Deploying to a cluster (Helm)
+
+The provider runs on the **host cluster** and registers itself into the hub.
+The chart is published as an OCI artifact at
+`oci://ghcr.io/faroshq/charts/kedge-kuery-provider`.
+
+### Prerequisites
+
+- A reachable kedge hub (`hub.url`).
+- A **provider kubeconfig** — the workspace-admin kubeconfig minted via the
+  admin onboarding flow (`/bonkers`). Stored as a Secret whose key **must be
+  `kubeconfig`**.
+- The `edges` APIExport identity hash from the hub
+  (`apiExport.edgesIdentityHash`) so the provider can bind the `edges`
+  permission claim.
+- For the Postgres store: a running PostgreSQL with a Secret exposing a
+  connection `uri` (e.g. a CloudNativePG cluster, whose `*-app` Secret carries
+  `uri`). Skip this for the default SQLite store.
+
+### 1. Namespace
+
+```bash
+kubectl create namespace kedge-prod-provider-kuery
+```
+
+### 2. Provider kubeconfig Secret
+
+The key **must** be `kubeconfig` (this matches the chart default
+`providerKubeconfig.secretName=kedge-provider-kubeconfig`):
+
+```bash
+kubectl -n kedge-prod-provider-kuery create secret generic kedge-provider-kubeconfig \
+  --from-file=kubeconfig="kedge/provider-kuery.kubeconfig"
+```
+
+### 3. (Postgres only) build the DSN
+
+Read the connection URI from the database Secret and require TLS:
+
+```bash
+DSN="$(kubectl -n kedge-prod-provider-kuery get secret kuery-pg-app \
+  -o jsonpath='{.data.uri}' | base64 -d)?sslmode=require"
+echo "$DSN"
+```
+
+### 4. Install / upgrade
+
+```bash
+helm upgrade --install kuery oci://ghcr.io/faroshq/charts/kedge-kuery-provider:0.0.8 \
+  -n kedge-prod-provider-kuery \
+  --set image.tag=v0.0.8 \
+  --set hub.url=https://kedge-kedge-hub.kedge-prod.svc.cluster.local:9443 \
+  --set hub.insecure=true \
+  --set hub.tokenSecretRef.name="" \
+  --set apiExport.edgesIdentityHash="<identity-hash>" \
+  --set catalogEntry.enabled=true \
+  --set store.driver=postgres \
+  --set store.persistence.enabled=false \
+  --set-string store.dsn="$DSN"
+```
+
+Key flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `image.tag` | Provider image version (match the chart release). |
+| `hub.url` | In-cluster hub address. |
+| `hub.insecure` | Skip hub TLS verification (in-cluster, self-signed). |
+| `hub.tokenSecretRef.name=""` | No static hub token — auth is via the provider kubeconfig. |
+| `apiExport.edgesIdentityHash` | Hub's `edges` APIExport identity, for the permission claim. |
+| `catalogEntry.enabled=true` | Init container self-registers the CatalogEntry. |
+| `store.driver` | `postgres` or `sqlite` (default). |
+| `store.persistence.enabled` | PVC for the SQLite store; set `false` with Postgres. |
+| `store.dsn` | Postgres DSN (use `--set-string`, it contains `:`/`?`/`&`). |
+
+For the **default SQLite store**, drop the `store.*` Postgres flags and set
+`store.driver=sqlite` with `store.persistence.enabled=true` (the chart mounts a
+PVC at `/data`).
+
+### 5. Verify
+
+```bash
+kubectl -n kedge-prod-provider-kuery rollout status deploy/kuery-kedge-kuery-provider
+kubectl -n kedge-prod-provider-kuery logs deploy/kuery-kedge-kuery-provider -c provider --tail=50
+```
+
+A healthy provider logs `updated endpointslice object` and serves
+`GET /healthz`. Connect an edge in a tenant workspace that Enabled the
+provider, then open the Kuery portal tab.
+
 ## Local development
 
 From the kedge repo root:
