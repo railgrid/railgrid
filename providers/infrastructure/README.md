@@ -18,9 +18,6 @@ template in the kedge portal — or asks an MCP-driven LLM — supplies
 inputs, and this provider creates the kro instance CR on their behalf
 using cloud credentials pulled from the tenant's own kcp workspace.
 
-Full design + staged plan:
-[/Users/mjudeikis/.claude/plans/zippy-baking-jellyfish.md](../../../../../../.claude/plans/zippy-baking-jellyfish.md)
-
 ## What's here
 
 | Surface | Where |
@@ -125,6 +122,208 @@ Open the portal at `https://<hub>/ui/providers/infrastructure/`.
 
 ```sh
 docker build -t kedge-infrastructure-provider:dev .
+```
+
+## kro runtime (prerequisite)
+
+The provider brokers templates from a kro runtime. In production — and in **both
+Tiltfiles** (via `make dev-kro-up` / `dev-kro-up-into`) — kro runs in
+**`kcp-apiexport`** mode:
+
+- The provider creates instance CRs **in the tenant's kcp workspace**, through
+  its APIExport `infrastructure.providers.kedge.faros.sh`.
+- kro reads the `infrastructure` **APIExportEndpointSlice** in the provider
+  workspace (`root:kedge:providers:infrastructure`) to find the APIExport's
+  virtual-workspace URL, watches the instance CRs across every bound tenant
+  workspace through it, and — with `controller.deployToLocalRuntime=true` —
+  materializes each instance's child resources on the cluster kro runs in, while
+  the instance object + status stay in the tenant workspace.
+
+With no kro wired up the provider runs in stub mode (three baked-in templates).
+
+### How it's wired — and the ordering
+
+kro and the provider are mutually dependent, so bring-up is a two-step dance
+(exactly what Tilt automates as `kro-mgmt-up` → `infrastructure-init`):
+
+1. **kro chart installs first, with a _placeholder_ kubeconfig.** The chart
+   mounts the `kcp-kubeconfig` Secret (key `kubeconfig`) at
+   `/etc/kro/kcp/kubeconfig`; the mount is non-optional, so the Secret must exist
+   or the pod never schedules. You seed a stub value — kro starts but stays
+   not-Ready until the real credentials arrive.
+2. **The provider's `infrastructure init`** (the chart's init container) is what
+   makes kro functional. It:
+   - creates the APIExport + the `infrastructure` APIExportEndpointSlice in the
+     provider workspace ([`install.PlatformAPIExportEndpointSlice`](install/endpointslice.go)) — what kro watches;
+   - **overwrites** the `kcp-kubeconfig` Secret in `kro-system` with a real
+     kubeconfig pointing at the provider workspace, carrying the runtime SA
+     bearer token scoped by the provider's ClusterRole
+     ([`install.SeedKroCluster`](install/kroseed.go) — needs `KRO_KUBECONFIG`
+     set so init can reach the kro cluster);
+   - bounces the kro Deployment so it reloads the new kubeconfig.
+
+> [!IMPORTANT]
+> So it is **neither** "provider then kro" **nor** "kro then provider": the kro
+> chart goes in first with a placeholder Secret, and the provider's **init** then
+> seeds it (creates the endpoint slice, writes the real `kcp-kubeconfig`,
+> restarts kro). Until init runs, kro has no VW URL to watch and tenant instances
+> go unreconciled. There is no separate "mint a kubeconfig for kro" step — init
+> mints and delivers it from the provider's runtime identity.
+
+### Install kro (kcp-apiexport mode)
+
+kro ships its CRDs in the chart. The
+[`faroshq/kro-multicluster`](https://github.com/faroshq/kro-multicluster) fork
+publishes its image and chart to GHCR. The chart defaults to the upstream image,
+so you **must** point `image.repository`/`tag` at the fork or the multicluster
+features are missing:
+
+```sh
+KRO_VERSION=v0.0.1-mc.7   # latest faroshq/kro-multicluster release tag
+
+# Placeholder kcp credentials so the kro pod can schedule; the provider's
+# `infrastructure init` overwrites this Secret with the real kubeconfig and
+# restarts kro (see above).
+kubectl create namespace kro-system
+kubectl -n kro-system create secret generic kcp-kubeconfig \
+  --from-literal=kubeconfig=pending-init
+
+helm install kro oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro \
+  --version "$KRO_VERSION" \
+  -n kro-system \
+  --set image.repository=ghcr.io/faroshq/kro-multicluster/kro \
+  --set image.tag="$KRO_VERSION" \
+  --set multicluster.enabled=true \
+  --set multicluster.provider=kcp-apiexport \
+  --set multicluster.kcp.kubeconfigSecret=kcp-kubeconfig \
+  --set multicluster.kcp.apiExportEndpointSlice=infrastructure \
+  --set controller.deployToLocalRuntime=true
+```
+
+Now deploy the provider with bootstrap enabled (see "Deploy with Helm"); its init
+container seeds kro as described above. Make sure the provider's init can reach
+this kro cluster (`KRO_KUBECONFIG`) so `SeedKroCluster` can write the Secret and
+restart kro. Then verify:
+
+```sh
+kubectl -n kro-system rollout status deploy/kro
+kubectl -n kro-system logs deploy/kro | grep -i apiexport   # should log the discovered VW URL
+```
+
+Apply the RGD templates you want to expose, labeled `kedge.faros.sh/expose=true`
+(see [docs/credentials.md](docs/credentials.md)).
+
+### Alternative: standalone `kubeconfig` mode (dev only)
+
+For a quick setup with no kcp/APIExport wiring, run kro in `kubeconfig` mode
+(`--set multicluster.provider=kubeconfig`, or `--set multicluster.enabled=false`)
+against its own cluster. Here kro is installed **first** and the provider talks
+to it directly via `centralKro.kubeconfigSecretRef`, using a kubeconfig you mint
+from that cluster — create a ServiceAccount, grant it the broker's access
+(namespaces, secrets, RGD discovery, and the RGD-defined instance CRs) and a
+long-lived token, then assemble a kubeconfig from it:
+
+```sh
+KRO_CTX=<your-kro-cluster-context>   # kubectl context for the central kro cluster
+SA=kedge-infrastructure-broker
+NS=kro-system
+
+# ServiceAccount
+kubectl --context "$KRO_CTX" -n "$NS" create serviceaccount "$SA"
+
+# RBAC. namespaces + secrets are core; resourcegraphdefinitions is discovery.
+# RGD-generated instance CRDs live in whatever API group each RGD declares, so
+# the broker needs to act on those kinds too — scope this down to your RGDs'
+# groups in production instead of the broad rule below.
+cat <<EOF | kubectl --context "$KRO_CTX" apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kedge-infrastructure-broker
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  - apiGroups: ["kro.run"]
+    resources: ["resourcegraphdefinitions"]
+    verbs: ["get", "list", "watch"]
+  # Instance CRs created from RGDs. Replace "*" with your RGDs' actual API
+  # groups/resources for least privilege.
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kedge-infrastructure-broker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kedge-infrastructure-broker
+subjects:
+  - kind: ServiceAccount
+    name: $SA
+    namespace: $NS
+EOF
+
+# Long-lived token Secret (k8s >=1.24 no longer auto-creates SA token secrets).
+cat <<EOF | kubectl --context "$KRO_CTX" apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${SA}-token
+  namespace: $NS
+  annotations:
+    kubernetes.io/service-account.name: $SA
+type: kubernetes.io/service-account-token
+EOF
+
+# Assemble the kubeconfig from the SA token + cluster CA + API endpoint.
+SERVER="$(kubectl --context "$KRO_CTX" config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+CA="$(kubectl --context "$KRO_CTX" -n "$NS" get secret ${SA}-token -o jsonpath='{.data.ca\.crt}')"
+TOKEN="$(kubectl --context "$KRO_CTX" -n "$NS" get secret ${SA}-token -o jsonpath='{.data.token}' | base64 -d)"
+
+cat > central-kro.kubeconfig <<EOF
+apiVersion: v1
+kind: Config
+clusters:
+  - name: central-kro
+    cluster:
+      server: ${SERVER}
+      certificate-authority-data: ${CA}
+contexts:
+  - name: central-kro
+    context:
+      cluster: central-kro
+      user: ${SA}
+      namespace: ${NS}
+current-context: central-kro
+users:
+  - name: ${SA}
+    user:
+      token: ${TOKEN}
+EOF
+
+# Sanity check the minted kubeconfig.
+kubectl --kubeconfig central-kro.kubeconfig get resourcegraphdefinitions
+```
+
+> [!NOTE]
+> If the central kro API endpoint in the source context is a loopback/proxy
+> address (e.g. kind's `https://127.0.0.1:<port>`), rewrite `server:` to an
+> address reachable from the provider pod before using the kubeconfig
+> in-cluster.
+
+`central-kro.kubeconfig` is the file you feed to the provider — create the
+Secret it references (see "Deploy with Helm" → `centralKro.kubeconfigSecretRef`):
+
+```sh
+kubectl -n kedge-prod-provider-infrastructure create secret generic central-kro-kubeconfig \
+  --from-file=kubeconfig=central-kro.kubeconfig
 ```
 
 ## Deploy with Helm
