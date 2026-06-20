@@ -3,7 +3,7 @@ module github.com/faroshq/provider-kuery
 go 1.26.3
 
 require (
-	github.com/faroshq/kuery v0.0.0-20260614065711-08329d47d344
+	github.com/faroshq/kuery v0.0.0-20260620061119-7fcd75d5dcc3
 	github.com/faroshq/provider-sdk v0.0.1
 	github.com/kcp-dev/multicluster-provider v0.8.0
 	github.com/kcp-dev/sdk v0.32.0
