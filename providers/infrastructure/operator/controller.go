@@ -76,6 +76,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.fail(ctx, &cr, v1alpha1.ConditionBootstrapped, "ProviderKubeconfigInvalid", err)
 	}
 
+	// The workspace path is only needed to stamp spec.export.path on the
+	// APIExportEndpointSlice. When the CR doesn't set it, discover it from the
+	// workspace the provider kubeconfig is scoped to (its kcp.io/path annotation)
+	// — so a workspace-scoped provider kubeconfig needs no providerWorkspace.
+	workspacePath := cr.Spec.ProviderWorkspace
+	if workspacePath == "" {
+		workspacePath, err = discoverWorkspacePath(ctx, providerCfg)
+		if err != nil {
+			return r.fail(ctx, &cr, v1alpha1.ConditionBootstrapped, "WorkspacePathUnknown", err)
+		}
+	}
+
 	// Runtime cluster: an explicit kubeconfig Secret, or — when omitted — the
 	// operator's own cluster (in-cluster / current context). In the in-cluster
 	// case runtimeKC stays nil: helm runs without a KUBECONFIG override (using
@@ -103,7 +115,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	// 1. Bootstrap the provider workspace.
 	if err := Bootstrap(ctx, providerCfg, BootstrapOptions{
-		WorkspacePath: cr.Spec.ProviderWorkspace,
+		WorkspacePath: workspacePath,
 		APIExportName: APIExportName,
 	}); err != nil {
 		return r.fail(ctx, &cr, v1alpha1.ConditionBootstrapped, "BootstrapFailed", err)
@@ -118,7 +130,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := ensureNamespace(ctx, cs, cr.Spec.Kro.Namespace); err != nil {
 		return r.fail(ctx, &cr, v1alpha1.ConditionKroReleased, "KroNamespaceFailed", err)
 	}
-	if err := install.SeedKroClusterFromKubeconfig(ctx, runtimeCfg, providerKC, cr.Spec.ProviderWorkspace); err != nil {
+	if err := install.SeedKroClusterFromKubeconfig(ctx, runtimeCfg, providerKC, workspacePath); err != nil {
 		return r.fail(ctx, &cr, v1alpha1.ConditionKroReleased, "KroSeedFailed", err)
 	}
 	// helm needs a KUBECONFIG file only for an explicit runtime; for the

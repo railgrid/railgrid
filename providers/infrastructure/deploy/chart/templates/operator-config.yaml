@@ -40,7 +40,9 @@ metadata:
   labels:
     {{- include "infrastructure.labels" . | nindent 4 }}
 spec:
+  {{- if .Values.operator.providerWorkspace }}
   providerWorkspace: {{ .Values.operator.providerWorkspace | quote }}
+  {{- end }}
   providerKubeconfigSecret:
     name: {{ $providerSecret }}
     key: {{ .Values.operator.providerKubeconfigSecret.key | default "kubeconfig" }}

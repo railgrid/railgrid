@@ -187,8 +187,12 @@ spec:
               providerWorkspace:
                 description: |-
                   ProviderWorkspace is the kcp workspace path the provider is bootstrapped
-                  into, e.g. "root:kedge:providers:infrastructure". The provider kubeconfig
-                  is retargeted at this workspace.
+                  into, e.g. "root:kedge:providers:infrastructure". Optional: when the
+                  provider kubeconfig is already scoped to the provider workspace (as the
+                  admin portal issues it), the operator discovers the path from the
+                  workspace's kcp.io/path annotation, so you don't need to set this. Set it
+                  only when supplying a root-scoped (admin) kubeconfig that must be retargeted
+                  at a workspace.
                 type: string
               runtimeKubeconfigSecret:
                 description: |-
@@ -212,7 +216,6 @@ spec:
             - kro
             - provider
             - providerKubeconfigSecret
-            - providerWorkspace
             type: object
           status:
             description: InfrastructureProviderStatus reports the operator's reconcile

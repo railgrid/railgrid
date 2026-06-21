@@ -50,9 +50,14 @@ type InfrastructureProvider struct {
 // InfrastructureProviderSpec is the operator's input.
 type InfrastructureProviderSpec struct {
 	// ProviderWorkspace is the kcp workspace path the provider is bootstrapped
-	// into, e.g. "root:kedge:providers:infrastructure". The provider kubeconfig
-	// is retargeted at this workspace.
-	ProviderWorkspace string `json:"providerWorkspace"`
+	// into, e.g. "root:kedge:providers:infrastructure". Optional: when the
+	// provider kubeconfig is already scoped to the provider workspace (as the
+	// admin portal issues it), the operator discovers the path from the
+	// workspace's kcp.io/path annotation, so you don't need to set this. Set it
+	// only when supplying a root-scoped (admin) kubeconfig that must be retargeted
+	// at a workspace.
+	// +optional
+	ProviderWorkspace string `json:"providerWorkspace,omitempty"`
 
 	// ProviderKubeconfigSecret references a Secret holding the kcp provider
 	// kubeconfig (the credential the admin portal issues for the provider
