@@ -61,8 +61,12 @@ type InfrastructureProviderSpec struct {
 	ProviderKubeconfigSecret SecretKeyRef `json:"providerKubeconfigSecret"`
 
 	// RuntimeKubeconfigSecret references a Secret holding the kubeconfig of the
-	// cluster where kro and the provider serve Deployment run.
-	RuntimeKubeconfigSecret SecretKeyRef `json:"runtimeKubeconfigSecret"`
+	// cluster where kro and the provider serve Deployment run. Optional: when
+	// omitted the operator uses its own cluster (in-cluster config) as the
+	// runtime — i.e. kro + the serve Deployment land in the cluster the operator
+	// runs in.
+	// +optional
+	RuntimeKubeconfigSecret SecretKeyRef `json:"runtimeKubeconfigSecret,omitempty"`
 
 	// Hub configures the provider's heartbeat target. Optional.
 	// +optional

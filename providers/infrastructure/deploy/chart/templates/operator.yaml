@@ -44,6 +44,28 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "infrastructure.fullname" . }}-operator
     namespace: {{ .Release.Namespace }}
+{{- if .Values.operator.clusterAdmin }}
+---
+# The operator helm-installs the kro chart (which creates ClusterRoles, CRDs and
+# cluster-scoped objects) and, for the in-cluster runtime, manages namespaces,
+# Secrets, Deployments + the serve SA/binding on its own cluster — so its SA
+# needs cluster-admin. Set operator.clusterAdmin=false to bind a narrower role
+# yourself (e.g. when an explicit runtimeKubeconfig with its own creds is used).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "infrastructure.fullname" . }}-operator-admin
+  labels:
+    {{- include "infrastructure.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "infrastructure.fullname" . }}-operator
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment

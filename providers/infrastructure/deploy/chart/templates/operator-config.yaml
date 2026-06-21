@@ -44,9 +44,14 @@ spec:
   providerKubeconfigSecret:
     name: {{ $providerSecret }}
     key: {{ .Values.operator.providerKubeconfigSecret.key | default "kubeconfig" }}
+  {{- if or .Values.operator.runtimeKubeconfig .Values.operator.runtimeKubeconfigSecret.name }}
   runtimeKubeconfigSecret:
     name: {{ $runtimeSecret }}
     key: {{ .Values.operator.runtimeKubeconfigSecret.key | default "kubeconfig" }}
+  {{- else }}
+  # No runtimeKubeconfigSecret → the operator uses its own (in-cluster) cluster
+  # as the runtime (kro + serve land in the cluster the operator runs in).
+  {{- end }}
   {{- with .Values.hub }}
   hub:
     url: {{ .url | quote }}

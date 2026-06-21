@@ -52,7 +52,11 @@ func EnsureKroRelease(ctx context.Context, runtimeKubeconfigPath string, kro v1a
 	}
 
 	cmd := exec.CommandContext(ctx, "helm", args...)
-	cmd.Env = append(os.Environ(), "KUBECONFIG="+runtimeKubeconfigPath)
+	// An empty path means "in-cluster runtime": run helm with no KUBECONFIG
+	// override so it uses the pod's in-cluster service account.
+	if runtimeKubeconfigPath != "" {
+		cmd.Env = append(os.Environ(), "KUBECONFIG="+runtimeKubeconfigPath)
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("helm upgrade --install %s: %w\n%s", kro.ReleaseName, err, string(out))
 	}

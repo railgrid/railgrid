@@ -44,6 +44,10 @@ type Reconciler struct {
 	// Client reads CRs + referenced Secrets from the cluster the operator runs
 	// in (where the CRs live).
 	Client client.Client
+	// RestConfig is the operator's own cluster config (what the manager was
+	// built with). Used as the runtime cluster when a CR omits
+	// spec.runtimeKubeconfigSecret — i.e. "use the current context".
+	RestConfig *rest.Config
 }
 
 // Reconcile drives one CR to its desired state.
@@ -60,10 +64,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return r.fail(ctx, &cr, v1alpha1.ConditionBootstrapped, "ProviderKubeconfigMissing", err)
 	}
-	runtimeKC, err := r.secretValue(ctx, cr.Namespace, cr.Spec.RuntimeKubeconfigSecret)
-	if err != nil {
-		return r.fail(ctx, &cr, v1alpha1.ConditionBootstrapped, "RuntimeKubeconfigMissing", err)
-	}
 	var hubToken []byte
 	if cr.Spec.Hub.TokenSecret != nil {
 		if hubToken, err = r.secretValue(ctx, cr.Namespace, *cr.Spec.Hub.TokenSecret); err != nil {
@@ -75,9 +75,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return r.fail(ctx, &cr, v1alpha1.ConditionBootstrapped, "ProviderKubeconfigInvalid", err)
 	}
-	runtimeCfg, err := clientcmd.RESTConfigFromKubeConfig(runtimeKC)
-	if err != nil {
-		return r.fail(ctx, &cr, v1alpha1.ConditionKroReleased, "RuntimeKubeconfigInvalid", err)
+
+	// Runtime cluster: an explicit kubeconfig Secret, or — when omitted — the
+	// operator's own cluster (in-cluster / current context). In the in-cluster
+	// case runtimeKC stays nil: helm runs without a KUBECONFIG override (using
+	// its in-cluster credentials) and the serve Deployment uses its pod SA.
+	var (
+		runtimeCfg *rest.Config
+		runtimeKC  []byte
+	)
+	if cr.Spec.RuntimeKubeconfigSecret.Name != "" {
+		runtimeKC, err = r.secretValue(ctx, cr.Namespace, cr.Spec.RuntimeKubeconfigSecret)
+		if err != nil {
+			return r.fail(ctx, &cr, v1alpha1.ConditionKroReleased, "RuntimeKubeconfigMissing", err)
+		}
+		runtimeCfg, err = clientcmd.RESTConfigFromKubeConfig(runtimeKC)
+		if err != nil {
+			return r.fail(ctx, &cr, v1alpha1.ConditionKroReleased, "RuntimeKubeconfigInvalid", err)
+		}
+	} else {
+		if r.RestConfig == nil {
+			return r.fail(ctx, &cr, v1alpha1.ConditionKroReleased, "RuntimeKubeconfigMissing",
+				fmt.Errorf("no runtimeKubeconfigSecret and operator has no in-cluster config"))
+		}
+		runtimeCfg = r.RestConfig
 	}
 
 	// 1. Bootstrap the provider workspace.
@@ -100,12 +121,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := install.SeedKroClusterFromKubeconfig(ctx, runtimeCfg, providerKC, cr.Spec.ProviderWorkspace); err != nil {
 		return r.fail(ctx, &cr, v1alpha1.ConditionKroReleased, "KroSeedFailed", err)
 	}
-	tmp, cleanup, err := writeTempKubeconfig(runtimeKC)
-	if err != nil {
-		return r.fail(ctx, &cr, v1alpha1.ConditionKroReleased, "RuntimeKubeconfigWriteFailed", err)
+	// helm needs a KUBECONFIG file only for an explicit runtime; for the
+	// in-cluster runtime (runtimeKC nil) we run helm with no override so it uses
+	// its in-cluster service account.
+	helmKubeconfig := ""
+	if runtimeKC != nil {
+		tmp, cleanup, werr := writeTempKubeconfig(runtimeKC)
+		if werr != nil {
+			return r.fail(ctx, &cr, v1alpha1.ConditionKroReleased, "RuntimeKubeconfigWriteFailed", werr)
+		}
+		defer cleanup()
+		helmKubeconfig = tmp
 	}
-	defer cleanup()
-	if err := EnsureKroRelease(ctx, tmp, cr.Spec.Kro); err != nil {
+	if err := EnsureKroRelease(ctx, helmKubeconfig, cr.Spec.Kro); err != nil {
 		return r.fail(ctx, &cr, v1alpha1.ConditionKroReleased, "HelmFailed", err)
 	}
 	// Dev-only kind networking patches (no-op in prod; gated by env). Lets the
@@ -190,7 +218,7 @@ func Run(ctx context.Context, cfg *rest.Config) error {
 	if err != nil {
 		return fmt.Errorf("manager.New: %w", err)
 	}
-	if err := (&Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+	if err := (&Reconciler{Client: mgr.GetClient(), RestConfig: cfg}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup reconciler: %w", err)
 	}
 	klog.FromContext(ctx).Info("infrastructure operator manager starting")

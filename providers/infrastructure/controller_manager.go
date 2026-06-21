@@ -107,11 +107,22 @@ func startControllerManager(ctx context.Context, config *rest.Config) error {
 	// kcp workspace. It needs a separate client; KRO_KUBECONFIG points at
 	// that cluster (the same kubeconfig the legacy kro broker reads). When
 	// unset we run stub-only so dev/REST-only flows still boot.
+	// Resolve the kro runtime cluster: explicit KRO_KUBECONFIG, else the pod's
+	// in-cluster config (the operator's in-cluster-runtime mode — serve runs in
+	// the runtime cluster and authors RGDs against it via its pod SA). Falls
+	// back to stub-only when neither is available (dev/REST-only).
+	var kroCfg *rest.Config
+	var kroSrc string
 	if p := os.Getenv("KRO_KUBECONFIG"); p != "" {
-		kroCfg, err := clientcmd.BuildConfigFromFlags("", p)
+		c, err := clientcmd.BuildConfigFromFlags("", p)
 		if err != nil {
 			return fmt.Errorf("loading KRO_KUBECONFIG for kro backend: %w", err)
 		}
+		kroCfg, kroSrc = c, "KRO_KUBECONFIG="+p
+	} else if c, err := rest.InClusterConfig(); err == nil {
+		kroCfg, kroSrc = c, "in-cluster"
+	}
+	if kroCfg != nil {
 		kroDyn, err := dynamic.NewForConfig(kroCfg)
 		if err != nil {
 			return fmt.Errorf("kro backend dynamic client: %w", err)
@@ -119,9 +130,9 @@ func startControllerManager(ctx context.Context, config *rest.Config) error {
 		if err := registry.Register(krobackend.New(kroDyn)); err != nil {
 			return fmt.Errorf("register kro backend: %w", err)
 		}
-		log.Printf("controller manager: kro backend registered (RGD runtime cluster from KRO_KUBECONFIG=%s)", p)
+		log.Printf("controller manager: kro backend registered (RGD runtime cluster: %s)", kroSrc)
 	} else {
-		log.Printf("controller manager: KRO_KUBECONFIG unset — kro backend not registered (stub-only)")
+		log.Printf("controller manager: no kro runtime config (KRO_KUBECONFIG unset, not in a pod) — kro backend not registered (stub-only)")
 	}
 
 	dyn, err := dynamic.NewForConfig(config)

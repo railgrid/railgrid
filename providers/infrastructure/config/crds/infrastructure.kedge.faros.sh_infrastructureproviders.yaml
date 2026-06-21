@@ -193,7 +193,10 @@ spec:
               runtimeKubeconfigSecret:
                 description: |-
                   RuntimeKubeconfigSecret references a Secret holding the kubeconfig of the
-                  cluster where kro and the provider serve Deployment run.
+                  cluster where kro and the provider serve Deployment run. Optional: when
+                  omitted the operator uses its own cluster (in-cluster config) as the
+                  runtime — i.e. kro + the serve Deployment land in the cluster the operator
+                  runs in.
                 properties:
                   key:
                     default: kubeconfig
@@ -210,7 +213,6 @@ spec:
             - provider
             - providerKubeconfigSecret
             - providerWorkspace
-            - runtimeKubeconfigSecret
             type: object
           status:
             description: InfrastructureProviderStatus reports the operator's reconcile

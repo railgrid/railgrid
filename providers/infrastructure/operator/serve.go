@@ -16,6 +16,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -52,13 +53,14 @@ func EnsureProviderServe(
 
 	name := cr.Name
 	providerSecret := name + "-provider-kubeconfig"
-	runtimeSecret := name + "-runtime-kubeconfig"
 	if err := upsertOpaqueSecret(ctx, cs, ServeNamespace, providerSecret, "kubeconfig", providerKubeconfig); err != nil {
 		return fmt.Errorf("replicate provider kubeconfig: %w", err)
 	}
-	if err := upsertOpaqueSecret(ctx, cs, ServeNamespace, runtimeSecret, "kubeconfig", runtimeKubeconfig); err != nil {
-		return fmt.Errorf("replicate runtime kubeconfig: %w", err)
-	}
+
+	// inCluster: the runtime is the operator's own cluster (no runtime
+	// kubeconfig). The serve pod then runs the kro backend with its pod
+	// ServiceAccount (in-cluster) instead of a mounted runtime kubeconfig.
+	inCluster := len(runtimeKubeconfig) == 0
 
 	port := cr.Spec.Provider.Port
 	if port == 0 {
@@ -73,7 +75,6 @@ func EnsureProviderServe(
 		{Name: "PORT", Value: fmt.Sprintf("%d", port)},
 		{Name: "KEDGE_PROVIDER_NAME", Value: "infrastructure"},
 		{Name: "INFRASTRUCTURE_KUBECONFIG", Value: providerKubeconfigMount},
-		{Name: "KRO_KUBECONFIG", Value: runtimeKubeconfigMount},
 	}
 	if cr.Spec.Hub.URL != "" {
 		env = append(env, corev1.EnvVar{Name: "KEDGE_HUB_URL", Value: cr.Spec.Hub.URL})
@@ -83,11 +84,30 @@ func EnsureProviderServe(
 	}
 	volMounts := []corev1.VolumeMount{
 		{Name: "provider-kubeconfig", MountPath: "/var/run/secrets/kedge/provider", ReadOnly: true},
-		{Name: "runtime-kubeconfig", MountPath: "/var/run/secrets/kedge/runtime", ReadOnly: true},
 	}
 	volumes := []corev1.Volume{
 		{Name: "provider-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: providerSecret}}},
-		{Name: "runtime-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: runtimeSecret}}},
+	}
+	// Serve's kro backend reaches the runtime cluster either via a mounted
+	// runtime kubeconfig (explicit runtime) or its in-cluster SA (in-cluster
+	// runtime — KRO_KUBECONFIG left unset; controller_manager falls back to
+	// in-cluster).
+	serveSA := ""
+	if !inCluster {
+		runtimeSecret := name + "-runtime-kubeconfig"
+		if err := upsertOpaqueSecret(ctx, cs, ServeNamespace, runtimeSecret, "kubeconfig", runtimeKubeconfig); err != nil {
+			return fmt.Errorf("replicate runtime kubeconfig: %w", err)
+		}
+		env = append(env, corev1.EnvVar{Name: "KRO_KUBECONFIG", Value: runtimeKubeconfigMount})
+		volMounts = append(volMounts, corev1.VolumeMount{Name: "runtime-kubeconfig", MountPath: "/var/run/secrets/kedge/runtime", ReadOnly: true})
+		volumes = append(volumes, corev1.Volume{Name: "runtime-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: runtimeSecret}}})
+	} else {
+		// Give the serve pod an SA bound to the access its kro backend needs on
+		// the (operator's own) runtime cluster.
+		serveSA = name
+		if err := ensureServeRBAC(ctx, cs, serveSA); err != nil {
+			return fmt.Errorf("serve RBAC: %w", err)
+		}
 	}
 	if cr.Spec.Hub.TokenSecret != nil && len(hubToken) > 0 {
 		hubSecret := name + "-hub-token"
@@ -117,6 +137,7 @@ func EnsureProviderServe(
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
+					ServiceAccountName: serveSA,
 					Containers: []corev1.Container{{
 						Name:         "provider",
 						Image:        image,
@@ -164,6 +185,37 @@ func EnsureProviderServe(
 	}
 
 	return ensureServeService(ctx, cs, name, labels, port)
+}
+
+// ensureServeRBAC creates the serve pod's ServiceAccount (in ServeNamespace)
+// and binds it to cluster-admin so its in-cluster kro backend can author
+// RGD-defined instances, namespaces, and secrets on the runtime cluster. Used
+// only for the in-cluster runtime (no runtime kubeconfig). Scope down for
+// least privilege in hardened environments.
+func ensureServeRBAC(ctx context.Context, cs kubernetes.Interface, saName string) error {
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: ServeNamespace}}
+	if _, err := cs.CoreV1().ServiceAccounts(ServeNamespace).Get(ctx, saName, metav1.GetOptions{}); apierrors.IsNotFound(err) {
+		if _, cerr := cs.CoreV1().ServiceAccounts(ServeNamespace).Create(ctx, sa, metav1.CreateOptions{}); cerr != nil && !apierrors.IsAlreadyExists(cerr) {
+			return fmt.Errorf("create serve ServiceAccount: %w", cerr)
+		}
+	} else if err != nil {
+		return fmt.Errorf("get serve ServiceAccount: %w", err)
+	}
+
+	crbName := "kedge-infrastructure-serve-" + saName
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: crbName},
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: saName, Namespace: ServeNamespace}},
+	}
+	if _, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, crbName, metav1.GetOptions{}); apierrors.IsNotFound(err) {
+		if _, cerr := cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{}); cerr != nil && !apierrors.IsAlreadyExists(cerr) {
+			return fmt.Errorf("create serve ClusterRoleBinding: %w", cerr)
+		}
+	} else if err != nil {
+		return fmt.Errorf("get serve ClusterRoleBinding: %w", err)
+	}
+	return nil
 }
 
 func ensureServeService(ctx context.Context, cs kubernetes.Interface, name string, labels map[string]string, port int32) error {

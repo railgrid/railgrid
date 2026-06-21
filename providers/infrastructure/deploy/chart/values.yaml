@@ -138,6 +138,12 @@ affinity: {}
 operator:
   enabled: false
 
+  # Bind the operator ServiceAccount to cluster-admin. Required for the operator
+  # to helm-install the kro chart (which creates ClusterRoles/CRDs) and to manage
+  # runtime workloads in its own cluster (in-cluster runtime). Set false to wire
+  # a narrower role yourself.
+  clusterAdmin: true
+
   # Operator (controller) image. Defaults to the provider image above.
   image:
     repository: ""
