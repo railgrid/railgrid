@@ -48,6 +48,10 @@ type Reconciler struct {
 	// built with). Used as the runtime cluster when a CR omits
 	// spec.runtimeKubeconfigSecret — i.e. "use the current context".
 	RestConfig *rest.Config
+	// CatalogEntryManifest is the embedded provider CatalogEntry (manifest.yaml).
+	// The operator applies it to the provider workspace (ui/backend URLs pointed
+	// at the serve Service) so the provider self-registers in the catalog.
+	CatalogEntryManifest []byte
 }
 
 // Reconcile drives one CR to its desired state.
@@ -159,11 +163,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// where serve runs as a host binary for fast iteration.
 	if os.Getenv("INFRASTRUCTURE_OPERATOR_SKIP_SERVE") == "true" {
 		setCond(&cr, v1alpha1.ConditionProviderDeployed, metav1.ConditionTrue, "Skipped", "serve managed out-of-band (INFRASTRUCTURE_OPERATOR_SKIP_SERVE)")
+		setCond(&cr, v1alpha1.ConditionRegistered, metav1.ConditionTrue, "Skipped", "CatalogEntry managed out-of-band (skip-serve)")
 	} else {
 		if err := EnsureProviderServe(ctx, cs, &cr, providerKC, runtimeKC, hubToken); err != nil {
 			return r.fail(ctx, &cr, v1alpha1.ConditionProviderDeployed, "ServeDeployFailed", err)
 		}
 		setCond(&cr, v1alpha1.ConditionProviderDeployed, metav1.ConditionTrue, "Deployed", "provider serve Deployment reconciled")
+
+		// 4. Register the provider with the hub by applying its CatalogEntry,
+		// ui/backend pointed at the serve Service the operator owns. This is what
+		// lists the provider in the catalog/portal.
+		serveURL := ServeServiceURL(cr.Name, cr.Spec.Provider.Port)
+		if err := EnsureCatalogEntry(ctx, providerCfg, r.CatalogEntryManifest, serveURL); err != nil {
+			return r.fail(ctx, &cr, v1alpha1.ConditionRegistered, "CatalogEntryFailed", err)
+		}
+		setCond(&cr, v1alpha1.ConditionRegistered, metav1.ConditionTrue, "Registered", "CatalogEntry applied ("+serveURL+")")
 	}
 
 	cr.Status.Phase = "Ready"
@@ -212,7 +226,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Run builds a manager on the supplied config (the cluster the CRs live in) and
 // runs the InfrastructureProvider reconciler until ctx is cancelled.
-func Run(ctx context.Context, cfg *rest.Config) error {
+// catalogEntryManifest is the embedded provider CatalogEntry the operator
+// applies to self-register; may be nil to skip registration.
+func Run(ctx context.Context, cfg *rest.Config, catalogEntryManifest []byte) error {
 	ctrl.SetLogger(klog.NewKlogr())
 
 	scheme := runtime.NewScheme()
@@ -230,7 +246,7 @@ func Run(ctx context.Context, cfg *rest.Config) error {
 	if err != nil {
 		return fmt.Errorf("manager.New: %w", err)
 	}
-	if err := (&Reconciler{Client: mgr.GetClient(), RestConfig: cfg}).SetupWithManager(mgr); err != nil {
+	if err := (&Reconciler{Client: mgr.GetClient(), RestConfig: cfg, CatalogEntryManifest: catalogEntryManifest}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup reconciler: %w", err)
 	}
 	klog.FromContext(ctx).Info("infrastructure operator manager starting")

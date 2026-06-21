@@ -92,6 +92,13 @@ spec:
           image: "{{ .Values.operator.image.repository | default .Values.image.repository }}:{{ .Values.operator.image.tag | default .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["controller"]
+          env:
+            # Stamps spec.version on the CatalogEntry the operator applies, so
+            # the portal shows the release version (the embedded manifest.yaml
+            # only carries a 0.1.0 placeholder). Mirrors the chart-templated
+            # catalogentry.yaml's {{ "{{ .Chart.AppVersion }}" }}.
+            - name: KEDGE_PROVIDER_VERSION
+              value: {{ .Chart.AppVersion | quote }}
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
 {{- end }}

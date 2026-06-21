@@ -32,6 +32,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"log"
 	"os"
@@ -45,6 +46,13 @@ import (
 	"github.com/faroshq/provider-infrastructure/install"
 	"github.com/faroshq/provider-infrastructure/operator"
 )
+
+// catalogEntryManifest is the provider's CatalogEntry, embedded so the operator
+// can self-register it into the provider workspace (ui/backend URLs rewritten to
+// the serve Service it owns).
+//
+//go:embed manifest.yaml
+var catalogEntryManifest []byte
 
 // operatorReconcileInterval is how often the bootstrap reconcile re-runs.
 // Every step is idempotent, so this is purely a self-healing cadence —
@@ -152,7 +160,7 @@ func runController() error {
 	if err != nil {
 		return fmt.Errorf("operator manager kubeconfig: %w", err)
 	}
-	return operator.Run(ctx, cfg)
+	return operator.Run(ctx, cfg, catalogEntryManifest)
 }
 
 // loadOperatorManagerConfig resolves the cluster the operator watches CRs in:

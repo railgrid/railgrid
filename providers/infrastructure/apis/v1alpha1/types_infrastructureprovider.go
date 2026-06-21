@@ -193,4 +193,5 @@ const (
 	ConditionBootstrapped     = "Bootstrapped"
 	ConditionKroReleased      = "KroReleased"
 	ConditionProviderDeployed = "ProviderDeployed"
+	ConditionRegistered       = "Registered"
 )
