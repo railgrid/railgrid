@@ -61,10 +61,11 @@ func startControllerManager(ctx context.Context, config *rest.Config) error {
 		if err := install.CRDs(ctx, config); err != nil {
 			return fmt.Errorf("install CRDs: %w", err)
 		}
-		// Legacy single-binary path: CachedResource + EndpointSlice
-		// before APIExport so we can use virtual storage for templates.
-		// IdentityHash wait is best-effort; fall back to CRD storage
-		// when it times out so the binary still boots in stub-only mode.
+		// Legacy single-binary path: CachedResource + EndpointSlice before
+		// APIExport so templates use virtual storage. Templates MUST be served
+		// via virtual storage (to project into tenant workspaces) — never fall
+		// back to CRD storage; fail so a restart retries until the identityHash
+		// is ready.
 		if err := install.PlatformCachedResources(ctx, config); err != nil {
 			return fmt.Errorf("install CachedResources: %w", err)
 		}
@@ -73,8 +74,10 @@ func startControllerManager(ctx context.Context, config *rest.Config) error {
 		}
 		hash, err := install.WaitForCachedResourceIdentity(ctx, config)
 		if err != nil {
-			log.Printf("controller manager: WARNING %v — using CRD storage for templates", err)
-			hash = ""
+			return fmt.Errorf("CachedResource identityHash not ready (templates require virtual storage): %w", err)
+		}
+		if hash == "" {
+			return fmt.Errorf("CachedResource identityHash empty (templates require virtual storage)")
 		}
 		if err := install.PlatformSchemaInAPIExport(ctx, config, hash); err != nil {
 			return fmt.Errorf("register platform schemas on APIExport: %w", err)

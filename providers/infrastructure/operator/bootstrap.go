@@ -76,12 +76,16 @@ func Bootstrap(ctx context.Context, providerCfg *rest.Config, opts BootstrapOpti
 		return fmt.Errorf("install APIExportEndpointSlice: %w", err)
 	}
 
+	// Templates MUST be served via the CachedResource virtual storage so they
+	// project into tenant workspaces. Never fall back to CRD storage (which is an
+	// empty per-tenant CRD — tenants would see no templates). Fail instead and
+	// let the reconcile retry until the CachedResource identityHash is ready.
 	hash, err := install.WaitForCachedResourceIdentity(ctx, providerCfg)
 	if err != nil {
-		// Non-fatal: fall back to CRD storage this pass; a later reconcile
-		// upgrades to virtual storage once the identityHash settles.
-		log.Info("CachedResource identityHash not ready; using CRD storage for templates this pass", "err", err.Error())
-		hash = ""
+		return fmt.Errorf("CachedResource identityHash not ready (templates require virtual storage): %w", err)
+	}
+	if hash == "" {
+		return fmt.Errorf("CachedResource identityHash empty (templates require virtual storage)")
 	}
 	if err := install.PlatformSchemaInAPIExport(ctx, providerCfg, hash); err != nil {
 		return fmt.Errorf("register APIExport schemas: %w", err)

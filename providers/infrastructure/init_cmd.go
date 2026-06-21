@@ -121,13 +121,15 @@ func runInitCmd(ctx context.Context) error {
 	}
 
 	log.Printf("init: waiting for CachedResource identityHash")
+	// Templates MUST use the CachedResource virtual storage (so they project into
+	// tenant workspaces). Never fall back to CRD storage — fail so the init
+	// container retries until the identityHash is ready.
 	templatesIdentityHash, err := install.WaitForCachedResourceIdentity(ctx, adminConfig)
 	if err != nil {
-		// Non-fatal: fall back to CRD storage so a single missing hash
-		// doesn't block boot. Operators can re-run init once the
-		// CachedResource catches up.
-		log.Printf("init: WARNING %v — falling back to CRD storage for templates", err)
-		templatesIdentityHash = ""
+		return fmt.Errorf("CachedResource identityHash not ready (templates require virtual storage): %w", err)
+	}
+	if templatesIdentityHash == "" {
+		return fmt.Errorf("CachedResource identityHash empty (templates require virtual storage)")
 	}
 
 	log.Printf("init: registering platform schemas on APIExport (templates storage=%s)", storageLabel(templatesIdentityHash))
