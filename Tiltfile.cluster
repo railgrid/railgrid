@@ -569,6 +569,17 @@ local_resource(
 )
 
 # --- providers-kuery (fleet query engine, port :8084) ---
+# Local Postgres for the kuery store. Dev always runs the same SQL backend
+# as production — SQLite hid real Postgres-only query bugs, so it is not an
+# option here. make run-provider-kuery depends on this too.
+local_resource(
+    'kuery-db',
+    cmd='make kuery-db-up',
+    deps=['Makefile'],
+    resource_deps=['kedge-hub'],
+    labels=['providers-kuery'],
+)
+
 # Same shape as the embedded Tiltfile: serve immediately; engagement
 # needs ▶ kuery-register then ▶ kuery-init (mints the runtime kubeconfig
 # from the provider SA token + ensures the APIExportEndpointSlice).
@@ -588,11 +599,19 @@ local_resource(
         'providers/kuery/go.mod',
         '.kcp/kuery-runtime.kubeconfig',
     ],
-    resource_deps=['kedge-hub'],
+    resource_deps=['kedge-hub', 'kuery-db'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8084, path='/healthz'),
     ),
+    labels=['providers-kuery'],
+)
+
+local_resource(
+    'kuery-db-down',
+    cmd='make kuery-db-down',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
     labels=['providers-kuery'],
 )
 

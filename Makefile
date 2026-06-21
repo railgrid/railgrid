@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -676,7 +676,65 @@ KUERY_EDGES_IDENTITY_HASH ?=
 # init-provider-kuery from the provider SA token the hub mints.
 KUERY_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/kuery-runtime.kubeconfig
 
-run-provider-kuery: build-kuery-provider ## Run the kuery provider (requires: make run-hub-embedded-static + make install-provider-kuery; engagement needs init-provider-kuery)
+# Local store backend. Dev always runs Postgres — the same backend as
+# production — because Postgres-only SQL (jsonb_array_elements, uuid columns,
+# …) diverges from SQLite and passing on SQLite has shipped real query bugs.
+# kuery-db-up starts a throwaway container matching KUERY_DEV_DATABASE_URL.
+KUERY_POSTGRES_CONTAINER ?= kedge-kuery-postgres
+KUERY_POSTGRES_IMAGE ?= postgres:16-alpine
+KUERY_POSTGRES_PORT ?= 55433
+KUERY_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/kuery-postgres
+KUERY_POSTGRES_USER ?= kuery
+KUERY_POSTGRES_PASSWORD ?= kuery
+KUERY_POSTGRES_DB ?= kuery
+KUERY_DEV_DATABASE_URL ?= postgres://$(KUERY_POSTGRES_USER):$(KUERY_POSTGRES_PASSWORD)@localhost:$(KUERY_POSTGRES_PORT)/$(KUERY_POSTGRES_DB)?sslmode=disable
+# Connection string the provider uses. Defaults to the local dev container
+# above; point it at any external Postgres to override.
+KUERY_STORE_DSN ?=
+
+kuery-db-up: ## Start/reuse local Postgres for the kuery store (no-op when KUERY_STORE_DSN points at an external DB)
+	@if [ -n "$(KUERY_STORE_DSN)" ]; then \
+		echo "Using externally configured KUERY_STORE_DSN; not starting local kuery Postgres"; \
+		exit 0; \
+	fi; \
+	mkdir -p "$(KUERY_POSTGRES_DATA_DIR)"; \
+	if docker ps --format '{{.Names}}' | grep -qx "$(KUERY_POSTGRES_CONTAINER)"; then \
+		echo "kuery Postgres already running ($(KUERY_POSTGRES_CONTAINER))"; \
+	elif docker ps -a --format '{{.Names}}' | grep -qx "$(KUERY_POSTGRES_CONTAINER)"; then \
+		echo "Starting existing kuery Postgres container ($(KUERY_POSTGRES_CONTAINER))"; \
+		docker start "$(KUERY_POSTGRES_CONTAINER)" >/dev/null; \
+	else \
+		echo "Creating kuery Postgres container ($(KUERY_POSTGRES_CONTAINER))"; \
+		docker run -d \
+			--name "$(KUERY_POSTGRES_CONTAINER)" \
+			-e POSTGRES_USER="$(KUERY_POSTGRES_USER)" \
+			-e POSTGRES_PASSWORD="$(KUERY_POSTGRES_PASSWORD)" \
+			-e POSTGRES_DB="$(KUERY_POSTGRES_DB)" \
+			-p 127.0.0.1:$(KUERY_POSTGRES_PORT):5432 \
+			-v "$(abspath $(KUERY_POSTGRES_DATA_DIR)):/var/lib/postgresql/data" \
+			"$(KUERY_POSTGRES_IMAGE)" >/dev/null; \
+	fi; \
+	echo "Waiting for kuery Postgres..."; \
+	for _ in $$(seq 1 30); do \
+		if docker exec "$(KUERY_POSTGRES_CONTAINER)" pg_isready -U "$(KUERY_POSTGRES_USER)" -d "$(KUERY_POSTGRES_DB)" >/dev/null 2>&1; then \
+			echo "  database: $(KUERY_DEV_DATABASE_URL)"; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "ERROR: kuery Postgres did not become ready"; \
+	docker logs "$(KUERY_POSTGRES_CONTAINER)" --tail=50; \
+	exit 1
+
+kuery-db-down: ## Stop and remove the local kuery Postgres container (data remains in KUERY_POSTGRES_DATA_DIR)
+	@if docker ps -a --format '{{.Names}}' | grep -qx "$(KUERY_POSTGRES_CONTAINER)"; then \
+		echo "Removing kuery Postgres container ($(KUERY_POSTGRES_CONTAINER))"; \
+		docker rm -f "$(KUERY_POSTGRES_CONTAINER)" >/dev/null; \
+	else \
+		echo "No kuery Postgres container to remove ($(KUERY_POSTGRES_CONTAINER))"; \
+	fi
+
+run-provider-kuery: build-kuery-provider kuery-db-up ## Run the kuery provider (requires: make run-hub-embedded-static + make install-provider-kuery; engagement needs init-provider-kuery)
 	@echo "Starting kuery provider on :$(KUERY_PORT)"
 	@echo "  hub:   $(KUERY_HUB_URL)"
 	@echo "  token: $(KUERY_TOKEN)"
@@ -685,6 +743,13 @@ run-provider-kuery: build-kuery-provider ## Run the kuery provider (requires: ma
 	else \
 		echo "  engagement: DISABLED (run 'make init-provider-kuery' after install-provider-kuery)"; \
 	fi
+	@# Dev always runs Postgres. Fall back to the local dev container DSN when
+	@# KUERY_STORE_DSN is unset (external Postgres overrides it).
+	STORE_DSN="$${KUERY_STORE_DSN:-$(KUERY_STORE_DSN)}"; \
+	if [ -z "$$STORE_DSN" ]; then \
+		STORE_DSN="$(KUERY_DEV_DATABASE_URL)"; \
+	fi; \
+	echo "  store: postgres ($$STORE_DSN)"; \
 	PORT=$(KUERY_PORT) \
 	KEDGE_HUB_URL=$(KUERY_HUB_URL) \
 	KEDGE_HUB_TOKEN=$(KUERY_TOKEN) \
@@ -692,6 +757,8 @@ run-provider-kuery: build-kuery-provider ## Run the kuery provider (requires: ma
 	KEDGE_PROVIDER_NAME=kuery \
 	KEDGE_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
 	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+	KUERY_STORE_DRIVER=postgres \
+	KUERY_STORE_DSN="$$STORE_DSN" \
 		$(BINDIR)/kuery-provider
 
 install-provider-kuery: ## Apply kuery Provider + CatalogEntry into root:kedge:providers

@@ -29,6 +29,7 @@
 //
 //	kedge-release <component|all> [flags]
 //
+//	kedge-release current               # print every component's latest tag
 //	kedge-release quickstart            # bump providers/quickstart/v* patch and push
 //	kedge-release hub --minor           # bump v* minor
 //	kedge-release quickstart --tag v0.0.1   # explicit version
@@ -99,6 +100,9 @@ func run(args []string) error {
 		return nil
 	}
 	target := args[0]
+	if target == "current" {
+		return printCurrent()
+	}
 	opts := options{bump: "patch", ref: "HEAD"}
 
 	for i := 1; i < len(args); i++ {
@@ -220,6 +224,27 @@ func run(args []string) error {
 		fmt.Printf("pushed %s\n", p.fullTag)
 	}
 	fmt.Println("\nDone — the release workflows will pick these up.")
+	return nil
+}
+
+// printCurrent prints the latest existing tag for every component, in
+// componentOrder, so you can see each release line's current version at a
+// glance without cutting anything.
+func printCurrent() error {
+	fmt.Println("Current latest versions:")
+	fmt.Println()
+	for _, name := range componentOrder {
+		comp := components[name]
+		latest, hasLatest, err := latestTag(comp.prefix)
+		if err != nil {
+			return err
+		}
+		current := "(none)"
+		if hasLatest {
+			current = comp.prefix + strings.TrimPrefix(latest.String(), "v")
+		}
+		fmt.Printf("  %-15s %s\n", name, current)
+	}
 	return nil
 }
 
@@ -352,6 +377,7 @@ Components:
   infrastructure  providers/infrastructure/v<X.Y.Z>
   code            providers/code/v<X.Y.Z>
   all             every component (independent versions)
+  current         print every component's latest existing tag (no changes)
 
 Flags:
   --tag <vX.Y.Z>   set the exact version (single component only)
@@ -362,6 +388,7 @@ Flags:
   -y, --yes        skip the confirmation prompt
 
 Examples:
+  kedge-release current               print every component's latest tag
   kedge-release quickstart            bump providers/quickstart/v* patch and push
   kedge-release hub --minor           bump v* minor
   kedge-release quickstart --tag v0.0.1
