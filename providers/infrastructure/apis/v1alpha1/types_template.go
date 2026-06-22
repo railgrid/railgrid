@@ -152,6 +152,16 @@ type TemplateSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:XPreserveUnknownFields
 	BackendConfig *runtime.RawExtension `json:"backendConfig,omitempty"`
+
+	// SampleValues is an optional example input payload the portal pre-fills
+	// the provision form with, so a user can provision a working instance in
+	// one click and tweak from there. Keyed by the schema's top-level property
+	// names (nested objects allowed). Opaque to the controller; surfaced to the
+	// portal as spec.sampleValues. Stored as raw JSON.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:XPreserveUnknownFields
+	SampleValues *runtime.RawExtension `json:"sampleValues,omitempty"`
 }
 
 // TemplateInstanceCRD identifies the per-template CRD the platform
@@ -263,12 +273,12 @@ const (
 
 // Standard reason strings paired with the condition types above.
 const (
-	ReasonReconciling      = "Reconciling"
-	ReasonReady            = "Ready"
-	ReasonBackendNotFound  = "BackendNotFound"
-	ReasonBackendError     = "BackendError"
-	ReasonCRDError         = "CRDError"
-	ReasonAPIExportError   = "APIExportError"
+	ReasonReconciling       = "Reconciling"
+	ReasonReady             = "Ready"
+	ReasonBackendNotFound   = "BackendNotFound"
+	ReasonBackendError      = "BackendError"
+	ReasonCRDError          = "CRDError"
+	ReasonAPIExportError    = "APIExportError"
 	ReasonAwaitingEstablish = "AwaitingEstablish"
 )
 

@@ -8,6 +8,17 @@ spec:
   category: Workloads
   version: 0.1.0
   backend: kro
+  # Example payload the portal pre-fills the provision form with, so the 3-tier
+  # demo is effectively one click. The frontend/backend images are the example
+  # apps under examples/application/apps/, built + pushed to :latest by
+  # .github/workflows/infrastructure-examples.yaml; oidc.mode=none drops the auth
+  # gate so "Provision → see it working" needs zero external setup (demo/dev).
+  sampleValues:
+    name: demo
+    frontendImage: ghcr.io/faroshq/kedge-infrastructure-example-frontend:latest
+    backendImage: ghcr.io/faroshq/kedge-infrastructure-example-backend:latest
+    oidc:
+      mode: none
   instanceCRD:
     group: infrastructure.kedge.faros.sh
     version: v1alpha1
@@ -92,9 +103,9 @@ spec:
         properties:
           mode:
             type: string
-            enum: ["platform", "byo"]
-            default: "byo"
-            description: "byo (default, supported) = your own IdP; set issuerURL + clientID and put the client secret in your cloud-credentials Secret under key oidc_client_secret. platform = guard with kedge SSO — NOT yet supported (requires the hub Dex gRPC client-management API; tracked separately)."
+            enum: ["none", "byo", "platform"]
+            default: "none"
+            description: "none (default) = NO auth gate; the Ingress routes straight to the frontend so anyone with the URL can reach it (demo/dev only). byo = your own IdP; set issuerURL + clientID and put the client secret in your cloud-credentials Secret under key oidc_client_secret. platform = guard with kedge SSO — NOT yet supported (requires the hub Dex gRPC client-management API; tracked separately)."
           issuerURL:
             type: string
             description: "BYO mode: your IdP's OIDC issuer URL (required)."
@@ -368,6 +379,8 @@ spec:
       # pwgen Job fills it once; rotating it would invalidate live sessions,
       # so the Job no-ops if it's already set.
       - id: oauthCookieSecret
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: v1
           kind: Secret
@@ -375,6 +388,8 @@ spec:
             name: ${schema.spec.name}-oauth-cookie
             namespace: default
       - id: oauthPwgenAccount
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: v1
           kind: ServiceAccount
@@ -382,6 +397,8 @@ spec:
             name: ${schema.spec.name}-oauth-pwgen
             namespace: default
       - id: oauthPwgenRole
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: rbac.authorization.k8s.io/v1
           kind: Role
@@ -393,6 +410,8 @@ spec:
               resources: ["secrets"]
               verbs: ["get", "patch"]
       - id: oauthPwgenBinding
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: rbac.authorization.k8s.io/v1
           kind: RoleBinding
@@ -408,6 +427,8 @@ spec:
               name: ${oauthPwgenAccount.metadata.name}
               namespace: default
       - id: oauthPwgen
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: batch/v1
           kind: Job
@@ -439,6 +460,8 @@ spec:
                           echo "cookie secret already present for $SECRET"
                         fi
       - id: oauthDeployment
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: apps/v1
           kind: Deployment
@@ -490,6 +513,8 @@ spec:
                     ports:
                       - containerPort: 4180
       - id: oauthService
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: v1
           kind: Service
@@ -508,8 +533,10 @@ spec:
       # Plain Ingress; the controller is chosen by ${kedge.ingressClass}
       # (substituted before the RGD is authored). No tls block — TLS
       # terminates at the Cloudflare edge; the cloudflare ingress controller
-      # creates the DNS record + tunnel route from this host. Routes the
-      # public host to oauth2-proxy, which proxies to the frontend.
+      # creates the DNS record + tunnel route from this host. The backend is
+      # mode-dependent: oidc.mode=none routes the public host straight to the
+      # frontend Service (no gate — demo/dev); otherwise it routes to
+      # oauth2-proxy, which authenticates and then proxies to the frontend.
       - id: ingress
         template:
           apiVersion: networking.k8s.io/v1
@@ -527,9 +554,12 @@ spec:
                       pathType: Prefix
                       backend:
                         service:
-                          name: ${schema.spec.name}-oauth
+                          # Single-quoted: the CEL ternary contains ": " which
+                          # YAML would otherwise read as a mapping. kro resolves
+                          # the ${...} expression regardless of YAML scalar type.
+                          name: '${schema.spec.oidc.mode == "none" ? schema.spec.name + "-frontend" : schema.spec.name + "-oauth"}'
                           port:
-                            number: 4180
+                            number: '${schema.spec.oidc.mode == "none" ? schema.spec.frontendPort : 4180}'
     # Projected onto the instance in the tenant's kcp workspace. url/host are
     # derived from the controller-stamped fqdn; per-tier readiness lets the
     # portal show progress. No secret values are surfaced.

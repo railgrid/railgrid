@@ -169,6 +169,15 @@ spec:
                 - resource
                 - version
                 type: object
+              sampleValues:
+                description: |-
+                  SampleValues is an optional example input payload the portal pre-fills
+                  the provision form with, so a user can provision a working instance in
+                  one click and tweak from there. Keyed by the schema's top-level property
+                  names (nested objects allowed). Opaque to the controller; surfaced to the
+                  portal as spec.sampleValues. Stored as raw JSON.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               schema:
                 description: |-
                   Schema is the JSON Schema applied to the per-template CRD's

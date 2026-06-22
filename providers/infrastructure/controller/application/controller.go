@@ -86,6 +86,7 @@ const (
 	// their workspace; BYO mode reads oidcClientSecretKey out of it.
 	cloudCredentialsSecret = "cloud-credentials"
 
+	modeNone     = "none"
 	modeBYO      = "byo"
 	modePlatform = "platform"
 )
@@ -220,9 +221,20 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// 2. Bridge the OIDC client secret onto the runtime cluster.
 	mode := nestedString(app, "spec", "oidc", "mode")
 	if mode == "" {
-		mode = modePlatform
+		// Matches the template schema default. An instance authored without an
+		// oidc block gets the no-gate demo behavior rather than a hard error.
+		mode = modeNone
 	}
 	switch mode {
+	case modeNone:
+		// No auth gate: the Ingress routes straight to the frontend and the
+		// oauth2-proxy resources are excluded from the RGD (includeWhen), so
+		// there is no client secret to bridge. Surface the unauthenticated
+		// posture on the instance so it's not mistaken for a misconfiguration.
+		if err := c.setOIDCCondition(ctx, tenantClient, app, "True", "GateDisabled",
+			"oidc.mode=none — no auth gate (demo/dev only); anyone with the URL can reach the app"); err != nil {
+			return ctrl.Result{}, err
+		}
 	case modeBYO:
 		if err := c.bridgeBYOSecret(ctx, tenantClient, tenant, app.GetName()); err != nil {
 			log.Error(err, "bridging BYO OIDC client secret")
