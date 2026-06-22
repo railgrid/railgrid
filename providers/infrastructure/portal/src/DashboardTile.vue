@@ -237,30 +237,30 @@ function styleFor(phase: string) {
     <div v-else-if="error" class="text-[11px] text-danger">Failed to load: {{ error }}</div>
 
     <template v-else>
-      <!-- Totals + per-phase counts, all in a single card so the four
-           numbers read as one summary block (Total | Ready | Pending |
-           Failed) rather than four detached boxes. Dividers separate the
-           columns inside the shared border. -->
-      <div class="grid grid-cols-4 divide-x divide-border-subtle rounded-lg border border-border-subtle bg-surface-overlay/60">
-        <div class="px-2 py-2">
-          <div class="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-text-muted">
-            <Layers class="h-3 w-3" :stroke-width="2" />
-            Total
-          </div>
-          <div class="mt-1 text-[18px] font-bold tabular-nums text-text-primary">{{ stats.total }}</div>
-        </div>
-        <div class="px-2 py-2">
-          <div class="text-[10px] font-medium uppercase tracking-wider text-success">Ready</div>
-          <div class="mt-1 text-[18px] font-bold tabular-nums text-text-primary">{{ stats.ready }}</div>
-        </div>
-        <div class="px-2 py-2">
-          <div class="text-[10px] font-medium uppercase tracking-wider text-text-muted">Pending</div>
-          <div class="mt-1 text-[18px] font-bold tabular-nums text-text-primary">{{ stats.pending }}</div>
-        </div>
-        <div class="px-2 py-2">
-          <div class="text-[10px] font-medium uppercase tracking-wider text-danger">Failed</div>
-          <div class="mt-1 text-[18px] font-bold tabular-nums text-text-primary">{{ stats.failed }}</div>
-        </div>
+      <!-- Slim horizontal status row (matches the clusters/edges tiles): a
+           single inline line of icon + count + label chips rather than four
+           stacked boxes, so the tile stays compact. -->
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+        <span class="inline-flex items-center gap-1 text-text-primary">
+          <Layers class="h-3 w-3 text-text-muted" :stroke-width="1.75" />
+          <span class="font-semibold tabular-nums">{{ stats.total }}</span>
+          <span class="text-text-muted">total</span>
+        </span>
+        <span class="inline-flex items-center gap-1 text-success">
+          <CheckCircle2 class="h-3 w-3" :stroke-width="1.75" />
+          <span class="tabular-nums">{{ stats.ready }}</span>
+          <span class="text-text-muted">ready</span>
+        </span>
+        <span v-if="stats.pending > 0" class="inline-flex items-center gap-1 text-text-muted">
+          <Clock class="h-3 w-3" :stroke-width="1.75" />
+          <span class="tabular-nums">{{ stats.pending }}</span>
+          <span class="text-text-muted">pending</span>
+        </span>
+        <span v-if="stats.failed > 0" class="inline-flex items-center gap-1 text-danger">
+          <AlertCircle class="h-3 w-3" :stroke-width="1.75" />
+          <span class="tabular-nums">{{ stats.failed }}</span>
+          <span class="text-text-muted">failed</span>
+        </span>
       </div>
 
       <!-- Health bar — only meaningful when there's anything to be
