@@ -435,6 +435,17 @@ local_resource(
         'providers/infrastructure/kro',
         'providers/infrastructure/tenant',
         'providers/infrastructure/mcpserver',
+        # The operator path: the controller/manager, the bootstrap install
+        # helpers, the embedded CRDs + seed Templates (install/), the API types,
+        # and the kro backend. Without these, edits to the CRD schema, the seed
+        # templates, or the controller don't trigger a rebuild and the running
+        # binary embeds a stale CRD (kcp then prunes new fields like sampleValues).
+        'providers/infrastructure/apis',
+        'providers/infrastructure/install',
+        'providers/infrastructure/controller',
+        'providers/infrastructure/operator',
+        'providers/infrastructure/backend',
+        'providers/infrastructure/apps',
         'providers/infrastructure/portal/src',
         'providers/infrastructure/portal/package.json',
         'providers/infrastructure/go.mod',

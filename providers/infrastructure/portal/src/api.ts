@@ -118,6 +118,18 @@ function templateFromGQL(name: string, spec: Record<string, unknown>): Template 
   } else if (spec.schema && typeof spec.schema === 'object') {
     inputsSchema = spec.schema as JSONSchema
   }
+  // sampleValues is a preserve-unknown-fields field too → same JSONString
+  // treatment as schema: parse the string form, accept an object as-is.
+  let sampleValues: Record<string, unknown> | undefined
+  if (typeof spec.sampleValues === 'string' && spec.sampleValues) {
+    try {
+      sampleValues = JSON.parse(spec.sampleValues) as Record<string, unknown>
+    } catch {
+      // leave undefined — the form just starts empty
+    }
+  } else if (spec.sampleValues && typeof spec.sampleValues === 'object') {
+    sampleValues = spec.sampleValues as Record<string, unknown>
+  }
   return {
     name,
     displayName: (spec.displayName as string) || name,
@@ -128,7 +140,7 @@ function templateFromGQL(name: string, spec: Record<string, unknown>): Template 
     iconURL: spec.iconURL as string | undefined,
     kind: instanceCRD.kind ?? '',
     inputsSchema,
-    sampleValues: spec.sampleValues as Record<string, unknown> | undefined,
+    sampleValues,
   }
 }
 
@@ -188,10 +200,39 @@ async function introspectVersionFields(): Promise<Array<{ name: string; typeName
   }))
 }
 
+// sampleValues is a recent Template field. A gateway whose schema was built from
+// an older CRD that predates it has no such field, and selecting an absent field
+// is a hard GraphQL error that would break the whole catalog/provision query. So
+// select it optimistically and, on that specific error, remember it's missing and
+// retry without it (degrading to no form pre-fill). null = not yet probed.
+let sampleValuesSupported: boolean | null = null
+
+// templateSpec is the shared Template spec selection set. sampleValues is omitted
+// once we've learned the gateway doesn't expose it.
+function templateSpec(): string {
+  const sv = sampleValuesSupported === false ? '' : ' sampleValues'
+  return `displayName description category version iconURL backend instanceCRD { group version resource kind } schema${sv}`
+}
+
+// templateQuery runs a Template query built from templateSpec(), retrying once
+// without sampleValues if the gateway rejects that field (older CRD).
+async function templateQuery<T>(make: (spec: string) => string, variables: Record<string, unknown> = {}): Promise<T> {
+  try {
+    return await graphqlQuery<T>(make(templateSpec()), variables)
+  } catch (e) {
+    const msg = (e as { message?: string }).message ?? ''
+    if (sampleValuesSupported !== false && msg.includes('sampleValues')) {
+      sampleValuesSupported = false
+      return await graphqlQuery<T>(make(templateSpec()), variables)
+    }
+    throw e
+  }
+}
+
 async function refreshIndex(): Promise<InfraIndex> {
   const [tmplData, versionFields] = await Promise.all([
-    graphqlQuery<Infra<{ Templates?: { items?: Array<{ metadata: { name: string }; spec: Record<string, unknown> }> } }>>(
-      `{ ${GROUP_FIELD} { ${VERSION} { Templates { items { metadata { name } spec { displayName description category version iconURL backend instanceCRD { group version resource kind } schema } } } } } }`,
+    templateQuery<Infra<{ Templates?: { items?: Array<{ metadata: { name: string }; spec: Record<string, unknown> }> } }>>(
+      spec => `{ ${GROUP_FIELD} { ${VERSION} { Templates { items { metadata { name } spec { ${spec} } } } } } }`,
     ),
     introspectVersionFields(),
   ])
@@ -253,8 +294,8 @@ export const api = {
   },
 
   async getTemplate(name: string): Promise<{ template: Template }> {
-    const data = await graphqlQuery<Infra<{ Template?: { metadata: { name: string }; spec: Record<string, unknown> } }>>(
-      `query($n: String!) { ${GROUP_FIELD} { ${VERSION} { Template(name: $n) { metadata { name } spec { displayName description category version iconURL backend instanceCRD { group version resource kind } schema } } } } }`,
+    const data = await templateQuery<Infra<{ Template?: { metadata: { name: string }; spec: Record<string, unknown> } }>>(
+      spec => `query($n: String!) { ${GROUP_FIELD} { ${VERSION} { Template(name: $n) { metadata { name } spec { ${spec} } } } } }`,
       { n: name },
     )
     const t = data[GROUP_FIELD]?.[VERSION]?.Template

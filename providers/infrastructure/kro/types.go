@@ -74,6 +74,22 @@ type Template struct {
 	// author via the kedge.faros.sh/sample-values annotation. The
 	// portal uses it to seed the form so users see a working example.
 	SampleValues map[string]any `json:"sampleValues,omitempty"`
+	// Agent is operational guidance for AI agents that discover this
+	// template via MCP (what it does, prerequisites, where outputs land).
+	// Read from the Template's spec.agent; nil when not provided.
+	Agent *TemplateAgent `json:"agent,omitempty"`
+}
+
+// TemplateAgent is machine-facing guidance surfaced to LLM agents over MCP.
+// Mirrors apis/v1alpha1.TemplateAgent (this is the read-side DTO).
+type TemplateAgent struct {
+	// Usage is markdown guidance: what the template provisions, when to use it,
+	// how it's exposed, and how to operate the result.
+	Usage string `json:"usage,omitempty"`
+	// Prerequisites the caller must satisfy before provisioning.
+	Prerequisites []string `json:"prerequisites,omitempty"`
+	// Outputs describe where the instance's results land (URL, DB Secret, …).
+	Outputs []string `json:"outputs,omitempty"`
 }
 
 // Instance is a portal-shaped view of a kro RGD instance CR in the

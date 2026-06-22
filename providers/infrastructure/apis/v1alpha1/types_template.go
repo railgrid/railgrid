@@ -162,6 +162,40 @@ type TemplateSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:XPreserveUnknownFields
 	SampleValues *runtime.RawExtension `json:"sampleValues,omitempty"`
+
+	// Agent is operational guidance for AI agents that discover this template
+	// via MCP — what it provisions, when to choose it, prerequisites, and where
+	// its outputs (URL, DB connection Secret, …) land. It complements the
+	// human-facing displayName/description (which target the portal UI) and is
+	// not rendered in the form.
+	// +optional
+	Agent *TemplateAgent `json:"agent,omitempty"`
+}
+
+// TemplateAgent is machine-facing guidance for LLM agents operating this
+// template through MCP. All fields are natural language aimed at an agent, not
+// the portal UI.
+type TemplateAgent struct {
+	// Usage is markdown guidance for an agent: what this template provisions,
+	// when to choose it, how the result is exposed (URLs/ingress/auth), and how
+	// to operate it after provisioning. The primary, free-form field; the
+	// structured fields below call out the most actionable specifics.
+	// +optional
+	// +kubebuilder:validation:MaxLength=8192
+	Usage string `json:"usage,omitempty"`
+
+	// Prerequisites the caller must satisfy BEFORE provisioning — e.g. a
+	// cloud-credentials Secret in the tenant's default namespace carrying
+	// specific keys. One human-readable requirement per entry.
+	// +optional
+	Prerequisites []string `json:"prerequisites,omitempty"`
+
+	// Outputs describe where the provisioned instance's results land so an agent
+	// can discover and wire them — e.g. "status.url: public app URL",
+	// "Secret <name>-db-credentials key 'uri': postgres:// connection string".
+	// One output per entry.
+	// +optional
+	Outputs []string `json:"outputs,omitempty"`
 }
 
 // TemplateInstanceCRD identifies the per-template CRD the platform

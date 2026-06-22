@@ -80,6 +80,40 @@ spec:
           spec:
             description: TemplateSpec is the desired state.
             properties:
+              agent:
+                description: |-
+                  Agent is operational guidance for AI agents that discover this template
+                  via MCP — what it provisions, when to choose it, prerequisites, and where
+                  its outputs (URL, DB connection Secret, …) land. It complements the
+                  human-facing displayName/description (which target the portal UI) and is
+                  not rendered in the form.
+                properties:
+                  outputs:
+                    description: |-
+                      Outputs describe where the provisioned instance's results land so an agent
+                      can discover and wire them — e.g. "status.url: public app URL",
+                      "Secret <name>-db-credentials key 'uri': postgres:// connection string".
+                      One output per entry.
+                    items:
+                      type: string
+                    type: array
+                  prerequisites:
+                    description: |-
+                      Prerequisites the caller must satisfy BEFORE provisioning — e.g. a
+                      cloud-credentials Secret in the tenant's default namespace carrying
+                      specific keys. One human-readable requirement per entry.
+                    items:
+                      type: string
+                    type: array
+                  usage:
+                    description: |-
+                      Usage is markdown guidance for an agent: what this template provisions,
+                      when to choose it, how the result is exposed (URLs/ingress/auth), and how
+                      to operate it after provisioning. The primary, free-form field; the
+                      structured fields below call out the most actionable specifics.
+                    maxLength: 8192
+                    type: string
+                type: object
               backend:
                 description: |-
                   Backend names the registered backend implementation that
@@ -169,6 +203,15 @@ spec:
                 - resource
                 - version
                 type: object
+              sampleValues:
+                description: |-
+                  SampleValues is an optional example input payload the portal pre-fills
+                  the provision form with, so a user can provision a working instance in
+                  one click and tweak from there. Keyed by the schema's top-level property
+                  names (nested objects allowed). Opaque to the controller; surfaced to the
+                  portal as spec.sampleValues. Stored as raw JSON.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               schema:
                 description: |-
                   Schema is the JSON Schema applied to the per-template CRD's

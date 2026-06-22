@@ -154,6 +154,14 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/infrastructure/config/crds
+	# The provider embeds the Template CRD from install/crds/ (//go:embed in
+	# install/crds.go) and applies it into the kcp provider workspace at init.
+	# Keep that embed copy in lockstep with the generated schema — otherwise the
+	# operator installs a stale Template CRD and kcp silently prunes new fields
+	# (e.g. spec.sampleValues). The InfrastructureProvider CRD is NOT embedded
+	# (it's applied to the host cluster by the chart), so it stays in config/ only.
+	cp providers/infrastructure/config/crds/infrastructure.kedge.faros.sh_templates.yaml \
+	   providers/infrastructure/install/crds/infrastructure.kedge.faros.sh_templates.yaml
 	./hack/ensure-boilerplate.sh
 
 ## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the code
@@ -885,6 +893,8 @@ run-provider-infrastructure: build-infrastructure-provider ## Run the infrastruc
 	INFRASTRUCTURE_WORKSPACE_PATH=$${INFRASTRUCTURE_WORKSPACE_PATH:-$(INFRASTRUCTURE_WORKSPACE_PATH)} \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 	INFRASTRUCTURE_KUBECONFIG=$${INFRASTRUCTURE_KUBECONFIG:-$$( [ -f "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" ] && echo "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" )} \
+	KEDGE_APP_BASE_DOMAIN=$${KEDGE_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
+	KEDGE_INGRESS_CLASS=$${KEDGE_INGRESS_CLASS:-nginx} \
 		$(BINDIR)/infrastructure-provider
 
 run-provider-infrastructure-operator: build-infrastructure-provider ## Run the infrastructure provider in OPERATOR mode (bootstrap reconcile + serve from a provider + runtime kubeconfig)

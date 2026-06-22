@@ -15,149 +15,48 @@ limitations under the License.
 */
 
 // Command frontend is the public-facing tier of the infrastructure provider's
-// "application" 3-tier demo template. It is the only tier exposed (through the
-// Ingress, and — unless oidc.mode=none — the oauth2-proxy gate). It never talks
-// to Postgres directly: it calls the internal backend over cluster DNS via
-// BACKEND_URL and renders a tiny guestbook so the whole frontend → backend →
-// database path is visibly exercised in one click.
+// "application" 3-tier demo template. It serves a tiny single-page UI on "/"
+// that talks to the backend from the browser at "/api/*" on the SAME origin —
+// the exposure layer (Ingress for oidc.mode=none, oauth2-proxy otherwise)
+// routes "/api/" to the backend and "/" here, so the frontend never proxies to
+// the backend itself and needs no BACKEND_URL.
 //
-//	GET  /         render the guestbook (messages fetched from the backend)
-//	POST /         submit a message (proxied to the backend), then redirect
+//	GET  /         the SPA (HTML + a little JS that calls /api/messages)
 //	GET  /healthz  liveness/readiness
 //
-// Standard library only — keeps the image tiny and the build fast. Demo
-// workload, not production code.
+// Standard library only. Demo workload, not production code.
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
-	"html/template"
 	"log"
 	"net/http"
 	"os"
-	"time"
 )
-
-type message struct {
-	ID        int       `json:"id"`
-	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"createdAt"`
-}
-
-type server struct {
-	backend string
-	client  *http.Client
-	tmpl    *template.Template
-}
 
 func main() {
 	port := getenv("PORT", "8080")
 
-	backend := os.Getenv("BACKEND_URL")
-	if backend == "" {
-		log.Fatal("BACKEND_URL is required (the template injects the in-cluster backend URL)")
-	}
-
-	s := &server{
-		backend: backend,
-		client:  &http.Client{Timeout: 5 * time.Second},
-		tmpl:    template.Must(template.New("page").Parse(pageHTML)),
-	}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprintln(w, "ok") })
-	mux.HandleFunc("/", s.handle)
+	mux.HandleFunc("/", index)
 
-	log.Printf("frontend listening on :%s (backend=%s)", port, backend)
+	log.Printf("frontend listening on :%s (UI only; calls /api/* same-origin)", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func (s *server) handle(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.render(w, r)
-	case http.MethodPost:
-		s.submit(w, r)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// render fetches the guestbook from the backend and renders the page. A backend
-// error is shown inline rather than failing the request, so the demo still
-// loads (and visibly reports the wiring problem) while tiers are coming up.
-func (s *server) render(w http.ResponseWriter, r *http.Request) {
-	data := struct {
-		Messages []message
-		Backend  string
-		Err      string
-	}{Backend: s.backend}
-
-	msgs, err := s.fetchMessages(r.Context())
-	if err != nil {
-		data.Err = err.Error()
-	} else {
-		data.Messages = msgs
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.Execute(w, data); err != nil {
-		log.Printf("render: %v", err)
-	}
-}
-
-func (s *server) submit(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+// index serves the SPA for "/". Anything that isn't the root is 404'd so a
+// stray "/api/*" that somehow reached the frontend (it shouldn't — the exposure
+// layer routes those to the backend) doesn't get the HTML page back.
+func index(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
 		return
 	}
-	text := r.FormValue("text")
-	if text != "" {
-		if err := s.postMessage(r.Context(), text); err != nil {
-			log.Printf("submit: %v", err)
-			http.Error(w, "backend unavailable", http.StatusBadGateway)
-			return
-		}
-	}
-	// Post/Redirect/Get so a refresh doesn't resubmit.
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (s *server) fetchMessages(ctx context.Context) ([]message, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.backend+"/api/messages", nil)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("reaching backend: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("backend returned %s", resp.Status)
-	}
-	var msgs []message
-	if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
-		return nil, fmt.Errorf("decoding backend response: %w", err)
-	}
-	return msgs, nil
-}
-
-func (s *server) postMessage(ctx context.Context, text string) error {
-	body, _ := json.Marshal(map[string]string{"text": text})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.backend+"/api/messages", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("reaching backend: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("backend returned %s", resp.Status)
-	}
-	return nil
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(pageHTML))
 }
 
 func getenv(k, def string) string {
@@ -190,24 +89,58 @@ const pageHTML = `<!doctype html>
 </head>
 <body>
   <h1>kedge 3-tier demo</h1>
-  <p class="sub">frontend → backend → postgres. This page is the frontend; the list comes from the backend, which reads it from Postgres.</p>
+  <p class="sub">UI (served at <code>/</code>) → API (<code>/api</code>) → Postgres. The list below is fetched from the backend in your browser; the exposure layer routes <code>/api</code> to the backend service.</p>
 
-  <form method="post" action="/">
-    <input type="text" name="text" placeholder="Leave a message…" autofocus maxlength="200">
+  <form id="form">
+    <input id="text" type="text" placeholder="Leave a message…" autofocus maxlength="200">
     <button type="submit">Add</button>
   </form>
 
-  {{if .Err}}
-    <p class="err">Backend unavailable: {{.Err}}<br><small>backend = {{.Backend}}</small></p>
-  {{else if not .Messages}}
-    <p class="empty">No messages yet — add the first one above.</p>
-  {{else}}
-    <ul>
-      {{range .Messages}}
-        <li>{{.Text}}<time>{{.CreatedAt.Format "2006-01-02 15:04:05 MST"}}</time></li>
-      {{end}}
-    </ul>
-  {{end}}
+  <div id="out"></div>
+
+  <script>
+    const out = document.getElementById('out');
+    const form = document.getElementById('form');
+    const input = document.getElementById('text');
+
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    async function load() {
+      try {
+        const r = await fetch('/api/messages');
+        if (!r.ok) throw new Error('backend returned ' + r.status);
+        const msgs = await r.json();
+        if (!msgs.length) { out.innerHTML = '<p class="empty">No messages yet — add the first one above.</p>'; return; }
+        out.innerHTML = '<ul>' + msgs.map(m =>
+          '<li>' + esc(m.text) + '<time>' + esc(m.createdAt) + '</time></li>'
+        ).join('') + '</ul>';
+      } catch (e) {
+        out.innerHTML = '<p class="err">Backend unavailable: ' + esc(e.message) + '<br><small>GET /api/messages</small></p>';
+      }
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      try {
+        const r = await fetch('/api/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        if (!r.ok) throw new Error('backend returned ' + r.status);
+        input.value = '';
+        load();
+      } catch (e) {
+        out.innerHTML = '<p class="err">Could not post: ' + esc(e.message) + '</p>';
+      }
+    });
+
+    load();
+  </script>
 </body>
 </html>
 `

@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -48,6 +49,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	apiskcpv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
+	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -138,7 +141,14 @@ func New(cfg Config) (*Controller, error) {
 
 	c := &Controller{cfg: cfg}
 
-	scheme := runtime.NewScheme() // Application + Secret read unstructured; no typed registration needed.
+	// Application + Secret are read unstructured, but the apiexport multicluster
+	// provider builds a TYPED cache over APIExportEndpointSlice to discover the
+	// virtual-workspace URL — so the kcp apis scheme must be registered or the
+	// manager fails with "no kind is registered for the type
+	// v1alpha1.APIExportEndpointSlice". Mirrors the kuery engagement controller.
+	scheme := runtime.NewScheme()
+	utilruntime.Must(apiskcpv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(apiskcpv1alpha2.AddToScheme(scheme))
 
 	provider, err := apiexport.New(cfg.ProviderConfig, cfg.APIExportName, apiexport.Options{Scheme: scheme})
 	if err != nil {

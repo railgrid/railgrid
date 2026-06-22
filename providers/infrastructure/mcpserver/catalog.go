@@ -82,6 +82,7 @@ func templateFromUnstructured(u *unstructured.Unstructured) kro.Template {
 	kind, _, _ := unstructured.NestedString(u.Object, "spec", "instanceCRD", "kind")
 	inputs, _, _ := unstructured.NestedMap(u.Object, "spec", "schema")
 	sample, _, _ := unstructured.NestedMap(u.Object, "spec", "sampleValues")
+	agent := templateAgentFromSpec(u)
 
 	if displayName == "" {
 		displayName = name
@@ -105,6 +106,24 @@ func templateFromUnstructured(u *unstructured.Unstructured) kro.Template {
 		InstanceGVR:  schema.GroupVersionResource{Group: group, Version: crdVersion, Resource: resource},
 		InputsSchema: inputs,
 		SampleValues: sample,
+		Agent:        agent,
+	}
+}
+
+// templateAgentFromSpec reads spec.agent (AI-agent guidance) into the MCP DTO.
+// Returns nil when the Template defines no agent block.
+func templateAgentFromSpec(u *unstructured.Unstructured) *kro.TemplateAgent {
+	m, found, _ := unstructured.NestedMap(u.Object, "spec", "agent")
+	if !found || len(m) == 0 {
+		return nil
+	}
+	usage, _, _ := unstructured.NestedString(u.Object, "spec", "agent", "usage")
+	prereqs, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "agent", "prerequisites")
+	outputs, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "agent", "outputs")
+	return &kro.TemplateAgent{
+		Usage:         usage,
+		Prerequisites: prereqs,
+		Outputs:       outputs,
 	}
 }
 
