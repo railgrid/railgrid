@@ -7,7 +7,7 @@
 #
 #   kedge.faros.sh/expose=true            → mandatory; gates visibility
 #   kedge.faros.sh/template-name          → catalog slug (the URL segment)
-#   kedge.faros.sh/template-version       → required by POST /api/instances
+#   kedge.faros.sh/template-version       → required when provisioning
 #   kedge.faros.sh/category, /cloud       → optional facet chips in UI
 #   kedge.faros.sh/display-name           → human-readable name
 #   kedge.faros.sh/description            → short blurb

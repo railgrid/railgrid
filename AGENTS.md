@@ -282,7 +282,6 @@ Each suite has a dedicated Make target. Most spin up their own hub on fixed port
 | `make e2e-external-kcp` | `external_kcp` | kcp via Helm in kind |
 | `make e2e-provider` | `provider` | Provider provisioning (quickstart) |
 | `make e2e-provider-flags` | `providerflags` | `--providers` flag mechanics (dep validation, filtering) |
-| `make e2e-infrastructure` | `infrastructure` | Infra provider cross-tenant isolation (stub mode, port 18082) |
 | `make e2e-tilt-cluster` | `tiltcluster` | Against a live `make tilt-cluster` multi-shard stack |
 | `make e2e-all` | all | Builds hub+agent images, runs everything (~30m) |
 

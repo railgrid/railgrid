@@ -130,7 +130,7 @@ helm CLI.
 
 | Surface | Where |
 |---|---|
-| HTTP REST | `server/` — `/api/templates`, `/api/instances` |
+| HTTP server | `server/` — `/healthz`, portal SPA, `/mcp` |
 | MCP transport | `mcpserver/` — `/mcp`, `/mcp/sse` (6 `kro_*` tools) |
 | Central kro client | `kro/` — `ResourceGraphDefinition` discovery + instance lifecycle |
 | Tenant kcp client | `tenant/` — per-tenant `cloud-credentials` Secret resolution |
@@ -236,20 +236,12 @@ npm --prefix portal run build
 go run .
 # → listening on :8081 (kro=*kro.stubClient tenant=false mcp=true)
 
-# 3. Smoke tests:
+# 3. Smoke test: liveness.
 curl -s localhost:8081/healthz
-curl -s localhost:8081/api/templates | jq '.items[].name'
-curl -s localhost:8081/api/templates/postgres | jq '.template.inputsSchema'
 
-# 4. Provision flow (dev mode lets ?tenant= replace the X-Kedge-Tenant header).
-export KEDGE_DEV_ALLOW_TENANT_QUERY=true
-curl -s -X POST 'localhost:8081/api/instances?tenant=dev&user=alice' \
-  -H 'Content-Type: application/json' \
-  -d '{"templateName":"postgres","name":"foo","values":{"name":"foo","size":"medium"}}'
-curl -s 'localhost:8081/api/instances?tenant=dev' | jq
-curl -s -X DELETE 'localhost:8081/api/instances/foo?tenant=dev' -i
-
-# 5. MCP tools/list (note: SSE response — pipe through `tail`).
+# 4. MCP tools/list (note: SSE response — pipe through `head`). Templates
+#    and instances are NOT served as REST — they are kro_* MCP tools and,
+#    in a real cluster, CRDs read/written directly against kcp.
 curl -s -X POST -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \

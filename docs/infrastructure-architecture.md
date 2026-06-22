@@ -418,7 +418,7 @@ Note what tenants and the portal know about: `Template`, `Redis`. Nothing in thi
 | **B** | CachedResource publishing Templates | A tenant workspace with the APIBinding sees Templates as a read-only resource. `kubectl get templates -A` from a tenant returns the catalog. |
 | **C** | kro backend + APIExport VW wiring | Backend interface implemented for kro. The platform binary starts the kro multicluster-runtime pointed at the provider's APIExport VW. A tenant applies a Redis CR; kro reconciles it in the management cluster within 10s; status syncs back; delete propagates. Orphan sweeper for deleted tenant workspaces in scope. |
 | **D** | UI + MCP migration | Portal main app and dashboard tile read Templates + per-template CRs via GraphQL. MCP tools (`infrastructure__list_templates`, `__provision`, …) become kcp API calls. Old REST endpoints get a deprecation banner. |
-| **E** | Cleanup | REST handlers gone. `tenantHash`, `kedge-tenants-*` convention, per-request header identity all gone. `make e2e-infrastructure` exercises only the kcp path. |
+| **E** | Cleanup | REST handlers gone. `tenantHash`, `kedge-tenants-*` convention, per-request header identity all gone. The REST-surface e2e suite (`make e2e-infrastructure`) is removed; isolation is exercised via the kcp path. |
 
 A through C land the new platform + the first backend (~2.5 weeks). D adds another week (mostly portal rewrites). E is a day of deletions.
 

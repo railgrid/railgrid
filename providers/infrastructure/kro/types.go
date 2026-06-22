@@ -32,7 +32,7 @@ import (
 // JSON-schema-shaped InputsSchema the DynamicForm consumes.
 type Template struct {
 	// Name is the RGD's metadata.name; it doubles as the template
-	// identifier used in API URLs (POST /api/instances {templateName}).
+	// identifier callers reference when provisioning an instance.
 	Name string `json:"name"`
 	// DisplayName, Description, Category, Cloud are pulled from the
 	// RGD's labels/annotations (see kedge.faros.sh/* convention in
@@ -43,7 +43,7 @@ type Template struct {
 	Category    string `json:"category,omitempty"`
 	Cloud       string `json:"cloud,omitempty"`
 	// Version is read from the kedge.faros.sh/template-version label.
-	// Required by POST /api/instances so we never silently provision
+	// Required when provisioning so we never silently provision
 	// against a different RGD generation than the user previewed.
 	Version string `json:"version,omitempty"`
 	// IconURL is an optional asset URL stored in the
@@ -134,7 +134,7 @@ const (
 	// you want consumers' bookmarks to keep working.
 	LabelTemplateName = "kedge.faros.sh/template-name"
 	// LabelTemplateVersion pins a semver to the RGD revision. Required
-	// in POST /api/instances so a chart bump doesn't silently change
+	// when provisioning so a chart bump doesn't silently change
 	// what gets provisioned.
 	LabelTemplateVersion = "kedge.faros.sh/template-version"
 	// LabelCategory lets the catalog UI render filter chips.

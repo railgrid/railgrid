@@ -42,11 +42,11 @@ type Server struct {
 	mux *http.ServeMux
 }
 
-// New composes the mux. Route order: explicit endpoints first, then
-// /api/instances/* sub-resource, then /api/templates/* sub-resource,
-// then /mcp, then "/" catch-all serving the portal. The stdlib
-// ServeMux picks longest-prefix wins for path patterns, so this order
-// is illustrative — not load-bearing.
+// New composes the mux. Route order: /healthz first, then /mcp +
+// /mcp/sse, then the "/" catch-all serving the portal. Templates and
+// instances are NOT served as REST here — they live as CRDs in kcp
+// (see the comment below). The stdlib ServeMux picks longest-prefix
+// wins for path patterns, so this order is illustrative — not load-bearing.
 func New(d Deps) *Server {
 	s := &Server{
 		mux: http.NewServeMux(),

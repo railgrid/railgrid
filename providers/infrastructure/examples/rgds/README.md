@@ -14,7 +14,7 @@ kro/templates.go`) looks for these keys verbatim:
 |---|---|
 | `kedge.faros.sh/expose=true` (label) | gates visibility — required |
 | `kedge.faros.sh/template-name` (label) | catalog slug; defaults to `metadata.name` |
-| `kedge.faros.sh/template-version` (label) | required by `POST /api/instances` for safety |
+| `kedge.faros.sh/template-version` (label) | required when provisioning, for safety |
 | `kedge.faros.sh/category` (label) | filter chip in the catalog grid |
 | `kedge.faros.sh/cloud` (label) | filter chip + maps credential schema |
 | `kedge.faros.sh/display-name` (annotation) | human-readable name |

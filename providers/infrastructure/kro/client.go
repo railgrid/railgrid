@@ -51,7 +51,7 @@ type Client interface {
 	DeleteInstance(ctx context.Context, tenantPath, name string) error
 }
 
-// TemplateFilter is the GET /api/templates query, normalized.
+// TemplateFilter narrows a template listing by category and cloud.
 type TemplateFilter struct {
 	Category string
 	Cloud    string
