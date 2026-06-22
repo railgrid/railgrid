@@ -82,6 +82,15 @@ func EnsureProviderServe(
 	if cr.Spec.Hub.Insecure {
 		env = append(env, corev1.EnvVar{Name: "KEDGE_HUB_INSECURE", Value: "true"})
 	}
+	// Application-template exposure layer. KEDGE_APP_BASE_DOMAIN also gates the
+	// Application instance controller (it stays disabled when unset); KEDGE_INGRESS_CLASS
+	// falls back to the in-binary "cloudflare" default when left empty.
+	if cr.Spec.Application.BaseDomain != "" {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_APP_BASE_DOMAIN", Value: cr.Spec.Application.BaseDomain})
+	}
+	if cr.Spec.Application.IngressClass != "" {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_INGRESS_CLASS", Value: cr.Spec.Application.IngressClass})
+	}
 	volMounts := []corev1.VolumeMount{
 		{Name: "provider-kubeconfig", MountPath: "/var/run/secrets/kedge/provider", ReadOnly: true},
 	}

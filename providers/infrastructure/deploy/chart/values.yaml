@@ -197,3 +197,18 @@ operator:
       tag: ""          # empty → chart image.tag / appVersion
     replicas: 2
     port: 8081
+
+  # Application-template exposure layer (the `application` template's public URL
+  # + ingress controller). This is the operator-mode equivalent of the top-level
+  # `application.*` values: the operator owns the serve Deployment, so these land
+  # on the InfrastructureProvider CR (KEDGE_APP_BASE_DOMAIN / KEDGE_INGRESS_CLASS)
+  # rather than via the chart's deployment.yaml. See
+  # docs/application-template-architecture.md.
+  application:
+    # DNS zone apps are served under, e.g. "apps.example.com". REQUIRED to enable
+    # app exposure — the Application instance controller stays disabled until this
+    # is set. Empty → feature off.
+    baseDomain: ""
+    # Ingress controller that fulfils the generated Ingress. Empty → "cloudflare"
+    # (the in-binary default).
+    ingressClass: ""

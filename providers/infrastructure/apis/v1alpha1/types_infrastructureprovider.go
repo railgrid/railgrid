@@ -83,6 +83,34 @@ type InfrastructureProviderSpec struct {
 	// Provider is the provider serve Deployment the operator owns on the runtime
 	// cluster.
 	Provider ProviderServeSpec `json:"provider"`
+
+	// Application configures the `application` template's exposure layer — the
+	// public URL apps are served on and which ingress controller fulfils it.
+	// Maps onto the serve container's KEDGE_APP_BASE_DOMAIN / KEDGE_INGRESS_CLASS
+	// env vars. Optional; without it app exposure stays off (see ApplicationSpec).
+	// +optional
+	Application ApplicationSpec `json:"application,omitempty"`
+}
+
+// ApplicationSpec configures the `application` template exposure layer. The two
+// fields map 1:1 to the serve container's KEDGE_APP_BASE_DOMAIN and
+// KEDGE_INGRESS_CLASS environment variables. See
+// docs/application-template-architecture.md.
+type ApplicationSpec struct {
+	// BaseDomain is the DNS zone apps are served under, e.g. "apps.example.com".
+	// REQUIRED to enable app exposure: the Application instance controller stays
+	// disabled until this is set (it computes each app's host as
+	// <prefix|name>-<tenantHash>.<baseDomain> and stamps it onto the instance).
+	// Empty → the feature is off.
+	// +optional
+	BaseDomain string `json:"baseDomain,omitempty"`
+
+	// IngressClass is the ingress controller that fulfils the generated Ingress
+	// (its spec.ingressClassName). It is substituted for the
+	// ${kedge.ingressClass} token in a Template's backendConfig before the kro
+	// RGD is authored. Empty → "cloudflare" (the in-binary default).
+	// +optional
+	IngressClass string `json:"ingressClass,omitempty"`
 }
 
 // SecretKeyRef points at one key in a Secret in the operator's namespace.

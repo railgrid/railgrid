@@ -66,6 +66,29 @@ spec:
           spec:
             description: InfrastructureProviderSpec is the operator's input.
             properties:
+              application:
+                description: |-
+                  Application configures the `application` template's exposure layer — the
+                  public URL apps are served on and which ingress controller fulfils it.
+                  Maps onto the serve container's KEDGE_APP_BASE_DOMAIN / KEDGE_INGRESS_CLASS
+                  env vars. Optional; without it app exposure stays off (see ApplicationSpec).
+                properties:
+                  baseDomain:
+                    description: |-
+                      BaseDomain is the DNS zone apps are served under, e.g. "apps.example.com".
+                      REQUIRED to enable app exposure: the Application instance controller stays
+                      disabled until this is set (it computes each app's host as
+                      <prefix|name>-<tenantHash>.<baseDomain> and stamps it onto the instance).
+                      Empty → the feature is off.
+                    type: string
+                  ingressClass:
+                    description: |-
+                      IngressClass is the ingress controller that fulfils the generated Ingress
+                      (its spec.ingressClassName). It is substituted for the
+                      ${kedge.ingressClass} token in a Template's backendConfig before the kro
+                      RGD is authored. Empty → "cloudflare" (the in-binary default).
+                    type: string
+                type: object
               hub:
                 description: Hub configures the provider's heartbeat target. Optional.
                 properties:
