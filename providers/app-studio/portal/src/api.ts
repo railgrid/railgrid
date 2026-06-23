@@ -270,6 +270,14 @@ export const api = {
     await request<null>(ctx, 'DELETE', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
   },
 
+  async syncDevelopment(ctx: KedgeContext | null, name: string): Promise<unknown> {
+    return request<unknown>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/sync-development`)
+  },
+
+  async authorizeDevelopmentPreview(ctx: KedgeContext | null, name: string): Promise<unknown> {
+    return request<unknown>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/authorize-development-preview`)
+  },
+
   async listMessages(ctx: KedgeContext | null, name: string, cursor?: string): Promise<ProjectMessagesPage> {
     const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
     const body = await request<ProjectMessagesPage>(

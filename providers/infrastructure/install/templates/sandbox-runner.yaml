@@ -1,0 +1,373 @@
+apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: sandbox-runner
+spec:
+  displayName: "Sandbox runner"
+  description: "A live development runner for App Studio projects. Composes workspace storage, runner process supervision, file-sync control, and preview networking."
+  category: Developer
+  version: 0.1.0
+  backend: kro
+  instanceCRD:
+    group: infrastructure.kedge.faros.sh
+    version: v1alpha1
+    resource: sandboxrunners
+    kind: SandboxRunner
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        description: "Derived sandbox runner name; used as the runtime namespace and resource-name prefix."
+        pattern: "^kedge-sandbox-[a-f0-9]{16}$"
+      projectRef:
+        type: string
+        description: "App Studio Project name this runtime serves."
+      workingDir:
+        type: string
+        default: "/workspace"
+      startCommand:
+        type: string
+        default: "PORT_VALUE=\"$SANDBOX_PORT\"; if [ -z \"$PORT_VALUE\" ]; then PORT_VALUE=3000; fi; if [ -f package.json ]; then npm install --no-audit --no-fund && (npm run dev -- --host 0.0.0.0 --port \"$PORT_VALUE\" || npm start); else npx --yes vite --host 0.0.0.0 --port \"$PORT_VALUE\"; fi"
+      runnerImage:
+        type: string
+        description: "Sandbox runner image. Production deployments should supply an immutable digest reference."
+      tokenGeneratorImage:
+        type: string
+        description: "kubectl-capable image used by the one-shot control-token Job. Production deployments should supply an immutable digest reference."
+      port:
+        type: integer
+        default: 3000
+        minimum: 1
+        maximum: 65535
+      storageSize:
+        type: string
+        default: "1Gi"
+    required:
+      - name
+      - projectRef
+      - runnerImage
+      - tokenGeneratorImage
+  backendConfig:
+    resources:
+      - id: runtimeNamespace
+        template:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: ${schema.spec.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/managed-by: kedge-infrastructure
+      - id: workspace
+        template:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: ${schema.spec.name}-workspace
+            namespace: ${runtimeNamespace.metadata.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/managed-by: kedge-infrastructure
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: ${schema.spec.storageSize}
+      - id: runnerAccount
+        template:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: ${schema.spec.name}-runner
+            namespace: ${runtimeNamespace.metadata.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/managed-by: kedge-infrastructure
+          automountServiceAccountToken: false
+      - id: controlToken
+        template:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ${schema.spec.name}-control
+            namespace: ${runtimeNamespace.metadata.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/managed-by: kedge-infrastructure
+          type: Opaque
+      - id: tokenGeneratorAccount
+        template:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: ${schema.spec.name}-control-token
+            namespace: ${runtimeNamespace.metadata.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/component: control-token
+              app.kubernetes.io/managed-by: kedge-infrastructure
+      - id: tokenGeneratorRole
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: ${schema.spec.name}-control-token
+            namespace: ${runtimeNamespace.metadata.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/managed-by: kedge-infrastructure
+          rules:
+            - apiGroups: [""]
+              resources: ["secrets"]
+              verbs: ["get", "patch"]
+      - id: tokenGeneratorBinding
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: ${schema.spec.name}-control-token
+            namespace: ${runtimeNamespace.metadata.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/managed-by: kedge-infrastructure
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: ${tokenGeneratorRole.metadata.name}
+          subjects:
+            - kind: ServiceAccount
+              name: ${tokenGeneratorAccount.metadata.name}
+              namespace: ${runtimeNamespace.metadata.name}
+      - id: tokenGenerator
+        template:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${schema.spec.name}-control-token
+            namespace: ${runtimeNamespace.metadata.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/component: control-token
+              app.kubernetes.io/managed-by: kedge-infrastructure
+          spec:
+            backoffLimit: 5
+            ttlSecondsAfterFinished: 600
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: sandbox-runner
+                  app.kubernetes.io/instance: ${schema.spec.name}
+                  app.kubernetes.io/component: control-token
+                  app.kubernetes.io/managed-by: kedge-infrastructure
+              spec:
+                serviceAccountName: ${tokenGeneratorAccount.metadata.name}
+                restartPolicy: OnFailure
+                containers:
+                  - name: token
+                    image: ${schema.spec.tokenGeneratorImage}
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -eu
+                        SECRET="${controlToken.metadata.name}"
+                        if [ -z "$(kubectl get secret "$SECRET" -o jsonpath='{.data.token}' 2>/dev/null)" ]; then
+                          TOKEN="$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom | head -c 64)"
+                          kubectl patch secret "$SECRET" --type merge \
+                            -p "{\"stringData\":{\"token\":\"$TOKEN\"}}"
+                          echo "generated sandbox control token for $SECRET"
+                        else
+                          echo "sandbox control token already present for $SECRET"
+                        fi
+      - id: runnerDeployment
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${schema.spec.name}
+            namespace: ${runtimeNamespace.metadata.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/component: runner
+              app.kubernetes.io/managed-by: kedge-infrastructure
+              app-studio.kedge.faros.sh/project: ${schema.spec.projectRef}
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: sandbox-runner
+                app.kubernetes.io/instance: ${schema.spec.name}
+                app.kubernetes.io/component: runner
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: sandbox-runner
+                  app.kubernetes.io/instance: ${schema.spec.name}
+                  app.kubernetes.io/component: runner
+                  app.kubernetes.io/managed-by: kedge-infrastructure
+                  app-studio.kedge.faros.sh/project: ${schema.spec.projectRef}
+              spec:
+                serviceAccountName: ${runnerAccount.metadata.name}
+                automountServiceAccountToken: false
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  fsGroup: 1000
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: runner
+                    image: ${schema.spec.runnerImage}
+                    env:
+                      - name: SANDBOX_WORKDIR
+                        value: ${schema.spec.workingDir}
+                      - name: SANDBOX_START_COMMAND
+                        value: ${schema.spec.startCommand}
+                      - name: SANDBOX_PORT
+                        value: ${string(schema.spec.port)}
+                      - name: HOME
+                        value: ${schema.spec.workingDir}
+                      - name: NPM_CONFIG_CACHE
+                        value: ${schema.spec.workingDir + "/.npm"}
+                      - name: XDG_CACHE_HOME
+                        value: ${schema.spec.workingDir + "/.cache"}
+                      - name: SANDBOX_CONTROL_TOKEN
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${controlToken.metadata.name}
+                            key: token
+                    ports:
+                      - name: preview
+                        containerPort: ${schema.spec.port}
+                      - name: control
+                        containerPort: 7070
+                    readinessProbe:
+                      tcpSocket:
+                        port: preview
+                      initialDelaySeconds: 2
+                      periodSeconds: 3
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+                    resources:
+                      requests:
+                        cpu: 100m
+                        memory: 256Mi
+                      limits:
+                        cpu: "1"
+                        memory: 1Gi
+                    volumeMounts:
+                      - name: workspace
+                        mountPath: ${schema.spec.workingDir}
+                      - name: tmp
+                        mountPath: /tmp
+                volumes:
+                  - name: workspace
+                    persistentVolumeClaim:
+                      claimName: ${workspace.metadata.name}
+                  - name: tmp
+                    emptyDir: {}
+      - id: runnerService
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}
+            namespace: ${runtimeNamespace.metadata.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/managed-by: kedge-infrastructure
+          spec:
+            type: ClusterIP
+            selector:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/component: runner
+            ports:
+              - name: preview
+                port: ${schema.spec.port}
+                targetPort: preview
+              - name: control
+                port: 7070
+                targetPort: control
+      - id: runnerNetwork
+        template:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: ${schema.spec.name}-egress
+            namespace: ${runtimeNamespace.metadata.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/managed-by: kedge-infrastructure
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: sandbox-runner
+                app.kubernetes.io/instance: ${schema.spec.name}
+                app.kubernetes.io/component: runner
+            # Do not set an ingress default-deny here. App Studio reaches this
+            # service through the Kubernetes API server's service proxy, and the
+            # proxy source is not portable enough to model with a pod selector.
+            # Preview/control authorization stays at the App Studio proxy,
+            # runtime kubeconfig RBAC, and runner control-token layers.
+            policyTypes: ["Egress"]
+            egress:
+              - ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+              - to:
+                  - ipBlock:
+                      cidr: 0.0.0.0/0
+                      except:
+                        - 10.0.0.0/8
+                        - 100.64.0.0/10
+                        - 127.0.0.0/8
+                        - 169.254.0.0/16
+                        - 172.16.0.0/12
+                        - 192.168.0.0/16
+                ports:
+                  - protocol: TCP
+                    port: 80
+                  - protocol: TCP
+                    port: 443
+              - to:
+                  - ipBlock:
+                      cidr: ::/0
+                      except:
+                        - fc00::/7
+                        - fe80::/10
+                ports:
+                  - protocol: TCP
+                    port: 80
+                  - protocol: TCP
+                    port: 443
+    status:
+      runtimeNamespace: ${runnerService.metadata.namespace}
+      previewServiceRef:
+        name: ${runnerService.metadata.name}
+        namespace: ${runnerService.metadata.namespace}
+      controlServiceRef:
+        name: ${runnerService.metadata.name}
+        namespace: ${runnerService.metadata.namespace}
+      controlSecretRef:
+        name: ${controlToken.metadata.name}
+        namespace: ${controlToken.metadata.namespace}
+      readyReplicas: ${runnerDeployment.status.readyReplicas}

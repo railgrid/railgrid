@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260616-a79535b.projects.ai.kedge.faros.sh
+  name: v260621-b6870ca.projects.ai.kedge.faros.sh
 spec:
   group: ai.kedge.faros.sh
   names:
@@ -59,6 +59,72 @@ spec:
               maxLength: 128
               minLength: 1
               type: string
+            environments:
+              description: |-
+                Environments describe provider-backed runtime capabilities for this
+                Project. App Studio owns the binding contract; providers own runtime
+                implementation details.
+              items:
+                properties:
+                  autoDeploy:
+                    description: AutoDeploy marks artifact environments that should
+                      deploy automatically.
+                    type: boolean
+                  bindings:
+                    description: Bindings connect this environment to provider capabilities.
+                    items:
+                      properties:
+                        kind:
+                          type: string
+                        name:
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                        provider:
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                        resourceRef:
+                          properties:
+                            apiVersion:
+                              type: string
+                            kind:
+                              type: string
+                            name:
+                              type: string
+                            resource:
+                              type: string
+                          type: object
+                        values:
+                          description: |-
+                            Values is provider-owned configuration. App Studio treats it as an
+                            opaque contract payload.
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                      required:
+                      - kind
+                      - name
+                      - provider
+                      type: object
+                    type: array
+                  mode:
+                    description: |-
+                      Mode distinguishes artifact-based environments from live development
+                      runtimes. Empty means artifact for backward compatibility.
+                    type: string
+                  name:
+                    description: Name is a stable environment identifier such as development
+                      or test.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  promotion:
+                    description: Promotion controls how changes move into this environment.
+                    type: string
+                required:
+                - name
+                type: object
+              type: array
             memory:
               description: |-
                 Memory stores durable context the AI should consider for this
@@ -105,6 +171,37 @@ spec:
         status:
           description: ProjectStatus defines the observed Project state.
           properties:
+            environments:
+              description: Environments reports provider-observed environment state.
+              items:
+                properties:
+                  bindings:
+                    items:
+                      properties:
+                        name:
+                          type: string
+                        outputs:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        phase:
+                          type: string
+                        previewURL:
+                          type: string
+                        provider:
+                          type: string
+                        url:
+                          type: string
+                      type: object
+                    type: array
+                  mode:
+                    type: string
+                  name:
+                    type: string
+                  phase:
+                    type: string
+                type: object
+              type: array
             phase:
               description: Phase is Ready for MVP-created Projects.
               type: string

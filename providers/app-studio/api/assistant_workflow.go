@@ -673,7 +673,74 @@ func formatProjectAssistantPreviewURLResult(ctx context.Context, input projectAs
 	if err := ctx.Err(); err != nil {
 		return projectAssistantRuntimeWorkflowResult{}, err
 	}
+	if previewURL := projectAssistantRuntimePreviewURL(input.Project); previewURL != "" {
+		return projectAssistantRuntimeWorkflowResult{
+			Status:     "ready",
+			Summary:    "Development preview URL is available.",
+			Runtime:    &projectAssistantDeploymentRuntime{Status: "ready", URL: previewURL},
+			PreviewURL: previewURL,
+		}, nil
+	}
 	return projectAssistantRuntimeNotConfiguredResult("Preview URL is unavailable because no runtime deployment is recorded.")
+}
+
+func projectAssistantRuntimePreviewURL(p *aiv1alpha1.Project) string {
+	if p == nil {
+		return ""
+	}
+	if url := projectEnvironmentPreviewURL(p.Status.Environments, "development", "dev"); url != "" {
+		return url
+	}
+	if url := projectEnvironmentPreviewURL(p.Status.Environments, "test", "web"); url != "" {
+		return url
+	}
+	for _, env := range p.Status.Environments {
+		for _, binding := range env.Bindings {
+			if binding.PreviewURL != "" {
+				return binding.PreviewURL
+			}
+			if binding.URL != "" {
+				return binding.URL
+			}
+			if binding.Outputs != nil {
+				if v := binding.Outputs["previewURL"]; v != "" {
+					return v
+				}
+				if v := binding.Outputs["url"]; v != "" {
+					return v
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func projectEnvironmentPreviewURL(environments []aiv1alpha1.ProjectEnvironmentStatus, envName, bindingName string) string {
+	for _, env := range environments {
+		if env.Name != envName {
+			continue
+		}
+		for _, binding := range env.Bindings {
+			if binding.Name != bindingName {
+				continue
+			}
+			if binding.PreviewURL != "" {
+				return binding.PreviewURL
+			}
+			if binding.URL != "" {
+				return binding.URL
+			}
+			if binding.Outputs != nil {
+				if v := binding.Outputs["previewURL"]; v != "" {
+					return v
+				}
+				if v := binding.Outputs["url"]; v != "" {
+					return v
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func projectAssistantRuntimeNotConfiguredResult(summary string) (projectAssistantRuntimeWorkflowResult, error) {

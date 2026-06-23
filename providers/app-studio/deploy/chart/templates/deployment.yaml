@@ -1,4 +1,13 @@
 {{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
+{{- $runtimeKubeconfigSecret := .Values.runtimeKubeconfig.secretName | default "" -}}
+{{- $sandboxRunnerImage := .Values.sandboxRunner.runnerImage | default "" -}}
+{{- $sandboxTokenGeneratorImage := .Values.sandboxRunner.tokenGeneratorImage | default "" -}}
+{{- if and $runtimeKubeconfigSecret (not $sandboxRunnerImage) -}}
+{{- fail "sandboxRunner.runnerImage is required when runtimeKubeconfig.secretName is set; use an immutable digest reference" -}}
+{{- end -}}
+{{- if and $runtimeKubeconfigSecret (not $sandboxTokenGeneratorImage) -}}
+{{- fail "sandboxRunner.tokenGeneratorImage is required when runtimeKubeconfig.secretName is set; use an immutable digest reference" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -84,8 +93,27 @@ spec:
             # calling user via the forwarded bearer token.
             - name: KEDGE_PROVIDER_KUBECONFIG
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            {{- if $runtimeKubeconfigSecret }}
+            - name: APP_STUDIO_RUNTIME_KUBECONFIG
+              value: /var/run/secrets/kedge/runtime/kubeconfig
+            {{- end }}
+            {{- if $sandboxRunnerImage }}
+            - name: APP_STUDIO_SANDBOX_RUNNER_IMAGE
+              value: {{ $sandboxRunnerImage | quote }}
+            {{- end }}
+            {{- if $sandboxTokenGeneratorImage }}
+            - name: APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE
+              value: {{ $sandboxTokenGeneratorImage | quote }}
+            {{- end }}
             - name: APP_STUDIO_WORKSPACE_ROOT
               value: {{ .Values.workspace.path | quote }}
+            {{- if .Values.previewTokenSecretRef.name }}
+            - name: APP_STUDIO_PREVIEW_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.previewTokenSecretRef.name }}
+                  key: {{ .Values.previewTokenSecretRef.key }}
+            {{- end }}
             {{- if .Values.store.databaseURL }}
             - name: APP_STUDIO_DATABASE_URL
               value: {{ .Values.store.databaseURL | quote }}
@@ -128,6 +156,11 @@ spec:
             - name: kedge-provider-kubeconfig
               mountPath: /var/run/secrets/kedge
               readOnly: true
+            {{- if $runtimeKubeconfigSecret }}
+            - name: runtime-kubeconfig
+              mountPath: /var/run/secrets/kedge/runtime
+              readOnly: true
+            {{- end }}
             - name: project-workspaces
               mountPath: {{ .Values.workspace.path | quote }}
           resources:
@@ -143,6 +176,14 @@ spec:
             items:
               - key: kubeconfig
                 path: kedge-provider-kubeconfig
+        {{- if $runtimeKubeconfigSecret }}
+        - name: runtime-kubeconfig
+          secret:
+            secretName: {{ $runtimeKubeconfigSecret }}
+            items:
+              - key: kubeconfig
+                path: kubeconfig
+        {{- end }}
         {{- if $catalogEntryConfigMap }}
         - name: catalogentry
           configMap:

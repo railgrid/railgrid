@@ -83,8 +83,8 @@ func TestProjectAssistantStreamWriterMapsToolCallToSafeDisclosure(t *testing.T) 
 		t.Fatalf("events = %#v, want beginRendering and safe surfaceUpdate", got)
 	}
 	event := got[1]
-	if event.Type != "ui" || event.AssistantMessageID != "assistant-1" || event.UI == nil || event.UI.SurfaceUpdate == nil {
-		t.Fatalf("event = %#v, want safe surfaceUpdate UI event", event)
+	if event.Type != "ui" || event.AssistantMessageID != "assistant-1" || event.UI == nil || event.UI.SurfaceUpdate == nil || event.UI.DataModelUpdate == nil {
+		t.Fatalf("event = %#v, want safe surfaceUpdate and progress dataModelUpdate UI event", event)
 	}
 	components := event.UI.SurfaceUpdate.Components
 	if len(components) != 1 || components[0].ToolDisclosure == nil {
@@ -94,7 +94,37 @@ func TestProjectAssistantStreamWriterMapsToolCallToSafeDisclosure(t *testing.T) 
 	if disclosure.ID != "tool-1" || disclosure.Kind != "edit" || disclosure.Status != "succeeded" || disclosure.Label != "Edited files" {
 		t.Fatalf("disclosure = %#v, want safe edit disclosure", disclosure)
 	}
+	contents := event.UI.DataModelUpdate.Contents
+	if len(contents) != 1 || contents[0].Key != "assistant.progress" || contents[0].ValueString != "Updated the project files." {
+		t.Fatalf("data model contents = %#v, want safe assistant progress", contents)
+	}
 	assertNoRawAssistantTrace(t, got, "src/App.tsx", "warning only", "write_file")
+}
+
+func TestProjectAssistantStreamWriterSkipsLowValueFinishedInspectionProgress(t *testing.T) {
+	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
+		Type: projectAssistantEventToolCallFinished,
+		ToolCall: &projectAssistantToolCall{
+			ID:      "tool-1",
+			Name:    projectToolReadProjectFile,
+			Status:  "succeeded",
+			Summary: "Read src/App.tsx",
+		},
+	})
+	if err != nil {
+		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("events = %#v, want beginRendering and safe surfaceUpdate", got)
+	}
+	event := got[1]
+	if event.Type != "ui" || event.UI == nil || event.UI.SurfaceUpdate == nil {
+		t.Fatalf("event = %#v, want safe surfaceUpdate UI event", event)
+	}
+	if event.UI.DataModelUpdate != nil {
+		t.Fatalf("data model update = %#v, want no low-value finished inspection progress", event.UI.DataModelUpdate)
+	}
+	assertNoRawAssistantTrace(t, got, "src/App.tsx", "read_project_file")
 }
 
 func TestProjectAssistantStreamWriterMapsPermissionCheckpointToInterruptRequest(t *testing.T) {

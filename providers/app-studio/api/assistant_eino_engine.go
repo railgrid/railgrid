@@ -151,6 +151,7 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 			ContextTokens:   projectEinoAssistantSummaryContextTokens,
 		},
 		UserInstruction: projectEinoAssistantSummaryInstruction,
+		Finalize:        projectEinoAssistantFinalizeSummary,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create eino summarization middleware: %w", err)
@@ -183,6 +184,69 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		return nil, fmt.Errorf("create eino assistant agent: %w", err)
 	}
 	return agent, nil
+}
+
+func projectEinoAssistantFinalizeSummary(ctx context.Context, originalMessages []*schema.Message, summary *schema.Message) ([]*schema.Message, error) {
+	if strings.TrimSpace(projectEinoAssistantSummaryText(summary)) == "" {
+		summary = schema.AssistantMessage(projectEinoAssistantFallbackSummary(originalMessages), nil)
+	}
+	return summarization.DefaultFinalize(ctx, originalMessages, summary)
+}
+
+func projectEinoAssistantSummaryText(msg *schema.Message) string {
+	if msg == nil || msg.Role != schema.Assistant {
+		return ""
+	}
+	var parts []string
+	for _, part := range msg.AssistantGenMultiContent {
+		if part.Type == schema.ChatMessagePartTypeText && strings.TrimSpace(part.Text) != "" {
+			parts = append(parts, strings.TrimSpace(part.Text))
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
+	}
+	return strings.TrimSpace(msg.Content)
+}
+
+func projectEinoAssistantFallbackSummary(messages []*schema.Message) string {
+	const maxMessages = 12
+	var b strings.Builder
+	b.WriteString("Summary unavailable; preserving recent App Studio context.")
+	start := len(messages) - maxMessages
+	if start < 0 {
+		start = 0
+	}
+	for _, msg := range messages[start:] {
+		content := truncateProjectToolInfo(projectEinoAssistantMessageText(msg))
+		if content == "" {
+			continue
+		}
+		b.WriteString("\n- ")
+		b.WriteString(projectEinoAssistantMessageRole(msg))
+		b.WriteString(": ")
+		b.WriteString(content)
+	}
+	return b.String()
+}
+
+func projectEinoAssistantMessageText(msg *schema.Message) string {
+	if msg == nil {
+		return ""
+	}
+	switch msg.Role {
+	case schema.Assistant:
+		return projectEinoAssistantSummaryText(msg)
+	default:
+		return strings.TrimSpace(msg.Content)
+	}
+}
+
+func projectEinoAssistantMessageRole(msg *schema.Message) string {
+	if msg == nil {
+		return "message"
+	}
+	return strings.ToLower(string(msg.Role))
 }
 
 func projectEinoAssistantToolSearchSets(ctx context.Context, tools []einotool.BaseTool) ([]einotool.BaseTool, []einotool.BaseTool, error) {

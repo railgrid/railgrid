@@ -53,6 +53,8 @@ providers/quickstart/portal/dist/
 providers/infrastructure/portal/dist/
 providers/code/portal/dist/
 providers/kuery/portal/dist/
+providers/sandbox/portal/dist/*
+!providers/sandbox/portal/dist/.gitkeep
 
 # Data dirs
 data/

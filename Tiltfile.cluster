@@ -169,7 +169,7 @@ gateway_ip = '10.96.2.2'
 # and editing portal code doesn't rebuild Go until the dist actually changes.
 local_resource(
     'portal-build',
-    cmd='make build-portal && rm -rf pkg/hub/portal/dist && cp -r portal/dist pkg/hub/portal/',
+    cmd='make build-portal && mkdir -p pkg/hub/portal && rm -rf pkg/hub/portal/dist && cp -r portal/dist pkg/hub/portal/dist',
     deps=[
         'portal/src',
         'portal/package.json',
@@ -497,7 +497,9 @@ local_resource(
     # credential and acts as the caller). In the in-cluster hub flow the
     # provider runs on the host, so point it at the operator-issued admin
     # kubeconfig (kcp.localhost:8443).
-    serve_cmd='KEDGE_PROVIDER_KUBECONFIG={kc} make run-provider-app-studio'.format(kc=KCP_ADMIN_KUBECONFIG),
+    serve_cmd=('KEDGE_PROVIDER_KUBECONFIG={kc} APP_STUDIO_RUNTIME_KUBECONFIG={kind} ' +
+               'make run-provider-app-studio').format(
+                   kc=KCP_ADMIN_KUBECONFIG, kind=KIND_HOST_KUBECONFIG),
     deps=[
         'providers/app-studio/main.go',
         'providers/app-studio/heartbeat.go',
@@ -507,6 +509,8 @@ local_resource(
         'providers/app-studio/client',
         'providers/app-studio/store',
         'providers/app-studio/tenant',
+        'providers/app-studio/runner',
+        'providers/app-studio/Dockerfile.runner',
         'providers/app-studio/go.mod',
         'providers/app-studio/go.sum',
         'providers/app-studio/portal/src',
@@ -515,7 +519,7 @@ local_resource(
         'providers/app-studio/manifest.yaml',
         'providers/app-studio/.env',
     ],
-    resource_deps=['kedge-hub', 'app-studio-db'],
+    resource_deps=['kedge-hub', 'app-studio-db', 'sandbox-runner-image'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8085, path='/healthz'),
@@ -874,6 +878,20 @@ local_resource(
     auto_init=False,
     resource_deps=['kedge-hub'],
     labels=['providers-code'],
+)
+
+# --- App Studio sandbox runner image (live development runtimes) ---
+local_resource(
+    'sandbox-runner-image',
+    cmd=('KRO_KIND_NAME={name} make load-sandbox-runner-image').format(
+        name=cluster_name),
+    deps=[
+        'providers/app-studio/Dockerfile.runner',
+        'providers/app-studio/go.mod',
+        'providers/app-studio/go.sum',
+        'providers/app-studio/runner',
+    ],
+    labels=['providers-app-studio'],
 )
 
 # ---------------------------------------------------------------------------

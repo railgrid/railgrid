@@ -1500,6 +1500,102 @@ func TestResumeProjectAssistantRunRejectsEmptyFollowUpBeforeClaimingRun(t *testi
 	}
 }
 
+func TestResumeProjectAssistantRunClearsStaleFollowUpMessageWhenRunAlreadyClaimed(t *testing.T) {
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	runID := "run-stale-follow-up"
+	requestID := "input-stale-follow-up"
+	assistantMessageID := "msg-stale-follow-up"
+
+	checkpointState := projectAssistantCheckpointState{
+		Eino: &projectAssistantEinoCheckpointState{
+			CheckpointID:  runID,
+			Checkpoint:    []byte("checkpoint"),
+			InterruptID:   requestID,
+			InterruptType: projectAssistantInterruptTypeFollowUp,
+			ToolCallID:    "call-follow-up",
+			ToolName:      projectToolAskFollowUp,
+		},
+	}
+	rawCheckpoint, err := json.Marshal(checkpointState)
+	if err != nil {
+		t.Fatalf("marshal checkpoint returned error: %v", err)
+	}
+	if err := messages.SaveAssistantRun(context.Background(), messageScope, store.AssistantRun{
+		ID:         runID,
+		Status:     store.AssistantRunStatusRunning,
+		RequestID:  requestID,
+		Checkpoint: rawCheckpoint,
+	}); err != nil {
+		t.Fatalf("SaveAssistantRun returned error: %v", err)
+	}
+	followUp := projectAssistantFollowUp{
+		ID:         requestID,
+		ToolCallID: "call-follow-up",
+		Questions:  []string{"What audience should this app target?"},
+		Prompt:     "I need one detail before continuing.",
+	}
+	checkpoint := projectAssistantCheckpoint{ID: runID, Reason: "waiting_for_input"}
+	if err := appendProjectAssistantMessage(context.Background(), messages, messageScope, assistantMessageID, "", projectAssistantMessageMetadata(projectMessageStatusPendingInput, []projectToolCallStreamEvent{{
+		ID:         followUp.ToolCallID,
+		Name:       projectToolAskFollowUp,
+		Status:     "input_required",
+		Summary:    followUp.Prompt,
+		FollowUp:   &followUp,
+		Checkpoint: &checkpoint,
+	}})); err != nil {
+		t.Fatalf("appendProjectAssistantMessage returned error: %v", err)
+	}
+	pendingMsg, err := server.findProjectMessage(context.Background(), messageScope, assistantMessageID)
+	if err != nil {
+		t.Fatalf("findProjectMessage returned error: %v", err)
+	}
+	if got := projectAssistantUIInterruptFromMetadata(pendingMsg.Metadata[projectMessageMetadataAssistantInterrupt]); got == nil || got.Kind != "follow_up" || got.Status != "pending" {
+		t.Fatalf("pending interrupt = %#v, want pending follow-up", got)
+	}
+
+	_, err = server.resumeProjectAssistantRunWithRepositoryAndClient(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
+		runID,
+		projectAssistantResumeRequest{
+			RequestID:          requestID,
+			Answer:             "Solo founders.",
+			AssistantMessageID: assistantMessageID,
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "not waiting") {
+		t.Fatalf("resumeProjectAssistantRun error = %v, want not waiting", err)
+	}
+	updatedMsg, err := server.findProjectMessage(context.Background(), messageScope, assistantMessageID)
+	if err != nil {
+		t.Fatalf("findProjectMessage after resume returned error: %v", err)
+	}
+	if _, ok := updatedMsg.Metadata[projectMessageMetadataStatus]; ok {
+		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMsg.Metadata)
+	}
+	if interrupt := projectAssistantUIInterruptFromMetadata(updatedMsg.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt != nil {
+		t.Fatalf("assistant interrupt = %#v, want cleared stale follow-up", interrupt)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), messageScope, runID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	if run.Status != store.AssistantRunStatusRunning {
+		t.Fatalf("run status = %q, want running", run.Status)
+	}
+}
+
 func TestResumeProjectAssistantRunCompletesRunWhenContinuationLLMFailsAfterTool(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
@@ -1672,14 +1768,18 @@ func TestAbortProjectAssistantRunClearsPendingAssistantMessageMetadata(t *testin
 }
 
 func TestResumeProjectAssistantRunClaimsBeforeCommitSideEffects(t *testing.T) {
-	var commitCalls atomic.Int32
+	var sourceCommitCalls atomic.Int32
+	var buildConfigCommitCalls atomic.Int32
 	commitEntered := make(chan struct{})
 	releaseCommit := make(chan struct{})
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope struct {
 			Method string `json:"method"`
 			Params struct {
-				Name string `json:"name"`
+				Name      string `json:"name"`
+				Arguments struct {
+					Message string `json:"message"`
+				} `json:"arguments"`
 			} `json:"params"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
@@ -1691,11 +1791,19 @@ func TestResumeProjectAssistantRunClaimsBeforeCommitSideEffects(t *testing.T) {
 			if envelope.Params.Name != "code__commit_files" {
 				t.Fatalf("unexpected MCP tool call: %#v", envelope)
 			}
-			if commitCalls.Add(1) == 1 {
-				close(commitEntered)
+			switch envelope.Params.Arguments.Message {
+			case "Initial app":
+				if sourceCommitCalls.Add(1) == 1 {
+					close(commitEntered)
+				}
+				<-releaseCommit
+				fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["src/App.tsx"],"commitSHA":"abcdef1234567890"}}}`)
+			case projectBuildConfigCommitMessage:
+				buildConfigCommitCalls.Add(1)
+				fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":[".kedge/build.json",".github/workflows/kedge-app-studio-build.yml"],"commitSHA":"buildabcdef123456"}}}`)
+			default:
+				t.Fatalf("unexpected commit message: %#v", envelope.Params.Arguments)
 			}
-			<-releaseCommit
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["src/App.tsx"],"commitSHA":"abcdef1234567890"}}}`)
 		default:
 			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"commit files"}]}}`)
 		}
@@ -1715,7 +1823,10 @@ func TestResumeProjectAssistantRunClaimsBeforeCommitSideEffects(t *testing.T) {
 	project.Name = "demo"
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	workspaceScope := projectWorkspaceScope(id, project.Name)
-	if err := workspaces.ApplyFiles(context.Background(), workspaceScope, []workspace.File{{Path: "src/App.tsx", Content: "approved\n"}}); err != nil {
+	if err := workspaces.ApplyFiles(context.Background(), workspaceScope, []workspace.File{
+		{Path: "package.json", Content: `{"scripts":{"build":"vite build"}}` + "\n"},
+		{Path: "src/App.tsx", Content: "approved\n"},
+	}); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 	call := chatStreamingCall{Index: 0, ID: "call-commit", Type: "function"}
@@ -1741,7 +1852,7 @@ func TestResumeProjectAssistantRunClaimsBeforeCommitSideEffects(t *testing.T) {
 	select {
 	case <-commitEntered:
 	case <-time.After(3 * time.Second):
-		t.Fatal("first resume did not reach commit call")
+		t.Fatal("first resume did not reach source commit call")
 	}
 
 	_, err := server.resumeProjectAssistantRunWithRepositoryAndClient(
@@ -1762,8 +1873,11 @@ func TestResumeProjectAssistantRunClaimsBeforeCommitSideEffects(t *testing.T) {
 	if err := <-firstErr; err != nil {
 		t.Fatalf("first resume returned error: %v", err)
 	}
-	if got := commitCalls.Load(); got != 1 {
-		t.Fatalf("commit call count = %d, want 1", got)
+	if got := sourceCommitCalls.Load(); got != 1 {
+		t.Fatalf("source commit call count = %d, want 1", got)
+	}
+	if got := buildConfigCommitCalls.Load(); got != 1 {
+		t.Fatalf("build config commit call count = %d, want 1", got)
 	}
 }
 

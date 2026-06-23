@@ -18,6 +18,7 @@ import {
   MessageSquare,
   PanelRight,
   Plus,
+  RefreshCw,
   Search,
   Send,
   Settings2,
@@ -75,9 +76,10 @@ type ProjectAssistantActionView = ProjectAssistantUIAction
 type ProjectMessageView = ProjectMessage & {
   viewStatus?: ProjectMessageViewStatus
   actions?: ProjectAssistantActionView[]
+  progress?: string[]
   interrupt?: ProjectAssistantUIInterruptRequest
 }
-type WorkbenchTab = 'review' | 'providers'
+type WorkbenchTab = 'preview' | 'review' | 'providers'
 interface PendingApprovalView {
   message: ProjectMessageView
   interrupt: ProjectAssistantUIInterruptRequest
@@ -86,6 +88,14 @@ interface PendingApprovalView {
 interface PendingFollowUpView {
   message: ProjectMessageView
   interrupt: ProjectAssistantUIInterruptRequest
+}
+
+interface ProjectDevelopmentPreviewAuthorization {
+  ready: boolean
+  previewURL: string
+  previewTokenExpiresAt: string
+  message: string
+  reason: string
 }
 
 type LegacyProjectAssistantToolCall = Record<string, unknown>
@@ -102,6 +112,10 @@ const CREATE_PROJECT_ROUTE = '~new'
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
 const CODE_REPOSITORIES_URL = '/ui/providers/code/repositories'
+const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
+const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_SKEW_MS = 5 * 60 * 1000
+const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MIN_MS = 1000
+const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MAX_MS = 10 * 60 * 1000
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
 const PROJECT_ASSISTANT_ACTION_STATUSES = new Set<ProjectAssistantActionStatus>([
   'requested',
@@ -209,6 +223,7 @@ const projects = ref<Project[]>([])
 const providers = ref<ProviderItem[]>([])
 const selected = ref<Project | null>(null)
 const messages = ref<ProjectMessageView[]>([])
+const conversationMessages = computed(() => projectMessagesForConversation(messages.value))
 const pendingApproval = computed<PendingApprovalView | null>(() => {
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const message = messages.value[i]
@@ -249,6 +264,16 @@ const deletingProject = ref(false)
 const prompt = ref('')
 const projectQuery = ref('')
 const providerQuery = ref('')
+const developmentSyncBusy = ref(false)
+const developmentSyncStatus = ref<string | null>(null)
+const developmentSyncError = ref<string | null>(null)
+const developmentPreviewAuthorizing = ref(false)
+const developmentPreviewAuthorizationError = ref<string | null>(null)
+const developmentPreviewReadinessMessage = ref<string | null>(null)
+const developmentPreviewOverrideURL = ref<string | null>(null)
+const developmentPreviewAuthorizationKey = ref('')
+const developmentPreviewTokenExpiresAt = ref('')
+const developmentPreviewFrameKey = ref(0)
 const conversationStatus = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
 const permissionErrors = ref<Record<string, string>>({})
@@ -278,6 +303,9 @@ let initializationRetryTimer: number | undefined
 let landingPlaceholderDelayTimer: number | undefined
 let landingPlaceholderTypingTimer: number | undefined
 let landingPlaceholderIndex = 0
+let developmentPreviewAuthorizationSerial = 0
+let developmentPreviewAuthorizationRetryTimer: number | undefined
+let developmentPreviewAuthorizationRenewalTimer: number | undefined
 let activeMessageStreamController: AbortController | null = null
 
 const routeSegment = computed(() => {
@@ -509,6 +537,51 @@ const filteredProviderTools = computed(() => {
   )
 })
 
+const developmentEnvironment = computed(() => {
+  const envs = selected.value?.environments ?? []
+  return (
+    envs.find((env) => env.name === 'development') ??
+    envs.find((env) => env.mode === 'live') ??
+    null
+  )
+})
+
+const developmentBinding = computed(() => {
+  const bindings = developmentEnvironment.value?.bindings ?? []
+  return (
+    bindings.find((binding) => binding.name === 'dev' && binding.provider === 'app-studio') ??
+    bindings.find((binding) => binding.provider === 'app-studio') ??
+    bindings[0] ??
+    null
+  )
+})
+
+const developmentPreviewRawURL = computed(() => {
+  const binding = developmentBinding.value
+  return binding?.previewURL || binding?.outputs?.previewURL || binding?.url || ''
+})
+
+const developmentPreviewNeedsAuthorization = computed(() => {
+  return developmentBinding.value?.provider === 'app-studio' && developmentPreviewRawURL.value !== ''
+})
+
+const developmentPreviewURL = computed(() => {
+  if (developmentPreviewOverrideURL.value) return developmentPreviewOverrideURL.value
+  if (developmentPreviewNeedsAuthorization.value) return ''
+  return developmentPreviewRawURL.value
+})
+
+const developmentPreviewPhase = computed(() => developmentEnvironment.value?.phase || developmentBinding.value?.phase || 'Pending')
+const developmentPreviewUnavailableTitle = computed(() => (
+  developmentPreviewAuthorizing.value || developmentPreviewReadinessMessage.value
+    ? 'Preview is getting ready'
+    : 'Preview unavailable'
+))
+const developmentPreviewUnavailableMessage = computed(() => {
+  if (developmentPreviewAuthorizing.value) return 'Checking the sandbox runtime.'
+  return developmentPreviewReadinessMessage.value || 'Sandbox binding is not ready.'
+})
+
 onMounted(() => {
   void load()
   void loadProviders()
@@ -528,6 +601,36 @@ watch(
   () => {
     void loadProviders()
     void loadLLMSettings()
+  },
+)
+
+watch(
+  () => selected.value?.name,
+  () => {
+    developmentSyncStatus.value = null
+    developmentSyncError.value = null
+    developmentPreviewAuthorizationError.value = null
+    developmentPreviewReadinessMessage.value = null
+    developmentPreviewOverrideURL.value = null
+    developmentPreviewAuthorizationKey.value = ''
+    developmentPreviewTokenExpiresAt.value = ''
+    clearDevelopmentPreviewAuthorizationRetry()
+    clearDevelopmentPreviewAuthorizationRenewal()
+    developmentPreviewFrameKey.value += 1
+  },
+)
+
+watch(
+  () => [
+    selected.value?.name,
+    developmentBinding.value?.provider,
+    developmentPreviewRawURL.value,
+    props.ctx?.token,
+    props.ctx?.tenant,
+    props.ctx?.subPath,
+  ],
+  () => {
+    void authorizeDevelopmentPreview()
   },
 )
 
@@ -570,6 +673,8 @@ useEscapeKey(() => {
 
 onBeforeUnmount(() => {
   clearInitializationRetry()
+  clearDevelopmentPreviewAuthorizationRetry()
+  clearDevelopmentPreviewAuthorizationRenewal()
   clearLandingPlaceholderRotation()
   cancelMessageStream()
   detachMountedTool()
@@ -639,6 +744,18 @@ function clearInitializationRetry() {
   if (initializationRetryTimer === undefined) return
   window.clearTimeout(initializationRetryTimer)
   initializationRetryTimer = undefined
+}
+
+function clearDevelopmentPreviewAuthorizationRetry() {
+  if (developmentPreviewAuthorizationRetryTimer === undefined) return
+  window.clearTimeout(developmentPreviewAuthorizationRetryTimer)
+  developmentPreviewAuthorizationRetryTimer = undefined
+}
+
+function clearDevelopmentPreviewAuthorizationRenewal() {
+  if (developmentPreviewAuthorizationRenewalTimer === undefined) return
+  window.clearTimeout(developmentPreviewAuthorizationRenewalTimer)
+  developmentPreviewAuthorizationRenewalTimer = undefined
 }
 
 async function loadProviders() {
@@ -982,11 +1099,7 @@ async function createProjectAndStartConversation(content: string) {
     }, controller.signal)
 
     if (projectName) {
-      if (assistantMessageID && messages.value.every((message) => message.id !== assistantMessageID)) {
-        messages.value = (await api.listAllMessages(props.ctx, projectName)).map(toProjectMessageView)
-      }
-      selected.value = await api.getProject(props.ctx, projectName)
-      projects.value = await api.listProjects(props.ctx)
+      await refreshProjectConversationAfterAssistantRun(projectName)
     }
   } catch (e) {
     if (isAbortError(e)) {
@@ -1101,6 +1214,182 @@ async function refreshSelectedProjectConversation(projectName: string) {
   projects.value = projectList
 }
 
+async function refreshProjectConversationAfterAssistantRun(projectName: string) {
+  try {
+    await refreshSelectedProjectConversation(projectName)
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e)
+    error.value = detail ? `Assistant finished, but the conversation did not refresh: ${detail}` : 'Assistant finished, but the conversation did not refresh.'
+  }
+}
+
+async function syncDevelopmentPreview() {
+  const projectName = selected.value?.name
+  if (!projectName || developmentSyncBusy.value) return
+  developmentSyncBusy.value = true
+  developmentSyncStatus.value = null
+  developmentSyncError.value = null
+  try {
+    const result = await api.syncDevelopment(props.ctx, projectName)
+    const authorization = projectDevelopmentPreviewAuthorization(result)
+    const previewURL = authorization.previewURL
+    selected.value = await api.getProject(props.ctx, projectName)
+    if (previewURL) {
+      const key = developmentPreviewKey(projectName, developmentPreviewRawURL.value)
+      developmentPreviewOverrideURL.value = previewURL
+      developmentPreviewAuthorizationKey.value = key
+      developmentPreviewTokenExpiresAt.value = authorization.previewTokenExpiresAt
+      developmentPreviewReadinessMessage.value = null
+      clearDevelopmentPreviewAuthorizationRetry()
+      scheduleDevelopmentPreviewAuthorizationRenewal(projectName, key, authorization.previewTokenExpiresAt)
+    }
+    developmentPreviewFrameKey.value += 1
+    developmentSyncStatus.value = 'Synced'
+  } catch (e) {
+    developmentSyncError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    developmentSyncBusy.value = false
+  }
+}
+
+async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
+  const projectName = selected.value?.name
+  const rawURL = developmentPreviewRawURL.value
+  if (!projectName || !developmentPreviewNeedsAuthorization.value) {
+    developmentPreviewAuthorizationSerial += 1
+    developmentPreviewAuthorizing.value = false
+    developmentPreviewAuthorizationError.value = null
+    developmentPreviewReadinessMessage.value = null
+    developmentPreviewOverrideURL.value = null
+    developmentPreviewAuthorizationKey.value = ''
+    developmentPreviewTokenExpiresAt.value = ''
+    clearDevelopmentPreviewAuthorizationRetry()
+    clearDevelopmentPreviewAuthorizationRenewal()
+    return
+  }
+  const key = developmentPreviewKey(projectName, rawURL)
+  if (!options.force && developmentPreviewOverrideURL.value && developmentPreviewAuthorizationKey.value === key) return
+
+  clearDevelopmentPreviewAuthorizationRetry()
+  clearDevelopmentPreviewAuthorizationRenewal()
+  const serial = ++developmentPreviewAuthorizationSerial
+  developmentPreviewAuthorizing.value = true
+  developmentPreviewAuthorizationError.value = null
+  try {
+    const result = await api.authorizeDevelopmentPreview(props.ctx, projectName)
+    if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
+    const authorization = projectDevelopmentPreviewAuthorization(result)
+    if (!authorization.ready) {
+      developmentPreviewOverrideURL.value = null
+      developmentPreviewAuthorizationKey.value = key
+      developmentPreviewTokenExpiresAt.value = ''
+      developmentPreviewReadinessMessage.value = authorization.message || 'Preview is getting ready. The sandbox runtime is not serving traffic yet.'
+      scheduleDevelopmentPreviewAuthorizationRetry(projectName, key)
+      clearDevelopmentPreviewAuthorizationRenewal()
+      return
+    }
+    const previewURL = authorization.previewURL
+    if (!previewURL) throw new Error('sandbox preview authorization returned no preview URL')
+    developmentPreviewOverrideURL.value = previewURL
+    developmentPreviewAuthorizationKey.value = key
+    developmentPreviewTokenExpiresAt.value = authorization.previewTokenExpiresAt
+    developmentPreviewReadinessMessage.value = null
+    clearDevelopmentPreviewAuthorizationRetry()
+    scheduleDevelopmentPreviewAuthorizationRenewal(projectName, key, authorization.previewTokenExpiresAt)
+    developmentPreviewFrameKey.value += 1
+  } catch (e) {
+    if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
+    developmentPreviewOverrideURL.value = null
+    developmentPreviewAuthorizationKey.value = ''
+    developmentPreviewTokenExpiresAt.value = ''
+    developmentPreviewReadinessMessage.value = null
+    clearDevelopmentPreviewAuthorizationRetry()
+    clearDevelopmentPreviewAuthorizationRenewal()
+    developmentPreviewAuthorizationError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (serial === developmentPreviewAuthorizationSerial) developmentPreviewAuthorizing.value = false
+  }
+}
+
+function scheduleDevelopmentPreviewAuthorizationRetry(projectName: string, key: string) {
+  clearDevelopmentPreviewAuthorizationRetry()
+  developmentPreviewAuthorizationRetryTimer = window.setTimeout(() => {
+    developmentPreviewAuthorizationRetryTimer = undefined
+    if (selected.value?.name !== projectName || developmentPreviewAuthorizationKey.value !== key) return
+    void authorizeDevelopmentPreview()
+  }, DEVELOPMENT_PREVIEW_AUTH_RETRY_MS)
+}
+
+function scheduleDevelopmentPreviewAuthorizationRenewal(projectName: string, key: string, expiresAt: string) {
+  clearDevelopmentPreviewAuthorizationRenewal()
+  const expiresMs = Date.parse(expiresAt)
+  if (!Number.isFinite(expiresMs)) return
+  const delay = Math.min(
+    DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MAX_MS,
+    Math.max(
+      DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MIN_MS,
+      expiresMs - Date.now() - DEVELOPMENT_PREVIEW_AUTH_RENEWAL_SKEW_MS,
+    ),
+  )
+  developmentPreviewAuthorizationRenewalTimer = window.setTimeout(() => {
+    developmentPreviewAuthorizationRenewalTimer = undefined
+    if (selected.value?.name !== projectName || developmentPreviewAuthorizationKey.value !== key) return
+    void authorizeDevelopmentPreview({ force: true })
+  }, delay)
+}
+
+function developmentPreviewKey(projectName: string, rawURL: string): string {
+  return [projectName, rawURL, props.ctx?.tenant ?? '', props.ctx?.subPath ?? '', props.ctx?.token ? 'token' : ''].join('\u001f')
+}
+
+function projectDevelopmentPreviewURL(result: unknown): string {
+  if (!result || typeof result !== 'object') return ''
+  const directPreviewURL = (result as { previewURL?: unknown }).previewURL
+  if (typeof directPreviewURL === 'string') return directPreviewURL
+  const body = 'result' in result ? (result as { result?: unknown }).result : result
+  if (!body || typeof body !== 'object') return ''
+  const previewURL = (body as { previewURL?: unknown }).previewURL
+  return typeof previewURL === 'string' ? previewURL : ''
+}
+
+function projectDevelopmentPreviewAuthorization(result: unknown): ProjectDevelopmentPreviewAuthorization {
+  if (!result || typeof result !== 'object') return { ready: false, previewURL: '', previewTokenExpiresAt: '', message: '', reason: '' }
+  const previewURL = projectDevelopmentPreviewURL(result)
+  const ready = typeof (result as { ready?: unknown }).ready === 'boolean'
+    ? Boolean((result as { ready?: unknown }).ready)
+    : previewURL !== ''
+  return {
+    ready,
+    previewURL,
+    previewTokenExpiresAt: projectDevelopmentPreviewString(result, 'previewTokenExpiresAt'),
+    message: projectDevelopmentPreviewString(result, 'message'),
+    reason: projectDevelopmentPreviewString(result, 'reason'),
+  }
+}
+
+function projectDevelopmentPreviewString(result: unknown, key: 'message' | 'reason' | 'previewTokenExpiresAt'): string {
+  if (!result || typeof result !== 'object') return ''
+  const direct = (result as Record<string, unknown>)[key]
+  if (typeof direct === 'string') return direct
+  const body = 'result' in result ? (result as { result?: unknown }).result : null
+  if (!body || typeof body !== 'object') return ''
+  const value = (body as Record<string, unknown>)[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function handleDevelopmentPreviewFrameLoad() {
+  const projectName = selected.value?.name
+  const key = developmentPreviewAuthorizationKey.value
+  if (!projectName || !key || !developmentPreviewNeedsAuthorization.value) return
+  if (!developmentPreviewTokenExpired()) return
+  void authorizeDevelopmentPreview({ force: true })
+}
+
+function developmentPreviewTokenExpired(): boolean {
+  const expiresMs = Date.parse(developmentPreviewTokenExpiresAt.value)
+  return Number.isFinite(expiresMs) && expiresMs <= Date.now()
+}
+
 function workbenchTabButtonClass(tab: WorkbenchTab): string {
   return workbenchTab.value === tab
     ? 'border-accent/40 bg-accent/10 text-accent'
@@ -1180,12 +1469,7 @@ async function sendMessage() {
         throw new Error(event.error ?? 'Streaming error')
       }
     }, controller.signal)
-    if (assistantMessageID && messages.value.every((message) => message.id !== assistantMessageID)) {
-      const loaded = (await api.listAllMessages(props.ctx, projectName)).map(toProjectMessageView)
-      messages.value = loaded
-    }
-    selected.value = await api.getProject(props.ctx, projectName)
-    projects.value = await api.listProjects(props.ctx)
+    await refreshProjectConversationAfterAssistantRun(projectName)
   } catch (e) {
     if (isAbortError(e)) {
       markAssistantMessageInterrupted(projectName, assistantMessageID)
@@ -1240,6 +1524,11 @@ function applyAssistantUIEvent(projectName: string, assistantMessageID: string |
         conversationStatus.value = builderEventStatus(content.valueString)
         continue
       }
+      if (content.key === 'assistant.progress' && projectName && assistantMessageID) {
+        touchedAssistantMessageID = assistantMessageID
+        appendAssistantProgress(projectName, assistantMessageID, content.valueString)
+        continue
+      }
       if (content.key !== 'assistant.content' || !projectName || !assistantMessageID) continue
       conversationStatus.value = ''
       touchedAssistantMessageID = assistantMessageID
@@ -1275,6 +1564,21 @@ function applyAssistantUIEvent(projectName: string, assistantMessageID: string |
   }
 
   return touchedAssistantMessageID
+}
+
+function appendAssistantProgress(projectName: string, assistantMessageID: string, value?: string) {
+  const text = (value || '').trim()
+  if (!text) return
+  const idx = ensureAssistantMessage(projectName, assistantMessageID)
+  const message = messages.value[idx]
+  const progress = [...(message.progress ?? [])]
+  if (progress.includes(text)) return
+  progress.push(text)
+  messages.value[idx] = {
+    ...message,
+    progress: progress.slice(-8),
+  }
+  messages.value = [...messages.value]
 }
 
 function builderEventStatus(eventType?: string): string {
@@ -1463,14 +1767,19 @@ async function handleResumeFailure(
   e: unknown,
   options: { panelMessage: string; setPanelError: (message: string) => void; restorePending?: () => void },
 ) {
+  let refreshed = false
   try {
     await refreshSelectedProjectConversation(projectName)
+    refreshed = true
   } catch {
     options.restorePending?.()
     // Keep the original resume failure visible below.
   }
   if (hasPendingInterruptKey(key)) {
     options.setPanelError(options.panelMessage)
+    return
+  }
+  if (refreshed) {
     return
   }
   error.value = e instanceof Error ? e.message : String(e)
@@ -1513,6 +1822,76 @@ function upsertProjectMessage(message: ProjectMessage) {
     return
   }
   messages.value = [...messages.value]
+}
+
+function projectMessagesForConversation(source: ProjectMessageView[]): ProjectMessageView[] {
+  const out: ProjectMessageView[] = []
+  let pendingActivity: ProjectMessageView | null = null
+  for (const message of source) {
+    if (isAssistantActivityPlaceholder(message)) {
+      pendingActivity = pendingActivity ? mergeAssistantActivityIntoMessage(pendingActivity, message) : message
+      continue
+    }
+    if (message.role === 'assistant' && pendingActivity && message.content.trim()) {
+      out.push(mergeAssistantActivityIntoMessage(message, pendingActivity))
+      pendingActivity = null
+      continue
+    }
+    if (pendingActivity) {
+      out.push(pendingActivity)
+      pendingActivity = null
+    }
+    out.push(message)
+  }
+  if (pendingActivity) {
+    out.push(pendingActivity)
+  }
+  return out
+}
+
+function isAssistantActivityPlaceholder(message: ProjectMessageView): boolean {
+  return message.role === 'assistant'
+    && !message.content.trim()
+    && !message.interrupt
+    && !message.viewStatus
+    && ((message.actions?.length ?? 0) > 0 || (message.progress?.length ?? 0) > 0)
+}
+
+function mergeAssistantActivityIntoMessage(base: ProjectMessageView, activity: ProjectMessageView): ProjectMessageView {
+  const actions = mergeAssistantActionLists(activity.actions ?? [], base.actions ?? [])
+  const progress = mergeAssistantProgressLists(activity.progress ?? [], base.progress ?? [])
+  return {
+    ...base,
+    ...(actions.length > 0 ? { actions } : {}),
+    ...(progress.length > 0 ? { progress } : {}),
+  }
+}
+
+function mergeAssistantActionLists(...sources: ProjectAssistantActionView[][]): ProjectAssistantActionView[] {
+  const actions: ProjectAssistantActionView[] = []
+  for (const source of sources) {
+    for (const action of source) {
+      const existingIdx = actions.findIndex((item) => item.id === action.id)
+      if (existingIdx === -1) {
+        actions.push(action)
+      } else {
+        actions[existingIdx] = mergeAssistantAction(actions[existingIdx], action)
+      }
+    }
+  }
+  return actions
+}
+
+function mergeAssistantProgressLists(...sources: string[][]): string[] {
+  const progress: string[] = []
+  for (const source of sources) {
+    for (const value of source) {
+      const text = value.trim()
+      if (!text || progress.includes(text)) continue
+      progress.push(text)
+    }
+  }
+  return progress.slice(-8)
 }
 
 function toProjectMessageView(message: ProjectMessage): ProjectMessageView {
@@ -2595,7 +2974,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
           </div>
           <div v-else class="mx-auto flex w-full max-w-[820px] flex-col gap-5">
             <div
-              v-for="message in messages"
+              v-for="message in conversationMessages"
               :key="message.id"
               class="flex w-full"
               :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
@@ -2713,6 +3092,20 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                   </details>
                 </div>
                 <div
+                  v-if="message.progress?.length"
+                  class="mb-3 grid gap-1.5"
+                  aria-live="polite"
+                >
+                  <div
+                    v-for="(note, noteIndex) in message.progress"
+                    :key="`${message.id}-progress-${noteIndex}`"
+                    class="flex min-w-0 items-start gap-2 text-[13px] leading-6 text-text-secondary"
+                  >
+                    <span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/80"></span>
+                    <span class="min-w-0">{{ note }}</span>
+                  </div>
+                </div>
+                <div
                   v-if="message.content.trim()"
                   :class="assistantMarkdownClass"
                   v-html="renderMessageContent(message.content, message.role)"
@@ -2817,6 +3210,16 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             <button
               type="button"
               class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition"
+              :class="workbenchTabButtonClass('preview')"
+              title="Preview"
+              @click="workbenchTab = 'preview'"
+            >
+              <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
+              Preview
+            </button>
+            <button
+              type="button"
+              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition"
               :class="workbenchTabButtonClass('review')"
               title="Review"
               @click="workbenchTab = 'review'"
@@ -2839,7 +3242,59 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
       </header>
 
       <div v-if="!selectedTool" class="min-h-0 flex-1 overflow-auto p-3">
-        <div v-if="workbenchTab === 'review'" class="grid gap-3">
+        <div v-if="workbenchTab === 'preview'" class="flex h-full min-h-[420px] flex-col gap-3">
+          <div class="flex min-w-0 items-center justify-between gap-3">
+            <div class="flex min-w-0 items-center gap-2">
+              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
+                <AppWindow class="h-4 w-4 text-accent" :stroke-width="1.75" />
+              </div>
+              <div class="min-w-0">
+                <div class="truncate text-[13px] font-semibold text-text-primary">Development</div>
+                <div class="truncate text-[12px] text-text-muted">{{ developmentBinding?.provider || 'app-studio' }}</div>
+              </div>
+              <StatusBadge :status="developmentPreviewPhase" />
+            </div>
+            <button
+              type="button"
+              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="!selected || !developmentBinding || developmentSyncBusy"
+              title="Sync"
+              @click="syncDevelopmentPreview"
+            >
+              <Loader2 v-if="developmentSyncBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+              <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+              Sync
+            </button>
+          </div>
+          <div v-if="developmentSyncError || developmentPreviewAuthorizationError" class="rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
+            {{ developmentSyncError || developmentPreviewAuthorizationError }}
+          </div>
+          <div v-else-if="developmentSyncStatus" class="rounded-md border border-success/30 bg-success-subtle p-3 text-[12px] text-success">
+            {{ developmentSyncStatus }}
+          </div>
+          <div v-if="developmentPreviewURL" class="min-h-0 flex-1 overflow-hidden rounded-md border border-border-subtle bg-surface">
+            <iframe
+              :key="developmentPreviewFrameKey"
+              :src="developmentPreviewURL"
+              title="Development preview"
+              sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-scripts"
+              referrerpolicy="no-referrer"
+              class="h-full min-h-[360px] w-full border-0 bg-white"
+              @load="handleDevelopmentPreviewFrameLoad"
+            />
+          </div>
+          <div v-else class="flex min-h-[360px] flex-1 items-center justify-center rounded-md border border-border-subtle bg-surface/80 p-6 text-center">
+            <div class="max-w-xs">
+              <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
+                <AppWindow class="h-5 w-5 text-text-muted" :stroke-width="1.75" />
+              </div>
+              <div class="mt-3 text-[13px] font-semibold text-text-primary">{{ developmentPreviewUnavailableTitle }}</div>
+              <div class="mt-1 text-[12px] leading-5 text-text-muted">{{ developmentPreviewUnavailableMessage }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="workbenchTab === 'review'" class="grid gap-3">
           <div v-if="pendingFollowUp" class="grid gap-2 rounded-md border border-accent/25 bg-accent-subtle p-3">
             <div class="flex min-w-0 items-start justify-between gap-3">
               <div class="min-w-0">

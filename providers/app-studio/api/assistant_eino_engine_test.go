@@ -423,6 +423,52 @@ func TestEinoAssistantEngineSummarizesLongProjectSessions(t *testing.T) {
 	}
 }
 
+func TestEinoAssistantEngineContinuesWhenSummaryIsEmpty(t *testing.T) {
+	chatModel := &blankSummaryEinoChatModel{}
+	engine := projectEinoAssistantEngine{
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return chatModel, nil
+		},
+		newTools: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			return nil, nil
+		},
+	}
+	history := make([]store.Message, 0, projectEinoAssistantSummaryContextMessages+2)
+	for i := 0; i < projectEinoAssistantSummaryContextMessages+2; i++ {
+		role := aiv1alpha1.ProjectMessageRoleUser
+		if i%2 == 1 {
+			role = aiv1alpha1.ProjectMessageRoleAssistant
+		}
+		history = append(history, store.Message{
+			ID:      "message",
+			Role:    role,
+			Content: "Need a production dashboard with auth, metrics, and repository handoff.",
+		})
+	}
+	result, err := engine.StreamProjectAssistant(
+		context.Background(),
+		projectAssistantRunRequest{
+			Project: &aiv1alpha1.Project{},
+			History: history,
+		},
+	)
+	if err != nil {
+		t.Fatalf("StreamProjectAssistant returned error: %v", err)
+	}
+	if result.Content != "continued after blank summary" {
+		t.Fatalf("content = %q, want assistant continuation", result.Content)
+	}
+	if chatModel.summaryCalls != 1 {
+		t.Fatalf("summary calls = %d, want one Eino summarization call", chatModel.summaryCalls)
+	}
+	if len(chatModel.inputs) != 2 {
+		t.Fatalf("model calls = %d, want summarization plus assistant continuation", len(chatModel.inputs))
+	}
+	if !einoMessagesContainContent(chatModel.inputs[1], "Summary unavailable; preserving recent App Studio context") {
+		t.Fatalf("assistant input = %#v, want fallback summary in continuation context", chatModel.inputs[1])
+	}
+}
+
 func TestEinoAssistantEngineAsksFollowUpThroughEinoInterrupt(t *testing.T) {
 	messages := &countingAssistantRunStore{MemoryStore: store.NewMemoryStore()}
 	workspaces := workspace.NewFileStore(t.TempDir())
@@ -1342,6 +1388,11 @@ type summarizingEinoChatModel struct {
 	summaryCalls int
 }
 
+type blankSummaryEinoChatModel struct {
+	inputs       [][]*schema.Message
+	summaryCalls int
+}
+
 func (m *summarizingEinoChatModel) Generate(ctx context.Context, input []*schema.Message, _ ...einomodel.Option) (*schema.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -1354,7 +1405,27 @@ func (m *summarizingEinoChatModel) Generate(ctx context.Context, input []*schema
 	return schema.AssistantMessage("continued with summarized context", nil), nil
 }
 
+func (m *blankSummaryEinoChatModel) Generate(ctx context.Context, input []*schema.Message, _ ...einomodel.Option) (*schema.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.inputs = append(m.inputs, cloneEinoMessagesForTest(input))
+	if einoMessagesContainContent(input, projectEinoAssistantSummaryInstruction) {
+		m.summaryCalls++
+		return schema.AssistantMessage("", nil), nil
+	}
+	return schema.AssistantMessage("continued after blank summary", nil), nil
+}
+
 func (m *summarizingEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	msg, err := m.Generate(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return schema.StreamReaderFromArray([]*schema.Message{msg}), nil
+}
+
+func (m *blankSummaryEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	msg, err := m.Generate(ctx, input, opts...)
 	if err != nil {
 		return nil, err

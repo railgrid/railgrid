@@ -372,6 +372,9 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 	run, err := s.store.ClaimAssistantRun(ctx, messageScope, runID, strings.TrimSpace(req.RequestID), time.Now().UTC())
 	if err != nil {
 		if strings.Contains(err.Error(), "not waiting") || strings.Contains(err.Error(), "request id is required") {
+			if clearErr := s.clearProjectAssistantPendingMessageForNonWaitingRun(ctx, messageScope, preflightRun, req); clearErr != nil {
+				return projectAssistantResumeResponse{}, clearErr
+			}
 			return projectAssistantResumeResponse{}, newValidationError(err.Error())
 		}
 		return projectAssistantResumeResponse{}, err
@@ -424,6 +427,27 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, req, decision, id.user, out, nil, newValidationError("assistant checkpoint is not resumable"))
 	}
 	return s.resumeClaimedProjectAssistantRunWithEinoCheckpoint(ctx, r, id, c, p, repository, run, state, req, decision, out)
+}
+
+func (s *Server) clearProjectAssistantPendingMessageForNonWaitingRun(ctx context.Context, scope store.Scope, run store.AssistantRun, req projectAssistantResumeRequest) error {
+	runID := strings.TrimSpace(run.ID)
+	requestID := strings.TrimSpace(req.RequestID)
+	assistantMessageID := strings.TrimSpace(req.AssistantMessageID)
+	if runID == "" || requestID == "" || assistantMessageID == "" {
+		return nil
+	}
+	if strings.TrimSpace(run.RequestID) != requestID {
+		return nil
+	}
+	switch run.Status {
+	case store.AssistantRunStatusPendingPermission, store.AssistantRunStatusPendingInput:
+		return nil
+	}
+	return s.updateProjectAssistantPermissionMessage(ctx, scope, assistantMessageID, projectAssistantResumeResponse{
+		RunID:     runID,
+		RequestID: requestID,
+		Status:    run.Status,
+	})
 }
 
 func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(

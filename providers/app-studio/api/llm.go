@@ -270,6 +270,7 @@ func (s *Server) generateProjectAssistantStream(
 	if err != nil {
 		return "", err
 	}
+	p = projectWithLiveBindingStatus(ctx, c, p, id)
 	req := projectAssistantRunRequest{
 		Identity:                 id,
 		HTTPRequest:              r,
@@ -476,7 +477,7 @@ func (s *Server) callProjectLocalTool(ctx context.Context, id identity, project 
 	if !ok {
 		return "", fmt.Errorf("unknown local project tool %q", name)
 	}
-	return tool.Call(ctx, projectAssistantToolCallRequest{
+	result, err := tool.Call(ctx, projectAssistantToolCallRequest{
 		Identity:             id,
 		Project:              project,
 		Repository:           repository,
@@ -486,6 +487,10 @@ func (s *Server) callProjectLocalTool(ctx context.Context, id identity, project 
 		HTTPRequest:          r,
 		Arguments:            args,
 	})
+	if err == nil && project != nil && shouldSyncDevelopmentAfterTool(name) {
+		go s.syncDevelopmentAfterMutation(id, project.DeepCopy(), name)
+	}
+	return result, err
 }
 
 func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, args map[string]any) (string, error) {

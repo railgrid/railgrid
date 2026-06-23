@@ -24,6 +24,7 @@ const (
 	projectAssistantUIActionInspect = "inspect"
 	projectAssistantUIActionClarify = "clarify"
 	projectAssistantUIActionEdit    = "edit"
+	projectAssistantUIActionRun     = "run"
 	projectAssistantUIActionCommit  = "commit"
 	projectAssistantUIActionPlan    = "plan"
 	projectAssistantUIActionOther   = "other"
@@ -123,7 +124,7 @@ func projectAssistantUIStatusEvent(status string) projectAssistantUIEvent {
 }
 
 func projectAssistantUIToolDisclosureEvent(surfaceID string, action projectAssistantUIAction) projectAssistantUIEvent {
-	return projectAssistantUIEvent{
+	event := projectAssistantUIEvent{
 		SurfaceUpdate: &projectAssistantUISurfaceUpdate{
 			SurfaceID: surfaceID,
 			Components: []projectAssistantUIComponent{{
@@ -133,6 +134,16 @@ func projectAssistantUIToolDisclosureEvent(surfaceID string, action projectAssis
 			}},
 		},
 	}
+	if progress := projectAssistantUIProgressText(action); progress != "" {
+		event.DataModelUpdate = &projectAssistantUIDataModelUpdate{
+			SurfaceID: surfaceID,
+			Contents: []projectAssistantUIDataContent{{
+				Key:         "assistant.progress",
+				ValueString: progress,
+			}},
+		}
+	}
+	return event
 }
 
 func projectAssistantUIInterruptRequestEvent(surfaceID string, permission projectAssistantPermission, checkpoint projectAssistantCheckpoint) projectAssistantUIEvent {
@@ -237,6 +248,10 @@ func projectAssistantUIActionKind(name string) string {
 		return projectAssistantUIActionClarify
 	case base == projectToolRequestProjectPlanApproval:
 		return projectAssistantUIActionPlan
+	case base == projectToolPlanProjectChanges:
+		return projectAssistantUIActionPlan
+	case base == projectToolCheckProjectReadiness || base == projectToolPrepareProjectDeployment || base == projectToolDeployProjectRuntime || base == projectToolGetRuntimeStatus || base == projectToolGetPreviewURL:
+		return projectAssistantUIActionRun
 	case base == projectToolCommitProjectFiles || base == projectToolCommitFiles:
 		return projectAssistantUIActionCommit
 	case base == projectToolWriteFile || base == projectToolApplyPatch || base == projectToolMkdir:
@@ -258,6 +273,8 @@ func projectAssistantUIActionText(kind, status string, count int) (string, strin
 		return projectAssistantUIActionLabel(active, failed, "Inspecting project", "Inspected project", "Inspection failed"), projectAssistantUIActionCount(count, "inspection", "inspections")
 	case projectAssistantUIActionEdit:
 		return projectAssistantUIActionLabel(active, failed, "Editing files", "Edited files", "Edit failed"), projectAssistantUIActionCount(count, "edit action", "edit actions")
+	case projectAssistantUIActionRun:
+		return projectAssistantUIActionLabel(active, failed, "Running checks", "Ran checks", "Run failed"), projectAssistantUIActionCount(count, "check", "checks")
 	case projectAssistantUIActionCommit:
 		return projectAssistantUIActionLabel(active, failed, "Preparing commit", "Committed changes", "Commit failed"), projectAssistantUIActionCount(count, "commit step", "commit steps")
 	case projectAssistantUIActionPlan:
@@ -265,6 +282,57 @@ func projectAssistantUIActionText(kind, status string, count int) (string, strin
 	default:
 		return projectAssistantUIActionLabel(active, failed, "Working", "Completed actions", "Action failed"), projectAssistantUIActionCount(count, "tool action", "tool actions")
 	}
+}
+
+func projectAssistantUIProgressText(action projectAssistantUIAction) string {
+	switch action.Status {
+	case "awaiting_approval":
+		return "Waiting for your approval."
+	case "awaiting_input":
+		return "Waiting for your answer."
+	}
+	active := action.Status == "requested" || action.Status == "running"
+	failed := action.Status == "failed" || action.Status == "rejected"
+	if !active && !failed {
+		switch action.Kind {
+		case projectAssistantUIActionClarify:
+			return "I have the clarification I need."
+		case projectAssistantUIActionEdit:
+			return "Updated the project files."
+		case projectAssistantUIActionCommit:
+			return "Saved the completed changes."
+		case projectAssistantUIActionPlan:
+			return "I have a plan for the change and am moving into implementation."
+		default:
+			return ""
+		}
+	}
+	switch action.Kind {
+	case projectAssistantUIActionClarify:
+		return projectAssistantUIProgressLabel(active, failed, "Asking for the detail needed to continue.", "Clarification failed.")
+	case projectAssistantUIActionInspect:
+		return projectAssistantUIProgressLabel(active, failed, "Looking through the project to find the relevant code.", "Inspection failed.")
+	case projectAssistantUIActionEdit:
+		return projectAssistantUIProgressLabel(active, failed, "Applying the requested change in the project files.", "Edit failed.")
+	case projectAssistantUIActionRun:
+		return projectAssistantUIProgressLabel(active, failed, "Checking the project state so I can make the change safely.", "Run failed.")
+	case projectAssistantUIActionCommit:
+		return projectAssistantUIProgressLabel(active, failed, "Saving the completed changes.", "Commit failed.")
+	case projectAssistantUIActionPlan:
+		return projectAssistantUIProgressLabel(active, failed, "Reviewing the change plan before editing.", "Plan rejected.")
+	default:
+		return projectAssistantUIProgressLabel(active, failed, "Working through the next step.", "Action failed.")
+	}
+}
+
+func projectAssistantUIProgressLabel(active, failed bool, activeLabel, failedLabel string) string {
+	if failed {
+		return failedLabel
+	}
+	if active {
+		return activeLabel
+	}
+	return ""
 }
 
 func projectAssistantUIActionLabel(active, failed bool, activeLabel, doneLabel, failedLabel string) string {

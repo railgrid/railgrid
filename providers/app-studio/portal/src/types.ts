@@ -114,8 +114,25 @@ export interface Project {
     commits?: ProjectRepositoryCommit[]
   }
   memory?: ProjectMemory
+  environments?: ProjectEnvironment[]
   createdAt: string
   updatedAt?: string
+}
+
+export interface ProjectEnvironment {
+  name: string
+  mode?: string
+  phase?: string
+  bindings?: ProjectProviderBinding[]
+}
+
+export interface ProjectProviderBinding {
+  name: string
+  provider?: string
+  phase?: string
+  url?: string
+  previewURL?: string
+  outputs?: Record<string, string>
 }
 
 export interface ProjectRepositoryCommit {

@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-sandbox-runner docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio load-sandbox-runner-image build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -61,7 +61,9 @@ build-hub: build-mcp-provider-portal build-kubernetes-edges-provider-portal buil
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
 build-hub-portal: build-portal ## Build hub with embedded portal
-	cp -r portal/dist pkg/hub/portal/
+	mkdir -p pkg/hub/portal
+	rm -rf pkg/hub/portal/dist
+	cp -r portal/dist pkg/hub/portal/dist
 	go build $(GOFLAGS) -tags portal_embed -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
 build-portal: portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal ## Build the portal Vue.js SPA (and built-in provider micro-frontends it depends on)
@@ -848,7 +850,8 @@ APP_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
 APP_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 APP_STUDIO_KCP_SERVER ?= https://localhost:6443
 APP_STUDIO_WORKSPACE_PATH ?= root:kedge:providers:app-studio
-APP_STUDIO_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/app-studio-runtime.kubeconfig
+APP_STUDIO_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/app-studio-provider.kubeconfig
+APP_STUDIO_RUNTIME_KUBECONFIG ?= $(KRO_KIND_KUBECONFIG)
 APP_STUDIO_SCHEMAS_DIR ?= providers/app-studio/deploy/chart/files/schemas
 APP_STUDIO_MANIFEST ?= providers/app-studio/manifest.yaml
 APP_STUDIO_PROVIDER_MANIFEST ?= providers/app-studio/provider.yaml
@@ -1003,6 +1006,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 	@echo "Starting App Studio provider on :$(APP_STUDIO_PORT)"
 	@echo "  hub:   $(APP_STUDIO_HUB_URL)"
 	@echo "  token: $(APP_STUDIO_TOKEN)"
+	@echo "  runtime: $${APP_STUDIO_RUNTIME_KUBECONFIG:-$(APP_STUDIO_RUNTIME_KUBECONFIG)}"
 	@# Auto-source providers/app-studio/.env (gitignored) so local store/LLM
 	@# overrides reach Tilt and make without a manual export. See .env.example.
 	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
@@ -1018,7 +1022,8 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 		KEDGE_HUB_INSECURE=true \
 		KEDGE_PROVIDER_NAME=app-studio \
-		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_PROVIDER_KUBECONFIG)" "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+		APP_STUDIO_RUNTIME_KUBECONFIG=$${APP_STUDIO_RUNTIME_KUBECONFIG:-$$( [ -f "$(APP_STUDIO_RUNTIME_KUBECONFIG)" ] && echo "$(APP_STUDIO_RUNTIME_KUBECONFIG)" )} \
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
 		APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
@@ -1031,7 +1036,8 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 		KEDGE_HUB_INSECURE=true \
 		KEDGE_PROVIDER_NAME=app-studio \
-		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_PROVIDER_KUBECONFIG)" "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+		APP_STUDIO_RUNTIME_KUBECONFIG=$${APP_STUDIO_RUNTIME_KUBECONFIG:-$$( [ -f "$(APP_STUDIO_RUNTIME_KUBECONFIG)" ] && echo "$(APP_STUDIO_RUNTIME_KUBECONFIG)" )} \
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
 		APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
@@ -1052,17 +1058,17 @@ install-provider-app-studio: ## Apply App Studio Provider + CatalogEntry into ro
 
 ## Create App Studio's APIExport (+ schemas + endpoint slice + bind grant) in
 ## its provider workspace so tenants can Enable it. Reads the provider-token the
-## Provider controller minted on register, writes a dev runtime kubeconfig, and
+## Provider controller minted on register, writes a dev provider kubeconfig, and
 ## runs the provider's `init` (sdkinstall.Bootstrap) with the shipped schemas.
 ## KEDGE_CATALOGENTRY_FILE is intentionally unset — the dev install target
 ## already applied the CatalogEntry to system:providers. Idempotent.
-init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIExport + write dev runtime kubeconfig
+init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIExport + write dev provider kubeconfig
 	@test -f $(APP_STUDIO_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(APP_STUDIO_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
-	@echo "Reading provider-token from $(APP_STUDIO_WORKSPACE_PATH) and writing $(APP_STUDIO_RUNTIME_KUBECONFIG)"
+	@echo "Reading provider-token from $(APP_STUDIO_WORKSPACE_PATH) and writing $(APP_STUDIO_PROVIDER_KUBECONFIG)"
 	@TOKEN=$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
 		--server=$(APP_STUDIO_KCP_SERVER)/clusters/$(APP_STUDIO_WORKSPACE_PATH) \
 		--insecure-skip-tls-verify \
@@ -1071,9 +1077,9 @@ init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIE
 	mkdir -p $(KCP_DATA_DIR); \
 	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
 		"$(APP_STUDIO_KCP_SERVER)/clusters/$(APP_STUDIO_WORKSPACE_PATH)" "$$TOKEN" \
-		> $(APP_STUDIO_RUNTIME_KUBECONFIG)
+		> $(APP_STUDIO_PROVIDER_KUBECONFIG)
 	@echo "Running app-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
-	KEDGE_PROVIDER_KUBECONFIG=$(APP_STUDIO_RUNTIME_KUBECONFIG) \
+	KEDGE_PROVIDER_KUBECONFIG=$(APP_STUDIO_PROVIDER_KUBECONFIG) \
 	APP_STUDIO_WORKSPACE_PATH=$(APP_STUDIO_WORKSPACE_PATH) \
 	KEDGE_SCHEMAS_DIR=$(APP_STUDIO_SCHEMAS_DIR) \
 		$(BINDIR)/app-studio-provider init
@@ -1089,6 +1095,20 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(APP_STUDIO_MANIFEST) -f $(APP_STUDIO_PROVIDER_MANIFEST)
+
+# --- App Studio sandbox runner image (live development runtimes) ---
+SANDBOX_RUNNER_IMAGE ?= ghcr.io/faroshq/kedge-sandbox-runner:dev
+SANDBOX_RUNNER_PLATFORM ?= linux/$(ARCH)
+
+docker-build-sandbox-runner: ## Build the App Studio sandbox runner image used by SandboxRunner pods
+	docker build -f providers/app-studio/Dockerfile.runner \
+		--platform $(SANDBOX_RUNNER_PLATFORM) \
+		--provenance=false \
+		-t $(SANDBOX_RUNNER_IMAGE) .
+
+load-sandbox-runner-image: docker-build-sandbox-runner ## Load the sandbox runner image into the local kind runtime cluster
+	@echo ">>> loading $(SANDBOX_RUNNER_IMAGE) into kind cluster $(KRO_KIND_NAME)"
+	kind load docker-image $(SANDBOX_RUNNER_IMAGE) --name $(KRO_KIND_NAME)
 
 ## Apply the infrastructure CatalogEntry into root:kedge:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.

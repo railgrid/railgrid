@@ -28,6 +28,8 @@ import (
 
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -47,9 +49,13 @@ type Server struct {
 	workspaces               *workspace.FileStore
 	hubBase                  string
 	mcpInsecureSkipTLSVerify bool
+	runtimeConfig            *rest.Config
+	runtimeClient            kubernetes.Interface
+	previewSigner            *previewSigner
 	autoApproveActions       bool
 	assistantEngine          projectAssistantEngine
 	assistantRunManager      *projectAssistantRunManager
+	developmentSyncLocks     map[string]*sync.Mutex
 	mu                       sync.Mutex
 }
 
@@ -66,10 +72,33 @@ func NewWithWorkspace(clients *tenant.ClientFactory, msgStore store.Store, works
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
+		previewSigner:            newPreviewSigner(nil),
 	}
 	s.assistantEngine = NewEinoAssistantEngine(s)
 	s.assistantRunManager = newProjectAssistantRunManager()
 	return s
+}
+
+func (s *Server) SetRuntimeConfig(cfg *rest.Config) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runtimeConfig = cfg
+	if cfg == nil {
+		s.runtimeClient = nil
+		return nil
+	}
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return err
+	}
+	s.runtimeClient = client
+	return nil
+}
+
+func (s *Server) SetPreviewTokenSecret(secret []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.previewSigner = newPreviewSigner(secret)
 }
 
 func (s *Server) SetAutoApproveAssistantActions(enabled bool) {
@@ -102,6 +131,21 @@ func (s *Server) projectAssistantRunManager() *projectAssistantRunManager {
 	return s.assistantRunManager
 }
 
+func (s *Server) developmentSyncLock(id identity, projectName string) *sync.Mutex {
+	key := id.orgUUID + "/" + id.workspaceUUID + "/" + projectName
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.developmentSyncLocks == nil {
+		s.developmentSyncLocks = map[string]*sync.Mutex{}
+	}
+	lock := s.developmentSyncLocks[key]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.developmentSyncLocks[key] = lock
+	}
+	return lock
+}
+
 // Register mounts the project routes onto r. The hub backend proxy strips the
 // /services/providers/app-studio prefix, so paths are registered bare.
 func (s *Server) Register(r *mux.Router) {
@@ -115,6 +159,12 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}", s.deleteProject).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/messages", s.listProjectMessages).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/messages/stream", s.createProjectMessageStream).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/sync-development", s.syncProjectDevelopment).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/restart-development", s.restartProjectDevelopment).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/development-logs", s.logsProjectDevelopment).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/development-status", s.statusProjectDevelopment).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/authorize-development-preview", s.authorizeProjectDevelopmentPreview).Methods(http.MethodPost)
+	r.PathPrefix("/api/projects/{project}/preview/").HandlerFunc(s.previewProjectDevelopment)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/resume", s.resumeProjectAssistant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/abort", s.abortProjectAssistant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/memory", s.getProjectMemory).Methods(http.MethodGet)

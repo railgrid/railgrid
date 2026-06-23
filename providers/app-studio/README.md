@@ -35,8 +35,9 @@ service-account escalation.
 | Typed client | `client/` — trimmed dynamic client for the Project resource |
 | Tenant client | `tenant/` — token-forwarding `ClientFactory` (host+TLS from the provider kubeconfig, caller token per request) |
 | Message store | `store/` — Postgres + in-memory + envelope-encryption implementations |
+| Sandbox runtime | `runner/` + `api/development_*` — project-scoped sync, restart, logs, status, and signed preview proxy for infrastructure-backed `SandboxRunner` workloads |
 | Portal | `portal/` — the Vue micro-frontend (`<kedge-provider-app-studio>`), embedded via `assets.go` |
-| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.kedge.faros.sh`) + Code provider dependency + the Project APIResourceSchema + `secrets` claim |
+| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.kedge.faros.sh`) + Code and Infrastructure provider dependencies + the Project APIResourceSchema + `secrets` claim |
 | Deploy | `deploy/chart/` — Helm chart (Deployment, Service, CatalogEntry) |
 | CI (mirror) | `.github/workflows/{image,chart}.yaml` — publish the image + chart to GHCR (run only in the mirror) |
 
@@ -51,6 +52,10 @@ Environment variables consumed by the binary:
 | `KEDGE_HUB_TOKEN` | Bearer token for the heartbeat |
 | `KEDGE_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |
 | `KEDGE_PROVIDER_KUBECONFIG` | Provider kubeconfig (kcp front-proxy host + TLS only) |
+| `APP_STUDIO_RUNTIME_KUBECONFIG` | Kubernetes kubeconfig for the runtime cluster that runs `SandboxRunner` pods |
+| `APP_STUDIO_SANDBOX_RUNNER_IMAGE` | Runner image passed to new `SandboxRunner` resources; use an immutable digest outside local development |
+| `APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE` | kubectl-capable token-generator image passed to new `SandboxRunner` resources; use an immutable digest outside local development |
+| `APP_STUDIO_PREVIEW_TOKEN_SECRET` | Optional shared signing secret for preview URLs; configure for multi-replica deployments |
 | `APP_STUDIO_DATABASE_URL` | Postgres DSN for the message store |
 | `APP_STUDIO_IN_MEMORY_MESSAGE_STORE` | `true` → non-durable in-memory store (dev) |
 | `APP_STUDIO_MESSAGE_ENCRYPTION_KEYS` | Comma-separated `key-id:base64-aes-key` entries |
@@ -90,12 +95,22 @@ remains the git-source boundary: `commit_project_files` reads selected workspace
 files and delegates the actual commit to the Code provider's `code__commit_files`
 tool.
 
-## Runtime workers
+## Development runtime
 
-App Studio does not run build, test, preview, or log commands inside the
-provider pod. The assistant can recommend build and test checks from project
-context. Runtime deployment, status, and preview URL requests are exposed as
-App Studio graph workflow tools so the model gets structured handoff results and
-blockers. Until a tenant-isolated `RuntimeTarget` implementation is productized,
-those workflows return a clear not-configured result instead of executing
-provider-pod commands.
+App Studio owns the project-facing development runtime API. It creates and
+deletes infrastructure-backed `SandboxRunner` resources in the caller's tenant
+workspace, syncs App Studio workspace files to the runner, and serves project
+preview URLs from `/services/providers/app-studio/api/projects/{project}/preview/`.
+
+Infrastructure owns the resource composition: the `sandbox-runner` Template uses
+KRO to create the runtime namespace, PVC, Deployment, Service, control Secret,
+and network policy. App Studio uses `APP_STUDIO_RUNTIME_KUBECONFIG` only for
+runtime data-plane calls after validating that `SandboxRunner` status refs still
+point at the deterministic runner-owned namespace, Service, and Secret.
+
+In the Helm chart, set `runtimeKubeconfig.secretName` to a Secret with key
+`kubeconfig` to enable those runtime data-plane APIs. Leaving it empty starts App
+Studio normally with sandbox runtime operations disabled.
+
+See `../../docs/app-studio-sandbox-runtime.md` for the current runtime boundary
+and caveats.

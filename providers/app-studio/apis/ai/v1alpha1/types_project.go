@@ -72,6 +72,12 @@ type ProjectSpec struct {
 	// project. It is edited explicitly through the API in the MVP.
 	// +optional
 	Memory ProjectMemory `json:"memory,omitempty"`
+
+	// Environments describe provider-backed runtime capabilities for this
+	// Project. App Studio owns the binding contract; providers own runtime
+	// implementation details.
+	// +optional
+	Environments []ProjectEnvironmentSpec `json:"environments,omitempty"`
 }
 
 // ProjectRepositoryBinding identifies the Code provider Repository created for
@@ -102,6 +108,81 @@ type ProjectMemory struct {
 	Requirements []string `json:"requirements"`
 	// +optional
 	Constraints []string `json:"constraints"`
+}
+
+type ProjectEnvironmentMode string
+
+const (
+	ProjectEnvironmentModeArtifact ProjectEnvironmentMode = "artifact"
+	ProjectEnvironmentModeLive     ProjectEnvironmentMode = "live"
+)
+
+type ProjectPromotion string
+
+const (
+	ProjectPromotionManual ProjectPromotion = "manual"
+	ProjectPromotionAuto   ProjectPromotion = "auto"
+)
+
+type ProjectBindingKind string
+
+const (
+	ProjectBindingKindProviderResource ProjectBindingKind = "providerResource"
+)
+
+type ProjectEnvironmentSpec struct {
+	// Name is a stable environment identifier such as development or test.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
+
+	// Mode distinguishes artifact-based environments from live development
+	// runtimes. Empty means artifact for backward compatibility.
+	// +optional
+	Mode ProjectEnvironmentMode `json:"mode,omitempty"`
+
+	// AutoDeploy marks artifact environments that should deploy automatically.
+	// +optional
+	AutoDeploy bool `json:"autoDeploy,omitempty"`
+
+	// Promotion controls how changes move into this environment.
+	// +optional
+	Promotion ProjectPromotion `json:"promotion,omitempty"`
+
+	// Bindings connect this environment to provider capabilities.
+	// +optional
+	Bindings []ProjectProviderBindingSpec `json:"bindings,omitempty"`
+}
+
+type ProjectProviderBindingSpec struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Provider string `json:"provider"`
+
+	// +kubebuilder:validation:Required
+	Kind ProjectBindingKind `json:"kind"`
+
+	// +optional
+	ResourceRef *ProjectProviderResourceReference `json:"resourceRef,omitempty"`
+
+	// Values is provider-owned configuration. App Studio treats it as an
+	// opaque contract payload.
+	// +optional
+	Values runtime.RawExtension `json:"values,omitempty"`
+}
+
+type ProjectProviderResourceReference struct {
+	Name       string `json:"name,omitempty"`
+	APIVersion string `json:"apiVersion,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Resource   string `json:"resource,omitempty"`
 }
 
 // ProjectMessage is a single chat message in a Project.
@@ -152,6 +233,26 @@ type ProjectStatus struct {
 	// UpdatedAt reflects the latest API mutation affecting metadata or memory.
 	// +optional
 	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
+
+	// Environments reports provider-observed environment state.
+	// +optional
+	Environments []ProjectEnvironmentStatus `json:"environments,omitempty"`
+}
+
+type ProjectEnvironmentStatus struct {
+	Name     string                         `json:"name,omitempty"`
+	Mode     ProjectEnvironmentMode         `json:"mode,omitempty"`
+	Phase    string                         `json:"phase,omitempty"`
+	Bindings []ProjectProviderBindingStatus `json:"bindings,omitempty"`
+}
+
+type ProjectProviderBindingStatus struct {
+	Name       string            `json:"name,omitempty"`
+	Provider   string            `json:"provider,omitempty"`
+	Phase      string            `json:"phase,omitempty"`
+	URL        string            `json:"url,omitempty"`
+	PreviewURL string            `json:"previewURL,omitempty"`
+	Outputs    map[string]string `json:"outputs,omitempty"`
 }
 
 // +kubebuilder:object:root=true
