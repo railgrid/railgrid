@@ -174,6 +174,15 @@ func TestProjectAssistantStreamWriterEmitsCanonicalLifecycleSequence(t *testing.
 	}
 	assertA2UICard(t, got[5], "tool call", "Editing files")
 	assertA2UICard(t, got[6], "tool result", "Edited files")
+	firstToolCardID := assertSingleA2UICardID(t, got[1], "tool call")
+	runningToolCardID := assertSingleA2UICardID(t, got[5], "tool call")
+	finishedToolCardID := assertSingleA2UICardID(t, got[6], "tool result")
+	if runningToolCardID != firstToolCardID || finishedToolCardID != firstToolCardID {
+		t.Fatalf("tool card IDs = %q, %q, %q; want lifecycle updates to reuse one A2UI card", firstToolCardID, runningToolCardID, finishedToolCardID)
+	}
+	if children := assertA2UIRootChildren(t, got[6]); countString(children, firstToolCardID) != 1 {
+		t.Fatalf("root children = %#v, want tool card %q listed once", children, firstToolCardID)
+	}
 	if got[7].Type != string(projectAssistantEventRunFinished) || got[7].AssistantMessageID != "assistant-1" {
 		t.Fatalf("final event = %#v, want run_finished", got[7])
 	}
@@ -422,6 +431,12 @@ func TestStreamProjectAssistantEmitsCanonicalLifecycleSequence(t *testing.T) {
 	assertA2UICard(t, got[1], "tool call", "Editing files")
 	assertA2UICard(t, got[5], "tool call", "Editing files")
 	assertA2UICard(t, got[6], "tool result", "Edited files")
+	firstToolCardID := assertSingleA2UICardID(t, got[1], "tool call")
+	runningToolCardID := assertSingleA2UICardID(t, got[5], "tool call")
+	finishedToolCardID := assertSingleA2UICardID(t, got[6], "tool result")
+	if runningToolCardID != firstToolCardID || finishedToolCardID != firstToolCardID {
+		t.Fatalf("tool card IDs = %q, %q, %q; want lifecycle updates to reuse one A2UI card", firstToolCardID, runningToolCardID, finishedToolCardID)
+	}
 	if !projectMessageStreamEventsHaveContent([]projectMessageStreamEvent{got[7]}, projectAssistantUIDevelopmentPreviewRefreshKey) {
 		t.Fatalf("preview refresh event = %#v, want preview refresh signal", got[7])
 	}
@@ -637,6 +652,55 @@ func assertA2UICard(t *testing.T, event projectMessageStreamEvent, role, bodyCon
 		t.Fatalf("card role %q body = %q, want to contain %q", role, body, bodyContains)
 	}
 	t.Fatalf("components = %#v, want A2UI card with role %q", event.SurfaceUpdate.Components, role)
+}
+
+func assertSingleA2UICardID(t *testing.T, event projectMessageStreamEvent, role string) string {
+	t.Helper()
+	if event.SurfaceUpdate == nil {
+		t.Fatalf("event = %#v, want surfaceUpdate", event)
+	}
+	var found []string
+	components := map[string]projectAssistantUIComponent{}
+	for _, component := range event.SurfaceUpdate.Components {
+		components[component.ID] = component
+	}
+	for _, component := range event.SurfaceUpdate.Components {
+		if component.Component.Card == nil {
+			continue
+		}
+		texts := a2uiCardTexts(components, component.Component.Card.Children)
+		if len(texts) > 0 && texts[0] == role {
+			found = append(found, component.ID)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("components = %#v, want one A2UI card with role %q, got IDs %#v", event.SurfaceUpdate.Components, role, found)
+	}
+	return found[0]
+}
+
+func assertA2UIRootChildren(t *testing.T, event projectMessageStreamEvent) []string {
+	t.Helper()
+	if event.SurfaceUpdate == nil {
+		t.Fatalf("event = %#v, want surfaceUpdate", event)
+	}
+	for _, component := range event.SurfaceUpdate.Components {
+		if component.ID == projectAssistantUIRootComponentID && component.Component.Column != nil {
+			return component.Component.Column.Children
+		}
+	}
+	t.Fatalf("components = %#v, want root column component", event.SurfaceUpdate.Components)
+	return nil
+}
+
+func countString(values []string, want string) int {
+	var count int
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+	return count
 }
 
 func a2uiCardTexts(components map[string]projectAssistantUIComponent, children []string) []string {

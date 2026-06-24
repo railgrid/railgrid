@@ -30,6 +30,19 @@ import { api, isProjectAPIInitializingError } from './api'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useEscapeKey } from '@/composables/useEscapeKey'
+import {
+  activateWorkbenchTab,
+  closeWorkbenchTab,
+  createDefaultWorkbenchState,
+  openWorkbenchBuiltInTab,
+  openWorkbenchProviderTool,
+  reorderWorkbenchTab,
+  updateWorkbenchProviderToolPath,
+  type WorkbenchBuiltInTab,
+  type WorkbenchProviderToolRef,
+  type WorkbenchTabDropPlacement,
+  type WorkbenchTabDescriptor,
+} from './workbench'
 import type {
   KedgeContext,
   Project,
@@ -50,14 +63,8 @@ const props = defineProps<{
   navigate: (path: string) => void
 }>()
 
-interface ProviderTool {
-  id: string
+interface ProviderTool extends WorkbenchProviderToolRef {
   provider: ProviderItem
-  providerName: string
-  title: string
-  subtitle: string
-  path: string
-  iconURL?: string
 }
 
 interface LandingCategoryTile {
@@ -67,6 +74,16 @@ interface LandingCategoryTile {
   promptSeed: string
   icon: Component
   iconURL?: string
+}
+
+interface WorkbenchLauncherItem {
+  id: string
+  title: string
+  subtitle: string
+  icon: Component
+  iconURL?: string
+  builtInTab?: WorkbenchBuiltInTab
+  providerTool?: ProviderTool
 }
 
 type LLMCredentialMode = 'api-key' | 'service-account-json'
@@ -97,7 +114,6 @@ type ProjectMessageView = ProjectMessage & {
   surface?: ProjectAssistantSurface
   interrupt?: ProjectAssistantUIInterruptRequest
 }
-type WorkbenchTab = 'preview' | 'review' | 'providers'
 interface PendingApprovalView {
   message: ProjectMessageView
   interrupt: ProjectAssistantUIInterruptRequest
@@ -251,6 +267,7 @@ const pendingFollowUp = computed<PendingFollowUpView | null>(() => {
   }
   return null
 })
+const hasPendingReview = computed(() => pendingFollowUp.value !== null || pendingApproval.value !== null)
 const loading = ref(true)
 const projectsLoaded = ref(false)
 const providersLoading = ref(false)
@@ -271,6 +288,7 @@ const deletingProject = ref(false)
 const prompt = ref('')
 const projectQuery = ref('')
 const providerQuery = ref('')
+const workbenchLauncherQuery = ref('')
 const developmentSyncBusy = ref(false)
 const developmentSyncStatus = ref<string | null>(null)
 const developmentSyncError = ref<string | null>(null)
@@ -287,9 +305,11 @@ const permissionErrors = ref<Record<string, string>>({})
 const followUpAnswers = ref<Record<string, string>>({})
 const followUpBusy = ref<Record<string, boolean>>({})
 const followUpErrors = ref<Record<string, string>>({})
-const selectedTool = ref<ProviderTool | null>(null)
 const toolState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
-const workbenchTab = ref<WorkbenchTab>('providers')
+const workbench = ref(createDefaultWorkbenchState())
+const draggedWorkbenchTabID = ref<string | null>(null)
+const dragOverWorkbenchTabID = ref<string | null>(null)
+const dragOverWorkbenchTabPlacement = ref<WorkbenchTabDropPlacement>('before')
 const llmSettings = ref<ProjectLLMSettings | null>(null)
 const llmProvider = ref(OPENAI_COMPATIBLE_PROVIDER)
 const llmBaseURL = ref('https://api.openai.com/v1')
@@ -493,6 +513,73 @@ const providerTools = computed<ProviderTool[]>(() => {
   return out.sort((a, b) => a.title.localeCompare(b.title))
 })
 
+const activeWorkbenchTab = computed<WorkbenchTabDescriptor | null>(() => {
+  return workbench.value.tabs.find((tab) => tab.id === workbench.value.activeTabID) ?? workbench.value.tabs[0] ?? null
+})
+
+const activeProviderToolRef = computed(() => {
+  const tab = activeWorkbenchTab.value
+  return tab?.kind === 'provider' ? tab.providerTool ?? null : null
+})
+
+const activeProviderTool = computed<ProviderTool | null>(() => {
+  const toolRef = activeProviderToolRef.value
+  if (!toolRef) return null
+  const tool = providerTools.value.find((item) => item.id === toolRef.id)
+  return tool ? { ...tool, path: toolRef.path } : null
+})
+
+const workbenchLauncherQueryNormalized = computed(() => workbenchLauncherQuery.value.trim().toLowerCase())
+
+const launcherExistingTabs = computed(() => {
+  const q = workbenchLauncherQueryNormalized.value
+  return workbench.value.tabs.filter((tab) => {
+    if (tab.id === workbench.value.activeTabID) return false
+    if (!q) return true
+    return `${tab.title} ${tab.subtitle ?? ''}`.toLowerCase().includes(q)
+  })
+})
+
+const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
+  {
+    id: 'builtin:preview',
+    title: 'Preview',
+    subtitle: 'Preview your app',
+    icon: AppWindow,
+    builtInTab: 'preview',
+  },
+  {
+    id: 'builtin:providers',
+    title: 'Providers',
+    subtitle: 'Browse provider views and project tools',
+    icon: PanelRight,
+    builtInTab: 'providers',
+  },
+  {
+    id: 'builtin:review',
+    title: 'Review',
+    subtitle: hasPendingReview.value ? 'Resolve pending approvals and follow-up questions' : 'Inspect approvals and follow-up requests',
+    icon: ClipboardList,
+    builtInTab: 'review',
+  },
+])
+
+const launcherProviderItems = computed<WorkbenchLauncherItem[]>(() => providerTools.value.map((tool) => ({
+  id: `provider:${tool.id}`,
+  title: tool.title,
+  subtitle: tool.subtitle,
+  icon: Wrench,
+  iconURL: tool.iconURL,
+  providerTool: tool,
+})))
+
+const launcherSuggestedItems = computed(() => {
+  const q = workbenchLauncherQueryNormalized.value
+  const items = [...launcherBuiltInItems.value, ...launcherProviderItems.value]
+  if (!q) return items
+  return items.filter((item) => `${item.title} ${item.subtitle}`.toLowerCase().includes(q))
+})
+
 const landingCategoryTiles = computed<LandingCategoryTile[]>(() => {
   const tiles: LandingCategoryTile[] = []
   const seen = new Set<string>()
@@ -650,6 +737,35 @@ watch(
   },
 )
 
+watch(
+  () => activeProviderToolRef.value?.id ?? '',
+  async (toolID) => {
+    toolLoadSerial += 1
+    if (!toolID) {
+      toolState.value = 'idle'
+      toolError.value = null
+      detachMountedTool()
+      return
+    }
+    await nextTick()
+    await mountActiveProviderTool()
+  },
+)
+
+watch(
+  () => [
+    activeProviderToolRef.value?.path,
+    props.ctx?.token,
+    props.ctx?.user,
+    props.ctx?.tenant,
+    props.ctx?.theme,
+    props.ctx?.subPath,
+  ],
+  () => {
+    void nextTick(pushToolContext)
+  },
+)
+
 watch(llmProvider, () => {
   llmBaseURL.value = normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value)
   llmModel.value = normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value)
@@ -665,13 +781,6 @@ watch(llmCredentialMode, () => {
   llmBaseURL.value = normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value)
   llmModel.value = normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value)
 })
-
-watch(
-  () => [props.ctx?.token, props.ctx?.tenant, props.ctx?.theme],
-  () => {
-    pushToolContext()
-  },
-)
 
 watch(settingsProject, () => {
   if (showSettings.value) syncProjectSettingsForm()
@@ -720,13 +829,13 @@ async function load() {
     if (isCreateRoute.value) {
       selected.value = null
       messages.value = []
-      closeTool()
+      resetWorkbench()
       return
     }
     if (projects.value.length === 0) {
       selected.value = null
       messages.value = []
-      closeTool()
+      resetWorkbench()
       props.navigate(CREATE_PROJECT_ROUTE)
       return
     }
@@ -736,7 +845,7 @@ async function load() {
     } else {
       selected.value = null
       messages.value = []
-      closeTool()
+      resetWorkbench()
     }
   } catch (e) {
     if (handleProjectAPIInitializing(e)) return
@@ -1076,7 +1185,7 @@ async function createProjectAndStartConversation(content: string) {
   error.value = null
   prompt.value = ''
   selectedLandingCategory.value = null
-  closeTool()
+  resetWorkbench()
   selected.value = {
     name: draftName,
     displayName: 'New project',
@@ -1084,7 +1193,6 @@ async function createProjectAndStartConversation(content: string) {
     phase: 'Creating',
     createdAt: now,
   }
-  workbenchTab.value = 'providers'
   messages.value = [
     {
       id: `temp-${Date.now()}-user`,
@@ -1450,10 +1558,107 @@ function developmentPreviewTokenExpiresSoon(): boolean {
   return Number.isFinite(expiresMs) && expiresMs <= Date.now() + DEVELOPMENT_PREVIEW_AUTH_RENEWAL_SKEW_MS
 }
 
-function workbenchTabButtonClass(tab: WorkbenchTab): string {
-  return workbenchTab.value === tab
+function resetWorkbench() {
+  workbench.value = createDefaultWorkbenchState()
+}
+
+function openBuiltInWorkbenchTab(kind: WorkbenchBuiltInTab) {
+  workbench.value = openWorkbenchBuiltInTab(workbench.value, kind)
+}
+
+function openWorkbenchLauncher() {
+  workbenchLauncherQuery.value = ''
+  openBuiltInWorkbenchTab('launcher')
+}
+
+function openWorkbenchLauncherItem(item: WorkbenchLauncherItem) {
+  if (item.providerTool) {
+    openTool(item.providerTool)
+    return
+  }
+  if (item.builtInTab) {
+    openBuiltInWorkbenchTab(item.builtInTab)
+  }
+}
+
+function activateWorkbenchTabByID(tabID: string) {
+  workbench.value = activateWorkbenchTab(workbench.value, tabID)
+}
+
+function closeWorkbenchTabByID(tabID: string) {
+  workbench.value = closeWorkbenchTab(workbench.value, tabID)
+}
+
+function startWorkbenchTabDrag(event: DragEvent, tab: WorkbenchTabDescriptor) {
+  draggedWorkbenchTabID.value = tab.id
+  dragOverWorkbenchTabID.value = null
+  dragOverWorkbenchTabPlacement.value = 'before'
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', tab.id)
+  }
+}
+
+function dragOverWorkbenchTab(event: DragEvent, tab: WorkbenchTabDescriptor) {
+  const draggedTabID = draggedWorkbenchTabID.value
+  if (!draggedTabID || draggedTabID === tab.id) return
+  event.preventDefault()
+  dragOverWorkbenchTabID.value = tab.id
+  dragOverWorkbenchTabPlacement.value = workbenchTabDropPlacement(event)
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+}
+
+function dropWorkbenchTab(event: DragEvent, tab: WorkbenchTabDescriptor) {
+  event.preventDefault()
+  const draggedTabID = draggedWorkbenchTabID.value || event.dataTransfer?.getData('text/plain') || ''
+  if (draggedTabID && draggedTabID !== tab.id) {
+    workbench.value = reorderWorkbenchTab(workbench.value, draggedTabID, tab.id, workbenchTabDropPlacement(event))
+  }
+  clearWorkbenchTabDragState()
+}
+
+function clearWorkbenchTabDragState() {
+  draggedWorkbenchTabID.value = null
+  dragOverWorkbenchTabID.value = null
+  dragOverWorkbenchTabPlacement.value = 'before'
+}
+
+function workbenchTabDropPlacement(event: DragEvent): WorkbenchTabDropPlacement {
+  const target = event.currentTarget
+  if (!(target instanceof HTMLElement)) return 'before'
+  const rect = target.getBoundingClientRect()
+  return event.clientX > rect.left + rect.width / 2 ? 'after' : 'before'
+}
+
+function workbenchTabButtonClass(tab: WorkbenchTabDescriptor): string {
+  const classes = workbench.value.activeTabID === tab.id
     ? 'border-accent/40 bg-accent/10 text-accent'
     : 'border-transparent text-text-muted hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary'
+  const dragClasses = [
+    draggedWorkbenchTabID.value === tab.id ? 'opacity-60' : '',
+    dragOverWorkbenchTabID.value === tab.id ? 'border-accent/60 bg-accent/10' : '',
+    dragOverWorkbenchTabID.value === tab.id && dragOverWorkbenchTabPlacement.value === 'after' ? 'shadow-[inset_-2px_0_0_var(--color-accent)]' : '',
+    dragOverWorkbenchTabID.value === tab.id && dragOverWorkbenchTabPlacement.value === 'before' ? 'shadow-[inset_2px_0_0_var(--color-accent)]' : '',
+  ].filter(Boolean).join(' ')
+  return dragClasses ? `${classes} ${dragClasses}` : classes
+}
+
+function workbenchTabIcon(tab: WorkbenchTabDescriptor): Component {
+  if (tab.kind === 'preview') return AppWindow
+  if (tab.kind === 'review') return ClipboardList
+  if (tab.kind === 'providers') return PanelRight
+  if (tab.kind === 'launcher') return Plus
+  return Wrench
+}
+
+function workbenchTabPanelID(tab: WorkbenchTabDescriptor): string {
+  return `app-studio-workbench-panel-${tab.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+}
+
+function workbenchTabControlID(tab: WorkbenchTabDescriptor): string {
+  return `app-studio-workbench-tab-${tab.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
 }
 
 function requestDeleteProject(project: Project) {
@@ -1479,7 +1684,7 @@ async function confirmDeleteProject() {
       selected.value = null
       messages.value = []
       props.navigate('')
-      closeTool()
+      resetWorkbench()
       showSettings.value = false
     }
     deleteProjectTarget.value = null
@@ -1974,31 +2179,31 @@ function isAbortError(err: unknown): boolean {
     : err instanceof Error && err.name === 'AbortError'
 }
 
-async function openTool(tool: ProviderTool) {
-  selectedTool.value = tool
+function openTool(tool: ProviderTool) {
+  workbench.value = openWorkbenchProviderTool(workbench.value, tool)
   toolError.value = null
-  await nextTick()
-  await mountSelectedTool()
-}
-
-function closeTool() {
-  selectedTool.value = null
-  toolState.value = 'idle'
-  detachMountedTool()
 }
 
 function openToolFull() {
-  if (!selectedTool.value) return
-  const path = selectedTool.value.path ? `/${selectedTool.value.path.replace(/^\/+/, '')}` : ''
-  window.location.assign(`/ui/providers/${selectedTool.value.providerName}${path}`)
+  const tool = activeProviderTool.value
+  if (!tool) return
+  const path = tool.path ? `/${tool.path.replace(/^\/+/, '')}` : ''
+  window.location.assign(`/ui/providers/${tool.providerName}${path}`)
 }
 
-async function mountSelectedTool() {
-  const tool = selectedTool.value
+async function mountActiveProviderTool() {
+  const tool = activeProviderTool.value
   const host = toolHostRef.value
-  if (!tool || !host) return
+  if (!activeProviderToolRef.value) return
+  if (!tool) {
+    toolState.value = 'error'
+    toolError.value = 'Provider view is unavailable.'
+    detachMountedTool()
+    return
+  }
+  if (!host) return
 
-  const serial = ++toolLoadSerial
+  const serial = toolLoadSerial
   toolState.value = 'loading'
   toolError.value = null
   detachMountedTool()
@@ -2006,7 +2211,7 @@ async function mountSelectedTool() {
   try {
     const tag = tagForProvider(tool.providerName)
     await ensureProviderScript(tool)
-    if (serial !== toolLoadSerial || !selectedTool.value) return
+    if (serial !== toolLoadSerial || activeProviderTool.value?.id !== tool.id) return
 
     const el = document.createElement(tag) as HTMLElement & { kedgeContext?: unknown }
     el.className = 'block h-full min-h-0 w-full overflow-auto'
@@ -2048,7 +2253,7 @@ async function ensureProviderScript(tool: ProviderTool) {
 
 function pushToolContext() {
   const el = mountedToolEl.value as (HTMLElement & { kedgeContext?: unknown }) | null
-  const tool = selectedTool.value
+  const tool = activeProviderTool.value
   if (!el || !tool) return
   el.kedgeContext = {
     subPath: tool.path,
@@ -2063,9 +2268,10 @@ function pushToolContext() {
 function onNestedProviderNavigate(e: Event) {
   e.stopPropagation()
   const path = ((e as CustomEvent<{ path?: string }>).detail?.path ?? '').replace(/^\/+/, '')
-  if (!selectedTool.value) return
-  selectedTool.value = { ...selectedTool.value, path }
-  pushToolContext()
+  const tab = activeWorkbenchTab.value
+  if (!tab || tab.kind !== 'provider') return
+  workbench.value = updateWorkbenchProviderToolPath(workbench.value, tab.id, path)
+  void nextTick(pushToolContext)
 }
 
 function detachMountedTool() {
@@ -3091,67 +3297,167 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
 
     <section class="flex min-h-[360px] min-w-0 flex-1 flex-col md:min-h-0">
       <header class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
-        <template v-if="selectedTool">
-          <button
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
-            title="Back"
-            @click="closeTool"
+        <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
+          <PanelRight class="h-4 w-4 text-accent" :stroke-width="1.75" />
+        </div>
+        <div
+          class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+          role="tablist"
+          aria-label="Workbench tabs"
+        >
+          <div
+            v-for="tab in workbench.tabs"
+            :key="tab.id"
+            class="inline-flex h-8 shrink-0 cursor-grab items-center overflow-hidden rounded-md border text-[12px] font-medium transition active:cursor-grabbing"
+            :class="workbenchTabButtonClass(tab)"
+            draggable="true"
+            @dragstart="startWorkbenchTabDrag($event, tab)"
+            @dragover="dragOverWorkbenchTab($event, tab)"
+            @drop="dropWorkbenchTab($event, tab)"
+            @dragend="clearWorkbenchTabDragState"
           >
-            <ArrowLeft class="h-4 w-4" :stroke-width="1.75" />
-          </button>
-          <div class="min-w-0 flex-1">
-            <div class="truncate text-[13px] font-semibold text-text-primary">{{ selectedTool.title }}</div>
-            <div class="truncate text-[11px] text-text-muted">{{ selectedTool.subtitle }}</div>
+            <GripVertical class="ml-1 h-3 w-3 shrink-0 text-current/50" :stroke-width="2" aria-hidden="true" />
+            <button
+              type="button"
+              role="tab"
+              class="inline-flex h-full min-w-0 items-center gap-1.5 px-2 outline-none"
+              :id="workbenchTabControlID(tab)"
+              :aria-selected="workbench.activeTabID === tab.id"
+              :aria-controls="workbenchTabPanelID(tab)"
+              :title="tab.title"
+              @click="activateWorkbenchTabByID(tab.id)"
+            >
+              <img v-if="tab.kind === 'provider' && tab.providerTool?.iconURL" :src="tab.providerTool.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
+              <component v-else :is="workbenchTabIcon(tab)" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+              <span class="max-w-[9rem] truncate">{{ tab.title }}</span>
+              <span
+                v-if="tab.kind === 'review' && hasPendingReview"
+                class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                aria-hidden="true"
+              />
+            </button>
+            <button
+              v-if="tab.closeable"
+              type="button"
+              class="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-current/70 transition hover:bg-surface-hover hover:text-text-primary"
+              :title="`Close ${tab.title}`"
+              :aria-label="`Close ${tab.title}`"
+              @click="closeWorkbenchTabByID(tab.id)"
+            >
+              <X class="h-3 w-3" :stroke-width="2" />
+            </button>
           </div>
+        </div>
+        <button
+          type="button"
+          class="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-transparent text-text-muted transition hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary"
+          :class="hasPendingReview ? 'text-accent' : ''"
+          title="New tab"
+          aria-label="New tab"
+          @click="openWorkbenchLauncher"
+        >
+          <Plus class="h-4 w-4" :stroke-width="1.75" />
+          <span
+            v-if="hasPendingReview"
+            class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent"
+            aria-hidden="true"
+          />
+        </button>
+        <div class="flex shrink-0 items-center gap-1">
           <button
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
+            v-if="activeProviderTool"
+            class="flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
             title="Open full provider"
+            aria-label="Open full provider"
             @click="openToolFull"
           >
             <ExternalLink class="h-4 w-4" :stroke-width="1.75" />
           </button>
-        </template>
-        <template v-else>
-          <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
-            <PanelRight class="h-4 w-4 text-accent" :stroke-width="1.75" />
-          </div>
-          <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-            <button
-              type="button"
-              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition"
-              :class="workbenchTabButtonClass('preview')"
-              title="Preview"
-              @click="workbenchTab = 'preview'"
-            >
-              <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
-              Preview
-            </button>
-            <button
-              type="button"
-              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition"
-              :class="workbenchTabButtonClass('review')"
-              title="Review"
-              @click="workbenchTab = 'review'"
-            >
-              <Check class="h-3.5 w-3.5" :stroke-width="1.75" />
-              Review
-            </button>
-            <button
-              type="button"
-              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition"
-              :class="workbenchTabButtonClass('providers')"
-              title="Providers"
-              @click="workbenchTab = 'providers'"
-            >
-              <PanelRight class="h-3.5 w-3.5" :stroke-width="1.75" />
-              Providers
-            </button>
-          </div>
-        </template>
+        </div>
       </header>
 
-      <div v-if="!selectedTool" class="min-h-0 flex-1 overflow-auto p-3">
-        <div v-if="workbenchTab === 'preview'" class="flex h-full min-h-[420px] flex-col gap-3">
+      <div
+        v-if="activeWorkbenchTab?.kind === 'launcher'"
+        class="min-h-0 flex-1 overflow-auto p-4"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
+        <div class="mx-auto grid w-full max-w-2xl gap-4">
+          <div class="relative min-w-0">
+            <Search class="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
+            <input
+              v-model="workbenchLauncherQuery"
+              class="h-9 w-full rounded-md border border-border-subtle bg-surface py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
+              placeholder="Search for tools..."
+              aria-label="Search workbench tools"
+            />
+            <button
+              v-if="workbenchLauncherQuery"
+              class="absolute right-1 top-1.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary"
+              title="Clear search"
+              aria-label="Clear search"
+              @click="workbenchLauncherQuery = ''"
+            >
+              <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </button>
+          </div>
+
+          <section v-if="launcherExistingTabs.length" class="grid gap-1.5">
+            <h3 class="px-1 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Jump to existing tab</h3>
+            <button
+              v-for="tab in launcherExistingTabs"
+              :key="tab.id"
+              type="button"
+              class="group flex min-h-[56px] w-full items-center gap-3 rounded-md border border-transparent bg-surface-hover/60 px-2.5 py-2 text-left transition hover:border-border-subtle hover:bg-surface-hover"
+              @click="activateWorkbenchTabByID(tab.id)"
+            >
+              <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
+                <img v-if="tab.kind === 'provider' && tab.providerTool?.iconURL" :src="tab.providerTool.iconURL" alt="" class="h-5 w-5 object-contain" />
+                <component v-else :is="workbenchTabIcon(tab)" class="h-4 w-4 text-accent" :stroke-width="1.75" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-[13px] font-semibold text-text-primary">{{ tab.title }}</div>
+                <div class="truncate text-[12px] text-text-muted">{{ tab.subtitle || (tab.kind === 'preview' ? 'Preview your app' : 'Open tab') }}</div>
+              </div>
+              <ArrowRight class="h-4 w-4 shrink-0 text-text-muted opacity-0 transition group-hover:opacity-100" :stroke-width="1.75" />
+            </button>
+          </section>
+
+          <section class="grid gap-1.5">
+            <h3 class="px-1 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Suggested</h3>
+            <button
+              v-for="item in launcherSuggestedItems"
+              :key="item.id"
+              type="button"
+              class="group flex min-h-[56px] w-full items-center gap-3 rounded-md border border-transparent px-2.5 py-2 text-left transition hover:border-border-subtle hover:bg-surface-hover"
+              @click="openWorkbenchLauncherItem(item)"
+            >
+              <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
+                <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-5 w-5 object-contain" />
+                <component v-else :is="item.icon" class="h-4 w-4 text-accent" :stroke-width="1.75" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-[13px] font-semibold text-text-primary">{{ item.title }}</div>
+                <div class="line-clamp-2 text-[12px] leading-5 text-text-muted">{{ item.subtitle }}</div>
+              </div>
+              <ArrowRight class="h-4 w-4 shrink-0 text-text-muted opacity-0 transition group-hover:opacity-100" :stroke-width="1.75" />
+            </button>
+            <div v-if="launcherSuggestedItems.length === 0" class="rounded-md border border-border-subtle bg-surface/80 p-4 text-center text-[13px] text-text-muted">
+              No workbench tabs found.
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div
+        v-else-if="activeWorkbenchTab?.kind === 'preview'"
+        class="min-h-0 flex-1 overflow-auto p-3"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
+        <div class="flex h-full min-h-[420px] flex-col gap-3">
           <div class="flex min-w-0 items-center justify-between gap-3">
             <div class="flex min-w-0 items-center gap-2">
               <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
@@ -3202,8 +3508,16 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             </div>
           </div>
         </div>
+      </div>
 
-        <div v-else-if="workbenchTab === 'review'" class="grid gap-3">
+      <div
+        v-else-if="activeWorkbenchTab?.kind === 'review'"
+        class="min-h-0 flex-1 overflow-auto p-3"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
+        <div class="grid gap-3">
           <div v-if="pendingFollowUp" class="grid gap-2 rounded-md border border-accent/25 bg-accent-subtle p-3">
             <div class="flex min-w-0 items-start justify-between gap-3">
               <div class="min-w-0">
@@ -3279,8 +3593,15 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             No reviews are waiting.
           </div>
         </div>
+      </div>
 
-        <template v-else>
+      <div
+        v-else-if="activeWorkbenchTab?.kind === 'providers'"
+        class="min-h-0 flex-1 overflow-auto p-3"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
         <div class="relative mb-3 min-w-0">
           <Search class="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-text-muted" :stroke-width="1.75" />
           <input
@@ -3325,16 +3646,21 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             No provider views found.
           </div>
         </div>
-        </template>
       </div>
 
-      <div v-else class="relative min-h-0 flex-1 overflow-hidden bg-surface">
+      <div
+        v-else-if="activeWorkbenchTab?.kind === 'provider'"
+        class="relative min-h-0 flex-1 overflow-hidden bg-surface"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
         <div
           v-if="toolState === 'loading'"
           class="absolute inset-0 z-10 flex items-center justify-center bg-surface/80 text-[13px] text-text-muted"
         >
           <Loader2 class="mr-2 h-4 w-4 animate-spin" :stroke-width="1.75" />
-          Loading {{ selectedTool.title }}...
+          Loading {{ activeWorkbenchTab.title }}...
         </div>
         <div
           v-if="toolState === 'error'"
