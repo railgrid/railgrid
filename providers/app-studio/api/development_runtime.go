@@ -515,6 +515,12 @@ func hasReadyEndpoint(endpoints *corev1.Endpoints) bool {
 
 func (s *Server) previewProjectDevelopment(w http.ResponseWriter, r *http.Request) {
 	projectName := mux.Vars(r)["project"]
+	scopedBasePath := scopedProjectPreviewBasePath(projectName, r.URL.Path)
+	if scopedBasePath != "" {
+		if handlePreviewCORSPreflight(w, r) {
+			return
+		}
+	}
 	targetRef, suffix, ok := s.previewProjectTarget(w, r, projectName)
 	if !ok {
 		return
@@ -535,7 +541,6 @@ func (s *Server) previewProjectDevelopment(w http.ResponseWriter, r *http.Reques
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = transport
-	scopedBasePath := scopedProjectPreviewBasePath(projectName, r.URL.Path)
 	upstreamBasePath := runtimeServicePath(targetRef, "")
 	proxy.Director = func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
@@ -547,6 +552,9 @@ func (s *Server) previewProjectDevelopment(w http.ResponseWriter, r *http.Reques
 		stripPreviewForwardedCredentials(req.Header)
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		if scopedBasePath != "" {
+			applyPreviewCORSHeaders(resp.Header, r)
+		}
 		if resp.StatusCode == http.StatusServiceUnavailable && previewStatusContentType(resp.Header.Get("Content-Type")) {
 			raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 			if err != nil {
@@ -581,6 +589,49 @@ func (s *Server) previewProjectDevelopment(w http.ResponseWriter, r *http.Reques
 		return nil
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+func handlePreviewCORSPreflight(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodOptions || !previewCORSOriginAllowed(r) {
+		return false
+	}
+	if strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")) == "" {
+		return false
+	}
+	applyPreviewCORSHeaders(w.Header(), r)
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
+
+func applyPreviewCORSHeaders(header http.Header, r *http.Request) {
+	if !previewCORSOriginAllowed(r) {
+		return
+	}
+	header.Set("Access-Control-Allow-Origin", "null")
+	header.Set("Access-Control-Allow-Credentials", "true")
+	header.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
+	header.Set("Access-Control-Max-Age", "600")
+	if requestedHeaders := strings.TrimSpace(r.Header.Get("Access-Control-Request-Headers")); requestedHeaders != "" {
+		header.Set("Access-Control-Allow-Headers", requestedHeaders)
+	}
+	addPreviewVary(header, "Origin")
+	addPreviewVary(header, "Access-Control-Request-Method")
+	addPreviewVary(header, "Access-Control-Request-Headers")
+}
+
+func previewCORSOriginAllowed(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get("Origin")) == "null"
+}
+
+func addPreviewVary(header http.Header, value string) {
+	for _, existing := range header.Values("Vary") {
+		for _, part := range strings.Split(existing, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), value) {
+				return
+			}
+		}
+	}
+	header.Add("Vary", value)
 }
 
 func previewStatusContentType(contentType string) bool {
@@ -771,39 +822,9 @@ func setPreviewTokenCookie(w http.ResponseWriter, r *http.Request, projectName, 
 		Expires:  expires,
 		MaxAge:   int(time.Until(expires).Seconds()),
 		HttpOnly: true,
-		Secure:   previewCookieSecure(r),
-		SameSite: http.SameSiteLaxMode,
+		Secure:   true,
+		SameSite: http.SameSiteNoneMode,
 	})
-}
-
-func previewCookieSecure(r *http.Request) bool {
-	if r == nil || r.TLS != nil {
-		return true
-	}
-	if proto := forwardedPreviewProto(r); proto != "" {
-		return proto == "https"
-	}
-	return true
-}
-
-func forwardedPreviewProto(r *http.Request) string {
-	for _, header := range []string{"X-Forwarded-Proto", "X-Forwarded-Scheme"} {
-		value := strings.TrimSpace(r.Header.Get(header))
-		if value == "" {
-			continue
-		}
-		proto, _, _ := strings.Cut(value, ",")
-		return strings.ToLower(strings.TrimSpace(proto))
-	}
-	forwarded := r.Header.Get("Forwarded")
-	for _, part := range strings.Split(forwarded, ";") {
-		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if !ok || !strings.EqualFold(strings.TrimSpace(key), "proto") {
-			continue
-		}
-		return strings.ToLower(strings.Trim(strings.TrimSpace(value), `"`))
-	}
-	return ""
 }
 
 func readPreviewRewriteBody(r io.Reader) ([]byte, error) {
@@ -848,7 +869,7 @@ func scopedProjectPreviewRedirectURL(projectName, scope string, query url.Values
 
 func previewTokenScope(token string) string {
 	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])[:16]
+	return hex.EncodeToString(sum[:])[:32]
 }
 
 func previewProjectRequestScope(projectName, requestPath string) string {
@@ -879,7 +900,7 @@ func previewProjectRuntimeSuffix(projectName, requestPath string) string {
 }
 
 func validPreviewScope(scope string) bool {
-	if len(scope) != 16 {
+	if len(scope) != 32 {
 		return false
 	}
 	for _, ch := range scope {
@@ -924,6 +945,7 @@ func rewritePreviewResponseBody(contentType, basePath string, raw []byte, upstre
 		text = rewritePreviewHTMLUpstreamURLs(text, basePath, upstreamBasePaths)
 		text = rewritePreviewHTMLRootURLs(text, basePath)
 		text = injectPreviewBaseTag(text, basePath)
+		text = injectPreviewCredentialScript(text, basePath)
 	case "text/css":
 		text = rewritePreviewCSSUpstreamURLs(text, basePath, upstreamBasePaths)
 		text = rewritePreviewCSSRootURLs(text, basePath)
@@ -946,6 +968,60 @@ func injectPreviewBaseTag(text, basePath string) string {
 	}
 	insert := idx + len(head)
 	return text[:insert] + "\n  " + tag + text[insert:]
+}
+
+func injectPreviewCredentialScript(text, basePath string) string {
+	if strings.Contains(text, "data-kedge-preview-credentials") {
+		return text
+	}
+	script := `<script data-kedge-preview-credentials>
+(() => {
+  const basePath = ` + strconv.Quote(basePath) + `;
+  const baseURL = new URL(basePath, document.baseURI);
+  const isPreviewURL = (input) => {
+    try {
+      const raw = typeof Request !== 'undefined' && input instanceof Request ? input.url : input;
+      const target = new URL(String(raw), document.baseURI);
+      return target.pathname.startsWith(baseURL.pathname);
+    } catch {
+      return false;
+    }
+  };
+  const nativeFetch = window.fetch && window.fetch.bind(window);
+  if (nativeFetch) {
+    window.fetch = (input, init) => {
+      if (!isPreviewURL(input)) return nativeFetch(input, init);
+      const nextInit = init ? { ...init } : {};
+      if (nextInit.credentials === undefined) {
+        nextInit.credentials = 'include';
+      }
+      return nativeFetch(input, nextInit);
+    };
+  }
+  const NativeXHR = window.XMLHttpRequest;
+  if (NativeXHR && NativeXHR.prototype) {
+    const nativeOpen = NativeXHR.prototype.open;
+    const nativeSend = NativeXHR.prototype.send;
+    NativeXHR.prototype.open = function(method, url, ...rest) {
+      this.__kedgePreviewURL = url;
+      return nativeOpen.call(this, method, url, ...rest);
+    };
+    NativeXHR.prototype.send = function(...args) {
+      if (isPreviewURL(this.__kedgePreviewURL)) {
+        this.withCredentials = true;
+      }
+      return nativeSend.apply(this, args);
+    };
+  }
+})();
+</script>`
+	const head = "<head>"
+	idx := strings.Index(strings.ToLower(text), head)
+	if idx < 0 {
+		return script + text
+	}
+	insert := idx + len(head)
+	return text[:insert] + "\n  " + script + text[insert:]
 }
 
 func rewritePreviewHTMLRootURLs(text, basePath string) string {

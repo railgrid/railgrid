@@ -111,9 +111,7 @@ func appendProjectAssistantResumeResolvedUI(out *projectAssistantResumeResponse,
 	if out == nil {
 		return
 	}
-	if toolCall != nil && toolCall.ID != "" {
-		out.UIEvents = append(out.UIEvents, projectAssistantUIToolDisclosureEvent(assistantMessageID, projectAssistantUIActionFromToolCall(*toolCall)))
-	}
+	_ = toolCall
 	if requestID != "" {
 		out.UIEvents = append(out.UIEvents, projectAssistantUIResolvedInterruptEvent(assistantMessageID, requestID))
 	}
@@ -125,17 +123,22 @@ func appendProjectAssistantResumePendingUI(out *projectAssistantResumeResponse, 
 	}
 	if out.FollowUp != nil {
 		out.UIEvents = append(out.UIEvents,
-			projectAssistantUIToolDisclosureEvent(assistantMessageID, projectAssistantUIActionFromFollowUp(*out.FollowUp)),
 			projectAssistantUIFollowUpInterruptRequestEvent(assistantMessageID, *out.FollowUp, *out.Checkpoint),
 		)
 		return
 	}
 	if out.Permission != nil {
 		out.UIEvents = append(out.UIEvents,
-			projectAssistantUIToolDisclosureEvent(assistantMessageID, projectAssistantUIActionFromPermission(*out.Permission)),
 			projectAssistantUIInterruptRequestEvent(assistantMessageID, *out.Permission, *out.Checkpoint),
 		)
 	}
+}
+
+func appendProjectAssistantResumeDevelopmentPreviewRefreshUI(out *projectAssistantResumeResponse, needed bool) {
+	if out == nil || !needed {
+		return
+	}
+	out.UIEvents = append(out.UIEvents, projectAssistantUIDevelopmentPreviewRefreshEvent())
 }
 
 func (s *Server) saveProjectAssistantEinoPermissionCheckpoint(
@@ -577,6 +580,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	currentToolCall := projectAssistantResumeToolCall(streamedToolCalls, currentToolCallID)
 	out.ToolCall = currentToolCall
 	out.Result = projectAssistantResumeToolResult(result.Content, currentToolCall)
+	previewRefreshNeeded := s.projectAssistantPreviewRefreshNeeded(ctx, engineReq.WorkspaceScope, "", false, streamedToolCalls)
 	if err != nil {
 		var permissionErr *projectAssistantPermissionRequiredError
 		if !errors.As(err, &permissionErr) {
@@ -611,6 +615,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 				assistantMessageID := strings.TrimSpace(resumeReq.AssistantMessageID)
 				appendProjectAssistantResumeResolvedUI(&out, assistantMessageID, currentRequestID, currentToolCall)
 				appendProjectAssistantResumePendingUI(&out, assistantMessageID)
+				appendProjectAssistantResumeDevelopmentPreviewRefreshUI(&out, previewRefreshNeeded)
 				messageUpdate := out
 				messageUpdate.RunID = run.ID
 				messageUpdate.RequestID = currentRequestID
@@ -658,6 +663,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		assistantMessageID := strings.TrimSpace(resumeReq.AssistantMessageID)
 		appendProjectAssistantResumeResolvedUI(&out, assistantMessageID, currentRequestID, currentToolCall)
 		appendProjectAssistantResumePendingUI(&out, assistantMessageID)
+		appendProjectAssistantResumeDevelopmentPreviewRefreshUI(&out, previewRefreshNeeded)
 		messageUpdate := out
 		messageUpdate.RunID = run.ID
 		messageUpdate.RequestID = currentRequestID
@@ -697,6 +703,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	}
 	out.Status = run.Status
 	appendProjectAssistantResumeResolvedUI(&out, strings.TrimSpace(resumeReq.AssistantMessageID), currentRequestID, currentToolCall)
+	appendProjectAssistantResumeDevelopmentPreviewRefreshUI(&out, previewRefreshNeeded)
 	if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}

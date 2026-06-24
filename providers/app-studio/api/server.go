@@ -44,19 +44,20 @@ import (
 // for dev MCP calls; workspaces stores project files owned by App Studio; and
 // assistantEngine runs project assistant turns.
 type Server struct {
-	clients                  *tenant.ClientFactory
-	store                    store.Store
-	workspaces               *workspace.FileStore
-	hubBase                  string
-	mcpInsecureSkipTLSVerify bool
-	runtimeConfig            *rest.Config
-	runtimeClient            kubernetes.Interface
-	previewSigner            *previewSigner
-	autoApproveActions       bool
-	assistantEngine          projectAssistantEngine
-	assistantRunManager      *projectAssistantRunManager
-	developmentSyncLocks     map[string]*sync.Mutex
-	mu                       sync.Mutex
+	clients                      *tenant.ClientFactory
+	store                        store.Store
+	workspaces                   *workspace.FileStore
+	hubBase                      string
+	mcpInsecureSkipTLSVerify     bool
+	runtimeConfig                *rest.Config
+	runtimeClient                kubernetes.Interface
+	previewSigner                *previewSigner
+	autoApproveActions           bool
+	assistantEngine              projectAssistantEngine
+	assistantRunManager          *projectAssistantRunManager
+	developmentSyncLocks         map[string]*sync.Mutex
+	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string)
+	mu                           sync.Mutex
 }
 
 // New constructs a Server.

@@ -69,8 +69,6 @@ type projectAssistantRunResult struct {
 
 type projectAssistantEvent struct {
 	Type         projectAssistantEventType   `json:"type"`
-	ID           string                      `json:"id,omitempty"`
-	MessageID    string                      `json:"messageID,omitempty"`
 	ToolCall     *projectAssistantToolCall   `json:"toolCall,omitempty"`
 	Permission   *projectAssistantPermission `json:"permission,omitempty"`
 	FollowUp     *projectAssistantFollowUp   `json:"followUp,omitempty"`
@@ -79,8 +77,6 @@ type projectAssistantEvent struct {
 	Delta        string                      `json:"delta,omitempty"`
 	Status       string                      `json:"status,omitempty"`
 	Error        string                      `json:"error,omitempty"`
-	Metadata     json.RawMessage             `json:"metadata,omitempty"`
-	CreatedAt    *time.Time                  `json:"createdAt,omitempty"`
 }
 
 type projectAssistantEventType string

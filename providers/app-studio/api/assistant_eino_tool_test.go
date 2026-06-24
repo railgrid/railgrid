@@ -20,6 +20,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 func TestEinoApprovePlanToolRejectsMissingAllowedOperations(t *testing.T) {
@@ -79,5 +82,45 @@ func TestEinoToolPassesSessionSnapshotToLocalTool(t *testing.T) {
 	got.LastFileSnapshot[0] = "mutated"
 	if !stringSliceEqual(runState.SessionSnapshot().LastFileSnapshot, []string{"package.json"}) {
 		t.Fatal("tool received mutable run-state session snapshot")
+	}
+}
+
+func TestEinoToolSchedulesDevelopmentSyncAfterMutatingTool(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	server := &Server{}
+	var gotName string
+	var gotProjectName string
+	server.developmentSyncAfterMutation = func(_ identity, p *aiv1alpha1.Project, name string) {
+		gotName = name
+		if p != nil {
+			gotProjectName = p.Name
+		}
+	}
+	localTool := projectAssistantToolFunc{
+		spec: projectAssistantToolSpec{
+			Name: projectToolWriteFile,
+			Risk: projectAssistantToolRiskWrite,
+		},
+		call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
+			return `{"status":"ok"}`, nil
+		},
+	}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	tool := projectEinoAssistantTool{
+		server: server,
+		tool:   localTool,
+		req: projectAssistantRunRequest{
+			Project:        project,
+			WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"},
+		},
+		runState: runState,
+	}
+
+	if _, err := tool.invokeAllowedTool(context.Background(), "call-write", localTool.Spec(), map[string]any{"path": "src/App.tsx"}); err != nil {
+		t.Fatalf("invokeAllowedTool returned error: %v", err)
+	}
+	if gotName != projectToolWriteFile || gotProjectName != "demo" {
+		t.Fatalf("scheduled sync = (%q, %q), want (%q, demo)", gotName, gotProjectName, projectToolWriteFile)
 	}
 }

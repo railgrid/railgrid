@@ -264,6 +264,8 @@ local_resource(
         'providers/app-studio/client',
         'providers/app-studio/store',
         'providers/app-studio/tenant',
+        'providers/app-studio/runner',
+        'providers/app-studio/Dockerfile.runner',
         'providers/app-studio/go.mod',
         'providers/app-studio/go.sum',
         'providers/app-studio/portal/src',
@@ -273,7 +275,7 @@ local_resource(
         'providers/app-studio/deploy/chart/values.yaml',
         'providers/app-studio/.env',
     ],
-    resource_deps=['hub', 'app-studio-db'],
+    resource_deps=['hub', 'app-studio-db', 'sandbox-runner-image'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8085, path='/healthz'),
@@ -315,6 +317,20 @@ local_resource(
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
+    labels=['providers-app-studio'],
+)
+
+# --- App Studio sandbox runner image (live development runtimes) ---
+local_resource(
+    'sandbox-runner-image',
+    cmd='make load-sandbox-runner-image',
+    deps=[
+        'providers/app-studio/Dockerfile.runner',
+        'providers/app-studio/go.mod',
+        'providers/app-studio/go.sum',
+        'providers/app-studio/runner',
+    ],
+    resource_deps=['kro-mgmt-up'],
     labels=['providers-app-studio'],
 )
 

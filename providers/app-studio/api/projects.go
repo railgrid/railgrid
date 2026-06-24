@@ -120,11 +120,14 @@ type ProjectMessagesResponse struct {
 }
 
 type projectMessageStreamEvent struct {
-	Type               string                   `json:"type"`
-	AssistantMessageID string                   `json:"assistantMessageID,omitempty"`
-	Error              string                   `json:"error,omitempty"`
-	Project            *ProjectView             `json:"project,omitempty"`
-	UI                 *projectAssistantUIEvent `json:"ui,omitempty"`
+	Type               string                              `json:"type,omitempty"`
+	AssistantMessageID string                              `json:"assistantMessageID,omitempty"`
+	Error              string                              `json:"error,omitempty"`
+	Project            *ProjectView                        `json:"project,omitempty"`
+	BeginRendering     *projectAssistantUIBeginRendering   `json:"beginRendering,omitempty"`
+	SurfaceUpdate      *projectAssistantUISurfaceUpdate    `json:"surfaceUpdate,omitempty"`
+	DataModelUpdate    *projectAssistantUIDataModelUpdate  `json:"dataModelUpdate,omitempty"`
+	InterruptRequest   *projectAssistantUIInterruptRequest `json:"interruptRequest,omitempty"`
 }
 
 type projectToolCallStreamEvent struct {
@@ -141,7 +144,6 @@ type projectToolCallStreamEvent struct {
 
 const projectAPIInitializingMessage = "App Studio is still initializing for this workspace. Try again shortly."
 const projectMessageMetadataStatus = "status"
-const projectMessageMetadataToolCalls = "toolCalls"
 const projectMessageMetadataAssistantActions = "assistantActions"
 const projectMessageMetadataAssistantInterrupt = "assistantInterrupt"
 const projectMessageStatusInterrupted = "interrupted"
@@ -420,18 +422,17 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	assistantID := newMessageID()
 	writeStreamError := func(err error) {
 		_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-			Type:  string(projectAssistantEventRunFailed),
-			Error: err.Error(),
+			Type:               string(projectAssistantEventRunFailed),
+			AssistantMessageID: assistantID,
+			Error:              err.Error(),
 		})
 	}
 	writeStatus := func(status string) error {
 		ui := projectAssistantUIStatusEvent(status)
-		return writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-			Type: projectAssistantUIEventType,
-			UI:   &ui,
-		})
+		return writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEventFromUI(ui))
 	}
 
 	if err := writeStatus("Starting"); err != nil {
@@ -457,7 +458,7 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 	if err := writeStatus("Working"); err != nil {
 		return
 	}
-	s.streamProjectAssistant(w, flusher, r, c, id, created, msgStore)
+	s.streamProjectAssistant(w, flusher, r, c, id, created, msgStore, assistantID)
 }
 
 func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Request) {
@@ -496,7 +497,7 @@ func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	s.streamProjectAssistant(w, flusher, r, c, id, p, msgStore)
+	s.streamProjectAssistant(w, flusher, r, c, id, p, msgStore, "")
 }
 
 func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) {
@@ -561,14 +562,19 @@ func (s *Server) streamProjectAssistant(
 	id identity,
 	p *aiv1alpha1.Project,
 	msgStore store.Store,
+	assistantMessageID string,
 ) {
-	assistantID := newMessageID()
+	assistantID := assistantMessageID
+	if assistantID == "" {
+		assistantID = newMessageID()
+	}
 	assistantContent := &strings.Builder{}
 	var streamErr error
 	var streamedToolCalls []projectToolCallStreamEvent
 	var pendingPermissionToolCallID string
 	var pendingFollowUpToolCallID string
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
+	workspaceScope := projectWorkspaceScope(id, p.Name)
 	streamWriter := projectAssistantStreamWriter{
 		assistantID: assistantID,
 		write: func(event projectMessageStreamEvent) error {
@@ -666,6 +672,15 @@ func (s *Server) streamProjectAssistant(
 			},
 		})
 	}
+	emitDevelopmentPreviewRefreshIfNeeded := func() error {
+		if streamErr != nil || !s.projectAssistantPreviewRefreshNeeded(r.Context(), workspaceScope, "", false, streamedToolCalls) {
+			return nil
+		}
+		if err := streamWriter.write(projectMessageStreamEventFromUI(projectAssistantUIDevelopmentPreviewRefreshEvent())); err != nil {
+			return err
+		}
+		return nil
+	}
 
 	reply, err := s.generateProjectAssistantStream(r, id, c, p, projectAssistantStreamCallbacks{
 		OnChunk:          streamChunk,
@@ -686,6 +701,7 @@ func (s *Server) streamProjectAssistant(
 					})
 				}
 			}
+			_ = emitDevelopmentPreviewRefreshIfNeeded()
 			return
 		}
 		var inputErr *projectAssistantInputRequiredError
@@ -701,6 +717,7 @@ func (s *Server) streamProjectAssistant(
 				}
 			}
 			_ = inputErr
+			_ = emitDevelopmentPreviewRefreshIfNeeded()
 			return
 		}
 		if shouldPersistInterruptedProjectAssistant(r.Context(), err, streamErr, assistantContent.String()) {
@@ -757,6 +774,9 @@ func (s *Server) streamProjectAssistant(
 		})
 		return
 	}
+	if err := emitDevelopmentPreviewRefreshIfNeeded(); err != nil {
+		return
+	}
 	if err := streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{Type: projectAssistantEventRunFinished}); err != nil {
 		return
 	}
@@ -782,6 +802,15 @@ func projectAssistantUnstreamedContent(reply, streamed string) string {
 		return ""
 	}
 	return "\n\n" + reply
+}
+
+func projectAssistantToolCallsRequireDevelopmentSync(toolCalls []projectToolCallStreamEvent) bool {
+	for _, toolCall := range toolCalls {
+		if toolCall.Status == "succeeded" && shouldSyncDevelopmentAfterTool(toolCall.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 func projectAssistantGenerationFailureMessage(err error) string {
@@ -906,7 +935,6 @@ func (s *Server) updateProjectAssistantPermissionMessage(
 	if strings.TrimSpace(response.AssistantContent) != "" {
 		content = response.AssistantContent
 	}
-	delete(metadata, projectMessageMetadataToolCalls)
 	if len(actions) > 0 {
 		metadata[projectMessageMetadataAssistantActions] = actions
 	} else {
@@ -1369,12 +1397,21 @@ func newMessageID() string {
 	return "msg-" + uuid.NewString()
 }
 
+func projectMessageStreamEventFromUI(ui projectAssistantUIEvent) projectMessageStreamEvent {
+	return projectMessageStreamEvent{
+		BeginRendering:   ui.BeginRendering,
+		SurfaceUpdate:    ui.SurfaceUpdate,
+		DataModelUpdate:  ui.DataModelUpdate,
+		InterruptRequest: ui.InterruptRequest,
+	}
+}
+
 func writeProjectMessageStreamEvent(w http.ResponseWriter, flusher http.Flusher, event projectMessageStreamEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	if _, err = fmt.Fprint(w, "event: ", event.Type, "\n"); err != nil {
+	if _, err = fmt.Fprint(w, "event: ", event.streamType(), "\n"); err != nil {
 		return err
 	}
 	if _, err = fmt.Fprint(w, "data: ", string(data), "\n\n"); err != nil {
@@ -1382,6 +1419,24 @@ func writeProjectMessageStreamEvent(w http.ResponseWriter, flusher http.Flusher,
 	}
 	flusher.Flush()
 	return nil
+}
+
+func (event projectMessageStreamEvent) streamType() string {
+	if event.Type != "" {
+		return event.Type
+	}
+	switch {
+	case event.BeginRendering != nil:
+		return "beginRendering"
+	case event.SurfaceUpdate != nil:
+		return "surfaceUpdate"
+	case event.DataModelUpdate != nil:
+		return "dataModelUpdate"
+	case event.InterruptRequest != nil:
+		return "interruptRequest"
+	default:
+		return "message"
+	}
 }
 
 var invalidProjectNameChars = regexp.MustCompile(`[^a-z0-9-]+`)

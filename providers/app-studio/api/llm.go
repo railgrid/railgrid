@@ -487,8 +487,8 @@ func (s *Server) callProjectLocalTool(ctx context.Context, id identity, project 
 		HTTPRequest:          r,
 		Arguments:            args,
 	})
-	if err == nil && project != nil && shouldSyncDevelopmentAfterTool(name) {
-		go s.syncDevelopmentAfterMutation(id, project.DeepCopy(), name)
+	if err == nil {
+		s.scheduleDevelopmentSyncAfterMutation(id, project, name)
 	}
 	return result, err
 }

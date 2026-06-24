@@ -18,7 +18,8 @@ package api
 
 import "fmt"
 
-const projectAssistantUIEventType = "ui"
+const projectAssistantUIRootComponentID = "root-col"
+const projectAssistantUIDevelopmentPreviewRefreshKey = "development.previewRefreshNeeded"
 
 const (
 	projectAssistantUIActionInspect = "inspect"
@@ -48,9 +49,33 @@ type projectAssistantUISurfaceUpdate struct {
 }
 
 type projectAssistantUIComponent struct {
-	ID             string                    `json:"id"`
-	Type           string                    `json:"type"`
-	ToolDisclosure *projectAssistantUIAction `json:"toolDisclosure,omitempty"`
+	ID        string                           `json:"id"`
+	Component projectAssistantUIComponentValue `json:"component"`
+}
+
+type projectAssistantUIComponentValue struct {
+	Text   *projectAssistantUITextComponent   `json:"Text,omitempty"`
+	Column *projectAssistantUIColumnComponent `json:"Column,omitempty"`
+	Card   *projectAssistantUICardComponent   `json:"Card,omitempty"`
+	Row    *projectAssistantUIRowComponent    `json:"Row,omitempty"`
+}
+
+type projectAssistantUITextComponent struct {
+	Value     string `json:"value,omitempty"`
+	DataKey   string `json:"dataKey,omitempty"`
+	UsageHint string `json:"usageHint,omitempty"`
+}
+
+type projectAssistantUIColumnComponent struct {
+	Children []string `json:"children"`
+}
+
+type projectAssistantUICardComponent struct {
+	Children []string `json:"children"`
+}
+
+type projectAssistantUIRowComponent struct {
+	Children []string `json:"children"`
 }
 
 type projectAssistantUIAction struct {
@@ -93,20 +118,58 @@ func projectAssistantUIBeginRenderingEvent(surfaceID string) projectAssistantUIE
 	return projectAssistantUIEvent{
 		BeginRendering: &projectAssistantUIBeginRendering{
 			SurfaceID: surfaceID,
-			Root:      "assistant-message",
+			Root:      projectAssistantUIRootComponentID,
 		},
 	}
 }
 
-func projectAssistantUIContentDeltaEvent(surfaceID, delta string) projectAssistantUIEvent {
+func projectAssistantUIDataUpdateEvent(surfaceID, key, value string) projectAssistantUIEvent {
+	return projectAssistantUIDataContentEvent(surfaceID, key, value, false)
+}
+
+func projectAssistantUIDataAppendEvent(surfaceID, key, value string) projectAssistantUIEvent {
+	return projectAssistantUIDataContentEvent(surfaceID, key, value, true)
+}
+
+func projectAssistantUIDataContentEvent(surfaceID, key, value string, appendValue bool) projectAssistantUIEvent {
 	return projectAssistantUIEvent{
 		DataModelUpdate: &projectAssistantUIDataModelUpdate{
 			SurfaceID: surfaceID,
 			Contents: []projectAssistantUIDataContent{{
-				Key:         "assistant.content",
-				ValueString: delta,
-				Append:      true,
+				Key:         key,
+				ValueString: value,
+				Append:      appendValue,
 			}},
+		},
+	}
+}
+
+func projectAssistantUIMessageShellEvent(surfaceID string, rootChildren []string, cardID, colID, roleID, contentID, dataKey, roleLabel string) projectAssistantUIEvent {
+	return projectAssistantUIEvent{
+		SurfaceUpdate: &projectAssistantUISurfaceUpdate{
+			SurfaceID: surfaceID,
+			Components: []projectAssistantUIComponent{
+				projectAssistantUIColumnComponentNode(projectAssistantUIRootComponentID, append([]string(nil), rootChildren...)),
+				projectAssistantUICardComponentNode(cardID, []string{colID}),
+				projectAssistantUIColumnComponentNode(colID, []string{roleID, contentID}),
+				projectAssistantUITextComponentNode(roleID, roleLabel, "caption"),
+				projectAssistantUIBoundTextComponentNode(contentID, dataKey, "body"),
+			},
+		},
+	}
+}
+
+func projectAssistantUIToolCardEvent(surfaceID string, rootChildren []string, cardID, colID, labelID, textID, kind, text string) projectAssistantUIEvent {
+	return projectAssistantUIEvent{
+		SurfaceUpdate: &projectAssistantUISurfaceUpdate{
+			SurfaceID: surfaceID,
+			Components: []projectAssistantUIComponent{
+				projectAssistantUIColumnComponentNode(projectAssistantUIRootComponentID, append([]string(nil), rootChildren...)),
+				projectAssistantUICardComponentNode(cardID, []string{colID}),
+				projectAssistantUIColumnComponentNode(colID, []string{labelID, textID}),
+				projectAssistantUITextComponentNode(labelID, kind, "caption"),
+				projectAssistantUITextComponentNode(textID, text, "body"),
+			},
 		},
 	}
 }
@@ -123,27 +186,59 @@ func projectAssistantUIStatusEvent(status string) projectAssistantUIEvent {
 	}
 }
 
-func projectAssistantUIToolDisclosureEvent(surfaceID string, action projectAssistantUIAction) projectAssistantUIEvent {
-	event := projectAssistantUIEvent{
-		SurfaceUpdate: &projectAssistantUISurfaceUpdate{
-			SurfaceID: surfaceID,
-			Components: []projectAssistantUIComponent{{
-				ID:             action.ID,
-				Type:           "toolDisclosure",
-				ToolDisclosure: &action,
-			}},
+func projectAssistantUIDevelopmentPreviewRefreshEvent() projectAssistantUIEvent {
+	return projectAssistantUIDataUpdateEvent("conversation", projectAssistantUIDevelopmentPreviewRefreshKey, "true")
+}
+
+func projectAssistantUITextComponentNode(id, value, usageHint string) projectAssistantUIComponent {
+	return projectAssistantUIComponent{
+		ID: id,
+		Component: projectAssistantUIComponentValue{
+			Text: &projectAssistantUITextComponent{
+				Value:     value,
+				UsageHint: usageHint,
+			},
 		},
 	}
-	if progress := projectAssistantUIProgressText(action); progress != "" {
-		event.DataModelUpdate = &projectAssistantUIDataModelUpdate{
-			SurfaceID: surfaceID,
-			Contents: []projectAssistantUIDataContent{{
-				Key:         "assistant.progress",
-				ValueString: progress,
-			}},
-		}
+}
+
+func projectAssistantUIBoundTextComponentNode(id, dataKey, usageHint string) projectAssistantUIComponent {
+	return projectAssistantUIComponent{
+		ID: id,
+		Component: projectAssistantUIComponentValue{
+			Text: &projectAssistantUITextComponent{
+				DataKey:   dataKey,
+				UsageHint: usageHint,
+			},
+		},
 	}
-	return event
+}
+
+func projectAssistantUIColumnComponentNode(id string, children []string) projectAssistantUIComponent {
+	return projectAssistantUIComponent{
+		ID: id,
+		Component: projectAssistantUIComponentValue{
+			Column: &projectAssistantUIColumnComponent{Children: children},
+		},
+	}
+}
+
+func projectAssistantUICardComponentNode(id string, children []string) projectAssistantUIComponent {
+	return projectAssistantUIComponent{
+		ID: id,
+		Component: projectAssistantUIComponentValue{
+			Card: &projectAssistantUICardComponent{Children: children},
+		},
+	}
+}
+
+func projectAssistantUIRowComponentNode(id string, children []string) projectAssistantUIComponent {
+	return projectAssistantUIComponent{
+		ID: id,
+		Component: projectAssistantUIComponentValue{
+			Row: &projectAssistantUIRowComponent{Children: children},
+		},
+	}
 }
 
 func projectAssistantUIInterruptRequestEvent(surfaceID string, permission projectAssistantPermission, checkpoint projectAssistantCheckpoint) projectAssistantUIEvent {
@@ -282,57 +377,6 @@ func projectAssistantUIActionText(kind, status string, count int) (string, strin
 	default:
 		return projectAssistantUIActionLabel(active, failed, "Working", "Completed actions", "Action failed"), projectAssistantUIActionCount(count, "tool action", "tool actions")
 	}
-}
-
-func projectAssistantUIProgressText(action projectAssistantUIAction) string {
-	switch action.Status {
-	case "awaiting_approval":
-		return "Waiting for your approval."
-	case "awaiting_input":
-		return "Waiting for your answer."
-	}
-	active := action.Status == "requested" || action.Status == "running"
-	failed := action.Status == "failed" || action.Status == "rejected"
-	if !active && !failed {
-		switch action.Kind {
-		case projectAssistantUIActionClarify:
-			return "I have the clarification I need."
-		case projectAssistantUIActionEdit:
-			return "Updated the project files."
-		case projectAssistantUIActionCommit:
-			return "Saved the completed changes."
-		case projectAssistantUIActionPlan:
-			return "I have a plan for the change and am moving into implementation."
-		default:
-			return ""
-		}
-	}
-	switch action.Kind {
-	case projectAssistantUIActionClarify:
-		return projectAssistantUIProgressLabel(active, failed, "Asking for the detail needed to continue.", "Clarification failed.")
-	case projectAssistantUIActionInspect:
-		return projectAssistantUIProgressLabel(active, failed, "Looking through the project to find the relevant code.", "Inspection failed.")
-	case projectAssistantUIActionEdit:
-		return projectAssistantUIProgressLabel(active, failed, "Applying the requested change in the project files.", "Edit failed.")
-	case projectAssistantUIActionRun:
-		return projectAssistantUIProgressLabel(active, failed, "Checking the project state so I can make the change safely.", "Run failed.")
-	case projectAssistantUIActionCommit:
-		return projectAssistantUIProgressLabel(active, failed, "Saving the completed changes.", "Commit failed.")
-	case projectAssistantUIActionPlan:
-		return projectAssistantUIProgressLabel(active, failed, "Reviewing the change plan before editing.", "Plan rejected.")
-	default:
-		return projectAssistantUIProgressLabel(active, failed, "Working through the next step.", "Action failed.")
-	}
-}
-
-func projectAssistantUIProgressLabel(active, failed bool, activeLabel, failedLabel string) string {
-	if failed {
-		return failedLabel
-	}
-	if active {
-		return activeLabel
-	}
-	return ""
 }
 
 func projectAssistantUIActionLabel(active, failed bool, activeLabel, doneLabel, failedLabel string) string {

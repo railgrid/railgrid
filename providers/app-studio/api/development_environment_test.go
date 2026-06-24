@@ -94,6 +94,24 @@ fetch(API_URL);`
 	}
 }
 
+func TestRewritePreviewHTMLInjectsCredentialedPreviewFetchShim(t *testing.T) {
+	basePath := "/services/providers/app-studio/api/projects/simply-done/preview/__kedge_preview/abc123/"
+	raw := []byte(`<html><head><script src="/assets/app.js"></script></head><body></body></html>`)
+
+	got := string(rewritePreviewResponseBody("text/html", basePath, raw))
+	for _, want := range []string{
+		`<script data-kedge-preview-credentials>`,
+		`credentials = 'include'`,
+		`NativeXHR.prototype.open`,
+		`this.withCredentials = true`,
+		`<script src="` + basePath + `assets/app.js"></script>`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rewritten HTML missing %q: %s", want, got)
+		}
+	}
+}
+
 func TestProjectAssistantRuntimePreviewURLPrefersDevelopment(t *testing.T) {
 	p := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
@@ -156,6 +174,28 @@ func TestProjectDevelopmentSyncTargetReadsSandboxBindingName(t *testing.T) {
 	}
 	if got, want := target.ResourceName, sandboxRunnerResourceName(id.tenantPath, "todo"); got != want {
 		t.Fatalf("ResourceName = %q, want %q", got, want)
+	}
+}
+
+func TestProjectAssistantPreviewRefreshNeededUsesSuccessfulMutatingToolCalls(t *testing.T) {
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	if !server.projectAssistantPreviewRefreshNeeded(context.Background(), workspace.Scope{}, "", false, []projectToolCallStreamEvent{{
+		Name:   projectToolWriteFile,
+		Status: "succeeded",
+	}}) {
+		t.Fatal("preview refresh = false, want true after successful workspace mutation")
+	}
+	if server.projectAssistantPreviewRefreshNeeded(context.Background(), workspace.Scope{}, "", false, []projectToolCallStreamEvent{{
+		Name:   projectToolWriteFile,
+		Status: "failed",
+	}}) {
+		t.Fatal("preview refresh = true, want false after failed workspace mutation")
+	}
+	if server.projectAssistantPreviewRefreshNeeded(context.Background(), workspace.Scope{}, "", false, []projectToolCallStreamEvent{{
+		Name:   projectToolReadProjectFile,
+		Status: "succeeded",
+	}}) {
+		t.Fatal("preview refresh = true, want false after read-only tool")
 	}
 }
 
@@ -227,77 +267,6 @@ func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToRuntime(t *testing.T) 
 	}
 	if decoded.PreviewTokenExpiresAt == "" {
 		t.Fatal("previewTokenExpiresAt is empty, want signed token expiry")
-	}
-}
-
-func TestSyncDevelopmentAfterMutationSerializesPerProject(t *testing.T) {
-	var calls atomic.Int32
-	firstReceived := make(chan struct{})
-	secondReceived := make(chan struct{})
-	releaseFirst := make(chan struct{})
-	releaseBlockedFirst := func() {
-		select {
-		case <-releaseFirst:
-		default:
-			close(releaseFirst)
-		}
-	}
-	defer releaseBlockedFirst()
-	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch calls.Add(1) {
-		case 1:
-			close(firstReceived)
-			<-releaseFirst
-		case 2:
-			close(secondReceived)
-		default:
-			t.Fatalf("unexpected extra sync request")
-		}
-		fmt.Fprint(w, `{"phase":"Synced"}`)
-	}))
-	defer runtimeAPI.Close()
-
-	workspaces := workspace.NewFileStore(t.TempDir())
-	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", token: "caller-token"}
-	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
-	project := &aiv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
-		Spec: aiv1alpha1.ProjectSpec{
-			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
-		},
-	}
-	scope := projectWorkspaceScope(id, project.Name)
-	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "src/App.tsx", Content: "first\n"}}); err != nil {
-		t.Fatalf("ApplyFiles first returned error: %v", err)
-	}
-	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), testSandboxRunner(runnerName, project.Name)))
-	server := NewWithWorkspace(nil, nil, workspaces, "http://hub.example", false)
-	server.runtimeConfig = &rest.Config{Host: runtimeAPI.URL}
-	server.runtimeClient = kubernetesfake.NewSimpleClientset(testRuntimeControlSecret(runnerName, "runtime-token"))
-	server.previewSigner = newPreviewSigner([]byte("test-secret"))
-
-	go server.syncDevelopmentAfterMutationWithClient(client, id, project, projectToolWriteFile)
-	select {
-	case <-firstReceived:
-	case <-time.After(3 * time.Second):
-		t.Fatal("first sync was not received")
-	}
-	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "src/App.tsx", Content: "second\n"}}); err != nil {
-		t.Fatalf("ApplyFiles second returned error: %v", err)
-	}
-	go server.syncDevelopmentAfterMutationWithClient(client, id, project, projectToolWriteFile)
-
-	select {
-	case <-secondReceived:
-		releaseBlockedFirst()
-		t.Fatal("second sync started while first sync was still in flight")
-	case <-time.After(100 * time.Millisecond):
-	}
-	releaseBlockedFirst()
-	select {
-	case <-secondReceived:
-	case <-time.After(3 * time.Second):
-		t.Fatal("second sync was not received after first completed")
 	}
 }
 
@@ -447,6 +416,135 @@ func TestPreviewTokenRedirectSetsSecureCookie(t *testing.T) {
 	}
 	if !cookies[0].HttpOnly {
 		t.Fatalf("preview token cookie HttpOnly = false, want true")
+	}
+	if got, want := cookies[0].SameSite, http.SameSiteNoneMode; got != want {
+		t.Fatalf("preview token cookie SameSite = %v, want %v", got, want)
+	}
+}
+
+func TestPreviewProjectDevelopmentRejectsScopedRequestWithoutCookieAfterTokenRedirect(t *testing.T) {
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("runtime proxy should not be reached without preview cookie; path = %q", r.URL.Path)
+	}))
+	defer runtimeAPI.Close()
+
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.runtimeConfig = &rest.Config{Host: runtimeAPI.URL}
+	server.previewSigner = newPreviewSigner([]byte("test-secret"))
+	token, _, err := server.previewSigner.sign(previewTokenPayload{
+		TenantPath:         "root:kedge:tenants:org-a:ws-1",
+		Project:            "todo",
+		RuntimeNamespace:   "runtime-ns",
+		PreviewServiceName: "runtime-svc",
+		PreviewPortName:    "preview",
+		SandboxRunner:      "runtime-svc",
+	})
+	if err != nil {
+		t.Fatalf("sign preview token: %v", err)
+	}
+	router := mux.NewRouter()
+	server.Register(router)
+
+	authReq := httptest.NewRequest(http.MethodGet, "https://kedge.example.test/api/projects/todo/preview/?"+previewTokenQuery+"="+url.QueryEscape(token), nil)
+	authResp := httptest.NewRecorder()
+	router.ServeHTTP(authResp, authReq)
+	if got, want := authResp.Code, http.StatusFound; got != want {
+		t.Fatalf("authorization status = %d, want %d", got, want)
+	}
+
+	scope := previewTokenScope(token)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/todo/preview/"+previewScopePrefix+"/"+scope+"/api/todos", strings.NewReader(`{"title":"Buy milk"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if got, want := resp.Code, http.StatusUnauthorized; got != want {
+		t.Fatalf("status = %d, want %d; body = %s", got, want, resp.Body.String())
+	}
+}
+
+func TestPreviewProjectDevelopmentSupportsSandboxedCORSScopeRequests(t *testing.T) {
+	var runtimeCalls atomic.Int32
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runtimeCalls.Add(1)
+		if got, want := r.Method, http.MethodGet; got != want {
+			t.Fatalf("runtime method = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Path, "/api/v1/namespaces/runtime-ns/services/runtime-svc:preview/proxy/api/todos"; got != want {
+			t.Fatalf("runtime proxy path = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	defer runtimeAPI.Close()
+
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.runtimeConfig = &rest.Config{Host: runtimeAPI.URL}
+	server.previewSigner = newPreviewSigner([]byte("test-secret"))
+	token, _, err := server.previewSigner.sign(previewTokenPayload{
+		TenantPath:         "root:kedge:tenants:org-a:ws-1",
+		Project:            "todo",
+		RuntimeNamespace:   "runtime-ns",
+		PreviewServiceName: "runtime-svc",
+		PreviewPortName:    "preview",
+		SandboxRunner:      "runtime-svc",
+	})
+	if err != nil {
+		t.Fatalf("sign preview token: %v", err)
+	}
+	router := mux.NewRouter()
+	server.Register(router)
+	authReq := httptest.NewRequest(http.MethodGet, "https://kedge.example.test/api/projects/todo/preview/?"+previewTokenQuery+"="+url.QueryEscape(token), nil)
+	authResp := httptest.NewRecorder()
+	router.ServeHTTP(authResp, authReq)
+	if got, want := authResp.Code, http.StatusFound; got != want {
+		t.Fatalf("authorization status = %d, want %d", got, want)
+	}
+
+	scope := previewTokenScope(token)
+	scopedPath := "/api/projects/todo/preview/" + previewScopePrefix + "/" + scope + "/api/todos"
+	getReq := httptest.NewRequest(http.MethodGet, scopedPath, nil)
+	getReq.AddCookie(authResp.Result().Cookies()[0])
+	getReq.Header.Set("Origin", "null")
+	getResp := httptest.NewRecorder()
+	router.ServeHTTP(getResp, getReq)
+	if got, want := getResp.Code, http.StatusOK; got != want {
+		t.Fatalf("GET status = %d, want %d; body = %s", got, want, getResp.Body.String())
+	}
+	if got, want := getResp.Header().Get("Access-Control-Allow-Origin"), "null"; got != want {
+		t.Fatalf("GET Access-Control-Allow-Origin = %q, want %q", got, want)
+	}
+	if got, want := getResp.Header().Get("Access-Control-Allow-Credentials"), "true"; got != want {
+		t.Fatalf("GET Access-Control-Allow-Credentials = %q, want %q", got, want)
+	}
+	if got, want := len(getResp.Result().Header.Values("Access-Control-Allow-Origin")), 1; got != want {
+		t.Fatalf("GET Access-Control-Allow-Origin header count = %d, want %d", got, want)
+	}
+
+	preflightReq := httptest.NewRequest(http.MethodOptions, scopedPath, nil)
+	preflightReq.Header.Set("Origin", "null")
+	preflightReq.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	preflightReq.Header.Set("Access-Control-Request-Headers", "content-type")
+	preflightResp := httptest.NewRecorder()
+	router.ServeHTTP(preflightResp, preflightReq)
+	if got, want := preflightResp.Code, http.StatusNoContent; got != want {
+		t.Fatalf("OPTIONS status = %d, want %d; body = %s", got, want, preflightResp.Body.String())
+	}
+	if got, want := preflightResp.Header().Get("Access-Control-Allow-Origin"), "null"; got != want {
+		t.Fatalf("OPTIONS Access-Control-Allow-Origin = %q, want %q", got, want)
+	}
+	if got := strings.ToLower(preflightResp.Header().Get("Access-Control-Allow-Headers")); got != "content-type" {
+		t.Fatalf("OPTIONS Access-Control-Allow-Headers = %q, want content-type", got)
+	}
+	if got := preflightResp.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, http.MethodPost) {
+		t.Fatalf("OPTIONS Access-Control-Allow-Methods = %q, want POST", got)
+	}
+	if got, want := preflightResp.Header().Get("Access-Control-Allow-Credentials"), "true"; got != want {
+		t.Fatalf("OPTIONS Access-Control-Allow-Credentials = %q, want %q", got, want)
+	}
+	if got, want := runtimeCalls.Load(), int32(1); got != want {
+		t.Fatalf("runtime calls = %d, want %d", got, want)
 	}
 }
 

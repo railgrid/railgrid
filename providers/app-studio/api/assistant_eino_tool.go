@@ -195,6 +195,9 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 	if err != nil {
 		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), err.Error()), nil
 	}
+	if t.server != nil {
+		t.server.scheduleDevelopmentSyncAfterMutation(t.req.Identity, t.req.Project, spec.Name)
+	}
 	t.emitToolCall(projectToolCallStreamEvent{
 		ID:        callID,
 		Name:      spec.Name,

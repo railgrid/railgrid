@@ -215,6 +215,10 @@ func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.
 	return files, nil
 }
 
+func (s *Server) projectAssistantPreviewRefreshNeeded(_ context.Context, _ workspace.Scope, _ string, _ bool, toolCalls []projectToolCallStreamEvent) bool {
+	return projectAssistantToolCallsRequireDevelopmentSync(toolCalls)
+}
+
 func shouldSyncDevelopmentAfterTool(name string) bool {
 	switch projectToolBaseName(name) {
 	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
@@ -222,6 +226,21 @@ func shouldSyncDevelopmentAfterTool(name string) bool {
 	default:
 		return false
 	}
+}
+
+func (s *Server) scheduleDevelopmentSyncAfterMutation(id identity, p *aiv1alpha1.Project, name string) {
+	if s == nil || p == nil || !shouldSyncDevelopmentAfterTool(name) {
+		return
+	}
+	project := p.DeepCopy()
+	s.mu.Lock()
+	hook := s.developmentSyncAfterMutation
+	s.mu.Unlock()
+	if hook != nil {
+		hook(id, project, name)
+		return
+	}
+	go s.syncDevelopmentAfterMutation(id, project, name)
 }
 
 func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project, name string) {

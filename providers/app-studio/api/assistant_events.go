@@ -16,11 +16,18 @@ limitations under the License.
 
 package api
 
-import "context"
+import (
+	"context"
+	"strconv"
+)
 
 type projectAssistantStreamWriter struct {
 	assistantID       string
 	began             bool
+	rootChildren      []string
+	msgIdx            int
+	assistantDataKey  string
+	assistantShellSet bool
 	pendingPermission *projectAssistantPermission
 	pendingFollowUp   *projectAssistantFollowUp
 	write             func(projectMessageStreamEvent) error
@@ -38,18 +45,22 @@ func (w *projectAssistantStreamWriter) EmitProjectAssistantEvent(
 		if event.Delta == "" {
 			return nil
 		}
-		return w.writeAssistantUI(ctx, projectAssistantUIContentDeltaEvent(w.assistantID, event.Delta))
+		return w.writeAssistantContent(ctx, event.Delta)
 	case projectAssistantEventStatus:
 		if event.Status == "" {
 			return nil
 		}
-		return w.writeUI(ctx, "", projectAssistantUIStatusEvent(event.Status), false)
+		return w.writeUI(ctx, w.assistantID, projectAssistantUIStatusEvent(event.Status), false)
 	case projectAssistantEventToolCallStarted, projectAssistantEventToolCallFinished:
 		if event.ToolCall == nil || event.ToolCall.ID == "" || event.ToolCall.Status == "" {
 			return nil
 		}
 		action := projectAssistantUIActionFromAssistantToolCall(*event.ToolCall)
-		return w.writeAssistantUI(ctx, projectAssistantUIToolDisclosureEvent(w.assistantID, action))
+		kind := "tool call"
+		if event.Type == projectAssistantEventToolCallFinished {
+			kind = "tool result"
+		}
+		return w.writeToolCard(ctx, kind, projectAssistantUIToolCardText(action))
 	case projectAssistantEventPermissionNeeded:
 		if event.Permission == nil || event.Permission.ID == "" {
 			return nil
@@ -58,7 +69,11 @@ func (w *projectAssistantStreamWriter) EmitProjectAssistantEvent(
 		permission.Input = nil
 		w.pendingPermission = &permission
 		action := projectAssistantUIActionFromPermission(permission)
-		return w.writeAssistantUI(ctx, projectAssistantUIToolDisclosureEvent(w.assistantID, action))
+		text := permission.Reason
+		if text == "" {
+			text = projectAssistantUIToolCardText(action)
+		}
+		return w.writeToolCard(ctx, "approval needed", text)
 	case projectAssistantEventInputNeeded:
 		if event.FollowUp == nil || event.FollowUp.ID == "" {
 			return nil
@@ -66,7 +81,11 @@ func (w *projectAssistantStreamWriter) EmitProjectAssistantEvent(
 		followUp := *event.FollowUp
 		w.pendingFollowUp = &followUp
 		action := projectAssistantUIActionFromFollowUp(followUp)
-		return w.writeAssistantUI(ctx, projectAssistantUIToolDisclosureEvent(w.assistantID, action))
+		text := followUp.Prompt
+		if text == "" {
+			text = projectAssistantUIToolCardText(action)
+		}
+		return w.writeToolCard(ctx, "approval needed", text)
 	case projectAssistantEventCheckpointSaved:
 		if event.Checkpoint == nil || event.Checkpoint.ID == "" {
 			return nil
@@ -92,8 +111,9 @@ func (w *projectAssistantStreamWriter) EmitProjectAssistantEvent(
 			return nil
 		}
 		return w.write(projectMessageStreamEvent{
-			Type:  string(projectAssistantEventRunFailed),
-			Error: event.Error,
+			Type:               string(projectAssistantEventRunFailed),
+			AssistantMessageID: w.assistantID,
+			Error:              event.Error,
 		})
 	case projectAssistantEventRunFinished:
 		return w.write(projectMessageStreamEvent{
@@ -109,26 +129,107 @@ func (w *projectAssistantStreamWriter) writeAssistantUI(ctx context.Context, ui 
 	return w.writeUI(ctx, w.assistantID, ui, true)
 }
 
+func (w *projectAssistantStreamWriter) writeAssistantContent(ctx context.Context, delta string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if delta == "" {
+		return nil
+	}
+	if err := w.ensureBegin(ctx); err != nil {
+		return err
+	}
+	if !w.assistantShellSet {
+		cardID, colID, roleID, contentID := w.nextMessageComponentIDs()
+		w.assistantDataKey = w.assistantID + "/" + contentID
+		w.rootChildren = append(w.rootChildren, cardID)
+		if err := w.write(projectMessageStreamEventFromUI(projectAssistantUIMessageShellEvent(
+			w.assistantID,
+			w.rootChildren,
+			cardID,
+			colID,
+			roleID,
+			contentID,
+			w.assistantDataKey,
+			"assistant",
+		))); err != nil {
+			return err
+		}
+		w.assistantShellSet = true
+	}
+	return w.write(projectMessageStreamEventFromUI(projectAssistantUIDataAppendEvent(w.assistantID, w.assistantDataKey, delta)))
+}
+
+func (w *projectAssistantStreamWriter) writeToolCard(ctx context.Context, kind, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := w.ensureBegin(ctx); err != nil {
+		return err
+	}
+	cardID, colID, labelID, textID := w.nextMessageComponentIDs()
+	w.rootChildren = append(w.rootChildren, cardID)
+	return w.write(projectMessageStreamEventFromUI(projectAssistantUIToolCardEvent(
+		w.assistantID,
+		w.rootChildren,
+		cardID,
+		colID,
+		labelID,
+		textID,
+		kind,
+		text,
+	)))
+}
+
 func (w *projectAssistantStreamWriter) writeUI(ctx context.Context, assistantID string, ui projectAssistantUIEvent, begin bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if begin && assistantID != "" && !w.began {
-		beginUI := projectAssistantUIBeginRenderingEvent(assistantID)
-		if err := w.write(projectMessageStreamEvent{
-			Type:               projectAssistantUIEventType,
-			AssistantMessageID: assistantID,
-			UI:                 &beginUI,
-		}); err != nil {
+	if projectAssistantUIEventIsEmpty(ui) {
+		return nil
+	}
+	if begin {
+		if err := w.ensureBegin(ctx); err != nil {
 			return err
 		}
-		w.began = true
 	}
-	return w.write(projectMessageStreamEvent{
-		Type:               projectAssistantUIEventType,
-		AssistantMessageID: assistantID,
-		UI:                 &ui,
-	})
+	return w.write(projectMessageStreamEventFromUI(ui))
+}
+
+func (w *projectAssistantStreamWriter) ensureBegin(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if w.assistantID == "" || w.began {
+		return nil
+	}
+	if err := w.write(projectMessageStreamEventFromUI(projectAssistantUIBeginRenderingEvent(w.assistantID))); err != nil {
+		return err
+	}
+	w.began = true
+	return nil
+}
+
+func (w *projectAssistantStreamWriter) nextMessageComponentIDs() (string, string, string, string) {
+	idx := w.msgIdx
+	w.msgIdx++
+	id := strconv.Itoa(idx)
+	cardID := "msg-" + id + "-card"
+	colID := "msg-" + id + "-col"
+	labelID := "msg-" + id + "-label"
+	textID := "msg-" + id + "-text"
+	return cardID, colID, labelID, textID
+}
+
+func projectAssistantUIToolCardText(action projectAssistantUIAction) string {
+	if action.Summary != "" {
+		return action.Label + "\n" + action.Summary
+	}
+	return action.Label
+}
+
+func projectAssistantUIEventIsEmpty(ui projectAssistantUIEvent) bool {
+	return ui.BeginRendering == nil && ui.SurfaceUpdate == nil && ui.DataModelUpdate == nil && ui.InterruptRequest == nil
 }
 
 func projectAssistantUIBuilderEvent(surfaceID string, event projectBuilderEventView) projectAssistantUIEvent {

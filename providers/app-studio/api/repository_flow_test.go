@@ -486,7 +486,7 @@ func TestProjectAssistantMessageMetadataSafeActions(t *testing.T) {
 	}
 	merged := upsertProjectToolCallStreamEvent(events[:1], events[1])
 	metadata := projectAssistantMessageMetadata("", merged)
-	if _, ok := metadata[projectMessageMetadataToolCalls]; ok {
+	if _, ok := metadata["toolCalls"]; ok {
 		t.Fatalf("metadata = %#v, should not persist raw toolCalls", metadata)
 	}
 	actions := projectAssistantUIActionsFromMetadata(metadata[projectMessageMetadataAssistantActions])
@@ -740,6 +740,7 @@ func TestStreamProjectAssistantPersistsPermissionTimelineMessage(t *testing.T) {
 		id,
 		project,
 		messages,
+		"",
 	)
 
 	recent, err := messages.LoadRecentMessages(context.Background(), messageScope, 10)
@@ -758,7 +759,7 @@ func TestStreamProjectAssistantPersistsPermissionTimelineMessage(t *testing.T) {
 	if assistant.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission {
 		t.Fatalf("assistant metadata = %#v, want pending permission status", assistant.Metadata)
 	}
-	if _, ok := assistant.Metadata[projectMessageMetadataToolCalls]; ok {
+	if _, ok := assistant.Metadata["toolCalls"]; ok {
 		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", assistant.Metadata)
 	}
 	actions := projectAssistantUIActionsFromMetadata(assistant.Metadata[projectMessageMetadataAssistantActions])
@@ -809,6 +810,7 @@ func TestStreamProjectAssistantPersistsPermissionTimelineAfterStreamWriteFailure
 		id,
 		project,
 		messages,
+		"",
 	)
 
 	recent, err := messages.LoadRecentMessages(context.Background(), messageScope, 10)
@@ -824,7 +826,7 @@ func TestStreamProjectAssistantPersistsPermissionTimelineAfterStreamWriteFailure
 	if assistant.ID == "" {
 		t.Fatalf("messages = %#v, want persisted assistant permission message", recent)
 	}
-	if _, ok := assistant.Metadata[projectMessageMetadataToolCalls]; ok {
+	if _, ok := assistant.Metadata["toolCalls"]; ok {
 		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", assistant.Metadata)
 	}
 	actions := projectAssistantUIActionsFromMetadata(assistant.Metadata[projectMessageMetadataAssistantActions])
@@ -1138,7 +1140,7 @@ func TestResumeProjectAssistantRunApprovesPendingTool(t *testing.T) {
 	if _, ok := updatedMessage.Metadata[projectMessageMetadataStatus]; ok {
 		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMessage.Metadata)
 	}
-	if _, ok := updatedMessage.Metadata[projectMessageMetadataToolCalls]; ok {
+	if _, ok := updatedMessage.Metadata["toolCalls"]; ok {
 		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", updatedMessage.Metadata)
 	}
 	updatedActions := projectAssistantUIActionsFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActions])
@@ -1320,7 +1322,7 @@ func TestResumeProjectAssistantRunDeniesPendingToolAndUpdatesMessage(t *testing.
 	if _, ok := updatedMessage.Metadata[projectMessageMetadataStatus]; ok {
 		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMessage.Metadata)
 	}
-	if _, ok := updatedMessage.Metadata[projectMessageMetadataToolCalls]; ok {
+	if _, ok := updatedMessage.Metadata["toolCalls"]; ok {
 		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", updatedMessage.Metadata)
 	}
 	updatedActions := projectAssistantUIActionsFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActions])
@@ -2087,7 +2089,7 @@ func TestResumeProjectAssistantRunRejectsStaleRepositoryBinding(t *testing.T) {
 	if _, ok := updatedMessage.Metadata[projectMessageMetadataStatus]; ok {
 		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMessage.Metadata)
 	}
-	if _, ok := updatedMessage.Metadata[projectMessageMetadataToolCalls]; ok {
+	if _, ok := updatedMessage.Metadata["toolCalls"]; ok {
 		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", updatedMessage.Metadata)
 	}
 	updatedActions := projectAssistantUIActionsFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActions])

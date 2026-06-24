@@ -8,7 +8,6 @@ import {
   BarChart3,
   Braces,
   Check,
-  ChevronRight,
   ClipboardList,
   ExternalLink,
   Folder,
@@ -34,9 +33,9 @@ import { useEscapeKey } from '@/composables/useEscapeKey'
 import type {
   KedgeContext,
   Project,
-  ProjectAssistantActionStatus,
   ProjectAssistantResumeResponse,
   ProjectAssistantUIAction,
+  ProjectAssistantUIComponent,
   ProjectAssistantUIEvent,
   ProjectAssistantUIInterruptRequest,
   ProjectLLMSettings,
@@ -73,10 +72,29 @@ interface LandingCategoryTile {
 type LLMCredentialMode = 'api-key' | 'service-account-json'
 type ProjectMessageViewStatus = 'interrupted'
 type ProjectAssistantActionView = ProjectAssistantUIAction
+type ProjectAssistantComponentValue = ProjectAssistantUIComponent['component']
+interface ProjectAssistantSurface {
+  rootId: string
+  components: Record<string, ProjectAssistantComponentValue>
+  dataModel: Record<string, string>
+}
+interface ProjectAssistantSurfaceCard {
+  id: string
+  role: string
+  body: string
+}
+type AssistantTraceItemStatus = 'running' | 'complete' | 'waiting' | 'error'
+interface AssistantTraceItem {
+  id: string
+  role: string
+  label: string
+  detail: string
+  status: AssistantTraceItemStatus
+}
 type ProjectMessageView = ProjectMessage & {
   viewStatus?: ProjectMessageViewStatus
   actions?: ProjectAssistantActionView[]
-  progress?: string[]
+  surface?: ProjectAssistantSurface
   interrupt?: ProjectAssistantUIInterruptRequest
 }
 type WorkbenchTab = 'preview' | 'review' | 'providers'
@@ -98,8 +116,6 @@ interface ProjectDevelopmentPreviewAuthorization {
   reason: string
 }
 
-type LegacyProjectAssistantToolCall = Record<string, unknown>
-
 const SPLIT_WIDTH_KEY = 'kedge:projects:split-width'
 const OPENAI_COMPATIBLE_PROVIDER = 'openai-compatible'
 const GOOGLE_AI_STUDIO_PROVIDER = 'google-ai-studio'
@@ -115,17 +131,8 @@ const CODE_REPOSITORIES_URL = '/ui/providers/code/repositories'
 const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
 const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_SKEW_MS = 5 * 60 * 1000
 const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MIN_MS = 1000
-const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MAX_MS = 10 * 60 * 1000
+const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MAX_MS = 60 * 60 * 1000
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
-const PROJECT_ASSISTANT_ACTION_STATUSES = new Set<ProjectAssistantActionStatus>([
-  'requested',
-  'running',
-  'awaiting_approval',
-  'awaiting_input',
-  'succeeded',
-  'failed',
-  'rejected',
-])
 const assistantMarkdown = new MarkdownIt({
   html: false,
   breaks: true,
@@ -293,6 +300,7 @@ const llmSaving = ref(false)
 const llmStatus = ref<string | null>(null)
 const messagesRef = ref<HTMLDivElement | null>(null)
 const expandedMessageTimestampID = ref<string | null>(null)
+const expandedAssistantTraceMessageID = ref<string | null>(null)
 const promptRef = ref<HTMLTextAreaElement | null>(null)
 const workspaceRef = ref<HTMLDivElement | null>(null)
 const toolHostRef = ref<HTMLDivElement | null>(null)
@@ -571,7 +579,11 @@ const developmentPreviewURL = computed(() => {
   return developmentPreviewRawURL.value
 })
 
-const developmentPreviewPhase = computed(() => developmentEnvironment.value?.phase || developmentBinding.value?.phase || 'Pending')
+const developmentPreviewPhase = computed(() => {
+  const phase = developmentEnvironment.value?.phase || developmentBinding.value?.phase || 'Pending'
+  if (phase.toLowerCase() === 'pending' && developmentPreviewOverrideURL.value) return 'Ready'
+  return phase
+})
 const developmentPreviewUnavailableTitle = computed(() => (
   developmentPreviewAuthorizing.value || developmentPreviewReadinessMessage.value
     ? 'Preview is getting ready'
@@ -587,6 +599,10 @@ onMounted(() => {
   void loadProviders()
   void loadLLMSettings()
   startLandingPlaceholderRotation()
+  window.addEventListener('focus', handleDevelopmentPreviewAuthorizationWake)
+  window.addEventListener('online', handleDevelopmentPreviewAuthorizationWake)
+  window.addEventListener('pageshow', handleDevelopmentPreviewAuthorizationWake)
+  document.addEventListener('visibilitychange', handleDevelopmentPreviewVisibilityChange)
 })
 
 watch(
@@ -678,6 +694,10 @@ onBeforeUnmount(() => {
   clearLandingPlaceholderRotation()
   cancelMessageStream()
   detachMountedTool()
+  window.removeEventListener('focus', handleDevelopmentPreviewAuthorizationWake)
+  window.removeEventListener('online', handleDevelopmentPreviewAuthorizationWake)
+  window.removeEventListener('pageshow', handleDevelopmentPreviewAuthorizationWake)
+  document.removeEventListener('visibilitychange', handleDevelopmentPreviewVisibilityChange)
   window.removeEventListener('pointermove', resizeWorkspace)
   window.removeEventListener('pointerup', stopResize)
 })
@@ -1044,9 +1064,10 @@ async function createProjectAndStartConversation(content: string) {
   const now = new Date().toISOString()
   const draftName = `draft-${Date.now()}`
   const description = selectedLandingCategory.value?.subtitle ?? ''
-  const controller = new AbortController()
-  let projectName = ''
-  let assistantMessageID = ''
+	const controller = new AbortController()
+	let projectName = ''
+	let assistantMessageID = ''
+	let shouldRefreshPreviewAfterRun = false
 
   activeMessageStreamController = controller
   busy.value = true
@@ -1077,8 +1098,11 @@ async function createProjectAndStartConversation(content: string) {
   try {
     await nextTick()
     await api.createProjectStream(props.ctx, { description: description || undefined, prompt: content }, (event: ProjectMessageStreamEvent) => {
-      if (event.type === 'ui') {
-        const nextAssistantMessageID = applyAssistantUIEvent(projectName, event.assistantMessageID, event.ui)
+      if (isProjectAssistantUIStreamEvent(event)) {
+        if (projectAssistantUIEventRequestsPreviewRefresh(event)) {
+          shouldRefreshPreviewAfterRun = true
+        }
+        const nextAssistantMessageID = applyAssistantUIEvent(projectName, event)
         if (!assistantMessageID && nextAssistantMessageID) {
           assistantMessageID = nextAssistantMessageID
         }
@@ -1099,7 +1123,9 @@ async function createProjectAndStartConversation(content: string) {
     }, controller.signal)
 
     if (projectName) {
-      await refreshProjectConversationAfterAssistantRun(projectName)
+      if (await refreshProjectConversationAfterAssistantRun(projectName) && shouldRefreshPreviewAfterRun) {
+        await refreshDevelopmentPreviewFrame('Preview refreshed')
+      }
     }
   } catch (e) {
     if (isAbortError(e)) {
@@ -1214,42 +1240,59 @@ async function refreshSelectedProjectConversation(projectName: string) {
   projects.value = projectList
 }
 
-async function refreshProjectConversationAfterAssistantRun(projectName: string) {
-  try {
-    await refreshSelectedProjectConversation(projectName)
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e)
-    error.value = detail ? `Assistant finished, but the conversation did not refresh: ${detail}` : 'Assistant finished, but the conversation did not refresh.'
-  }
+async function refreshProjectConversationAfterAssistantRun(projectName: string): Promise<boolean> {
+	try {
+		await refreshSelectedProjectConversation(projectName)
+		return true
+	} catch (e) {
+		const detail = e instanceof Error ? e.message : String(e)
+		error.value = detail ? `Assistant finished, but the conversation did not refresh: ${detail}` : 'Assistant finished, but the conversation did not refresh.'
+		return false
+	}
 }
 
 async function syncDevelopmentPreview() {
+	const projectName = selected.value?.name
+	await syncDevelopmentPreviewForProject(projectName, 'Synced and refreshed preview')
+}
+
+async function syncDevelopmentPreviewForProject(projectName: string | undefined, successStatus: string) {
+	if (!projectName || developmentSyncBusy.value) return
+	developmentSyncBusy.value = true
+	developmentSyncStatus.value = null
+	developmentSyncError.value = null
+	try {
+		const result = await api.syncDevelopment(props.ctx, projectName)
+		const authorization = projectDevelopmentPreviewAuthorization(result)
+		const previewURL = authorization.previewURL
+		const project = await api.getProject(props.ctx, projectName)
+		if (selected.value?.name !== projectName) return
+		selected.value = project
+		if (previewURL) {
+			applyDevelopmentPreviewAuthorization(projectName, authorization)
+		} else {
+			await refreshDevelopmentPreviewFrame('')
+		}
+		developmentSyncStatus.value = successStatus
+	} catch (e) {
+		developmentSyncError.value = e instanceof Error ? e.message : String(e)
+	} finally {
+		developmentSyncBusy.value = false
+	}
+}
+
+async function refreshDevelopmentPreviewFrame(status: string) {
   const projectName = selected.value?.name
-  if (!projectName || developmentSyncBusy.value) return
-  developmentSyncBusy.value = true
-  developmentSyncStatus.value = null
-  developmentSyncError.value = null
-  try {
-    const result = await api.syncDevelopment(props.ctx, projectName)
-    const authorization = projectDevelopmentPreviewAuthorization(result)
-    const previewURL = authorization.previewURL
-    selected.value = await api.getProject(props.ctx, projectName)
-    if (previewURL) {
-      const key = developmentPreviewKey(projectName, developmentPreviewRawURL.value)
-      developmentPreviewOverrideURL.value = previewURL
-      developmentPreviewAuthorizationKey.value = key
-      developmentPreviewTokenExpiresAt.value = authorization.previewTokenExpiresAt
-      developmentPreviewReadinessMessage.value = null
-      clearDevelopmentPreviewAuthorizationRetry()
-      scheduleDevelopmentPreviewAuthorizationRenewal(projectName, key, authorization.previewTokenExpiresAt)
-    }
+  if (!projectName || !developmentBinding.value) return
+  if (developmentPreviewNeedsAuthorization.value) {
+    await authorizeDevelopmentPreview({ force: true })
+    if (selected.value?.name !== projectName || developmentPreviewAuthorizationError.value || !developmentPreviewURL.value) return
+  } else if (developmentPreviewURL.value) {
     developmentPreviewFrameKey.value += 1
-    developmentSyncStatus.value = 'Synced'
-  } catch (e) {
-    developmentSyncError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    developmentSyncBusy.value = false
+  } else {
+    return
   }
+  if (status) developmentSyncStatus.value = status
 }
 
 async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
@@ -1290,13 +1333,7 @@ async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
     }
     const previewURL = authorization.previewURL
     if (!previewURL) throw new Error('sandbox preview authorization returned no preview URL')
-    developmentPreviewOverrideURL.value = previewURL
-    developmentPreviewAuthorizationKey.value = key
-    developmentPreviewTokenExpiresAt.value = authorization.previewTokenExpiresAt
-    developmentPreviewReadinessMessage.value = null
-    clearDevelopmentPreviewAuthorizationRetry()
-    scheduleDevelopmentPreviewAuthorizationRenewal(projectName, key, authorization.previewTokenExpiresAt)
-    developmentPreviewFrameKey.value += 1
+    applyDevelopmentPreviewAuthorization(projectName, authorization)
   } catch (e) {
     if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
     developmentPreviewOverrideURL.value = null
@@ -1309,6 +1346,17 @@ async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
   } finally {
     if (serial === developmentPreviewAuthorizationSerial) developmentPreviewAuthorizing.value = false
   }
+}
+
+function applyDevelopmentPreviewAuthorization(projectName: string, authorization: ProjectDevelopmentPreviewAuthorization) {
+  const key = developmentPreviewKey(projectName, developmentPreviewRawURL.value)
+  developmentPreviewOverrideURL.value = authorization.previewURL
+  developmentPreviewAuthorizationKey.value = key
+  developmentPreviewTokenExpiresAt.value = authorization.previewTokenExpiresAt
+  developmentPreviewReadinessMessage.value = null
+  clearDevelopmentPreviewAuthorizationRetry()
+  scheduleDevelopmentPreviewAuthorizationRenewal(projectName, key, authorization.previewTokenExpiresAt)
+  developmentPreviewFrameKey.value += 1
 }
 
 function scheduleDevelopmentPreviewAuthorizationRetry(projectName: string, key: string) {
@@ -1378,16 +1426,28 @@ function projectDevelopmentPreviewString(result: unknown, key: 'message' | 'reas
 }
 
 function handleDevelopmentPreviewFrameLoad() {
+  refreshDevelopmentPreviewAuthorizationIfExpiring()
+}
+
+function handleDevelopmentPreviewVisibilityChange() {
+  if (document.visibilityState === 'visible') handleDevelopmentPreviewAuthorizationWake()
+}
+
+function handleDevelopmentPreviewAuthorizationWake() {
+  refreshDevelopmentPreviewAuthorizationIfExpiring()
+}
+
+function refreshDevelopmentPreviewAuthorizationIfExpiring() {
   const projectName = selected.value?.name
   const key = developmentPreviewAuthorizationKey.value
-  if (!projectName || !key || !developmentPreviewNeedsAuthorization.value) return
-  if (!developmentPreviewTokenExpired()) return
+  if (!projectName || !key || !developmentPreviewNeedsAuthorization.value || developmentPreviewAuthorizing.value) return
+  if (!developmentPreviewTokenExpiresSoon()) return
   void authorizeDevelopmentPreview({ force: true })
 }
 
-function developmentPreviewTokenExpired(): boolean {
+function developmentPreviewTokenExpiresSoon(): boolean {
   const expiresMs = Date.parse(developmentPreviewTokenExpiresAt.value)
-  return Number.isFinite(expiresMs) && expiresMs <= Date.now()
+  return Number.isFinite(expiresMs) && expiresMs <= Date.now() + DEVELOPMENT_PREVIEW_AUTH_RENEWAL_SKEW_MS
 }
 
 function workbenchTabButtonClass(tab: WorkbenchTab): string {
@@ -1441,6 +1501,7 @@ async function sendMessage() {
   messageStreaming.value = true
   error.value = null
   let assistantMessageID = ''
+  let shouldRefreshPreviewAfterRun = false
   const controller = new AbortController()
   activeMessageStreamController = controller
 
@@ -1455,8 +1516,11 @@ async function sendMessage() {
   messages.value = optimisticMessages
   try {
     await api.createMessageStream(props.ctx, projectName, content, (event: ProjectMessageStreamEvent) => {
-      if (event.type === 'ui') {
-        const nextAssistantMessageID = applyAssistantUIEvent(projectName, event.assistantMessageID, event.ui)
+      if (isProjectAssistantUIStreamEvent(event)) {
+        if (projectAssistantUIEventRequestsPreviewRefresh(event)) {
+          shouldRefreshPreviewAfterRun = true
+        }
+        const nextAssistantMessageID = applyAssistantUIEvent(projectName, event)
         if (!assistantMessageID && nextAssistantMessageID) {
           assistantMessageID = nextAssistantMessageID
         }
@@ -1469,7 +1533,9 @@ async function sendMessage() {
         throw new Error(event.error ?? 'Streaming error')
       }
     }, controller.signal)
-    await refreshProjectConversationAfterAssistantRun(projectName)
+    if (await refreshProjectConversationAfterAssistantRun(projectName) && shouldRefreshPreviewAfterRun) {
+      await refreshDevelopmentPreviewFrame('Preview refreshed')
+    }
   } catch (e) {
     if (isAbortError(e)) {
       markAssistantMessageInterrupted(projectName, assistantMessageID)
@@ -1510,9 +1576,20 @@ function ensureAssistantMessage(projectName: string, assistantMessageID: string)
   return messages.value.length - 1
 }
 
-function applyAssistantUIEvent(projectName: string, assistantMessageID: string | undefined, ui?: ProjectAssistantUIEvent): string | undefined {
-  if (!ui) return undefined
+function applyAssistantUIEvent(projectName: string, ui: ProjectAssistantUIEvent): string | undefined {
+  const assistantMessageID = projectAssistantUIEventSurfaceID(ui)
   let touchedAssistantMessageID: string | undefined
+
+  if (ui.beginRendering && projectName && assistantMessageID) {
+    touchedAssistantMessageID = assistantMessageID
+    ensureAssistantSurface(projectName, assistantMessageID, ui.beginRendering.root)
+  }
+
+  if (ui.surfaceUpdate?.components?.length && projectName && assistantMessageID) {
+    conversationStatus.value = ''
+    touchedAssistantMessageID = assistantMessageID
+    upsertAssistantSurfaceComponents(projectName, assistantMessageID, ui.surfaceUpdate.components)
+  }
 
   if (ui.dataModelUpdate?.contents?.length) {
     for (const content of ui.dataModelUpdate.contents) {
@@ -1524,36 +1601,13 @@ function applyAssistantUIEvent(projectName: string, assistantMessageID: string |
         conversationStatus.value = builderEventStatus(content.valueString)
         continue
       }
-      if (content.key === 'assistant.progress' && projectName && assistantMessageID) {
-        touchedAssistantMessageID = assistantMessageID
-        appendAssistantProgress(projectName, assistantMessageID, content.valueString)
+      if (content.key === 'development.previewRefreshNeeded') {
         continue
       }
-      if (content.key !== 'assistant.content' || !projectName || !assistantMessageID) continue
+      if (!projectName || !assistantMessageID) continue
       conversationStatus.value = ''
       touchedAssistantMessageID = assistantMessageID
-      const idx = ensureAssistantMessage(projectName, assistantMessageID)
-      const existing = messages.value[idx]
-      messages.value[idx] = {
-        ...existing,
-        content: content.append ? `${existing.content}${content.valueString ?? ''}` : (content.valueString ?? ''),
-      }
-      messages.value = [...messages.value]
-    }
-  }
-
-  if (ui.beginRendering && projectName && assistantMessageID) {
-    touchedAssistantMessageID = assistantMessageID
-    ensureAssistantMessage(projectName, assistantMessageID)
-  }
-
-  if (ui.surfaceUpdate?.components?.length && projectName && assistantMessageID) {
-    conversationStatus.value = ''
-    touchedAssistantMessageID = assistantMessageID
-    for (const component of ui.surfaceUpdate.components) {
-      if (component.toolDisclosure) {
-        upsertAssistantAction(projectName, assistantMessageID, component.toolDisclosure)
-      }
+      updateAssistantSurfaceData(projectName, assistantMessageID, content.key, content.valueString || '', content.append === true)
     }
   }
 
@@ -1566,19 +1620,82 @@ function applyAssistantUIEvent(projectName: string, assistantMessageID: string |
   return touchedAssistantMessageID
 }
 
-function appendAssistantProgress(projectName: string, assistantMessageID: string, value?: string) {
-  const text = (value || '').trim()
-  if (!text) return
+function projectAssistantUIEventRequestsPreviewRefresh(ui: ProjectAssistantUIEvent): boolean {
+  return ui.dataModelUpdate?.contents?.some((content) =>
+    content.key === 'development.previewRefreshNeeded' && content.valueString !== 'false',
+  ) ?? false
+}
+
+function isProjectAssistantUIStreamEvent(event: ProjectMessageStreamEvent): event is ProjectAssistantUIEvent {
+  return ('beginRendering' in event && Boolean(event.beginRendering)) ||
+    ('surfaceUpdate' in event && Boolean(event.surfaceUpdate)) ||
+    ('dataModelUpdate' in event && Boolean(event.dataModelUpdate)) ||
+    ('interruptRequest' in event && Boolean(event.interruptRequest))
+}
+
+function projectAssistantUIEventSurfaceID(ui: ProjectAssistantUIEvent): string {
+  return ui.beginRendering?.surfaceId ||
+    ui.surfaceUpdate?.surfaceId ||
+    ui.dataModelUpdate?.surfaceId ||
+    ui.interruptRequest?.surfaceId ||
+    ''
+}
+
+function ensureAssistantSurface(projectName: string, assistantMessageID: string, rootId: string): number {
   const idx = ensureAssistantMessage(projectName, assistantMessageID)
   const message = messages.value[idx]
-  const progress = [...(message.progress ?? [])]
-  if (progress.includes(text)) return
-  progress.push(text)
+  if (message.surface?.rootId === rootId) return idx
   messages.value[idx] = {
     ...message,
-    progress: progress.slice(-8),
+    surface: {
+      rootId,
+      components: {},
+      dataModel: {},
+    },
   }
   messages.value = [...messages.value]
+  return idx
+}
+
+function upsertAssistantSurfaceComponents(projectName: string, assistantMessageID: string, components: ProjectAssistantUIComponent[]) {
+  const idx = ensureAssistantSurface(projectName, assistantMessageID, messages.value.find((message) => message.id === assistantMessageID)?.surface?.rootId || 'root-col')
+  const message = messages.value[idx]
+  const surface = message.surface ?? { rootId: 'root-col', components: {}, dataModel: {} }
+  const nextComponents = { ...surface.components }
+  for (const component of components) {
+    nextComponents[component.id] = component.component
+  }
+  messages.value[idx] = {
+    ...message,
+    surface: {
+      ...surface,
+      components: nextComponents,
+    },
+  }
+  messages.value = [...messages.value]
+}
+
+function updateAssistantSurfaceData(projectName: string, assistantMessageID: string, key: string, value: string, appendValue = false) {
+  const idx = ensureAssistantSurface(projectName, assistantMessageID, messages.value.find((message) => message.id === assistantMessageID)?.surface?.rootId || 'root-col')
+  const message = messages.value[idx]
+  const surface = message.surface ?? { rootId: 'root-col', components: {}, dataModel: {} }
+  const nextValue = appendValue ? `${surface.dataModel[key] || ''}${value}` : value
+  messages.value[idx] = {
+    ...message,
+    content: assistantSurfaceHasAssistantBinding(surface, key) ? nextValue : message.content,
+    surface: {
+      ...surface,
+      dataModel: {
+        ...surface.dataModel,
+        [key]: nextValue,
+      },
+    },
+  }
+  messages.value = [...messages.value]
+}
+
+function assistantSurfaceHasAssistantBinding(surface: ProjectAssistantSurface, key: string): boolean {
+  return Object.values(surface.components).some((component) => component.Text?.dataKey === key)
 }
 
 function builderEventStatus(eventType?: string): string {
@@ -1594,23 +1711,6 @@ function builderEventStatus(eventType?: string): string {
   }
 }
 
-function upsertAssistantAction(projectName: string, assistantMessageID: string, action: ProjectAssistantActionView) {
-  const idx = ensureAssistantMessage(projectName, assistantMessageID)
-  const message = messages.value[idx]
-  const actions = [...(message.actions ?? [])]
-  const existingIdx = actions.findIndex((item) => item.id === action.id)
-  if (existingIdx === -1) {
-    actions.push(action)
-  } else {
-    actions[existingIdx] = mergeAssistantAction(actions[existingIdx], action)
-  }
-  messages.value[idx] = {
-    ...message,
-    actions,
-  }
-  messages.value = [...messages.value]
-}
-
 function applyAssistantInterrupt(projectName: string, assistantMessageID: string, interrupt: ProjectAssistantUIInterruptRequest) {
   const idx = ensureAssistantMessage(projectName, assistantMessageID)
   const message = messages.value[idx]
@@ -1624,18 +1724,6 @@ function applyAssistantInterrupt(projectName: string, assistantMessageID: string
   }
   messages.value[idx] = next
   messages.value = [...messages.value]
-}
-
-function mergeAssistantAction(existing: ProjectAssistantActionView, next: ProjectAssistantActionView): ProjectAssistantActionView {
-  return {
-    ...existing,
-    ...next,
-    summary: next.summary || existing.summary,
-    label: next.label || existing.label,
-    kind: next.kind || existing.kind,
-    status: next.status || existing.status,
-    count: next.count || existing.count,
-  }
 }
 
 function markAssistantMessageInterrupted(projectName: string, assistantMessageID: string) {
@@ -1682,9 +1770,12 @@ async function resolveToolPermission(message: ProjectMessageView, interrupt: Pro
       decision,
       assistantMessageID: message.id,
     })
-    applyPermissionResponse(projectName, message.id, interrupt, response)
+    const shouldRefreshPreview = applyPermissionResponse(projectName, message.id, interrupt, response)
     responseApplied = true
     await refreshSelectedProjectConversation(projectName)
+    if (shouldRefreshPreview) {
+      await refreshDevelopmentPreviewFrame('Preview refreshed')
+    }
   } catch (e) {
     await handleResumeFailure(projectName, key, e, {
       panelMessage: responseApplied ? 'Approval updated, but the conversation did not refresh. Reopen this project.' : 'Could not update approval. Try again.',
@@ -1724,9 +1815,12 @@ async function submitFollowUpAnswer(message: ProjectMessageView, interrupt: Proj
       answer,
       assistantMessageID: message.id,
     })
-    applyPermissionResponse(projectName, message.id, interrupt, response)
+    const shouldRefreshPreview = applyPermissionResponse(projectName, message.id, interrupt, response)
     responseApplied = true
     await refreshSelectedProjectConversation(projectName)
+    if (shouldRefreshPreview) {
+      await refreshDevelopmentPreviewFrame('Preview refreshed')
+    }
     const answers = { ...followUpAnswers.value }
     delete answers[key]
     followUpAnswers.value = answers
@@ -1790,11 +1884,15 @@ function applyPermissionResponse(
   assistantMessageID: string,
   interrupt: ProjectAssistantUIInterruptRequest,
   response: ProjectAssistantResumeResponse,
-) {
+): boolean {
   const key = permissionKey(interrupt)
+  let shouldRefreshPreview = false
   if (response.uiEvents?.length) {
     for (const uiEvent of response.uiEvents) {
-      applyAssistantUIEvent(projectName, assistantMessageID, uiEvent)
+      if (projectAssistantUIEventRequestsPreviewRefresh(uiEvent)) {
+        shouldRefreshPreview = true
+      }
+      applyAssistantUIEvent(projectName, uiEvent)
     }
   } else {
     applyAssistantInterrupt(projectName, assistantMessageID, { ...interrupt, status: 'resolved' })
@@ -1810,6 +1908,7 @@ function applyPermissionResponse(
   if (response.assistantMessage) {
     upsertProjectMessage(response.assistantMessage)
   }
+  return shouldRefreshPreview
 }
 
 function upsertProjectMessage(message: ProjectMessage) {
@@ -1825,73 +1924,7 @@ function upsertProjectMessage(message: ProjectMessage) {
 }
 
 function projectMessagesForConversation(source: ProjectMessageView[]): ProjectMessageView[] {
-  const out: ProjectMessageView[] = []
-  let pendingActivity: ProjectMessageView | null = null
-  for (const message of source) {
-    if (isAssistantActivityPlaceholder(message)) {
-      pendingActivity = pendingActivity ? mergeAssistantActivityIntoMessage(pendingActivity, message) : message
-      continue
-    }
-    if (message.role === 'assistant' && pendingActivity && message.content.trim()) {
-      out.push(mergeAssistantActivityIntoMessage(message, pendingActivity))
-      pendingActivity = null
-      continue
-    }
-    if (pendingActivity) {
-      out.push(pendingActivity)
-      pendingActivity = null
-    }
-    out.push(message)
-  }
-  if (pendingActivity) {
-    out.push(pendingActivity)
-  }
-  return out
-}
-
-function isAssistantActivityPlaceholder(message: ProjectMessageView): boolean {
-  return message.role === 'assistant'
-    && !message.content.trim()
-    && !message.interrupt
-    && !message.viewStatus
-    && ((message.actions?.length ?? 0) > 0 || (message.progress?.length ?? 0) > 0)
-}
-
-function mergeAssistantActivityIntoMessage(base: ProjectMessageView, activity: ProjectMessageView): ProjectMessageView {
-  const actions = mergeAssistantActionLists(activity.actions ?? [], base.actions ?? [])
-  const progress = mergeAssistantProgressLists(activity.progress ?? [], base.progress ?? [])
-  return {
-    ...base,
-    ...(actions.length > 0 ? { actions } : {}),
-    ...(progress.length > 0 ? { progress } : {}),
-  }
-}
-
-function mergeAssistantActionLists(...sources: ProjectAssistantActionView[][]): ProjectAssistantActionView[] {
-  const actions: ProjectAssistantActionView[] = []
-  for (const source of sources) {
-    for (const action of source) {
-      const existingIdx = actions.findIndex((item) => item.id === action.id)
-      if (existingIdx === -1) {
-        actions.push(action)
-      } else {
-        actions[existingIdx] = mergeAssistantAction(actions[existingIdx], action)
-      }
-    }
-  }
-  return actions
-}
-
-function mergeAssistantProgressLists(...sources: string[][]): string[] {
-  const progress: string[] = []
-  for (const source of sources) {
-    for (const value of source) {
-      const text = value.trim()
-      if (!text || progress.includes(text)) continue
-      progress.push(text)
-    }
-  }
-  return progress.slice(-8)
+  return source
 }
 
 function toProjectMessageView(message: ProjectMessage): ProjectMessageView {
@@ -1914,17 +1947,13 @@ function projectMessageViewStatus(message: ProjectMessage): ProjectMessageViewSt
 function projectMessageActions(message: ProjectMessage): ProjectAssistantActionView[] {
   if (message.role !== 'assistant') return []
   const raw = message.metadata?.assistantActions
-  if (Array.isArray(raw)) {
-    const actions = raw.filter(isProjectAssistantAction)
-    if (actions.length > 0) return actions
-  }
-  return legacyProjectMessageActions(message)
+  return Array.isArray(raw) ? raw.filter(isProjectAssistantAction) : []
 }
 
 function projectMessageInterrupt(message: ProjectMessage): ProjectAssistantUIInterruptRequest | undefined {
   if (message.role !== 'assistant') return undefined
   const raw = message.metadata?.assistantInterrupt
-  return isProjectAssistantInterrupt(raw) ? raw : legacyProjectMessageInterrupt(message)
+  return isProjectAssistantInterrupt(raw) ? raw : undefined
 }
 
 function isProjectAssistantAction(value: unknown): value is ProjectAssistantActionView {
@@ -1937,151 +1966,6 @@ function isProjectAssistantInterrupt(value: unknown): value is ProjectAssistantU
   if (!value || typeof value !== 'object') return false
   const item = value as Partial<ProjectAssistantUIInterruptRequest>
   return typeof item.interruptId === 'string'
-}
-
-function legacyProjectMessageActions(message: ProjectMessage): ProjectAssistantActionView[] {
-  const actions: ProjectAssistantActionView[] = []
-  for (const toolCall of legacyProjectMessageToolCalls(message)) {
-    const status = legacyAssistantActionStatus(legacyString(toolCall.status), legacyString(toolCall.error))
-    const id = legacyString(toolCall.id)
-      || legacyString(legacyObject(toolCall.permission)?.toolCallID)
-      || legacyString(legacyObject(toolCall.followUp)?.toolCallID)
-    if (!id || !status) continue
-    const kind = legacyAssistantActionKind(
-      legacyString(toolCall.name)
-      || legacyString(legacyObject(toolCall.permission)?.toolName)
-      || (legacyObject(toolCall.followUp) ? 'ask_follow_up' : ''),
-    )
-    const next: ProjectAssistantActionView = {
-      id,
-      kind,
-      status,
-      label: toolActionGroupLabel({ id: `tool-action-${kind}`, kind, status, count: 1 }),
-      summary: toolActionGroupSummary({ id: `tool-action-${kind}`, kind, status, count: 1 }),
-      count: 1,
-    }
-    const existingIdx = actions.findIndex((item) => item.id === next.id)
-    if (existingIdx === -1) {
-      actions.push(next)
-    } else {
-      actions[existingIdx] = mergeAssistantAction(actions[existingIdx], next)
-    }
-  }
-  return actions
-}
-
-function legacyProjectMessageInterrupt(message: ProjectMessage): ProjectAssistantUIInterruptRequest | undefined {
-  if (message.metadata?.status !== 'pending_permission' && message.metadata?.status !== 'pending_input') return undefined
-  const toolCalls = legacyProjectMessageToolCalls(message)
-  for (let i = toolCalls.length - 1; i >= 0; i -= 1) {
-    const toolCall = toolCalls[i]
-    const status = legacyString(toolCall.status)
-    const checkpoint = legacyObject(toolCall.checkpoint)
-    const runId = legacyString(checkpoint?.id)
-    if (!runId) continue
-    if (status === 'input_required') {
-      const followUp = legacyObject(toolCall.followUp)
-      const requestId = legacyString(followUp?.id)
-      if (!requestId) continue
-      return {
-        interruptId: requestId,
-        kind: 'follow_up',
-        description: legacyString(followUp?.prompt),
-        questions: legacyStringArray(followUp?.questions),
-        status: 'pending',
-        action: {
-          runId,
-          requestId,
-          assistantMessageId: message.id,
-        },
-      }
-    }
-    if (status === 'permission_required') {
-      const permission = legacyObject(toolCall.permission)
-      const requestId = legacyString(permission?.id)
-      if (!requestId) continue
-      return {
-        interruptId: requestId,
-        kind: 'permission',
-        description: legacyString(permission?.reason),
-        status: 'pending',
-        action: {
-          runId,
-          requestId,
-          assistantMessageId: message.id,
-        },
-      }
-    }
-  }
-  return undefined
-}
-
-function legacyProjectMessageToolCalls(message: ProjectMessage): LegacyProjectAssistantToolCall[] {
-  const raw = message.metadata?.toolCalls
-  if (!Array.isArray(raw)) return []
-  return raw.filter(isRecord)
-}
-
-function legacyAssistantActionStatus(status?: string, error?: string): ProjectAssistantActionStatus | undefined {
-  switch (status) {
-    case 'permission_required':
-      return 'awaiting_approval'
-    case 'input_required':
-      return 'awaiting_input'
-    default:
-      if (status && PROJECT_ASSISTANT_ACTION_STATUSES.has(status as ProjectAssistantActionStatus)) {
-        return status as ProjectAssistantActionStatus
-      }
-      return error ? 'failed' : undefined
-  }
-}
-
-function legacyAssistantActionKind(name?: string): ProjectAssistantActionView['kind'] {
-  const base = legacyToolBaseName(name)
-  switch (base) {
-    case 'ask_follow_up':
-      return 'clarify'
-    case 'request_project_plan_approval':
-      return 'plan'
-    case 'commit_project_files':
-    case 'commit_files':
-      return 'commit'
-    case 'write_file':
-    case 'apply_patch':
-    case 'mkdir':
-      return 'edit'
-    case 'list_project_files':
-    case 'read_project_file':
-    case 'search_project_files':
-      return 'inspect'
-    default:
-      return 'other'
-  }
-}
-
-function legacyToolBaseName(name?: string): string {
-  const value = (name || '').trim()
-  if (!value) return ''
-  const parts = value.split('__')
-  return parts[parts.length - 1] || value
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object'
-}
-
-function legacyObject(value: unknown): Record<string, unknown> | undefined {
-  return isRecord(value) ? value : undefined
-}
-
-function legacyString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value : undefined
-}
-
-function legacyStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const strings = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-  return strings.length > 0 ? strings : undefined
 }
 
 function isAbortError(err: unknown): boolean {
@@ -2236,6 +2120,10 @@ function toggleMessageTimestamp(messageID: string) {
   expandedMessageTimestampID.value = expandedMessageTimestampID.value === messageID ? null : messageID
 }
 
+function toggleAssistantTrace(messageID: string) {
+  expandedAssistantTraceMessageID.value = expandedAssistantTraceMessageID.value === messageID ? null : messageID
+}
+
 function formatRelativeTime(value?: string | null, numeric: Intl.RelativeTimeFormatNumeric = 'auto'): string {
   if (!value) return ''
   const date = new Date(value)
@@ -2293,105 +2181,166 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
   return assistantMarkdown.render(normalizeAssistantMarkdown(content))
 }
 
-type ToolActionGroupKind = ProjectAssistantActionView['kind']
-
-interface ToolActionGroup {
-  id: string
-  kind: ToolActionGroupKind
-  status: ProjectAssistantActionStatus
-  count: number
+function assistantSurfaceCards(message: ProjectMessageView): ProjectAssistantSurfaceCard[] {
+  const surface = message.surface
+  if (!surface) return []
+  return assistantSurfaceChildCards(surface, surface.rootId)
 }
 
-function toolActionGroups(actions?: ProjectAssistantActionView[]): ToolActionGroup[] {
-  const groups: ToolActionGroup[] = []
-  for (const action of actions ?? []) {
-    const kind = action.kind || 'other'
-    let group = groups.find((candidate) => candidate.kind === kind)
-    if (!group) {
-      group = {
-        id: `tool-action-${kind}`,
-        kind,
-        status: action.status,
-        count: 0,
-      }
-      groups.push(group)
+function assistantResponseCard(message: ProjectMessageView): ProjectAssistantSurfaceCard | undefined {
+  return assistantSurfaceCards(message).find((card) => card.role === 'assistant' && card.body.trim())
+}
+
+function assistantResponseContent(message: ProjectMessageView): string {
+  return assistantResponseCard(message)?.body || message.content || ''
+}
+
+function hasAssistantResponseContent(message: ProjectMessageView): boolean {
+  return assistantResponseContent(message).trim().length > 0
+}
+
+function renderAssistantResponse(message: ProjectMessageView): string {
+  return assistantMarkdown.render(normalizeAssistantMarkdown(assistantResponseContent(message)))
+}
+
+function assistantSurfaceChildCards(surface: ProjectAssistantSurface, id: string): ProjectAssistantSurfaceCard[] {
+  const component = surface.components[id]
+  if (!component) return []
+  if (component.Column) {
+    return component.Column.children.flatMap((child) => assistantSurfaceChildCards(surface, child))
+  }
+  if (component.Row) {
+    return component.Row.children.flatMap((child) => assistantSurfaceChildCards(surface, child))
+  }
+  if (!component.Card) return []
+  return [assistantSurfaceCard(surface, id, component.Card.children)]
+}
+
+function assistantSurfaceCard(surface: ProjectAssistantSurface, id: string, children: string[]): ProjectAssistantSurfaceCard {
+  const textNodes = children.flatMap((child) => assistantSurfaceTextNodes(surface, child))
+  const role = textNodes[0]?.value || 'assistant'
+  const body = textNodes.slice(1).map((node) => node.value).filter(Boolean).join('\n')
+  return { id, role, body }
+}
+
+function assistantSurfaceTextNodes(surface: ProjectAssistantSurface, id: string): Array<{ value: string }> {
+  const component = surface.components[id]
+  if (!component) return []
+  if (component.Text) {
+    const value = component.Text.dataKey ? surface.dataModel[component.Text.dataKey] || '' : component.Text.value || ''
+    return [{ value }]
+  }
+  if (component.Column) {
+    return component.Column.children.flatMap((child) => assistantSurfaceTextNodes(surface, child))
+  }
+  if (component.Row) {
+    return component.Row.children.flatMap((child) => assistantSurfaceTextNodes(surface, child))
+  }
+  if (component.Card) {
+    return component.Card.children.flatMap((child) => assistantSurfaceTextNodes(surface, child))
+  }
+  return []
+}
+
+function assistantActionCards(actions?: ProjectAssistantActionView[]): ProjectAssistantSurfaceCard[] {
+  return (actions ?? []).map((action) => ({
+    id: action.id,
+    role: assistantActionCardRole(action),
+    body: action.summary ? `${action.label}\n${action.summary}` : action.label,
+  }))
+}
+
+function assistantActionCardRole(action: ProjectAssistantActionView): string {
+  if (action.status === 'awaiting_approval' || action.status === 'awaiting_input') return 'approval needed'
+  if (action.status === 'requested' || action.status === 'running') return 'tool call'
+  return 'tool result'
+}
+
+function assistantTraceCards(message: ProjectMessageView): ProjectAssistantSurfaceCard[] {
+  return [...assistantSurfaceCards(message), ...assistantActionCards(message.actions)].filter(
+    (card) => card.role !== 'assistant' && card.body.trim(),
+  )
+}
+
+function assistantTraceItems(message: ProjectMessageView): AssistantTraceItem[] {
+  return assistantTraceCards(message).map((card) => {
+    const lines = card.body.split('\n').map((line) => line.trim()).filter(Boolean)
+    const label = assistantTraceLabel(lines[0] || card.role)
+    return {
+      id: card.id,
+      role: card.role,
+      label,
+      detail: lines.slice(1).join('\n') || lines[0] || card.role,
+      status: assistantTraceStatus(card.role),
     }
-    group.count += action.count ?? 1
-    group.status = toolActionGroupStatus(group.status, action.status)
-  }
-  return groups
+  })
 }
 
-function toolActionGroupStatus(
-  current: ProjectAssistantActionStatus,
-  next: ProjectAssistantActionStatus,
-): ProjectAssistantActionStatus {
-  const rank: Record<ProjectAssistantActionStatus, number> = {
-    failed: 6,
-    rejected: 5,
-    awaiting_approval: 4,
-    awaiting_input: 4,
-    running: 3,
-    requested: 2,
-    succeeded: 1,
-  }
-  return rank[next] > rank[current] ? next : current
-}
-
-function toolActionGroupLabel(group: ToolActionGroup): string {
-  const active = group.status === 'requested' || group.status === 'running' || group.status === 'awaiting_approval' || group.status === 'awaiting_input'
-  const failed = group.status === 'failed' || group.status === 'rejected'
-  switch (group.kind) {
-    case 'clarify':
-      return failed ? 'Clarification failed' : active ? 'Clarifying requirements' : 'Clarified requirements'
-    case 'inspect':
-      return failed ? 'Inspection failed' : active ? 'Inspecting project' : 'Inspected project'
-    case 'edit':
-      return failed ? 'Edit failed' : active ? 'Editing files' : 'Edited files'
-    case 'run':
-      return failed ? 'Run failed' : active ? 'Running checks' : 'Ran checks'
-    case 'commit':
-      return failed ? 'Commit failed' : active ? 'Preparing commit' : 'Committed changes'
-    case 'plan':
-      return failed ? 'Plan rejected' : active ? 'Reviewing plan' : 'Reviewed plan'
+function assistantTraceStatus(role: string): AssistantTraceItemStatus {
+  switch (role) {
+    case 'approval needed':
+      return 'waiting'
+    case 'error':
+      return 'error'
+    case 'tool call':
+      return 'running'
+    case 'tool result':
+      return 'complete'
     default:
-      return failed ? 'Action failed' : active ? 'Working' : 'Completed actions'
+      return 'complete'
   }
 }
 
-function toolActionGroupSummary(group: ToolActionGroup): string {
-  const noun =
-    group.kind === 'inspect'
-      ? group.count === 1 ? 'inspection' : 'inspections'
-      : group.kind === 'clarify'
-        ? group.count === 1 ? 'question' : 'questions'
-        : group.kind === 'edit'
-          ? group.count === 1 ? 'edit action' : 'edit actions'
-          : group.kind === 'run'
-            ? group.count === 1 ? 'check' : 'checks'
-            : group.kind === 'commit'
-              ? group.count === 1 ? 'commit step' : 'commit steps'
-              : group.kind === 'plan'
-                ? group.count === 1 ? 'plan step' : 'plan steps'
-                : group.count === 1 ? 'tool action' : 'tool actions'
-  return `${group.count} ${noun}`
+function assistantTraceLabel(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return 'Working'
+  return trimmed
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^./, (ch) => ch.toUpperCase())
 }
 
-function toolActionGroupStatusClass(group: ToolActionGroup): string {
-  switch (group.status) {
-    case 'succeeded':
-      return 'text-success'
-    case 'failed':
-    case 'rejected':
-      return 'text-danger'
-    case 'awaiting_approval':
-    case 'awaiting_input':
-      return 'text-accent'
-    case 'requested':
+function assistantTraceSummary(message: ProjectMessageView): string {
+  const labels = assistantTraceItems(message).map((item) => item.label).filter(Boolean)
+  if (labels.length === 0) return ''
+  const visible = labels.slice(0, 3).join(' · ')
+  return labels.length > 3 ? `${visible} · ${labels.length - 3} more` : visible
+}
+
+function assistantTraceCountLabel(message: ProjectMessageView): string {
+  const count = assistantTraceItems(message).length
+  return `${count} action${count === 1 ? '' : 's'}`
+}
+
+function assistantTraceIconClasses(status: AssistantTraceItemStatus): string {
+  const base = 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border shadow-sm'
+  switch (status) {
     case 'running':
+      return `${base} border-accent/20 bg-accent/10 text-accent`
+    case 'waiting':
+      return `${base} border-warning/30 bg-warning-subtle text-warning`
+    case 'error':
+      return `${base} border-danger/30 bg-danger-subtle text-danger`
     default:
-      return 'text-warning'
+      return `${base} border-border-subtle bg-surface-raised text-success`
   }
+}
+
+function assistantTraceDetailClasses(status: AssistantTraceItemStatus): string {
+  switch (status) {
+    case 'running':
+      return 'border-accent/20 bg-accent/5'
+    case 'waiting':
+      return 'border-warning/30 bg-warning-subtle/40'
+    case 'error':
+      return 'border-danger/30 bg-danger-subtle/40'
+    default:
+      return 'border-border-subtle bg-surface-overlay/50'
+  }
+}
+
+function renderAssistantTraceDetail(item: AssistantTraceItem): string {
+  return escapeHtml(item.detail).replace(/\n/g, '<br />')
 }
 
 function permissionKey(interrupt: ProjectAssistantUIInterruptRequest): string {
@@ -3010,105 +2959,65 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 class="w-full min-w-0 py-1 text-[13px] leading-6 text-text-secondary"
               >
                 <div
-                  v-if="message.actions?.length"
+                  v-if="assistantTraceItems(message).length"
                   class="mb-3"
-                >
-                  <details
-                    class="group/actions overflow-hidden rounded-lg bg-transparent text-[12px] text-text-secondary transition hover:bg-surface-overlay/50 focus-within:bg-surface-overlay/50 [&[open]]:bg-surface-overlay/40"
-                  >
-                    <summary class="flex min-h-11 min-w-0 cursor-pointer list-none items-center gap-2 px-2.5 py-2 [&::-webkit-details-marker]:hidden">
-                      <ChevronRight
-                        class="h-4 w-4 shrink-0 text-text-muted transition group-open/actions:rotate-90"
-                        :stroke-width="1.75"
-                      />
-                      <div class="flex min-w-0 items-center -space-x-1">
-                        <span
-                          v-for="group in toolActionGroups(message.actions).slice(0, 4)"
-                          :key="`bundle-${group.id}`"
-                          class="flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-muted shadow-sm"
-                        >
-                          <Loader2
-                            v-if="group.status === 'running' || group.status === 'requested'"
-                            class="h-4 w-4 animate-spin"
-                            :class="toolActionGroupStatusClass(group)"
-                            :stroke-width="1.75"
-                          />
-                          <Check
-                            v-else-if="group.status === 'succeeded'"
-                            class="h-4 w-4"
-                            :class="toolActionGroupStatusClass(group)"
-                            :stroke-width="1.75"
-                          />
-                          <X
-                            v-else-if="group.status === 'failed' || group.status === 'rejected'"
-                            class="h-4 w-4"
-                            :class="toolActionGroupStatusClass(group)"
-                            :stroke-width="1.75"
-                          />
-                          <Wrench v-else class="h-4 w-4" :stroke-width="1.75" />
-                        </span>
-                        <span
-                          v-if="toolActionGroups(message.actions).length > 4"
-                          class="flex h-8 min-w-8 items-center justify-center rounded-md border border-border-subtle bg-surface px-1.5 text-[11px] font-medium text-text-muted shadow-sm"
-                        >
-                          +{{ toolActionGroups(message.actions).length - 4 }}
-                        </span>
-                      </div>
-                      <span class="truncate text-[13px] font-medium text-text-secondary">
-                        {{ toolActionGroups(message.actions).map((group) => toolActionGroupLabel(group)).join(' · ') }}
-                      </span>
-                    </summary>
-                    <div class="grid gap-1.5 border-t border-border-subtle px-2 py-2">
-                      <div
-                        v-for="group in toolActionGroups(message.actions)"
-                        :key="`group-${group.id}`"
-                        class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface/80 px-2.5 py-2"
-                      >
-                        <Loader2
-                          v-if="group.status === 'running' || group.status === 'requested'"
-                          class="h-3.5 w-3.5 shrink-0 animate-spin"
-                          :class="toolActionGroupStatusClass(group)"
-                          :stroke-width="1.75"
-                        />
-                        <Check
-                          v-else-if="group.status === 'succeeded'"
-                          class="h-3.5 w-3.5 shrink-0"
-                          :class="toolActionGroupStatusClass(group)"
-                          :stroke-width="1.75"
-                        />
-                        <X
-                          v-else-if="group.status === 'failed' || group.status === 'rejected'"
-                          class="h-3.5 w-3.5 shrink-0"
-                          :class="toolActionGroupStatusClass(group)"
-                          :stroke-width="1.75"
-                        />
-                        <Wrench v-else class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-                        <div class="min-w-0 flex-1">
-                          <div class="truncate text-[12px] font-medium text-text-secondary">{{ toolActionGroupLabel(group) }}</div>
-                          <div class="truncate text-[11px] text-text-muted">{{ toolActionGroupSummary(group) }}</div>
-                        </div>
-                      </div>
-                    </div>
-                  </details>
-                </div>
-                <div
-                  v-if="message.progress?.length"
-                  class="mb-3 grid gap-1.5"
                   aria-live="polite"
                 >
+	                  <button
+	                    type="button"
+	                    class="group inline-flex max-w-full items-center gap-2 rounded-md py-1 text-left text-[12px] text-text-secondary transition hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+	                    :aria-expanded="expandedAssistantTraceMessageID === message.id"
+	                    @click="toggleAssistantTrace(message.id)"
+	                  >
+                    <span class="flex shrink-0 -space-x-1">
+                      <span
+                        v-for="item in assistantTraceItems(message).slice(0, 4)"
+                        :key="`${message.id}-${item.id}-icon`"
+                        :class="assistantTraceIconClasses(item.status)"
+                      >
+                        <Loader2 v-if="item.status === 'running'" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+                        <Square v-else-if="item.status === 'waiting'" class="h-3 w-3 fill-current" :stroke-width="2" />
+                        <X v-else-if="item.status === 'error'" class="h-3.5 w-3.5" :stroke-width="2" />
+                        <Check v-else class="h-3.5 w-3.5" :stroke-width="2" />
+                      </span>
+                    </span>
+                    <span class="min-w-0 truncate">
+                      <span class="font-medium text-text-primary">{{ assistantTraceCountLabel(message) }}</span>
+                      <span v-if="assistantTraceSummary(message)" class="text-text-muted"> · {{ assistantTraceSummary(message) }}</span>
+                    </span>
+                  </button>
                   <div
-                    v-for="(note, noteIndex) in message.progress"
-                    :key="`${message.id}-progress-${noteIndex}`"
-                    class="flex min-w-0 items-start gap-2 text-[13px] leading-6 text-text-secondary"
+                    v-if="expandedAssistantTraceMessageID === message.id"
+                    class="mt-2 grid gap-1.5 rounded-lg border border-border-subtle bg-surface/80 p-2"
                   >
-                    <span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/80"></span>
-                    <span class="min-w-0">{{ note }}</span>
+                    <div
+                      v-for="item in assistantTraceItems(message)"
+                      :key="`${message.id}-${item.id}-detail`"
+                      class="grid gap-1 rounded-md border px-2.5 py-2 text-[12px] leading-5 text-text-secondary"
+                      :class="assistantTraceDetailClasses(item.status)"
+                    >
+                      <div class="flex min-w-0 items-center gap-2">
+                        <span :class="assistantTraceIconClasses(item.status)">
+                          <Loader2 v-if="item.status === 'running'" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+                          <Square v-else-if="item.status === 'waiting'" class="h-3 w-3 fill-current" :stroke-width="2" />
+                          <X v-else-if="item.status === 'error'" class="h-3.5 w-3.5" :stroke-width="2" />
+                          <Check v-else class="h-3.5 w-3.5" :stroke-width="2" />
+                        </span>
+                        <span class="min-w-0 truncate font-medium text-text-primary">{{ item.label }}</span>
+                        <span class="ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">{{ item.role }}</span>
+                      </div>
+                      <div
+                        v-if="item.detail && item.detail !== item.label"
+                        class="whitespace-pre-wrap pl-9 font-mono text-[11px] leading-5 text-text-muted"
+                        v-html="renderAssistantTraceDetail(item)"
+                      />
+                    </div>
                   </div>
                 </div>
                 <div
-                  v-if="message.content.trim()"
+                  v-if="hasAssistantResponseContent(message)"
                   :class="assistantMarkdownClass"
-                  v-html="renderMessageContent(message.content, message.role)"
+                  v-html="renderAssistantResponse(message)"
                 />
                 <div
                   v-if="message.viewStatus === 'interrupted'"
