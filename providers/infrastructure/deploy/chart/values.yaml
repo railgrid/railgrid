@@ -49,10 +49,14 @@ application:
   # Zone apps are served under, e.g. "apps.example.com". Each app gets
   # <prefix|name>-<tenantHash>.<baseDomain>. Empty → feature disabled.
   baseDomain: ""
-  # Exposure-layer ingress class substituted into Application RGDs. Defaults
-  # to "cloudflare" (Cloudflare Tunnel) in-binary; override to swap the
-  # ingress controller without touching the template.
-  ingressClass: "cloudflare"
+  # Gateway API parent the generated Application HTTPRoutes attach to
+  # (substituted into Application RGDs as ${kedge.gatewayName} /
+  # ${kedge.gatewayNamespace}). Defaults to the cfgate Cloudflare Tunnel
+  # Gateway in-binary; override to point apps at a different Gateway without
+  # touching the template.
+  gateway:
+    name: "cloudflare-tunnel"
+    namespace: "cfgate-system"
 
 # Secret the provider mounts read-only at
 # /var/run/secrets/kedge/kedge-provider-kubeconfig to reach kcp. How it is
@@ -199,16 +203,18 @@ operator:
     port: 8081
 
   # Application-template exposure layer (the `application` template's public URL
-  # + ingress controller). This is the operator-mode equivalent of the top-level
+  # + Gateway API parent). This is the operator-mode equivalent of the top-level
   # `application.*` values: the operator owns the serve Deployment, so these land
-  # on the InfrastructureProvider CR (KEDGE_APP_BASE_DOMAIN / KEDGE_INGRESS_CLASS)
-  # rather than via the chart's deployment.yaml. See
+  # on the InfrastructureProvider CR (KEDGE_APP_BASE_DOMAIN / KEDGE_GATEWAY_NAME /
+  # KEDGE_GATEWAY_NAMESPACE) rather than via the chart's deployment.yaml. See
   # docs/application-template-architecture.md.
   application:
     # DNS zone apps are served under, e.g. "apps.example.com". REQUIRED to enable
     # app exposure — the Application instance controller stays disabled until this
     # is set. Empty → feature off.
     baseDomain: ""
-    # Ingress controller that fulfils the generated Ingress. Empty → "cloudflare"
-    # (the in-binary default).
-    ingressClass: ""
+    # Gateway API parent the generated HTTPRoutes attach to. Empty fields →
+    # "cloudflare-tunnel" / "cfgate-system" (the in-binary defaults).
+    gateway:
+      name: ""
+      namespace: ""

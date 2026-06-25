@@ -132,6 +132,21 @@ ingress:
   #      - path: /
   #        pathType: ImplementationSpecific
 
+# -- HTTPRoute (Gateway API; e.g. for the cfgate Cloudflare Tunnel controller).
+# The hub serves HTTPS with a self-signed cert on service.hub.port, so when
+# attaching to cfgate set the origin annotations below so cloudflared opens a
+# TLS connection to the origin without verifying the cert.
+httpRoute:
+  enabled: false
+  parentRefs:
+    - name: cloudflare-tunnel
+      namespace: cfgate-system
+  annotations: {}
+  #  cfgate.io/origin-protocol: "https"
+  #  cfgate.io/origin-ssl-verify: "false"
+  hostnames: []
+  #  - kedge.example.com
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

@@ -69,9 +69,10 @@ spec:
               application:
                 description: |-
                   Application configures the `application` template's exposure layer — the
-                  public URL apps are served on and which ingress controller fulfils it.
-                  Maps onto the serve container's KEDGE_APP_BASE_DOMAIN / KEDGE_INGRESS_CLASS
-                  env vars. Optional; without it app exposure stays off (see ApplicationSpec).
+                  public URL apps are served on and the Gateway API parent that fulfils it.
+                  Maps onto the serve container's KEDGE_APP_BASE_DOMAIN / KEDGE_GATEWAY_NAME
+                  / KEDGE_GATEWAY_NAMESPACE env vars. Optional; without it app exposure stays
+                  off (see ApplicationSpec).
                 properties:
                   baseDomain:
                     description: |-
@@ -81,13 +82,23 @@ spec:
                       <prefix|name>-<tenantHash>.<baseDomain> and stamps it onto the instance).
                       Empty → the feature is off.
                     type: string
-                  ingressClass:
+                  gateway:
                     description: |-
-                      IngressClass is the ingress controller that fulfils the generated Ingress
-                      (its spec.ingressClassName). It is substituted for the
-                      ${kedge.ingressClass} token in a Template's backendConfig before the kro
-                      RGD is authored. Empty → "cloudflare" (the in-binary default).
-                    type: string
+                      Gateway identifies the Gateway API parent the generated HTTPRoutes attach
+                      to. Its name/namespace are substituted for the ${kedge.gatewayName} /
+                      ${kedge.gatewayNamespace} tokens in a Template's backendConfig before the
+                      kro RGD is authored. Empty fields fall back to the in-binary default
+                      ("cloudflare-tunnel" in "cfgate-system").
+                    properties:
+                      name:
+                        description: Name of the Gateway. Empty → "cloudflare-tunnel"
+                          (the in-binary default).
+                        type: string
+                      namespace:
+                        description: Namespace of the Gateway. Empty → "cfgate-system"
+                          (the in-binary default).
+                        type: string
+                    type: object
                 type: object
               hub:
                 description: Hub configures the provider's heartbeat target. Optional.

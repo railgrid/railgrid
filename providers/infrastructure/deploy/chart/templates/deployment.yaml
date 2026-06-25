@@ -129,10 +129,16 @@ spec:
             - name: KEDGE_APP_BASE_DOMAIN
               value: {{ . | quote }}
             {{- end }}
-            {{- with .Values.application.ingressClass }}
-            # Exposure-layer ingress class substituted into Application RGDs
-            # (${kedge.ingressClass}); defaults to "cloudflare" in-binary.
-            - name: KEDGE_INGRESS_CLASS
+            {{- with .Values.application.gateway.name }}
+            # Gateway API parent the Application HTTPRoutes attach to
+            # (${kedge.gatewayName}); defaults to "cloudflare-tunnel" in-binary.
+            - name: KEDGE_GATEWAY_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.application.gateway.namespace }}
+            # The Gateway's namespace (${kedge.gatewayNamespace}); defaults to
+            # "cfgate-system" in-binary.
+            - name: KEDGE_GATEWAY_NAMESPACE
               value: {{ . | quote }}
             {{- end }}
           volumeMounts:

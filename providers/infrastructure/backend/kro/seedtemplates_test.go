@@ -47,7 +47,7 @@ func TestSeedTemplatesBuildRGD(t *testing.T) {
 			}
 			tmpl := decodeTemplate(t, raw)
 
-			rgd, err := buildRGD(tmpl, "cloudflare")
+			rgd, err := buildRGD(tmpl, "cloudflare-tunnel", "cfgate-system")
 			if err != nil {
 				t.Fatalf("buildRGD(%s): %v", e.Name(), err)
 			}
@@ -88,7 +88,7 @@ func TestSeedTemplatesIncludeSandboxRunner(t *testing.T) {
 	if got, want := tmpl.Spec.InstanceCRD.Resource, "sandboxrunners"; got != want {
 		t.Fatalf("instance resource = %q, want %q", got, want)
 	}
-	rgd, err := buildRGD(tmpl, "cloudflare")
+	rgd, err := buildRGD(tmpl, "cloudflare-tunnel", "cfgate-system")
 	if err != nil {
 		t.Fatalf("buildRGD(sandbox-runner): %v", err)
 	}
@@ -124,7 +124,7 @@ func TestSeedTemplatesIncludeStandaloneDatabase(t *testing.T) {
 		t.Fatalf("instance resource = %q, want %q", got, want)
 	}
 
-	rgd, err := buildRGD(tmpl, "cloudflare")
+	rgd, err := buildRGD(tmpl, "cloudflare-tunnel", "cfgate-system")
 	if err != nil {
 		t.Fatalf("buildRGD(database): %v", err)
 	}
@@ -133,7 +133,7 @@ func TestSeedTemplatesIncludeStandaloneDatabase(t *testing.T) {
 			t.Fatalf("database template missing %s resource", id)
 		}
 	}
-	for _, id := range []string{"backendDeployment", "frontendDeployment", "ingress", "oauthDeployment"} {
+	for _, id := range []string{"backendDeployment", "frontendDeployment", "httpRoute", "oauthDeployment"} {
 		if findResource(t, rgd, id) != nil {
 			t.Fatalf("database template must not include application resource %s", id)
 		}
@@ -151,7 +151,7 @@ func TestSandboxRunnerUsesManagedJobForControlToken(t *testing.T) {
 		t.Fatalf("read sandbox-runner seed template: %v", err)
 	}
 	tmpl := decodeTemplate(t, raw)
-	rgd, err := buildRGD(tmpl, "cloudflare")
+	rgd, err := buildRGD(tmpl, "cloudflare-tunnel", "cfgate-system")
 	if err != nil {
 		t.Fatalf("buildRGD(sandbox-runner): %v", err)
 	}

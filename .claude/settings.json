@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/Users/mjudeikis/go/src/github.com/kcp-dev/kcp/pkg/reconciler/apis/apibinding"
+    ]
+  }
+}

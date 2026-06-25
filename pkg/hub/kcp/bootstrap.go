@@ -79,7 +79,20 @@ type Bootstrapper struct {
 
 // NewBootstrapper creates a new bootstrapper.
 func NewBootstrapper(config *rest.Config) *Bootstrapper {
-	return &Bootstrapper{config: config}
+	// The hub admin client fans out across many kcp workspaces (every org, every
+	// child workspace, every provider export) and polls during provider Enable.
+	// client-go's default 5 QPS / 10 burst throttles that fan-out and surfaces as
+	// "client rate limiter Wait ... would exceed context deadline" mid-Enable
+	// (e.g. while waiting for a provider's APIExport in exportClaimIdentities).
+	// Give it generous headroom — matching the kuery controller's 50/100 — and
+	// force RateLimiter to nil so each per-path client (configForPath copies this
+	// config) builds its own limiter rather than sharing a single contended
+	// bucket inherited from e.g. a loopback config.
+	cfg := rest.CopyConfig(config)
+	cfg.QPS = 50
+	cfg.Burst = 100
+	cfg.RateLimiter = nil
+	return &Bootstrapper{config: cfg}
 }
 
 // WithEnabledProviders sets the subset of builtin providers the

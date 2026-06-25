@@ -53,32 +53,44 @@ type Backend struct {
 	// pointed at by KRO_KUBECONFIG.
 	runtime dynamic.Interface
 
-	// ingressClass is the value substituted for the reserved
-	// ${kedge.ingressClass} token in a Template's backendConfig before the
-	// RGD is authored. It's a platform-wide setting (the exposure-layer
-	// controller, e.g. "cloudflare"), so it belongs on the backend, not in
-	// per-tenant data. See substituteTokens in rgd.go.
-	ingressClass string
+	// gatewayName / gatewayNamespace are the values substituted for the
+	// reserved ${kedge.gatewayName} / ${kedge.gatewayNamespace} tokens in a
+	// Template's backendConfig before the RGD is authored. They identify the
+	// platform-wide Gateway API parent the generated HTTPRoutes attach to
+	// (the exposure-layer Gateway, e.g. cfgate's "cloudflare-tunnel"), so they
+	// belong on the backend, not in per-tenant data. See substituteTokens in
+	// rgd.go.
+	gatewayName      string
+	gatewayNamespace string
 }
 
 var _ backend.Backend = (*Backend)(nil)
 
-// DefaultIngressClass is used when KEDGE_INGRESS_CLASS is unset. Cloudflare
-// Tunnel is the exposure layer we ship with (reverse tunnels, edge TLS).
-const DefaultIngressClass = "cloudflare"
+// DefaultGatewayName / DefaultGatewayNamespace are used when
+// KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE are unset. They point at the
+// cfgate Cloudflare Tunnel Gateway we ship with (the Gateway API exposure
+// layer: reverse tunnels, edge TLS).
+const (
+	DefaultGatewayName      = "cloudflare-tunnel"
+	DefaultGatewayNamespace = "cfgate-system"
+)
 
 // New constructs the kro backend against the runtime cluster's dynamic
 // client. The caller (controller_manager) builds it from KRO_KUBECONFIG.
-// The exposure-layer ingress class is read from KEDGE_INGRESS_CLASS
-// (defaulting to "cloudflare") and substituted into backendConfig at RGD
-// build time, so swapping ingress controllers is a config change, not a
-// template edit.
+// The exposure-layer Gateway parent is read from KEDGE_GATEWAY_NAME /
+// KEDGE_GATEWAY_NAMESPACE (defaulting to "cloudflare-tunnel" in
+// "cfgate-system") and substituted into backendConfig at RGD build time, so
+// pointing apps at a different Gateway is a config change, not a template edit.
 func New(runtime dynamic.Interface) *Backend {
-	ingressClass := os.Getenv("KEDGE_INGRESS_CLASS")
-	if ingressClass == "" {
-		ingressClass = DefaultIngressClass
+	gatewayName := os.Getenv("KEDGE_GATEWAY_NAME")
+	if gatewayName == "" {
+		gatewayName = DefaultGatewayName
 	}
-	return &Backend{runtime: runtime, ingressClass: ingressClass}
+	gatewayNamespace := os.Getenv("KEDGE_GATEWAY_NAMESPACE")
+	if gatewayNamespace == "" {
+		gatewayNamespace = DefaultGatewayNamespace
+	}
+	return &Backend{runtime: runtime, gatewayName: gatewayName, gatewayNamespace: gatewayNamespace}
 }
 
 // Name returns "kro".
@@ -89,7 +101,7 @@ func (b *Backend) Name() string { return Name }
 // error (malformed schema/backendConfig) is returned so the Template
 // controller surfaces BackendError; a successful apply reports Ready=true.
 func (b *Backend) SetupTemplate(ctx context.Context, tmpl *infrav1alpha1.Template) (backend.TemplateStatus, error) {
-	rgd, err := buildRGD(tmpl, b.ingressClass)
+	rgd, err := buildRGD(tmpl, b.gatewayName, b.gatewayNamespace)
 	if err != nil {
 		return backend.TemplateStatus{Ready: false, Message: err.Error()}, err
 	}

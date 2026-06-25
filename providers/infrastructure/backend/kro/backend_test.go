@@ -87,7 +87,7 @@ func TestBuildRGD(t *testing.T) {
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)}
 	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"statefulset","template":{"apiVersion":"apps/v1","kind":"StatefulSet"}}]}`)}
 
-	rgd, err := buildRGD(tmpl, DefaultIngressClass)
+	rgd, err := buildRGD(tmpl, DefaultGatewayName, DefaultGatewayNamespace)
 	if err != nil {
 		t.Fatalf("buildRGD: %v", err)
 	}
@@ -123,16 +123,16 @@ func TestBuildRGD(t *testing.T) {
 	}
 }
 
-func TestBuildRGDSubstitutesIngressClass(t *testing.T) {
+func TestBuildRGDSubstitutesGatewayRef(t *testing.T) {
 	tmpl := &infrav1alpha1.Template{}
 	tmpl.Name = "application"
 	tmpl.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{
 		Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "applications", Kind: "Application",
 	}
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)}
-	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"ingress","template":{"apiVersion":"networking.k8s.io/v1","kind":"Ingress","spec":{"ingressClassName":"${kedge.ingressClass}"}}}]}`)}
+	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"httpRoute","template":{"apiVersion":"gateway.networking.k8s.io/v1","kind":"HTTPRoute","spec":{"parentRefs":[{"name":"${kedge.gatewayName}","namespace":"${kedge.gatewayNamespace}"}]}}}]}`)}
 
-	rgd, err := buildRGD(tmpl, "cloudflare")
+	rgd, err := buildRGD(tmpl, "cloudflare-tunnel", "cfgate-system")
 	if err != nil {
 		t.Fatalf("buildRGD: %v", err)
 	}
@@ -140,20 +140,24 @@ func TestBuildRGDSubstitutesIngressClass(t *testing.T) {
 	if err != nil || len(resources) != 1 {
 		t.Fatalf("spec.resources: len=%d err=%v", len(resources), err)
 	}
-	got, found, err := unstructured.NestedString(resources[0].(map[string]any), "template", "spec", "ingressClassName")
-	if err != nil || !found {
-		t.Fatalf("ingressClassName not found: err=%v", err)
+	parentRefs, found, err := unstructured.NestedSlice(resources[0].(map[string]any), "template", "spec", "parentRefs")
+	if err != nil || !found || len(parentRefs) != 1 {
+		t.Fatalf("parentRefs not found: found=%v len=%d err=%v", found, len(parentRefs), err)
 	}
-	if got != "cloudflare" {
-		t.Errorf("ingressClassName = %q, want %q (token not substituted)", got, "cloudflare")
+	ref := parentRefs[0].(map[string]any)
+	if ref["name"] != "cloudflare-tunnel" {
+		t.Errorf("parentRefs[0].name = %q, want %q (token not substituted)", ref["name"], "cloudflare-tunnel")
+	}
+	if ref["namespace"] != "cfgate-system" {
+		t.Errorf("parentRefs[0].namespace = %q, want %q (token not substituted)", ref["namespace"], "cfgate-system")
 	}
 }
 
 func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
 	// kro's own ${...} references must survive substitution untouched.
-	in := []byte(`{"a":"${schema.spec.name}","b":"${kedge.ingressClass}","c":"${svc.metadata.name}"}`)
-	out := string(substituteTokens(in, "nginx"))
-	if want := `{"a":"${schema.spec.name}","b":"nginx","c":"${svc.metadata.name}"}`; out != want {
+	in := []byte(`{"a":"${schema.spec.name}","b":"${kedge.gatewayName}","c":"${kedge.gatewayNamespace}","d":"${svc.metadata.name}"}`)
+	out := string(substituteTokens(in, "my-gw", "my-ns"))
+	if want := `{"a":"${schema.spec.name}","b":"my-gw","c":"my-ns","d":"${svc.metadata.name}"}`; out != want {
 		t.Errorf("substituteTokens = %s, want %s", out, want)
 	}
 }
@@ -164,7 +168,7 @@ func TestBuildRGDRequiresBackendConfig(t *testing.T) {
 	tmpl.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{Group: "g", Version: "v1alpha1", Resource: "rs", Kind: "R"}
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}}}`)}
 	// no BackendConfig
-	if _, err := buildRGD(tmpl, DefaultIngressClass); err == nil {
+	if _, err := buildRGD(tmpl, DefaultGatewayName, DefaultGatewayNamespace); err == nil {
 		t.Fatal("expected error when backendConfig is missing")
 	}
 }

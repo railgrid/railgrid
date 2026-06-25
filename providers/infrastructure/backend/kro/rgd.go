@@ -21,13 +21,16 @@ import (
 	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 )
 
-// ingressClassToken is the reserved placeholder a Template author writes in
-// backendConfig (e.g. an Ingress's spec.ingressClassName) to defer the
-// exposure-layer controller choice to platform config. It is substituted
-// for the configured ingress class before the RGD is authored. The
-// "kedge." namespace keeps it from colliding with kro's own ${...}
-// reference syntax (${schema.spec.x}, ${someResource.metadata.name}).
-const ingressClassToken = "${kedge.ingressClass}"
+// gatewayNameToken / gatewayNamespaceToken are the reserved placeholders a
+// Template author writes in backendConfig (e.g. an HTTPRoute's parentRefs) to
+// defer the exposure-layer Gateway choice to platform config. They are
+// substituted for the configured Gateway API parent before the RGD is
+// authored. The "kedge." namespace keeps them from colliding with kro's own
+// ${...} reference syntax (${schema.spec.x}, ${someResource.metadata.name}).
+const (
+	gatewayNameToken      = "${kedge.gatewayName}"
+	gatewayNamespaceToken = "${kedge.gatewayNamespace}"
+)
 
 const (
 	rgdAPIVersion = "kro.run/v1alpha1"
@@ -57,7 +60,7 @@ var rgdGVR = schema.GroupVersionResource{
 //   - spec.schema.spec        = Template.spec.schema (OpenAPI) → kro SimpleSchema
 //   - spec.schema.status      = Template.spec.backendConfig.status (optional)
 //   - spec.resources          = Template.spec.backendConfig.resources (verbatim)
-func buildRGD(tmpl *infrav1alpha1.Template, ingressClass string) (*unstructured.Unstructured, error) {
+func buildRGD(tmpl *infrav1alpha1.Template, gatewayName, gatewayNamespace string) (*unstructured.Unstructured, error) {
 	if tmpl.Spec.Schema == nil || len(tmpl.Spec.Schema.Raw) == 0 {
 		return nil, fmt.Errorf("template %q: spec.schema is required", tmpl.Name)
 	}
@@ -66,7 +69,7 @@ func buildRGD(tmpl *infrav1alpha1.Template, ingressClass string) (*unstructured.
 		return nil, fmt.Errorf("template %q: %w", tmpl.Name, err)
 	}
 
-	resources, status, err := backendConfig(tmpl, ingressClass)
+	resources, status, err := backendConfig(tmpl, gatewayName, gatewayNamespace)
 	if err != nil {
 		return nil, err
 	}
@@ -107,11 +110,11 @@ func buildRGD(tmpl *infrav1alpha1.Template, ingressClass string) (*unstructured.
 // backendConfig decodes Template.spec.backendConfig and extracts the kro
 // resource graph (required) and an optional status-mapping block. The
 // backendConfig is opaque to the platform; only this backend interprets it.
-func backendConfig(tmpl *infrav1alpha1.Template, ingressClass string) (resources []any, status map[string]any, err error) {
+func backendConfig(tmpl *infrav1alpha1.Template, gatewayName, gatewayNamespace string) (resources []any, status map[string]any, err error) {
 	if tmpl.Spec.BackendConfig == nil || len(tmpl.Spec.BackendConfig.Raw) == 0 {
 		return nil, nil, fmt.Errorf("template %q: spec.backendConfig is required for the kro backend", tmpl.Name)
 	}
-	raw := substituteTokens(tmpl.Spec.BackendConfig.Raw, ingressClass)
+	raw := substituteTokens(tmpl.Spec.BackendConfig.Raw, gatewayName, gatewayNamespace)
 	var bc map[string]any
 	if err := json.Unmarshal(raw, &bc); err != nil {
 		return nil, nil, fmt.Errorf("template %q: decode spec.backendConfig: %w", tmpl.Name, err)
@@ -131,12 +134,17 @@ func backendConfig(tmpl *infrav1alpha1.Template, ingressClass string) (resources
 // into the RGD. Only the kedge namespace is touched; kro's own ${...}
 // references pass through untouched for kro to resolve at reconcile time.
 //
-// Today the only token is ${kedge.ingressClass}. The replacement is a plain
-// string substitution on the JSON bytes — safe because the configured value
-// is a DNS-style class name with no JSON metacharacters.
-func substituteTokens(raw []byte, ingressClass string) []byte {
-	if ingressClass == "" {
-		ingressClass = DefaultIngressClass
+// Today the tokens are ${kedge.gatewayName} / ${kedge.gatewayNamespace}. The
+// replacement is a plain string substitution on the JSON bytes — safe because
+// the configured values are DNS-style names with no JSON metacharacters.
+func substituteTokens(raw []byte, gatewayName, gatewayNamespace string) []byte {
+	if gatewayName == "" {
+		gatewayName = DefaultGatewayName
 	}
-	return bytes.ReplaceAll(raw, []byte(ingressClassToken), []byte(ingressClass))
+	if gatewayNamespace == "" {
+		gatewayNamespace = DefaultGatewayNamespace
+	}
+	raw = bytes.ReplaceAll(raw, []byte(gatewayNameToken), []byte(gatewayName))
+	raw = bytes.ReplaceAll(raw, []byte(gatewayNamespaceToken), []byte(gatewayNamespace))
+	return raw
 }
