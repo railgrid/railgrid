@@ -1,6 +1,14 @@
 # Application template: 3-tier app with an OIDC-guarded URL
 
-Status: **Design proposal, not implemented.**
+Status: **Design proposal.** The exposure layer has since been implemented on
+**Gateway API** rather than the plain `Ingress` this proposal describes: the
+`application` template emits `gateway.networking.k8s.io/v1 HTTPRoute`s that
+attach to a platform Gateway (default the cfgate `cloudflare-tunnel` Gateway in
+`cfgate-system`), configured via `${kedge.gatewayName}` / `${kedge.gatewayNamespace}`
+(`KEDGE_GATEWAY_NAME` / `KEDGE_GATEWAY_NAMESPACE`). Where this document says
+`Ingress` / `ingressClassName` / `${kedge.ingressClass}` below, read HTTPRoute /
+`parentRefs` / `${kedge.gatewayName}`. The current operational reference is
+[providers/infrastructure/docs/application-template-architecture.md](../providers/infrastructure/docs/application-template-architecture.md).
 Author: 2026-06-12
 Related: `docs/infrastructure-architecture.md` (the platform/backend layer this builds on),
 `providers/infrastructure/install/templates/redis-cache.yaml` (the in-graph secret-generation

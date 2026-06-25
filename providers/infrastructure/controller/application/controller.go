@@ -16,8 +16,8 @@
 //
 //   - spec.expose.fqdn — the public hostname, <prefix|name>-<tenantHash>.<base>.
 //     kro can't derive a tenant hash in-graph, so the controller stamps it onto
-//     spec; the RGD then reads ${schema.spec.expose.fqdn} for the Ingress host
-//     and the oauth2-proxy redirect URL.
+//     spec; the RGD then reads ${schema.spec.expose.fqdn} for the HTTPRoute
+//     hostname and the oauth2-proxy redirect URL.
 //   - the OIDC client secret — it must land as a Secret beside the oauth2-proxy
 //     pod on the runtime cluster WITHOUT sitting in the CR spec in clear text.
 //     The controller bridges it into cloud-credentials-<name> in the per-tenant
@@ -237,7 +237,7 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	switch mode {
 	case modeNone:
-		// No auth gate: the Ingress routes straight to the frontend and the
+		// No auth gate: the HTTPRoute routes straight to the frontend and the
 		// oauth2-proxy resources are excluded from the RGD (includeWhen), so
 		// there is no client secret to bridge. Surface the unauthenticated
 		// posture on the instance so it's not mistaken for a misconfiguration.

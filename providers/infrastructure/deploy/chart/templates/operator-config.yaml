@@ -83,15 +83,22 @@ spec:
       tag: {{ .Values.operator.provider.image.tag | default .Values.image.tag | default .Chart.AppVersion | quote }}
     replicas: {{ .Values.operator.provider.replicas }}
     port: {{ .Values.operator.provider.port }}
-  {{- if or .Values.operator.application.baseDomain .Values.operator.application.ingressClass }}
+  {{- if or .Values.operator.application.baseDomain .Values.operator.application.gateway.name .Values.operator.application.gateway.namespace }}
   # Exposure layer for the `application` template (serve container's
-  # KEDGE_APP_BASE_DOMAIN / KEDGE_INGRESS_CLASS). baseDomain gates the feature.
+  # KEDGE_APP_BASE_DOMAIN / KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE).
+  # baseDomain gates the feature.
   application:
     {{- with .Values.operator.application.baseDomain }}
     baseDomain: {{ . | quote }}
     {{- end }}
-    {{- with .Values.operator.application.ingressClass }}
-    ingressClass: {{ . | quote }}
+    {{- if or .Values.operator.application.gateway.name .Values.operator.application.gateway.namespace }}
+    gateway:
+      {{- with .Values.operator.application.gateway.name }}
+      name: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.operator.application.gateway.namespace }}
+      namespace: {{ . | quote }}
+      {{- end }}
     {{- end }}
   {{- end }}
 {{- end }}

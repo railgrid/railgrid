@@ -89,9 +89,11 @@ Values:
   image/appVersion).
 - `operator.application.*` — the `application` template's exposure layer:
   `baseDomain` (the zone apps are served under; **required to enable app
-  exposure**) and `ingressClass` (defaults to `cloudflare`). These render into
-  the CR's `spec.application` and become the serve container's
-  `KEDGE_APP_BASE_DOMAIN` / `KEDGE_INGRESS_CLASS`. See
+  exposure**) and `gateway.name` / `gateway.namespace` (the Gateway API parent
+  the generated HTTPRoutes attach to; default `cloudflare-tunnel` /
+  `cfgate-system`). These render into the CR's `spec.application` and become the
+  serve container's `KEDGE_APP_BASE_DOMAIN` / `KEDGE_GATEWAY_NAME` /
+  `KEDGE_GATEWAY_NAMESPACE`. See
   [docs/application-template-architecture.md](docs/application-template-architecture.md).
 
 ### Verify

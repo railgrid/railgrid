@@ -33,7 +33,7 @@ spec:
       YOU SUPPLY exactly two container images — frontendImage and backendImage —
       and nothing else app-side. The platform provisions Postgres, injects the DB
       connection, path-routes one URL to both tiers, and (in byo mode) authenticates
-      in front; you do NOT create the database, Secrets, Services, or Ingress. This
+      in front; you do NOT create the database, Secrets, Services, or routes. This
       contract is fully self-contained — build BOTH images from it BEFORE you
       provision; the only runtime couplings are the env var and ports below.
 
@@ -172,7 +172,7 @@ spec:
 
       # ── OIDC (the gate in front of the frontend) ──
       # default: {} so oidc.mode defaults to "none" when the object is omitted —
-      # the Ingress backend references ${schema.spec.oidc.mode} unconditionally.
+      # the HTTPRoute backend references ${schema.spec.oidc.mode} unconditionally.
       oidc:
         type: object
         default: {}
@@ -181,7 +181,7 @@ spec:
             type: string
             enum: ["none", "byo", "platform"]
             default: "none"
-            description: "none (default) = NO auth gate; the Ingress routes straight to the frontend so anyone with the URL can reach it (demo/dev only). byo = your own IdP; set issuerURL + clientID and put the client secret in your cloud-credentials Secret under key oidc_client_secret. platform = guard with kedge SSO — NOT yet supported (requires the hub Dex gRPC client-management API; tracked separately)."
+            description: "none (default) = NO auth gate; the HTTPRoute routes straight to the frontend so anyone with the URL can reach it (demo/dev only). byo = your own IdP; set issuerURL + clientID and put the client secret in your cloud-credentials Secret under key oidc_client_secret. platform = guard with kedge SSO — NOT yet supported (requires the hub Dex gRPC client-management API; tracked separately)."
           issuerURL:
             type: string
             description: "BYO mode: your IdP's OIDC issuer URL (required)."
@@ -212,9 +212,11 @@ spec:
   # cluster and remaps that to the per-tenant namespace (kedge-tenants-<hash>),
   # so a tenant's whole app lands together and is isolated from other tenants.
   #
-  # Reserved kedge token: ${kedge.ingressClass} is substituted for the
-  # platform's configured ingress class (KEDGE_INGRESS_CLASS, default
-  # "cloudflare") before the RGD is authored — kro never sees the token.
+  # Reserved kedge tokens: ${kedge.gatewayName} / ${kedge.gatewayNamespace}
+  # are substituted for the platform's configured Gateway API parent
+  # (KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE, default
+  # "cloudflare-tunnel" in "cfgate-system") before the RGD is authored — kro
+  # never sees the tokens.
   backendConfig:
     resources:
       # ───────────────────── Postgres tier ─────────────────────
@@ -564,7 +566,7 @@ spec:
                       # Path-routed upstreams, both behind this gate: /api/* →
                       # backend, everything else → frontend. oauth2-proxy picks
                       # the longest matching path prefix. This is the byo-mode
-                      # equivalent of the Ingress /api path used in mode=none, and
+                      # equivalent of the /api HTTPRoute used in mode=none, and
                       # keeps the backend authenticated (never exposed directly).
                       - --upstream=http://${schema.spec.name}-backend:${string(schema.spec.backendPort)}/api/
                       - --upstream=http://${schema.spec.name}-frontend:${string(schema.spec.frontendPort)}
@@ -610,75 +612,84 @@ spec:
               - port: 4180
                 targetPort: 4180
 
-      # ───────────────────── Ingress (exposure layer) ─────────────────────
-      # Plain Ingress; the controller is chosen by ${kedge.ingressClass}
-      # (substituted before the RGD is authored). No tls block — TLS
-      # terminates at the Cloudflare edge; the cloudflare ingress controller
-      # creates the DNS record + tunnel route from this host. The backend is
-      # mode-dependent: oidc.mode=none routes the public host straight to the
-      # frontend Service (no gate — demo/dev); otherwise it routes to
-      # oauth2-proxy, which authenticates and then proxies to the frontend.
-      - id: ingress
+      # ──────────────── HTTPRoute (Gateway API exposure layer) ────────────────
+      # Attaches to the platform Gateway (parentRefs computed from platform
+      # config: ${kedge.gatewayName} in ${kedge.gatewayNamespace}, substituted
+      # before the RGD is authored). No TLS config here — TLS terminates at the
+      # Gateway edge (cfgate / Cloudflare Tunnel), which programs the DNS record
+      # + tunnel route from this hostname. The backend is mode-dependent:
+      # oidc.mode=none routes the public host straight to the frontend Service
+      # (no gate — demo/dev); otherwise it routes to oauth2-proxy, which
+      # authenticates and then proxies to the frontend.
+      - id: httpRoute
         template:
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
           metadata:
             name: ${schema.spec.name}
             namespace: default
           spec:
-            ingressClassName: ${kedge.ingressClass}
+            parentRefs:
+              - group: gateway.networking.k8s.io
+                kind: Gateway
+                name: ${kedge.gatewayName}
+                namespace: ${kedge.gatewayNamespace}
+            hostnames:
+              - ${schema.spec.expose.fqdn}
             rules:
-              - host: ${schema.spec.expose.fqdn}
-                http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          # Single-quoted: the CEL ternary contains ": " which
-                          # YAML would otherwise read as a mapping. kro resolves
-                          # the ${...} expression regardless of YAML scalar type.
-                          name: '${schema.spec.oidc.mode == "none" ? schema.spec.name + "-frontend" : schema.spec.name + "-oauth"}'
-                          port:
-                            number: '${schema.spec.oidc.mode == "none" ? schema.spec.frontendPort : 4180}'
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /
+                backendRefs:
+                  # Single-quoted: the CEL ternary contains ": " which YAML
+                  # would otherwise read as a mapping. kro resolves the ${...}
+                  # expression regardless of YAML scalar type.
+                  - name: '${schema.spec.oidc.mode == "none" ? schema.spec.name + "-frontend" : schema.spec.name + "-oauth"}'
+                    port: '${schema.spec.oidc.mode == "none" ? schema.spec.frontendPort : 4180}'
 
-      # In mode=none there is no oauth2-proxy to path-route, so a second Ingress
-      # adds /api → backend alongside the "/" → frontend rule above (same host;
-      # the ingress controller merges them and longest-prefix wins). Gated to
-      # none — in byo this path would bypass the gate, so there oauth2-proxy does
-      # the /api routing instead (see its upstreams).
-      - id: ingressAPI
+      # In mode=none there is no oauth2-proxy to path-route, so a second
+      # HTTPRoute adds /api → backend alongside the "/" → frontend rule above
+      # (same host + parent Gateway; Gateway API merges routes and the more
+      # specific /api prefix wins). Gated to none — in byo this path would
+      # bypass the gate, so there oauth2-proxy does the /api routing instead
+      # (see its upstreams).
+      - id: httpRouteAPI
         includeWhen:
           - '${schema.spec.oidc.mode == "none"}'
         template:
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
           metadata:
             name: ${schema.spec.name}-api
             namespace: default
           spec:
-            ingressClassName: ${kedge.ingressClass}
+            parentRefs:
+              - group: gateway.networking.k8s.io
+                kind: Gateway
+                name: ${kedge.gatewayName}
+                namespace: ${kedge.gatewayNamespace}
+            hostnames:
+              - ${schema.spec.expose.fqdn}
             rules:
-              - host: ${schema.spec.expose.fqdn}
-                http:
-                  paths:
-                    - path: /api
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: ${schema.spec.name}-backend
-                          port:
-                            number: ${schema.spec.backendPort}
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /api
+                backendRefs:
+                  - name: ${schema.spec.name}-backend
+                    port: ${schema.spec.backendPort}
     # Projected onto the instance in the tenant's kcp workspace. url/host are
-    # read from the Ingress (this kro fork forbids ${schema.*} in status — status
-    # may reference resources only — so we source the controller-stamped fqdn from
-    # the Ingress rule rather than schema.spec.expose.fqdn). The Ingress is always
-    # created (only its backend changes by mode). Per-tier readiness lets the
-    # portal show progress. No secret values are surfaced.
+    # read from the HTTPRoute (this kro fork forbids ${schema.*} in status —
+    # status may reference resources only — so we source the controller-stamped
+    # fqdn from the HTTPRoute's hostnames rather than schema.spec.expose.fqdn).
+    # The HTTPRoute is always created (only its backend changes by mode).
+    # Per-tier readiness lets the portal show progress. No secret values are
+    # surfaced.
     status:
-      url: ${"https://" + ingress.spec.rules[0].host}
-      host: ${ingress.spec.rules[0].host}
-      redirectURL: ${"https://" + ingress.spec.rules[0].host + "/oauth2/callback"}
+      url: ${"https://" + httpRoute.spec.hostnames[0]}
+      host: ${httpRoute.spec.hostnames[0]}
+      redirectURL: ${"https://" + httpRoute.spec.hostnames[0] + "/oauth2/callback"}
       frontendReady: ${frontendDeployment.status.readyReplicas}
       backendReady: ${backendDeployment.status.readyReplicas}
       databaseReady: ${dbStatefulSet.status.readyReplicas}

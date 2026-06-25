@@ -85,16 +85,17 @@ type InfrastructureProviderSpec struct {
 	Provider ProviderServeSpec `json:"provider"`
 
 	// Application configures the `application` template's exposure layer — the
-	// public URL apps are served on and which ingress controller fulfils it.
-	// Maps onto the serve container's KEDGE_APP_BASE_DOMAIN / KEDGE_INGRESS_CLASS
-	// env vars. Optional; without it app exposure stays off (see ApplicationSpec).
+	// public URL apps are served on and the Gateway API parent that fulfils it.
+	// Maps onto the serve container's KEDGE_APP_BASE_DOMAIN / KEDGE_GATEWAY_NAME
+	// / KEDGE_GATEWAY_NAMESPACE env vars. Optional; without it app exposure stays
+	// off (see ApplicationSpec).
 	// +optional
 	Application ApplicationSpec `json:"application,omitempty"`
 }
 
-// ApplicationSpec configures the `application` template exposure layer. The two
-// fields map 1:1 to the serve container's KEDGE_APP_BASE_DOMAIN and
-// KEDGE_INGRESS_CLASS environment variables. See
+// ApplicationSpec configures the `application` template exposure layer. The
+// fields map 1:1 to the serve container's KEDGE_APP_BASE_DOMAIN,
+// KEDGE_GATEWAY_NAME and KEDGE_GATEWAY_NAMESPACE environment variables. See
 // docs/application-template-architecture.md.
 type ApplicationSpec struct {
 	// BaseDomain is the DNS zone apps are served under, e.g. "apps.example.com".
@@ -105,12 +106,25 @@ type ApplicationSpec struct {
 	// +optional
 	BaseDomain string `json:"baseDomain,omitempty"`
 
-	// IngressClass is the ingress controller that fulfils the generated Ingress
-	// (its spec.ingressClassName). It is substituted for the
-	// ${kedge.ingressClass} token in a Template's backendConfig before the kro
-	// RGD is authored. Empty → "cloudflare" (the in-binary default).
+	// Gateway identifies the Gateway API parent the generated HTTPRoutes attach
+	// to. Its name/namespace are substituted for the ${kedge.gatewayName} /
+	// ${kedge.gatewayNamespace} tokens in a Template's backendConfig before the
+	// kro RGD is authored. Empty fields fall back to the in-binary default
+	// ("cloudflare-tunnel" in "cfgate-system").
 	// +optional
-	IngressClass string `json:"ingressClass,omitempty"`
+	Gateway GatewayRef `json:"gateway,omitempty"`
+}
+
+// GatewayRef points at the platform Gateway (gateway.networking.k8s.io) the
+// `application` template's HTTPRoutes attach to via parentRefs.
+type GatewayRef struct {
+	// Name of the Gateway. Empty → "cloudflare-tunnel" (the in-binary default).
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// Namespace of the Gateway. Empty → "cfgate-system" (the in-binary default).
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // SecretKeyRef points at one key in a Secret in the operator's namespace.
