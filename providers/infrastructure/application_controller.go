@@ -27,24 +27,25 @@ import (
 //
 // It runs on the provider's APIExport virtual workspace, so it needs the
 // provider kcp config (the same one the controller manager uses). It's
-// opt-in: without KEDGE_APP_BASE_DOMAIN and KRO_KUBECONFIG there is nothing
-// for it to do (no app domain to compute, no runtime cluster to bridge
-// secrets onto), so it stays disabled — preserving the REST-only/stub flow.
+// opt-in on KEDGE_APP_BASE_DOMAIN: without an app domain there is no hostname
+// to compute, so it stays disabled — preserving the REST-only/stub flow. The
+// kro runtime cluster (where the bridged Secret lands) is resolved the same
+// way the kro backend resolves it — explicit KRO_KUBECONFIG, else the pod's
+// in-cluster config — so the operator's in-cluster-runtime mode is honored
+// (it does NOT mount a KRO_KUBECONFIG in that mode).
 func startApplicationController(ctx context.Context, providerConfig *rest.Config) {
 	if providerConfig == nil {
 		return
 	}
 	baseDomain := os.Getenv("KEDGE_APP_BASE_DOMAIN")
-	kroKubeconfig := os.Getenv("KRO_KUBECONFIG")
-	if baseDomain == "" || kroKubeconfig == "" {
-		log.Printf("application controller: disabled (need KEDGE_APP_BASE_DOMAIN + KRO_KUBECONFIG; have domain=%v kro=%v)",
-			baseDomain != "", kroKubeconfig != "")
+	if baseDomain == "" {
+		log.Printf("application controller: disabled (need KEDGE_APP_BASE_DOMAIN to compute app hostnames)")
 		return
 	}
 
-	runtimeClient, err := runtimeDynamicClient(kroKubeconfig)
+	runtimeClient, runtimeSrc, err := runtimeDynamicClient()
 	if err != nil {
-		log.Printf("application controller: NOT started: %v", err)
+		log.Printf("application controller: disabled (no kro runtime cluster: %v)", err)
 		return
 	}
 
@@ -60,24 +61,37 @@ func startApplicationController(ctx context.Context, providerConfig *rest.Config
 	}
 
 	go func() {
-		log.Printf("application controller: starting (apiExport=%s baseDomain=%s)", install.APIExportName, baseDomain)
+		log.Printf("application controller: starting (apiExport=%s baseDomain=%s runtime=%s)", install.APIExportName, baseDomain, runtimeSrc)
 		if err := ctrl.Start(ctx); err != nil {
 			log.Printf("application controller: stopped: %v", err)
 		}
 	}()
 }
 
-// runtimeDynamicClient builds a dynamic client for the kro runtime cluster
-// from KRO_KUBECONFIG — the same cluster the kro backend authors RGDs on and
-// where the bridged Secret must land.
-func runtimeDynamicClient(kubeconfigPath string) (dynamic.Interface, error) {
-	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("loading KRO_KUBECONFIG for application controller: %w", err)
+// runtimeDynamicClient builds a dynamic client for the kro runtime cluster the
+// controller bridges OIDC secrets onto — the same cluster the kro backend
+// authors RGDs on. It mirrors the kro backend's resolution in
+// controller_manager.go: explicit KRO_KUBECONFIG, else the pod's in-cluster
+// config (the operator's in-cluster-runtime mode). Errors when neither is
+// available (dev/REST-only), so the controller stays disabled rather than
+// pointing at the wrong cluster. Returns the source for logging.
+func runtimeDynamicClient() (dynamic.Interface, string, error) {
+	var cfg *rest.Config
+	var src string
+	if p := os.Getenv("KRO_KUBECONFIG"); p != "" {
+		c, err := clientcmd.BuildConfigFromFlags("", p)
+		if err != nil {
+			return nil, "", fmt.Errorf("loading KRO_KUBECONFIG: %w", err)
+		}
+		cfg, src = c, "KRO_KUBECONFIG="+p
+	} else if c, err := rest.InClusterConfig(); err == nil {
+		cfg, src = c, "in-cluster"
+	} else {
+		return nil, "", fmt.Errorf("KRO_KUBECONFIG unset and not running in a pod")
 	}
 	dyn, err := dynamic.NewForConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("runtime dynamic client: %w", err)
+		return nil, "", fmt.Errorf("runtime dynamic client: %w", err)
 	}
-	return dyn, nil
+	return dyn, src, nil
 }
