@@ -40,6 +40,7 @@ type projectEinoAssistantRunState struct {
 	toolCalls            []chatToolCall
 	seenToolCalls        map[string]int
 	turn                 int
+	turnPolicy           projectAssistantTurnPolicy
 	projectRepositoryRef string
 	toolPrompt           string
 	toolDiscovery        *projectEinoAssistantToolDiscovery
@@ -51,7 +52,34 @@ type projectEinoAssistantRunState struct {
 func newProjectEinoAssistantRunState() *projectEinoAssistantRunState {
 	return &projectEinoAssistantRunState{
 		seenToolCalls: map[string]int{},
+		turnPolicy:    projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDiscussion),
 	}
+}
+
+func (s *projectEinoAssistantRunState) SetTurnProfile(profile projectAssistantTurnProfile) {
+	s.SetTurnPolicy(projectAssistantTurnPolicyForProfile(profile))
+}
+
+func (s *projectEinoAssistantRunState) SetTurnPolicy(policy projectAssistantTurnPolicy) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.turnPolicy = normalizeProjectAssistantTurnPolicy(policy, projectAssistantTurnProfileDiscussion)
+}
+
+func (s *projectEinoAssistantRunState) TurnProfile() projectAssistantTurnProfile {
+	return s.TurnPolicy().profile
+}
+
+func (s *projectEinoAssistantRunState) TurnPolicy() projectAssistantTurnPolicy {
+	if s == nil {
+		return projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDiscussion)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return normalizeProjectAssistantTurnPolicy(s.turnPolicy, projectAssistantTurnProfileDiscussion)
 }
 
 func (s *projectEinoAssistantRunState) SetToolPrompt(prompt string) {
@@ -133,6 +161,7 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.toolCalls = cloneProjectAssistantToolCalls(state.ToolCalls)
 	s.seenToolCalls = cloneProjectAssistantSeenToolCalls(state.SeenToolCalls)
 	s.turn = state.Turn
+	s.turnPolicy = projectAssistantTurnPolicyForCheckpoint(state)
 	s.projectRepositoryRef = strings.TrimSpace(state.ProjectRepositoryRef)
 	s.approvedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
 	s.sessionSnapshot = cloneProjectEinoAssistantSessionSnapshot(state.SessionSnapshot)
@@ -278,6 +307,7 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		SeenToolCalls:        cloneProjectAssistantSeenToolCalls(s.seenToolCalls),
 		Turn:                 s.turn,
 		ProjectRepositoryRef: strings.TrimSpace(s.projectRepositoryRef),
+		TurnPolicy:           projectAssistantCheckpointTurnPolicyForPolicy(s.turnPolicy),
 		ApprovedPlan:         cloneProjectAssistantApprovedPlan(s.approvedPlan),
 		SessionSnapshot:      cloneProjectEinoAssistantSessionSnapshot(s.sessionSnapshot),
 	}

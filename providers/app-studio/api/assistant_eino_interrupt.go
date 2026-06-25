@@ -27,6 +27,7 @@ import (
 
 const (
 	projectAssistantInterruptTypePermission = "permission"
+	projectAssistantInterruptTypeApproval   = "approval"
 	projectAssistantInterruptTypeFollowUp   = "follow_up"
 )
 

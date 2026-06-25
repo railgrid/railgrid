@@ -99,6 +99,52 @@ func TestSeedTemplatesIncludeSandboxRunner(t *testing.T) {
 	}
 }
 
+func TestSeedTemplatesIncludeStandaloneDatabase(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "install", "templates", "database.yaml"))
+	if err != nil {
+		t.Fatalf("read database seed template: %v", err)
+	}
+	tmpl := decodeTemplate(t, raw)
+	if got, want := tmpl.Name, "database"; got != want {
+		t.Fatalf("Template name = %q, want %q", got, want)
+	}
+	if got, want := tmpl.Spec.Backend, Name; got != want {
+		t.Fatalf("backend = %q, want %q", got, want)
+	}
+	if got, want := tmpl.Spec.Category, "Databases"; got != want {
+		t.Fatalf("category = %q, want %q", got, want)
+	}
+	if got, want := tmpl.Spec.InstanceCRD.Group, "infrastructure.kedge.faros.sh"; got != want {
+		t.Fatalf("instance group = %q, want %q", got, want)
+	}
+	if got, want := tmpl.Spec.InstanceCRD.Kind, "PostgresDatabase"; got != want {
+		t.Fatalf("instance kind = %q, want %q", got, want)
+	}
+	if got, want := tmpl.Spec.InstanceCRD.Resource, "postgresdatabases"; got != want {
+		t.Fatalf("instance resource = %q, want %q", got, want)
+	}
+
+	rgd, err := buildRGD(tmpl, "cloudflare")
+	if err != nil {
+		t.Fatalf("buildRGD(database): %v", err)
+	}
+	for _, id := range []string{"credentials", "pwgenAccount", "pwgenRole", "pwgenBinding", "pwgen", "statefulset", "service"} {
+		if findResource(t, rgd, id) == nil {
+			t.Fatalf("database template missing %s resource", id)
+		}
+	}
+	for _, id := range []string{"backendDeployment", "frontendDeployment", "ingress", "oauthDeployment"} {
+		if findResource(t, rgd, id) != nil {
+			t.Fatalf("database template must not include application resource %s", id)
+		}
+	}
+	for _, field := range []string{"ready", "host", "port", "connectionSecretRef"} {
+		if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "status", field); !found {
+			t.Fatalf("database status missing %s", field)
+		}
+	}
+}
+
 func TestSandboxRunnerUsesManagedJobForControlToken(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "install", "templates", "sandbox-runner.yaml"))
 	if err != nil {

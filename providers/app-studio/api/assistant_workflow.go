@@ -22,13 +22,23 @@ import (
 	"fmt"
 	"strings"
 
+	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
+	"github.com/cloudwego/eino-examples/adk/common/tool/graphtool"
+	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 const projectAssistantWorkflowMaxResultBytes = 4096
+
+func init() {
+	// GraphTool checkpoints serialize the original model input while waiting
+	// for Eino approval wrapper resume.
+	schema.RegisterName[*projectAssistantRuntimeDeployToolInput]("faros_app_studio_runtime_deploy_tool_input")
+}
 
 type projectAssistantWorkflowInput struct {
 	Server         *Server
@@ -45,6 +55,21 @@ type projectAssistantRuntimeWorkflowInput struct {
 	SessionSnapshot *projectEinoAssistantSessionSnapshot
 	AppDeployment   projectAssistantAppDeploymentRequest
 }
+
+type projectAssistantWorkflowToolInput struct {
+	IncludeFiles *bool `json:"includeFiles,omitempty" jsonschema_description:"Whether to include a bounded current workspace file list."`
+	MaxFiles     int   `json:"maxFiles,omitempty" jsonschema_description:"Maximum workspace file paths to include when includeFiles is true."`
+}
+
+type projectAssistantRuntimeDeployToolInput struct {
+	TargetRef string `json:"targetRef,omitempty" jsonschema_description:"RuntimeTarget name or reference that should run this app."`
+	AppName   string `json:"appName,omitempty" jsonschema_description:"Optional runtime app name; defaults to the App Studio project name."`
+	Image     string `json:"image,omitempty" jsonschema_description:"OCI image to deploy."`
+	Port      int64  `json:"port,omitempty" jsonschema_description:"Container port exposed by the app."`
+	Intent    string `json:"intent,omitempty" jsonschema_description:"Deployment intent, such as preview or production."`
+}
+
+type projectAssistantRuntimeStatusToolInput struct{}
 
 type projectAssistantWorkflowContext struct {
 	Project        *aiv1alpha1.Project
@@ -118,238 +143,224 @@ type projectAssistantWorkflowRepo struct {
 	Status string `json:"status,omitempty"`
 }
 
-func newProjectAssistantWorkflowTool(server *Server) projectAssistantTool {
-	return projectAssistantToolFunc{
-		spec: projectAssistantToolSpec{
+type projectAssistantWorkflowRunContext struct {
+	Server         *Server
+	Project        *aiv1alpha1.Project
+	Repository     *ProjectRepositoryView
+	WorkspaceScope workspace.Scope
+	RunState       *projectEinoAssistantRunState
+}
+
+func projectAssistantWorkflowRunContextForRequest(server *Server, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) projectAssistantWorkflowRunContext {
+	return projectAssistantWorkflowRunContext{
+		Server:         server,
+		Project:        req.Project,
+		Repository:     req.Repository,
+		WorkspaceScope: req.WorkspaceScope,
+		RunState:       runState,
+	}
+}
+
+func projectAssistantWorkflowToolSpecs() []projectAssistantToolSpec {
+	return []projectAssistantToolSpec{
+		{
 			Name:        projectToolPlanProjectChanges,
 			Description: "Create a deterministic read-only plan for project changes from project memory, repository status, and the current workspace file list.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"includeFiles":{"type":"boolean","description":"Whether to include a bounded current workspace file list."},"maxFiles":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum workspace file paths to include when includeFiles is true."}}}`),
 			Risk:        projectAssistantToolRiskRead,
 		},
-		call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
-			input := projectAssistantWorkflowInput{
-				Server:         server,
-				Project:        req.Project,
-				Repository:     req.Repository,
-				WorkspaceScope: req.WorkspaceScope,
-				IncludeFiles:   projectToolBool(req.Arguments["includeFiles"]),
-				MaxFiles:       boundedWorkflowFileLimit(projectToolInt(req.Arguments["maxFiles"])),
-			}
-			return runProjectAssistantPlanningWorkflow(ctx, input)
-		},
-	}
-}
-
-func newProjectAssistantReadinessWorkflowTool(server *Server) projectAssistantTool {
-	return projectAssistantToolFunc{
-		spec: projectAssistantToolSpec{
+		{
 			Name:        projectToolCheckProjectReadiness,
 			Description: "Check deterministic App Studio project readiness from memory, repository status, and workspace context before edits, verification, or commit.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"includeFiles":{"type":"boolean","description":"Whether to include a bounded current workspace file list."},"maxFiles":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum workspace file paths to include when includeFiles is true."}}}`),
 			Risk:        projectAssistantToolRiskRead,
 		},
-		call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
-			includeFiles := true
-			if rawIncludeFiles, ok := req.Arguments["includeFiles"]; ok {
-				includeFiles = projectToolBool(rawIncludeFiles)
-			}
-			input := projectAssistantWorkflowInput{
-				Server:         server,
-				Project:        req.Project,
-				Repository:     req.Repository,
-				WorkspaceScope: req.WorkspaceScope,
-				IncludeFiles:   includeFiles,
-				MaxFiles:       boundedWorkflowFileLimit(projectToolInt(req.Arguments["maxFiles"])),
-			}
-			return runProjectAssistantReadinessWorkflow(ctx, input)
-		},
-	}
-}
-
-func newProjectAssistantPrepareDeploymentWorkflowTool(server *Server) projectAssistantTool {
-	return projectAssistantToolFunc{
-		spec: projectAssistantToolSpec{
+		{
 			Name:        projectToolPrepareProjectDeployment,
 			Description: "Prepare deterministic App Studio deployment handoff context from project memory, repository status, workspace files, build checks, and runtime handoff constraints.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"includeFiles":{"type":"boolean","description":"Whether to include a bounded current workspace file list."},"maxFiles":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum workspace file paths to include when includeFiles is true."}}}`),
 			Risk:        projectAssistantToolRiskRead,
 		},
-		call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
-			includeFiles := true
-			if rawIncludeFiles, ok := req.Arguments["includeFiles"]; ok {
-				includeFiles = projectToolBool(rawIncludeFiles)
-			}
-			input := projectAssistantWorkflowInput{
-				Server:         server,
-				Project:        req.Project,
-				Repository:     req.Repository,
-				WorkspaceScope: req.WorkspaceScope,
-				IncludeFiles:   includeFiles,
-				MaxFiles:       boundedWorkflowFileLimit(projectToolInt(req.Arguments["maxFiles"])),
-			}
-			return runProjectAssistantPrepareDeploymentWorkflow(ctx, input)
-		},
-	}
-}
-
-func newProjectAssistantDeployRuntimeWorkflowTool() projectAssistantTool {
-	return projectAssistantToolFunc{
-		spec: projectAssistantToolSpec{
+		{
 			Name:        projectToolDeployProjectRuntime,
 			Description: "Create a deterministic AppDeployment handoff request from an OCI image, runtime target, port, and intent; returns structured blockers until a runtime provider is configured.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"targetRef":{"type":"string","description":"RuntimeTarget name or reference that should run this app."},"appName":{"type":"string","description":"Optional runtime app name; defaults to the App Studio project name."},"image":{"type":"string","description":"OCI image to deploy."},"port":{"type":"integer","minimum":1,"maximum":65535,"description":"Container port exposed by the app."},"intent":{"type":"string","enum":["preview","production"],"description":"Deployment intent."}},"required":["targetRef","image","port"]}`),
 			Risk:        projectAssistantToolRiskRuntime,
 		},
-		call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
-			input := projectAssistantRuntimeWorkflowInput{
-				Project:         req.Project,
-				Repository:      req.Repository,
-				SessionSnapshot: req.SessionSnapshot,
-				AppDeployment: projectAssistantAppDeploymentRequest{
-					TargetRef: projectToolString(req.Arguments["targetRef"]),
-					AppName:   projectToolString(req.Arguments["appName"]),
-					Image:     projectToolString(req.Arguments["image"]),
-					Intent:    projectToolString(req.Arguments["intent"]),
-				},
-			}
-			if port, ok := projectToolNumber(req.Arguments["port"]); ok {
-				input.AppDeployment.Port = port
-			}
-			return runProjectAssistantDeployRuntimeWorkflow(ctx, input)
-		},
-	}
-}
-
-func newProjectAssistantRuntimeStatusWorkflowTool() projectAssistantTool {
-	return projectAssistantToolFunc{
-		spec: projectAssistantToolSpec{
+		{
 			Name:        projectToolGetRuntimeStatus,
 			Description: "Return a structured not-configured App Studio runtime status until a runtime provider state reader is configured.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			Risk:        projectAssistantToolRiskRead,
 		},
-		call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
-			return runProjectAssistantRuntimeStatusWorkflow(ctx, projectAssistantRuntimeWorkflowInput{
-				Project:         req.Project,
-				Repository:      req.Repository,
-				SessionSnapshot: req.SessionSnapshot,
-			})
-		},
-	}
-}
-
-func newProjectAssistantPreviewURLWorkflowTool() projectAssistantTool {
-	return projectAssistantToolFunc{
-		spec: projectAssistantToolSpec{
+		{
 			Name:        projectToolGetPreviewURL,
 			Description: "Return a structured not-configured App Studio preview URL result until a runtime provider state reader is configured.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			Risk:        projectAssistantToolRiskRead,
 		},
-		call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
-			return runProjectAssistantPreviewURLWorkflow(ctx, projectAssistantRuntimeWorkflowInput{
-				Project:         req.Project,
-				Repository:      req.Repository,
-				SessionSnapshot: req.SessionSnapshot,
-			})
-		},
 	}
 }
 
-func runProjectAssistantPlanningWorkflow(ctx context.Context, input projectAssistantWorkflowInput) (string, error) {
-	runner, err := newProjectAssistantPlanningWorkflow(ctx)
-	if err != nil {
-		return "", err
+func projectAssistantWorkflowToolSpec(name string) (projectAssistantToolSpec, bool) {
+	name = projectToolBaseName(name)
+	for _, spec := range projectAssistantWorkflowToolSpecs() {
+		if projectToolBaseName(spec.Name) == name {
+			return spec, true
+		}
 	}
-	plan, err := runner.Invoke(ctx, input)
-	if err != nil {
-		return "", err
-	}
-	raw, err := marshalProjectAssistantWorkflowPlan(plan)
-	if err != nil {
-		return "", fmt.Errorf("encode project planning workflow result: %w", err)
-	}
-	return string(raw), nil
+	return projectAssistantToolSpec{}, false
 }
 
-func runProjectAssistantReadinessWorkflow(ctx context.Context, input projectAssistantWorkflowInput) (string, error) {
-	runner, err := newProjectAssistantReadinessWorkflow(ctx)
-	if err != nil {
-		return "", err
+func newProjectAssistantGraphWorkflowTools(ctx context.Context, runCtx projectAssistantWorkflowRunContext, policy projectAssistantTurnPolicy) ([]einotool.BaseTool, error) {
+	specs := projectAssistantWorkflowToolSpecs()
+	out := make([]einotool.BaseTool, 0, len(specs))
+	for _, spec := range specs {
+		if !policy.AllowsTool(spec) {
+			continue
+		}
+		graphTool, err := newProjectAssistantGraphWorkflowTool(spec, runCtx)
+		if err != nil {
+			return nil, err
+		}
+		if err := annotateProjectAssistantGraphTool(ctx, graphTool, spec); err != nil {
+			return nil, err
+		}
+		out = append(out, graphTool)
 	}
-	readiness, err := runner.Invoke(ctx, input)
-	if err != nil {
-		return "", err
-	}
-	raw, err := marshalProjectAssistantWorkflowJSON(readiness)
-	if err != nil {
-		return "", fmt.Errorf("encode project readiness workflow result: %w", err)
-	}
-	return string(raw), nil
+	return out, nil
 }
 
-func runProjectAssistantPrepareDeploymentWorkflow(ctx context.Context, input projectAssistantWorkflowInput) (string, error) {
-	runner, err := newProjectAssistantPrepareDeploymentWorkflow(ctx)
-	if err != nil {
-		return "", err
+func newProjectAssistantGraphWorkflowTool(spec projectAssistantToolSpec, runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
+	switch projectToolBaseName(spec.Name) {
+	case projectToolPlanProjectChanges:
+		return newProjectAssistantPlanningGraphTool(runCtx)
+	case projectToolCheckProjectReadiness:
+		return newProjectAssistantReadinessGraphTool(runCtx)
+	case projectToolPrepareProjectDeployment:
+		return newProjectAssistantPrepareDeploymentGraphTool(runCtx)
+	case projectToolDeployProjectRuntime:
+		return newProjectAssistantDeployRuntimeGraphTool(runCtx)
+	case projectToolGetRuntimeStatus:
+		return newProjectAssistantRuntimeStatusGraphTool(runCtx)
+	case projectToolGetPreviewURL:
+		return newProjectAssistantPreviewURLGraphTool(runCtx)
+	default:
+		return nil, fmt.Errorf("project assistant tool %q is not an Eino graph workflow", spec.Name)
 	}
-	prepared, err := runner.Invoke(ctx, input)
-	if err != nil {
-		return "", err
-	}
-	raw, err := marshalProjectAssistantWorkflowJSON(prepared)
-	if err != nil {
-		return "", fmt.Errorf("encode project deployment preparation workflow result: %w", err)
-	}
-	return string(raw), nil
 }
 
-func runProjectAssistantDeployRuntimeWorkflow(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (string, error) {
-	runner, err := newProjectAssistantDeployRuntimeWorkflow(ctx)
+func annotateProjectAssistantGraphTool(ctx context.Context, graphTool einotool.BaseTool, spec projectAssistantToolSpec) error {
+	info, err := graphTool.Info(ctx)
 	if err != nil {
-		return "", err
+		return err
 	}
-	result, err := runner.Invoke(ctx, input)
-	if err != nil {
-		return "", err
+	if info.Extra == nil {
+		info.Extra = map[string]any{}
 	}
-	raw, err := marshalProjectAssistantWorkflowJSON(result)
-	if err != nil {
-		return "", fmt.Errorf("encode project runtime deployment workflow result: %w", err)
-	}
-	return string(raw), nil
+	info.Extra["bundle"] = string(projectAssistantToolBundleForSpec(spec))
+	info.Extra["risk"] = string(spec.Risk)
+	return nil
 }
 
-func runProjectAssistantRuntimeStatusWorkflow(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (string, error) {
-	runner, err := newProjectAssistantRuntimeStatusWorkflow(ctx)
-	if err != nil {
-		return "", err
-	}
-	result, err := runner.Invoke(ctx, input)
-	if err != nil {
-		return "", err
-	}
-	raw, err := marshalProjectAssistantWorkflowJSON(result)
-	if err != nil {
-		return "", fmt.Errorf("encode project runtime status workflow result: %w", err)
-	}
-	return string(raw), nil
+func newProjectAssistantPlanningGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
+	workflow := compose.NewWorkflow[*projectAssistantWorkflowToolInput, *projectAssistantWorkflowPlan]()
+	workflow.AddLambdaNode("normalize", compose.InvokableLambda(projectAssistantWorkflowInputFromTool(runCtx, false))).
+		AddInput(compose.START)
+	workflow.AddLambdaNode("read-context", compose.InvokableLambda(readProjectAssistantWorkflowContext)).
+		AddInput("normalize")
+	workflow.AddLambdaNode("format-plan", compose.InvokableLambda(formatProjectAssistantWorkflowPlan)).
+		AddInput("read-context")
+	workflow.End().AddInput("format-plan")
+	return graphtool.NewInvokableGraphTool[*projectAssistantWorkflowToolInput, *projectAssistantWorkflowPlan](
+		workflow,
+		projectToolPlanProjectChanges,
+		"Create a deterministic read-only plan for project changes from project memory, repository status, and the current workspace file list.",
+		compose.WithGraphName("app-studio-plan-project-changes"),
+	)
 }
 
-func runProjectAssistantPreviewURLWorkflow(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (string, error) {
-	runner, err := newProjectAssistantPreviewURLWorkflow(ctx)
+func newProjectAssistantReadinessGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
+	workflow := compose.NewWorkflow[*projectAssistantWorkflowToolInput, *projectAssistantReadinessWorkflowResult]()
+	workflow.AddLambdaNode("normalize", compose.InvokableLambda(projectAssistantWorkflowInputFromTool(runCtx, true))).
+		AddInput(compose.START)
+	workflow.AddLambdaNode("read-context", compose.InvokableLambda(readProjectAssistantReadinessWorkflowContext)).
+		AddInput("normalize")
+	workflow.AddLambdaNode("format-readiness", compose.InvokableLambda(formatProjectAssistantReadinessWorkflowResult)).
+		AddInput("read-context")
+	workflow.End().AddInput("format-readiness")
+	return graphtool.NewInvokableGraphTool[*projectAssistantWorkflowToolInput, *projectAssistantReadinessWorkflowResult](
+		workflow,
+		projectToolCheckProjectReadiness,
+		"Check deterministic App Studio project readiness from memory, repository status, and workspace context before edits, verification, or commit.",
+		compose.WithGraphName("app-studio-check-project-readiness"),
+	)
+}
+
+func newProjectAssistantPrepareDeploymentGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
+	workflow := compose.NewWorkflow[*projectAssistantWorkflowToolInput, *projectAssistantDeploymentPreparationResult]()
+	workflow.AddLambdaNode("normalize", compose.InvokableLambda(projectAssistantWorkflowInputFromTool(runCtx, true))).
+		AddInput(compose.START)
+	workflow.AddLambdaNode("read-context", compose.InvokableLambda(readProjectAssistantWorkflowContext)).
+		AddInput("normalize")
+	workflow.AddLambdaNode("format-deployment-preparation", compose.InvokableLambda(formatProjectAssistantDeploymentPreparationResult)).
+		AddInput("read-context")
+	workflow.End().AddInput("format-deployment-preparation")
+	return graphtool.NewInvokableGraphTool[*projectAssistantWorkflowToolInput, *projectAssistantDeploymentPreparationResult](
+		workflow,
+		projectToolPrepareProjectDeployment,
+		"Prepare deterministic App Studio deployment handoff context from project memory, repository status, workspace files, build checks, and runtime handoff constraints.",
+		compose.WithGraphName("app-studio-prepare-project-deployment"),
+	)
+}
+
+func newProjectAssistantDeployRuntimeGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
+	workflow := compose.NewWorkflow[*projectAssistantRuntimeDeployToolInput, *projectAssistantRuntimeWorkflowResult]()
+	workflow.AddLambdaNode("normalize", compose.InvokableLambda(projectAssistantRuntimeWorkflowInputFromDeployTool(runCtx))).
+		AddInput(compose.START)
+	workflow.AddLambdaNode("format-runtime-deployment", compose.InvokableLambda(formatProjectAssistantRuntimeDeploymentResult)).
+		AddInput("normalize")
+	workflow.End().AddInput("format-runtime-deployment")
+	innerTool, err := graphtool.NewInvokableGraphTool[*projectAssistantRuntimeDeployToolInput, *projectAssistantRuntimeWorkflowResult](
+		workflow,
+		projectToolDeployProjectRuntime,
+		"Create a deterministic AppDeployment handoff request from an OCI image, runtime target, port, and intent; returns structured blockers until a runtime provider is configured.",
+		compose.WithGraphName("app-studio-deploy-project-runtime"),
+	)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	result, err := runner.Invoke(ctx, input)
-	if err != nil {
-		return "", err
-	}
-	raw, err := marshalProjectAssistantWorkflowJSON(result)
-	if err != nil {
-		return "", fmt.Errorf("encode project preview URL workflow result: %w", err)
-	}
-	return string(raw), nil
+	return approvaltool.InvokableApprovableTool{InvokableTool: innerTool}, nil
+}
+
+func newProjectAssistantRuntimeStatusGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
+	workflow := compose.NewWorkflow[*projectAssistantRuntimeStatusToolInput, *projectAssistantRuntimeWorkflowResult]()
+	workflow.AddLambdaNode("normalize", compose.InvokableLambda(projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx))).
+		AddInput(compose.START)
+	workflow.AddLambdaNode("format-runtime-status", compose.InvokableLambda(formatProjectAssistantRuntimeStatusResult)).
+		AddInput("normalize")
+	workflow.End().AddInput("format-runtime-status")
+	return graphtool.NewInvokableGraphTool[*projectAssistantRuntimeStatusToolInput, *projectAssistantRuntimeWorkflowResult](
+		workflow,
+		projectToolGetRuntimeStatus,
+		"Return a structured not-configured App Studio runtime status until a runtime provider state reader is configured.",
+		compose.WithGraphName("app-studio-get-runtime-status"),
+	)
+}
+
+func newProjectAssistantPreviewURLGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
+	workflow := compose.NewWorkflow[*projectAssistantRuntimeStatusToolInput, *projectAssistantRuntimeWorkflowResult]()
+	workflow.AddLambdaNode("normalize", compose.InvokableLambda(projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx))).
+		AddInput(compose.START)
+	workflow.AddLambdaNode("format-preview-url", compose.InvokableLambda(formatProjectAssistantPreviewURLResult)).
+		AddInput("normalize")
+	workflow.End().AddInput("format-preview-url")
+	return graphtool.NewInvokableGraphTool[*projectAssistantRuntimeStatusToolInput, *projectAssistantRuntimeWorkflowResult](
+		workflow,
+		projectToolGetPreviewURL,
+		"Return a structured not-configured App Studio preview URL result until a runtime provider state reader is configured.",
+		compose.WithGraphName("app-studio-get-preview-url"),
+	)
 }
 
 func marshalProjectAssistantWorkflowPlan(plan projectAssistantWorkflowPlan) ([]byte, error) {
@@ -445,72 +456,6 @@ func trimProjectAssistantWorkflowString(value string, maxChars int) string {
 	return strings.TrimSpace(string(runes[:maxChars-3])) + "..."
 }
 
-func newProjectAssistantPlanningWorkflow(ctx context.Context) (compose.Runnable[projectAssistantWorkflowInput, projectAssistantWorkflowPlan], error) {
-	workflow := compose.NewWorkflow[projectAssistantWorkflowInput, projectAssistantWorkflowPlan]()
-	workflow.AddLambdaNode("normalize", compose.InvokableLambda(normalizeProjectAssistantWorkflowInput)).
-		AddInput(compose.START)
-	workflow.AddLambdaNode("read-context", compose.InvokableLambda(readProjectAssistantWorkflowContext)).
-		AddInput("normalize")
-	workflow.AddLambdaNode("format-plan", compose.InvokableLambda(formatProjectAssistantWorkflowPlan)).
-		AddInput("read-context")
-	workflow.End().AddInput("format-plan")
-	return workflow.Compile(ctx, compose.WithGraphName("app-studio-plan-project-changes"))
-}
-
-func newProjectAssistantReadinessWorkflow(ctx context.Context) (compose.Runnable[projectAssistantWorkflowInput, projectAssistantReadinessWorkflowResult], error) {
-	workflow := compose.NewWorkflow[projectAssistantWorkflowInput, projectAssistantReadinessWorkflowResult]()
-	workflow.AddLambdaNode("normalize", compose.InvokableLambda(normalizeProjectAssistantWorkflowInput)).
-		AddInput(compose.START)
-	workflow.AddLambdaNode("read-context", compose.InvokableLambda(readProjectAssistantReadinessWorkflowContext)).
-		AddInput("normalize")
-	workflow.AddLambdaNode("format-readiness", compose.InvokableLambda(formatProjectAssistantReadinessWorkflow)).
-		AddInput("read-context")
-	workflow.End().AddInput("format-readiness")
-	return workflow.Compile(ctx, compose.WithGraphName("app-studio-check-project-readiness"))
-}
-
-func newProjectAssistantPrepareDeploymentWorkflow(ctx context.Context) (compose.Runnable[projectAssistantWorkflowInput, projectAssistantDeploymentPreparationResult], error) {
-	workflow := compose.NewWorkflow[projectAssistantWorkflowInput, projectAssistantDeploymentPreparationResult]()
-	workflow.AddLambdaNode("normalize", compose.InvokableLambda(normalizeProjectAssistantWorkflowInput)).
-		AddInput(compose.START)
-	workflow.AddLambdaNode("read-context", compose.InvokableLambda(readProjectAssistantWorkflowContext)).
-		AddInput("normalize")
-	workflow.AddLambdaNode("format-deployment-preparation", compose.InvokableLambda(formatProjectAssistantDeploymentPreparationWorkflow)).
-		AddInput("read-context")
-	workflow.End().AddInput("format-deployment-preparation")
-	return workflow.Compile(ctx, compose.WithGraphName("app-studio-prepare-project-deployment"))
-}
-
-func newProjectAssistantDeployRuntimeWorkflow(ctx context.Context) (compose.Runnable[projectAssistantRuntimeWorkflowInput, projectAssistantRuntimeWorkflowResult], error) {
-	workflow := compose.NewWorkflow[projectAssistantRuntimeWorkflowInput, projectAssistantRuntimeWorkflowResult]()
-	workflow.AddLambdaNode("normalize", compose.InvokableLambda(normalizeProjectAssistantRuntimeWorkflowInput)).
-		AddInput(compose.START)
-	workflow.AddLambdaNode("format-runtime-deployment", compose.InvokableLambda(formatProjectAssistantRuntimeDeploymentWorkflow)).
-		AddInput("normalize")
-	workflow.End().AddInput("format-runtime-deployment")
-	return workflow.Compile(ctx, compose.WithGraphName("app-studio-deploy-project-runtime"))
-}
-
-func newProjectAssistantRuntimeStatusWorkflow(ctx context.Context) (compose.Runnable[projectAssistantRuntimeWorkflowInput, projectAssistantRuntimeWorkflowResult], error) {
-	workflow := compose.NewWorkflow[projectAssistantRuntimeWorkflowInput, projectAssistantRuntimeWorkflowResult]()
-	workflow.AddLambdaNode("normalize", compose.InvokableLambda(normalizeProjectAssistantRuntimeWorkflowInput)).
-		AddInput(compose.START)
-	workflow.AddLambdaNode("format-runtime-status", compose.InvokableLambda(formatProjectAssistantRuntimeStatusWorkflow)).
-		AddInput("normalize")
-	workflow.End().AddInput("format-runtime-status")
-	return workflow.Compile(ctx, compose.WithGraphName("app-studio-get-runtime-status"))
-}
-
-func newProjectAssistantPreviewURLWorkflow(ctx context.Context) (compose.Runnable[projectAssistantRuntimeWorkflowInput, projectAssistantRuntimeWorkflowResult], error) {
-	workflow := compose.NewWorkflow[projectAssistantRuntimeWorkflowInput, projectAssistantRuntimeWorkflowResult]()
-	workflow.AddLambdaNode("normalize", compose.InvokableLambda(normalizeProjectAssistantRuntimeWorkflowInput)).
-		AddInput(compose.START)
-	workflow.AddLambdaNode("format-preview-url", compose.InvokableLambda(formatProjectAssistantPreviewURLWorkflow)).
-		AddInput("normalize")
-	workflow.End().AddInput("format-preview-url")
-	return workflow.Compile(ctx, compose.WithGraphName("app-studio-get-preview-url"))
-}
-
 func normalizeProjectAssistantWorkflowInput(ctx context.Context, input projectAssistantWorkflowInput) (projectAssistantWorkflowInput, error) {
 	if err := ctx.Err(); err != nil {
 		return projectAssistantWorkflowInput{}, err
@@ -520,6 +465,27 @@ func normalizeProjectAssistantWorkflowInput(ctx context.Context, input projectAs
 		return projectAssistantWorkflowInput{}, fmt.Errorf("project is required")
 	}
 	return input, nil
+}
+
+func projectAssistantWorkflowInputFromTool(runCtx projectAssistantWorkflowRunContext, defaultIncludeFiles bool) func(context.Context, *projectAssistantWorkflowToolInput) (projectAssistantWorkflowInput, error) {
+	return func(ctx context.Context, args *projectAssistantWorkflowToolInput) (projectAssistantWorkflowInput, error) {
+		includeFiles := defaultIncludeFiles
+		maxFiles := 0
+		if args != nil {
+			if args.IncludeFiles != nil {
+				includeFiles = *args.IncludeFiles
+			}
+			maxFiles = args.MaxFiles
+		}
+		return normalizeProjectAssistantWorkflowInput(ctx, projectAssistantWorkflowInput{
+			Server:         runCtx.Server,
+			Project:        runCtx.Project,
+			Repository:     runCtx.Repository,
+			WorkspaceScope: runCtx.WorkspaceScope,
+			IncludeFiles:   includeFiles,
+			MaxFiles:       boundedWorkflowFileLimit(maxFiles),
+		})
+	}
 }
 
 func normalizeProjectAssistantRuntimeWorkflowInput(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (projectAssistantRuntimeWorkflowInput, error) {
@@ -541,6 +507,41 @@ func normalizeProjectAssistantRuntimeWorkflowInput(ctx context.Context, input pr
 		input.AppDeployment.Intent = "preview"
 	}
 	return input, nil
+}
+
+func projectAssistantRuntimeWorkflowInputFromDeployTool(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeDeployToolInput) (projectAssistantRuntimeWorkflowInput, error) {
+	return func(ctx context.Context, args *projectAssistantRuntimeDeployToolInput) (projectAssistantRuntimeWorkflowInput, error) {
+		input := projectAssistantRuntimeWorkflowInput{
+			Project:    runCtx.Project,
+			Repository: runCtx.Repository,
+		}
+		if runCtx.RunState != nil {
+			input.SessionSnapshot = runCtx.RunState.SessionSnapshot()
+		}
+		if args != nil {
+			input.AppDeployment = projectAssistantAppDeploymentRequest{
+				TargetRef: strings.TrimSpace(args.TargetRef),
+				AppName:   strings.TrimSpace(args.AppName),
+				Image:     strings.TrimSpace(args.Image),
+				Port:      args.Port,
+				Intent:    strings.TrimSpace(args.Intent),
+			}
+		}
+		return normalizeProjectAssistantRuntimeWorkflowInput(ctx, input)
+	}
+}
+
+func projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeStatusToolInput) (projectAssistantRuntimeWorkflowInput, error) {
+	return func(ctx context.Context, _ *projectAssistantRuntimeStatusToolInput) (projectAssistantRuntimeWorkflowInput, error) {
+		input := projectAssistantRuntimeWorkflowInput{
+			Project:    runCtx.Project,
+			Repository: runCtx.Repository,
+		}
+		if runCtx.RunState != nil {
+			input.SessionSnapshot = runCtx.RunState.SessionSnapshot()
+		}
+		return normalizeProjectAssistantRuntimeWorkflowInput(ctx, input)
+	}
 }
 
 func readProjectAssistantReadinessWorkflowContext(ctx context.Context, input projectAssistantWorkflowInput) (projectAssistantWorkflowContext, error) {
@@ -577,34 +578,14 @@ func readProjectAssistantWorkflowContext(ctx context.Context, input projectAssis
 	return out, nil
 }
 
-func formatProjectAssistantReadinessWorkflow(ctx context.Context, input projectAssistantWorkflowContext) (projectAssistantReadinessWorkflowResult, error) {
-	return formatProjectAssistantReadinessWorkflowResult(ctx, input)
-}
-
-func formatProjectAssistantDeploymentPreparationWorkflow(ctx context.Context, input projectAssistantWorkflowContext) (projectAssistantDeploymentPreparationResult, error) {
-	return formatProjectAssistantDeploymentPreparationResult(ctx, input)
-}
-
-func formatProjectAssistantRuntimeDeploymentWorkflow(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (projectAssistantRuntimeWorkflowResult, error) {
-	return formatProjectAssistantRuntimeDeploymentResult(ctx, input)
-}
-
-func formatProjectAssistantRuntimeStatusWorkflow(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (projectAssistantRuntimeWorkflowResult, error) {
-	return formatProjectAssistantRuntimeStatusResult(ctx, input)
-}
-
-func formatProjectAssistantPreviewURLWorkflow(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (projectAssistantRuntimeWorkflowResult, error) {
-	return formatProjectAssistantPreviewURLResult(ctx, input)
-}
-
-func formatProjectAssistantReadinessWorkflowResult(ctx context.Context, input projectAssistantWorkflowContext) (projectAssistantReadinessWorkflowResult, error) {
-	result := projectAssistantReadinessWorkflowResult{}
+func formatProjectAssistantReadinessWorkflowResult(ctx context.Context, input projectAssistantWorkflowContext) (*projectAssistantReadinessWorkflowResult, error) {
+	result := &projectAssistantReadinessWorkflowResult{}
 	if err := ctx.Err(); err != nil {
-		return result, err
+		return nil, err
 	}
 	p := input.Project
 	if p == nil {
-		return result, fmt.Errorf("project is required")
+		return nil, fmt.Errorf("project is required")
 	}
 	displayName := strings.TrimSpace(p.Spec.DisplayName)
 	if displayName == "" {
@@ -632,11 +613,11 @@ func formatProjectAssistantReadinessWorkflowResult(ctx context.Context, input pr
 	return result, nil
 }
 
-func formatProjectAssistantRuntimeDeploymentResult(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (projectAssistantRuntimeWorkflowResult, error) {
+func formatProjectAssistantRuntimeDeploymentResult(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (*projectAssistantRuntimeWorkflowResult, error) {
 	if err := ctx.Err(); err != nil {
-		return projectAssistantRuntimeWorkflowResult{}, err
+		return nil, err
 	}
-	result := projectAssistantRuntimeWorkflowResult{
+	result := &projectAssistantRuntimeWorkflowResult{
 		Status:        "blocked",
 		AppDeployment: &input.AppDeployment,
 		Runtime:       projectAssistantRuntimeNotConfigured(),
@@ -662,19 +643,19 @@ func formatProjectAssistantRuntimeDeploymentResult(ctx context.Context, input pr
 	return result, nil
 }
 
-func formatProjectAssistantRuntimeStatusResult(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (projectAssistantRuntimeWorkflowResult, error) {
+func formatProjectAssistantRuntimeStatusResult(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (*projectAssistantRuntimeWorkflowResult, error) {
 	if err := ctx.Err(); err != nil {
-		return projectAssistantRuntimeWorkflowResult{}, err
+		return nil, err
 	}
 	return projectAssistantRuntimeNotConfiguredResult("Runtime deployment status is unavailable because no runtime deployment is recorded.")
 }
 
-func formatProjectAssistantPreviewURLResult(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (projectAssistantRuntimeWorkflowResult, error) {
+func formatProjectAssistantPreviewURLResult(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (*projectAssistantRuntimeWorkflowResult, error) {
 	if err := ctx.Err(); err != nil {
-		return projectAssistantRuntimeWorkflowResult{}, err
+		return nil, err
 	}
 	if previewURL := projectAssistantRuntimePreviewURL(input.Project); previewURL != "" {
-		return projectAssistantRuntimeWorkflowResult{
+		return &projectAssistantRuntimeWorkflowResult{
 			Status:     "ready",
 			Summary:    "Development preview URL is available.",
 			Runtime:    &projectAssistantDeploymentRuntime{Status: "ready", URL: previewURL},
@@ -743,8 +724,8 @@ func projectEnvironmentPreviewURL(environments []aiv1alpha1.ProjectEnvironmentSt
 	return ""
 }
 
-func projectAssistantRuntimeNotConfiguredResult(summary string) (projectAssistantRuntimeWorkflowResult, error) {
-	return projectAssistantRuntimeWorkflowResult{
+func projectAssistantRuntimeNotConfiguredResult(summary string) (*projectAssistantRuntimeWorkflowResult, error) {
+	return &projectAssistantRuntimeWorkflowResult{
 		Status:  "not_configured",
 		Summary: summary,
 		Runtime: projectAssistantRuntimeNotConfigured(),
@@ -764,14 +745,14 @@ func projectAssistantRuntimeNotConfigured() *projectAssistantDeploymentRuntime {
 	}
 }
 
-func formatProjectAssistantDeploymentPreparationResult(ctx context.Context, input projectAssistantWorkflowContext) (projectAssistantDeploymentPreparationResult, error) {
-	result := projectAssistantDeploymentPreparationResult{}
+func formatProjectAssistantDeploymentPreparationResult(ctx context.Context, input projectAssistantWorkflowContext) (*projectAssistantDeploymentPreparationResult, error) {
+	result := &projectAssistantDeploymentPreparationResult{}
 	if err := ctx.Err(); err != nil {
-		return result, err
+		return nil, err
 	}
 	p := input.Project
 	if p == nil {
-		return result, fmt.Errorf("project is required")
+		return nil, fmt.Errorf("project is required")
 	}
 	displayName := strings.TrimSpace(p.Spec.DisplayName)
 	if displayName == "" {
@@ -820,13 +801,13 @@ func formatProjectAssistantDeploymentPreparationResult(ctx context.Context, inpu
 	return result, nil
 }
 
-func formatProjectAssistantWorkflowPlan(ctx context.Context, input projectAssistantWorkflowContext) (projectAssistantWorkflowPlan, error) {
+func formatProjectAssistantWorkflowPlan(ctx context.Context, input projectAssistantWorkflowContext) (*projectAssistantWorkflowPlan, error) {
 	if err := ctx.Err(); err != nil {
-		return projectAssistantWorkflowPlan{}, err
+		return nil, err
 	}
 	p := input.Project
 	if p == nil {
-		return projectAssistantWorkflowPlan{}, fmt.Errorf("project is required")
+		return nil, fmt.Errorf("project is required")
 	}
 	displayName := strings.TrimSpace(p.Spec.DisplayName)
 	if displayName == "" {
@@ -847,7 +828,15 @@ func formatProjectAssistantWorkflowPlan(ctx context.Context, input projectAssist
 			Status: input.Repository.Status,
 		}
 	}
-	return plan, nil
+	raw, err := marshalProjectAssistantWorkflowPlan(plan)
+	if err != nil {
+		return nil, err
+	}
+	var bounded projectAssistantWorkflowPlan
+	if err := json.Unmarshal(raw, &bounded); err != nil {
+		return nil, err
+	}
+	return &bounded, nil
 }
 
 func projectAssistantWorkflowSteps(memory aiv1alpha1.ProjectMemory, repository *ProjectRepositoryView, files []string) []string {

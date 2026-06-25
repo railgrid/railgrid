@@ -54,6 +54,7 @@ type Server struct {
 	previewSigner                *previewSigner
 	autoApproveActions           bool
 	assistantEngine              projectAssistantEngine
+	assistantTurnRouter          projectAssistantTurnRouter
 	assistantRunManager          *projectAssistantRunManager
 	developmentSyncLocks         map[string]*sync.Mutex
 	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string)
@@ -121,6 +122,15 @@ func (s *Server) projectAssistantEngine() projectAssistantEngine {
 		s.assistantEngine = NewEinoAssistantEngine(s)
 	}
 	return s.assistantEngine
+}
+
+func (s *Server) projectAssistantTurnRouter() projectAssistantTurnRouter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.assistantTurnRouter == nil {
+		return projectAssistantSemanticTurnRouter
+	}
+	return s.assistantTurnRouter
 }
 
 func (s *Server) projectAssistantRunManager() *projectAssistantRunManager {

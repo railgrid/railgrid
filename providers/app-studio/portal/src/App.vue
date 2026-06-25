@@ -12,6 +12,7 @@ import {
   ExternalLink,
   Folder,
   GitBranch,
+  Globe,
   GripVertical,
   Loader2,
   MessageSquare,
@@ -20,9 +21,11 @@ import {
   RefreshCw,
   Search,
   Send,
+  Settings,
   Settings2,
   Square,
   Trash2,
+  Users,
   Wrench,
   X,
 } from 'lucide-vue-next'
@@ -144,6 +147,7 @@ const CREATE_PROJECT_ROUTE = '~new'
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
 const CODE_REPOSITORIES_URL = '/ui/providers/code/repositories'
+const PUBLISHING_DOMAIN_SUFFIX = '.kedge.app'
 const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
 const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_SKEW_MS = 5 * 60 * 1000
 const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MIN_MS = 1000
@@ -299,6 +303,7 @@ const developmentPreviewOverrideURL = ref<string | null>(null)
 const developmentPreviewAuthorizationKey = ref('')
 const developmentPreviewTokenExpiresAt = ref('')
 const developmentPreviewFrameKey = ref(0)
+const publishingAccess = ref<'public' | 'members' | 'private'>('members')
 const conversationStatus = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
 const permissionErrors = ref<Record<string, string>>({})
@@ -365,7 +370,7 @@ const conversationWorkingLabel = computed(() => {
   if (conversationStatus.value) return conversationStatus.value
   if (!messageStreaming.value) return ''
   const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
-  if (lastAssistant?.content.trim()) return 'Writing'
+  if (lastAssistant?.content.trim()) return 'Working'
   return 'Working'
 })
 const deleteProjectMessage = computed(() => {
@@ -375,6 +380,21 @@ const deleteProjectMessage = computed(() => {
   const repositoryName = project.repository?.name || project.repository?.ref
   const repositoryNote = repositoryName ? ` The associated repository resource (${repositoryName})` : ' The associated repository resource'
   return `Are you sure you want to delete ${projectName}? This removes the App Studio project and its conversation history.${repositoryNote} will be orphaned and will not be deleted.`
+})
+const publishingProjectName = computed(() => selected.value?.displayName || selected.value?.name || '')
+const publishingProjectSlug = computed(() => projectToSlug(publishingProjectName.value || 'app-studio-project'))
+const publishingDefaultDomain = computed(() => `${publishingProjectSlug.value}${PUBLISHING_DOMAIN_SUFFIX}`)
+const publishingPreviewSummary = computed(() => developmentPreviewRawURL.value || developmentPreviewURL.value || '')
+const publishingAvailability = computed(() => {
+  if (!publishingProjectName.value) return 'Unavailable'
+  if (!developmentBinding.value) return 'Needs preview binding'
+  if (!publishingPreviewSummary.value) return 'Preview unavailable'
+  if (developmentPreviewNeedsAuthorization.value) return `Sandbox ${developmentPreviewPhase.value}`
+  return 'Sandbox ready'
+})
+const publishingSummaryTarget = computed(() => {
+  const previewURL = publishingPreviewSummary.value
+  return previewURL || 'Project has no deployable preview URL yet.'
 })
 const isGoogleGeminiProvider = computed(() => llmProvider.value.trim().toLowerCase() === GOOGLE_AI_STUDIO_PROVIDER)
 const isGoogleServiceAccountMode = computed(() =>
@@ -554,6 +574,13 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
     subtitle: 'Browse provider views and project tools',
     icon: PanelRight,
     builtInTab: 'providers',
+  },
+  {
+    id: 'builtin:publishing',
+    title: 'Publishing',
+    subtitle: 'Prepare a shareable production URL',
+    icon: Globe,
+    builtInTab: 'publishing',
   },
   {
     id: 'builtin:review',
@@ -1075,6 +1102,16 @@ function clearLandingPlaceholderTyping() {
   landingPlaceholderTypingTimer = undefined
 }
 
+function projectToSlug(value: string): string {
+  const base = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+  return base || 'app-studio-project'
+}
+
 function normalizeLLMBaseURLInput(provider: string, baseURL: string, credentialMode: LLMCredentialMode): string {
   const normalizedProvider = provider.trim().toLowerCase()
   const normalizedBaseURL = baseURL.trim().replace(/\/+$/, '')
@@ -1581,6 +1618,10 @@ function openWorkbenchLauncherItem(item: WorkbenchLauncherItem) {
   }
 }
 
+function resetPublishingSettings() {
+  publishingAccess.value = 'members'
+}
+
 function activateWorkbenchTabByID(tabID: string) {
   workbench.value = activateWorkbenchTab(workbench.value, tabID)
 }
@@ -1649,6 +1690,7 @@ function workbenchTabIcon(tab: WorkbenchTabDescriptor): Component {
   if (tab.kind === 'preview') return AppWindow
   if (tab.kind === 'review') return ClipboardList
   if (tab.kind === 'providers') return PanelRight
+  if (tab.kind === 'publishing') return Globe
   if (tab.kind === 'launcher') return Plus
   return Wrench
 }
@@ -2977,101 +3019,6 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
 
       <template v-if="selected">
         <div
-          v-if="pendingFollowUp"
-          class="mx-4 mt-3 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
-        >
-          <div class="flex min-w-0 items-start gap-3">
-            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
-              <MessageSquare class="h-4 w-4" :stroke-width="1.75" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="text-[13px] font-semibold text-text-primary">Clarification needed</div>
-              <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
-                {{ pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.' }}
-              </div>
-              <ul v-if="pendingFollowUp.interrupt.questions?.length" class="mt-2 list-disc space-y-1 pl-4 text-[12px] leading-5 text-text-secondary">
-                <li v-for="question in pendingFollowUp.interrupt.questions" :key="question">{{ question }}</li>
-              </ul>
-              <textarea
-                class="mt-3 min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-                aria-label="Clarification response"
-                placeholder="Answer here..."
-                :value="followUpAnswer(pendingFollowUp.interrupt)"
-                :disabled="followUpBusyState(pendingFollowUp.interrupt)"
-                @input="updateFollowUpAnswer(pendingFollowUp.interrupt, ($event.target as HTMLTextAreaElement).value)"
-              />
-              <div v-if="followUpError(pendingFollowUp.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
-                {{ followUpError(pendingFollowUp.interrupt) }}
-              </div>
-              <div class="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                  :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
-                  @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
-                >
-                  <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                  <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  Continue
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div
-          v-else-if="pendingApproval"
-          class="mx-4 mt-3 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
-        >
-          <div class="flex min-w-0 items-start gap-3">
-            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
-              <ClipboardList class="h-4 w-4" :stroke-width="1.75" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="flex min-w-0 items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <div class="text-[13px] font-semibold text-text-primary">Approval required</div>
-                  <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
-                    {{ pendingApproval.interrupt.description || 'Review this action before it runs.' }}
-                  </div>
-                </div>
-              </div>
-              <div v-if="permissionError(pendingApproval.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
-                {{ permissionError(pendingApproval.interrupt) }}
-              </div>
-              <div class="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                  :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
-                  @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
-                >
-                  <Loader2
-                    v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'"
-                    class="h-3.5 w-3.5 animate-spin"
-                    :stroke-width="1.75"
-                  />
-                  <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  Allow
-                </button>
-                <button
-                  type="button"
-                  class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                  :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
-                  @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
-                >
-                  <Loader2
-                    v-if="permissionBusyState(pendingApproval.interrupt) === 'deny'"
-                    class="h-3.5 w-3.5 animate-spin"
-                    :stroke-width="1.75"
-                  />
-                  <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  Deny
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div
           ref="messagesRef"
           class="min-h-0 flex-1 overflow-auto px-4 py-3"
           :aria-busy="messageStreaming"
@@ -3249,6 +3196,101 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
         </div>
 
         <form class="shrink-0 border-t border-border-subtle p-3" @submit.prevent="sendMessage">
+          <div
+            v-if="pendingFollowUp"
+            class="mb-2 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
+          >
+            <div class="flex min-w-0 items-start gap-3">
+              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
+                <MessageSquare class="h-4 w-4" :stroke-width="1.75" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-[13px] font-semibold text-text-primary">Clarification needed</div>
+                <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
+                  {{ pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.' }}
+                </div>
+                <ul v-if="pendingFollowUp.interrupt.questions?.length" class="mt-2 list-disc space-y-1 pl-4 text-[12px] leading-5 text-text-secondary">
+                  <li v-for="question in pendingFollowUp.interrupt.questions" :key="question">{{ question }}</li>
+                </ul>
+                <textarea
+                  class="mt-3 min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                  aria-label="Clarification response"
+                  placeholder="Answer here..."
+                  :value="followUpAnswer(pendingFollowUp.interrupt)"
+                  :disabled="followUpBusyState(pendingFollowUp.interrupt)"
+                  @input="updateFollowUpAnswer(pendingFollowUp.interrupt, ($event.target as HTMLTextAreaElement).value)"
+                />
+                <div v-if="followUpError(pendingFollowUp.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
+                  {{ followUpError(pendingFollowUp.interrupt) }}
+                </div>
+                <div class="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
+                    @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
+                  >
+                    <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                    <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    Continue
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div
+            v-else-if="pendingApproval"
+            class="mb-2 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
+          >
+            <div class="flex min-w-0 items-start gap-3">
+              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
+                <ClipboardList class="h-4 w-4" :stroke-width="1.75" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex min-w-0 items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="text-[13px] font-semibold text-text-primary">Approval required</div>
+                    <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
+                      {{ pendingApproval.interrupt.description || 'Review this action before it runs.' }}
+                    </div>
+                  </div>
+                </div>
+                <div v-if="permissionError(pendingApproval.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
+                  {{ permissionError(pendingApproval.interrupt) }}
+                </div>
+                <div class="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
+                    @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
+                  >
+                    <Loader2
+                      v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'"
+                      class="h-3.5 w-3.5 animate-spin"
+                      :stroke-width="1.75"
+                    />
+                    <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    Allow
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
+                    @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
+                  >
+                    <Loader2
+                      v-if="permissionBusyState(pendingApproval.interrupt) === 'deny'"
+                      class="h-3.5 w-3.5 animate-spin"
+                      :stroke-width="1.75"
+                    />
+                    <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    Deny
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="relative min-h-[58px] rounded-md border border-border-subtle bg-surface shadow-sm transition focus-within:border-accent/50">
             <textarea
               ref="promptRef"
@@ -3505,6 +3547,111 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               </div>
               <div class="mt-3 text-[13px] font-semibold text-text-primary">{{ developmentPreviewUnavailableTitle }}</div>
               <div class="mt-1 text-[12px] leading-5 text-text-muted">{{ developmentPreviewUnavailableMessage }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        v-else-if="activeWorkbenchTab?.kind === 'publishing'"
+        class="min-h-0 flex-1 overflow-auto p-3"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
+        <div class="grid gap-3">
+          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
+            <div class="flex min-w-0 items-start justify-between gap-2">
+              <div class="min-w-0">
+                <div class="text-[13px] font-semibold text-text-primary">Publish your app</div>
+                <div class="text-[12px] leading-5 text-text-muted">
+                  Prepare a production URL and review what App Studio needs before this sandbox app is ready to share.
+                </div>
+              </div>
+              <StatusBadge :status="publishingAvailability" />
+            </div>
+
+            <div class="grid gap-2">
+              <label class="text-[11px] font-semibold uppercase tracking-wide text-text-muted" for="publishing-domain">
+                Domain
+              </label>
+              <div class="flex items-center gap-2">
+                <Globe class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" />
+                <input
+                  id="publishing-domain"
+                  :value="publishingDefaultDomain"
+                  class="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
+                  :aria-describedby="`publishing-${workbenchTabPanelID(activeWorkbenchTab)}-domain-help`"
+                  readonly
+                />
+                <span class="text-[11px] text-text-muted">(suggested)</span>
+              </div>
+              <p
+                :id="`publishing-${workbenchTabPanelID(activeWorkbenchTab)}-domain-help`"
+                class="text-[11px] leading-4 text-text-muted"
+              >
+                Domain suggestions are generated from your project name. App Studio will use this as the proposed production URL when publishing is connected.
+              </p>
+            </div>
+          </section>
+
+          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
+            <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">What you're publishing</div>
+            <dl class="grid gap-2 text-[12px]">
+              <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]">
+                <dt class="text-text-muted">Project</dt>
+                <dd class="font-medium text-text-primary">{{ publishingProjectName || 'No project selected' }}</dd>
+              </div>
+              <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]">
+                <dt class="text-text-muted">Sandbox preview</dt>
+                <dd class="truncate text-text-primary">{{ publishingSummaryTarget }}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Access</div>
+                <div class="text-[12px] text-text-muted">Choose the intended audience for the production URL.</div>
+              </div>
+            </div>
+            <div class="grid gap-1.5 sm:grid-cols-3" role="radiogroup" aria-label="Publishing access">
+              <label class="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-[12px]">
+                <input v-model="publishingAccess" type="radio" value="public" name="publishing-access" class="h-3.5 w-3.5" />
+                <span>Public</span>
+              </label>
+              <label class="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-[12px]">
+                <input v-model="publishingAccess" type="radio" value="members" name="publishing-access" class="h-3.5 w-3.5" />
+                <Users class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <span>Members only</span>
+              </label>
+              <label class="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-[12px]">
+                <input v-model="publishingAccess" type="radio" value="private" name="publishing-access" class="h-3.5 w-3.5" />
+                <span>Private</span>
+              </label>
+            </div>
+          </section>
+
+          <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-1">
+            <div class="text-[12px] text-text-muted">Publishing is a setup preview; no production resources are created from this panel yet.</div>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
+                @click="resetPublishingSettings"
+              >
+                <Settings class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Adjust settings
+              </button>
+              <button
+                type="button"
+                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-4 text-[12px] font-semibold text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled
+                title="Publishing workflow is not connected yet"
+              >
+                Publish
+              </button>
             </div>
           </div>
         </div>

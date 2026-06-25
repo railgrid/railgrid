@@ -23,6 +23,7 @@ import (
 	"io"
 	"strings"
 
+	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/dynamictool/toolsearch"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
@@ -36,6 +37,7 @@ const (
 	projectEinoAssistantSummaryContextMessages = 128
 	projectEinoAssistantSummaryContextTokens   = 24000
 	projectEinoAssistantSummaryInstruction     = "Summarize this App Studio project session for the next builder turn. Preserve user requirements, accepted plans, files touched or inspected, unresolved questions, repository/runtime state, and any constraints. Keep it concise and operational."
+	projectEinoAssistantNoOutputFallback       = "I couldn't produce a response for that turn. Please try again or rephrase the request, and I can continue from the current project context."
 
 	// Bundle search is for App Studio's full product toolbox. Smaller injected
 	// tool sets stay direct so focused permission/resume flows keep their shape.
@@ -85,7 +87,10 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 		return projectAssistantRunResult{}, errors.New("eino tool factory is not configured")
 	}
 
+	req.TurnPolicy = normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
+	req.TurnProfile = req.TurnPolicy.profile
 	runState := newProjectEinoAssistantRunState()
+	runState.SetTurnPolicy(req.TurnPolicy)
 	runState.SetProjectRepositoryRef(projectEinoAssistantProjectRepositoryRef(req))
 
 	checkpointID := newProjectAssistantRunID()
@@ -121,6 +126,8 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	}))
 	resumeRunReq := req
 	resumeRunReq.Continuation = &state
+	resumeRunReq.TurnPolicy = runState.TurnPolicy()
+	resumeRunReq.TurnProfile = resumeRunReq.TurnPolicy.profile
 	checkpointStore := newProjectEinoAssistantCheckpointStoreWithCheckpoint(state.Eino.CheckpointID, state.Eino.Checkpoint)
 	turn := newProjectAssistantTurnItem(projectAssistantTurnResume, req.Identity, req.Project.Name)
 	turn.RequestID = strings.TrimSpace(resumeReq.RequestID)
@@ -296,11 +303,7 @@ func projectEinoAssistantToolUsesSearch(info *schema.ToolInfo, useBundleSearch b
 	if info == nil || info.Extra == nil {
 		return false
 	}
-	if useBundleSearch && projectEinoAssistantToolCanUseSearch(info) {
-		return true
-	}
-	risk, _ := info.Extra["risk"].(string)
-	return projectAssistantToolRisk(risk) == projectAssistantToolRiskRead
+	return useBundleSearch && projectEinoAssistantToolCanUseSearch(info)
 }
 
 type projectEinoAssistantTurnOutcome struct {
@@ -392,7 +395,7 @@ func (e projectEinoAssistantEngine) runProjectAssistantTurnLoop(
 		return projectAssistantRunResult{}, exit.ExitReason
 	}
 	if !outcome.receivedOutput {
-		return projectAssistantRunResult{}, errors.New("eino turn loop completed without assistant output")
+		return projectAssistantRunResult{Content: projectEinoAssistantNoOutputFallback}, nil
 	}
 	return outcome.result, nil
 }
@@ -420,6 +423,16 @@ func projectEinoAssistantResumeData(interruptType string, item projectAssistantT
 			Decision:        decision,
 			EditedArguments: cloneProjectAssistantToolArguments(item.EditedArguments),
 		}, nil
+	case projectAssistantInterruptTypeApproval:
+		decision, err := parseProjectAssistantPermissionDecision(item.Decision)
+		if err != nil {
+			return nil, err
+		}
+		if decision == projectAssistantPermissionAllow {
+			return &approvaltool.ApprovalResult{Approved: true}, nil
+		}
+		reason := "denied by user"
+		return &approvaltool.ApprovalResult{Approved: false, DisapproveReason: &reason}, nil
 	case projectAssistantInterruptTypeFollowUp:
 		answer := strings.TrimSpace(item.Answer)
 		if answer == "" {
@@ -483,8 +496,12 @@ func (e projectEinoAssistantEngine) collectProjectAssistantTurnEvents(
 		if role == "" && msg != nil {
 			role = msg.Role
 		}
-		if msg != nil && role == schema.Assistant && strings.TrimSpace(msg.Content) != "" {
-			outcome.result.Content = msg.Content
+		if msg != nil && role == schema.Assistant {
+			content := projectEinoAssistantSummaryText(msg)
+			if strings.TrimSpace(content) == "" {
+				continue
+			}
+			outcome.result.Content = content
 			outcome.receivedOutput = true
 		}
 	}
@@ -583,7 +600,10 @@ func (e projectEinoAssistantEngine) saveProjectAssistantInterrupt(
 		return errors.New("eino checkpoint was not saved for permission interrupt")
 	}
 	if info, interruptID, ok := projectEinoPermissionInterruptInfoFromEvent(interrupted); ok {
-		return e.saveProjectAssistantPermissionInterrupt(ctx, req, runState, checkpoint, checkpointID, interruptID, info)
+		return e.saveProjectAssistantPermissionInterrupt(ctx, req, runState, checkpoint, checkpointID, interruptID, projectAssistantInterruptTypePermission, info)
+	}
+	if info, interruptID, ok := projectEinoApprovalInterruptInfoFromEvent(interrupted); ok {
+		return e.saveProjectAssistantPermissionInterrupt(ctx, req, runState, checkpoint, checkpointID, interruptID, projectAssistantInterruptTypeApproval, info)
 	}
 	if info, interruptID, ok := projectEinoFollowUpInterruptInfoFromEvent(interrupted); ok {
 		return e.saveProjectAssistantFollowUpInterrupt(ctx, req, runState, checkpoint, checkpointID, interruptID, info)
@@ -598,6 +618,7 @@ func (e projectEinoAssistantEngine) saveProjectAssistantPermissionInterrupt(
 	checkpoint []byte,
 	checkpointID string,
 	interruptID string,
+	interruptType string,
 	info *projectEinoPermissionInterruptInfo,
 ) error {
 	_, index, toolCalls := runState.ToolCallByID(info.ToolCallID, info.ToolName, info.ArgumentsInJSON)
@@ -610,7 +631,7 @@ func (e projectEinoAssistantEngine) saveProjectAssistantPermissionInterrupt(
 		CheckpointID:  strings.TrimSpace(checkpointID),
 		Checkpoint:    checkpoint,
 		InterruptID:   interruptID,
-		InterruptType: projectAssistantInterruptTypePermission,
+		InterruptType: interruptType,
 		ToolCallID:    info.ToolCallID,
 		ToolName:      info.ToolName,
 	}
@@ -694,6 +715,42 @@ func projectEinoPermissionInterruptInfoFromEvent(interrupted *adk.InterruptInfo)
 	return nil, "", false
 }
 
+func projectEinoApprovalInterruptInfoFromEvent(interrupted *adk.InterruptInfo) (*projectEinoPermissionInterruptInfo, string, bool) {
+	if interrupted == nil {
+		return nil, "", false
+	}
+	for _, interruptCtx := range interrupted.InterruptContexts {
+		if interruptCtx == nil {
+			continue
+		}
+		switch info := interruptCtx.Info.(type) {
+		case *approvaltool.ApprovalInfo:
+			if info != nil {
+				return projectEinoPermissionInterruptInfoForApproval(info), strings.TrimSpace(interruptCtx.ID), true
+			}
+		case approvaltool.ApprovalInfo:
+			return projectEinoPermissionInterruptInfoForApproval(&info), strings.TrimSpace(interruptCtx.ID), true
+		}
+	}
+	return nil, "", false
+}
+
+func projectEinoPermissionInterruptInfoForApproval(info *approvaltool.ApprovalInfo) *projectEinoPermissionInterruptInfo {
+	if info == nil {
+		return nil
+	}
+	spec, ok := projectAssistantWorkflowToolSpec(info.ToolName)
+	if !ok {
+		spec = projectAssistantToolSpec{Name: strings.TrimSpace(info.ToolName)}
+	}
+	return &projectEinoPermissionInterruptInfo{
+		ToolName:        spec.Name,
+		ArgumentsInJSON: strings.TrimSpace(info.ArgumentsInJSON),
+		Reason:          projectAssistantPermissionReason(spec),
+		Risk:            spec.Risk,
+	}
+}
+
 func projectEinoFollowUpInterruptInfoFromEvent(interrupted *adk.InterruptInfo) (*projectEinoFollowUpInterruptInfo, string, bool) {
 	if interrupted == nil {
 		return nil, "", false
@@ -719,7 +776,7 @@ func projectEinoAssistantInputMessages(ctx context.Context, req projectAssistant
 	if req.Continuation != nil && len(req.Continuation.Messages) > 0 {
 		chatMessages = cloneChatMessages(req.Continuation.Messages)
 	} else {
-		chatMessages = projectPromptMessages(req.Project, req.Repository, req.History)
+		chatMessages = projectPromptMessagesForProfile(req.Project, req.Repository, req.History, req.TurnProfile)
 		if snapshot, ok := projectEinoAssistantSessionContextMessage(ctx, req, runState); ok {
 			chatMessages = append(chatMessages, snapshot)
 		}

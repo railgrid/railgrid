@@ -163,7 +163,7 @@ func TestProjectEinoAssistantMessageOutputStreamsToolCallContent(t *testing.T) {
 	}
 }
 
-func TestEinoAssistantEngineUsesToolSearchForReadToolCalls(t *testing.T) {
+func TestEinoAssistantEngineDoesNotUseToolSearchForSmallReadToolSet(t *testing.T) {
 	chatModel := &scriptedEinoChatModel{}
 	projectTool := &recordingProjectAssistantTool{
 		spec: projectAssistantToolSpec{
@@ -202,32 +202,32 @@ func TestEinoAssistantEngineUsesToolSearchForReadToolCalls(t *testing.T) {
 	if projectTool.lastRequest.Arguments["path"] != "src/App.tsx" {
 		t.Fatalf("tool arguments = %#v, want model arguments", projectTool.lastRequest.Arguments)
 	}
-	if len(chatModel.toolNames) != 3 {
-		t.Fatalf("model calls = %d, want search, selected tool, and final calls", len(chatModel.toolNames))
+	if len(chatModel.toolNames) != 2 {
+		t.Fatalf("model calls = %d, want direct tool call and final response", len(chatModel.toolNames))
 	}
-	if !stringSliceEqual(chatModel.toolNames[0], []string{"tool_search"}) {
-		t.Fatalf("initial model tools = %#v, want only tool_search", chatModel.toolNames[0])
+	if !stringSliceEqual(chatModel.toolNames[0], []string{"inspect_workspace"}) {
+		t.Fatalf("initial model tools = %#v, want direct inspect_workspace", chatModel.toolNames[0])
 	}
-	if !stringSliceContains(chatModel.toolNames[1], "inspect_workspace") {
-		t.Fatalf("selected model tools = %#v, want inspect_workspace after tool_search", chatModel.toolNames[1])
+	if stringSliceContains(chatModel.toolNames[0], "tool_search") {
+		t.Fatalf("initial model tools = %#v, want no tool_search for small read-only set", chatModel.toolNames[0])
 	}
-	if len(chatModel.inputs) != 3 {
-		t.Fatalf("model calls = %d, want search, selected tool, and final calls", len(chatModel.inputs))
+	if len(chatModel.inputs) != 2 {
+		t.Fatalf("model calls = %d, want direct tool call and final response", len(chatModel.inputs))
 	}
-	if !einoMessagesContainToolResult(chatModel.inputs[1], "call-tool-search", "inspect_workspace") {
-		t.Fatalf("second model input = %#v, want Eino tool_search result", chatModel.inputs[1])
-	}
-	if !einoMessagesContainToolResult(chatModel.inputs[2], "call-inspect", "src/App.tsx") {
-		t.Fatalf("third model input = %#v, want Eino-propagated tool result", chatModel.inputs[2])
+	if !einoMessagesContainToolResult(chatModel.inputs[1], "call-inspect", "src/App.tsx") {
+		t.Fatalf("second model input = %#v, want Eino-propagated tool result", chatModel.inputs[1])
 	}
 }
 
 func TestEinoAssistantToolSearchUsesBundlesForProductToolbox(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	runState := newProjectEinoAssistantRunState()
-	var tools []einotool.BaseTool
-	for _, tool := range server.projectAssistantToolRegistry().Tools(true) {
-		tools = append(tools, newProjectEinoAssistantServerTool(server, tool, projectAssistantRunRequest{}, runState))
+	runState.SetToolDiscovery(projectEinoAssistantToolDiscovery{IncludeCommitBridge: true})
+	req := projectEinoRunRequestForProfileTest(projectAssistantTurnProfileImplementation)
+	req.TurnPolicy = projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation)
+	tools, err := newProjectEinoAssistantToolsFactory(server)(context.Background(), req, runState)
+	if err != nil {
+		t.Fatalf("new tools returned error: %v", err)
 	}
 
 	staticTools, dynamicTools, err := projectEinoAssistantToolSearchSets(context.Background(), tools)
@@ -255,6 +255,153 @@ func TestEinoAssistantToolSearchUsesBundlesForProductToolbox(t *testing.T) {
 		if !stringSliceContains(dynamicNames, want) {
 			t.Fatalf("dynamic tools = %#v, want %s", dynamicNames, want)
 		}
+	}
+}
+
+func TestEinoAssistantEngineDiscussionAndGuidanceExposeNoTools(t *testing.T) {
+	for _, profile := range []projectAssistantTurnProfile{
+		projectAssistantTurnProfileDiscussion,
+		projectAssistantTurnProfileGuidance,
+	} {
+		t.Run(string(profile), func(t *testing.T) {
+			server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+			chatModel := &toolCapturingEinoChatModel{content: "direct answer"}
+			engine := projectEinoAssistantEngine{
+				server: server,
+				newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+					return chatModel, nil
+				},
+				newTools: newProjectEinoAssistantToolsFactory(server),
+			}
+			result, err := engine.StreamProjectAssistant(context.Background(), projectEinoRunRequestForProfileTest(profile))
+			if err != nil {
+				t.Fatalf("StreamProjectAssistant returned error: %v", err)
+			}
+			if result.Content != "direct answer" {
+				t.Fatalf("content = %q, want direct answer", result.Content)
+			}
+			if len(chatModel.toolNames) != 1 || len(chatModel.toolNames[0]) != 0 {
+				t.Fatalf("%s model tools = %#v, want no visible tools", profile, chatModel.toolNames)
+			}
+			for _, content := range chatModel.contents {
+				for _, unwanted := range []string{"No tools were discovered", "Available tools in this workspace", "tool_search"} {
+					if strings.Contains(content, unwanted) {
+						t.Fatalf("%s model input unexpectedly mentions %q:\n%s", profile, unwanted, content)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestEinoAssistantEngineProfileFiltersReadOnlyAndRuntimeTools(t *testing.T) {
+	tests := []struct {
+		name       string
+		profile    projectAssistantTurnProfile
+		policy     projectAssistantTurnPolicy
+		wantAllow  []string
+		wantReject []string
+	}{
+		{
+			name:       "exploration",
+			profile:    projectAssistantTurnProfileExploration,
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile},
+			wantReject: []string{projectToolGetRuntimeStatus, projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles},
+		},
+		{
+			name:       "debugging",
+			profile:    projectAssistantTurnProfileDebugging,
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolGetPreviewURL},
+			wantReject: []string{projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles},
+		},
+		{
+			name:    "runtime-state exploration",
+			profile: projectAssistantTurnProfileExploration,
+			policy: projectAssistantTurnPolicy{
+				profile:              projectAssistantTurnProfileExploration,
+				requiresRuntimeState: true,
+			},
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolGetPreviewURL},
+			wantReject: []string{projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chatModel := &toolCapturingEinoChatModel{content: "read-only answer"}
+			var filteredNames []string
+			engine := projectEinoAssistantEngine{
+				newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+					return chatModel, nil
+				},
+				newTools: func(_ context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+					tools, err := projectEinoToolsForProfileTest(t, req, state)
+					filteredNames = einoToolNamesForTest(t, tools)
+					return tools, err
+				},
+			}
+			req := projectEinoRunRequestForProfileTest(tt.profile)
+			req.TurnPolicy = tt.policy
+			if _, err := engine.StreamProjectAssistant(context.Background(), req); err != nil {
+				t.Fatalf("StreamProjectAssistant returned error: %v", err)
+			}
+			for _, want := range tt.wantAllow {
+				if !stringSliceContains(filteredNames, want) {
+					t.Fatalf("%s filtered tools = %#v, want %s", tt.profile, filteredNames, want)
+				}
+			}
+			for _, unwanted := range tt.wantReject {
+				if stringSliceContains(filteredNames, unwanted) {
+					t.Fatalf("%s filtered tools = %#v, should not expose %s", tt.profile, filteredNames, unwanted)
+				}
+			}
+		})
+	}
+}
+
+func TestEinoAssistantEngineWriteProfilesRetainPlanApprovalBeforeWrites(t *testing.T) {
+	for _, profile := range []projectAssistantTurnProfile{
+		projectAssistantTurnProfileImplementation,
+		projectAssistantTurnProfileDebugFix,
+	} {
+		t.Run(string(profile), func(t *testing.T) {
+			server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+			chatModel := &planThenWriteEinoChatModel{}
+			engine := projectEinoAssistantEngine{
+				server: server,
+				newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+					return chatModel, nil
+				},
+				newTools: func(_ context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+					return projectEinoToolsForProfileTest(t, req, state)
+				},
+			}
+			_, err := engine.StreamProjectAssistant(context.Background(), projectEinoRunRequestForProfileTest(profile))
+			var permissionErr *projectAssistantPermissionRequiredError
+			if !errors.As(err, &permissionErr) {
+				t.Fatalf("StreamProjectAssistant error = %v, want plan approval permission", err)
+			}
+			if permissionErr.ToolName != projectToolRequestProjectPlanApproval {
+				t.Fatalf("permission tool = %q, want %s", permissionErr.ToolName, projectToolRequestProjectPlanApproval)
+			}
+		})
+	}
+}
+
+func TestEinoAssistantCheckpointPreservesTurnPolicy(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	runState.SetTurnPolicy(projectAssistantTurnPolicy{
+		profile:              projectAssistantTurnProfileExploration,
+		requiresRuntimeState: true,
+	})
+	checkpoint := runState.CheckpointState()
+	if checkpoint.TurnPolicy.Profile != projectAssistantTurnProfileExploration || !checkpoint.TurnPolicy.RequiresRuntimeState {
+		t.Fatalf("checkpoint policy = %#v, want runtime-state exploration", checkpoint.TurnPolicy)
+	}
+	restored := newProjectEinoAssistantRunState()
+	restored.RestoreCheckpointState(checkpoint)
+	if got := restored.TurnPolicy(); got.profile != projectAssistantTurnProfileExploration || !got.requiresRuntimeState {
+		t.Fatalf("restored policy = %#v, want runtime-state exploration", got)
 	}
 }
 
@@ -357,7 +504,7 @@ func TestEinoAssistantRunStateCheckpointsProjectSnapshot(t *testing.T) {
 	}
 }
 
-func TestEinoAssistantEngineRequiresTurnLoopOutput(t *testing.T) {
+func TestEinoAssistantEngineFallsBackWhenTurnLoopHasNoAssistantOutput(t *testing.T) {
 	engine := projectEinoAssistantEngine{
 		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
 			return emptyOutputEinoChatModel{}, nil
@@ -366,14 +513,41 @@ func TestEinoAssistantEngineRequiresTurnLoopOutput(t *testing.T) {
 			return nil, nil
 		},
 	}
-	_, err := engine.StreamProjectAssistant(
+	result, err := engine.StreamProjectAssistant(
 		context.Background(),
 		projectAssistantRunRequest{
 			Project: &aiv1alpha1.Project{},
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "eino turn loop completed without assistant output") {
-		t.Fatalf("StreamProjectAssistant error = %v, want missing turn loop output error", err)
+	if err != nil {
+		t.Fatalf("StreamProjectAssistant returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "couldn't produce a response") || strings.Contains(result.Content, "eino") {
+		t.Fatalf("result content = %q, want user-facing empty-output fallback", result.Content)
+	}
+}
+
+func TestEinoAssistantEngineAcceptsAssistantMultiContentOutput(t *testing.T) {
+	engine := projectEinoAssistantEngine{
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return multiContentOutputEinoChatModel{}, nil
+		},
+		newTools: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			return nil, nil
+		},
+	}
+	result, err := engine.StreamProjectAssistant(
+		context.Background(),
+		projectAssistantRunRequest{
+			Project:     &aiv1alpha1.Project{},
+			TurnProfile: projectAssistantTurnProfileDiscussion,
+		},
+	)
+	if err != nil {
+		t.Fatalf("StreamProjectAssistant returned error: %v", err)
+	}
+	if result.Content != "multi content answer" {
+		t.Fatalf("content = %q, want multi content answer", result.Content)
 	}
 }
 
@@ -743,6 +917,80 @@ func TestEinoAssistantEngineStopsToolBatchAfterPermissionRequest(t *testing.T) {
 	turnCheckpoint := decodeProjectEinoTurnLoopCheckpointForTest(t, checkpoint.Eino.Checkpoint)
 	if !turnCheckpoint.HasRunnerState || len(turnCheckpoint.CanceledItems) != 1 || turnCheckpoint.CanceledItems[0].Kind != projectAssistantTurnMessage {
 		t.Fatalf("turn loop checkpoint = %#v, want interrupted message turn with runner state", turnCheckpoint)
+	}
+}
+
+func TestEinoAssistantEngineRequiresPermissionForRuntimeGraphTool(t *testing.T) {
+	messages := &countingAssistantRunStore{MemoryStore: store.NewMemoryStore()}
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	chatModel := &deployRuntimeEinoChatModel{}
+	engine := projectEinoAssistantEngine{
+		server: server,
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return chatModel, nil
+		},
+		newTools: newProjectEinoAssistantToolsFactory(server),
+	}
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	var assistantEvents []projectAssistantEvent
+	req := projectAssistantRunRequest{
+		Identity:       id,
+		Project:        project,
+		WorkspaceScope: projectWorkspaceScope(id, project.Name),
+		MessageScope:   projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
+		TurnProfile:    projectAssistantTurnProfileImplementation,
+		TurnPolicy:     projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
+		StreamCallbacks: projectAssistantStreamCallbacks{
+			OnAssistantEvent: func(event projectAssistantEvent) {
+				assistantEvents = append(assistantEvents, event)
+			},
+		},
+	}
+	_, err := engine.StreamProjectAssistant(
+		context.Background(),
+		req,
+	)
+	var permissionErr *projectAssistantPermissionRequiredError
+	if !errors.As(err, &permissionErr) {
+		t.Fatalf("StreamProjectAssistant error = %v, want runtime permission required", err)
+	}
+	if permissionErr.ToolName != projectToolDeployProjectRuntime {
+		t.Fatalf("permission tool = %q, want %s", permissionErr.ToolName, projectToolDeployProjectRuntime)
+	}
+	if countProjectAssistantEvents(assistantEvents, projectAssistantEventPermissionNeeded) != 1 || countProjectAssistantEvents(assistantEvents, projectAssistantEventCheckpointSaved) != 1 {
+		t.Fatalf("assistant events = %#v, want one permission and one checkpoint", assistantEvents)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), req.MessageScope, permissionErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	var checkpoint projectAssistantCheckpointState
+	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil {
+		t.Fatalf("decode checkpoint returned error: %v", err)
+	}
+	if checkpoint.Eino == nil || checkpoint.Eino.InterruptType != projectAssistantInterruptTypeApproval || checkpoint.Eino.ToolName != projectToolDeployProjectRuntime {
+		t.Fatalf("checkpoint eino state = %#v, want runtime approval checkpoint", checkpoint.Eino)
+	}
+
+	result, err := engine.ResumeProjectAssistant(
+		context.Background(),
+		req,
+		projectAssistantResumeRequest{
+			RequestID: permissionErr.RequestID,
+			Decision:  string(projectAssistantPermissionAllow),
+		},
+		checkpoint,
+	)
+	if err != nil {
+		t.Fatalf("ResumeProjectAssistant returned error: %v", err)
+	}
+	if result.Content != "runtime deployed" {
+		t.Fatalf("content = %q, want final runtime response", result.Content)
+	}
+	if len(chatModel.inputs) < 2 || !einoMessagesContainToolResult(chatModel.inputs[len(chatModel.inputs)-1], "call-deploy-runtime", "not_configured") {
+		t.Fatalf("model inputs = %#v, want resumed runtime graph tool result", chatModel.inputs)
 	}
 }
 
@@ -1340,6 +1588,12 @@ type capturingEinoChatModel struct {
 	content         string
 }
 
+type toolCapturingEinoChatModel struct {
+	content   string
+	toolNames [][]string
+	contents  []string
+}
+
 type emptyOutputEinoChatModel struct{}
 
 func (emptyOutputEinoChatModel) Generate(ctx context.Context, _ []*schema.Message, _ ...einomodel.Option) (*schema.Message, error) {
@@ -1350,6 +1604,28 @@ func (emptyOutputEinoChatModel) Generate(ctx context.Context, _ []*schema.Messag
 }
 
 func (m emptyOutputEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	msg, err := m.Generate(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return schema.StreamReaderFromArray([]*schema.Message{msg}), nil
+}
+
+type multiContentOutputEinoChatModel struct{}
+
+func (multiContentOutputEinoChatModel) Generate(ctx context.Context, _ []*schema.Message, _ ...einomodel.Option) (*schema.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &schema.Message{
+		Role: schema.Assistant,
+		AssistantGenMultiContent: []schema.MessageOutputPart{
+			{Type: schema.ChatMessagePartTypeText, Text: "multi content answer"},
+		},
+	}, nil
+}
+
+func (m multiContentOutputEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	msg, err := m.Generate(ctx, input, opts...)
 	if err != nil {
 		return nil, err
@@ -1379,6 +1655,11 @@ type multipleToolCallEinoChatModel struct {
 }
 
 type dynamicWritePermissionEinoChatModel struct {
+	inputs    [][]*schema.Message
+	toolNames [][]string
+}
+
+type deployRuntimeEinoChatModel struct {
 	inputs    [][]*schema.Message
 	toolNames [][]string
 }
@@ -1490,6 +1771,40 @@ func (m *dynamicWritePermissionEinoChatModel) Generate(ctx context.Context, inpu
 }
 
 func (m *dynamicWritePermissionEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	msg, err := m.Generate(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return schema.StreamReaderFromArray([]*schema.Message{msg}), nil
+}
+
+func (m *deployRuntimeEinoChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	common := einomodel.GetCommonOptions(nil, opts...)
+	names := make([]string, 0, len(common.Tools))
+	for _, tool := range common.Tools {
+		if tool != nil {
+			names = append(names, tool.Name)
+		}
+	}
+	m.toolNames = append(m.toolNames, names)
+	m.inputs = append(m.inputs, cloneEinoMessagesForTest(input))
+	if len(m.inputs) == 1 {
+		return schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-deploy-runtime",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      projectToolDeployProjectRuntime,
+				Arguments: `{"targetRef":"runtime-1","image":"example.com/demo:latest","port":3000,"intent":"preview"}`,
+			},
+		}}), nil
+	}
+	return schema.AssistantMessage("runtime deployed", nil), nil
+}
+
+func (m *deployRuntimeEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	msg, err := m.Generate(ctx, input, opts...)
 	if err != nil {
 		return nil, err
@@ -1711,15 +2026,6 @@ func (m *scriptedEinoChatModel) Generate(ctx context.Context, input []*schema.Me
 	switch len(m.inputs) {
 	case 1:
 		return schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "call-tool-search",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      "tool_search",
-				Arguments: `{"query":"inspect workspace","max_results":5}`,
-			},
-		}}), nil
-	case 2:
-		return schema.AssistantMessage("", []schema.ToolCall{{
 			ID:   "call-inspect",
 			Type: "function",
 			Function: schema.FunctionCall{
@@ -1727,8 +2033,10 @@ func (m *scriptedEinoChatModel) Generate(ctx context.Context, input []*schema.Me
 				Arguments: `{"path":"src/App.tsx"}`,
 			},
 		}}), nil
-	default:
+	case 2:
 		return schema.AssistantMessage("done after tool", nil), nil
+	default:
+		return schema.AssistantMessage("unexpected extra tool round", nil), nil
 	}
 }
 
@@ -1754,6 +2062,34 @@ func (m *capturingEinoChatModel) Generate(ctx context.Context, input []*schema.M
 }
 
 func (m *capturingEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	msg, err := m.Generate(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return schema.StreamReaderFromArray([]*schema.Message{msg}), nil
+}
+
+func (m *toolCapturingEinoChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	common := einomodel.GetCommonOptions(nil, opts...)
+	names := make([]string, 0, len(common.Tools))
+	for _, tool := range common.Tools {
+		if tool != nil {
+			names = append(names, tool.Name)
+		}
+	}
+	m.toolNames = append(m.toolNames, names)
+	for _, msg := range input {
+		if msg != nil {
+			m.contents = append(m.contents, msg.Content)
+		}
+	}
+	return schema.AssistantMessage(m.content, nil), nil
+}
+
+func (m *toolCapturingEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	msg, err := m.Generate(ctx, input, opts...)
 	if err != nil {
 		return nil, err
@@ -1844,6 +2180,29 @@ func stringSliceContains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func projectEinoRunRequestForProfileTest(profile projectAssistantTurnProfile) projectAssistantRunRequest {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	project.Spec.DisplayName = "Demo"
+	return projectAssistantRunRequest{
+		Identity:       identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"},
+		Project:        project,
+		Repository:     &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true},
+		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"},
+		MessageScope:   store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"},
+		TurnProfile:    profile,
+	}
+}
+
+func projectEinoToolsForProfileTest(t *testing.T, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+	t.Helper()
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	policy := normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
+	req.TurnPolicy = policy
+	state.SetToolDiscovery(projectEinoAssistantToolDiscovery{IncludeCommitBridge: true})
+	return newProjectEinoAssistantToolsFactory(server)(context.Background(), req, state)
 }
 
 type countingAssistantRunStore struct {

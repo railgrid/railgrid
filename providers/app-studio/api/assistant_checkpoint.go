@@ -36,6 +36,7 @@ type projectAssistantCheckpointState struct {
 	ToolCalls            []chatToolCall                       `json:"toolCalls"`
 	CurrentIndex         int                                  `json:"currentIndex"`
 	ProjectRepositoryRef string                               `json:"projectRepositoryRef,omitempty"`
+	TurnPolicy           projectAssistantCheckpointTurnPolicy `json:"turnPolicy"`
 	Messages             []chatMessage                        `json:"messages,omitempty"`
 	Turn                 int                                  `json:"turn,omitempty"`
 	SeenToolCalls        map[string]int                       `json:"seenToolCalls,omitempty"`
@@ -45,6 +46,11 @@ type projectAssistantCheckpointState struct {
 	ApprovedPlan         *projectAssistantApprovedPlan        `json:"approvedPlan,omitempty"`
 	SessionSnapshot      *projectEinoAssistantSessionSnapshot `json:"sessionSnapshot,omitempty"`
 	Eino                 *projectAssistantEinoCheckpointState `json:"eino,omitempty"`
+}
+
+type projectAssistantCheckpointTurnPolicy struct {
+	Profile              projectAssistantTurnProfile `json:"profile"`
+	RequiresRuntimeState bool                        `json:"requiresRuntimeState,omitempty"`
 }
 
 type projectAssistantEinoCheckpointState struct {
@@ -168,7 +174,9 @@ func (s *Server) saveProjectAssistantEinoPermissionCheckpoint(
 	state.LastToolMessages = cloneChatMessages(state.LastToolMessages)
 	state.ApprovedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
 	state.Eino = cloneProjectAssistantEinoCheckpointState(state.Eino)
-	state.Eino.InterruptType = projectAssistantInterruptTypePermission
+	if strings.TrimSpace(state.Eino.InterruptType) == "" {
+		state.Eino.InterruptType = projectAssistantInterruptTypePermission
+	}
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return nil, projectAssistantPermission{}, projectAssistantCheckpoint{}, fmt.Errorf("encode assistant checkpoint: %w", err)
@@ -354,7 +362,7 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 			return projectAssistantResumeResponse{}, newValidationError("assistant checkpoint is not resumable")
 		}
 		switch {
-		case preflightRun.Status == store.AssistantRunStatusPendingPermission && preflightState.Eino.InterruptType != projectAssistantInterruptTypePermission:
+		case preflightRun.Status == store.AssistantRunStatusPendingPermission && !projectAssistantEinoInterruptTypeIsPermission(preflightState.Eino.InterruptType):
 			return projectAssistantResumeResponse{}, newValidationError("assistant checkpoint is not resumable")
 		case preflightRun.Status == store.AssistantRunStatusPendingInput && preflightState.Eino.InterruptType != projectAssistantInterruptTypeFollowUp:
 			return projectAssistantResumeResponse{}, newValidationError("assistant checkpoint is not resumable")
@@ -430,6 +438,15 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, req, decision, id.user, out, nil, newValidationError("assistant checkpoint is not resumable"))
 	}
 	return s.resumeClaimedProjectAssistantRunWithEinoCheckpoint(ctx, r, id, c, p, repository, run, state, req, decision, out)
+}
+
+func projectAssistantEinoInterruptTypeIsPermission(interruptType string) bool {
+	switch strings.TrimSpace(interruptType) {
+	case projectAssistantInterruptTypePermission, projectAssistantInterruptTypeApproval:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) clearProjectAssistantPendingMessageForNonWaitingRun(ctx context.Context, scope store.Scope, run store.AssistantRun, req projectAssistantResumeRequest) error {

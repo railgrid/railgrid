@@ -1,0 +1,207 @@
+apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: database
+spec:
+  displayName: "PostgreSQL database"
+  description: "A standalone PostgreSQL database for workloads. StatefulSet + Service + credentials Secret; credentials stay in-cluster and are exposed only as a Secret reference."
+  category: Databases
+  version: 0.1.0
+  backend: kro
+  sampleValues:
+    name: todo-db
+    version: "16"
+  agent:
+    usage: |
+      Provisions only a PostgreSQL database: a credentials Secret, password
+      generator Job, StatefulSet, PVC, and ClusterIP Service. Choose this when an
+      app already has a runtime or development sandbox and needs a standalone
+      relational database, without deploying a new web app stack, ingress, OAuth
+      proxy, frontend, or backend.
+
+      The platform creates database `appdb`, user `appuser`, and a random
+      password. Consumers read the full connection URI from Secret
+      `<name>-db-credentials`, key `uri`. The URI has the form
+      `postgres://appuser:<password>@<name>-db:5432/appdb`. The in-cluster
+      Postgres service has TLS disabled, so clients that default to TLS should
+      set sslmode=disable.
+
+      Postgres may not be ready the moment a consuming app starts. App code
+      should retry the initial connection and run schema creation or migrations
+      idempotently. This template does not expose the database publicly.
+    outputs:
+      - "status.host / status.port - the in-cluster Service endpoint for PostgreSQL."
+      - "status.ready - ready replica count for the Postgres StatefulSet."
+      - "status.connectionSecretRef - Secret '<name>-db-credentials' containing host, port, user, dbname, password, and uri keys. Secret values are not surfaced in status."
+  instanceCRD:
+    group: infrastructure.kedge.faros.sh
+    version: v1alpha1
+    resource: postgresdatabases
+    kind: PostgresDatabase
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        maxLength: 50
+        description: "Logical name; database resources use '<name>-db' and the credentials Secret uses '<name>-db-credentials'."
+      version:
+        type: string
+        enum: ["15", "16"]
+        default: "16"
+        description: "PostgreSQL major version."
+    required:
+      - name
+  backendConfig:
+    resources:
+      # Connection Secret. Non-sensitive fields are set here; the pwgen Job
+      # below fills password + a full postgres:// URI once.
+      - id: credentials
+        template:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ${schema.spec.name}-db-credentials
+            namespace: default
+          stringData:
+            host: ${schema.spec.name}-db
+            port: "5432"
+            user: appuser
+            dbname: appdb
+      - id: pwgenAccount
+        template:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: ${schema.spec.name}-db-pwgen
+            namespace: default
+      - id: pwgenRole
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: ${schema.spec.name}-db-pwgen
+            namespace: default
+          rules:
+            - apiGroups: [""]
+              resources: ["secrets"]
+              verbs: ["get", "patch"]
+      - id: pwgenBinding
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: ${schema.spec.name}-db-pwgen
+            namespace: default
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: ${pwgenRole.metadata.name}
+          subjects:
+            - kind: ServiceAccount
+              name: ${pwgenAccount.metadata.name}
+              namespace: default
+      # Mints a random password and a complete postgres:// URI into the
+      # credentials Secret. It no-ops when password already exists, so
+      # re-reconciles do not rotate credentials.
+      - id: pwgen
+        template:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${schema.spec.name}-db-pwgen
+            namespace: default
+          spec:
+            backoffLimit: 5
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                serviceAccountName: ${pwgenAccount.metadata.name}
+                restartPolicy: OnFailure
+                containers:
+                  - name: pwgen
+                    image: bitnami/kubectl
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -eu
+                        SECRET="${credentials.metadata.name}"
+                        if [ -z "$(kubectl get secret "$SECRET" -o jsonpath='{.data.password}' 2>/dev/null)" ]; then
+                          PW="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 24)"
+                          kubectl patch secret "$SECRET" --type merge \
+                            -p "{\"stringData\":{\"password\":\"$PW\",\"uri\":\"postgres://appuser:$PW@${schema.spec.name}-db:5432/appdb\"}}"
+                          echo "generated database credentials for $SECRET"
+                        else
+                          echo "database credentials already present for $SECRET"
+                        fi
+      - id: statefulset
+        template:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ${schema.spec.name}-db
+            namespace: default
+          spec:
+            serviceName: ${schema.spec.name}-db
+            replicas: 1
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}-db
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}-db
+              spec:
+                containers:
+                  - name: postgres
+                    image: postgres:${schema.spec.version}
+                    env:
+                      - name: POSTGRES_USER
+                        value: appuser
+                      - name: POSTGRES_DB
+                        value: appdb
+                      - name: POSTGRES_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${credentials.metadata.name}
+                            key: password
+                      # Keep PGDATA in a subdir so the PVC mount root, which may
+                      # contain lost+found, does not trip initdb.
+                      - name: PGDATA
+                        value: /var/lib/postgresql/data/pgdata
+                    ports:
+                      - containerPort: 5432
+                    volumeMounts:
+                      - name: data
+                        mountPath: /var/lib/postgresql/data
+            volumeClaimTemplates:
+              - metadata:
+                  name: data
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 1Gi
+      - id: service
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}-db
+            namespace: default
+          spec:
+            type: ClusterIP
+            selector:
+              app: ${schema.spec.name}-db
+            ports:
+              - port: 5432
+                targetPort: 5432
+    status:
+      ready: ${statefulset.status.readyReplicas}
+      host: ${service.metadata.name}
+      port: ${service.spec.ports[0].port}
+      connectionSecretRef:
+        name: ${credentials.metadata.name}
+        namespace: ${credentials.metadata.namespace}

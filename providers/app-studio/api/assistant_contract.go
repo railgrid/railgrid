@@ -59,6 +59,8 @@ type projectAssistantRunRequest struct {
 	MCPInsecureSkipTLSVerify bool
 	AutoApproveActions       bool
 	StreamCallbacks          projectAssistantStreamCallbacks
+	TurnProfile              projectAssistantTurnProfile
+	TurnPolicy               projectAssistantTurnPolicy
 	Continuation             *projectAssistantCheckpointState
 	AssistantRun             *store.AssistantRun
 }

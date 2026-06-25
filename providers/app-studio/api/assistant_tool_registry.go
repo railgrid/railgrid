@@ -58,28 +58,28 @@ func (r projectAssistantToolRegistry) Get(name string) (projectAssistantTool, bo
 }
 
 func (r projectAssistantToolRegistry) Has(name string) bool {
-	_, ok := r.Get(name)
+	_, ok := r.Spec(name)
 	return ok
 }
 
-func (r projectAssistantToolRegistry) ChatTool(name string) (chatTool, bool) {
+func (r projectAssistantToolRegistry) Spec(name string) (projectAssistantToolSpec, bool) {
 	tool, ok := r.Get(name)
+	if ok {
+		return tool.Spec(), true
+	}
+	return projectAssistantWorkflowToolSpec(name)
+}
+
+func (r projectAssistantToolRegistry) ChatTool(name string) (chatTool, bool) {
+	spec, ok := r.Spec(name)
 	if !ok {
 		return chatTool{}, false
 	}
-	return tool.Spec().chatTool(), true
+	return spec.chatTool(), true
 }
 
 func (r projectAssistantToolRegistry) ChatTools(includeCommitBridge bool) []chatTool {
-	out := make([]chatTool, 0, len(r.tools))
-	for _, tool := range r.tools {
-		spec := tool.Spec()
-		if spec.Risk == projectAssistantToolRiskCommit && !includeCommitBridge {
-			continue
-		}
-		out = append(out, spec.chatTool())
-	}
-	return out
+	return projectAssistantChatToolsForSpecs(projectAssistantAllToolSpecs(r.Tools(includeCommitBridge)))
 }
 
 func (r projectAssistantToolRegistry) Tools(includeCommitBridge bool) []projectAssistantTool {
@@ -91,6 +91,45 @@ func (r projectAssistantToolRegistry) Tools(includeCommitBridge bool) []projectA
 		}
 		out = append(out, tool)
 	}
+	return out
+}
+
+func projectAssistantAllToolSpecs(tools []projectAssistantTool) []projectAssistantToolSpec {
+	workflowSpecs := projectAssistantWorkflowToolSpecs()
+	out := make([]projectAssistantToolSpec, 0, len(tools)+len(workflowSpecs))
+	seen := map[string]struct{}{}
+	workflowInserted := false
+	appendSpec := func(spec projectAssistantToolSpec) {
+		key := projectAssistantToolKey(spec.Name)
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, spec)
+	}
+	appendWorkflowSpecs := func() {
+		if workflowInserted {
+			return
+		}
+		workflowInserted = true
+		for _, spec := range workflowSpecs {
+			appendSpec(spec)
+		}
+	}
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		spec := tool.Spec()
+		appendSpec(spec)
+		if projectToolBaseName(spec.Name) == projectToolSearchProjectFiles {
+			appendWorkflowSpecs()
+		}
+	}
+	appendWorkflowSpecs()
 	return out
 }
 
@@ -155,12 +194,6 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}))
 			},
 		},
-		newProjectAssistantWorkflowTool(server),
-		newProjectAssistantReadinessWorkflowTool(server),
-		newProjectAssistantPrepareDeploymentWorkflowTool(server),
-		newProjectAssistantDeployRuntimeWorkflowTool(),
-		newProjectAssistantRuntimeStatusWorkflowTool(),
-		newProjectAssistantPreviewURLWorkflowTool(),
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolAskFollowUp,

@@ -90,6 +90,30 @@ test('providers is a closeable built-in tab that opens from the launcher catalog
   assert.equal(closedProviders.activeTabID, 'launcher')
 })
 
+test('publishing is a closeable built-in tab that opens from the launcher catalog', () => {
+  const withPublishing = openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'publishing')
+  const closedPublishing = closeWorkbenchTab(withPublishing, 'publishing')
+
+  assert.deepEqual(withPublishing.tabs[withPublishing.tabs.length - 1], {
+    id: 'publishing',
+    kind: 'publishing',
+    title: 'Publishing',
+    closeable: true,
+  })
+  assert.equal(withPublishing.activeTabID, 'publishing')
+  assert.equal(closedPublishing.tabs.some((tab) => tab.id === 'publishing'), false)
+  assert.equal(closedPublishing.activeTabID, 'launcher')
+})
+
+test('opens publishing once and activates it when requested again', () => {
+  const initial = createDefaultWorkbenchState()
+  const once = openWorkbenchBuiltInTab(initial, 'publishing')
+  const twice = openWorkbenchBuiltInTab(once, 'publishing')
+
+  assert.equal(twice.tabs.filter((tab) => tab.id === 'publishing').length, 1)
+  assert.equal(twice.activeTabID, 'publishing')
+})
+
 test('review is a closeable built-in tab without being forced open by default', () => {
   const defaultState = createDefaultWorkbenchState()
   const withReview = openWorkbenchBuiltInTab(defaultState, 'review')

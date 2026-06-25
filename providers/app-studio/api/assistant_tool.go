@@ -39,12 +39,13 @@ const (
 )
 
 const (
-	projectAssistantToolBundleWorkflow      projectAssistantToolBundle = "workflow"
-	projectAssistantToolBundleWorkspaceRead projectAssistantToolBundle = "workspace_read"
-	projectAssistantToolBundleEdit          projectAssistantToolBundle = "edit"
-	projectAssistantToolBundleRepo          projectAssistantToolBundle = "repo"
-	projectAssistantToolBundleRuntime       projectAssistantToolBundle = "runtime"
-	projectAssistantToolBundleCollaboration projectAssistantToolBundle = "collaboration"
+	projectAssistantToolBundleWorkflow       projectAssistantToolBundle = "workflow"
+	projectAssistantToolBundleWorkspaceRead  projectAssistantToolBundle = "workspace_read"
+	projectAssistantToolBundleEdit           projectAssistantToolBundle = "edit"
+	projectAssistantToolBundleRepo           projectAssistantToolBundle = "repo"
+	projectAssistantToolBundleRuntime        projectAssistantToolBundle = "runtime"
+	projectAssistantToolBundleInfrastructure projectAssistantToolBundle = "infrastructure"
+	projectAssistantToolBundleCollaboration  projectAssistantToolBundle = "collaboration"
 )
 
 type projectAssistantToolSpec struct {
@@ -79,6 +80,8 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 		return projectAssistantToolBundleRepo
 	case projectToolAskFollowUp, projectToolRequestProjectPlanApproval:
 		return projectAssistantToolBundleCollaboration
+	case projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureProvision, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance:
+		return projectAssistantToolBundleInfrastructure
 	}
 	switch spec.Risk {
 	case projectAssistantToolRiskPlan:
