@@ -161,5 +161,11 @@ func rgdToTemplate(obj *unstructured.Unstructured) (*Template, error) {
 			t.SampleValues = parsed
 		}
 	}
+	if raw := annotations[AnnotationView]; raw != "" {
+		var view TemplateView
+		if err := json.Unmarshal([]byte(raw), &view); err == nil {
+			t.View = &view
+		}
+	}
 	return t, nil
 }

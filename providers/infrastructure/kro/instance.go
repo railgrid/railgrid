@@ -244,6 +244,16 @@ func unstructuredToInstance(obj *unstructured.Unstructured, templateName string)
 	if spec, _, _ := unstructured.NestedMap(obj.Object, "spec"); spec != nil {
 		inst.Values = spec
 	}
+	if status, _, _ := unstructured.NestedMap(obj.Object, "status"); status != nil {
+		// Surface controller-computed outputs (url, fqdn, secret names, …)
+		// for a template's View to reference as status.*. Drop the bulky
+		// conditions/children arrays — already promoted to typed fields.
+		delete(status, "conditions")
+		delete(status, "children")
+		if len(status) > 0 {
+			inst.Status = status
+		}
+	}
 	if phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase"); phase != "" {
 		inst.Phase = phase
 	}

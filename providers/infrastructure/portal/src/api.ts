@@ -13,7 +13,8 @@
 // `delete<Kind>` mutations — no field schema needs to be known ahead of time.
 
 import { load as yamlLoad } from 'js-yaml'
-import type { ErrorResponse, Instance, JSONSchema, Template } from './types'
+import type { ErrorResponse, Instance, JSONSchema, Template, TemplateView } from './types'
+import { columnsNeedInstanceData } from './view'
 
 const GROUP = 'infrastructure.kedge.faros.sh'
 const VERSION = 'v1alpha1'
@@ -96,10 +97,14 @@ interface RawObject {
     labels?: Record<string, string>
   }
   spec?: Record<string, unknown>
+  // status carries the well-known phase/message/conditions plus any
+  // controller-computed output fields (url, fqdn, …) a template's View may
+  // reference — hence the open-ended index signature.
   status?: {
     phase?: string
     message?: string
     conditions?: Array<{ type: string; status: string; reason?: string; message?: string; lastTransitionTime?: string }>
+    [k: string]: unknown
   }
 }
 
@@ -130,6 +135,18 @@ function templateFromGQL(name: string, spec: Record<string, unknown>): Template 
   } else if (spec.sampleValues && typeof spec.sampleValues === 'object') {
     sampleValues = spec.sampleValues as Record<string, unknown>
   }
+  // view is a preserve-unknown-fields field → JSONString from the gateway;
+  // same parse-the-string / accept-an-object treatment as schema/sampleValues.
+  let view: TemplateView | undefined
+  if (typeof spec.view === 'string' && spec.view) {
+    try {
+      view = JSON.parse(spec.view) as TemplateView
+    } catch {
+      // leave undefined — instances fall back to the default rendering
+    }
+  } else if (spec.view && typeof spec.view === 'object') {
+    view = spec.view as TemplateView
+  }
   return {
     name,
     displayName: (spec.displayName as string) || name,
@@ -141,6 +158,7 @@ function templateFromGQL(name: string, spec: Record<string, unknown>): Template 
     kind: instanceCRD.kind ?? '',
     inputsSchema,
     sampleValues,
+    view,
   }
 }
 
@@ -157,6 +175,15 @@ function instanceFromObj(c: RawObject, templateByKind: Map<string, string>): Ins
     message: cond.message,
     time: cond.lastTransitionTime,
   }))
+  // status outputs: everything under .status except the conditions/children
+  // arrays (promoted to their own fields), so a View can reference status.*.
+  let status: Record<string, unknown> | undefined
+  if (c.status && typeof c.status === 'object') {
+    const { conditions: _c, children: _ch, ...rest } = c.status as Record<string, unknown>
+    void _c
+    void _ch
+    if (Object.keys(rest).length > 0) status = rest
+  }
   return {
     name: c.metadata?.name ?? '',
     namespace: c.metadata?.namespace ?? '',
@@ -165,6 +192,7 @@ function instanceFromObj(c: RawObject, templateByKind: Map<string, string>): Ins
     message: c.status?.message,
     conditions,
     values: c.spec,
+    status,
     createdAt: c.metadata?.creationTimestamp ?? '',
   }
 }
@@ -206,26 +234,39 @@ async function introspectVersionFields(): Promise<Array<{ name: string; typeName
 // select it optimistically and, on that specific error, remember it's missing and
 // retry without it (degrading to no form pre-fill). null = not yet probed.
 let sampleValuesSupported: boolean | null = null
+// view, like sampleValues, is a recent Template field. A gateway built from an
+// older CRD has no such field and rejects the whole query if we select it, so we
+// probe optimistically and drop it on that specific error. null = not yet probed.
+let viewSupported: boolean | null = null
 
-// templateSpec is the shared Template spec selection set. sampleValues is omitted
-// once we've learned the gateway doesn't expose it.
+// templateSpec is the shared Template spec selection set. sampleValues/view are
+// omitted once we've learned the gateway doesn't expose them.
 function templateSpec(): string {
   const sv = sampleValuesSupported === false ? '' : ' sampleValues'
-  return `displayName description category version iconURL backend instanceCRD { group version resource kind } schema${sv}`
+  const vw = viewSupported === false ? '' : ' view'
+  return `displayName description category version iconURL backend instanceCRD { group version resource kind } schema${sv}${vw}`
 }
 
-// templateQuery runs a Template query built from templateSpec(), retrying once
-// without sampleValues if the gateway rejects that field (older CRD).
+// templateQuery runs a Template query built from templateSpec(), retrying when
+// the gateway rejects an optional field (older CRD) by remembering it's missing
+// and rebuilding the selection without it. Loops so a gateway missing both
+// sampleValues and view degrades in two passes rather than failing.
 async function templateQuery<T>(make: (spec: string) => string, variables: Record<string, unknown> = {}): Promise<T> {
-  try {
-    return await graphqlQuery<T>(make(templateSpec()), variables)
-  } catch (e) {
-    const msg = (e as { message?: string }).message ?? ''
-    if (sampleValuesSupported !== false && msg.includes('sampleValues')) {
-      sampleValuesSupported = false
+  for (;;) {
+    try {
       return await graphqlQuery<T>(make(templateSpec()), variables)
+    } catch (e) {
+      const msg = (e as { message?: string }).message ?? ''
+      if (sampleValuesSupported !== false && msg.includes('sampleValues')) {
+        sampleValuesSupported = false
+        continue
+      }
+      if (viewSupported !== false && msg.includes('view')) {
+        viewSupported = false
+        continue
+      }
+      throw e
     }
-    throw e
   }
 }
 
@@ -341,6 +382,30 @@ export const api = {
       }),
     )
     const items = lists.flat().map(c => instanceFromObj(c, idx.templateByKind))
+    // Enrich instances whose template defines columns referencing spec.*/status.*
+    // — the LIST above selects only metadata + status phase/conditions, so fetch
+    // the full object (incl. arbitrary spec/status) via the <Kind>Yaml escape
+    // hatch for just those instances. Runs in parallel; failures leave the cell
+    // empty rather than breaking the table.
+    await Promise.all(
+      items.map(async i => {
+        const tmpl = idx.templates.find(t => t.name === i.template)
+        if (!tmpl?.kind || !columnsNeedInstanceData(tmpl.view)) return
+        try {
+          const data = await graphqlQuery<Infra<Record<string, string>>>(
+            `query($n: String!) { ${GROUP_FIELD} { ${VERSION} { ${tmpl.kind}Yaml(name: $n) } } }`,
+            { n: i.name },
+          )
+          const text = data[GROUP_FIELD]?.[VERSION]?.[tmpl.kind + 'Yaml']
+          if (!text) return
+          const full = instanceFromObj(yamlLoad(text) as RawObject, idx.templateByKind)
+          i.values = full.values
+          i.status = full.status
+        } catch {
+          // leave unenriched
+        }
+      }),
+    )
     return { items }
   },
 

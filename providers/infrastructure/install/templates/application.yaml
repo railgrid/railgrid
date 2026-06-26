@@ -85,6 +85,52 @@ spec:
       - "status.redirectURL — the OIDC redirect/callback URL to register with your IdP (byo mode)."
       - "Per-tier readiness: status.frontendReady / backendReady / databaseReady / oauthReady (ready replica counts)."
       - "The backend's DATABASE_URL env is sourced from Secret '<name>-db-credentials' (key 'uri') in the instance namespace — informational; the image just reads the DATABASE_URL env, it never reads the Secret."
+  # ── Portal presentation ───────────────────────────────────────────────
+  # Tells the portal how to render this template's instances instead of the
+  # default raw-JSON values dump. Field values are dot-paths or ${…}-interpolated
+  # strings resolved against the instance's spec.* (inputs), status.* (computed
+  # outputs), and meta.* (name/phase/…). type ∈ text|link|badge|code.
+  view:
+    # Extra columns in the "My instances" table (after Name/Template).
+    columns:
+      - header: URL
+        value: "${status.url}"
+        type: link
+      - header: Auth
+        path: spec.oidc.mode
+        type: badge
+    # Field groups on the instance detail page (replace the raw values dump).
+    detail:
+      - title: Access
+        fields:
+          - label: URL
+            value: "${status.url}"
+            type: link
+          - label: Hostname
+            path: status.host
+            type: code
+          - label: Redirect URL
+            value: "${status.redirectURL}"
+            type: link
+      - title: Configuration
+        fields:
+          - label: Auth mode
+            path: spec.oidc.mode
+            type: badge
+          - label: Postgres version
+            path: spec.database.version
+            type: badge
+          - label: DB secret
+            path: status.dbConnectionSecretRef.name
+            type: code
+      - title: Readiness
+        fields:
+          - label: Frontend
+            path: status.frontendReady
+          - label: Backend
+            path: status.backendReady
+          - label: Database
+            path: status.databaseReady
   instanceCRD:
     group: infrastructure.kedge.faros.sh
     version: v1alpha1

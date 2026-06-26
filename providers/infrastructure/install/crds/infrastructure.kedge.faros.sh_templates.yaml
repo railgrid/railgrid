@@ -235,6 +235,24 @@ spec:
                 maxLength: 64
                 pattern: ^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$
                 type: string
+              view:
+                description: "View is optional presentation metadata that tells the
+                  portal how to render\nthis template's instances — extra columns
+                  in the instance-list table and\ngrouped, typed fields on the instance
+                  detail page — instead of the default\nraw-JSON dump. Authored by
+                  the template owner so each template controls its\nown UX. Field
+                  values are dot-paths or ${…}-interpolated strings resolved\nagainst
+                  the instance's spec/status/meta (see the portal's view resolver).\nStored
+                  as raw JSON (preserve-unknown-fields) and surfaced to the portal
+                  as\nspec.view; opaque to the controller. Shape:\n\n\tcolumns:                         #
+                  extra instance-list columns\n\t  - header: Endpoint\n\t    value:
+                  \"https://${spec.expose.fqdn}\"\n\t    type: link                   #
+                  text | link | badge | code\n\tdetail:                          #
+                  detail-page field groups\n\t  - title: Access\n\t    fields:\n\t
+                  \     - label: URL\n\t        value: \"https://${status.url}\"\n\t
+                  \       type: link\n\t      - label: Region\n\t        path: spec.region"
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
             required:
             - backend
             - instanceCRD

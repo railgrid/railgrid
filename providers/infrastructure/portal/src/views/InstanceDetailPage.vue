@@ -2,8 +2,10 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import ViewValue from '../components/ViewValue.vue'
 import { api } from '../api'
-import type { Instance } from '../types'
+import { resolve } from '../view'
+import type { Instance, TemplateView } from '../types'
 
 const props = defineProps<{ instanceName: string }>()
 const emit = defineEmits<{ (e: 'navigate', view: string): void }>()
@@ -11,6 +13,23 @@ const emit = defineEmits<{ (e: 'navigate', view: string): void }>()
 const inst = ref<Instance | null>(null)
 const error = ref<string | null>(null)
 let pollHandle: number | null = null
+
+// The instance's template view, if any: drives the grouped detail fields that
+// replace the raw-JSON values dump. Loaded once the instance (and thus its
+// template name) is known.
+const view = ref<TemplateView | null>(null)
+let loadedViewFor: string | null = null
+
+async function loadView(templateName: string) {
+  if (!templateName || loadedViewFor === templateName) return
+  loadedViewFor = templateName
+  try {
+    const { items } = await api.listTemplates()
+    view.value = items.find(t => t.name === templateName)?.view ?? null
+  } catch {
+    view.value = null
+  }
+}
 
 const showDelete = ref(false)
 const deleting = ref(false)
@@ -20,6 +39,7 @@ async function refresh() {
   try {
     inst.value = await api.getInstance(props.instanceName)
     error.value = null
+    if (inst.value) loadView(inst.value.template)
   } catch (e: unknown) {
     error.value = (e as { message?: string }).message ?? 'failed to get instance'
   }
@@ -92,8 +112,27 @@ async function executeDelete() {
         {{ inst.message }}
       </div>
 
-      <!-- Values -->
-      <div class="mb-5 overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised">
+      <!-- Detail groups (template-defined view) -->
+      <template v-if="view && view.detail && view.detail.length">
+        <div
+          v-for="(group, gi) in view.detail"
+          :key="gi"
+          class="mb-5 overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised"
+        >
+          <div v-if="group.title" class="border-b border-border-subtle px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+            {{ group.title }}
+          </div>
+          <dl class="divide-y divide-border-subtle/60">
+            <div v-for="(field, fi) in group.fields" :key="fi" class="flex items-baseline gap-4 px-4 py-2.5">
+              <dt class="w-40 shrink-0 text-[12px] text-text-muted">{{ field.label }}</dt>
+              <dd class="min-w-0 break-words"><ViewValue :value="resolve(field, inst)" /></dd>
+            </div>
+          </dl>
+        </div>
+      </template>
+
+      <!-- Values (raw fallback when the template defines no detail view) -->
+      <div v-else class="mb-5 overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised">
         <div class="border-b border-border-subtle px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Values</div>
         <pre class="overflow-auto p-4 font-mono text-[12px] leading-relaxed text-text-secondary">{{ JSON.stringify(inst.values, null, 2) }}</pre>
       </div>

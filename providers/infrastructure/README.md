@@ -140,6 +140,7 @@ helm CLI.
 | Operator | `operator/` + `apis/v1alpha1` — `InfrastructureProvider` CRD + reconciler |
 | Helm chart | `deploy/chart/` — operator + provider Deployment + CatalogEntry |
 | Per-cloud credential convention | [docs/credentials.md](docs/credentials.md) |
+| Template-defined instance rendering | [docs/instance-views.md](docs/instance-views.md) |
 
 The CatalogEntry ships with `apiExport.schemas: []` (pure broker, no
 CRDs leak into tenant workspaces). The single `permissionClaim` is

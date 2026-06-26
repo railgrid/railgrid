@@ -78,6 +78,59 @@ type Template struct {
 	// template via MCP (what it does, prerequisites, where outputs land).
 	// Read from the Template's spec.agent; nil when not provided.
 	Agent *TemplateAgent `json:"agent,omitempty"`
+	// View is optional presentation metadata that drives how the portal
+	// renders this template's instances (extra list columns + grouped
+	// detail fields). Read from the kedge.faros.sh/view annotation on the
+	// RGD (the Template CRD carries the equivalent under spec.view, which
+	// the portal reads directly over GraphQL). nil falls back to the
+	// default raw-values rendering.
+	View *TemplateView `json:"view,omitempty"`
+}
+
+// TemplateView is presentation metadata: how the portal should render
+// instances of this template. All field values are dot-paths or
+// ${…}-interpolated strings resolved against an instance's spec/status/
+// meta — opaque to the provider, interpreted by the portal's view resolver.
+type TemplateView struct {
+	// Columns are extra instance-list table columns, in addition to the
+	// built-in Name/Status/Age. Empty leaves the table at its defaults.
+	Columns []ViewColumn `json:"columns,omitempty"`
+	// Detail are the field groups shown on the instance detail page in
+	// place of the raw-JSON values dump. Empty keeps the raw dump.
+	Detail []ViewGroup `json:"detail,omitempty"`
+}
+
+// ViewColumn is one extra column in the instance-list table.
+type ViewColumn struct {
+	// Header is the column heading.
+	Header string `json:"header"`
+	// Path is a dot-path into the instance (e.g. spec.expose.fqdn). An
+	// unqualified first segment is resolved against spec. Mutually
+	// exclusive with Value.
+	Path string `json:"path,omitempty"`
+	// Value is a ${…}-interpolated string (e.g. "https://${spec.fqdn}").
+	Value string `json:"value,omitempty"`
+	// Type selects the renderer: text (default), link, badge, or code.
+	Type string `json:"type,omitempty"`
+	// Href is an optional explicit link target template for type=link;
+	// defaults to the resolved Value/Path.
+	Href string `json:"href,omitempty"`
+}
+
+// ViewGroup is a titled group of fields on the detail page.
+type ViewGroup struct {
+	Title  string      `json:"title,omitempty"`
+	Fields []ViewField `json:"fields,omitempty"`
+}
+
+// ViewField is one label/value row inside a ViewGroup. The value is
+// resolved the same way as a ViewColumn.
+type ViewField struct {
+	Label string `json:"label"`
+	Path  string `json:"path,omitempty"`
+	Value string `json:"value,omitempty"`
+	Type  string `json:"type,omitempty"`
+	Href  string `json:"href,omitempty"`
 }
 
 // TemplateAgent is machine-facing guidance surfaced to LLM agents over MCP.
@@ -105,6 +158,12 @@ type Instance struct {
 	Conditions []InstanceCondition   `json:"conditions,omitempty"`
 	Children  []InstanceChild        `json:"children,omitempty"`
 	Values    map[string]any         `json:"values,omitempty"`
+	// Status carries the instance's computed status fields (everything
+	// under .status except the conditions/children arrays already promoted
+	// above). Surfaces controller-computed outputs — a provisioned URL,
+	// FQDN, secret name — so a template's View can reference status.* the
+	// same way it references spec.* (the user's input values).
+	Status    map[string]any         `json:"status,omitempty"`
 	CreatedAt time.Time              `json:"createdAt"`
 }
 
@@ -163,6 +222,9 @@ const (
 	AnnotationDescription  = "kedge.faros.sh/description"
 	AnnotationIconURL      = "kedge.faros.sh/icon-url"
 	AnnotationSampleValues = "kedge.faros.sh/sample-values"
+	// AnnotationView is the JSON-encoded TemplateView the portal uses to
+	// render instances of this template. See TemplateView for the shape.
+	AnnotationView = "kedge.faros.sh/view"
 
 	// LabelTenant is set on every instance CR + the credentials Secret
 	// the provider creates on the user's behalf, so list operations

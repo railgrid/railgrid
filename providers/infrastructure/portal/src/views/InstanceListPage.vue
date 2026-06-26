@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import ViewValue from '../components/ViewValue.vue'
 import { api } from '../api'
-import type { Instance } from '../types'
+import { resolve } from '../view'
+import type { Instance, TemplateView, ViewColumn } from '../types'
 
 const emit = defineEmits<{
   (e: 'navigate', view: string): void
@@ -13,6 +15,39 @@ const items = ref<Instance[]>([])
 const error = ref<string | null>(null)
 const loading = ref(true)
 let pollHandle: number | null = null
+
+// Per-template view metadata, fetched once: drives the extra table columns each
+// template defines. Templates change rarely, so we don't refresh this on poll.
+const viewByTemplate = ref<Map<string, TemplateView>>(new Map())
+
+// The extra columns to render, as the ordered union of every present template's
+// column headers (templates can differ; a row only fills headers its own
+// template defines). Empty when no template defines columns → table unchanged.
+const extraColumns = computed<string[]>(() => {
+  const headers: string[] = []
+  for (const inst of items.value) {
+    const cols = viewByTemplate.value.get(inst.template)?.columns ?? []
+    for (const c of cols) if (!headers.includes(c.header)) headers.push(c.header)
+  }
+  return headers
+})
+
+// columnFor finds the column definition a given instance's template provides
+// for a header (templates may define different columns under the same header).
+function columnFor(inst: Instance, header: string): ViewColumn | undefined {
+  return viewByTemplate.value.get(inst.template)?.columns?.find(c => c.header === header)
+}
+
+async function loadViews() {
+  try {
+    const { items: templates } = await api.listTemplates()
+    const m = new Map<string, TemplateView>()
+    for (const t of templates) if (t.view) m.set(t.name, t.view)
+    viewByTemplate.value = m
+  } catch {
+    // Non-fatal: without views the table just shows the default columns.
+  }
+}
 
 // Delete confirmation state (mirrors the edges providers' table UX).
 const deleteConfirm = ref<Instance | null>(null)
@@ -66,6 +101,7 @@ function formatAge(ts?: string): string {
 }
 
 onMounted(() => {
+  loadViews()
   refresh()
   // Poll every 10s so status transitions show without a manual refresh.
   pollHandle = window.setInterval(refresh, 10000)
@@ -116,6 +152,13 @@ onUnmounted(() => {
           <tr class="border-b border-border-subtle">
             <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Name</th>
             <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Template</th>
+            <th
+              v-for="header in extraColumns"
+              :key="header"
+              class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted"
+            >
+              {{ header }}
+            </th>
             <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Status</th>
             <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Age</th>
             <th class="px-4 py-2.5"></th>
@@ -133,6 +176,13 @@ onUnmounted(() => {
             </td>
             <td class="px-4 py-3">
               <span class="rounded-md border border-border-subtle bg-surface-overlay px-2 py-0.5 text-[11px] text-text-secondary">{{ i.template }}</span>
+            </td>
+            <td v-for="header in extraColumns" :key="header" class="px-4 py-3">
+              <ViewValue
+                v-if="columnFor(i, header)"
+                :value="resolve(columnFor(i, header)!, i)"
+              />
+              <span v-else class="text-[12px] text-text-muted/50">—</span>
             </td>
             <td class="px-4 py-3"><StatusBadge :phase="i.phase" /></td>
             <td class="px-4 py-3 font-mono text-[12px] text-text-muted">{{ formatAge(i.createdAt) }}</td>

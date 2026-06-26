@@ -16,7 +16,11 @@ You may obtain a copy of the License at
 // The base kubeconfig (the provider's own kcp connection) supplies only the
 // front-proxy host + TLS; its credential is dropped so the factory can never
 // authenticate as the provider. Per request we build a config with that host
-// (cluster segment swapped for the tenant's path) and the caller's bearer token.
+// (no /clusters/ segment) and the caller's bearer token: the kedge hub proxy
+// scopes bare paths to the caller's own DefaultCluster, which is the only
+// workspace this factory ever talks to. Addressing by the tenant's workspace
+// *path* instead would be rejected — the proxy's cluster gate accepts only the
+// caller's DefaultCluster *ID* (or ID:mount), not a path.
 package tenant
 
 import (
@@ -70,8 +74,14 @@ func NewClientFactory(base *rest.Config) *ClientFactory {
 	}
 }
 
-// For returns a dynamic client scoped to tenantPath, authenticating as the
-// caller via token. Cached per (tenant, token).
+// For returns a dynamic client scoped to the caller's own workspace,
+// authenticating as the caller via token. Cached per (tenant, token).
+//
+// The host carries no /clusters/ segment: the hub proxy scopes bare paths to
+// the token's DefaultCluster. tenantPath is retained only as a cache key — the
+// caller always acts within its own default workspace, so a request must never
+// be addressed by the workspace path (the proxy's gate rejects paths, accepting
+// only the DefaultCluster ID).
 func (f *ClientFactory) For(tenantPath, token string) (dynamic.Interface, error) {
 	if token == "" {
 		return nil, fmt.Errorf("no bearer token on request — cannot act on the tenant's behalf")
@@ -83,7 +93,7 @@ func (f *ClientFactory) For(tenantPath, token string) (dynamic.Interface, error)
 	}
 
 	cfg := &rest.Config{
-		Host:            f.baseHost + "/clusters/" + tenantPath,
+		Host:            f.baseHost,
 		BearerToken:     token,
 		TLSClientConfig: f.baseTLS,
 	}

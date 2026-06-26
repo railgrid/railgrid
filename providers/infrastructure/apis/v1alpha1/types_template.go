@@ -170,6 +170,33 @@ type TemplateSpec struct {
 	// not rendered in the form.
 	// +optional
 	Agent *TemplateAgent `json:"agent,omitempty"`
+
+	// View is optional presentation metadata that tells the portal how to render
+	// this template's instances — extra columns in the instance-list table and
+	// grouped, typed fields on the instance detail page — instead of the default
+	// raw-JSON dump. Authored by the template owner so each template controls its
+	// own UX. Field values are dot-paths or ${…}-interpolated strings resolved
+	// against the instance's spec/status/meta (see the portal's view resolver).
+	// Stored as raw JSON (preserve-unknown-fields) and surfaced to the portal as
+	// spec.view; opaque to the controller. Shape:
+	//
+	//	columns:                         # extra instance-list columns
+	//	  - header: Endpoint
+	//	    value: "https://${spec.expose.fqdn}"
+	//	    type: link                   # text | link | badge | code
+	//	detail:                          # detail-page field groups
+	//	  - title: Access
+	//	    fields:
+	//	      - label: URL
+	//	        value: "https://${status.url}"
+	//	        type: link
+	//	      - label: Region
+	//	        path: spec.region
+	//
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:XPreserveUnknownFields
+	View *runtime.RawExtension `json:"view,omitempty"`
 }
 
 // TemplateAgent is machine-facing guidance for LLM agents operating this
