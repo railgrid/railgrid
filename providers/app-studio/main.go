@@ -165,13 +165,14 @@ func runServe() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Provider config → tenant client factory. Without a kubeconfig the project
-	// API returns 501 (useful for UI-only dev), with a loud warning.
-	var clientFactory *tenant.ClientFactory
-	if cfg, err := loadProviderConfig(); err != nil {
-		log.Printf("WARNING project API disabled (no provider kubeconfig): %v", err)
+	// Tenant access goes through the hub's GraphQL gateway (the hub injects
+	// X-Kedge-Cluster per request). Without a hub URL the project API returns
+	// 501 (useful for UI-only dev), with a loud warning.
+	var gqlClient *tenant.GraphQLClient
+	if hubURL := os.Getenv("KEDGE_HUB_URL"); hubURL == "" {
+		log.Printf("WARNING project API disabled (no KEDGE_HUB_URL)")
 	} else {
-		clientFactory = tenant.NewClientFactory(cfg)
+		gqlClient = tenant.NewGraphQLClient(hubURL, os.Getenv("KEDGE_HUB_INSECURE") == "true")
 	}
 
 	msgStore, closeStore, err := openMessageStore(ctx)
@@ -181,7 +182,7 @@ func runServe() {
 	defer closeStore()
 
 	apiServer := api.NewWithWorkspace(
-		clientFactory,
+		gqlClient,
 		msgStore,
 		openWorkspaceStore(),
 		os.Getenv("KEDGE_HUB_URL"),

@@ -31,6 +31,7 @@ import (
 // headers (defense in depth — a spoofed header cannot mis-scope storage).
 type identity struct {
 	tenantPath    string // X-Kedge-Tenant, e.g. root:kedge:orgs:<org>:<ws>
+	clusterID     string // X-Kedge-Cluster, the workspace's kcp logical-cluster ID
 	orgUUID       string // parsed from tenantPath
 	workspaceUUID string // parsed from tenantPath ("" when the path is org-only)
 	user          string // X-Kedge-User
@@ -50,6 +51,7 @@ func identityFromRequest(w http.ResponseWriter, r *http.Request) (identity, bool
 	org, ws := parseTenantPath(tenantPath)
 	return identity{
 		tenantPath:    tenantPath,
+		clusterID:     strings.TrimSpace(r.Header.Get("X-Kedge-Cluster")),
 		orgUUID:       org,
 		workspaceUUID: ws,
 		user:          strings.TrimSpace(r.Header.Get("X-Kedge-User")),

@@ -457,8 +457,8 @@ func (s *Server) scheduleDevelopmentSyncAfterMutation(id identity, p *aiv1alpha1
 }
 
 func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project, name string) {
-	if s.clients == nil {
-		klog.V(2).Infof("development sandbox sync after %s skipped for project %s: tenant client factory is not configured", projectToolBaseName(name), p.Name)
+	if s.gql == nil {
+		klog.V(2).Infof("development sandbox sync after %s skipped for project %s: tenant GraphQL client is not configured", projectToolBaseName(name), p.Name)
 		return
 	}
 	c, err := s.clientFor(id)

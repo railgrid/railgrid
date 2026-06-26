@@ -1279,7 +1279,7 @@ func firstSSELine(body []byte) (json.RawMessage, bool) {
 
 func readProjectLLMSettings(ctx context.Context, c *asclient.Client) (projectLLMSettings, error) {
 	settings := defaultProjectLLMSettings()
-	secret, err := c.Dynamic().Resource(secretGVR).Namespace(projectLLMSecretNamespace).Get(ctx, projectLLMSecretName, metav1.GetOptions{})
+	secret, err := c.Resource(secretResource, projectLLMSecretNamespace).Get(ctx, projectLLMSecretName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return settings, nil
 	}
@@ -1301,16 +1301,16 @@ func readProjectLLMSettings(ctx context.Context, c *asclient.Client) (projectLLM
 
 func writeProjectLLMSettings(ctx context.Context, c *asclient.Client, settings projectLLMSettings) error {
 	secret := projectLLMSettingsSecret(settings)
-	existing, err := c.Dynamic().Resource(secretGVR).Namespace(projectLLMSecretNamespace).Get(ctx, projectLLMSecretName, metav1.GetOptions{})
+	existing, err := c.Resource(secretResource, projectLLMSecretNamespace).Get(ctx, projectLLMSecretName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = c.Dynamic().Resource(secretGVR).Namespace(projectLLMSecretNamespace).Create(ctx, secret, metav1.CreateOptions{})
+		_, err = c.Resource(secretResource, projectLLMSecretNamespace).Create(ctx, secret, metav1.CreateOptions{})
 		return err
 	}
 	if err != nil {
 		return err
 	}
 	secret.SetResourceVersion(existing.GetResourceVersion())
-	_, err = c.Dynamic().Resource(secretGVR).Namespace(projectLLMSecretNamespace).Update(ctx, secret, metav1.UpdateOptions{})
+	_, err = c.Resource(secretResource, projectLLMSecretNamespace).Update(ctx, secret, metav1.UpdateOptions{})
 	return err
 }
 

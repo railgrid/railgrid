@@ -101,7 +101,7 @@ func (s *Server) prepareProjectRepository(ctx context.Context, c *asclient.Clien
 
 func selectCodeConnection(ctx context.Context, c *asclient.Client, requested string) (string, error) {
 	if requested != "" {
-		conn, err := c.Dynamic().Resource(codeConnectionsGVR).Get(ctx, requested, metav1.GetOptions{})
+		conn, err := c.Resource(codeConnectionResource, "").Get(ctx, requested, metav1.GetOptions{})
 		if err != nil {
 			return "", codeProviderRequestError("get Code connection", err)
 		}
@@ -111,7 +111,7 @@ func selectCodeConnection(ctx context.Context, c *asclient.Client, requested str
 		return requested, nil
 	}
 
-	list, err := c.Dynamic().Resource(codeConnectionsGVR).List(ctx, metav1.ListOptions{})
+	list, err := c.Resource(codeConnectionResource, "").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return "", codeProviderRequestError("list Code connections", err)
 	}
@@ -142,7 +142,7 @@ func repositoryName(ctx context.Context, c *asclient.Client, requested, displayN
 		if i > 0 {
 			name = dns1123LabelWithSuffix(base, uuid.NewString()[:6])
 		}
-		if _, err := c.Dynamic().Resource(codeRepositoriesGVR).Get(ctx, name, metav1.GetOptions{}); apierrors.IsNotFound(err) {
+		if _, err := c.Resource(codeRepositoryResource, "").Get(ctx, name, metav1.GetOptions{}); apierrors.IsNotFound(err) {
 			return name, nil
 		} else if err != nil {
 			return "", codeProviderRequestError("get Code repository", err)
@@ -169,7 +169,7 @@ func (s *Server) createProjectRepository(ctx context.Context, c *asclient.Client
 		"description":   plan.Description,
 		"autoInit":      true,
 	}
-	if _, err := c.Dynamic().Resource(codeRepositoriesGVR).Create(ctx, repo, metav1.CreateOptions{}); err != nil {
+	if _, err := c.Resource(codeRepositoryResource, "").Create(ctx, repo, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			return newValidationError(fmt.Sprintf("Code repository %q already exists", plan.Ref))
 		}
@@ -183,10 +183,10 @@ func projectRepositoryView(ctx context.Context, c *asclient.Client, p *aiv1alpha
 	var list codeResourceLister
 	if c != nil {
 		get = func(ctx context.Context, gvr schema.GroupVersionResource, name string) (*unstructured.Unstructured, error) {
-			return c.Dynamic().Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+			return c.Resource(codeResourceFor(gvr), "").Get(ctx, name, metav1.GetOptions{})
 		}
 		list = func(ctx context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
-			return c.Dynamic().Resource(gvr).List(ctx, opts)
+			return c.Resource(codeResourceFor(gvr), "").List(ctx, opts)
 		}
 	}
 	return projectRepositoryViewFromResources(ctx, p, get, list)

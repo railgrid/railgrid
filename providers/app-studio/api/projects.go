@@ -167,10 +167,20 @@ func writeProjectError(w http.ResponseWriter, err error) {
 }
 
 func isProjectAPIInitializingError(err error) bool {
-	if !apierrors.IsNotFound(err) {
+	if err == nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(err.Error()), "server could not find the requested resource")
+	low := strings.ToLower(err.Error())
+	// kcp dynamic path: the Project API isn't served in the workspace yet.
+	if apierrors.IsNotFound(err) && strings.Contains(low, "server could not find the requested resource") {
+		return true
+	}
+	// GraphQL path: either the gateway has no schema for the workspace cluster
+	// yet, or the schema lacks the Project type (APIBinding not established) —
+	// both surface while the workspace is still being provisioned.
+	return strings.Contains(low, "workspace initializing") ||
+		strings.Contains(low, "cannot query field") ||
+		strings.Contains(low, "unknown field")
 }
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
@@ -297,7 +307,7 @@ func (s *Server) cleanupCreatedProjectSetup(ctx context.Context, c *asclient.Cli
 	_ = s.deleteProjectProviderResources(ctx, c, p, id)
 	if p.Spec.Repository != nil {
 		if ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef); ref != "" {
-			_ = c.Dynamic().Resource(codeRepositoriesGVR).Delete(ctx, ref, metav1.DeleteOptions{})
+			_ = c.Resource(codeRepositoryResource, "").Delete(ctx, ref, metav1.DeleteOptions{})
 		}
 	}
 	if name := strings.TrimSpace(p.Name); name != "" {

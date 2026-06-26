@@ -46,7 +46,7 @@ import (
 // for dev MCP calls; workspaces stores project files owned by App Studio; and
 // assistantEngine runs project assistant turns.
 type Server struct {
-	clients                      *tenant.ClientFactory
+	gql                          *tenant.GraphQLClient
 	store                        store.Store
 	workspaces                   *workspace.FileStore
 	hubBase                      string
@@ -65,14 +65,14 @@ type Server struct {
 }
 
 // New constructs a Server.
-func New(clients *tenant.ClientFactory, msgStore store.Store, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
-	return NewWithWorkspace(clients, msgStore, nil, hubBase, mcpInsecureSkipTLSVerify)
+func New(gql *tenant.GraphQLClient, msgStore store.Store, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
+	return NewWithWorkspace(gql, msgStore, nil, hubBase, mcpInsecureSkipTLSVerify)
 }
 
 // NewWithWorkspace constructs a Server with an explicit project workspace store.
-func NewWithWorkspace(clients *tenant.ClientFactory, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
+func NewWithWorkspace(gql *tenant.GraphQLClient, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
 	s := &Server{
-		clients:                  clients,
+		gql:                      gql,
 		store:                    msgStore,
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
@@ -190,13 +190,14 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/memory", s.patchProjectMemory).Methods(http.MethodPatch)
 }
 
-// clientFor builds a workspace-scoped client acting as the caller.
+// clientFor builds a workspace-scoped client acting as the caller, talking to
+// the hub's GraphQL gateway for the caller's current workspace cluster.
 func (s *Server) clientFor(id identity) (*asclient.Client, error) {
-	dyn, err := s.clients.For(id.tenantPath, id.token)
+	scope, err := s.gql.For(id.clusterID, id.token)
 	if err != nil {
 		return nil, err
 	}
-	return asclient.NewFromDynamic(dyn), nil
+	return asclient.NewFromGraphQL(scope), nil
 }
 
 // requireProjectClient resolves the caller identity and a workspace-scoped
@@ -210,8 +211,12 @@ func (s *Server) requireProjectClient(w http.ResponseWriter, r *http.Request) (*
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "a workspace is required for this endpoint — select an organization and workspace first")
 		return nil, identity{}, false
 	}
-	if s.clients == nil {
-		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant client factory not configured — provider has no kubeconfig")
+	if s.gql == nil {
+		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant GraphQL client not configured — provider has no hub URL")
+		return nil, identity{}, false
+	}
+	if id.clusterID == "" {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Kedge-Cluster missing) — the hub did not resolve a cluster for this workspace")
 		return nil, identity{}, false
 	}
 	c, err := s.clientFor(id)

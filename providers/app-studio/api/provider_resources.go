@@ -89,7 +89,7 @@ func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *a
 	if owner := projectProviderResourceOwnerRef(p); owner != nil {
 		want.SetOwnerReferences([]metav1.OwnerReference{*owner})
 	}
-	res := c.Dynamic().Resource(gvr)
+	res := c.Resource(providerBindingResource(gvr, binding.ResourceRef.Kind), "")
 	existing, err := res.Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return res.Create(ctx, want, metav1.CreateOptions{})
@@ -138,7 +138,7 @@ func (s *Server) deleteProjectProviderResources(ctx context.Context, c *asclient
 			}
 			runtimeNamespace := ""
 			if isSandboxRunnerBinding(binding) && s != nil && s.runtimeClient != nil {
-				obj, err := c.Dynamic().Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+				obj, err := c.Resource(providerBindingResource(gvr, binding.ResourceRef.Kind), "").Get(ctx, name, metav1.GetOptions{})
 				if err != nil && !apierrors.IsNotFound(err) {
 					return err
 				}
@@ -149,7 +149,7 @@ func (s *Server) deleteProjectProviderResources(ctx context.Context, c *asclient
 					}
 				}
 			}
-			err = c.Dynamic().Resource(gvr).Delete(ctx, name, metav1.DeleteOptions{})
+			err = c.Resource(providerBindingResource(gvr, binding.ResourceRef.Kind), "").Delete(ctx, name, metav1.DeleteOptions{})
 			if err != nil && !apierrors.IsNotFound(err) {
 				return err
 			}
@@ -291,7 +291,7 @@ func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 		status.Phase = "Invalid"
 		return status
 	}
-	obj, err := c.Dynamic().Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+	obj, err := c.Resource(providerBindingResource(gvr, binding.ResourceRef.Kind), "").Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		status.Phase = "Pending"
 		return status

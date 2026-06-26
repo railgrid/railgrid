@@ -18,6 +18,7 @@ package providers
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -114,6 +115,7 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 	p.setHeaders = func(req *http.Request, name, _ string) {
 		req.Header.Del("X-Kedge-User")
 		req.Header.Del("X-Kedge-Tenant")
+		req.Header.Del("X-Kedge-Cluster")
 		if p.tenantResolver == nil {
 			// V(2) so tests / non-bootstrapper hubs don't spam, but
 			// devs can flip on verbosity to see the dropped path.
@@ -150,6 +152,17 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		} else {
 			p.log.Info("tenant resolved but tenantPath empty — forwarding without X-Kedge-Tenant", "provider", name, "user", user, "hint", "user may not have a personal Organization workspace bootstrapped yet")
 		}
+		// Resolve the workspace path to its kcp logical-cluster ID and inject
+		// X-Kedge-Cluster. Best-effort: a resolve failure drops only this
+		// header (the provider still has X-Kedge-Tenant), so a provider that
+		// doesn't need the ID is unaffected.
+		if tenantPath != "" && p.clusterResolver != nil {
+			if clusterID, err := p.clusterResolver(req.Context(), tenantPath); err != nil {
+				p.log.Info("cluster-id resolve failed — forwarding without X-Kedge-Cluster", "provider", name, "tenant", tenantPath, "err", err.Error())
+			} else if clusterID != "" {
+				req.Header.Set("X-Kedge-Cluster", clusterID)
+			}
+		}
 	}
 	return p
 }
@@ -161,6 +174,14 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 // inbound-header stripping below still runs.
 func (p *ProviderProxy) SetTenantResolver(r TenantResolver) {
 	p.tenantResolver = r
+}
+
+// SetClusterResolver installs an optional resolver mapping a tenant workspace
+// path to its kcp logical-cluster ID, injected as X-Kedge-Cluster on
+// backend-proxied requests. Wire alongside SetTenantResolver; without it the
+// header is simply omitted (and any inbound value is still stripped).
+func (p *ProviderProxy) SetClusterResolver(f func(ctx context.Context, tenantPath string) (string, error)) {
+	p.clusterResolver = f
 }
 
 // ProviderProxy is the shared implementation backing both proxies. Exported
@@ -188,6 +209,14 @@ type ProviderProxy struct {
 	// UI proxy serves static assets and has no use for caller identity.
 	// See SetTenantResolver.
 	tenantResolver TenantResolver
+
+	// clusterResolver, when set, maps the resolved tenant workspace path to
+	// its kcp logical-cluster ID, injected as X-Kedge-Cluster. Providers need
+	// the ID (not the path) to address per-workspace surfaces that key on it —
+	// notably the hub's GraphQL gateway at /graphql/clusters/{id}, whose
+	// per-cluster schema lookup only matches a cluster ID. See
+	// SetClusterResolver.
+	clusterResolver func(ctx context.Context, tenantPath string) (string, error)
 }
 
 // SetFallback installs the portal SPA handler invoked for non-asset paths

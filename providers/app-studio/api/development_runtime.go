@@ -68,7 +68,7 @@ func (s *Server) runtimeTargetForProject(ctx context.Context, c *asclient.Client
 	if strings.TrimSpace(name) == "" {
 		return runtimeTarget{}, nil, fmt.Errorf("sandbox runner name is empty")
 	}
-	obj, err := c.Dynamic().Resource(sandboxRunnerGVR).Get(ctx, name, metav1.GetOptions{})
+	obj, err := c.Resource(sandboxRunnerResource, "").Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return runtimeTarget{}, nil, err
 	}
@@ -332,14 +332,14 @@ func patchLastSync(ctx context.Context, c *asclient.Client, name string, t metav
 	if c == nil {
 		return nil
 	}
-	obj, err := c.Dynamic().Resource(sandboxRunnerGVR).Get(ctx, name, metav1.GetOptions{})
+	obj, err := c.Resource(sandboxRunnerResource, "").Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
 	if err := unstructured.SetNestedField(obj.Object, t.Format("2006-01-02T15:04:05Z07:00"), "status", "lastSyncTime"); err != nil {
 		return err
 	}
-	_, err = c.Dynamic().Resource(sandboxRunnerGVR).UpdateStatus(ctx, obj, metav1.UpdateOptions{})
+	_, err = c.Resource(sandboxRunnerResource, "").UpdateStatus(ctx, obj, metav1.UpdateOptions{})
 	if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) {
 		return nil
 	}

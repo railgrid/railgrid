@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/faroshq/provider-app-studio/tenant"
 )
 
 // ProjectGVR points at the workspace-scoped Project CRD.
@@ -43,17 +44,63 @@ var ProjectGVR = schema.GroupVersionResource{
 	Resource: "projects",
 }
 
-// Client provides typed access to App Studio resources via the dynamic client.
+// projectResource describes the Project CRD for the GraphQL tenant client. The
+// Project is cluster-scoped in the workspace.
+var projectResource = tenant.Resource{
+	GVR:        ProjectGVR,
+	Kind:       "Project",
+	Plural:     "Projects",
+	Namespaced: false,
+}
+
+// ResourceClient is the per-resource surface App Studio needs. Its signatures
+// match dynamic.ResourceInterface's subset exactly, so both a real
+// dynamic.ResourceInterface (tests) and the GraphQL-backed gqlResource
+// (production) satisfy it.
+type ResourceClient interface {
+	Get(ctx context.Context, name string, opts metav1.GetOptions, subresources ...string) (*unstructured.Unstructured, error)
+	List(ctx context.Context, opts metav1.ListOptions) (*unstructured.UnstructuredList, error)
+	Create(ctx context.Context, obj *unstructured.Unstructured, opts metav1.CreateOptions, subresources ...string) (*unstructured.Unstructured, error)
+	Update(ctx context.Context, obj *unstructured.Unstructured, opts metav1.UpdateOptions, subresources ...string) (*unstructured.Unstructured, error)
+	UpdateStatus(ctx context.Context, obj *unstructured.Unstructured, opts metav1.UpdateOptions) (*unstructured.Unstructured, error)
+	Delete(ctx context.Context, name string, opts metav1.DeleteOptions, subresources ...string) error
+	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions, subresources ...string) (*unstructured.Unstructured, error)
+}
+
+// Client provides typed access to App Studio resources. It is backed by either
+// the GraphQL tenant client (production: the hub's gateway, which serves any
+// workspace the caller has access to) or a dynamic client (tests).
 type Client struct {
+	scope   *tenant.Scope
 	dynamic dynamic.Interface
 }
 
-// NewFromDynamic creates a Client from an existing dynamic.Interface.
+// NewFromGraphQL creates a Client backed by the hub's GraphQL gateway.
+func NewFromGraphQL(scope *tenant.Scope) *Client {
+	return &Client{scope: scope}
+}
+
+// NewFromDynamic creates a Client from an existing dynamic.Interface (tests).
 func NewFromDynamic(d dynamic.Interface) *Client {
 	return &Client{dynamic: d}
 }
 
-// Dynamic returns the underlying dynamic client.
+// Resource returns a ResourceClient for an arbitrary resource (e.g. provider
+// CRs, secrets). namespace is "" for cluster-scoped access.
+func (c *Client) Resource(res tenant.Resource, namespace string) ResourceClient {
+	if c.scope != nil {
+		return &gqlResource{scope: c.scope, res: res, namespace: namespace}
+	}
+	nri := c.dynamic.Resource(res.GVR)
+	if namespace != "" {
+		return nri.Namespace(namespace)
+	}
+	return nri
+}
+
+// Dynamic returns the underlying dynamic client. Only valid for clients built
+// with NewFromDynamic (tests); nil in GraphQL mode. Production code paths must
+// use Resource() so they work against either backend.
 func (c *Client) Dynamic() dynamic.Interface {
 	return c.dynamic
 }
@@ -62,16 +109,16 @@ func (c *Client) Dynamic() dynamic.Interface {
 // workspace.
 func (c *Client) Projects() *TypedResource[aiv1alpha1.Project, aiv1alpha1.ProjectList] {
 	return &TypedResource[aiv1alpha1.Project, aiv1alpha1.ProjectList]{
-		client: c.dynamic.Resource(ProjectGVR),
+		client: c.Resource(projectResource, ""),
 		gvk:    ProjectGVR.GroupVersion().WithKind("Project"),
 	}
 }
 
 // TypedResource provides typed CRUD operations for a specific resource type.
 // gvk is used to populate apiVersion/kind on objects before sending them to
-// the dynamic client.
+// the backing client.
 type TypedResource[T any, L any] struct {
-	client dynamic.ResourceInterface
+	client ResourceClient
 	gvk    schema.GroupVersionKind
 }
 
@@ -178,6 +225,74 @@ func fromUnstructured[T any](u *unstructured.Unstructured) (*T, error) {
 		return nil, fmt.Errorf("converting from unstructured: %w", err)
 	}
 	return &obj, nil
+}
+
+// gqlResource adapts a GraphQL tenant Scope to the ResourceClient surface.
+// Create/Update map to the gateway's generic applyYaml (create-or-update);
+// status writes map to applyStatusYaml.
+type gqlResource struct {
+	scope     *tenant.Scope
+	res       tenant.Resource
+	namespace string
+}
+
+func (g *gqlResource) Get(ctx context.Context, name string, _ metav1.GetOptions, _ ...string) (*unstructured.Unstructured, error) {
+	return g.scope.Get(ctx, g.res, g.namespace, name)
+}
+
+func (g *gqlResource) List(ctx context.Context, _ metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	items, err := g.scope.List(ctx, g.res, g.namespace)
+	if err != nil {
+		return nil, err
+	}
+	return &unstructured.UnstructuredList{Items: items}, nil
+}
+
+func (g *gqlResource) Create(ctx context.Context, obj *unstructured.Unstructured, _ metav1.CreateOptions, subresources ...string) (*unstructured.Unstructured, error) {
+	if len(subresources) == 1 && subresources[0] == "status" {
+		return g.UpdateStatus(ctx, obj, metav1.UpdateOptions{})
+	}
+	return g.scope.Apply(ctx, obj)
+}
+
+func (g *gqlResource) Update(ctx context.Context, obj *unstructured.Unstructured, _ metav1.UpdateOptions, subresources ...string) (*unstructured.Unstructured, error) {
+	if len(subresources) == 1 && subresources[0] == "status" {
+		return g.UpdateStatus(ctx, obj, metav1.UpdateOptions{})
+	}
+	return g.scope.Apply(ctx, obj)
+}
+
+func (g *gqlResource) UpdateStatus(ctx context.Context, obj *unstructured.Unstructured, _ metav1.UpdateOptions) (*unstructured.Unstructured, error) {
+	if err := g.scope.ApplyStatus(ctx, obj); err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
+func (g *gqlResource) Delete(ctx context.Context, name string, _ metav1.DeleteOptions, _ ...string) error {
+	return g.scope.Delete(ctx, g.res, g.namespace, name)
+}
+
+// Patch supports only the status subresource (the sole patch App Studio uses).
+// The merge-patch body is applied to the object's status via applyStatusYaml.
+func (g *gqlResource) Patch(ctx context.Context, name string, _ types.PatchType, data []byte, _ metav1.PatchOptions, subresources ...string) (*unstructured.Unstructured, error) {
+	if len(subresources) != 1 || subresources[0] != "status" {
+		return nil, fmt.Errorf("graphql client: Patch supports only the status subresource, got %v", subresources)
+	}
+	patch := map[string]any{}
+	if err := json.Unmarshal(data, &patch); err != nil {
+		return nil, fmt.Errorf("decode status patch: %w", err)
+	}
+	obj := &unstructured.Unstructured{Object: patch}
+	obj.SetGroupVersionKind(g.res.GVR.GroupVersion().WithKind(g.res.Kind))
+	obj.SetName(name)
+	if g.namespace != "" {
+		obj.SetNamespace(g.namespace)
+	}
+	if err := g.scope.ApplyStatus(ctx, obj); err != nil {
+		return nil, err
+	}
+	return obj, nil
 }
 
 func fromUnstructuredList[L any](u *unstructured.UnstructuredList) (*L, error) {

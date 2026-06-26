@@ -144,6 +144,12 @@ github.com/exponent-io/jsonpath v0.0.0-20210407135951-1de76d718b3f h1:Wl78ApPPB2
 github.com/exponent-io/jsonpath v0.0.0-20210407135951-1de76d718b3f/go.mod h1:OSYXu++VVOHnXeitef/D8n/6y4QV8uLHSFXX4NeXMGc=
 github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260612154300-f9c2b298c4cd h1:c/SnMtn9/6CXoB/+EATPqP87gOt5ENSFLq6xzGWqNOM=
 github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260612154300-f9c2b298c4cd/go.mod h1:FTy6tfcfD1XoN081U3WaG+4t1GpgWNRYPYy+AcDYRKU=
+github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626173633-9c3bfe012c22 h1:MGjoHiISmJLY+lMbfaeA8qIUG6PhfKqOCotXyZt1ygY=
+github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626173633-9c3bfe012c22/go.mod h1:FTy6tfcfD1XoN081U3WaG+4t1GpgWNRYPYy+AcDYRKU=
+github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626181934-a2eab00748ed h1:3s49oo4zW5ElcRDgxcWsxKWieqMhlNx+wVde/0BOP1Q=
+github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626181934-a2eab00748ed/go.mod h1:FTy6tfcfD1XoN081U3WaG+4t1GpgWNRYPYy+AcDYRKU=
+github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626182922-d10b61a76a93 h1:Ex8FjE9zP4KBWU5wVjKVs9YX57D/ZpGCO0vsG5m6AiA=
+github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626182922-d10b61a76a93/go.mod h1:FTy6tfcfD1XoN081U3WaG+4t1GpgWNRYPYy+AcDYRKU=
 github.com/fatih/color v1.18.0 h1:S8gINlzdQ840/4pfAwic/ZE0djQEH3wM94VfqLTZcOM=
 github.com/fatih/color v1.18.0/go.mod h1:4FelSpRwEGDpQ12mAdzqdOukCy4u8WUtOY6lkT/6HfU=
 github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=

@@ -533,6 +533,10 @@ func (s *Server) Run(ctx context.Context) error {
 			// resolver (lives here to avoid a providers→proxy→kcp→providers
 			// import cycle).
 			backendProxy.SetTenantResolver(newKCPTenantResolver(kcpProxy, userClient))
+			// Inject X-Kedge-Cluster (the resolved tenant's logical-cluster
+			// ID) so providers can address per-workspace surfaces that key on
+			// the ID — notably the GraphQL gateway at /graphql/clusters/{id}.
+			backendProxy.SetClusterResolver(newClusterIDResolver(kcpConfig))
 
 			// Step 10: Org / Workspace / Membership / User REST
 			apiMgr := restapi.NewManager(userClient, bootstrapper)
