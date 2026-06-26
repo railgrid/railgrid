@@ -28,11 +28,13 @@ import (
 
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/previewtoken"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/tenant"
 	"github.com/faroshq/provider-app-studio/workspace"
@@ -51,7 +53,8 @@ type Server struct {
 	mcpInsecureSkipTLSVerify     bool
 	runtimeConfig                *rest.Config
 	runtimeClient                kubernetes.Interface
-	previewSigner                *previewSigner
+	runtimeDynamic               dynamic.Interface
+	previewSigner                *previewtoken.Signer
 	autoApproveActions           bool
 	assistantEngine              projectAssistantEngine
 	assistantTurnRouter          projectAssistantTurnRouter
@@ -74,7 +77,7 @@ func NewWithWorkspace(clients *tenant.ClientFactory, msgStore store.Store, works
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
-		previewSigner:            newPreviewSigner(nil),
+		previewSigner:            previewtoken.NewSigner(nil),
 	}
 	s.assistantEngine = NewEinoAssistantEngine(s)
 	s.assistantRunManager = newProjectAssistantRunManager()
@@ -87,20 +90,26 @@ func (s *Server) SetRuntimeConfig(cfg *rest.Config) error {
 	s.runtimeConfig = cfg
 	if cfg == nil {
 		s.runtimeClient = nil
+		s.runtimeDynamic = nil
 		return nil
 	}
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return err
 	}
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return err
+	}
 	s.runtimeClient = client
+	s.runtimeDynamic = dyn
 	return nil
 }
 
 func (s *Server) SetPreviewTokenSecret(secret []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.previewSigner = newPreviewSigner(secret)
+	s.previewSigner = previewtoken.NewSigner(secret)
 }
 
 func (s *Server) SetAutoApproveAssistantActions(enabled bool) {
@@ -175,7 +184,6 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/development-logs", s.logsProjectDevelopment).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/development-status", s.statusProjectDevelopment).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/authorize-development-preview", s.authorizeProjectDevelopmentPreview).Methods(http.MethodPost)
-	r.PathPrefix("/api/projects/{project}/preview/").HandlerFunc(s.previewProjectDevelopment)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/resume", s.resumeProjectAssistant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/abort", s.abortProjectAssistant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/memory", s.getProjectMemory).Methods(http.MethodGet)

@@ -14,16 +14,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/previewtoken"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -31,14 +37,30 @@ const (
 	projectDevelopmentEnvironmentName   = "development"
 	projectDevelopmentBindingName       = "dev"
 	projectDevelopmentProviderAppStudio = "app-studio"
+	previewChannelDevelopment           = "development-preview"
+	sandboxPreviewHTTPRouteNamespace    = "default"
 	projectSandboxSyncTimeout           = 20 * time.Second
 )
+
+var gatewayReferenceGrantGVR = schema.GroupVersionResource{
+	Group:    "gateway.networking.k8s.io",
+	Version:  "v1beta1",
+	Resource: "referencegrants",
+}
 
 type projectDevelopmentSyncTargetInfo struct {
 	EnvironmentName string
 	BindingName     string
 	Provider        string
 	ResourceName    string
+}
+
+type sandboxPreviewHTTPRouteInfo struct {
+	URL                string
+	HTTPRouteNamespace string
+	BackendNamespace   string
+	BackendServiceName string
+	ReferenceGrantName string
 }
 
 type projectSandboxSyncFile struct {
@@ -86,6 +108,9 @@ func projectDevelopmentSyncTarget(p *aiv1alpha1.Project, id identity) (projectDe
 		}
 		for _, binding := range env.Bindings {
 			if strings.TrimSpace(binding.Provider) != projectDevelopmentProviderAppStudio {
+				continue
+			}
+			if !isSandboxRunnerBinding(binding) {
 				continue
 			}
 			target := projectDevelopmentSyncTargetInfo{
@@ -174,11 +199,11 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		return nil, fmt.Errorf("sandbox runtime sync returned %d: %s", status, strings.TrimSpace(string(body)))
 	}
 	_ = patchLastSync(ctx, c, target.ResourceName, metav1.Now())
-	return json.RawMessage(s.syncResponseWithPreviewURL(body, id, p, target.ResourceName, runtimeTarget)), nil
+	return json.RawMessage(body), nil
 }
 
 func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (projectSandboxPreviewURLResponse, error) {
-	runtimeTarget, _, err := s.runtimeTargetForProject(ctx, c, target.ResourceName)
+	runtimeTarget, runner, err := s.runtimeTargetForProject(ctx, c, target.ResourceName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return projectSandboxPreviewURLResponse{
@@ -190,10 +215,198 @@ func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c
 		return projectSandboxPreviewURLResponse{}, err
 	}
 	preview := s.previewReadiness(ctx, runtimeTarget)
-	if preview.Ready {
-		preview.PreviewURL, preview.PreviewTokenExpiresAt = s.signedProjectPreviewURLAndExpiry(p.Name, id.tenantPath, target.ResourceName, runtimeTarget)
+	if !preview.Ready {
+		return preview, nil
 	}
+	route, err := sandboxRunnerPreviewRoute(runner)
+	if err != nil {
+		return projectSandboxPreviewURLResponse{}, err
+	}
+	if strings.TrimSpace(route.URL) == "" {
+		return projectSandboxPreviewURLResponse{
+			Ready:   false,
+			Reason:  "sandbox_preview_route_not_ready",
+			Message: "Preview is getting ready. The sandbox preview route does not have a URL yet.",
+		}, nil
+	}
+	if err := s.ensureSandboxPreviewReferenceGrant(ctx, p.Name, route); err != nil {
+		return projectSandboxPreviewURLResponse{}, err
+	}
+	preview.PreviewURL, preview.PreviewTokenExpiresAt = s.signedProjectPreviewURLAndExpiry(p.Name, id, target, runtimeTarget, route.URL, aiv1alpha1.ProjectSharingModePrivate)
 	return preview, nil
+}
+
+func sandboxRunnerPreviewRoute(obj *unstructured.Unstructured) (sandboxPreviewHTTPRouteInfo, error) {
+	if obj == nil {
+		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox runner is nil")
+	}
+	name, err := sandboxRunnerInstanceName(obj)
+	if err != nil {
+		return sandboxPreviewHTTPRouteInfo{}, err
+	}
+	rawURL, _, _ := unstructured.NestedString(obj.Object, "status", "previewRoute", "url")
+	httpRouteNamespace, _, _ := unstructured.NestedString(obj.Object, "status", "previewRoute", "httpRouteRef", "namespace")
+	expectedHost := sandboxRunnerPreviewRouteHost(name)
+	if strings.TrimSpace(rawURL) == "" || expectedHost == "" {
+		return sandboxPreviewHTTPRouteInfo{ReferenceGrantName: name}, nil
+	}
+	if host := previewtoken.NormalizeHost(rawURL); host != expectedHost {
+		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox preview route host %q does not match expected host %q", host, expectedHost)
+	}
+	httpRouteNamespace = strings.TrimSpace(httpRouteNamespace)
+	if httpRouteNamespace == "" {
+		httpRouteNamespace = sandboxPreviewHTTPRouteNamespace
+	}
+	if !isExpectedSandboxPreviewHTTPRouteNamespace(obj, httpRouteNamespace) {
+		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox preview HTTPRoute namespace %q does not match expected namespace %q", httpRouteNamespace, sandboxPreviewHTTPRouteNamespace)
+	}
+	return sandboxPreviewHTTPRouteInfo{
+		URL:                previewPublicURL(strings.TrimSpace(rawURL)),
+		HTTPRouteNamespace: httpRouteNamespace,
+		BackendNamespace:   previewBackendNamespace(),
+		BackendServiceName: previewBackendServiceName(),
+		ReferenceGrantName: name,
+	}, nil
+}
+
+func sandboxRunnerPreviewRouteHost(runnerName string) string {
+	runnerName = strings.TrimSpace(runnerName)
+	baseDomain := strings.Trim(previewtoken.NormalizeHost(previewHTTPRouteBaseDomain()), ".")
+	if runnerName == "" || baseDomain == "" || !previewHTTPRouteEnabled() {
+		return ""
+	}
+	return runnerName + "." + baseDomain
+}
+
+func isExpectedSandboxPreviewHTTPRouteNamespace(obj *unstructured.Unstructured, namespace string) bool {
+	namespace = strings.TrimSpace(namespace)
+	if namespace == sandboxPreviewHTTPRouteNamespace {
+		return true
+	}
+	return namespace != "" && namespace == expectedKROPrefixedNamespace(obj, sandboxPreviewHTTPRouteNamespace)
+}
+
+func (s *Server) ensureSandboxPreviewReferenceGrant(ctx context.Context, projectName string, route sandboxPreviewHTTPRouteInfo) error {
+	if s.runtimeDynamic == nil {
+		return fmt.Errorf("sandbox preview reference grant requires runtime dynamic client")
+	}
+	if route.ReferenceGrantName == "" {
+		return fmt.Errorf("sandbox preview reference grant name is empty")
+	}
+	if route.HTTPRouteNamespace == "" {
+		return fmt.Errorf("sandbox preview HTTPRoute namespace is empty")
+	}
+	if route.BackendNamespace == "" || route.BackendServiceName == "" {
+		return fmt.Errorf("sandbox preview backend service reference is incomplete")
+	}
+	res := s.runtimeDynamic.Resource(gatewayReferenceGrantGVR).Namespace(route.BackendNamespace)
+	wantSpec := map[string]any{
+		"from": []any{
+			map[string]any{
+				"group":     "gateway.networking.k8s.io",
+				"kind":      "HTTPRoute",
+				"namespace": route.HTTPRouteNamespace,
+			},
+		},
+		"to": []any{
+			map[string]any{
+				"group": "",
+				"kind":  "Service",
+				"name":  route.BackendServiceName,
+			},
+		},
+	}
+	labels := map[string]string{
+		"app-studio.kedge.faros.sh/project":    projectName,
+		"app-studio.kedge.faros.sh/managed-by": "app-studio",
+	}
+	existing, err := res.Get(ctx, route.ReferenceGrantName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		grant := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "gateway.networking.k8s.io/v1beta1",
+			"kind":       "ReferenceGrant",
+			"metadata": map[string]any{
+				"name":      route.ReferenceGrantName,
+				"namespace": route.BackendNamespace,
+				"labels": map[string]any{
+					"app-studio.kedge.faros.sh/project":    projectName,
+					"app-studio.kedge.faros.sh/managed-by": "app-studio",
+				},
+			},
+			"spec": wantSpec,
+		}}
+		_, err = res.Create(ctx, grant, metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	existing.SetAPIVersion("gateway.networking.k8s.io/v1beta1")
+	existing.SetKind("ReferenceGrant")
+	existing.Object["spec"] = wantSpec
+	existingLabels := existing.GetLabels()
+	if existingLabels == nil {
+		existingLabels = map[string]string{}
+	}
+	for key, value := range labels {
+		existingLabels[key] = value
+	}
+	existing.SetLabels(existingLabels)
+	_, err = res.Update(ctx, existing, metav1.UpdateOptions{})
+	return err
+}
+
+func previewPublicURL(raw string) string {
+	port := previewPublicPort()
+	if raw == "" || port == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.Port() != "" {
+		return raw
+	}
+	u.Host = net.JoinHostPort(u.Hostname(), port)
+	return u.String()
+}
+
+func previewPublicPort() string {
+	value := envValue("APP_STUDIO_PREVIEW_PUBLIC_PORT")
+	if value == "" {
+		return ""
+	}
+	port, err := strconv.ParseInt(value, 10, 32)
+	if err != nil || port < 1 || port > 65535 {
+		return ""
+	}
+	return strconv.FormatInt(port, 10)
+}
+
+func (s *Server) signedProjectPreviewURLAndExpiry(projectName string, id identity, target projectDevelopmentSyncTargetInfo, runtimeTarget runtimeTarget, previewBaseURL string, accessMode aiv1alpha1.ProjectSharingMode) (string, string) {
+	u, err := url.Parse(strings.TrimSpace(previewBaseURL))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", ""
+	}
+	u.Path = "/"
+	u.RawQuery = ""
+	host := previewtoken.NormalizeHost(u.Host)
+	token, expiresAt, err := s.previewSigner.Sign(previewtoken.Payload{
+		ProjectName:        projectName,
+		TenantPath:         id.tenantPath,
+		ResourceName:       target.ResourceName,
+		Subject:            id.user,
+		Host:               host,
+		RuntimeNamespace:   runtimeTarget.Preview.Namespace,
+		PreviewServiceName: runtimeTarget.Preview.Name,
+		PreviewPortName:    runtimeTarget.Preview.PortName,
+		AccessMode:         string(accessMode),
+	})
+	if err != nil {
+		return "", ""
+	}
+	q := u.Query()
+	q.Set(previewtoken.QueryParam, token)
+	u.RawQuery = q.Encode()
+	return u.String(), expiresAt.Format(time.RFC3339)
 }
 
 func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.Scope) ([]projectSandboxSyncFile, error) {

@@ -27,6 +27,6 @@ import (
 
 // registerPortalRoutes is a no-op when the portal is not embedded.
 // Build with -tags portal_embed to include the portal UI.
-func registerPortalRoutes(_ *mux.Router) (http.Handler, error) {
+func registerPortalRoutes(_ *mux.Router, _ ...string) (http.Handler, error) {
 	return nil, fmt.Errorf("portal not embedded (build with -tags portal_embed)")
 }

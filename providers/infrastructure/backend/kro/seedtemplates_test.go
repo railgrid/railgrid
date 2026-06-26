@@ -12,6 +12,7 @@ package kro
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,10 +93,81 @@ func TestSeedTemplatesIncludeSandboxRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRGD(sandbox-runner): %v", err)
 	}
-	for _, field := range []string{"runtimeNamespace", "previewServiceRef", "controlServiceRef", "controlSecretRef"} {
+	for _, field := range []string{"runtimeNamespace", "previewServiceRef", "controlServiceRef", "controlSecretRef", "previewRoute"} {
 		if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "status", field); !found {
 			t.Fatalf("sandbox-runner status missing %s", field)
 		}
+	}
+}
+
+func TestSandboxRunnerSplitsPreviewAndControlServices(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "install", "templates", "sandbox-runner.yaml"))
+	if err != nil {
+		t.Fatalf("read sandbox-runner seed template: %v", err)
+	}
+	tmpl := decodeTemplate(t, raw)
+	rgd, err := buildRGD(tmpl, "cloudflare")
+	if err != nil {
+		t.Fatalf("buildRGD(sandbox-runner): %v", err)
+	}
+
+	previewService := findResource(t, rgd, "previewService")
+	if previewService == nil {
+		t.Fatal("sandbox-runner missing previewService resource")
+	}
+	previewServiceTemplate := mustNestedMap(t, previewService, "template")
+	if got, _, _ := unstructured.NestedString(previewServiceTemplate, "metadata", "name"); got != "${schema.spec.name}-preview" {
+		t.Fatalf("preview service name = %q, want %q", got, "${schema.spec.name}-preview")
+	}
+	if got, found, _ := unstructured.NestedBool(previewServiceTemplate, "spec", "publishNotReadyAddresses"); found || got {
+		t.Fatalf("preview service publishNotReadyAddresses = %v, found %v; want absent", got, found)
+	}
+	previewPorts := mustNestedSlice(t, previewServiceTemplate, "spec", "ports")
+	if len(previewPorts) != 1 {
+		t.Fatalf("preview service ports = %d, want 1", len(previewPorts))
+	}
+	previewPort, ok := previewPorts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("preview service port has type %T, want map[string]any", previewPorts[0])
+	}
+	if got, _, _ := unstructured.NestedString(previewPort, "name"); got != "preview" {
+		t.Fatalf("preview service port name = %q, want preview", got)
+	}
+
+	controlService := findResource(t, rgd, "controlService")
+	if controlService == nil {
+		t.Fatal("sandbox-runner missing controlService resource")
+	}
+	controlServiceTemplate := mustNestedMap(t, controlService, "template")
+	if got, _, _ := unstructured.NestedString(controlServiceTemplate, "metadata", "name"); got != "${schema.spec.name}-control" {
+		t.Fatalf("control service name = %q, want %q", got, "${schema.spec.name}-control")
+	}
+	if got, found, _ := unstructured.NestedBool(controlServiceTemplate, "spec", "publishNotReadyAddresses"); !found || !got {
+		t.Fatalf("control service publishNotReadyAddresses = %v, found %v; want true", got, found)
+	}
+	controlPorts := mustNestedSlice(t, controlServiceTemplate, "spec", "ports")
+	if len(controlPorts) != 1 {
+		t.Fatalf("control service ports = %d, want 1", len(controlPorts))
+	}
+	controlPort, ok := controlPorts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("control service port has type %T, want map[string]any", controlPorts[0])
+	}
+	if got, _, _ := unstructured.NestedString(controlPort, "name"); got != "control" {
+		t.Fatalf("control service port name = %q, want control", got)
+	}
+	if got, found, _ := unstructured.NestedFieldNoCopy(controlPort, "port"); !found || fmt.Sprintf("%v", got) != "7070" {
+		t.Fatalf("control service port = %v, found %v; want 7070", got, found)
+	}
+
+	if got, _, _ := unstructured.NestedString(rgd.Object, "spec", "schema", "status", "previewServiceRef", "name"); got != "${previewService.metadata.name}" {
+		t.Fatalf("status.previewServiceRef.name = %q, want %q", got, "${previewService.metadata.name}")
+	}
+	if got, _, _ := unstructured.NestedString(rgd.Object, "spec", "schema", "status", "runtimeNamespace"); got != "${previewService.metadata.namespace}" {
+		t.Fatalf("status.runtimeNamespace = %q, want %q", got, "${previewService.metadata.namespace}")
+	}
+	if got, _, _ := unstructured.NestedString(rgd.Object, "spec", "schema", "status", "controlServiceRef", "name"); got != "${controlService.metadata.name}" {
+		t.Fatalf("status.controlServiceRef.name = %q, want %q", got, "${controlService.metadata.name}")
 	}
 }
 
@@ -142,6 +214,120 @@ func TestSeedTemplatesIncludeStandaloneDatabase(t *testing.T) {
 		if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "status", field); !found {
 			t.Fatalf("database status missing %s", field)
 		}
+	}
+}
+
+func TestSeedTemplatesDoNotExposeStandaloneSandboxPreviewHTTPRoute(t *testing.T) {
+	path := filepath.Join("..", "..", "install", "templates", "sandbox-preview-httproute.yaml")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("standalone sandbox preview HTTPRoute template still exists at %s", path)
+	}
+}
+
+func TestSandboxRunnerIncludesManagedPreviewHTTPRoute(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "install", "templates", "sandbox-runner.yaml"))
+	if err != nil {
+		t.Fatalf("read sandbox-runner seed template: %v", err)
+	}
+	tmpl := decodeTemplate(t, raw)
+	rgd, err := buildRGD(tmpl, "cloudflare")
+	if err != nil {
+		t.Fatalf("buildRGD(sandbox-runner): %v", err)
+	}
+	httpRoute := findResource(t, rgd, "httpRoute")
+	if httpRoute == nil {
+		t.Fatal("sandbox-runner template missing httpRoute resource")
+	}
+	includeWhen := mustNestedSlice(t, httpRoute, "includeWhen")
+	if len(includeWhen) != 1 || includeWhen[0] != "${schema.spec.previewRouteEnabled}" {
+		t.Fatalf("httpRoute includeWhen = %#v, want previewRouteEnabled gate", includeWhen)
+	}
+	if referenceGrant := findResource(t, rgd, "referenceGrant"); referenceGrant != nil {
+		t.Fatal("sandbox-runner template must not create referenceGrant; backend namespace grants are owned by App Studio")
+	}
+
+	httpRouteTemplate := mustNestedMap(t, httpRoute, "template")
+	if got, _, _ := unstructured.NestedString(httpRouteTemplate, "apiVersion"); got != "gateway.networking.k8s.io/v1" {
+		t.Fatalf("httpRoute apiVersion = %q, want gateway.networking.k8s.io/v1", got)
+	}
+	if got, _, _ := unstructured.NestedString(httpRouteTemplate, "kind"); got != "HTTPRoute" {
+		t.Fatalf("httpRoute kind = %q, want HTTPRoute", got)
+	}
+	if got, found, _ := unstructured.NestedString(httpRouteTemplate, "metadata", "name"); !found || got != "${schema.spec.name}" {
+		t.Fatalf("httpRoute metadata.name = %q (found %v), want %q", got, found, "${schema.spec.name}")
+	}
+	if got, found, _ := unstructured.NestedString(httpRouteTemplate, "metadata", "namespace"); !found || got != "default" {
+		t.Fatalf("httpRoute metadata.namespace = %q (found %v), want default", got, found)
+	}
+
+	parentRefs := mustNestedSlice(t, httpRouteTemplate, "spec", "parentRefs")
+	if len(parentRefs) == 0 {
+		t.Fatal("httpRoute has no parentRefs")
+	}
+	parentRef, ok := parentRefs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("httpRoute parentRef has type %T, want map[string]any", parentRefs[0])
+	}
+	if got, _, _ := unstructured.NestedString(parentRef, "name"); got != "${schema.spec.previewRoute.parentGateway.name}" {
+		t.Fatalf("parentRefs[0].name = %q, want %q", got, "${schema.spec.previewRoute.parentGateway.name}")
+	}
+	if got, _, _ := unstructured.NestedString(parentRef, "namespace"); got != "${schema.spec.previewRoute.parentGateway.namespace}" {
+		t.Fatalf("parentRefs[0].namespace = %q, want %q", got, "${schema.spec.previewRoute.parentGateway.namespace}")
+	}
+	if got, _, _ := unstructured.NestedString(parentRef, "sectionName"); got != "${schema.spec.previewRoute.parentGateway.sectionName}" {
+		t.Fatalf("parentRefs[0].sectionName = %q, want %q", got, "${schema.spec.previewRoute.parentGateway.sectionName}")
+	}
+
+	hostnames := mustNestedSlice(t, httpRouteTemplate, "spec", "hostnames")
+	if len(hostnames) == 0 || hostnames[0] != "${schema.spec.previewRoute.host}" {
+		t.Fatalf("httpRoute hostnames = %#v, want first element %q", hostnames, "${schema.spec.previewRoute.host}")
+	}
+
+	rules := mustNestedSlice(t, httpRouteTemplate, "spec", "rules")
+	if len(rules) == 0 {
+		t.Fatal("httpRoute has no rules")
+	}
+	rule, ok := rules[0].(map[string]any)
+	if !ok {
+		t.Fatalf("httpRoute rule has type %T, want map[string]any", rules[0])
+	}
+	backendRefs := mustNestedSlice(t, rule, "backendRefs")
+	if len(backendRefs) == 0 {
+		t.Fatal("httpRoute rule has no backendRefs")
+	}
+	backendRef, ok := backendRefs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("httpRoute backendRef has type %T, want map[string]any", backendRefs[0])
+	}
+	if got, _, _ := unstructured.NestedString(backendRef, "name"); got != "${schema.spec.previewRoute.backend.serviceName}" {
+		t.Fatalf("backendRef.name = %q, want %q", got, "${schema.spec.previewRoute.backend.serviceName}")
+	}
+	if got, _, _ := unstructured.NestedString(backendRef, "namespace"); got != "${schema.spec.previewRoute.backend.namespace}" {
+		t.Fatalf("backendRef.namespace = %q, want %q", got, "${schema.spec.previewRoute.backend.namespace}")
+	}
+	if got, found, _ := unstructured.NestedFieldNoCopy(backendRef, "port"); !found || fmt.Sprintf("%v", got) != "${schema.spec.previewRoute.backend.servicePort}" {
+		t.Fatalf("backendRef.port = %v (found %v), want %q", got, found, "${schema.spec.previewRoute.backend.servicePort}")
+	}
+	if got, _, _ := unstructured.NestedString(backendRef, "kind"); got != "Service" {
+		t.Fatalf("backendRef.kind = %q, want Service", got)
+	}
+
+	for _, field := range []string{"host", "url", "httpRouteRef", "gatewayRef", "phase"} {
+		if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "status", "previewRoute", field); !found {
+			t.Fatalf("sandbox-runner status.previewRoute missing %s", field)
+		}
+	}
+	if got, _, _ := unstructured.NestedString(rgd.Object, "spec", "schema", "status", "previewRoute", "httpRouteRef", "name"); got != "${httpRoute.metadata.name}" {
+		t.Fatalf("status.previewRoute.httpRouteRef.name = %q, want %q", got, "${httpRoute.metadata.name}")
+	}
+	if got, _, _ := unstructured.NestedString(rgd.Object, "spec", "schema", "status", "previewRoute", "httpRouteRef", "namespace"); got != "${httpRoute.metadata.namespace}" {
+		t.Fatalf("status.previewRoute.httpRouteRef.namespace = %q, want %q", got, "${httpRoute.metadata.namespace}")
+	}
+	if got, _, _ := unstructured.NestedString(rgd.Object, "spec", "schema", "status", "previewRoute", "gatewayRef", "name"); got != "${httpRoute.spec.parentRefs[0].name}" {
+		t.Fatalf("status.previewRoute.gatewayRef.name = %q, want %q", got, "${httpRoute.spec.parentRefs[0].name}")
+	}
+	if got, _, _ := unstructured.NestedString(rgd.Object, "spec", "schema", "status", "previewRoute", "gatewayRef", "namespace"); got != "${httpRoute.spec.parentRefs[0].namespace}" {
+		t.Fatalf("status.previewRoute.gatewayRef.namespace = %q, want %q", got, "${httpRoute.spec.parentRefs[0].namespace}")
 	}
 }
 

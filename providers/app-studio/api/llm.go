@@ -1644,6 +1644,7 @@ func appendProjectAssistantBuilderPrompt(b *strings.Builder, repoRef string) {
 	b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
 	b.WriteString("When requirements are unclear during implementation, call ask_follow_up with at most three concise questions instead of guessing. ")
 	b.WriteString("Before source edits, call request_project_plan_approval with a concise batch plan, target path envelope, allowed edit operations, and acceptance criteria; after approval, keep workspace edits inside that envelope. ")
+	b.WriteString("Do not give the user manual copy/paste file replacement instructions when App Studio edit tools are available; request approval and apply the change in the workspace instead. ")
 	b.WriteString("Prefer small App Studio workspace mutations with write_file, apply_patch, and mkdir instead of rewriting a whole project. ")
 	b.WriteString("After workspace mutations, commit the changed source/config files to the managed git source with commit_project_files using repositoryRef \"" + repoRef + "\". ")
 	b.WriteString("Use provider-code only as the git-source boundary; do not use provider-code tools to inspect or mutate the live App Studio workspace. ")

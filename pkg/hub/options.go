@@ -76,6 +76,10 @@ type Options struct {
 	// a Vite dev server, e.g. http://localhost:3000). Takes precedence over the
 	// embedded portal dist (if built with -tags portal_embed).
 	PortalDevURL string
+	// PortalFrameSources are additional CSP frame-src source expressions allowed
+	// by the portal. Keep this narrow; provider UIs are still same-origin through
+	// the hub, while platform-owned preview hosts can be added explicitly.
+	PortalFrameSources []string
 
 	// Embedded kcp options
 	EmbeddedKCP         bool   // Enable embedded kcp server

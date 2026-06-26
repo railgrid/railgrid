@@ -16,20 +16,22 @@ limitations under the License.
 
 package hub
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 // WithPortalSecurityHeaders wraps a portal handler to set a Content-Security-
-// Policy permitting provider iframes proxied through the hub. The policy
-// allows same-origin frames (every /ui/providers/{name}/* path is hub-
-// proxied, so same-origin from the browser's perspective) but rejects any
-// off-origin frame source — a malicious ProviderCatalogEntry pointing at an
-// external host cannot exfiltrate the user's session through an iframe load.
+// Policy permitting provider iframes proxied through the hub. The policy allows
+// same-origin frames (every /ui/providers/{name}/* path is hub-proxied, so
+// same-origin from the browser's perspective) and optional platform-owned frame
+// sources such as App Studio preview hosts.
 //
 // Applied to both the embedded portal SPA and the --portal-dev-url proxy so
 // the dev experience matches production.
-func WithPortalSecurityHeaders(next http.Handler) http.Handler {
-	const csp = "default-src 'self'; " +
-		"frame-src 'self'; " +
+func WithPortalSecurityHeaders(next http.Handler, frameSources ...string) http.Handler {
+	csp := "default-src 'self'; " +
+		"frame-src " + strings.Join(portalFrameSources(frameSources), " ") + "; " +
 		"img-src 'self' data:; " +
 		"script-src 'self' 'unsafe-inline'; " +
 		"style-src 'self' 'unsafe-inline'; " +
@@ -41,4 +43,28 @@ func WithPortalSecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		next.ServeHTTP(w, r)
 	})
+}
+
+func portalFrameSources(frameSources []string) []string {
+	sources := []string{"'self'"}
+	seen := map[string]struct{}{"'self'": {}}
+	for _, sourceList := range frameSources {
+		if strings.Contains(sourceList, ";") {
+			continue
+		}
+		for _, source := range strings.FieldsFunc(sourceList, func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+		}) {
+			source = strings.TrimSpace(source)
+			if source == "" {
+				continue
+			}
+			if _, ok := seen[source]; ok {
+				continue
+			}
+			sources = append(sources, source)
+			seen[source] = struct{}{}
+		}
+	}
+	return sources
 }

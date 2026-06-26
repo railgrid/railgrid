@@ -55,6 +55,13 @@ Environment variables consumed by the binary:
 | `APP_STUDIO_RUNTIME_KUBECONFIG` | Kubernetes kubeconfig for the runtime cluster that runs `SandboxRunner` pods |
 | `APP_STUDIO_SANDBOX_RUNNER_IMAGE` | Runner image passed to new `SandboxRunner` resources; use an immutable digest outside local development |
 | `APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE` | kubectl-capable token-generator image passed to new `SandboxRunner` resources; use an immutable digest outside local development |
+| `APP_STUDIO_PREVIEW_BASE_DOMAIN` | Optional DNS zone for companion Sandbox preview routing. |
+| `APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAME` | Gateway resource name to attach each preview `HTTPRoute` to. |
+| `APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAMESPACE` | Namespace of the parent Gateway (defaults to `kedge-preview`). |
+| `APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_SECTION_NAME` | Listener section name on the parent Gateway (defaults to `https`). |
+| `APP_STUDIO_PREVIEW_BACKEND_NAMESPACE` | Namespace for the shared preview gateway Service backend. The Helm chart sets this to the release namespace unless `previewGateway.backend.namespace` is configured. |
+| `APP_STUDIO_PREVIEW_BACKEND_SERVICE_NAME` | Shared preview gateway Service name. Defaults to the chart-created `preview-gateway` Service when unset. |
+| `APP_STUDIO_PREVIEW_BACKEND_SERVICE_PORT` | Shared preview gateway Service port (defaults to `8080`). |
 | `APP_STUDIO_PREVIEW_TOKEN_SECRET` | Optional shared signing secret for preview URLs; configure for multi-replica deployments |
 | `APP_STUDIO_DATABASE_URL` | Postgres DSN for the message store |
 | `APP_STUDIO_IN_MEMORY_MESSAGE_STORE` | `true` → non-durable in-memory store (dev) |
@@ -100,13 +107,25 @@ tool.
 App Studio owns the project-facing development runtime API. It creates and
 deletes infrastructure-backed `SandboxRunner` resources in the caller's tenant
 workspace, syncs App Studio workspace files to the runner, and serves project
-preview URLs from `/services/providers/app-studio/api/projects/{project}/preview/`.
+preview URLs by minting signed, host-based URLs from the companion
+`SandboxPreviewHTTPRoute` status.
 
 Infrastructure owns the resource composition: the `sandbox-runner` Template uses
 KRO to create the runtime namespace, PVC, Deployment, Service, control Secret,
 and network policy. App Studio uses `APP_STUDIO_RUNTIME_KUBECONFIG` only for
 runtime data-plane calls after validating that `SandboxRunner` status refs still
 point at the deterministic runner-owned namespace, Service, and Secret.
+
+When `APP_STUDIO_PREVIEW_BASE_DOMAIN` is set, App Studio also creates a
+`SandboxPreviewHTTPRoute` infrastructure resource beside each `SandboxRunner`.
+That companion template creates a Gateway API `HTTPRoute` that attaches to the
+configured parent Gateway and routes traffic to the shared preview-gateway
+Service.
+
+Preview browser traffic does not use the App Studio provider backend path. The
+browser goes to the preview host, the cluster Gateway routes to the
+preview-gateway Service, and the preview gateway validates the signed session
+before proxying to the sandbox Service.
 
 In the Helm chart, set `runtimeKubeconfig.secretName` to a Secret with key
 `kubeconfig` to enable those runtime data-plane APIs. Leaving it empty starts App

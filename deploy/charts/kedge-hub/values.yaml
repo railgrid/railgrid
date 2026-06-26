@@ -67,6 +67,9 @@ hub:
   # For OIDC, use the admin's email; for a static token, the synthesized identity
   # is static-<first8chars>@kedge.local.
   adminUsers: []
+  # Additional Content-Security-Policy frame-src entries allowed in the portal.
+  # Use this for platform-owned preview hosts that are rendered inside the portal.
+  portalFrameSources: []
   resources:
     requests:
       cpu: 100m

@@ -804,10 +804,10 @@ func (s *Server) Run(ctx context.Context) error {
 				// base=/ui/ so it already expects /ui/*.
 			},
 		}
-		portalSPA = WithPortalSecurityHeaders(devProxy)
+		portalSPA = WithPortalSecurityHeaders(devProxy, s.opts.PortalFrameSources...)
 		portalAvailable = true
 		logger.Info("Portal dev proxy enabled", "target", s.opts.PortalDevURL)
-	} else if h, portalErr := registerPortalRoutes(router); portalErr != nil {
+	} else if h, portalErr := registerPortalRoutes(router, s.opts.PortalFrameSources...); portalErr != nil {
 		logger.Info("Portal not available", "reason", portalErr.Error())
 	} else {
 		portalSPA = h

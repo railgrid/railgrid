@@ -38,7 +38,8 @@ func TestProjectAssistantTurnProfileClassifier(t *testing.T) {
 		{name: "discussion", message: "I am thinking about whether this product direction makes sense", want: projectAssistantTurnProfileDiscussion},
 		{name: "guidance", message: "How should I design authentication for this app?", want: projectAssistantTurnProfileGuidance},
 		{name: "exploration", message: "What files are in my current app?", want: projectAssistantTurnProfileExploration},
-		{name: "debugging", message: "The preview is not working and shows Failed to fetch", want: projectAssistantTurnProfileDebugging},
+		{name: "debugging", message: "Why is the preview not working and showing Failed to fetch? Diagnose it only.", want: projectAssistantTurnProfileDebugging},
+		{name: "implicit debug fix", message: "I click the button to make it dark mode but it didnt do anything", want: projectAssistantTurnProfileDebugFix},
 		{name: "debug fix", message: "Fix the failed fetch error and make it work", want: projectAssistantTurnProfileDebugFix},
 		{name: "fix only fallback", message: "Please fix the login form", want: projectAssistantTurnProfileDebugFix},
 		{name: "implementation", message: "Add a search field to the todo app", want: projectAssistantTurnProfileImplementation},
@@ -113,6 +114,26 @@ func TestProjectAssistantSemanticTurnClassifierNormalizesInconsistentMutationDec
 	decision, err := classifyProjectAssistantTurnWithModel(context.Background(), model, []store.Message{{
 		Role:    aiv1alpha1.ProjectMessageRoleUser,
 		Content: "Please fix the login form",
+	}})
+	if err != nil {
+		t.Fatalf("classifyProjectAssistantTurnWithModel returned error: %v", err)
+	}
+	if decision.Profile != projectAssistantTurnProfileDebugFix {
+		t.Fatalf("profile = %q, want debug_fix from mutation fallback", decision.Profile)
+	}
+	if !decision.RequestsMutation {
+		t.Fatalf("decision = %#v, want mutation preserved", decision)
+	}
+}
+
+func TestProjectAssistantSemanticTurnClassifierPreservesMutationFallback(t *testing.T) {
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: einoschema.AssistantMessage(`{"profile":"debugging","requires_current_state":true,"requires_runtime_state":false,"requests_mutation":false,"confidence":"high"}`, nil),
+	}}}
+
+	decision, err := classifyProjectAssistantTurnWithModel(context.Background(), model, []store.Message{{
+		Role:    aiv1alpha1.ProjectMessageRoleUser,
+		Content: "I click the button to make it dark mode but it didnt do anything",
 	}})
 	if err != nil {
 		t.Fatalf("classifyProjectAssistantTurnWithModel returned error: %v", err)
@@ -250,6 +271,7 @@ func TestProjectAssistantModePromptsPutBuilderGuidanceOnlyOnWriteProfiles(t *tes
 				projectToolApplyPatch,
 				projectToolCommitProjectFiles,
 				"tool_search",
+				"Do not give the user manual copy/paste file replacement instructions",
 			} {
 				if !strings.Contains(prompt, want) {
 					t.Fatalf("%s prompt missing %q:\n%s", profile, want, prompt)

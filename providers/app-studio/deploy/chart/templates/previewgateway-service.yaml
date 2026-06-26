@@ -1,0 +1,22 @@
+{{- $previewGatewayEnabled := .Values.previewGateway.enabled | default false -}}
+{{- $previewGatewayBaseDomain := .Values.previewGateway.baseDomain | default "" -}}
+{{- $previewGatewayName := printf "%s-preview-gateway" (include "appstudio.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- if and $previewGatewayEnabled (ne (trim $previewGatewayBaseDomain) "") -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $previewGatewayName }}
+  labels:
+    app.kubernetes.io/name: {{ include "appstudio.name" . }}-preview-gateway
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  type: {{ .Values.previewGateway.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.previewGateway.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ include "appstudio.name" . }}-preview-gateway
+    app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

@@ -46,6 +46,7 @@ import {
   type WorkbenchTabDropPlacement,
   type WorkbenchTabDescriptor,
 } from './workbench'
+import { developmentPreviewDisplayPhase, developmentPreviewSyncStatus } from './previewState'
 import type {
   KedgeContext,
   Project,
@@ -54,6 +55,7 @@ import type {
   ProjectAssistantUIComponent,
   ProjectAssistantUIEvent,
   ProjectAssistantUIInterruptRequest,
+  ProjectProviderBinding,
   ProjectLLMSettings,
   ProjectMessage,
   ProjectRepositoryCommit,
@@ -679,24 +681,34 @@ const developmentBinding = computed(() => {
 })
 
 const developmentPreviewRawURL = computed(() => {
-  const binding = developmentBinding.value
-  return binding?.previewURL || binding?.outputs?.previewURL || binding?.url || ''
+  return projectBindingPreviewURL(developmentBinding.value)
 })
 
 const developmentPreviewNeedsAuthorization = computed(() => {
-  return developmentBinding.value?.provider === 'app-studio' && developmentPreviewRawURL.value !== ''
+  return !!developmentBinding.value && developmentBinding.value.provider === 'app-studio'
 })
 
 const developmentPreviewURL = computed(() => {
   if (developmentPreviewOverrideURL.value) return developmentPreviewOverrideURL.value
-  if (developmentPreviewNeedsAuthorization.value) return ''
-  return developmentPreviewRawURL.value
+  return ''
 })
 
 const developmentPreviewPhase = computed(() => {
-  const phase = developmentEnvironment.value?.phase || developmentBinding.value?.phase || 'Pending'
-  if (phase.toLowerCase() === 'pending' && developmentPreviewOverrideURL.value) return 'Ready'
-  return phase
+  return developmentPreviewDisplayPhase({
+    previewURL: developmentPreviewURL.value,
+    authorizationError: developmentPreviewAuthorizationError.value || '',
+  })
+})
+
+const developmentPreviewCanOpenInBrowser = computed(() => {
+  return !!developmentBinding.value &&
+    !developmentPreviewAuthorizing.value &&
+    !!developmentPreviewOverrideURL.value &&
+    !developmentPreviewAuthorizationError.value
+})
+
+const developmentPreviewOpenButtonLabel = computed(() => {
+  return 'Open in browser'
 })
 const developmentPreviewUnavailableTitle = computed(() => (
   developmentPreviewAuthorizing.value || developmentPreviewReadinessMessage.value
@@ -1407,18 +1419,21 @@ async function syncDevelopmentPreviewForProject(projectName: string | undefined,
 	developmentSyncStatus.value = null
 	developmentSyncError.value = null
 	try {
-		const result = await api.syncDevelopment(props.ctx, projectName)
-		const authorization = projectDevelopmentPreviewAuthorization(result)
-		const previewURL = authorization.previewURL
+		await api.syncDevelopment(props.ctx, projectName)
 		const project = await api.getProject(props.ctx, projectName)
 		if (selected.value?.name !== projectName) return
 		selected.value = project
-		if (previewURL) {
-			applyDevelopmentPreviewAuthorization(projectName, authorization)
+		if (developmentPreviewNeedsAuthorization.value) {
+			await authorizeDevelopmentPreview({ force: true })
 		} else {
 			await refreshDevelopmentPreviewFrame('')
 		}
-		developmentSyncStatus.value = successStatus
+		developmentSyncStatus.value = developmentPreviewSyncStatus({
+			hasPreviewRouteBinding: developmentPreviewNeedsAuthorization.value,
+			previewURL: developmentPreviewURL.value,
+			readinessMessage: developmentPreviewReadinessMessage.value || '',
+			authorizationError: developmentPreviewAuthorizationError.value || '',
+		}, successStatus)
 	} catch (e) {
 		developmentSyncError.value = e instanceof Error ? e.message : String(e)
 	} finally {
@@ -1438,6 +1453,21 @@ async function refreshDevelopmentPreviewFrame(status: string) {
     return
   }
   if (status) developmentSyncStatus.value = status
+}
+
+async function openDevelopmentPreviewInBrowser() {
+  const projectName = selected.value?.name
+  if (!projectName || !developmentBinding.value) return
+  if (!developmentPreviewNeedsAuthorization.value) return
+  await authorizeDevelopmentPreview({ force: true })
+  if (
+    selected.value?.name !== projectName ||
+    developmentPreviewAuthorizationError.value ||
+    !developmentPreviewOverrideURL.value
+  ) {
+    return
+  }
+  window.open(developmentPreviewOverrideURL.value, '_blank', 'noopener')
 }
 
 async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
@@ -1558,6 +1588,11 @@ function projectDevelopmentPreviewAuthorization(result: unknown): ProjectDevelop
     message: projectDevelopmentPreviewString(result, 'message'),
     reason: projectDevelopmentPreviewString(result, 'reason'),
   }
+}
+
+function projectBindingPreviewURL(binding: ProjectProviderBinding | null | undefined): string {
+  if (!binding) return ''
+  return binding.previewURL || binding.outputs?.previewURL || binding.url || binding.outputs?.url || ''
 }
 
 function projectDevelopmentPreviewString(result: unknown, key: 'message' | 'reason' | 'previewTokenExpiresAt'): string {
@@ -3511,17 +3546,29 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               </div>
               <StatusBadge :status="developmentPreviewPhase" />
             </div>
-            <button
-              type="button"
-              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-              :disabled="!selected || !developmentBinding || developmentSyncBusy"
-              title="Sync"
-              @click="syncDevelopmentPreview"
-            >
-              <Loader2 v-if="developmentSyncBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-              <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-              Sync
-            </button>
+            <div class="ml-auto flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="!selected || !developmentBinding || developmentSyncBusy"
+                title="Sync"
+                @click="syncDevelopmentPreview"
+              >
+                <Loader2 v-if="developmentSyncBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Sync
+              </button>
+              <button
+                type="button"
+                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="!selected || !developmentBinding || !developmentPreviewCanOpenInBrowser"
+                title="Open a separate browser tab for the development preview"
+                @click="openDevelopmentPreviewInBrowser"
+              >
+                <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
+                {{ developmentPreviewOpenButtonLabel }}
+              </button>
+            </div>
           </div>
           <div v-if="developmentSyncError || developmentPreviewAuthorizationError" class="rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
             {{ developmentSyncError || developmentPreviewAuthorizationError }}
@@ -3534,7 +3581,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               :key="developmentPreviewFrameKey"
               :src="developmentPreviewURL"
               title="Development preview"
-              sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-scripts"
+              sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-scripts allow-same-origin"
               referrerpolicy="no-referrer"
               class="h-full min-h-[360px] w-full border-0 bg-white"
               @load="handleDevelopmentPreviewFrameLoad"

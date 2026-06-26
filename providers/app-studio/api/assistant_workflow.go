@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
@@ -665,6 +666,19 @@ func formatProjectAssistantPreviewURLResult(ctx context.Context, input projectAs
 	return projectAssistantRuntimeNotConfiguredResult("Preview URL is unavailable because no runtime deployment is recorded.")
 }
 
+func isInternalAppStudioPreviewURL(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	previewPath := value
+	if parsed, err := url.Parse(value); err == nil && parsed.Path != "" {
+		previewPath = parsed.Path
+	}
+	return strings.HasPrefix(previewPath, "/services/providers/app-studio/api/projects/") &&
+		strings.Contains(previewPath, "/preview/")
+}
+
 func projectAssistantRuntimePreviewURL(p *aiv1alpha1.Project) string {
 	if p == nil {
 		return ""
@@ -677,23 +691,31 @@ func projectAssistantRuntimePreviewURL(p *aiv1alpha1.Project) string {
 	}
 	for _, env := range p.Status.Environments {
 		for _, binding := range env.Bindings {
-			if binding.PreviewURL != "" {
-				return binding.PreviewURL
+			if url := projectAssistantPreviewCandidate(binding.PreviewURL); url != "" {
+				return url
 			}
-			if binding.URL != "" {
-				return binding.URL
+			if url := projectAssistantPreviewCandidate(binding.URL); url != "" {
+				return url
 			}
 			if binding.Outputs != nil {
-				if v := binding.Outputs["previewURL"]; v != "" {
+				if v := projectAssistantPreviewCandidate(binding.Outputs["previewURL"]); v != "" {
 					return v
 				}
-				if v := binding.Outputs["url"]; v != "" {
+				if v := projectAssistantPreviewCandidate(binding.Outputs["url"]); v != "" {
 					return v
 				}
 			}
 		}
 	}
 	return ""
+}
+
+func projectAssistantPreviewCandidate(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || isInternalAppStudioPreviewURL(value) {
+		return ""
+	}
+	return value
 }
 
 func projectEnvironmentPreviewURL(environments []aiv1alpha1.ProjectEnvironmentStatus, envName, bindingName string) string {
@@ -705,17 +727,17 @@ func projectEnvironmentPreviewURL(environments []aiv1alpha1.ProjectEnvironmentSt
 			if binding.Name != bindingName {
 				continue
 			}
-			if binding.PreviewURL != "" {
-				return binding.PreviewURL
+			if url := projectAssistantPreviewCandidate(binding.PreviewURL); url != "" {
+				return url
 			}
-			if binding.URL != "" {
-				return binding.URL
+			if url := projectAssistantPreviewCandidate(binding.URL); url != "" {
+				return url
 			}
 			if binding.Outputs != nil {
-				if v := binding.Outputs["previewURL"]; v != "" {
+				if v := projectAssistantPreviewCandidate(binding.Outputs["previewURL"]); v != "" {
 					return v
 				}
-				if v := binding.Outputs["url"]; v != "" {
+				if v := projectAssistantPreviewCandidate(binding.Outputs["url"]); v != "" {
 					return v
 				}
 			}

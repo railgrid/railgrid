@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -24,6 +25,65 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestRunMainRoutesServeToProviderServer(t *testing.T) {
+	var served bool
+	var previewGateway bool
+	code := runMainWith(
+		[]string{"serve"},
+		func(context.Context) error { return nil },
+		func() { served = true },
+		func() { previewGateway = true },
+		io.Discard,
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !served {
+		t.Fatal("serve handler was not called")
+	}
+	if previewGateway {
+		t.Fatal("preview-gateway handler was called for serve command")
+	}
+}
+
+func TestRunMainRoutesPreviewGatewaySeparately(t *testing.T) {
+	var served bool
+	var previewGateway bool
+	code := runMainWith(
+		[]string{"preview-gateway"},
+		func(context.Context) error { return nil },
+		func() { served = true },
+		func() { previewGateway = true },
+		io.Discard,
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if served {
+		t.Fatal("serve handler was called for preview-gateway command")
+	}
+	if !previewGateway {
+		t.Fatal("preview-gateway handler was not called")
+	}
+}
+
+func TestRunMainRejectsUnknownCommand(t *testing.T) {
+	var stderr bytes.Buffer
+	code := runMainWith(
+		[]string{"bogus"},
+		func(context.Context) error { return nil },
+		func() { t.Fatal("serve handler should not be called") },
+		func() { t.Fatal("preview-gateway handler should not be called") },
+		&stderr,
+	)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if got := stderr.String(); !strings.Contains(got, "usage: app-studio [init|serve|preview-gateway]") {
+		t.Fatalf("stderr = %q, want usage", got)
+	}
+}
 
 func TestHealthz(t *testing.T) {
 	h, err := newHandler(nil)

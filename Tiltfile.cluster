@@ -138,6 +138,15 @@ load('ext://restart_process', 'docker_build_with_restart')
 
 hub_namespace = 'kedge-system'
 hub_image = 'ghcr.io/faroshq/kedge-hub'
+app_studio_provider_image = 'ghcr.io/faroshq/kedge/app-studio-provider:dev'
+app_studio_preview_namespace = 'kedge-preview'
+app_studio_preview_gateway_name = 'sandbox-preview-gateway'
+app_studio_preview_parent_gateway_name = 'app-studio-preview'
+app_studio_preview_token_secret = 'sandbox-preview-token'
+app_studio_preview_tls_secret = 'app-studio-preview-localhost-tls'
+app_studio_preview_listener = 'app-studio-preview-https'
+app_studio_preview_base_domain = 'preview.localhost'
+app_studio_preview_public_port = '10443'
 
 # The kedge-hub chart deploys namespaced objects (TLS Certificate + Secret,
 # selfsigned Issuer, StatefulSet) into hub_namespace but ships NO Namespace
@@ -239,6 +248,212 @@ RUN chmod 0755 /tmp/kedge-hub
     ],
 )
 
+docker_build(
+    app_studio_provider_image,
+    context='providers/app-studio',
+    dockerfile='providers/app-studio/Dockerfile',
+)
+
+k8s_yaml(blob('''
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: %s
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: app-studio-preview-selfsigned
+  namespace: envoy-gateway-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: app-studio-preview-localhost
+  namespace: envoy-gateway-system
+spec:
+  secretName: %s
+  dnsNames:
+    - "*.%s"
+  issuerRef:
+    name: app-studio-preview-selfsigned
+    kind: Issuer
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: %s
+  namespace: envoy-gateway-system
+  labels:
+    app.kubernetes.io/managed-by: tilt
+spec:
+  addresses:
+    - type: IPAddress
+      value: %s
+  gatewayClassName: eg
+  listeners:
+    - name: %s
+      hostname: "*.%s"
+      port: %s
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: %s
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: %s
+type: Opaque
+stringData:
+  token: dev-app-studio-preview-token-secret
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: %s
+  namespace: %s
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: %s
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: %s
+subjects:
+  - kind: ServiceAccount
+    name: %s
+    namespace: %s
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: %s
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    app.kubernetes.io/name: %s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: %s
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: %s
+    spec:
+      serviceAccountName: %s
+      containers:
+        - name: preview-gateway
+          image: %s
+          args: ["preview-gateway"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8080"
+            - name: APP_STUDIO_PREVIEW_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: %s
+                  key: token
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    app.kubernetes.io/name: %s
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: %s
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+'''.strip() % (
+    app_studio_preview_namespace,
+    app_studio_preview_tls_secret,
+    app_studio_preview_base_domain,
+    app_studio_preview_parent_gateway_name,
+    gateway_ip,
+    app_studio_preview_listener,
+    app_studio_preview_base_domain,
+    app_studio_preview_public_port,
+    app_studio_preview_tls_secret,
+    app_studio_preview_token_secret, app_studio_preview_namespace,
+    app_studio_preview_gateway_name, app_studio_preview_namespace,
+    app_studio_preview_gateway_name,
+    app_studio_preview_gateway_name,
+    app_studio_preview_gateway_name, app_studio_preview_namespace,
+    app_studio_preview_gateway_name,
+    app_studio_preview_gateway_name, app_studio_preview_namespace, app_studio_preview_gateway_name,
+    app_studio_preview_gateway_name,
+    app_studio_preview_gateway_name,
+    app_studio_preview_gateway_name,
+    app_studio_provider_image,
+    app_studio_preview_token_secret,
+    app_studio_preview_gateway_name, app_studio_preview_namespace, app_studio_preview_gateway_name,
+    app_studio_preview_gateway_name,
+)))
+
+k8s_resource(
+    app_studio_preview_gateway_name,
+    labels=['providers-app-studio'],
+)
+
+local_resource(
+    'app-studio-preview-port-forward',
+    cmd='true',
+    serve_cmd='''
+set -eu
+while true; do
+  svc="$(kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=app-studio-preview -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [ -n "$svc" ]; then
+    exec kubectl -n envoy-gateway-system port-forward "svc/$svc" 10443:10443
+  fi
+  sleep 2
+done
+'''.strip(),
+    resource_deps=[app_studio_preview_gateway_name],
+    labels=['providers-app-studio'],
+)
+
 # --- kcp kubeconfig → in-cluster Secret the chart mounts ---
 # We use ONLY the front-proxy kubeconfig, for both the primary connection AND
 # the GraphQL listener. The listener locates the APIExportEndpointSlice by
@@ -305,6 +520,7 @@ k8s_yaml(helm(
         # /bonkers admin access for the dev static token (resolves to
         # static-dev-toke@kedge.local — see proxy.ensureStaticTokenUserOnce).
         'hub.adminUsers={static-dev-toke@kedge.local}',
+        'hub.portalFrameSources={https://*.%s:%s}' % (app_studio_preview_base_domain, app_studio_preview_public_port),
         # Make *.kcp.localhost resolve to the Envoy gateway from the hub pod,
         # so the operator-issued kubeconfigs work in-cluster unchanged.
         'hostAliases[0].ip=%s' % gateway_ip,
@@ -498,8 +714,24 @@ local_resource(
     # provider runs on the host, so point it at the operator-issued admin
     # kubeconfig (kcp.localhost:8443).
     serve_cmd=('KEDGE_PROVIDER_KUBECONFIG={kc} APP_STUDIO_RUNTIME_KUBECONFIG={kind} ' +
+               'APP_STUDIO_PREVIEW_BASE_DOMAIN={preview_domain} ' +
+               'APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAME={preview_gateway} ' +
+               'APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAMESPACE=envoy-gateway-system ' +
+               'APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_SECTION_NAME={preview_listener} ' +
+               'APP_STUDIO_PREVIEW_BACKEND_NAMESPACE={preview_namespace} ' +
+               'APP_STUDIO_PREVIEW_BACKEND_SERVICE_NAME={preview_backend} ' +
+               'APP_STUDIO_PREVIEW_BACKEND_SERVICE_PORT=8080 ' +
+               'APP_STUDIO_PREVIEW_PUBLIC_PORT={preview_public_port} ' +
+               'APP_STUDIO_PREVIEW_TOKEN_SECRET=dev-app-studio-preview-token-secret ' +
                'make run-provider-app-studio').format(
-                   kc=KCP_ADMIN_KUBECONFIG, kind=KIND_HOST_KUBECONFIG),
+                   kc=KCP_ADMIN_KUBECONFIG,
+                   kind=KIND_HOST_KUBECONFIG,
+                   preview_domain=app_studio_preview_base_domain,
+                   preview_gateway=app_studio_preview_parent_gateway_name,
+                   preview_listener=app_studio_preview_listener,
+                   preview_namespace=app_studio_preview_namespace,
+                   preview_backend=app_studio_preview_gateway_name,
+                   preview_public_port=app_studio_preview_public_port),
     deps=[
         'providers/app-studio/main.go',
         'providers/app-studio/heartbeat.go',
@@ -519,7 +751,13 @@ local_resource(
         'providers/app-studio/manifest.yaml',
         'providers/app-studio/.env',
     ],
-    resource_deps=['kedge-hub', 'app-studio-db', 'sandbox-runner-image'],
+    resource_deps=[
+        'kedge-hub',
+        'app-studio-db',
+        'sandbox-runner-image',
+        app_studio_preview_gateway_name,
+        'app-studio-preview-port-forward',
+    ],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8085, path='/healthz'),

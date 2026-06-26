@@ -86,6 +86,7 @@ func main() {
 	cmd.Flags().BoolVar(&opts.GraphQLPlayground, "graphql-playground", opts.GraphQLPlayground, "Enable the GraphQL playground UI")
 
 	cmd.Flags().StringVar(&opts.PortalDevURL, "portal-dev-url", "", "Reverse-proxy /ui/* to this URL (e.g. http://localhost:3000 for Vite dev server); takes precedence over embedded portal dist")
+	cmd.Flags().StringSliceVar(&opts.PortalFrameSources, "portal-frame-source", nil, "Additional CSP frame-src source expressions allowed by the portal, e.g. https://*.preview.example.com")
 
 	// Embedded kcp flags
 	cmd.Flags().BoolVar(&opts.EmbeddedKCP, "embedded-kcp", opts.EmbeddedKCP, "Enable embedded kcp server (runs kcp in-process)")

@@ -8,6 +8,7 @@
     "build": "vite build && cp index.html icon.svg dist/ && touch dist/.gitkeep",
     "dev": "vite",
     "test:workbench": "node --test src/workbench.test.mjs",
+    "test:preview-state": "node --test src/previewState.test.mjs",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

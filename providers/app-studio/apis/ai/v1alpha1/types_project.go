@@ -73,11 +73,44 @@ type ProjectSpec struct {
 	// +optional
 	Memory ProjectMemory `json:"memory,omitempty"`
 
+	// Sharing captures App Studio access policy intent for previews and
+	// published apps. Empty policies are interpreted as private.
+	// +optional
+	Sharing ProjectSharingSpec `json:"sharing,omitempty"`
+
 	// Environments describe provider-backed runtime capabilities for this
 	// Project. App Studio owns the binding contract; providers own runtime
 	// implementation details.
 	// +optional
 	Environments []ProjectEnvironmentSpec `json:"environments,omitempty"`
+}
+
+type ProjectSharingMode string
+
+const (
+	ProjectSharingModePrivate ProjectSharingMode = "private"
+	ProjectSharingModeShared  ProjectSharingMode = "shared"
+	ProjectSharingModePublic  ProjectSharingMode = "public"
+)
+
+type ProjectSharingSpec struct {
+	// Preview controls who may access the mutable development preview. The
+	// current implementation enforces private access; shared/public are future
+	// policy intent.
+	// +optional
+	Preview ProjectSharingPolicy `json:"preview,omitempty"`
+
+	// Publishing controls who may access published app instances once the
+	// publishing runtime exists.
+	// +optional
+	Publishing ProjectSharingPolicy `json:"publishing,omitempty"`
+}
+
+type ProjectSharingPolicy struct {
+	// Mode is the requested visibility for this channel. Empty means private.
+	// +optional
+	// +kubebuilder:validation:Enum=private;shared;public
+	Mode ProjectSharingMode `json:"mode,omitempty"`
 }
 
 // ProjectRepositoryBinding identifies the Code provider Repository created for

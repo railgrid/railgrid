@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -40,6 +41,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/faroshq/provider-app-studio/api"
+	"github.com/faroshq/provider-app-studio/previewgateway"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/tenant"
 	"github.com/faroshq/provider-app-studio/workspace"
@@ -101,31 +103,60 @@ func loadRuntimeConfig() (*rest.Config, error) {
 	return nil, fmt.Errorf("no runtime kubeconfig found (set APP_STUDIO_RUNTIME_KUBECONFIG)")
 }
 
+func loadPreviewGatewayConfig() (*rest.Config, error) {
+	if path := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_GATEWAY_KUBECONFIG")); path != "" {
+		cfg, err := clientcmd.BuildConfigFromFlags("", path)
+		if err != nil {
+			return nil, fmt.Errorf("loading preview gateway kubeconfig %s: %w", path, err)
+		}
+		return cfg, nil
+	}
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading preview gateway in-cluster config: %w", err)
+	}
+	return cfg, nil
+}
+
 // Subcommands:
 //
 //	app-studio init   — one-shot: apply APIResourceSchemas, APIExport,
 //	    APIExportEndpointSlice, and bind grant into the provider workspace using
 //	    KEDGE_PROVIDER_KUBECONFIG. See init_cmd.go.
 //	app-studio serve  — runtime (default).
+//	app-studio preview-gateway — proxy private sandbox previews to runtime.
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+	os.Exit(runMain(os.Args[1:]))
+}
+
+func runMain(args []string) int {
+	return runMainWith(args, runInitCmd, runServe, runPreviewGateway, os.Stderr)
+}
+
+func runMainWith(args []string, initCmd func(context.Context) error, serve func(), previewGateway func(), stderr io.Writer) int {
+	if len(args) > 0 {
+		switch args[0] {
 		case "init":
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			if err := runInitCmd(ctx); err != nil {
-				fmt.Fprintln(os.Stderr, "init:", err)
-				os.Exit(1)
+			if err := initCmd(ctx); err != nil {
+				fmt.Fprintln(stderr, "init:", err)
+				return 1
 			}
-			return
+			return 0
 		case "serve":
-			// fall through
+			serve()
+			return 0
+		case "preview-gateway":
+			previewGateway()
+			return 0
 		default:
-			fmt.Fprintf(os.Stderr, "unknown subcommand: %s\nusage: app-studio [init|serve]\n", os.Args[1])
-			os.Exit(2)
+			fmt.Fprintf(stderr, "unknown subcommand: %s\nusage: app-studio [init|serve|preview-gateway]\n", args[0])
+			return 2
 		}
 	}
-	runServe()
+	serve()
+	return 0
 }
 
 func runServe() {
@@ -185,6 +216,48 @@ func runServe() {
 	}()
 
 	go runHeartbeat(ctx)
+
+	<-ctx.Done()
+	log.Printf("shutting down")
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdown); err != nil {
+		log.Printf("shutdown error: %v", err)
+	}
+}
+
+func runPreviewGateway() {
+	port := envOr("PORT", "8080")
+
+	secret := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_TOKEN_SECRET"))
+	if secret == "" {
+		log.Fatal("APP_STUDIO_PREVIEW_TOKEN_SECRET is required for preview-gateway")
+	}
+
+	cfg, err := loadPreviewGatewayConfig()
+	if err != nil {
+		log.Fatalf("preview-gateway config: %v", err)
+	}
+	gateway, err := previewgateway.NewFromConfig(cfg, []byte(secret))
+	if err != nil {
+		log.Fatalf("preview-gateway handler: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           logMiddleware(gateway),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		log.Printf("app-studio preview-gateway listening on :%s", port)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("preview-gateway server: %v", err)
+		}
+	}()
 
 	<-ctx.Done()
 	log.Printf("shutting down")

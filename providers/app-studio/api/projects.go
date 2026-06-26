@@ -48,8 +48,9 @@ type CreateProjectRequest struct {
 }
 
 type PatchProjectRequest struct {
-	DisplayName *string `json:"displayName,omitempty"`
-	Description *string `json:"description,omitempty"`
+	DisplayName *string                        `json:"displayName,omitempty"`
+	Description *string                        `json:"description,omitempty"`
+	Sharing     *aiv1alpha1.ProjectSharingSpec `json:"sharing,omitempty"`
 }
 
 type PatchProjectMemoryRequest struct {
@@ -64,15 +65,16 @@ type CreateProjectMessageRequest struct {
 }
 
 type ProjectView struct {
-	Name         string                   `json:"name"`
-	DisplayName  string                   `json:"displayName"`
-	Description  string                   `json:"description,omitempty"`
-	Phase        string                   `json:"phase,omitempty"`
-	Repository   *ProjectRepositoryView   `json:"repository,omitempty"`
-	Memory       aiv1alpha1.ProjectMemory `json:"memory,omitempty"`
-	Environments []ProjectEnvironmentView `json:"environments,omitempty"`
-	CreatedAt    time.Time                `json:"createdAt"`
-	UpdatedAt    *time.Time               `json:"updatedAt,omitempty"`
+	Name         string                        `json:"name"`
+	DisplayName  string                        `json:"displayName"`
+	Description  string                        `json:"description,omitempty"`
+	Phase        string                        `json:"phase,omitempty"`
+	Repository   *ProjectRepositoryView        `json:"repository,omitempty"`
+	Memory       aiv1alpha1.ProjectMemory      `json:"memory,omitempty"`
+	Sharing      aiv1alpha1.ProjectSharingSpec `json:"sharing,omitempty"`
+	Environments []ProjectEnvironmentView      `json:"environments,omitempty"`
+	CreatedAt    time.Time                     `json:"createdAt"`
+	UpdatedAt    *time.Time                    `json:"updatedAt,omitempty"`
 }
 
 type ProjectEnvironmentView struct {
@@ -320,22 +322,13 @@ func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	changed := false
-	if req.DisplayName != nil {
-		displayName := strings.TrimSpace(*req.DisplayName)
-		if displayName == "" {
-			writeProjectError(w, newValidationError("displayName cannot be empty"))
-			return
-		}
-		p.Spec.DisplayName = displayName
-		changed = true
-	}
-	if req.Description != nil {
-		p.Spec.Description = strings.TrimSpace(*req.Description)
-		changed = true
+	changed, err := applyProjectPatchRequest(p, req)
+	if err != nil {
+		writeProjectError(w, err)
+		return
 	}
 	if !changed {
-		writeProjectError(w, newValidationError("PATCH body must set displayName or description"))
+		writeProjectError(w, newValidationError("PATCH body must set displayName, description, or sharing"))
 		return
 	}
 	updated, err := c.Projects().Update(r.Context(), p, metav1.UpdateOptions{})
@@ -349,6 +342,64 @@ func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, projectView(r.Context(), c, updated, id))
+}
+
+func applyProjectPatchRequest(p *aiv1alpha1.Project, req PatchProjectRequest) (bool, error) {
+	changed := false
+	if req.DisplayName != nil {
+		displayName := strings.TrimSpace(*req.DisplayName)
+		if displayName == "" {
+			return false, newValidationError("displayName cannot be empty")
+		}
+		p.Spec.DisplayName = displayName
+		changed = true
+	}
+	if req.Description != nil {
+		p.Spec.Description = strings.TrimSpace(*req.Description)
+		changed = true
+	}
+	if req.Sharing != nil {
+		sharing, err := normalizeProjectSharingSpec(*req.Sharing)
+		if err != nil {
+			return false, err
+		}
+		p.Spec.Sharing = sharing
+		changed = true
+	}
+	return changed, nil
+}
+
+func normalizeProjectSharingSpec(sharing aiv1alpha1.ProjectSharingSpec) (aiv1alpha1.ProjectSharingSpec, error) {
+	if sharing.Preview.Mode == "" {
+		sharing.Preview.Mode = aiv1alpha1.ProjectSharingModePrivate
+	}
+	if sharing.Publishing.Mode == "" {
+		sharing.Publishing.Mode = aiv1alpha1.ProjectSharingModePrivate
+	}
+	if !validProjectSharingMode(sharing.Preview.Mode) {
+		return aiv1alpha1.ProjectSharingSpec{}, newValidationError("sharing.preview.mode must be private, shared, or public")
+	}
+	if !validProjectSharingMode(sharing.Publishing.Mode) {
+		return aiv1alpha1.ProjectSharingSpec{}, newValidationError("sharing.publishing.mode must be private, shared, or public")
+	}
+	return sharing, nil
+}
+
+func effectiveProjectSharingSpec(sharing aiv1alpha1.ProjectSharingSpec) aiv1alpha1.ProjectSharingSpec {
+	normalized, err := normalizeProjectSharingSpec(sharing)
+	if err != nil {
+		return privateProjectSharingSpec()
+	}
+	return normalized
+}
+
+func validProjectSharingMode(mode aiv1alpha1.ProjectSharingMode) bool {
+	switch mode {
+	case aiv1alpha1.ProjectSharingModePrivate, aiv1alpha1.ProjectSharingModeShared, aiv1alpha1.ProjectSharingModePublic:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
@@ -1289,6 +1340,7 @@ func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project,
 		Phase:        p.Status.Phase,
 		Repository:   projectRepositoryView(ctx, c, p),
 		Memory:       p.Spec.Memory,
+		Sharing:      effectiveProjectSharingSpec(p.Spec.Sharing),
 		Environments: projectEnvironmentViews(p),
 		CreatedAt:    p.CreationTimestamp.Time,
 	}

@@ -58,8 +58,8 @@ Definitions:
 - discussion: conceptual, exploratory, or conversational; no current project state required.
 - guidance: recommendation, how-to, architecture, or design direction; no current project state required.
 - exploration: asks about current project, files, workspace, repository, runtime, or preview state without asking for a change.
-- debugging: reports a problem and asks for diagnosis without explicitly asking for a fix.
-- debug_fix: asks to fix, solve, repair, resolve, or make a broken/problematic behavior work.
+- debugging: asks to diagnose, explain, or inspect a problem without changing the app.
+- debug_fix: reports broken/problematic app behavior or asks to fix, solve, repair, resolve, or make it work, unless the user explicitly asks for diagnosis only.
 - implementation: asks to build, add, change, remove, update, deploy, provision, write code, or otherwise evolve the app.
 
 Do not call tools. Do not answer the user. Classify intent only.`
@@ -144,14 +144,23 @@ func fallbackProjectAssistantTurnDecisionForMessage(content string) projectAssis
 	hasDebug := containsProjectAssistantTurnKeyword(normalized, []string{
 		"error", "failed", "failure", "failing", "bug", "broken", "not working", "doesn't work", "does not work",
 		"stack trace", "exception", "crash", "crashing", "issue", "problem", "wrong", "failed to fetch",
+		"didn't do anything", "didnt do anything", "doesn't do anything", "does not do anything", "does nothing",
+		"nothing happens", "unresponsive",
 	})
 	hasFix := containsProjectAssistantTurnKeyword(normalized, []string{
 		"fix", "solve", "repair", "resolve", "make it work", "make this work", "get it working",
+	})
+	diagnosisOnly := containsProjectAssistantTurnKeyword(normalized, []string{
+		"why", "diagnose", "diagnosis", "explain", "what's wrong", "what is wrong", "root cause",
+		"debug only", "do not change", "don't change", "without changing", "no changes", "read only", "read-only",
 	})
 	if hasFix {
 		return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileDebugFix)
 	}
 	if hasDebug {
+		if !diagnosisOnly {
+			return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileDebugFix)
+		}
 		return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileDebugging)
 	}
 	if containsProjectAssistantTurnKeyword(normalized, []string{
@@ -245,6 +254,11 @@ func normalizeProjectAssistantTurnDecision(decision projectAssistantTurnDecision
 }
 
 func reconcileProjectAssistantTurnDecision(decision projectAssistantTurnDecision, fallback projectAssistantTurnDecision) projectAssistantTurnDecision {
+	if fallback.RequestsMutation && !decision.RequestsMutation && projectAssistantTurnProfileAllowsMutation(fallback.Profile) {
+		fallback.Confidence = decision.Confidence
+		fallback.RequiresRuntimeState = fallback.RequiresRuntimeState || decision.RequiresRuntimeState
+		return fallback
+	}
 	if decision.RequestsMutation && !projectAssistantTurnProfileAllowsMutation(decision.Profile) {
 		if fallback.RequestsMutation && projectAssistantTurnProfileAllowsMutation(fallback.Profile) {
 			fallback.Confidence = decision.Confidence

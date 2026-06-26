@@ -26,6 +26,7 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/previewtoken"
 )
 
 func (s *Server) reconcileProjectLiveBindings(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) (*aiv1alpha1.Project, error) {
@@ -40,6 +41,9 @@ func (s *Server) reconcileProjectLiveBindings(ctx context.Context, c *asclient.C
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderResource || binding.ResourceRef == nil {
 				continue
 			}
+			if isSandboxPreviewHTTPRouteBinding(binding) {
+				continue
+			}
 			if _, err := ensureProjectProviderResource(ctx, c, p, binding, id); err != nil {
 				return nil, err
 			}
@@ -49,6 +53,9 @@ func (s *Server) reconcileProjectLiveBindings(ctx context.Context, c *asclient.C
 }
 
 func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, id identity) (*unstructured.Unstructured, error) {
+	if isSandboxPreviewHTTPRouteBinding(binding) {
+		return nil, fmt.Errorf("sandbox preview HTTPRoute bindings are no longer reconciled")
+	}
 	gvr, err := projectProviderResourceGVR(binding.ResourceRef)
 	if err != nil {
 		return nil, err
@@ -246,6 +253,9 @@ func projectLiveEnvironmentStatuses(ctx context.Context, c *asclient.Client, p *
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderResource || binding.ResourceRef == nil {
 				continue
 			}
+			if isSandboxPreviewHTTPRouteBinding(binding) {
+				continue
+			}
 			envStatus.Bindings = append(envStatus.Bindings, projectProviderBindingStatus(ctx, c, p, binding, id))
 		}
 		if len(envStatus.Bindings) == 0 {
@@ -286,13 +296,15 @@ func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 		status.Phase = "Pending"
 		return status
 	}
-	if phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase"); phase != "" {
-		status.Phase = phase
-	}
-	if isSandboxRunnerBinding(binding) && p != nil {
-		status.PreviewURL = externalProjectPreviewPath(p.Name)
-	} else if previewURL, _, _ := unstructured.NestedString(obj.Object, "status", "previewURL"); previewURL != "" {
-		status.PreviewURL = previewURL
+	status.Phase = projectProviderResourcePhase(obj)
+	if isSandboxRunnerBinding(binding) {
+		if route, err := sandboxRunnerPreviewRoute(obj); err == nil && route.URL != "" {
+			status.PreviewURL = route.URL
+		}
+	} else if !isSandboxRunnerBinding(binding) {
+		if previewURL, _, _ := unstructured.NestedString(obj.Object, "status", "previewURL"); previewURL != "" {
+			status.PreviewURL = previewURL
+		}
 	}
 	if url, _, _ := unstructured.NestedString(obj.Object, "status", "url"); url != "" {
 		status.URL = url
@@ -301,6 +313,42 @@ func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 		status.Outputs = outputs
 	}
 	return status
+}
+
+func projectProviderResourcePhase(obj *unstructured.Unstructured) string {
+	if obj == nil {
+		return ""
+	}
+	if phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase"); strings.TrimSpace(phase) != "" {
+		return strings.TrimSpace(phase)
+	}
+	if conditionStatus, ok := projectProviderResourceConditionStatus(obj, "Ready"); ok {
+		if strings.EqualFold(conditionStatus, "True") {
+			return "Ready"
+		}
+		return "Pending"
+	}
+	if state, _, _ := unstructured.NestedString(obj.Object, "status", "state"); strings.EqualFold(strings.TrimSpace(state), "ACTIVE") {
+		return "Ready"
+	}
+	return ""
+}
+
+func projectProviderResourceConditionStatus(obj *unstructured.Unstructured, conditionType string) (string, bool) {
+	conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	for _, raw := range conditions {
+		condition, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		rawType, _ := condition["type"].(string)
+		if rawType != conditionType {
+			continue
+		}
+		status, _ := condition["status"].(string)
+		return strings.TrimSpace(status), strings.TrimSpace(status) != ""
+	}
+	return "", false
 }
 
 func mergeProjectEnvironmentStatuses(existing, live []aiv1alpha1.ProjectEnvironmentStatus) []aiv1alpha1.ProjectEnvironmentStatus {
@@ -353,6 +401,9 @@ func projectProviderBindingResourceName(p *aiv1alpha1.Project, binding aiv1alpha
 	if isSandboxRunnerBinding(binding) && p != nil && strings.TrimSpace(id.tenantPath) != "" && strings.TrimSpace(p.Name) != "" {
 		return sandboxRunnerResourceName(id.tenantPath, p.Name)
 	}
+	if isSandboxPreviewHTTPRouteBinding(binding) && p != nil && strings.TrimSpace(id.tenantPath) != "" && strings.TrimSpace(p.Name) != "" {
+		return sandboxPreviewHTTPRouteResourceName(id.tenantPath, p.Name)
+	}
 	if binding.ResourceRef != nil && strings.TrimSpace(binding.ResourceRef.Name) != "" {
 		return strings.TrimSpace(binding.ResourceRef.Name)
 	}
@@ -371,13 +422,42 @@ func projectProviderBindingResourceName(p *aiv1alpha1.Project, binding aiv1alpha
 }
 
 func normalizeProjectProviderBindingValues(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, values map[string]any, resourceName string) {
-	if !isSandboxRunnerBinding(binding) {
+	switch {
+	case isSandboxRunnerBinding(binding):
+		values["name"] = resourceName
+		if p != nil {
+			values["projectRef"] = p.Name
+		}
+		normalizeSandboxRunnerPreviewRouteValues(values, resourceName)
+	}
+}
+
+func normalizeSandboxRunnerPreviewRouteValues(values map[string]any, runnerName string) {
+	if !previewHTTPRouteEnabled() {
+		values["previewRouteEnabled"] = false
+		delete(values, "previewRoute")
 		return
 	}
-	values["name"] = resourceName
-	if p != nil {
-		values["projectRef"] = p.Name
+	baseDomain := strings.TrimSuffix(previewtoken.NormalizeHost(previewHTTPRouteBaseDomain()), "/")
+	values["previewRouteEnabled"] = true
+	route := map[string]any{
+		"channel":    previewChannelDevelopment,
+		"accessMode": string(aiv1alpha1.ProjectSharingModePrivate),
+		"parentGateway": map[string]any{
+			"name":        previewHTTPRouteParentGatewayName(),
+			"namespace":   previewHTTPRouteParentGatewayNamespace(),
+			"sectionName": previewHTTPRouteParentGatewaySectionName(),
+		},
+		"backend": map[string]any{
+			"namespace":   previewBackendNamespace(),
+			"serviceName": previewBackendServiceName(),
+			"servicePort": previewBackendServicePort(),
+		},
 	}
+	if runnerName != "" && baseDomain != "" {
+		route["host"] = runnerName + "." + strings.Trim(strings.TrimSpace(baseDomain), ".")
+	}
+	values["previewRoute"] = route
 }
 
 func isSandboxRunnerBinding(binding aiv1alpha1.ProjectProviderBindingSpec) bool {
@@ -394,9 +474,27 @@ func isSandboxRunnerBinding(binding aiv1alpha1.ProjectProviderBindingSpec) bool 
 		strings.TrimSpace(binding.ResourceRef.Resource) == "sandboxrunners"
 }
 
+func isSandboxPreviewHTTPRouteBinding(binding aiv1alpha1.ProjectProviderBindingSpec) bool {
+	if strings.TrimSpace(binding.Provider) != projectDevelopmentProviderAppStudio || binding.ResourceRef == nil {
+		return false
+	}
+	gv, err := schema.ParseGroupVersion(strings.TrimSpace(binding.ResourceRef.APIVersion))
+	if err != nil {
+		return false
+	}
+	return gv.Group == "infrastructure.kedge.faros.sh" &&
+		gv.Version == "v1alpha1" &&
+		strings.TrimSpace(binding.ResourceRef.Kind) == "SandboxPreviewHTTPRoute" &&
+		strings.TrimSpace(binding.ResourceRef.Resource) == "sandboxpreviewhttproutes"
+}
+
 func sandboxRunnerResourceName(tenantPath, projectName string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(tenantPath) + "\x00" + strings.TrimSpace(projectName)))
 	return "kedge-sandbox-" + hex.EncodeToString(sum[:8])
+}
+
+func sandboxPreviewHTTPRouteResourceName(tenantPath, projectName string) string {
+	return sandboxRunnerResourceName(tenantPath, projectName) + "-preview"
 }
 
 func nestedStringMap(obj map[string]any, fields ...string) (map[string]string, bool) {

@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260621-b6870ca.projects.ai.kedge.faros.sh
+  name: v260625-49a11a87.projects.ai.kedge.faros.sh
 spec:
   group: ai.kedge.faros.sh
   names:
@@ -164,6 +164,41 @@ spec:
                   type: string
               required:
               - repositoryRef
+              type: object
+            sharing:
+              description: |-
+                Sharing captures App Studio access policy intent for previews and
+                published apps. Empty policies are interpreted as private.
+              properties:
+                preview:
+                  description: |-
+                    Preview controls who may access the mutable development preview. The
+                    current implementation enforces private access; shared/public are future
+                    policy intent.
+                  properties:
+                    mode:
+                      description: Mode is the requested visibility for this channel.
+                        Empty means private.
+                      enum:
+                      - private
+                      - shared
+                      - public
+                      type: string
+                  type: object
+                publishing:
+                  description: |-
+                    Publishing controls who may access published app instances once the
+                    publishing runtime exists.
+                  properties:
+                    mode:
+                      description: Mode is the requested visibility for this channel.
+                        Empty means private.
+                      enum:
+                      - private
+                      - shared
+                      - public
+                      type: string
+                  type: object
               type: object
           required:
           - displayName

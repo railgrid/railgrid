@@ -1,3 +1,5 @@
+//go:build portal_embed
+
 /*
 Copyright 2026 The Faros Authors.
 
@@ -13,8 +15,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
-//go:build portal_embed
 
 package hub
 
@@ -40,7 +40,7 @@ const PortalPathPrefix = "/ui"
 // on the provided router; the SPA catch-all is returned as a separate handler
 // so the caller can invoke it only for paths under the portal prefix (after
 // other API fallbacks have been checked).
-func registerPortalRoutes(router *mux.Router) (http.Handler, error) {
+func registerPortalRoutes(router *mux.Router, frameSources ...string) (http.Handler, error) {
 	distFS, err := fs.Sub(portalFS, "portal/dist")
 	if err != nil {
 		return nil, err
@@ -91,5 +91,5 @@ func registerPortalRoutes(router *mux.Router) (http.Handler, error) {
 		fileServer.ServeHTTP(w, r)
 	})
 
-	return WithPortalSecurityHeaders(spaHandler), nil
+	return WithPortalSecurityHeaders(spaHandler, frameSources...), nil
 }

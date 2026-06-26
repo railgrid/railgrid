@@ -479,7 +479,7 @@ Both become provider-aware.
 | [portal/src/components/AppLayout.vue](../portal/src/components/AppLayout.vue) | Replace the static `navItems` array (lines 48-53) with a `computed` that merges static items with `providersStore.enabledNavItems`. Add a static "Providers" entry (catalog browser) before the dynamic block. Render dynamic items with `<img :src="iconURL">` instead of `<component :is="icon">` so providers can use their own icons. |
 | [portal/src/graphql/mutations.ts](../portal/src/graphql/mutations.ts) | Add `CREATE_PROVIDER_BINDING`, `DELETE_PROVIDER_BINDING` |
 | [portal/vite.config.ts](../portal/vite.config.ts) | Add proxy entries so dev-mode shell on `:3000` forwards `/services` and `/ui/providers/*` to the hub at `:9443`. The `/ui/providers/*` rule must take precedence over Vite's own `/ui/` static serving (use `bypass: () => undefined` only for that prefix). |
-| [pkg/hub/portal.go](../pkg/hub/portal.go) | Add `Content-Security-Policy` header to portal HTML responses: `default-src 'self'; frame-src 'self'; img-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'`. `frame-src 'self'` permits provider iframes (proxied = same-origin). |
+| [pkg/hub/portal.go](../pkg/hub/portal.go) | Add `Content-Security-Policy` header to portal HTML responses: `default-src 'self'; frame-src 'self' <configured platform frame sources>; img-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'`. `frame-src 'self'` permits provider iframes (proxied = same-origin); configured platform frame sources permit owned surfaces such as App Studio preview hosts. |
 
 ### Reactive providers store
 
@@ -833,7 +833,8 @@ A provider's UI MUST:
   (host-cluster RBAC on the `CatalogEntry` resource).
 - **iframe sandboxing**: `sandbox` attribute set; no
   `allow-top-navigation`.
-- **CSP**: hub portal CSP allows `frame-src 'self'` only.
+- **CSP**: hub portal CSP allows `frame-src 'self'` plus explicitly configured
+  platform-owned frame sources, such as App Studio preview hosts.
 - **Internal-only services**: providers should be `ClusterIP`. Hub is the
   only public ingress. Network policies recommended.
 - **Heartbeat token**: provider SA token is short-lived (24h); rotation
@@ -985,9 +986,9 @@ provider UI and seeing it load inside the portal frame.
 See §"Portal changes" above for the file create/edit lists. Order of
 operations:
 
-1. **CSP first** ([pkg/hub/portal.go](../pkg/hub/portal.go)) — without
-   `frame-src 'self'` the iframe is blocked. Add a small middleware that
-   sets the header on portal HTML responses only.
+1. **CSP first** ([pkg/hub/portal.go](../pkg/hub/portal.go)) — without an
+   explicit `frame-src` entry the iframe is blocked. Add a small middleware
+   that sets the header on portal HTML responses only.
 2. **UI proxy** — `pkg/hub/providers/proxy.go` (already created in phase
    1) gets the `NewUIProxy` handler wired into the router. Existing
    backend proxy stays.

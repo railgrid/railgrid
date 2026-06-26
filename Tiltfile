@@ -52,6 +52,7 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
   --graphql-grpc-addr=localhost:50051 \
   --graphql-playground \
   --portal-dev-url=http://localhost:3000 \
+  --portal-frame-source=https://*.preview.localhost:10443 \
   --kubeconfig=.kedge-kro.kubeconfig \
   --provider-internal-url=https://host.docker.internal:9443
 ''',

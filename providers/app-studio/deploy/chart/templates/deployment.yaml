@@ -2,6 +2,13 @@
 {{- $runtimeKubeconfigSecret := .Values.runtimeKubeconfig.secretName | default "" -}}
 {{- $sandboxRunnerImage := .Values.sandboxRunner.runnerImage | default "" -}}
 {{- $sandboxTokenGeneratorImage := .Values.sandboxRunner.tokenGeneratorImage | default "" -}}
+{{- $previewGatewayEnabled := .Values.previewGateway.enabled | default false -}}
+{{- $previewGatewayBaseDomain := .Values.previewGateway.baseDomain | default "" -}}
+{{- $previewGatewayFeatureEnabled := and $previewGatewayEnabled (ne (trim $previewGatewayBaseDomain) "") -}}
+{{- $previewGatewayServiceName := printf "%s-preview-gateway" (include "appstudio.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- if and $previewGatewayFeatureEnabled (not .Values.previewTokenSecretRef.name) -}}
+{{- fail "previewGateway is enabled with baseDomain, but previewTokenSecretRef.name is required for shared preview tokens" -}}
+{{- end -}}
 {{- if and $runtimeKubeconfigSecret (not $sandboxRunnerImage) -}}
 {{- fail "sandboxRunner.runnerImage is required when runtimeKubeconfig.secretName is set; use an immutable digest reference" -}}
 {{- end -}}
@@ -104,6 +111,22 @@ spec:
             {{- if $sandboxTokenGeneratorImage }}
             - name: APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE
               value: {{ $sandboxTokenGeneratorImage | quote }}
+            {{- end }}
+            {{- if $previewGatewayFeatureEnabled }}
+            - name: APP_STUDIO_PREVIEW_BASE_DOMAIN
+              value: {{ $previewGatewayBaseDomain | quote }}
+            - name: APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAME
+              value: {{ .Values.previewGateway.parentGateway.name | quote }}
+            - name: APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAMESPACE
+              value: {{ .Values.previewGateway.parentGateway.namespace | quote }}
+            - name: APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_SECTION_NAME
+              value: {{ .Values.previewGateway.parentGateway.sectionName | quote }}
+            - name: APP_STUDIO_PREVIEW_BACKEND_NAMESPACE
+              value: {{ default .Release.Namespace .Values.previewGateway.backend.namespace | quote }}
+            - name: APP_STUDIO_PREVIEW_BACKEND_SERVICE_NAME
+              value: {{ default $previewGatewayServiceName .Values.previewGateway.backend.serviceName | quote }}
+            - name: APP_STUDIO_PREVIEW_BACKEND_SERVICE_PORT
+              value: {{ .Values.previewGateway.backend.servicePort | quote }}
             {{- end }}
             - name: APP_STUDIO_WORKSPACE_ROOT
               value: {{ .Values.workspace.path | quote }}

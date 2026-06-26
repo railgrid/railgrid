@@ -43,6 +43,53 @@ spec:
       storageSize:
         type: string
         default: "1Gi"
+      previewRouteEnabled:
+        type: boolean
+        description: "Platform-owned switch for creating the preview HTTPRoute."
+        default: false
+      previewRoute:
+        type: object
+        properties:
+          channel:
+            type: string
+            description: "Preview channel used for grouping routing policy and metadata."
+            default: "development-preview"
+          accessMode:
+            type: string
+            description: "Planned preview access mode for this host."
+            enum: ["private", "shared", "public"]
+            default: "private"
+          host:
+            type: string
+            description: "Public host for the preview HTTPRoute."
+          parentGateway:
+            type: object
+            properties:
+              name:
+                type: string
+                description: "Parent Gateway name that owns this route."
+              namespace:
+                type: string
+                description: "Parent Gateway namespace."
+              sectionName:
+                type: string
+                description: "Listener section name on the parent Gateway."
+                default: "https"
+          backend:
+            type: object
+            properties:
+              namespace:
+                type: string
+                description: "Namespace of the shared preview gateway Service."
+                default: "kedge-preview"
+              serviceName:
+                type: string
+                description: "Preview gateway Service name."
+                default: "sandbox-preview-gateway"
+              servicePort:
+                type: integer
+                description: "Preview gateway Service port."
+                default: 8080
     required:
       - name
       - projectRef
@@ -280,16 +327,17 @@ spec:
                       claimName: ${workspace.metadata.name}
                   - name: tmp
                     emptyDir: {}
-      - id: runnerService
+      - id: previewService
         template:
           apiVersion: v1
           kind: Service
           metadata:
-            name: ${schema.spec.name}
+            name: ${schema.spec.name}-preview
             namespace: ${runtimeNamespace.metadata.name}
             labels:
               app.kubernetes.io/name: sandbox-runner
               app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/component: preview
               app.kubernetes.io/managed-by: kedge-infrastructure
           spec:
             type: ClusterIP
@@ -301,9 +349,51 @@ spec:
               - name: preview
                 port: ${schema.spec.port}
                 targetPort: preview
+      - id: controlService
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}-control
+            namespace: ${runtimeNamespace.metadata.name}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/component: control
+              app.kubernetes.io/managed-by: kedge-infrastructure
+          spec:
+            type: ClusterIP
+            publishNotReadyAddresses: true
+            selector:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/component: runner
+            ports:
               - name: control
                 port: 7070
                 targetPort: control
+      - id: httpRoute
+        includeWhen:
+          - ${schema.spec.previewRouteEnabled}
+        template:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: ${schema.spec.name}
+            namespace: default
+          spec:
+            parentRefs:
+              - name: ${schema.spec.previewRoute.parentGateway.name}
+                namespace: ${schema.spec.previewRoute.parentGateway.namespace}
+                sectionName: ${schema.spec.previewRoute.parentGateway.sectionName}
+            hostnames:
+              - ${schema.spec.previewRoute.host}
+            rules:
+              - backendRefs:
+                  - name: ${schema.spec.previewRoute.backend.serviceName}
+                    namespace: ${schema.spec.previewRoute.backend.namespace}
+                    port: ${schema.spec.previewRoute.backend.servicePort}
+                    kind: Service
       - id: runnerNetwork
         template:
           apiVersion: networking.k8s.io/v1
@@ -360,14 +450,24 @@ spec:
                   - protocol: TCP
                     port: 443
     status:
-      runtimeNamespace: ${runnerService.metadata.namespace}
+      runtimeNamespace: ${previewService.metadata.namespace}
       previewServiceRef:
-        name: ${runnerService.metadata.name}
-        namespace: ${runnerService.metadata.namespace}
+        name: ${previewService.metadata.name}
+        namespace: ${previewService.metadata.namespace}
       controlServiceRef:
-        name: ${runnerService.metadata.name}
-        namespace: ${runnerService.metadata.namespace}
+        name: ${controlService.metadata.name}
+        namespace: ${controlService.metadata.namespace}
       controlSecretRef:
         name: ${controlToken.metadata.name}
         namespace: ${controlToken.metadata.namespace}
+      previewRoute:
+        host: ${httpRoute.spec.hostnames[0]}
+        url: ${"https://" + httpRoute.spec.hostnames[0]}
+        phase: ${httpRoute.status.parents[0].conditions[0].status}
+        httpRouteRef:
+          name: ${httpRoute.metadata.name}
+          namespace: ${httpRoute.metadata.namespace}
+        gatewayRef:
+          name: ${httpRoute.spec.parentRefs[0].name}
+          namespace: ${httpRoute.spec.parentRefs[0].namespace}
       readyReplicas: ${runnerDeployment.status.readyReplicas}

@@ -49,6 +49,40 @@ sandboxRunner:
   runnerImage: ""
   tokenGeneratorImage: ""
 
+# Optional preview route deployment settings and companion infrastructure binding.
+# If baseDomain is empty, App Studio does not add the SandboxPreviewHTTPRoute
+# companion binding for new projects.
+previewGateway:
+  # Master switch: when true and baseDomain is set, the companion route is
+  # enabled, the provider emits APP_STUDIO_PREVIEW_HTTPROUTE_* env vars, and the
+  # chart creates a preview-gateway workload.
+  enabled: true
+  baseDomain: ""
+  # Parent Gateway references (host traffic fan-in).
+  parentGateway:
+    name: "kedge-preview"
+    namespace: "kedge-preview"
+    sectionName: "https"
+  # Shared preview-gateway Service reached by all HTTPRoute resources.
+  # When namespace is unset, the chart uses the Helm release namespace. When
+  # serviceName is unset, the chart uses its rendered preview-gateway service
+  # name.
+  backend:
+    namespace: ""
+    serviceName: ""
+    servicePort: 8080
+  # Dedicated workload that runs `app-studio preview-gateway`.
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  serviceAccount:
+    create: true
+    name: ""
+  resources: {}
+  rbac:
+    create: true
+
 # Optional shared secret for signed preview URLs. When unset, the pod generates
 # an in-memory secret on startup; configure this for multi-replica deployments.
 previewTokenSecretRef:

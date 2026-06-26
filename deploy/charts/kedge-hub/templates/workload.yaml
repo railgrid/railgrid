@@ -93,6 +93,9 @@ spec:
             {{- range .Values.hub.adminUsers }}
             - --admin-users={{ . }}
             {{- end }}
+            {{- range .Values.hub.portalFrameSources }}
+            - --portal-frame-source={{ . }}
+            {{- end }}
             {{- if .Values.hub.devMode }}
             - --dev-mode
             {{- end }}
