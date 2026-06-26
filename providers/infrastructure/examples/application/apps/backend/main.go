@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -84,6 +85,12 @@ func main() {
 // database StatefulSet still coming up alongside it (no ordering guarantees in
 // the RGD).
 func openDB(dsn string) (*sql.DB, error) {
+	// The injected DATABASE_URL carries no sslmode, and the in-cluster Postgres
+	// has TLS disabled — but lib/pq defaults to sslmode=require, which fails with
+	// "SSL is not enabled on the server". Default to sslmode=disable unless the
+	// DSN already sets one. See the application template's agent.usage contract.
+	dsn = ensureSSLModeDisable(dsn)
+
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, err
@@ -100,6 +107,23 @@ func openDB(dsn string) (*sql.DB, error) {
 		time.Sleep(2 * time.Second)
 	}
 	return nil, fmt.Errorf("postgres not reachable after retries: %w", lastErr)
+}
+
+// ensureSSLModeDisable appends sslmode=disable to the postgres:// DATABASE_URL
+// when it doesn't already carry an sslmode, so lib/pq (which defaults to
+// sslmode=require) can reach the TLS-disabled in-cluster Postgres. A DSN that
+// already sets sslmode, or one we can't parse as a URL, is left untouched.
+func ensureSSLModeDisable(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Scheme == "" {
+		return dsn
+	}
+	q := u.Query()
+	if q.Get("sslmode") == "" {
+		q.Set("sslmode", "disable")
+		u.RawQuery = q.Encode()
+	}
+	return u.String()
 }
 
 func (s *server) initSchema() error {
