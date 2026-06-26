@@ -311,6 +311,18 @@ spec:
           spec:
             serviceName: ${schema.spec.name}-db
             replicas: 1
+            # Tie the data PVC's lifecycle to the StatefulSet. The PVC is
+            # created by the StatefulSet controller from volumeClaimTemplates
+            # (NOT by kro), so it carries no kro labels and isn't in kro's
+            # applyset — kro never garbage-collects it. With the k8s default
+            # (whenDeleted: Retain) the PVC also outlives a StatefulSet delete,
+            # so deleting an Application orphaned the volume: a same-name
+            # recreate minted a fresh db password but Postgres recovered the old
+            # data (old password) → "password authentication failed". Delete the
+            # PVC when kro deletes the StatefulSet so a recreate starts clean.
+            persistentVolumeClaimRetentionPolicy:
+              whenDeleted: Delete
+              whenScaled: Retain
             selector:
               matchLabels:
                 app: ${schema.spec.name}-db
