@@ -162,9 +162,9 @@ The "subresource on the instance" semantics can be realized two ways:
 
 ### 6.2 Move runner config ownership to infra
 
-- **Images** — runner / token-generator image defaults move to the Template / infra config. App Studio stops setting `APP_STUDIO_SANDBOX_*_IMAGE`; the chart guard added in `faroshq/kedge#362` moves to infra. (#362 remains the correct interim prod fix until then.)
-- **Preview routing** — `previewRouteEnabled` + host / parentGateway / backend derivation move from App Studio (`normalizeSandboxRunnerPreviewRouteValues`) to infra, which already has `application.baseDomain` + gateway in its `InfrastructureProvider` spec.
-- **ReferenceGrant** — fold the cross-namespace `ReferenceGrant` into the sandbox-runner kro RGD (it already emits the HTTPRoute) rather than App Studio creating it imperatively.
+- **Images — DONE (Phase 2a).** The kro backend now substitutes `${kedge.sandboxRunnerImage}` / `${kedge.sandboxTokenGeneratorImage}` (from `KEDGE_SANDBOX_RUNNER_IMAGE` / `KEDGE_SANDBOX_TOKEN_GENERATOR_IMAGE`) into the sandbox-runner RGD, and the instance-schema image fields are now optional (deprecated, ignored). App Studio's continued injection is harmless dead data removed in Phase 3; its `#362` chart guard remains the safety net until then. The infra chart wires the env on both serve paths and rejects partial image config. The `runnerImage`/`tokenGeneratorImage` schema fields are removed in a later cleanup once App Studio stops sending them.
+- **Preview routing — TODO (Phase 2b).** `previewRouteEnabled` + host / parentGateway / backend derivation move from App Studio (`normalizeSandboxRunnerPreviewRouteValues`) to infra, which already has `application.baseDomain` + gateway in its `InfrastructureProvider` spec. Needs kro RGD CEL work (compute the per-instance host from `${schema.spec.name}` + a base-domain token), best validated against a runtime cluster.
+- **ReferenceGrant — TODO (Phase 2b).** Fold the cross-namespace `ReferenceGrant` into the sandbox-runner kro RGD (it already emits the HTTPRoute) rather than App Studio creating it imperatively.
 
 ### 6.3 Streaming through two proxies
 

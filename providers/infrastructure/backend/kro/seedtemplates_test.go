@@ -48,7 +48,7 @@ func TestSeedTemplatesBuildRGD(t *testing.T) {
 			}
 			tmpl := decodeTemplate(t, raw)
 
-			rgd, err := buildRGD(tmpl, "cloudflare-tunnel", "cfgate-system")
+			rgd, err := buildRGD(tmpl, testTokens())
 			if err != nil {
 				t.Fatalf("buildRGD(%s): %v", e.Name(), err)
 			}
@@ -89,7 +89,7 @@ func TestSeedTemplatesIncludeSandboxRunner(t *testing.T) {
 	if got, want := tmpl.Spec.InstanceCRD.Resource, "sandboxrunners"; got != want {
 		t.Fatalf("instance resource = %q, want %q", got, want)
 	}
-	rgd, err := buildRGD(tmpl, "cloudflare-tunnel", "cfgate-system")
+	rgd, err := buildRGD(tmpl, testTokens())
 	if err != nil {
 		t.Fatalf("buildRGD(sandbox-runner): %v", err)
 	}
@@ -106,7 +106,7 @@ func TestSandboxRunnerSplitsPreviewAndControlServices(t *testing.T) {
 		t.Fatalf("read sandbox-runner seed template: %v", err)
 	}
 	tmpl := decodeTemplate(t, raw)
-	rgd, err := buildRGD(tmpl, "cloudflare")
+	rgd, err := buildRGD(tmpl, testTokens())
 	if err != nil {
 		t.Fatalf("buildRGD(sandbox-runner): %v", err)
 	}
@@ -196,7 +196,7 @@ func TestSeedTemplatesIncludeStandaloneDatabase(t *testing.T) {
 		t.Fatalf("instance resource = %q, want %q", got, want)
 	}
 
-	rgd, err := buildRGD(tmpl, "cloudflare-tunnel", "cfgate-system")
+	rgd, err := buildRGD(tmpl, testTokens())
 	if err != nil {
 		t.Fatalf("buildRGD(database): %v", err)
 	}
@@ -230,7 +230,7 @@ func TestSandboxRunnerIncludesManagedPreviewHTTPRoute(t *testing.T) {
 		t.Fatalf("read sandbox-runner seed template: %v", err)
 	}
 	tmpl := decodeTemplate(t, raw)
-	rgd, err := buildRGD(tmpl, "cloudflare")
+	rgd, err := buildRGD(tmpl, testTokens())
 	if err != nil {
 		t.Fatalf("buildRGD(sandbox-runner): %v", err)
 	}
@@ -337,7 +337,7 @@ func TestSandboxRunnerUsesManagedJobForControlToken(t *testing.T) {
 		t.Fatalf("read sandbox-runner seed template: %v", err)
 	}
 	tmpl := decodeTemplate(t, raw)
-	rgd, err := buildRGD(tmpl, "cloudflare-tunnel", "cfgate-system")
+	rgd, err := buildRGD(tmpl, testTokens())
 	if err != nil {
 		t.Fatalf("buildRGD(sandbox-runner): %v", err)
 	}
@@ -391,6 +391,19 @@ func TestSandboxRunnerUsesManagedJobForControlToken(t *testing.T) {
 	runnerVolumeMounts := mustNestedSlice(t, runnerContainer, "volumeMounts")
 	if hasNamedMap(runnerVolumeMounts, "kube-api-access") {
 		t.Fatalf("runner container must not mount kube-api-access")
+	}
+
+	// The runner image is platform-owned: it comes from the ${kedge.*} token
+	// the backend substitutes, NOT from the instance spec.
+	if got, _, _ := unstructured.NestedString(runnerContainer, "image"); got != testTokens()[sandboxRunnerImageToken] {
+		t.Fatalf("runner image = %q, want the substituted ${kedge.sandboxRunnerImage} %q", got, testTokens()[sandboxRunnerImageToken])
+	}
+	tokenContainers := mustNestedSlice(t, tokenGeneratorTemplate, "spec", "template", "spec", "containers")
+	if len(tokenContainers) != 1 {
+		t.Fatalf("tokenGenerator containers = %d, want 1", len(tokenContainers))
+	}
+	if got, _, _ := unstructured.NestedString(tokenContainers[0].(map[string]any), "image"); got != testTokens()[sandboxTokenGeneratorToken] {
+		t.Fatalf("token generator image = %q, want the substituted ${kedge.sandboxTokenGeneratorImage} %q", got, testTokens()[sandboxTokenGeneratorToken])
 	}
 
 	runnerNetwork := findResource(t, rgd, "runnerNetwork")

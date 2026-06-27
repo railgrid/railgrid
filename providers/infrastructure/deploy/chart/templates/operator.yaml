@@ -99,6 +99,19 @@ spec:
             # catalogentry.yaml's {{ "{{ .Chart.AppVersion }}" }}.
             - name: KEDGE_PROVIDER_VERSION
               value: {{ .Chart.AppVersion | quote }}
+            {{- include "infrastructure.validateSandboxImages" . }}
+            {{- with .Values.sandboxRunner.runnerImage }}
+            # Platform-owned SandboxRunner images. The operator forwards these to
+            # the serve container it manages (see operator/serve.go); the kro
+            # backend substitutes them for ${kedge.sandboxRunnerImage} /
+            # ${kedge.sandboxTokenGeneratorImage}.
+            - name: KEDGE_SANDBOX_RUNNER_IMAGE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.sandboxRunner.tokenGeneratorImage }}
+            - name: KEDGE_SANDBOX_TOKEN_GENERATOR_IMAGE
+              value: {{ . | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
 {{- end }}

@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -21,15 +22,19 @@ import (
 	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 )
 
-// gatewayNameToken / gatewayNamespaceToken are the reserved placeholders a
-// Template author writes in backendConfig (e.g. an HTTPRoute's parentRefs) to
-// defer the exposure-layer Gateway choice to platform config. They are
-// substituted for the configured Gateway API parent before the RGD is
-// authored. The "kedge." namespace keeps them from colliding with kro's own
-// ${...} reference syntax (${schema.spec.x}, ${someResource.metadata.name}).
+// Reserved ${kedge.*} placeholders a Template author writes in backendConfig to
+// defer a platform-owned value (the exposure Gateway, the sandbox runner images)
+// out of per-tenant data. They are substituted for the configured value before
+// the RGD is authored. The "kedge." namespace keeps them from colliding with
+// kro's own ${...} reference syntax (${schema.spec.x}, ${res.metadata.name}).
 const (
 	gatewayNameToken      = "${kedge.gatewayName}"
 	gatewayNamespaceToken = "${kedge.gatewayNamespace}"
+	// sandboxRunnerImageToken / sandboxTokenGeneratorToken carry the images the
+	// SandboxRunner workload + its control-token Job run. The platform owns them
+	// (App Studio no longer injects them into the instance spec).
+	sandboxRunnerImageToken    = "${kedge.sandboxRunnerImage}"
+	sandboxTokenGeneratorToken = "${kedge.sandboxTokenGeneratorImage}"
 )
 
 const (
@@ -60,7 +65,7 @@ var rgdGVR = schema.GroupVersionResource{
 //   - spec.schema.spec        = Template.spec.schema (OpenAPI) → kro SimpleSchema
 //   - spec.schema.status      = Template.spec.backendConfig.status (optional)
 //   - spec.resources          = Template.spec.backendConfig.resources (verbatim)
-func buildRGD(tmpl *infrav1alpha1.Template, gatewayName, gatewayNamespace string) (*unstructured.Unstructured, error) {
+func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstructured.Unstructured, error) {
 	if tmpl.Spec.Schema == nil || len(tmpl.Spec.Schema.Raw) == 0 {
 		return nil, fmt.Errorf("template %q: spec.schema is required", tmpl.Name)
 	}
@@ -69,7 +74,7 @@ func buildRGD(tmpl *infrav1alpha1.Template, gatewayName, gatewayNamespace string
 		return nil, fmt.Errorf("template %q: %w", tmpl.Name, err)
 	}
 
-	resources, status, err := backendConfig(tmpl, gatewayName, gatewayNamespace)
+	resources, status, err := backendConfig(tmpl, tokens)
 	if err != nil {
 		return nil, err
 	}
@@ -110,11 +115,11 @@ func buildRGD(tmpl *infrav1alpha1.Template, gatewayName, gatewayNamespace string
 // backendConfig decodes Template.spec.backendConfig and extracts the kro
 // resource graph (required) and an optional status-mapping block. The
 // backendConfig is opaque to the platform; only this backend interprets it.
-func backendConfig(tmpl *infrav1alpha1.Template, gatewayName, gatewayNamespace string) (resources []any, status map[string]any, err error) {
+func backendConfig(tmpl *infrav1alpha1.Template, tokens map[string]string) (resources []any, status map[string]any, err error) {
 	if tmpl.Spec.BackendConfig == nil || len(tmpl.Spec.BackendConfig.Raw) == 0 {
 		return nil, nil, fmt.Errorf("template %q: spec.backendConfig is required for the kro backend", tmpl.Name)
 	}
-	raw := substituteTokens(tmpl.Spec.BackendConfig.Raw, gatewayName, gatewayNamespace)
+	raw := substituteTokens(tmpl.Spec.BackendConfig.Raw, tokens)
 	var bc map[string]any
 	if err := json.Unmarshal(raw, &bc); err != nil {
 		return nil, nil, fmt.Errorf("template %q: decode spec.backendConfig: %w", tmpl.Name, err)
@@ -129,22 +134,28 @@ func backendConfig(tmpl *infrav1alpha1.Template, gatewayName, gatewayNamespace s
 	return res, status, nil
 }
 
-// substituteTokens replaces reserved kedge ${kedge.*} placeholders in a
-// raw backendConfig with platform config values, before the JSON is parsed
-// into the RGD. Only the kedge namespace is touched; kro's own ${...}
-// references pass through untouched for kro to resolve at reconcile time.
+// substituteTokens replaces reserved kedge ${kedge.*} placeholders in a raw
+// backendConfig with the configured platform values, before the JSON is parsed
+// into the RGD. Only the kedge namespace is touched; kro's own ${...} references
+// pass through untouched for kro to resolve at reconcile time.
 //
-// Today the tokens are ${kedge.gatewayName} / ${kedge.gatewayNamespace}. The
-// replacement is a plain string substitution on the JSON bytes — safe because
-// the configured values are DNS-style names with no JSON metacharacters.
-func substituteTokens(raw []byte, gatewayName, gatewayNamespace string) []byte {
-	if gatewayName == "" {
-		gatewayName = DefaultGatewayName
+// The replacement is a plain string substitution on the JSON bytes — safe
+// because the configured values are DNS-style names / image references with no
+// JSON metacharacters. The gateway tokens fall back to their in-binary defaults
+// when unset; other tokens (e.g. the sandbox images) substitute their value
+// as-is, so an unset image leaves an empty string the chart guards against at
+// install time rather than masking the misconfiguration here.
+func substituteTokens(raw []byte, tokens map[string]string) []byte {
+	resolved := make(map[string]string, len(tokens))
+	maps.Copy(resolved, tokens)
+	if resolved[gatewayNameToken] == "" {
+		resolved[gatewayNameToken] = DefaultGatewayName
 	}
-	if gatewayNamespace == "" {
-		gatewayNamespace = DefaultGatewayNamespace
+	if resolved[gatewayNamespaceToken] == "" {
+		resolved[gatewayNamespaceToken] = DefaultGatewayNamespace
 	}
-	raw = bytes.ReplaceAll(raw, []byte(gatewayNameToken), []byte(gatewayName))
-	raw = bytes.ReplaceAll(raw, []byte(gatewayNamespaceToken), []byte(gatewayNamespace))
+	for token, value := range resolved {
+		raw = bytes.ReplaceAll(raw, []byte(token), []byte(value))
+	}
 	return raw
 }

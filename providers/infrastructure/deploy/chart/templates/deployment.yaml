@@ -141,6 +141,17 @@ spec:
             - name: KEDGE_GATEWAY_NAMESPACE
               value: {{ . | quote }}
             {{- end }}
+            {{- include "infrastructure.validateSandboxImages" . }}
+            {{- with .Values.sandboxRunner.runnerImage }}
+            # App Studio SandboxRunner workload image (${kedge.sandboxRunnerImage}).
+            - name: KEDGE_SANDBOX_RUNNER_IMAGE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.sandboxRunner.tokenGeneratorImage }}
+            # Control-token Job image (${kedge.sandboxTokenGeneratorImage}).
+            - name: KEDGE_SANDBOX_TOKEN_GENERATOR_IMAGE
+              value: {{ . | quote }}
+            {{- end }}
           volumeMounts:
             - name: kedge-provider-kubeconfig
               mountPath: /var/run/secrets/kedge

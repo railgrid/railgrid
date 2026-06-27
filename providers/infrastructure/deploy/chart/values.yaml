@@ -58,6 +58,18 @@ application:
     name: "cloudflare-tunnel"
     namespace: "cfgate-system"
 
+# Images materialized into App Studio SandboxRunner workloads. The platform owns
+# them (App Studio no longer injects them); the kro backend substitutes these
+# for ${kedge.sandboxRunnerImage} / ${kedge.sandboxTokenGeneratorImage} in the
+# sandbox-runner template. Empty by default so installs do not silently trust
+# mutable development tags. Deployments running the App Studio sandbox runtime
+# MUST set both to immutable digest references; leaving them empty makes
+# SandboxRunner pods reference an empty image and fail to start. Setting only one
+# is a misconfiguration the chart rejects at install (see _helpers.tpl).
+sandboxRunner:
+  runnerImage: ""
+  tokenGeneratorImage: ""
+
 # Secret the provider mounts read-only at
 # /var/run/secrets/kedge/kedge-provider-kubeconfig to reach kcp. How it is
 # populated depends on bootstrap.enabled:

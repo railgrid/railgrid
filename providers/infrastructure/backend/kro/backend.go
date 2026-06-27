@@ -53,15 +53,13 @@ type Backend struct {
 	// pointed at by KRO_KUBECONFIG.
 	runtime dynamic.Interface
 
-	// gatewayName / gatewayNamespace are the values substituted for the
-	// reserved ${kedge.gatewayName} / ${kedge.gatewayNamespace} tokens in a
-	// Template's backendConfig before the RGD is authored. They identify the
-	// platform-wide Gateway API parent the generated HTTPRoutes attach to
-	// (the exposure-layer Gateway, e.g. cfgate's "cloudflare-tunnel"), so they
-	// belong on the backend, not in per-tenant data. See substituteTokens in
-	// rgd.go.
-	gatewayName      string
-	gatewayNamespace string
+	// tokens are the platform-config values substituted for reserved ${kedge.*}
+	// placeholders in a Template's backendConfig before the RGD is authored —
+	// platform-wide settings that belong on the backend, not in per-tenant data.
+	// See substituteTokens in rgd.go. Today: the exposure-layer Gateway parent
+	// (${kedge.gatewayName}/${kedge.gatewayNamespace}) and the sandbox runner
+	// images (${kedge.sandboxRunnerImage}/${kedge.sandboxTokenGeneratorImage}).
+	tokens map[string]string
 }
 
 var _ backend.Backend = (*Backend)(nil)
@@ -77,10 +75,17 @@ const (
 
 // New constructs the kro backend against the runtime cluster's dynamic
 // client. The caller (controller_manager) builds it from KRO_KUBECONFIG.
-// The exposure-layer Gateway parent is read from KEDGE_GATEWAY_NAME /
-// KEDGE_GATEWAY_NAMESPACE (defaulting to "cloudflare-tunnel" in
-// "cfgate-system") and substituted into backendConfig at RGD build time, so
-// pointing apps at a different Gateway is a config change, not a template edit.
+//
+// Platform config is read from the environment once and substituted into
+// backendConfig at RGD build time (so changing it is a config change, not a
+// template edit):
+//
+//   - KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE — the exposure-layer Gateway
+//     parent (defaults "cloudflare-tunnel" / "cfgate-system").
+//   - KEDGE_SANDBOX_RUNNER_IMAGE / KEDGE_SANDBOX_TOKEN_GENERATOR_IMAGE — the
+//     images materialized into SandboxRunner workloads. The platform owns these
+//     (App Studio no longer injects them); deployments should pin immutable
+//     digests. Empty when unset — the chart guards against that at install.
 func New(runtime dynamic.Interface) *Backend {
 	gatewayName := os.Getenv("KEDGE_GATEWAY_NAME")
 	if gatewayName == "" {
@@ -90,7 +95,13 @@ func New(runtime dynamic.Interface) *Backend {
 	if gatewayNamespace == "" {
 		gatewayNamespace = DefaultGatewayNamespace
 	}
-	return &Backend{runtime: runtime, gatewayName: gatewayName, gatewayNamespace: gatewayNamespace}
+	tokens := map[string]string{
+		gatewayNameToken:           gatewayName,
+		gatewayNamespaceToken:      gatewayNamespace,
+		sandboxRunnerImageToken:    os.Getenv("KEDGE_SANDBOX_RUNNER_IMAGE"),
+		sandboxTokenGeneratorToken: os.Getenv("KEDGE_SANDBOX_TOKEN_GENERATOR_IMAGE"),
+	}
+	return &Backend{runtime: runtime, tokens: tokens}
 }
 
 // Name returns "kro".
@@ -101,7 +112,7 @@ func (b *Backend) Name() string { return Name }
 // error (malformed schema/backendConfig) is returned so the Template
 // controller surfaces BackendError; a successful apply reports Ready=true.
 func (b *Backend) SetupTemplate(ctx context.Context, tmpl *infrav1alpha1.Template) (backend.TemplateStatus, error) {
-	rgd, err := buildRGD(tmpl, b.gatewayName, b.gatewayNamespace)
+	rgd, err := buildRGD(tmpl, b.tokens)
 	if err != nil {
 		return backend.TemplateStatus{Ready: false, Message: err.Error()}, err
 	}

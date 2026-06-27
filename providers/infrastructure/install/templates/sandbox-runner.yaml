@@ -31,10 +31,10 @@ spec:
         default: "PORT_VALUE=\"$SANDBOX_PORT\"; if [ -z \"$PORT_VALUE\" ]; then PORT_VALUE=3000; fi; if [ -f package.json ]; then npm install --no-audit --no-fund && (npm run dev -- --host 0.0.0.0 --port \"$PORT_VALUE\" || npm start); else npx --yes vite --host 0.0.0.0 --port \"$PORT_VALUE\"; fi"
       runnerImage:
         type: string
-        description: "Sandbox runner image. Production deployments should supply an immutable digest reference."
+        description: "DEPRECATED and ignored: the runner image is platform-owned and injected by the infrastructure provider from KEDGE_SANDBOX_RUNNER_IMAGE. Retained as an optional field for backward compatibility; removed in a later release."
       tokenGeneratorImage:
         type: string
-        description: "kubectl-capable image used by the one-shot control-token Job. Production deployments should supply an immutable digest reference."
+        description: "DEPRECATED and ignored: the control-token Job image is platform-owned and injected by the infrastructure provider from KEDGE_SANDBOX_TOKEN_GENERATOR_IMAGE. Retained as an optional field for backward compatibility; removed in a later release."
       port:
         type: integer
         default: 3000
@@ -93,8 +93,6 @@ spec:
     required:
       - name
       - projectRef
-      - runnerImage
-      - tokenGeneratorImage
   # Live data-plane verbs the provider serves as subresources on a SandboxRunner
   # instance (sandboxrunners/<name>/{log,sync,restart,proxy,status}). Each verb
   # resolves to a runtime Service/Secret read from the instance status below;
@@ -254,7 +252,7 @@ spec:
                 restartPolicy: OnFailure
                 containers:
                   - name: token
-                    image: ${schema.spec.tokenGeneratorImage}
+                    image: ${kedge.sandboxTokenGeneratorImage}
                     command:
                       - /bin/sh
                       - -c
@@ -309,7 +307,7 @@ spec:
                     type: RuntimeDefault
                 containers:
                   - name: runner
-                    image: ${schema.spec.runnerImage}
+                    image: ${kedge.sandboxRunnerImage}
                     env:
                       - name: SANDBOX_WORKDIR
                         value: ${schema.spec.workingDir}

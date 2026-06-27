@@ -13,6 +13,7 @@ package operator
 import (
 	"context"
 	"fmt"
+	"os"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -94,6 +95,17 @@ func EnsureProviderServe(
 	}
 	if cr.Spec.Application.Gateway.Namespace != "" {
 		env = append(env, corev1.EnvVar{Name: "KEDGE_GATEWAY_NAMESPACE", Value: cr.Spec.Application.Gateway.Namespace})
+	}
+	// Sandbox runner images the kro backend materializes into SandboxRunner
+	// workloads (substituted for ${kedge.sandboxRunnerImage} /
+	// ${kedge.sandboxTokenGeneratorImage}). Platform-owned — App Studio no
+	// longer injects them. Forwarded from the operator's own environment so the
+	// chart sets them once on the operator; empty values are dropped (the chart
+	// guards that they are set when the sandbox runtime is in use).
+	for _, key := range []string{"KEDGE_SANDBOX_RUNNER_IMAGE", "KEDGE_SANDBOX_TOKEN_GENERATOR_IMAGE"} {
+		if v := os.Getenv(key); v != "" {
+			env = append(env, corev1.EnvVar{Name: key, Value: v})
+		}
 	}
 	volMounts := []corev1.VolumeMount{
 		{Name: "provider-kubeconfig", MountPath: "/var/run/secrets/kedge/provider", ReadOnly: true},

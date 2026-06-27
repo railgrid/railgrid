@@ -87,7 +87,7 @@ func TestBuildRGD(t *testing.T) {
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)}
 	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"statefulset","template":{"apiVersion":"apps/v1","kind":"StatefulSet"}}]}`)}
 
-	rgd, err := buildRGD(tmpl, DefaultGatewayName, DefaultGatewayNamespace)
+	rgd, err := buildRGD(tmpl, testTokens())
 	if err != nil {
 		t.Fatalf("buildRGD: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestBuildRGDSubstitutesGatewayRef(t *testing.T) {
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)}
 	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"httpRoute","template":{"apiVersion":"gateway.networking.k8s.io/v1","kind":"HTTPRoute","spec":{"parentRefs":[{"name":"${kedge.gatewayName}","namespace":"${kedge.gatewayNamespace}"}]}}}]}`)}
 
-	rgd, err := buildRGD(tmpl, "cloudflare-tunnel", "cfgate-system")
+	rgd, err := buildRGD(tmpl, testTokens())
 	if err != nil {
 		t.Fatalf("buildRGD: %v", err)
 	}
@@ -156,9 +156,33 @@ func TestBuildRGDSubstitutesGatewayRef(t *testing.T) {
 func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
 	// kro's own ${...} references must survive substitution untouched.
 	in := []byte(`{"a":"${schema.spec.name}","b":"${kedge.gatewayName}","c":"${kedge.gatewayNamespace}","d":"${svc.metadata.name}"}`)
-	out := string(substituteTokens(in, "my-gw", "my-ns"))
+	out := string(substituteTokens(in, map[string]string{gatewayNameToken: "my-gw", gatewayNamespaceToken: "my-ns"}))
 	if want := `{"a":"${schema.spec.name}","b":"my-gw","c":"my-ns","d":"${svc.metadata.name}"}`; out != want {
 		t.Errorf("substituteTokens = %s, want %s", out, want)
+	}
+}
+
+func TestSubstituteTokensSandboxImages(t *testing.T) {
+	in := []byte(`{"runner":"${kedge.sandboxRunnerImage}","token":"${kedge.sandboxTokenGeneratorImage}"}`)
+	tokens := map[string]string{
+		sandboxRunnerImageToken:    "ghcr.io/faroshq/kedge-sandbox-runner@sha256:abc",
+		sandboxTokenGeneratorToken: "docker.io/bitnami/kubectl@sha256:def",
+	}
+	out := string(substituteTokens(in, tokens))
+	want := `{"runner":"ghcr.io/faroshq/kedge-sandbox-runner@sha256:abc","token":"docker.io/bitnami/kubectl@sha256:def"}`
+	if out != want {
+		t.Errorf("substituteTokens = %s, want %s", out, want)
+	}
+}
+
+// testTokens is the platform-config token map the backend builds from env,
+// with the gateway defaults and placeholder sandbox images, for buildRGD tests.
+func testTokens() map[string]string {
+	return map[string]string{
+		gatewayNameToken:           DefaultGatewayName,
+		gatewayNamespaceToken:      DefaultGatewayNamespace,
+		sandboxRunnerImageToken:    "ghcr.io/faroshq/kedge-sandbox-runner:test",
+		sandboxTokenGeneratorToken: "docker.io/bitnami/kubectl:test",
 	}
 }
 
@@ -168,7 +192,7 @@ func TestBuildRGDRequiresBackendConfig(t *testing.T) {
 	tmpl.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{Group: "g", Version: "v1alpha1", Resource: "rs", Kind: "R"}
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}}}`)}
 	// no BackendConfig
-	if _, err := buildRGD(tmpl, DefaultGatewayName, DefaultGatewayNamespace); err == nil {
+	if _, err := buildRGD(tmpl, testTokens()); err == nil {
 		t.Fatal("expected error when backendConfig is missing")
 	}
 }
