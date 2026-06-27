@@ -142,6 +142,96 @@ spec:
                   "Other" bucket.
                 maxLength: 64
                 type: string
+              dataPlane:
+                description: |-
+                  DataPlane optionally declares the live data-plane verbs this template's
+                  instances expose — log streaming, a service proxy, sync/restart control —
+                  and how each resolves to a runtime Service/Secret/port from the instance's
+                  status. The infrastructure provider serves these as subresources on the
+                  instance (e.g. sandboxrunners/<name>/log) so consumers reach a workload's
+                  data plane without holding a credential to the runtime cluster themselves.
+                  Empty means the template's instances expose no data plane.
+
+                  See docs/app-studio-runtime-decoupling.md for the end-to-end design.
+                properties:
+                  endpoints:
+                    additionalProperties:
+                      description: |-
+                        TemplateDataPlaneEndpoint describes one data-plane verb: either a value served
+                        straight from the instance status (FromStatus), or a reverse proxy to a
+                        Service in the instance's runtime namespace.
+                      properties:
+                        fromStatus:
+                          description: |-
+                            FromStatus serves this verb from the instance CR status with no runtime
+                            hop (e.g. a "status" verb that just returns status). When true, the proxy
+                            fields below are ignored.
+                          type: boolean
+                        methods:
+                          description: |-
+                            Methods is the allowed HTTP method allowlist for this verb. Empty allows
+                            GET only. Ignored when FromStatus.
+                          items:
+                            type: string
+                          type: array
+                        port:
+                          description: |-
+                            Port is the Service port name to target (e.g. "control", "preview").
+                            Required unless FromStatus.
+                          maxLength: 63
+                          type: string
+                        servicePath:
+                          description: |-
+                            ServicePath is the status dot-path to a {name, namespace} object naming the
+                            Service to proxy to (e.g. "status.controlServiceRef"). When the ref omits a
+                            namespace it defaults to RuntimeNamespacePath; a namespace that differs
+                            from RuntimeNamespacePath is rejected. Required unless FromStatus.
+                          maxLength: 256
+                          type: string
+                        stream:
+                          description: |-
+                            Stream marks a long-lived response (e.g. log follow) so the provider
+                            disables response buffering and request timeouts. Ignored when FromStatus.
+                          type: boolean
+                        upgrade:
+                          description: |-
+                            Upgrade allows HTTP connection upgrades (WebSocket / SPDY exec /
+                            port-forward) through this verb's proxy. Ignored when FromStatus.
+                          type: boolean
+                        upstreamPath:
+                          description: |-
+                            UpstreamPath is prepended to the caller-supplied path when composing the
+                            service-proxy URL (e.g. "/logs"). Defaults to "/". Ignored when FromStatus.
+                          maxLength: 256
+                          type: string
+                      type: object
+                    description: |-
+                      Endpoints maps a verb name — the subresource the provider serves, e.g.
+                      "log", "proxy", "sync", "restart", "status" — to how it resolves. At least
+                      one entry is required when DataPlane is set.
+                    minProperties: 1
+                    type: object
+                  runtimeNamespacePath:
+                    description: |-
+                      RuntimeNamespacePath is the status dot-path to the namespace the backend
+                      owns for this instance (e.g. "status.runtimeNamespace"). Every Service and
+                      Secret a data-plane verb resolves to MUST live in this namespace; the
+                      resolver rejects refs that point elsewhere. Required when any endpoint
+                      proxies to the runtime cluster (i.e. anything but a FromStatus endpoint).
+                    maxLength: 256
+                    type: string
+                  tokenSecretPath:
+                    description: |-
+                      TokenSecretPath is an optional status dot-path to a {name, namespace}
+                      object naming the Secret whose "token" key the provider injects as the
+                      X-Sandbox-Control-Token header on upstream requests (the per-instance
+                      control token). Empty means no token header is added. The named Secret is
+                      confined to RuntimeNamespacePath like every other ref.
+                    maxLength: 256
+                    type: string
+                required:
+                - endpoints
+                type: object
               description:
                 description: |-
                   Description is one to three sentences shown beneath the

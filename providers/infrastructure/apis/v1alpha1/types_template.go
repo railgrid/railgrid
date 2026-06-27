@@ -197,6 +197,97 @@ type TemplateSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:XPreserveUnknownFields
 	View *runtime.RawExtension `json:"view,omitempty"`
+
+	// DataPlane optionally declares the live data-plane verbs this template's
+	// instances expose — log streaming, a service proxy, sync/restart control —
+	// and how each resolves to a runtime Service/Secret/port from the instance's
+	// status. The infrastructure provider serves these as subresources on the
+	// instance (e.g. sandboxrunners/<name>/log) so consumers reach a workload's
+	// data plane without holding a credential to the runtime cluster themselves.
+	// Empty means the template's instances expose no data plane.
+	//
+	// See docs/app-studio-runtime-decoupling.md for the end-to-end design.
+	// +optional
+	DataPlane *TemplateDataPlane `json:"dataPlane,omitempty"`
+}
+
+// TemplateDataPlane is the declarative contract for an instance's live data
+// plane. The provider resolves every Service and Secret reference from the
+// instance status and confines them to the instance's backend-owned runtime
+// namespace (RuntimeNamespacePath), so a forged or mutated instance status
+// cannot redirect a proxy to an arbitrary Service or Secret elsewhere in the
+// runtime cluster.
+type TemplateDataPlane struct {
+	// RuntimeNamespacePath is the status dot-path to the namespace the backend
+	// owns for this instance (e.g. "status.runtimeNamespace"). Every Service and
+	// Secret a data-plane verb resolves to MUST live in this namespace; the
+	// resolver rejects refs that point elsewhere. Required when any endpoint
+	// proxies to the runtime cluster (i.e. anything but a FromStatus endpoint).
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	RuntimeNamespacePath string `json:"runtimeNamespacePath,omitempty"`
+
+	// TokenSecretPath is an optional status dot-path to a {name, namespace}
+	// object naming the Secret whose "token" key the provider injects as the
+	// X-Sandbox-Control-Token header on upstream requests (the per-instance
+	// control token). Empty means no token header is added. The named Secret is
+	// confined to RuntimeNamespacePath like every other ref.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	TokenSecretPath string `json:"tokenSecretPath,omitempty"`
+
+	// Endpoints maps a verb name — the subresource the provider serves, e.g.
+	// "log", "proxy", "sync", "restart", "status" — to how it resolves. At least
+	// one entry is required when DataPlane is set.
+	// +required
+	// +kubebuilder:validation:MinProperties=1
+	Endpoints map[string]TemplateDataPlaneEndpoint `json:"endpoints"`
+}
+
+// TemplateDataPlaneEndpoint describes one data-plane verb: either a value served
+// straight from the instance status (FromStatus), or a reverse proxy to a
+// Service in the instance's runtime namespace.
+type TemplateDataPlaneEndpoint struct {
+	// FromStatus serves this verb from the instance CR status with no runtime
+	// hop (e.g. a "status" verb that just returns status). When true, the proxy
+	// fields below are ignored.
+	// +optional
+	FromStatus bool `json:"fromStatus,omitempty"`
+
+	// ServicePath is the status dot-path to a {name, namespace} object naming the
+	// Service to proxy to (e.g. "status.controlServiceRef"). When the ref omits a
+	// namespace it defaults to RuntimeNamespacePath; a namespace that differs
+	// from RuntimeNamespacePath is rejected. Required unless FromStatus.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	ServicePath string `json:"servicePath,omitempty"`
+
+	// Port is the Service port name to target (e.g. "control", "preview").
+	// Required unless FromStatus.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	Port string `json:"port,omitempty"`
+
+	// UpstreamPath is prepended to the caller-supplied path when composing the
+	// service-proxy URL (e.g. "/logs"). Defaults to "/". Ignored when FromStatus.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	UpstreamPath string `json:"upstreamPath,omitempty"`
+
+	// Methods is the allowed HTTP method allowlist for this verb. Empty allows
+	// GET only. Ignored when FromStatus.
+	// +optional
+	Methods []string `json:"methods,omitempty"`
+
+	// Stream marks a long-lived response (e.g. log follow) so the provider
+	// disables response buffering and request timeouts. Ignored when FromStatus.
+	// +optional
+	Stream bool `json:"stream,omitempty"`
+
+	// Upgrade allows HTTP connection upgrades (WebSocket / SPDY exec /
+	// port-forward) through this verb's proxy. Ignored when FromStatus.
+	// +optional
+	Upgrade bool `json:"upgrade,omitempty"`
 }
 
 // TemplateAgent is machine-facing guidance for LLM agents operating this

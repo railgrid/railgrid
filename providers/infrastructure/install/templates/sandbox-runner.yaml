@@ -95,6 +95,40 @@ spec:
       - projectRef
       - runnerImage
       - tokenGeneratorImage
+  # Live data-plane verbs the provider serves as subresources on a SandboxRunner
+  # instance (sandboxrunners/<name>/{log,sync,restart,proxy,status}). Each verb
+  # resolves to a runtime Service/Secret read from the instance status below;
+  # the provider confines every ref to status.runtimeNamespace so a mutated
+  # status cannot redirect a proxy elsewhere. See
+  # docs/app-studio-runtime-decoupling.md.
+  dataPlane:
+    runtimeNamespacePath: status.runtimeNamespace
+    tokenSecretPath: status.controlSecretRef
+    endpoints:
+      log:
+        servicePath: status.controlServiceRef
+        port: control
+        upstreamPath: /logs
+        methods: ["GET"]
+        stream: true
+      sync:
+        servicePath: status.controlServiceRef
+        port: control
+        upstreamPath: /sync
+        methods: ["POST"]
+      restart:
+        servicePath: status.controlServiceRef
+        port: control
+        upstreamPath: /restart
+        methods: ["POST"]
+      proxy:
+        servicePath: status.previewServiceRef
+        port: preview
+        upstreamPath: /
+        methods: ["GET", "POST", "HEAD"]
+        upgrade: true
+      status:
+        fromStatus: true
   backendConfig:
     resources:
       - id: runtimeNamespace
