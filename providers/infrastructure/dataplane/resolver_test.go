@@ -191,7 +191,7 @@ func TestMethodAllowed(t *testing.T) {
 		{"sync", http.MethodPost, true},
 		{"sync", http.MethodGet, false},
 		{"proxy", http.MethodHead, true},
-		{"status", http.MethodGet, true},  // FromStatus, empty Methods => GET
+		{"status", http.MethodGet, true}, // FromStatus, empty Methods => GET
 		{"status", http.MethodPost, false},
 		{"unknown", http.MethodGet, false},
 	} {

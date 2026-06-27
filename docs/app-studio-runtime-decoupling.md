@@ -110,14 +110,14 @@ A generic resolver turns `(instance, endpointName) → {serviceNamespace, servic
 ### 4.1 Request shape
 
 ```
-GET  /services/providers/infrastructure/vw/clusters/{ws}/
-       apis/infrastructure.kedge.faros.sh/v1alpha1/sandboxrunners/{name}/log
+GET  /services/providers/infrastructure/dataplane/clusters/{ws}/sandboxrunners/{name}/log
 GET  …/sandboxrunners/{name}/proxy/{path...}
 POST …/sandboxrunners/{name}/sync
 POST …/sandboxrunners/{name}/restart
+     …/sandboxrunners/{name}/status     (served from the instance status; no runtime hop)
 ```
 
-(The exact prefix depends on the transport vehicle chosen in §6; the handler logic is identical either way.)
+The `/services/providers/infrastructure` prefix is the hub backend proxy; the provider's serve mux sees `/dataplane/clusters/{ws}/{resource}/{name}/{verb}[/{tail}]` (§6.1). The `{ws}` segment carries colons (`root:kedge:orgs:acme`) and is a single path segment.
 
 ### 4.2 Per-request flow
 
@@ -148,16 +148,17 @@ After this, App Studio's `SandboxRunner` values shrink to roughly `{projectRef}`
 
 ## 6. Open decisions
 
-### 6.1 VW transport vehicle — **spike in Phase 1**
+### 6.1 VW transport vehicle — **decided in Phase 1**
 
 The "subresource on the instance" semantics can be realized two ways:
 
 | Vehicle | Pros | Cons |
 |---|---|---|
 | **kcp APIExport subresource** on the instance kind | Purest model; reachable via the normal bound-resource API path App Studio already uses; no per-workspace URL mapping | Unproven that kcp APIExport supports arbitrary custom subresources on CRD-backed resources |
-| **Dedicated VW builder** (`spec.virtualWorkspace` → `/services/providers/infrastructure/vw/…`) | **Proven in-repo** by `edges_proxy_builder.go` (proxy + upgrades + WebSocket through the hub) | Hub must map workspace → provider (the binding supplies this); slightly more wiring |
+| **Provider serve mux behind the hub backend proxy** (`/services/providers/infrastructure/dataplane/…`, workspace in the path) | **Proven in-repo** — the provider already serves `/mcp` this way, and `edges_proxy_builder.go` shows proxy + upgrades + WebSocket through the hub; no kcp-VW machinery | Workspace addressed explicitly in the URL rather than implied by the bound resource; the handler re-authorizes against the instance itself |
 
-Recommendation: budget for the **dedicated VW builder**; it is the de-risked path and the handler logic is identical. Confirm the APIExport-subresource option early — if kcp supports it, prefer it.
+**Decision (Phase 1):** the **provider serve mux** vehicle. The handler mounts at `dataplane.PathPrefix` (`/dataplane/`) on the provider's existing HTTP server and is reached through the hub backend proxy with the caller's bearer token forwarded as-is. The URL carries the workspace explicitly —
+`/dataplane/clusters/<ws>/<resource>/<name>/<verb>[/<tail>]` — and the handler authorizes by fetching the instance **as the caller** (a tenant-scoped GET; 403/404 is the gate). This keeps the k8s-native subresource *semantics* while avoiding the unproven kcp-APIExport-subresource path. BYO compute still falls out of the binding: App Studio resolves which provider backs a workspace and routes there; a future migration to a true APIExport subresource can swap the transport without touching the resolver or the handler logic.
 
 ### 6.2 Move runner config ownership to infra
 

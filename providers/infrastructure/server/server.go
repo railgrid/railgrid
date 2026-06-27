@@ -31,6 +31,7 @@ type AssetServer func(w http.ResponseWriter, r *http.Request, distFS fs.FS, name
 // in the smoke test only.
 type Deps struct {
 	MCP              http.Handler // /mcp + /mcp/sse handler; may be nil
+	DataPlane        http.Handler // /dataplane/* subresource proxy; may be nil
 	PortalFileServer http.Handler
 	PortalFS         fs.FS
 	ServePortalAsset AssetServer
@@ -63,6 +64,14 @@ func New(d Deps) *Server {
 		// streamable-HTTP handler dispatches on method internally.
 		s.mux.Handle("/mcp", d.MCP)
 		s.mux.Handle("/mcp/sse", d.MCP)
+	}
+
+	// Data-plane subresource proxy: /dataplane/clusters/<ws>/<resource>/<name>/<verb>.
+	// Reached via the hub backend proxy at
+	// /services/providers/infrastructure/dataplane/... — see the dataplane
+	// package and docs/app-studio-runtime-decoupling.md.
+	if d.DataPlane != nil {
+		s.mux.Handle("/dataplane/", d.DataPlane)
 	}
 
 	// Portal fallback — last so all explicit routes above take

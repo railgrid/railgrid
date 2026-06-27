@@ -145,8 +145,17 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 		log.Fatalf("portal embed: %v", err)
 	}
 
+	// Data-plane subresource proxy (logs/sync/restart/preview proxy/status).
+	// nil in REST-only/dev (no kcp or runtime cluster); the handler then reports
+	// 503 so the route exists but is clearly unavailable.
+	var dataPlaneHandler http.Handler
+	if h := buildDataPlaneHandler(kcpConfig); h != nil {
+		dataPlaneHandler = h
+	}
+
 	srv := server.New(server.Deps{
 		MCP:              mcpHandler,
+		DataPlane:        dataPlaneHandler,
 		PortalFileServer: fileServer,
 		PortalFS:         distFS,
 		ServePortalAsset: servePortalAsset,
