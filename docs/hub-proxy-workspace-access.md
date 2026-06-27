@@ -97,10 +97,13 @@ to "is this a workspace the caller is a member of?". Concretely:
   keep scoping to `DefaultCluster`. Bare paths carry no workspace selector, so
   the home workspace stays the sensible default.
 
-The proxy already holds a kedge client (`kedgeClient`) and can read the index;
-cache per-user with a short TTL, mirroring the existing tenant resolver
-([pkg/hub/provider_tenant_resolver.go](../pkg/hub/provider_tenant_resolver.go),
-5-minute TTL).
+**Back the authorization with an informer/watch on `UserMembershipIndex`, not a
+TTL cache.** The index is continuously reconciled by the Membership controller
+(O-3: it owns the index and keeps it in sync with every Membership write), so an
+informer-backed local view is as fresh as the controller — authorization reads a
+hot in-memory set with no per-request kcp round-trip and no TTL staleness window.
+The proxy already holds `kedgeClient`; add a shared informer for the index and
+gate off its lister.
 
 ### A-2 — Path ↔ ID bridge
 
@@ -118,7 +121,11 @@ options, in preference order:
    cached. Simpler to ship, one lookup per cold cache entry.
 
 A-2.1 is preferred: it keeps the hot path free of extra kcp calls and makes the
-authorization decision purely a function of data the hub already owns.
+authorization decision purely a function of data the hub already owns — for
+**workspace-scope** memberships. **Org-scope** memberships grant access to child
+workspaces that may have no explicit index entry, which the pure set lookup
+doesn't cover; that interaction is the main open decision (see
+[Open questions](#open-questions)).
 
 ### A-3 — Reconcile with O-10
 
@@ -154,6 +161,13 @@ honest role: the default for bare paths and first-login landing.
   the tenant resolver already uses for the `X-Kedge-Org`/`X-Kedge-Workspace`
   headers ([provider_tenant_resolver.go](../pkg/hub/provider_tenant_resolver.go)).
 - **Org workspaces stay sealed** (A-3 / O-10).
+- **Revocation is reconciler-driven, not time-bounded.** Removing a Membership
+  makes the Membership controller delete the matching `UserMembershipIndex`
+  entry **and** tear down the per-workspace RBAC grant (the inverse of the
+  organization controller's Step-H backfill). The proxy's informer reflects the
+  index deletion within its propagation latency, and kcp denies independently
+  once the RBAC grant is gone — two reconciler-driven controls, no TTL window to
+  reason about.
 - **Failure mode is closed:** unknown cluster, non-member, or index-lookup
   error → 403, same as today.
 - **Blast radius is the most security-sensitive path in the system** (every
@@ -191,16 +205,46 @@ the hub REST handlers.
 
 ---
 
+## Decided
+
+- **Freshness = informer, not TTL.** Authorization gates off an informer-backed
+  lister of `UserMembershipIndex`, kept current by the Membership controller —
+  as fresh as the controller, no staleness window (see A-1).
+- **Revocation = reconciler-driven.** Removing the Membership makes the
+  controller delete the index entry and tear down the per-workspace RBAC grant;
+  both the proxy informer and kcp deny without any time bound (see Security
+  analysis).
+- **No feature flag.** Ship the membership gate directly, guarded by the test
+  matrix above rather than a runtime flag.
+
 ## Open questions
 
-- **Index freshness vs. membership revocation.** A short TTL bounds the window
-  where a just-revoked member could still reach a workspace through a cached
-  authorization; kcp RBAC revocation (the real control) is immediate, so the
-  exposure is bounded to "proxy lets the request through, kcp then denies it."
-  Confirm the TTL choice with the Membership controller's write latency.
+- **Org-scope authorization vs. the O(1) lookup (the real fork).** A-2.1 ("carry
+  the cluster ID in the index → O(1) set lookup") works for **workspace-scope**
+  memberships, which have one entry per workspace. But A-3 also grants an
+  **org-scope** member access to *every child workspace of the org* — including
+  children with **no explicit index entry**. Authorizing child cluster `X` under
+  an org-scope membership therefore needs `X → path → org`, i.e. a cluster→org
+  resolution, not a set lookup. Decision needed:
+  - **(a) Explicit entries** — have the Membership controller fan an org-scope
+    Membership out into a per-child-workspace index entry (carrying each child's
+    cluster ID), preserving the pure O(1) lookup at the cost of more index
+    churn; or
+  - **(b) On-demand resolve** — accept a cluster→org resolve step (cached, via
+    the `newClusterIDResolver` primitive) for org-scope entries only.
+- **Client-side workspace selection.** A-4 says the client addresses
+  `/clusters/{id}`, but doesn't define how `kubectl`/the portal *obtain* the
+  right ID per workspace — today the portal kubeconfig is pinned to
+  `DefaultCluster`, and the raw proxy has no `X-Kedge-Cluster` equivalent. Needs
+  a kubeconfig/switching story.
+- **Static-token and SA-user paths.** A-1 covers the OIDC user path; the proxy's
+  `serveStaticToken` and workspace-SA identities (O-14) have a different
+  membership model. Define how they authorize cluster access (likely: an SA is
+  pinned to its one workspace, not membership-expanded).
 - **Mounts.** The existing `{clusterName}:{mountName}` allowance must be
   re-expressed against membership (allow mounts under any member workspace, not
   just `DefaultCluster`).
-- **Rollout.** Feature-flag the membership path and keep the `DefaultCluster`
-  behavior as a fallback for one release, so a regression is a flag flip rather
-  than a redeploy.
+- **Bare-path silent default.** Keeping bare `/api|/apis` → `DefaultCluster`
+  means a user who primarily works in a non-default workspace has legacy/CLI
+  tools silently hit the *wrong* workspace. Acceptable, but a known foot-gun to
+  document for users.
