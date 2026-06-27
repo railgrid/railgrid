@@ -31,7 +31,6 @@ import (
 	"strings"
 	"time"
 
-	einomodel "github.com/cloudwego/eino/components/model"
 	einoschema "github.com/cloudwego/eino/schema"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -415,13 +414,12 @@ func (s *Server) generateProjectNaming(ctx context.Context, c *asclient.Client, 
 	if err != nil {
 		return projectNamingResult{}, err
 	}
-	temperature := float32(0.1)
 	reply, err := model.Generate(ctx, []*einoschema.Message{
 		einoschema.SystemMessage("Generate concise app project names. Return only JSON with string fields displayName and repositoryName. " +
 			"displayName should be 2-5 words, human-readable, and no longer than 64 characters. " +
 			"repositoryName must be derived from displayName and must already satisfy DNS-1123 label rules: lowercase a-z, 0-9, hyphen only; starts and ends with alphanumeric; max 63 characters."),
 		einoschema.UserMessage("Prompt:\n" + prompt),
-	}, einomodel.WithTemperature(temperature))
+	}, projectTemperatureOptions(settings.Model, 0.1)...)
 	if err != nil {
 		return projectNamingResult{}, err
 	}

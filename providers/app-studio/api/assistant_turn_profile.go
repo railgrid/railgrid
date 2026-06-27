@@ -88,15 +88,16 @@ func classifyProjectAssistantTurnProfile(history []store.Message) projectAssista
 	return fallbackProjectAssistantTurnDecision(history).Profile
 }
 
-func classifyProjectAssistantTurnWithModel(ctx context.Context, model einomodel.BaseChatModel, history []store.Message) (projectAssistantTurnDecision, error) {
+func classifyProjectAssistantTurnWithModel(ctx context.Context, model einomodel.BaseChatModel, history []store.Message, extraOpts ...einomodel.Option) (projectAssistantTurnDecision, error) {
 	fallback := fallbackProjectAssistantTurnDecision(history)
 	if model == nil {
 		return fallback, nil
 	}
+	opts := append([]einomodel.Option{einomodel.WithToolChoice(einoschema.ToolChoiceForbidden)}, extraOpts...)
 	msg, err := model.Generate(ctx, []*einoschema.Message{
 		einoschema.SystemMessage(projectAssistantTurnClassifierSystemPrompt),
 		einoschema.UserMessage(projectAssistantTurnClassifierUserPrompt(history)),
-	}, einomodel.WithTemperature(0), einomodel.WithToolChoice(einoschema.ToolChoiceForbidden))
+	}, opts...)
 	if err != nil || msg == nil || len(msg.ToolCalls) > 0 {
 		return fallback, nil
 	}
@@ -117,7 +118,7 @@ func projectAssistantSemanticTurnRouter(ctx context.Context, req projectAssistan
 	if err != nil {
 		return fallbackProjectAssistantTurnDecision(req.History), nil
 	}
-	return classifyProjectAssistantTurnWithModel(ctx, model, req.History)
+	return classifyProjectAssistantTurnWithModel(ctx, model, req.History, projectTemperatureOptions(req.LLM.Model, 0)...)
 }
 
 func projectAssistantFallbackTurnRouter(_ context.Context, req projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {

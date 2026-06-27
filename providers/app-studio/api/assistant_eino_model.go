@@ -59,18 +59,55 @@ func newProjectEinoChatModel(ctx context.Context, settings projectLLMSettings) (
 }
 
 func newProjectEinoOpenAIChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
-	temperature := float32(0.2)
-	model, err := openaimodel.NewChatModel(ctx, &openaimodel.ChatModelConfig{
-		APIKey:      strings.TrimSpace(settings.APIKey),
-		BaseURL:     strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"),
-		Model:       strings.TrimSpace(settings.Model),
-		Temperature: &temperature,
-		HTTPClient:  &http.Client{},
-	})
+	config := &openaimodel.ChatModelConfig{
+		APIKey:     strings.TrimSpace(settings.APIKey),
+		BaseURL:    strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"),
+		Model:      strings.TrimSpace(settings.Model),
+		HTTPClient: &http.Client{},
+	}
+	// GPT-5 and the o-series reasoning models reject any temperature other than
+	// the fixed default of 1, so only request a custom temperature when the
+	// configured model supports it.
+	if projectModelSupportsTemperature(settings.Model) {
+		temperature := float32(0.2)
+		config.Temperature = &temperature
+	}
+	model, err := openaimodel.NewChatModel(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("create native Eino OpenAI chat model: %w", err)
 	}
 	return model, nil
+}
+
+// projectModelSupportsTemperature reports whether the given model accepts a
+// custom sampling temperature. OpenAI's GPT-5 family and the o-series reasoning
+// models (o1/o3/o4) fix temperature, top_p, and the penalties, and return an
+// error if a non-default value is sent.
+func projectModelSupportsTemperature(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return true
+	}
+	// Drop any provider prefix such as "openai/".
+	if idx := strings.LastIndex(m, "/"); idx >= 0 {
+		m = m[idx+1:]
+	}
+	switch {
+	case strings.HasPrefix(m, "gpt-5"), strings.HasPrefix(m, "gpt5"):
+		return false
+	case strings.HasPrefix(m, "o1"), strings.HasPrefix(m, "o3"), strings.HasPrefix(m, "o4"):
+		return false
+	}
+	return true
+}
+
+// projectTemperatureOptions returns the per-call temperature option for the
+// given model, or nil when the model does not accept a custom temperature.
+func projectTemperatureOptions(model string, temperature float32) []einomodel.Option {
+	if !projectModelSupportsTemperature(model) {
+		return nil
+	}
+	return []einomodel.Option{einomodel.WithTemperature(temperature)}
 }
 
 func newProjectEinoGeminiChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {

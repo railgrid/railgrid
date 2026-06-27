@@ -9,11 +9,18 @@
 {{- if and $previewGatewayFeatureEnabled (not .Values.previewTokenSecretRef.name) -}}
 {{- fail "previewGateway is enabled with baseDomain, but previewTokenSecretRef.name is required for shared preview tokens" -}}
 {{- end -}}
-{{- if and $runtimeKubeconfigSecret (not $sandboxRunnerImage) -}}
-{{- fail "sandboxRunner.runnerImage is required when runtimeKubeconfig.secretName is set; use an immutable digest reference" -}}
+{{- /*
+App Studio creates a SandboxRunner for every project's development environment,
+and the SandboxRunner spec requires both images regardless of whether the
+runtime data plane (runtimeKubeconfig) is enabled. Require them unconditionally
+so a misconfigured install fails here instead of producing invalid SandboxRunner
+resources at runtime.
+*/ -}}
+{{- if not $sandboxRunnerImage -}}
+{{- fail "sandboxRunner.runnerImage is required; use an immutable digest reference" -}}
 {{- end -}}
-{{- if and $runtimeKubeconfigSecret (not $sandboxTokenGeneratorImage) -}}
-{{- fail "sandboxRunner.tokenGeneratorImage is required when runtimeKubeconfig.secretName is set; use an immutable digest reference" -}}
+{{- if not $sandboxTokenGeneratorImage -}}
+{{- fail "sandboxRunner.tokenGeneratorImage is required; use an immutable digest reference" -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -104,14 +111,12 @@ spec:
             - name: APP_STUDIO_RUNTIME_KUBECONFIG
               value: /var/run/secrets/kedge/runtime/kubeconfig
             {{- end }}
-            {{- if $sandboxRunnerImage }}
+            # Always set: the SandboxRunner spec requires both images, and the
+            # template above fails the install when either is unset.
             - name: APP_STUDIO_SANDBOX_RUNNER_IMAGE
               value: {{ $sandboxRunnerImage | quote }}
-            {{- end }}
-            {{- if $sandboxTokenGeneratorImage }}
             - name: APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE
               value: {{ $sandboxTokenGeneratorImage | quote }}
-            {{- end }}
             {{- if $previewGatewayFeatureEnabled }}
             - name: APP_STUDIO_PREVIEW_BASE_DOMAIN
               value: {{ $previewGatewayBaseDomain | quote }}
