@@ -228,6 +228,13 @@ func TestTenancySATokenCrossWorkspace(t *testing.T) {
 	testenv.Test(t, cases.TenancySATokenCrossWorkspace())
 }
 
+// Two-user membership-gated kcp proxy isolation: each user reaches only the
+// workspace clusters their UserMembershipIndex covers, cross access is refused
+// until granted, and bare paths are rejected. OIDC-only (needs two identities).
+func TestHubProxyMembershipIsolation(t *testing.T) {
+	testenv.Test(t, cases.HubProxyMembershipIsolation())
+}
+
 // TestOIDCTokenIssuerMatchesDiscovery verifies that the hub's OIDC issuer URL
 // matches what Dex advertises in its discovery document.
 func TestOIDCTokenIssuerMatchesDiscovery(t *testing.T) {

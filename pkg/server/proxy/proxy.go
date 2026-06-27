@@ -70,6 +70,9 @@ type KCPProxy struct {
 	hubExternalURL       string
 	devMode              bool
 	logger               klog.Logger
+	// authorizer gates /clusters/{id} access against the caller's
+	// UserMembershipIndex (docs/hub-proxy-workspace-access.md, Option A).
+	authorizer *clusterAuthorizer
 	// staticTokenRateLimiter protects the token-login endpoint against brute force attacks
 	staticTokenRateLimiter *tokenRateLimiter
 }
@@ -219,6 +222,14 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 		verifyCtx = context.WithValue(verifyCtx, oauth2.HTTPClient, insecureClient)
 	}
 
+	authorizer := newClusterAuthorizer(
+		func(ctx context.Context, userName string) (*tenancyv1alpha1.UserMembershipIndex, error) {
+			return kedgeClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
+		},
+		bootstrapper.GetChildWorkspaceClusterName,
+		bootstrapper.ListChildWorkspaces,
+	)
+
 	return &KCPProxy{
 		kcpTarget:            target,
 		passthroughTransport: passthroughTransport,
@@ -230,6 +241,7 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 		hubExternalURL:       hubExternalURL,
 		devMode:              devMode,
 		logger:               klog.Background().WithName("kcp-proxy"),
+		authorizer:           authorizer,
 		// Initialize rate limiter for token-login endpoint (10 requests per minute)
 		staticTokenRateLimiter: &tokenRateLimiter{
 			limiter:   newRateLimiter(defaultStaticTokenBurstDuration, defaultStaticTokenRateLimit),
@@ -269,8 +281,8 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// correctly reject them, but running the check first saves a JWKS fetch and
 	// makes the auth branch unambiguous in logs.
 	if saClaims, ok := parseServiceAccountToken(token); ok {
-		p.logger.Info("proxy auth: SA token", "path", r.URL.Path, "clusterName", saClaims.ClusterName)
-		p.serveServiceAccount(w, r, token, saClaims.ClusterName)
+		p.logger.Info("proxy auth: SA token", "path", r.URL.Path, "clusterName", saClaims.ClusterName())
+		p.serveServiceAccount(w, r, token, saClaims.ClusterName())
 		return
 	}
 
@@ -319,29 +331,18 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 		_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"user workspace not found","reason":"Forbidden","code":403}`)
 		return
 	}
-	// Wait for the bootstrap controller to populate DefaultCluster on
-	// the very first request after sign-up. Warm-path requests
-	// short-circuit on the first iteration.
+	// Wait for the bootstrap controller to finish provisioning the user's
+	// personal org/workspace (and its membership index) on the very first
+	// request after sign-up. Warm-path requests short-circuit immediately.
 	user = p.waitForDefaultCluster(r.Context(), user)
 
-	kcpPath, errStatus, errBody := resolveKCPPath(r.URL.Path, user.Spec.DefaultCluster)
+	// Authorize the requested cluster against the caller's membership (A-1/A-3).
+	kcpPath, errStatus, errBody := p.authorizeKCPPath(r.Context(), user.Name, r.URL.Path)
 	if errStatus != 0 {
-		if strings.HasPrefix(r.URL.Path, "/clusters/") {
-			p.logger.Info("cluster access denied", "user", user.Name, "path", r.URL.Path, "allowed", user.Spec.DefaultCluster)
-		} else {
-			p.logger.Error(nil, "user has no default cluster", "user", user.Name)
-		}
+		p.logger.Info("cluster access denied", "user", user.Name, "path", r.URL.Path, "status", errStatus)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(errStatus)
 		_, _ = fmt.Fprint(w, errBody)
-		return
-	}
-
-	// O-10 gate: refuse direct access to Organization workspaces.
-	// Tenants must use the hub REST surface for Org-scoped operations.
-	if clusterPath := extractClusterPathFromKCPPath(kcpPath); isOrgWorkspacePath(clusterPath) {
-		p.logger.Info("org workspace access denied (O-10)", "user", user.Name, "cluster", clusterPath)
-		writeOrgWorkspaceForbidden(w)
 		return
 	}
 
@@ -391,28 +392,17 @@ func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, toke
 		_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"failed to create user","reason":"InternalError","code":500}`)
 		return
 	}
-	// Wait for the bootstrap controller to populate DefaultCluster on
-	// the very first request after sign-up.
+	// Wait for the bootstrap controller to finish provisioning the user's
+	// personal org/workspace (and its membership index) on first request.
 	user = p.waitForDefaultCluster(ctx, user)
 
-	kcpPath, errStatus, errBody := resolveKCPPath(r.URL.Path, user.Spec.DefaultCluster)
+	// Authorize the requested cluster against the caller's membership (A-1/A-3).
+	kcpPath, errStatus, errBody := p.authorizeKCPPath(ctx, user.Name, r.URL.Path)
 	if errStatus != 0 {
-		if strings.HasPrefix(r.URL.Path, "/clusters/") {
-			p.logger.Info("cluster access denied", "user", user.Name, "path", r.URL.Path, "allowed", user.Spec.DefaultCluster)
-		} else {
-			p.logger.Error(nil, "user has no default cluster", "user", user.Name)
-		}
+		p.logger.Info("cluster access denied", "user", user.Name, "path", r.URL.Path, "status", errStatus)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(errStatus)
 		_, _ = fmt.Fprint(w, errBody)
-		return
-	}
-
-	// O-10 gate: refuse direct access to Organization workspaces.
-	// Tenants must use the hub REST surface for Org-scoped operations.
-	if clusterPath := extractClusterPathFromKCPPath(kcpPath); isOrgWorkspacePath(clusterPath) {
-		p.logger.Info("org workspace access denied (O-10)", "user", user.Name, "cluster", clusterPath)
-		writeOrgWorkspaceForbidden(w)
 		return
 	}
 
@@ -621,10 +611,26 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 	proxy.ServeHTTP(w, r)
 }
 
-// saTokenClaims holds the claims we extract from a kcp ServiceAccount JWT.
+// saTokenClaims holds the claims we extract from a kcp ServiceAccount JWT. kcp
+// carries the SA's logical cluster in the token: bound tokens nest it under
+// kubernetes.io.clusterName, legacy tokens use the flat
+// kubernetes.io/serviceaccount/clusterName key. We read both, matching kcp's
+// WithInClusterServiceAccountRequestRewrite (pkg/server/filters/serviceaccounts.go).
 type saTokenClaims struct {
-	Issuer      string `json:"iss"`
-	ClusterName string `json:"kubernetes.io/serviceaccount/clusterName"`
+	Issuer            string `json:"iss"`
+	ClusterNameLegacy string `json:"kubernetes.io/serviceaccount/clusterName"`
+	Kubernetes        struct {
+		ClusterName string `json:"clusterName"`
+	} `json:"kubernetes.io"`
+}
+
+// ClusterName returns the SA's logical cluster, preferring the bound-token claim
+// and falling back to the legacy flat claim.
+func (c saTokenClaims) ClusterName() string {
+	if c.Kubernetes.ClusterName != "" {
+		return c.Kubernetes.ClusterName
+	}
+	return c.ClusterNameLegacy
 }
 
 // parseServiceAccountToken decodes a JWT without signature verification and
@@ -643,7 +649,11 @@ func parseServiceAccountToken(token string) (saTokenClaims, bool) {
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return saTokenClaims{}, false
 	}
-	if claims.Issuer != "kubernetes/serviceaccount" || claims.ClusterName == "" {
+	// It's a kcp SA token when it carries a logical-cluster claim (bound or
+	// legacy). An OIDC/Dex user token has neither, so this never misclassifies a
+	// user token. We no longer require iss=="kubernetes/serviceaccount" so that
+	// bound SA tokens (different issuer) are also recognised.
+	if claims.ClusterName() == "" {
 		return saTokenClaims{}, false
 	}
 	return claims, true
@@ -718,37 +728,43 @@ func writeOrgWorkspaceForbidden(w http.ResponseWriter) {
 	_, _ = fmt.Fprint(w, orgWorkspaceForbiddenBody)
 }
 
-// resolveKCPPath computes the target kcp path for the given request URL path.
-//
-// Two formats are accepted:
-//   - /clusters/{logicalClusterName}/... — validated against defaultCluster;
-//     returns the original path unchanged on success.
-//   - /api/... or /apis/... (bare paths) — prepended with
-//     /clusters/{defaultCluster}; returns 403 if defaultCluster is empty.
-//
-// Returns (kcpPath, 0, "") on success, or ("", httpStatus, jsonBody) on error.
-// The caller is responsible for logging context and writing the HTTP response.
-func resolveKCPPath(urlPath, defaultCluster string) (string, int, string) {
-	if strings.HasPrefix(urlPath, "/clusters/") {
-		// kcp-syntax: validate that the requested cluster matches the user's workspace.
-		rest := strings.TrimPrefix(urlPath, "/clusters/")
-		slashIdx := strings.Index(rest, "/")
-		clusterID := rest
-		if slashIdx >= 0 {
-			clusterID = rest[:slashIdx]
-		}
-		// Allow exact match or mount access ({clusterName}:{mountName}).
-		if clusterID != defaultCluster && !strings.HasPrefix(clusterID, defaultCluster+":") {
-			return "", http.StatusForbidden, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"cluster access denied","reason":"Forbidden","code":403}`
-		}
-		return urlPath, 0, ""
-	}
+// Response bodies for the membership-gated cluster authorization (Option A).
+const (
+	bareNoClusterBody       = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"no workspace selected — address /clusters/{id} (resolve the id via the hub REST endpoints, e.g. /api/orgs/{org}/workspaces)","reason":"BadRequest","code":400}`
+	addressByIDBody         = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"address workspaces by cluster ID (/clusters/{id}), not by path — resolve the id via /api/orgs/{org}/workspaces/{ws}","reason":"Forbidden","code":403}`
+	clusterAccessDeniedBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"cluster access denied","reason":"Forbidden","code":403}`
+)
 
-	// Bare path: scope to the user's default cluster.
-	if defaultCluster != "" {
-		return "/clusters/" + defaultCluster + urlPath, 0, ""
+// authorizeKCPPath authorizes userName's request URL against their membership
+// and returns the kcp path to forward (unchanged for /clusters/{id}) or an
+// error (status, body). Implements docs/hub-proxy-workspace-access.md:
+//
+//   - bare /api|/apis (no cluster segment) → rejected; there is no
+//     DefaultCluster default (A-1).
+//   - /clusters/{org-workspace-path} → O-10 refusal (Org workspaces are
+//     hub-mediated).
+//   - /clusters/{tenant-path} (path-form) → rejected; clients address by ID.
+//   - /clusters/{id}[:{edge}] → allowed iff the caller is a member of the
+//     workspace the id (or the id of an edge's parent) belongs to (A-3).
+//
+// Returns (kcpPath, 0, "") on success, or ("", status, body) on denial.
+func (p *KCPProxy) authorizeKCPPath(ctx context.Context, userName, urlPath string) (string, int, string) {
+	if !strings.HasPrefix(urlPath, "/clusters/") {
+		return "", http.StatusBadRequest, bareNoClusterBody
 	}
-	return "", http.StatusForbidden, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"user has no default cluster","reason":"Forbidden","code":403}`
+	seg := extractClusterPathFromKCPPath(urlPath)
+	switch {
+	case seg == "":
+		return "", http.StatusBadRequest, bareNoClusterBody
+	case isOrgWorkspacePath(seg):
+		return "", http.StatusForbidden, orgWorkspaceForbiddenBody
+	case strings.HasPrefix(seg, "root:"):
+		return "", http.StatusForbidden, addressByIDBody
+	}
+	if !p.authorizer.authorize(ctx, userName, seg) {
+		return "", http.StatusForbidden, clusterAccessDeniedBody
+	}
+	return urlPath, 0, ""
 }
 
 // ErrIdentifyNoBearer is returned by IdentifyUser when the request
