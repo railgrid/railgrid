@@ -1,6 +1,6 @@
 # Hub kcp-proxy — per-workspace access (membership-gated)
 
-**Status:** Design draft (proposed — not yet implemented)
+**Status:** Design agreed — ready for implementation (A-1…A-6)
 **Owner:** TBD
 **Last updated:** 2026-06-27
 **Reads as a delta on:** [organizations.md](./organizations.md) (decision O-10), [provider-connectivity-contract.md](./provider-connectivity-contract.md)
@@ -87,15 +87,20 @@ membership**, and let kcp RBAC remain the real enforcement boundary.
 
 ### A-1 — Authorize against `UserMembershipIndex`, not a single `DefaultCluster`
 
-`resolveKCPPath` (and the SA path) change from "is this the default cluster?"
-to "is this a workspace the caller is a member of?". Concretely:
+`resolveKCPPath` changes from "is this the default cluster?" to "is this a
+workspace the caller is a member of?" (the SA path is handled separately in
+A-6). Concretely:
 
 - For `/clusters/{id}/...`: allow when `{id}` maps to a workspace in the
-  caller's `UserMembershipIndex` (or a mount under such a workspace). Keep the
-  exact-`DefaultCluster` match as a fast path.
-- For bare `/api|/apis` paths (legacy kubeconfigs with no cluster segment):
-  keep scoping to `DefaultCluster`. Bare paths carry no workspace selector, so
-  the home workspace stays the sensible default.
+  caller's `UserMembershipIndex` (or an **edge** under such a workspace —
+  `{id}:{edgeName}`, see A-3).
+- For bare `/api|/apis` paths (no cluster segment): **reject — no default.** The
+  proxy no longer silently scopes bare paths to `DefaultCluster`; a request with
+  no workspace selector can't be authorized against membership, and silently
+  defaulting risks hitting the wrong workspace. Clients always address
+  `/clusters/{id}`, resolving the ID via REST (A-5). `DefaultCluster` is then
+  only a *landing hint* for the UI/CLI on first use, not a server-side
+  request-scoping default.
 
 **Back the authorization with an informer/watch on `UserMembershipIndex`, not a
 TTL cache.** The index is continuously reconciled by the Membership controller
@@ -138,6 +143,11 @@ For a request to `/clusters/{id}`:
    org-scope entry `(org, "")`. Org-scope is just the `(org, *)` case of the
    same lookup — no special path.
 
+**Edges** (`/clusters/{id}:{edgeName}`) are authorized by their parent: an edge
+mounted under a workspace the caller may reach is allowed. (kcp calls this a
+"mount"; in kedge the mounted thing is an **edge**, so the terminology and the
+allowance are stated in edge terms — `{id}:{edgeName}`, not `{id}:{mountName}`.)
+
 O-10 (no direct access to **Org** workspaces) stays: a request whose target
 resolves to the Org workspace itself (`root:kedge:tenants:{org}`, no `:{ws}`)
 never matches a child entry and is refused as today. So the relaxation is
@@ -147,9 +157,10 @@ remains hub-mediated.
 ### A-4 — Drop the "current cluster" idea on the client
 
 With A-1 in place there is no need for a server-side "current workspace". The
-client simply addresses `/clusters/{id}` for whichever workspace it's operating
-in; the proxy authorizes it against membership. `DefaultCluster` reverts to its
-honest role: the default for bare paths and first-login landing.
+client always addresses `/clusters/{id}` for whichever workspace it's operating
+in (no bare-path fallback — A-1); the proxy authorizes it against membership.
+`DefaultCluster` is reduced to a **landing hint** — the workspace the UI/CLI
+points at on first use — with no request-scoping role.
 
 ### A-5 — Clients learn the cluster ID via a hub REST endpoint
 
@@ -171,6 +182,24 @@ re-checks (A-3), so REST and proxy never disagree. This is the symmetric,
 provider-agnostic equivalent of the `X-Kedge-Cluster` header the backend proxy
 injects for provider HTTP traffic: REST hands the **client** the ID; the header
 hands the **provider** the ID; both come from the one topology index.
+
+### A-6 — ServiceAccount / static-token path: pin to the token's cluster claim
+
+Workspace ServiceAccounts (O-14) are **not** membership-expanded — an SA belongs
+to exactly one workspace and must reach only that one. kcp already carries the
+SA's logical cluster **inside the token**: a bound SA JWT has the cluster in the
+`kubernetes.io.clusterName` claim (legacy tokens:
+`kubernetes.io/serviceaccount/clusterName`), and kcp's
+[`WithInClusterServiceAccountRequestRewrite`](../../kcp-dev/kcp/pkg/server/filters/serviceaccounts.go)
+reads that claim and rewrites the request to `/clusters/<clusterName>/...`.
+
+So the proxy's SA path does the same: parse the SA token, read the
+`kubernetes.io.clusterName` claim, and authorize **only** that cluster (or an
+edge under it). No `UserMembershipIndex` lookup, no topology join — the token
+*is* the authorization scope, self-pinned to the SA's home workspace. A request
+that targets any other `/clusters/{id}` than the claim is refused. This keeps SA
+identities strictly single-workspace while users (A-1…A-3) span their member
+workspaces.
 
 ---
 
@@ -198,8 +227,9 @@ hands the **provider** the ID; both come from the one topology index.
 - **Blast radius is the most security-sensitive path in the system** (every
   user, every `kubectl`, every portal kcp call). This is the reason to document
   and review the design before implementing, and to land it behind tests that
-  assert: member→allowed, non-member→403, Org-workspace→403, bare-path→default,
-  cross-Org isolation.
+  assert: member→allowed, non-member→403, Org-workspace→403, cross-Org
+  isolation, bare-path→**rejected** (no default), SA→only its claim cluster
+  (other cluster→403), and edge-under-member-workspace→allowed.
 
 ---
 
@@ -251,17 +281,19 @@ the hub REST handlers.
   org/workspace endpoints return `clusterID` (single + listing), reusing the
   topology index (A-5). CLI plugin and UI resolve workspace → ID there, then
   address `/clusters/{id}`; no client-side kcp resolve.
+- **ServiceAccounts = pin to the token's cluster claim, not membership.** The SA
+  path reads the SA JWT's `kubernetes.io.clusterName` claim and authorizes only
+  that one cluster (or an edge under it), matching kcp's
+  `WithInClusterServiceAccountRequestRewrite` (A-6). SAs stay single-workspace.
+- **No bare-path default.** Bare `/api|/apis` (no cluster selector) is
+  **rejected**, not silently scoped to `DefaultCluster` — clients always address
+  `/clusters/{id}` via the REST-resolved ID (A-1, A-5). `DefaultCluster` becomes
+  a UI/CLI landing hint only.
+- **Edges, not "mounts".** The `{id}:{mountName}` allowance is re-expressed in
+  kedge terms as `{id}:{edgeName}`, authorized by the parent workspace's
+  membership (A-3).
 
 ## Open questions
 
-- **Static-token and SA-user paths.** A-1 covers the OIDC user path; the proxy's
-  `serveStaticToken` and workspace-SA identities (O-14) have a different
-  membership model. Define how they authorize cluster access (likely: an SA is
-  pinned to its one workspace, not membership-expanded).
-- **Mounts.** The existing `{clusterName}:{mountName}` allowance must be
-  re-expressed against membership (allow mounts under any member workspace, not
-  just `DefaultCluster`).
-- **Bare-path silent default.** Keeping bare `/api|/apis` → `DefaultCluster`
-  means a user who primarily works in a non-default workspace has legacy/CLI
-  tools silently hit the *wrong* workspace. Acceptable, but a known foot-gun to
-  document for users.
+None outstanding — the design decisions above cover the proposal. Remaining work
+is implementation (A-1…A-6) and the test matrix in [Security analysis](#security-analysis).
