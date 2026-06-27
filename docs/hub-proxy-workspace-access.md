@@ -105,40 +105,44 @@ hot in-memory set with no per-request kcp round-trip and no TTL staleness window
 The proxy already holds `kedgeClient`; add a shared informer for the index and
 gate off its lister.
 
-### A-2 — Path ↔ ID bridge
+### A-2 — Cluster → (org, workspace) topology index
 
-Requests address clusters by **ID**; the membership index stores Org/Workspace
-**UUIDs** (i.e. path components). The proxy needs to map between them. Two
-options, in preference order:
+Requests address clusters by **ID**; the membership index keys off Org/Workspace
+**UUIDs** (path components). Rather than push cluster IDs into every membership
+entry — or resolve `LogicalCluster` per request — keep a **separate
+reconciler-maintained topology index**: `clusterID → (orgUUID, wsUUID)` over the
+Org/Workspace tree.
 
-1. **Carry the cluster ID in the index.** Add the workspace's kcp
-   logical-cluster ID to `MembershipIndexEntry` (the Membership controller
-   already resolves it elsewhere). Then authorization is an O(1) set lookup, no
-   kcp round-trip on the request path.
-2. **Resolve on demand** via the well-known `LogicalCluster` object (the same
-   primitive `newClusterIDResolver` uses —
-   [pkg/hub/provider_cluster_resolver.go](../pkg/hub/provider_cluster_resolver.go)),
-   cached. Simpler to ship, one lookup per cold cache entry.
+- A small hub reconciler (or an informer-derived index over the kcp `Workspace`
+  objects, which carry both `spec.cluster` and their path) maintains
+  `map[clusterID] → (org, ws)`. It's tenant-wide, not per-user, and reflects
+  workspace create/delete continuously — the same freshness model as A-1.
+- The `LogicalCluster`/`newClusterIDResolver` primitive
+  ([pkg/hub/provider_cluster_resolver.go](../pkg/hub/provider_cluster_resolver.go))
+  is the per-entry resolve the reconciler uses to populate the index; it is
+  **not** on the request path.
 
-A-2.1 is preferred: it keeps the hot path free of extra kcp calls and makes the
-authorization decision purely a function of data the hub already owns — for
-**workspace-scope** memberships. **Org-scope** memberships grant access to child
-workspaces that may have no explicit index entry, which the pure set lookup
-doesn't cover; that interaction is the main open decision (see
-[Open questions](#open-questions)).
+This is the key simplification: with the topology index, **org-scope and
+workspace-scope authorization become the same O(1) check** (see A-3). No cluster
+IDs duplicated into membership entries, no per-request kcp call, no fan-out of
+org-scope memberships into synthetic per-workspace entries.
 
-### A-3 — Reconcile with O-10
+### A-3 — Authorization check (one rule for both scopes)
 
-O-10 (no direct access to **Org** workspaces) stays. The membership check must
-distinguish:
+For a request to `/clusters/{id}`:
 
-- **Org-scope** entries (`WorkspaceUUID == ""`) → grant access to the Org's
-  **child** workspaces, **not** the Org workspace itself. The O-10 refusal of
-  `root:kedge:tenants:{org}` (no `:{ws}` suffix) is unchanged.
-- **Workspace-scope** entries → grant that specific child workspace.
+1. **Topology (A-2):** `id → (org, ws)`. If `id` isn't in the index it isn't a
+   kedge child workspace → fall through to the existing gates (O-10 / 403).
+2. **Membership (A-1):** the caller's `UserMembershipIndex` covers `(org, ws)`
+   when it holds **either** a workspace-scope entry `(org, ws)` **or** an
+   org-scope entry `(org, "")`. Org-scope is just the `(org, *)` case of the
+   same lookup — no special path.
 
-So the relaxation is strictly "a member may reach their **child** workspaces";
-the Org workspace remains hub-mediated.
+O-10 (no direct access to **Org** workspaces) stays: a request whose target
+resolves to the Org workspace itself (`root:kedge:tenants:{org}`, no `:{ws}`)
+never matches a child entry and is refused as today. So the relaxation is
+strictly "a member may reach their **child** workspaces"; the Org workspace
+remains hub-mediated.
 
 ### A-4 — Drop the "current cluster" idea on the client
 
@@ -216,22 +220,15 @@ the hub REST handlers.
   analysis).
 - **No feature flag.** Ship the membership gate directly, guarded by the test
   matrix above rather than a runtime flag.
+- **Org-scope authorization = topology index, not membership fan-out.** A
+  separate reconciler-maintained `clusterID → (org, ws)` topology index (A-2)
+  turns authorization into two O(1) in-memory lookups (topology then
+  membership), with org-scope as the `(org, *)` case of the same check (A-3). No
+  cluster→org resolve on the request path and no fan-out of org-scope
+  memberships into synthetic per-workspace entries.
 
 ## Open questions
 
-- **Org-scope authorization vs. the O(1) lookup (the real fork).** A-2.1 ("carry
-  the cluster ID in the index → O(1) set lookup") works for **workspace-scope**
-  memberships, which have one entry per workspace. But A-3 also grants an
-  **org-scope** member access to *every child workspace of the org* — including
-  children with **no explicit index entry**. Authorizing child cluster `X` under
-  an org-scope membership therefore needs `X → path → org`, i.e. a cluster→org
-  resolution, not a set lookup. Decision needed:
-  - **(a) Explicit entries** — have the Membership controller fan an org-scope
-    Membership out into a per-child-workspace index entry (carrying each child's
-    cluster ID), preserving the pure O(1) lookup at the cost of more index
-    churn; or
-  - **(b) On-demand resolve** — accept a cluster→org resolve step (cached, via
-    the `newClusterIDResolver` primitive) for org-scope entries only.
 - **Client-side workspace selection.** A-4 says the client addresses
   `/clusters/{id}`, but doesn't define how `kubectl`/the portal *obtain* the
   right ID per workspace — today the portal kubeconfig is pinned to
