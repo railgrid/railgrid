@@ -151,6 +151,27 @@ client simply addresses `/clusters/{id}` for whichever workspace it's operating
 in; the proxy authorizes it against membership. `DefaultCluster` reverts to its
 honest role: the default for bare paths and first-login landing.
 
+### A-5 — Clients learn the cluster ID via a hub REST endpoint
+
+The client still needs the cluster **ID** to address `/clusters/{id}`. Expose it
+through the existing membership-gated org/workspace REST surface (O-10), reusing
+the A-2 topology index for the `(org, ws) → clusterID` direction:
+
+- **Resolve one:** `GET /api/orgs/{org}/workspaces/{ws}` returns the workspace's
+  `clusterID` (add the field; the CLI plugin resolves a workspace name/UUID →
+  ID, then writes a kubeconfig server URL of `<front-proxy>/clusters/{id}`).
+- **List many:** `GET /api/orgs/{org}/workspaces` (and the switcher's
+  `UserMembershipIndex`-backed listing) carry `clusterID` per row, so the portal
+  retargets its kcp/GraphQL client on a workspace switch without an extra call.
+
+Because these endpoints are already gated by `tenant.Middleware` (the caller
+must hold a Membership in `(org, ws)`), a client can only resolve IDs for
+workspaces it can actually reach — the same authorization the proxy then
+re-checks (A-3), so REST and proxy never disagree. This is the symmetric,
+provider-agnostic equivalent of the `X-Kedge-Cluster` header the backend proxy
+injects for provider HTTP traffic: REST hands the **client** the ID; the header
+hands the **provider** the ID; both come from the one topology index.
+
 ---
 
 ## Security analysis
@@ -226,14 +247,13 @@ the hub REST handlers.
   membership), with org-scope as the `(org, *)` case of the same check (A-3). No
   cluster→org resolve on the request path and no fan-out of org-scope
   memberships into synthetic per-workspace entries.
+- **Client gets the cluster ID from hub REST.** The membership-gated
+  org/workspace endpoints return `clusterID` (single + listing), reusing the
+  topology index (A-5). CLI plugin and UI resolve workspace → ID there, then
+  address `/clusters/{id}`; no client-side kcp resolve.
 
 ## Open questions
 
-- **Client-side workspace selection.** A-4 says the client addresses
-  `/clusters/{id}`, but doesn't define how `kubectl`/the portal *obtain* the
-  right ID per workspace — today the portal kubeconfig is pinned to
-  `DefaultCluster`, and the raw proxy has no `X-Kedge-Cluster` equivalent. Needs
-  a kubeconfig/switching story.
 - **Static-token and SA-user paths.** A-1 covers the OIDC user path; the proxy's
   `serveStaticToken` and workspace-SA identities (O-14) have a different
   membership model. Define how they authorize cluster access (likely: an SA is
