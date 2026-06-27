@@ -28,9 +28,6 @@ import (
 
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -51,9 +48,6 @@ type Server struct {
 	workspaces                   *workspace.FileStore
 	hubBase                      string
 	mcpInsecureSkipTLSVerify     bool
-	runtimeConfig                *rest.Config
-	runtimeClient                kubernetes.Interface
-	runtimeDynamic               dynamic.Interface
 	previewSigner                *previewtoken.Signer
 	autoApproveActions           bool
 	assistantEngine              projectAssistantEngine
@@ -82,28 +76,6 @@ func NewWithWorkspace(gql *tenant.GraphQLClient, msgStore store.Store, workspace
 	s.assistantEngine = NewEinoAssistantEngine(s)
 	s.assistantRunManager = newProjectAssistantRunManager()
 	return s
-}
-
-func (s *Server) SetRuntimeConfig(cfg *rest.Config) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.runtimeConfig = cfg
-	if cfg == nil {
-		s.runtimeClient = nil
-		s.runtimeDynamic = nil
-		return nil
-	}
-	client, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return err
-	}
-	dyn, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		return err
-	}
-	s.runtimeClient = client
-	s.runtimeDynamic = dyn
-	return nil
 }
 
 func (s *Server) SetPreviewTokenSecret(secret []byte) {

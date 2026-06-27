@@ -1,5 +1,4 @@
 {{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
-{{- $runtimeKubeconfigSecret := .Values.runtimeKubeconfig.secretName | default "" -}}
 {{- $sandboxRunnerImage := .Values.sandboxRunner.runnerImage | default "" -}}
 {{- $sandboxTokenGeneratorImage := .Values.sandboxRunner.tokenGeneratorImage | default "" -}}
 {{- $previewGatewayEnabled := .Values.previewGateway.enabled | default false -}}
@@ -11,10 +10,10 @@
 {{- end -}}
 {{- /*
 App Studio creates a SandboxRunner for every project's development environment,
-and the SandboxRunner spec requires both images regardless of whether the
-runtime data plane (runtimeKubeconfig) is enabled. Require them unconditionally
-so a misconfigured install fails here instead of producing invalid SandboxRunner
-resources at runtime.
+and the SandboxRunner spec requires both images. Require them unconditionally so
+a misconfigured install fails here instead of producing invalid SandboxRunner
+resources at runtime. (Image ownership moves to the infrastructure provider in a
+later phase; until then App Studio still passes them through.)
 */ -}}
 {{- if not $sandboxRunnerImage -}}
 {{- fail "sandboxRunner.runnerImage is required; use an immutable digest reference" -}}
@@ -107,10 +106,6 @@ spec:
             # calling user via the forwarded bearer token.
             - name: KEDGE_PROVIDER_KUBECONFIG
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
-            {{- if $runtimeKubeconfigSecret }}
-            - name: APP_STUDIO_RUNTIME_KUBECONFIG
-              value: /var/run/secrets/kedge/runtime/kubeconfig
-            {{- end }}
             # Always set: the SandboxRunner spec requires both images, and the
             # template above fails the install when either is unset.
             - name: APP_STUDIO_SANDBOX_RUNNER_IMAGE
@@ -184,11 +179,6 @@ spec:
             - name: kedge-provider-kubeconfig
               mountPath: /var/run/secrets/kedge
               readOnly: true
-            {{- if $runtimeKubeconfigSecret }}
-            - name: runtime-kubeconfig
-              mountPath: /var/run/secrets/kedge/runtime
-              readOnly: true
-            {{- end }}
             - name: project-workspaces
               mountPath: {{ .Values.workspace.path | quote }}
           resources:
@@ -204,14 +194,6 @@ spec:
             items:
               - key: kubeconfig
                 path: kedge-provider-kubeconfig
-        {{- if $runtimeKubeconfigSecret }}
-        - name: runtime-kubeconfig
-          secret:
-            secretName: {{ $runtimeKubeconfigSecret }}
-            items:
-              - key: kubeconfig
-                path: kubeconfig
-        {{- end }}
         {{- if $catalogEntryConfigMap }}
         - name: catalogentry
           configMap:

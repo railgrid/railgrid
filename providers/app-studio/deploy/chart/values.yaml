@@ -34,12 +34,10 @@ catalogEntry:
 providerKubeconfig:
   secretName: kedge-provider-kubeconfig
 
-# Optional Secret holding a kubeconfig for the Kubernetes cluster that runs
-# SandboxRunner workloads. App Studio uses it only for project-scoped runtime
-# data-plane operations (sync, logs, restart, and preview proxying). Leave empty
-# to start App Studio with sandbox runtime APIs disabled.
-runtimeKubeconfig:
-  secretName: ""
+# App Studio no longer holds a kubeconfig to the runtime cluster. The sandbox
+# data plane (sync, logs, restart, preview readiness) is served by the
+# infrastructure provider as subresources on the SandboxRunner instance, reached
+# through the hub as the calling user. See docs/app-studio-runtime-decoupling.md.
 
 # Images passed into infrastructure-backed SandboxRunner resources. App Studio
 # creates a SandboxRunner for every project, and its spec requires both images,

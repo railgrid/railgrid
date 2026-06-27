@@ -131,7 +131,7 @@ The `/services/providers/infrastructure` prefix is the hub backend proxy; the pr
 
 Today the runtime-cluster client lives in the kro backend / operator. The data-plane handler runs in the provider **serve** process, which already gets the runtime kubeconfig mounted (the operator wires it). Add the runtime client to the server `Deps` so the handler can read the control Secret and reach the service-proxy. No new credential is introduced — it is the credential the provider already owns.
 
-## 5. App Studio after cutover
+## 5. App Studio after cutover — **DONE (Phase 3)**
 
 - **Delete** `runtimeConfig` / `runtimeClient` / `runtimeDynamic`, `loadRuntimeConfig`, `APP_STUDIO_RUNTIME_KUBECONFIG`, and the `runtimeKubeconfig` chart wiring.
 - **Rewrite** `api/development_runtime.go` / `api/development_sync.go` handlers to call the VW subresources as the tenant user (forwarding the caller's bearer token over App Studio's existing tenant kcp client) instead of the runtime cluster.

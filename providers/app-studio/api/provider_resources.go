@@ -136,60 +136,18 @@ func (s *Server) deleteProjectProviderResources(ctx context.Context, c *asclient
 			if name == "" {
 				return fmt.Errorf("provider binding %q has no resource name", binding.Name)
 			}
-			runtimeNamespace := ""
-			if isSandboxRunnerBinding(binding) && s != nil && s.runtimeClient != nil {
-				obj, err := c.Resource(providerBindingResource(gvr, binding.ResourceRef.Kind), "").Get(ctx, name, metav1.GetOptions{})
-				if err != nil && !apierrors.IsNotFound(err) {
-					return err
-				}
-				if err == nil {
-					runtimeNamespace, err = sandboxRunnerRuntimeNamespaceForCleanup(obj)
-					if err != nil {
-						return err
-					}
-				}
-			}
+			// Deleting the SandboxRunner instance is enough: the
+			// infrastructure provider's kro template owns the runtime
+			// namespace and garbage-collects it (and every materialized
+			// workload) when the instance goes away. App Studio no longer
+			// holds a runtime-cluster client to delete it directly.
 			err = c.Resource(providerBindingResource(gvr, binding.ResourceRef.Kind), "").Delete(ctx, name, metav1.DeleteOptions{})
 			if err != nil && !apierrors.IsNotFound(err) {
 				return err
 			}
-			if runtimeNamespace != "" {
-				if err := s.deleteSandboxRuntimeNamespace(ctx, runtimeNamespace); err != nil {
-					return err
-				}
-			}
 		}
 	}
 	return nil
-}
-
-func sandboxRunnerRuntimeNamespaceForCleanup(obj *unstructured.Unstructured) (string, error) {
-	name, err := sandboxRunnerInstanceName(obj)
-	if err != nil {
-		return "", err
-	}
-	if statusNamespace, ok, err := sandboxRunnerStatusRuntimeNamespace(obj, name); err != nil || ok {
-		return statusNamespace, err
-	}
-	if prefixed := expectedKROPrefixedRuntimeNamespace(obj, name); prefixed != "" {
-		return prefixed, nil
-	}
-	return name, nil
-}
-
-func (s *Server) deleteSandboxRuntimeNamespace(ctx context.Context, namespace string) error {
-	if s == nil || s.runtimeClient == nil {
-		return nil
-	}
-	namespace = strings.TrimSpace(namespace)
-	if namespace == "" {
-		return nil
-	}
-	err := s.runtimeClient.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	return err
 }
 
 func projectProviderResourceOwnerRef(p *aiv1alpha1.Project) *metav1.OwnerReference {

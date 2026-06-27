@@ -428,6 +428,33 @@ spec:
                     namespace: ${schema.spec.previewRoute.backend.namespace}
                     port: ${schema.spec.previewRoute.backend.servicePort}
                     kind: Service
+      # Allow the preview HTTPRoute (in the "default" namespace) to reference the
+      # shared preview-gateway Service in the backend namespace across the
+      # namespace boundary. Previously App Studio created this ReferenceGrant
+      # imperatively against the runtime cluster; it is now owned by this
+      # template so App Studio no longer needs a runtime-cluster credential.
+      - id: previewReferenceGrant
+        includeWhen:
+          - ${schema.spec.previewRouteEnabled}
+        template:
+          apiVersion: gateway.networking.k8s.io/v1beta1
+          kind: ReferenceGrant
+          metadata:
+            name: ${schema.spec.name}
+            namespace: ${schema.spec.previewRoute.backend.namespace}
+            labels:
+              app.kubernetes.io/name: sandbox-runner
+              app.kubernetes.io/instance: ${schema.spec.name}
+              app.kubernetes.io/managed-by: kedge-infrastructure
+          spec:
+            from:
+              - group: gateway.networking.k8s.io
+                kind: HTTPRoute
+                namespace: default
+            to:
+              - group: ""
+                kind: Service
+                name: ${schema.spec.previewRoute.backend.serviceName}
       - id: runnerNetwork
         template:
           apiVersion: networking.k8s.io/v1

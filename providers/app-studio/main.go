@@ -79,30 +79,6 @@ func loadProviderConfig() (*rest.Config, error) {
 	return nil, fmt.Errorf("no kubeconfig found (set KEDGE_PROVIDER_KUBECONFIG)")
 }
 
-// loadRuntimeConfig loads the kubeconfig used for the sandbox runtime data
-// plane. This must be distinct from the provider kubeconfig: it points at the
-// Kubernetes cluster where SandboxRunner workloads run.
-func loadRuntimeConfig() (*rest.Config, error) {
-	candidates := []string{
-		os.Getenv("APP_STUDIO_RUNTIME_KUBECONFIG"),
-		"/var/run/secrets/kedge/runtime/kubeconfig",
-	}
-	for _, path := range candidates {
-		if path == "" {
-			continue
-		}
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
-		cfg, err := clientcmd.BuildConfigFromFlags("", path)
-		if err != nil {
-			return nil, fmt.Errorf("loading runtime kubeconfig %s: %w", path, err)
-		}
-		return cfg, nil
-	}
-	return nil, fmt.Errorf("no runtime kubeconfig found (set APP_STUDIO_RUNTIME_KUBECONFIG)")
-}
-
 func loadPreviewGatewayConfig() (*rest.Config, error) {
 	if path := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_GATEWAY_KUBECONFIG")); path != "" {
 		cfg, err := clientcmd.BuildConfigFromFlags("", path)
@@ -192,11 +168,10 @@ func runServe() {
 	if secret := os.Getenv("APP_STUDIO_PREVIEW_TOKEN_SECRET"); secret != "" {
 		apiServer.SetPreviewTokenSecret([]byte(secret))
 	}
-	if cfg, err := loadRuntimeConfig(); err != nil {
-		log.Printf("WARNING sandbox runtime API disabled (no runtime kubeconfig): %v", err)
-	} else if err := apiServer.SetRuntimeConfig(cfg); err != nil {
-		log.Printf("WARNING sandbox runtime API disabled (invalid runtime kubeconfig): %v", err)
-	}
+	// App Studio no longer holds a runtime-cluster kubeconfig: the sandbox data
+	// plane (logs/sync/restart/preview) is served by the infrastructure provider
+	// as subresources on the SandboxRunner instance, reached through the hub as
+	// the calling user. See docs/app-studio-runtime-decoupling.md.
 
 	handler, err := newHandler(apiServer)
 	if err != nil {

@@ -38,24 +38,19 @@ Known limitations:
 Before promoting this beyond local/dev use, add explicit runtime isolation,
 quota defaults, image provenance controls, and network policy hardening.
 
-## Runtime kubeconfig RBAC
+## Runtime data plane (no App Studio runtime kubeconfig)
 
-`APP_STUDIO_RUNTIME_KUBECONFIG` must be scoped to only the runtime data-plane
-operations App Studio performs after validating deterministic `SandboxRunner`
-refs. The credential should not be cluster-admin. A minimal role needs:
-
-```yaml
-rules:
-  - apiGroups: [""]
-    resources: ["secrets", "endpoints"]
-    verbs: ["get"]
-  - apiGroups: [""]
-    resources: ["services/proxy"]
-    verbs: ["get", "create"]
-  - apiGroups: [""]
-    resources: ["namespaces"]
-    verbs: ["delete"]
-```
+App Studio no longer holds a kubeconfig to the runtime cluster. The live
+data-plane operations (sync, restart, logs, preview readiness) are served by the
+**infrastructure provider** as subresources on the `SandboxRunner` instance —
+the provider owns the runtime-cluster credential and the control-token
+injection. App Studio calls those subresources through the hub as the requesting
+user, who is authorized by their own RBAC on the instance. The runtime namespace
+is garbage-collected by the kro template when the `SandboxRunner` instance is
+deleted, and the preview `ReferenceGrant` is materialized by that template too.
+See [`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md) for
+the full design (including BYO compute, where a workspace can be backed by a
+different infrastructure provider / runtime cluster).
 
 ## Capability Boundary
 

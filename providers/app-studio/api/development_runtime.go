@@ -11,24 +11,17 @@ You may obtain a copy of the License at
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"path"
 	"strings"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/rest"
 
 	asclient "github.com/faroshq/provider-app-studio/client"
 )
@@ -200,12 +193,13 @@ func (s *Server) restartProjectDevelopment(w http.ResponseWriter, r *http.Reques
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox runner binding")
 		return
 	}
-	runtimeTarget, _, err := s.runtimeTargetForProject(r.Context(), c, target.ResourceName)
-	if err != nil {
+	// Validate the runner exists in the workspace before reaching the data
+	// plane, so a missing runner surfaces as 404 rather than a proxy error.
+	if _, _, err := s.runtimeTargetForProject(r.Context(), c, target.ResourceName); err != nil {
 		writeRuntimeTargetError(w, err)
 		return
 	}
-	respBody, status, err := s.postRuntimeService(r.Context(), runtimeTarget, "restart", []byte(`{}`))
+	respBody, status, err := s.sandboxDataPlanePost(r.Context(), id, target.ResourceName, dataPlaneVerbRestart, []byte(`{}`))
 	if err != nil {
 		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
 		return
@@ -225,41 +219,19 @@ func (s *Server) logsProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox runner binding")
 		return
 	}
-	runtimeTarget, _, err := s.runtimeTargetForProject(r.Context(), c, target.ResourceName)
-	if err != nil {
+	// Validate the runner exists in the workspace first (404 vs proxy error).
+	if _, _, err := s.runtimeTargetForProject(r.Context(), c, target.ResourceName); err != nil {
 		writeRuntimeTargetError(w, err)
 		return
 	}
-	if s.runtimeConfig == nil {
-		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "runtime kubeconfig not configured")
-		return
-	}
-	upstream := s.runtimeConfig.Host + runtimeServicePath(runtimeTarget.Control, "logs")
-	transport, err := restTransport(s.runtimeConfig)
-	if err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
-		return
-	}
-	token, err := s.runtimeControlToken(r.Context(), runtimeTarget.ControlSecret)
-	if err != nil {
+	// Stream logs from the infrastructure provider's data-plane subresource;
+	// it owns the runtime credential and the control-token injection.
+	if err := s.sandboxDataPlaneStream(r.Context(), id, target.ResourceName, dataPlaneVerbLog, w); err != nil {
+		// Headers may already be sent on a mid-stream failure; only safe to
+		// write a status when nothing has been flushed yet.
 		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstream, nil)
-	if err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
-		return
-	}
-	req.Header.Set("X-Sandbox-Control-Token", token)
-	resp, err := (&http.Client{Transport: transport}).Do(req)
-	if err != nil {
-		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
 }
 
 func (s *Server) statusProjectDevelopment(w http.ResponseWriter, r *http.Request) {
@@ -281,53 +253,6 @@ func (s *Server) statusProjectDevelopment(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, status)
 }
 
-func (s *Server) postRuntimeService(ctx context.Context, target runtimeTarget, op string, body []byte) ([]byte, int, error) {
-	if s.runtimeConfig == nil {
-		return nil, 0, fmt.Errorf("runtime kubeconfig not configured")
-	}
-	upstream := s.runtimeConfig.Host + runtimeServicePath(target.Control, op)
-	transport, err := restTransport(s.runtimeConfig)
-	if err != nil {
-		return nil, 0, err
-	}
-	token, err := s.runtimeControlToken(ctx, target.ControlSecret)
-	if err != nil {
-		return nil, 0, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream, bytes.NewReader(body))
-	if err != nil {
-		return nil, 0, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Sandbox-Control-Token", token)
-	client := &http.Client{Transport: transport}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, 0, fmt.Errorf("POST runtime service %s: %w", op, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
-		return nil, 0, err
-	}
-	return raw, resp.StatusCode, nil
-}
-
-func (s *Server) runtimeControlToken(ctx context.Context, ref runtimeSecretRef) (string, error) {
-	if s.runtimeClient == nil {
-		return "", fmt.Errorf("runtime client is not configured")
-	}
-	secret, err := s.runtimeClient.CoreV1().Secrets(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
-	if err != nil {
-		return "", err
-	}
-	token := string(secret.Data["token"])
-	if token == "" {
-		return "", fmt.Errorf("runtime control token is empty")
-	}
-	return token, nil
-}
-
 func patchLastSync(ctx context.Context, c *asclient.Client, name string, t metav1.Time) error {
 	if c == nil {
 		return nil
@@ -346,109 +271,29 @@ func patchLastSync(ctx context.Context, c *asclient.Client, name string, t metav
 	return err
 }
 
-func (s *Server) previewReadiness(ctx context.Context, target runtimeTarget) projectSandboxPreviewURLResponse {
-	if s.runtimeClient == nil {
-		return projectSandboxPreviewURLResponse{
-			Ready:   false,
-			Reason:  "runtime_not_configured",
-			Message: "Preview is getting ready. The sandbox runtime is still being configured.",
-		}
+// previewReadiness probes the sandbox preview through the infrastructure
+// provider's data-plane proxy subresource (App Studio no longer reaches the
+// runtime cluster directly). The proxy returns the runtime service-proxy
+// response, so a 503 carrying a Kubernetes "Status" body means the runtime is
+// still starting / has no ready endpoints; any normal response means ready.
+func (s *Server) previewReadiness(ctx context.Context, id identity, runnerName string) projectSandboxPreviewURLResponse {
+	notReady := func(reason, message string) projectSandboxPreviewURLResponse {
+		return projectSandboxPreviewURLResponse{Ready: false, Reason: reason, Message: message}
 	}
-	endpoints, err := s.runtimeClient.CoreV1().Endpoints(target.Preview.Namespace).Get(ctx, target.Preview.Name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return projectSandboxPreviewURLResponse{
-			Ready:   false,
-			Reason:  "service_not_found",
-			Message: "Preview is getting ready. The preview service has not been created yet.",
-		}
-	}
+	status, body, err := s.sandboxDataPlaneProbe(ctx, id, runnerName, "/")
 	if err != nil {
-		return projectSandboxPreviewURLResponse{
-			Ready:   false,
-			Reason:  "service_unavailable",
-			Message: "Preview is getting ready. The sandbox runtime is not reachable yet.",
-		}
+		return notReady("service_unavailable", "Preview is getting ready. The sandbox runtime is not reachable yet.")
 	}
-	if !hasReadyEndpoint(endpoints) {
-		return projectSandboxPreviewURLResponse{
-			Ready:   false,
-			Reason:  "no_ready_endpoints",
-			Message: "Preview is getting ready. The sandbox runtime is not serving traffic yet.",
-		}
+	switch {
+	case status == http.StatusServiceUnavailable && isPreviewRuntimeStartingStatus(body):
+		return notReady("runtime_starting", "Preview is getting ready. The sandbox runtime is not serving traffic yet.")
+	case status == http.StatusNotFound:
+		return notReady("service_not_found", "Preview is getting ready. The preview service has not been created yet.")
+	case status == http.StatusBadGateway, status == http.StatusGatewayTimeout, status == http.StatusServiceUnavailable:
+		return notReady("service_unavailable", "Preview is getting ready. The sandbox runtime is not reachable yet.")
+	default:
+		return projectSandboxPreviewURLResponse{Ready: true}
 	}
-	if ok, err := s.previewServiceResponding(ctx, target.Preview); err != nil {
-		return projectSandboxPreviewURLResponse{
-			Ready:   false,
-			Reason:  "service_unavailable",
-			Message: "Preview is getting ready. The sandbox runtime is not reachable yet.",
-		}
-	} else if !ok {
-		return projectSandboxPreviewURLResponse{
-			Ready:   false,
-			Reason:  "runtime_starting",
-			Message: "Preview is getting ready. The sandbox runtime is not serving traffic yet.",
-		}
-	}
-	return projectSandboxPreviewURLResponse{Ready: true}
-}
-
-func (s *Server) previewServiceResponding(ctx context.Context, ref runtimeServiceRef) (bool, error) {
-	if s.runtimeConfig == nil {
-		return true, nil
-	}
-	target, err := url.Parse(s.runtimeConfig.Host)
-	if err != nil {
-		return false, err
-	}
-	transport, err := restTransport(s.runtimeConfig)
-	if err != nil {
-		return false, err
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, previewReadinessProbeTimeout)
-	defer cancel()
-	reqURL := *target
-	reqURL.Path = runtimeServicePath(ref, "")
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, reqURL.String(), nil)
-	if err != nil {
-		return false, err
-	}
-	req.Host = target.Host
-	stripPreviewForwardedCredentials(req.Header)
-	resp, err := (&http.Client{Transport: transport}).Do(req)
-	if err != nil {
-		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
-			return false, nil
-		}
-		return false, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusServiceUnavailable && previewStatusContentType(resp.Header.Get("Content-Type")) {
-		raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		if err != nil {
-			return false, err
-		}
-		if isPreviewRuntimeStartingStatus(raw) {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-func hasReadyEndpoint(endpoints *corev1.Endpoints) bool {
-	if endpoints == nil {
-		return false
-	}
-	for _, subset := range endpoints.Subsets {
-		if len(subset.Addresses) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func previewStatusContentType(contentType string) bool {
-	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
-	return mediaType == "application/json" || mediaType == "application/status+json"
 }
 
 func isPreviewRuntimeStartingStatus(raw []byte) bool {
@@ -472,32 +317,6 @@ func isPreviewRuntimeStartingStatus(raw []byte) bool {
 	return strings.Contains(message, "error trying to reach service") ||
 		strings.Contains(message, "no endpoints available") ||
 		strings.Contains(message, "connection refused")
-}
-
-func stripPreviewForwardedCredentials(header http.Header) {
-	header.Del("Authorization")
-	header.Del("Cookie")
-	header.Del("X-Kedge-Tenant")
-	header.Del("X-Kedge-User")
-	header.Del("X-Sandbox-Control-Token")
-	for key := range header {
-		if strings.HasPrefix(strings.ToLower(key), "x-kedge-") {
-			header.Del(key)
-		}
-	}
-}
-
-func runtimeServicePath(ref runtimeServiceRef, suffix string) string {
-	cleanSuffix := strings.TrimPrefix(path.Clean("/"+suffix), "/")
-	base := "/api/v1/namespaces/" + ref.Namespace + "/services/" + ref.Name + ":" + ref.PortName + "/proxy"
-	if cleanSuffix == "" || cleanSuffix == "." {
-		return base + "/"
-	}
-	return base + "/" + cleanSuffix
-}
-
-func restTransport(cfg *rest.Config) (http.RoundTripper, error) {
-	return rest.TransportFor(cfg)
 }
 
 func writeRuntimeTargetError(w http.ResponseWriter, err error) {

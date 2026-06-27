@@ -24,7 +24,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -41,12 +40,6 @@ const (
 	sandboxPreviewHTTPRouteNamespace    = "default"
 	projectSandboxSyncTimeout           = 20 * time.Second
 )
-
-var gatewayReferenceGrantGVR = schema.GroupVersionResource{
-	Group:    "gateway.networking.k8s.io",
-	Version:  "v1beta1",
-	Resource: "referencegrants",
-}
 
 type projectDevelopmentSyncTargetInfo struct {
 	EnvironmentName string
@@ -187,11 +180,11 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	if err != nil {
 		return nil, fmt.Errorf("encode sandbox sync payload: %w", err)
 	}
-	runtimeTarget, _, err := s.runtimeTargetForProject(ctx, c, target.ResourceName)
-	if err != nil {
+	// Validate the runner exists in the workspace first (clear 404 vs proxy err).
+	if _, _, err := s.runtimeTargetForProject(ctx, c, target.ResourceName); err != nil {
 		return nil, err
 	}
-	body, status, err := s.postRuntimeService(ctx, runtimeTarget, "sync", payload)
+	body, status, err := s.sandboxDataPlanePost(ctx, id, target.ResourceName, dataPlaneVerbSync, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +207,7 @@ func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c
 		}
 		return projectSandboxPreviewURLResponse{}, err
 	}
-	preview := s.previewReadiness(ctx, runtimeTarget)
+	preview := s.previewReadiness(ctx, id, target.ResourceName)
 	if !preview.Ready {
 		return preview, nil
 	}
@@ -229,9 +222,11 @@ func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c
 			Message: "Preview is getting ready. The sandbox preview route does not have a URL yet.",
 		}, nil
 	}
-	if err := s.ensureSandboxPreviewReferenceGrant(ctx, p.Name, route); err != nil {
-		return projectSandboxPreviewURLResponse{}, err
-	}
+	// The cross-namespace ReferenceGrant that lets the preview HTTPRoute target
+	// the shared preview-gateway Service is now materialized by the
+	// sandbox-runner kro template on the runtime cluster (App Studio no longer
+	// writes to that cluster). See providers/infrastructure/install/templates/
+	// sandbox-runner.yaml.
 	preview.PreviewURL, preview.PreviewTokenExpiresAt = s.signedProjectPreviewURLAndExpiry(p.Name, id, target, runtimeTarget, route.URL, aiv1alpha1.ProjectSharingModePrivate)
 	return preview, nil
 }
@@ -284,76 +279,6 @@ func isExpectedSandboxPreviewHTTPRouteNamespace(obj *unstructured.Unstructured, 
 		return true
 	}
 	return namespace != "" && namespace == expectedKROPrefixedNamespace(obj, sandboxPreviewHTTPRouteNamespace)
-}
-
-func (s *Server) ensureSandboxPreviewReferenceGrant(ctx context.Context, projectName string, route sandboxPreviewHTTPRouteInfo) error {
-	if s.runtimeDynamic == nil {
-		return fmt.Errorf("sandbox preview reference grant requires runtime dynamic client")
-	}
-	if route.ReferenceGrantName == "" {
-		return fmt.Errorf("sandbox preview reference grant name is empty")
-	}
-	if route.HTTPRouteNamespace == "" {
-		return fmt.Errorf("sandbox preview HTTPRoute namespace is empty")
-	}
-	if route.BackendNamespace == "" || route.BackendServiceName == "" {
-		return fmt.Errorf("sandbox preview backend service reference is incomplete")
-	}
-	res := s.runtimeDynamic.Resource(gatewayReferenceGrantGVR).Namespace(route.BackendNamespace)
-	wantSpec := map[string]any{
-		"from": []any{
-			map[string]any{
-				"group":     "gateway.networking.k8s.io",
-				"kind":      "HTTPRoute",
-				"namespace": route.HTTPRouteNamespace,
-			},
-		},
-		"to": []any{
-			map[string]any{
-				"group": "",
-				"kind":  "Service",
-				"name":  route.BackendServiceName,
-			},
-		},
-	}
-	labels := map[string]string{
-		"app-studio.kedge.faros.sh/project":    projectName,
-		"app-studio.kedge.faros.sh/managed-by": "app-studio",
-	}
-	existing, err := res.Get(ctx, route.ReferenceGrantName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		grant := &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "gateway.networking.k8s.io/v1beta1",
-			"kind":       "ReferenceGrant",
-			"metadata": map[string]any{
-				"name":      route.ReferenceGrantName,
-				"namespace": route.BackendNamespace,
-				"labels": map[string]any{
-					"app-studio.kedge.faros.sh/project":    projectName,
-					"app-studio.kedge.faros.sh/managed-by": "app-studio",
-				},
-			},
-			"spec": wantSpec,
-		}}
-		_, err = res.Create(ctx, grant, metav1.CreateOptions{})
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	existing.SetAPIVersion("gateway.networking.k8s.io/v1beta1")
-	existing.SetKind("ReferenceGrant")
-	existing.Object["spec"] = wantSpec
-	existingLabels := existing.GetLabels()
-	if existingLabels == nil {
-		existingLabels = map[string]string{}
-	}
-	for key, value := range labels {
-		existingLabels[key] = value
-	}
-	existing.SetLabels(existingLabels)
-	_, err = res.Update(ctx, existing, metav1.UpdateOptions{})
-	return err
 }
 
 func previewPublicURL(raw string) string {

@@ -52,7 +52,6 @@ Environment variables consumed by the binary:
 | `KEDGE_HUB_TOKEN` | Bearer token for the heartbeat |
 | `KEDGE_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |
 | `KEDGE_PROVIDER_KUBECONFIG` | Provider kubeconfig (kcp front-proxy host + TLS only) |
-| `APP_STUDIO_RUNTIME_KUBECONFIG` | Kubernetes kubeconfig for the runtime cluster that runs `SandboxRunner` pods |
 | `APP_STUDIO_SANDBOX_RUNNER_IMAGE` | Runner image passed to new `SandboxRunner` resources; use an immutable digest outside local development |
 | `APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE` | kubectl-capable token-generator image passed to new `SandboxRunner` resources; use an immutable digest outside local development |
 | `APP_STUDIO_PREVIEW_BASE_DOMAIN` | Optional DNS zone for companion Sandbox preview routing. |
@@ -112,9 +111,11 @@ preview URLs by minting signed, host-based URLs from the companion
 
 Infrastructure owns the resource composition: the `sandbox-runner` Template uses
 KRO to create the runtime namespace, PVC, Deployment, Service, control Secret,
-and network policy. App Studio uses `APP_STUDIO_RUNTIME_KUBECONFIG` only for
-runtime data-plane calls after validating that `SandboxRunner` status refs still
-point at the deterministic runner-owned namespace, Service, and Secret.
+and network policy. App Studio holds **no** kubeconfig to the runtime cluster:
+the live data plane (logs, file sync, restart, preview readiness) is served by
+the infrastructure provider as subresources on the `SandboxRunner` instance,
+which App Studio calls through the hub as the requesting user. See
+[`docs/app-studio-runtime-decoupling.md`](../../docs/app-studio-runtime-decoupling.md).
 
 When `APP_STUDIO_PREVIEW_BASE_DOMAIN` is set, App Studio also creates a
 `SandboxPreviewHTTPRoute` infrastructure resource beside each `SandboxRunner`.
