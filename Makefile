@@ -1112,7 +1112,7 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		delete -f $(APP_STUDIO_MANIFEST) -f $(APP_STUDIO_PROVIDER_MANIFEST)
 
 # --- App Studio sandbox runner image (live development runtimes) ---
-SANDBOX_RUNNER_IMAGE ?= ghcr.io/faroshq/kedge-sandbox-runner:dev
+SANDBOX_RUNNER_IMAGE ?= ghcr.io/faroshq/kedge-sandbox-runner:latest
 SANDBOX_TOKEN_GENERATOR_IMAGE ?= docker.io/bitnami/kubectl@sha256:b9f4412e53f09d76b0991cdd29c0feff4c1d1e112b307e0ab155e5b050a9f4ec
 SANDBOX_RUNNER_PLATFORM ?= linux/$(ARCH)
 

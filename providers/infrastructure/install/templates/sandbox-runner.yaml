@@ -31,8 +31,8 @@ spec:
         default: "PORT_VALUE=\"$SANDBOX_PORT\"; if [ -z \"$PORT_VALUE\" ]; then PORT_VALUE=3000; fi; if [ -f package.json ]; then npm install --no-audit --no-fund && (npm run dev -- --host 0.0.0.0 --port \"$PORT_VALUE\" || npm start); else npx --yes vite --host 0.0.0.0 --port \"$PORT_VALUE\"; fi"
       runnerImage:
         type: string
-        description: "Container image for the live development runner. Defaults to the standard kedge runner; override per instance to pin a digest or use a custom runtime."
-        default: "ghcr.io/faroshq/kedge-sandbox-runner:dev"
+        description: "Container image for the live development runner. Defaults to the standard kedge runner (published with app-studio releases); override per instance to pin a digest or use a custom runtime."
+        default: "ghcr.io/faroshq/kedge-sandbox-runner:latest"
       port:
         type: integer
         default: 3000
