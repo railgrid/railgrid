@@ -78,25 +78,6 @@ jobs:
             ${{ env.REGISTRY }}/${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.version }}
             ${{ env.REGISTRY }}/${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.semver }}
 
-      # The sandbox runner image is part of app-studio: it is built from
-      # app-studio's ./runner and is what the infrastructure SandboxRunner
-      # template runs. Publish it on every app-studio release with the SAME
-      # version tags as the provider image, plus :latest (the tag the template
-      # defaults to). Dockerfile.runner COPYs provider-sdk + providers/app-studio,
-      # so its build context is the repo root, not ./providers/app-studio.
-      - name: Build and push sandbox runner image
-        if: steps.tag.outputs.provider == 'app-studio'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./providers/app-studio/Dockerfile.runner
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-sandbox-runner:${{ steps.tag.outputs.version }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-sandbox-runner:${{ steps.tag.outputs.semver }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-sandbox-runner:latest
-
       - name: Install Helm
         uses: azure/setup-helm@v3
         with:
