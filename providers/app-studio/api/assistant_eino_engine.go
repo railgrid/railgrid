@@ -92,6 +92,14 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	runState := newProjectEinoAssistantRunState()
 	runState.SetTurnPolicy(req.TurnPolicy)
 	runState.SetProjectRepositoryRef(projectEinoAssistantProjectRepositoryRef(req))
+	// A new chat message starts a fresh run, so seed the plan-approval grant
+	// that a previous turn earned. Without this the model re-requests approval
+	// every turn even though the grant is meant to last until the next commit.
+	if e.server != nil {
+		if grant := e.server.loadProjectAssistantApprovedPlan(ctx, req.MessageScope); grant != nil {
+			runState.ApprovePlan(*grant)
+		}
+	}
 
 	checkpointID := newProjectAssistantRunID()
 	checkpointStore := newProjectEinoAssistantCheckpointStore()

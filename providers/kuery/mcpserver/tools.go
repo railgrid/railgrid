@@ -32,6 +32,14 @@ type queryInput struct {
 	Spec json.RawMessage `json:"spec" jsonschema:"kuery QuerySpec JSON. Key fields: filter.objects[] (groupKind{group,kind}, namespace, name, labels, categories), cluster.name (an EDGE name to restrict to one edge; omit for the whole fleet), limit, objects.object (sparse projection, e.g. {metadata:{name:true},spec:{replicas:true}}), objects.relations{} (owners, owners+, descendants, descendants+, references, selects, selected-by, linked, linked+, grouped), maxDepth."`
 }
 
+// queryOutput is the kuery_query result. It is returned as the handler's
+// structured output, but the tool is registered with Out=any (see the handler
+// signature in registerTools) so the SDK does NOT infer a JSON output schema
+// from this type. v1alpha1.ObjectResult is self-recursive (its Relations field
+// is map[string][]ObjectResult), and the SDK's schema reflector panics with
+// "cycle detected for type v1alpha1.ObjectResult" on recursive types — which
+// previously crashed every kuery /mcp request. With Out=any the schema is
+// omitted while StructuredOutput and JSON content are still populated.
 type queryOutput struct {
 	Status *v1alpha1.QueryStatus `json:"status"`
 }
@@ -138,108 +146,116 @@ func classifyImpact(anchor *v1alpha1.ObjectResult) (impactedBy, impacts, associa
 func registerTools(srv *mcp.Server, deps Deps, r *http.Request) {
 	ident := queryapi.IdentityFromRequest(r)
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "kuery_query",
-		Title:       "Query objects across the edge fleet",
-		Description: "Run one kuery query over every edge cluster connected to this workspace: filter by kind/namespace/labels, project sparse fields, and expand relations. Use instead of per-edge kubectl when the question spans edges.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in queryInput) (*mcp.CallToolResult, queryOutput, error) {
-		if ident.Tenant == "" {
-			return nil, queryOutput{}, fmt.Errorf("missing tenant identity")
-		}
-		var spec v1alpha1.QuerySpec
-		if len(in.Spec) > 0 {
-			if err := json.Unmarshal(in.Spec, &spec); err != nil {
-				return nil, queryOutput{}, fmt.Errorf("invalid QuerySpec: %w", err)
+	safeRegister("kuery_query", func() {
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "kuery_query",
+			Title:       "Query objects across the edge fleet",
+			Description: "Run one kuery query over every edge cluster connected to this workspace: filter by kind/namespace/labels, project sparse fields, and expand relations. Use instead of per-edge kubectl when the question spans edges.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
+			// Out is 'any', not queryOutput, on purpose — see the queryOutput doc
+			// comment: a typed Out makes the SDK infer an output schema from the
+			// recursive v1alpha1.ObjectResult and panic. 'any' keeps the structured
+			// output without the schema.
+		}, func(ctx context.Context, _ *mcp.CallToolRequest, in queryInput) (*mcp.CallToolResult, any, error) {
+			if ident.Tenant == "" {
+				return nil, nil, fmt.Errorf("missing tenant identity")
 			}
-		}
-		queryapi.ScopeToTenant(&spec, ident.Tenant)
-		status, err := deps.Engine.Execute(ctx, &spec)
-		if err != nil {
-			return nil, queryOutput{}, fmt.Errorf("query failed: %w", err)
-		}
-		return nil, queryOutput{Status: status}, nil
+			var spec v1alpha1.QuerySpec
+			if len(in.Spec) > 0 {
+				if err := json.Unmarshal(in.Spec, &spec); err != nil {
+					return nil, nil, fmt.Errorf("invalid QuerySpec: %w", err)
+				}
+			}
+			queryapi.ScopeToTenant(&spec, ident.Tenant)
+			status, err := deps.Engine.Execute(ctx, &spec)
+			if err != nil {
+				return nil, nil, fmt.Errorf("query failed: %w", err)
+			}
+			return nil, queryOutput{Status: status}, nil
+		})
 	})
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:  "kuery_impact",
-		Title: "Impact of one object (upstream deps + downstream blast radius)",
-		Description: "Map one object's DECLARED coupling across the edge fleet, split by impact direction so you query the right list:\n" +
-			"- impactedBy (UPSTREAM dependencies): deleting/breaking any of these breaks the target — its owners, the ConfigMaps/Secrets/ServiceAccounts it references, the Namespace it lives in, the selectors that target it. Use for 'why is X failing?' or 'what does X depend on?'.\n" +
-			"- impacts (DOWNSTREAM blast radius): what breaks if you change/delete the target — objects it owns (transitively), Services/endpoints that select it, and (for a Namespace) every object inside it. Use for 'is it safe to change/delete X?'.\n" +
-			"- associated: lateral peers (kuery.io/relates-to links, shared group label).\n" +
-			"Coupling is DECLARED — ownerRefs, spec field references, label selectors, namespace membership — NOT runtime traffic or network policy, so a clean result is not proof nothing else depends on it at runtime. Each related object is returned with its kind/namespace/name/edge and the relation that linked it. Prefer this over per-edge kubectl for change-safety and root-cause questions that span edges.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in impactInput) (*mcp.CallToolResult, impactOutput, error) {
-		if ident.Tenant == "" {
-			return nil, impactOutput{}, fmt.Errorf("missing tenant identity")
-		}
-		if in.Kind == "" || in.Name == "" {
-			return nil, impactOutput{}, fmt.Errorf("kind and name are required")
-		}
-		maxDepth := in.MaxDepth
-		if maxDepth == 0 {
-			maxDepth = 5
-		}
-
-		// Project just enough on related objects to identify them.
-		relProj, _ := json.Marshal(map[string]any{
-			"kind":       true,
-			"apiVersion": true,
-			"metadata":   map[string]any{"name": true, "namespace": true},
-		})
-		relObjects := &v1alpha1.ObjectsSpec{Cluster: true, Object: &runtime.RawExtension{Raw: relProj}}
-		relations := map[string]v1alpha1.RelationSpec{}
-		for _, rel := range impactRelations {
-			rs := v1alpha1.RelationSpec{Objects: relObjects}
-			if rel == "namespaced" {
-				rs.Limit = 200 // a Namespace's membership can be large
+	safeRegister("kuery_impact", func() {
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:  "kuery_impact",
+			Title: "Impact of one object (upstream deps + downstream blast radius)",
+			Description: "Map one object's DECLARED coupling across the edge fleet, split by impact direction so you query the right list:\n" +
+				"- impactedBy (UPSTREAM dependencies): deleting/breaking any of these breaks the target — its owners, the ConfigMaps/Secrets/ServiceAccounts it references, the Namespace it lives in, the selectors that target it. Use for 'why is X failing?' or 'what does X depend on?'.\n" +
+				"- impacts (DOWNSTREAM blast radius): what breaks if you change/delete the target — objects it owns (transitively), Services/endpoints that select it, and (for a Namespace) every object inside it. Use for 'is it safe to change/delete X?'.\n" +
+				"- associated: lateral peers (kuery.io/relates-to links, shared group label).\n" +
+				"Coupling is DECLARED — ownerRefs, spec field references, label selectors, namespace membership — NOT runtime traffic or network policy, so a clean result is not proof nothing else depends on it at runtime. Each related object is returned with its kind/namespace/name/edge and the relation that linked it. Prefer this over per-edge kubectl for change-safety and root-cause questions that span edges.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
+		}, func(ctx context.Context, _ *mcp.CallToolRequest, in impactInput) (*mcp.CallToolResult, impactOutput, error) {
+			if ident.Tenant == "" {
+				return nil, impactOutput{}, fmt.Errorf("missing tenant identity")
 			}
-			relations[rel] = rs
-		}
-		spec := v1alpha1.QuerySpec{
-			Cluster:  &v1alpha1.ClusterFilter{Name: in.Edge},
-			MaxDepth: maxDepth,
-			Filter: &v1alpha1.QueryFilter{
-				Objects: []v1alpha1.ObjectFilter{{
-					GroupKind: &v1alpha1.GroupKindFilter{APIGroup: in.Group, Kind: in.Kind},
-					Namespace: in.Namespace,
-					Name:      in.Name,
-				}},
-			},
-			Objects: &v1alpha1.ObjectsSpec{
-				ID:        true,
-				Cluster:   true,
-				Relations: relations,
-			},
-		}
-		if in.Edge == "" {
-			spec.Cluster = nil
-		}
-		queryapi.ScopeToTenant(&spec, ident.Tenant)
-		status, err := deps.Engine.Execute(ctx, &spec)
-		if err != nil {
-			return nil, impactOutput{}, fmt.Errorf("impact query failed: %w", err)
-		}
+			if in.Kind == "" || in.Name == "" {
+				return nil, impactOutput{}, fmt.Errorf("kind and name are required")
+			}
+			maxDepth := in.MaxDepth
+			if maxDepth == 0 {
+				maxDepth = 5
+			}
 
-		target := impactRef{Edge: in.Edge, Group: in.Group, Kind: in.Kind, Namespace: in.Namespace, Name: in.Name}
-		if len(status.Objects) == 0 {
-			return nil, impactOutput{
-				Object:  target,
-				Found:   false,
-				Summary: fmt.Sprintf("%s/%s not found in the kuery store (sync may be catching up)", in.Kind, in.Name),
-			}, nil
-		}
-		impactedBy, impacts, associated := classifyImpact(&status.Objects[0])
-		out := impactOutput{
-			Object:     target,
-			Found:      true,
-			ImpactedBy: impactedBy,
-			Impacts:    impacts,
-			Associated: associated,
-			Summary: fmt.Sprintf("%s %s/%s: %d upstream dependency(ies) that can break it, %d downstream object(s) in its blast radius, %d associated.",
-				in.Kind, in.Namespace, in.Name, len(impactedBy), len(impacts), len(associated)),
-		}
-		return nil, out, nil
+			// Project just enough on related objects to identify them.
+			relProj, _ := json.Marshal(map[string]any{
+				"kind":       true,
+				"apiVersion": true,
+				"metadata":   map[string]any{"name": true, "namespace": true},
+			})
+			relObjects := &v1alpha1.ObjectsSpec{Cluster: true, Object: &runtime.RawExtension{Raw: relProj}}
+			relations := map[string]v1alpha1.RelationSpec{}
+			for _, rel := range impactRelations {
+				rs := v1alpha1.RelationSpec{Objects: relObjects}
+				if rel == "namespaced" {
+					rs.Limit = 200 // a Namespace's membership can be large
+				}
+				relations[rel] = rs
+			}
+			spec := v1alpha1.QuerySpec{
+				Cluster:  &v1alpha1.ClusterFilter{Name: in.Edge},
+				MaxDepth: maxDepth,
+				Filter: &v1alpha1.QueryFilter{
+					Objects: []v1alpha1.ObjectFilter{{
+						GroupKind: &v1alpha1.GroupKindFilter{APIGroup: in.Group, Kind: in.Kind},
+						Namespace: in.Namespace,
+						Name:      in.Name,
+					}},
+				},
+				Objects: &v1alpha1.ObjectsSpec{
+					ID:        true,
+					Cluster:   true,
+					Relations: relations,
+				},
+			}
+			if in.Edge == "" {
+				spec.Cluster = nil
+			}
+			queryapi.ScopeToTenant(&spec, ident.Tenant)
+			status, err := deps.Engine.Execute(ctx, &spec)
+			if err != nil {
+				return nil, impactOutput{}, fmt.Errorf("impact query failed: %w", err)
+			}
+
+			target := impactRef{Edge: in.Edge, Group: in.Group, Kind: in.Kind, Namespace: in.Namespace, Name: in.Name}
+			if len(status.Objects) == 0 {
+				return nil, impactOutput{
+					Object:  target,
+					Found:   false,
+					Summary: fmt.Sprintf("%s/%s not found in the kuery store (sync may be catching up)", in.Kind, in.Name),
+				}, nil
+			}
+			impactedBy, impacts, associated := classifyImpact(&status.Objects[0])
+			out := impactOutput{
+				Object:     target,
+				Found:      true,
+				ImpactedBy: impactedBy,
+				Impacts:    impacts,
+				Associated: associated,
+				Summary: fmt.Sprintf("%s %s/%s: %d upstream dependency(ies) that can break it, %d downstream object(s) in its blast radius, %d associated.",
+					in.Kind, in.Namespace, in.Name, len(impactedBy), len(impacts), len(associated)),
+			}
+			return nil, out, nil
+		})
 	})
 }

@@ -20,9 +20,12 @@
 package mcpserver
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"k8s.io/klog/v2"
 
 	"github.com/faroshq/kuery/pkg/engine"
 )
@@ -67,4 +70,20 @@ func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 
 	registerTools(srv, deps, r)
 	return srv
+}
+
+// safeRegister runs one tool's registration in isolation. mcp.AddTool panics
+// on bad tool definitions (most notably the SDK's schema reflector choking on
+// a recursive Go type) — and because the server is built per request inside
+// the streamable-HTTP handler, that panic propagates out of ServeHTTP and the
+// caller just sees a dropped connection (EOF), losing EVERY kuery tool. Wrap
+// each AddTool so a single misbehaving tool degrades to "that one tool is
+// missing" while the rest of kuery's tools keep serving.
+func safeRegister(name string, register func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			klog.Background().Error(fmt.Errorf("%v", r), "kuery MCP: tool registration panicked; tool skipped", "tool", name)
+		}
+	}()
+	register()
 }

@@ -1249,6 +1249,73 @@ func TestEinoAssistantEnginePlanApprovalAllowsScopedWriteOnResume(t *testing.T) 
 	}
 }
 
+func TestEinoAssistantEnginePersistedPlanGrantSkipsApprovalOnNewTurn(t *testing.T) {
+	messages := &countingAssistantRunStore{MemoryStore: store.NewMemoryStore()}
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	registry := server.projectAssistantToolRegistry()
+	planTool, ok := registry.Get(projectToolRequestProjectPlanApproval)
+	if !ok {
+		t.Fatal("request_project_plan_approval tool missing")
+	}
+	writeTool, ok := registry.Get(projectToolWriteFile)
+	if !ok {
+		t.Fatal("write_file tool missing")
+	}
+	chatModel := &planThenWriteEinoChatModel{}
+	engine := projectEinoAssistantEngine{
+		server: server,
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return chatModel, nil
+		},
+		newTools: func(_ context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			return []einotool.BaseTool{
+				newProjectEinoAssistantServerTool(server, planTool, req, state),
+				newProjectEinoAssistantServerTool(server, writeTool, req, state),
+			}, nil
+		},
+	}
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	req := projectAssistantRunRequest{
+		Identity:       id,
+		HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+		Project:        project,
+		WorkspaceScope: projectWorkspaceScope(id, project.Name),
+		MessageScope:   projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
+		Workspace:      workspaces,
+	}
+
+	// Seed a grant as if a previous turn already earned plan approval.
+	grant := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
+		Summary:     "Build app shell",
+		TargetPaths: []string{"src/"},
+		Operations:  []string{projectToolWriteFile},
+	})
+	if err := server.saveProjectAssistantApprovedPlan(context.Background(), req.MessageScope, &grant); err != nil {
+		t.Fatalf("saveProjectAssistantApprovedPlan returned error: %v", err)
+	}
+
+	result, err := engine.StreamProjectAssistant(context.Background(), req)
+	if err != nil {
+		t.Fatalf("StreamProjectAssistant returned error: %v, want no plan permission prompt with an active grant", err)
+	}
+	if result.Content != "workspace ready" {
+		t.Fatalf("content = %q, want resumed model response", result.Content)
+	}
+	read, err := workspaces.ReadFile(context.Background(), req.WorkspaceScope, workspace.ReadOptions{Path: "src/App.tsx"})
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if read.Content != "approved plan write\n" {
+		t.Fatalf("content = %q, want approved plan write", read.Content)
+	}
+	if messages.saveAssistantRunCount != 0 {
+		t.Fatalf("permission checkpoints = %d, want none while a plan grant is active", messages.saveAssistantRunCount)
+	}
+}
+
 func TestEinoAssistantEngineCommitRequestConsumesApprovedPlan(t *testing.T) {
 	messages := &countingAssistantRunStore{MemoryStore: store.NewMemoryStore()}
 	workspaces := workspace.NewFileStore(t.TempDir())
@@ -2211,7 +2278,11 @@ type countingAssistantRunStore struct {
 }
 
 func (s *countingAssistantRunStore) SaveAssistantRun(ctx context.Context, scope store.Scope, run store.AssistantRun) error {
-	s.saveAssistantRunCount++
+	// Only count real run checkpoints. The reserved plan-grant run is
+	// cross-turn approval bookkeeping, not a permission/follow-up checkpoint.
+	if run.ID != projectAssistantApprovedPlanGrantRunID {
+		s.saveAssistantRunCount++
+	}
 	return s.MemoryStore.SaveAssistantRun(ctx, scope, run)
 }
 

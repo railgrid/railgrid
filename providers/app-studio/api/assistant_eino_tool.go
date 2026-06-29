@@ -27,6 +27,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/eino-contrib/jsonschema"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/store"
@@ -273,6 +274,16 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 	if spec.Risk == projectAssistantToolRiskWrite {
 		t.appendBuilderEvent(projectBuilderEventWorkspaceChanged)
 	}
+	if spec.Risk == projectAssistantToolRiskCommit {
+		// The grant ends at the commit it promised; retire it in-memory and in
+		// the store so the next edit cycle prompts for plan approval again.
+		t.runState.ClearApprovedPlan()
+		persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
+		defer cancelPersist()
+		if err := t.server.clearProjectAssistantApprovedPlan(persistCtx, t.req.MessageScope); err != nil {
+			klog.FromContext(ctx).Error(err, "clear App Studio plan grant", "project", t.req.MessageScope.ProjectName)
+		}
+	}
 	return result, nil
 }
 
@@ -335,7 +346,19 @@ func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, ca
 	if len(plan.Operations) == 0 {
 		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), "allowedOperations is required")
 	}
+	if existing := t.runState.ApprovedPlan(); existing != nil {
+		plan = mergeProjectAssistantApprovedPlans(*existing, plan)
+	}
 	t.runState.ApprovePlan(plan)
+	// Persist the grant so it survives into later turns until the next commit.
+	// Best effort: a failed write only means the user is re-prompted next turn.
+	if stored := t.runState.ApprovedPlan(); stored != nil {
+		persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
+		defer cancelPersist()
+		if err := t.server.saveProjectAssistantApprovedPlan(persistCtx, t.req.MessageScope, stored); err != nil {
+			klog.FromContext(ctx).Error(err, "persist App Studio plan grant", "project", t.req.MessageScope.ProjectName)
+		}
+	}
 	resultPayload := map[string]any{
 		"status":      "approved",
 		"summary":     plan.Summary,

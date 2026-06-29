@@ -43,7 +43,10 @@ func projectAssistantPermissionForToolWithRunState(spec projectAssistantToolSpec
 	case projectAssistantToolRiskRead, projectAssistantToolRiskInput:
 		return projectAssistantPermissionAllow
 	case projectAssistantToolRiskPlan:
-		if autoApprove {
+		// The first plan in a commit cycle prompts the user. Once a grant is
+		// active it stays active until the next commit, so re-stating the plan
+		// on later turns must not re-prompt — it only widens the envelope.
+		if autoApprove || projectAssistantApprovedPlanActive(runState.ApprovedPlan()) {
 			return projectAssistantPermissionAllow
 		}
 		return projectAssistantPermissionAsk
@@ -59,6 +62,10 @@ func projectAssistantPermissionForToolWithRunState(spec projectAssistantToolSpec
 	default:
 		return projectAssistantPermissionDeny
 	}
+}
+
+func projectAssistantApprovedPlanActive(plan *projectAssistantApprovedPlan) bool {
+	return plan != nil && len(plan.Operations) > 0
 }
 
 func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan, toolName string, args map[string]any) bool {
