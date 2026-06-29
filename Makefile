@@ -1111,16 +1111,19 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		--insecure-skip-tls-verify \
 		delete -f $(APP_STUDIO_MANIFEST) -f $(APP_STUDIO_PROVIDER_MANIFEST)
 
-# --- App Studio sandbox runner image (live development runtimes) ---
+# --- Sandbox runner image (live development runtimes) ---
+# Owned by the infrastructure provider alongside the `sandbox-runner` template
+# it serves. Self-contained build context (its own go.mod, stdlib-only).
+SANDBOX_RUNNER_DIR ?= providers/infrastructure/sandbox-runner
 SANDBOX_RUNNER_IMAGE ?= ghcr.io/faroshq/kedge-sandbox-runner:latest
 SANDBOX_TOKEN_GENERATOR_IMAGE ?= docker.io/bitnami/kubectl@sha256:b9f4412e53f09d76b0991cdd29c0feff4c1d1e112b307e0ab155e5b050a9f4ec
 SANDBOX_RUNNER_PLATFORM ?= linux/$(ARCH)
 
-docker-build-sandbox-runner: ## Build the App Studio sandbox runner image used by SandboxRunner pods
-	docker build -f providers/app-studio/Dockerfile.runner \
+docker-build-sandbox-runner: ## Build the sandbox runner image used by SandboxRunner pods
+	docker build -f $(SANDBOX_RUNNER_DIR)/Dockerfile \
 		--platform $(SANDBOX_RUNNER_PLATFORM) \
 		--provenance=false \
-		-t $(SANDBOX_RUNNER_IMAGE) .
+		-t $(SANDBOX_RUNNER_IMAGE) $(SANDBOX_RUNNER_DIR)
 
 load-sandbox-runner-image: docker-build-sandbox-runner ## Load the sandbox runner image into the local kind runtime cluster
 	@echo ">>> loading $(SANDBOX_RUNNER_IMAGE) into kind cluster $(KRO_KIND_NAME)"

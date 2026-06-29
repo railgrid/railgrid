@@ -8,6 +8,36 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
+// Command sandbox-runner is the in-pod control process for the infrastructure
+// provider's `sandbox-runner` template. One instance runs as the entrypoint of
+// every SandboxRunner pod (an App Studio live development environment).
+//
+// It does two things:
+//
+//  1. Supervises the user's dev process. It runs SANDBOX_START_COMMAND (e.g.
+//     "npm install && npm run dev") in the workspace, captures its stdout/stderr
+//     into a 500-line ring buffer, and can stop/restart it on demand.
+//
+//  2. Serves a small HTTP control API on :7070 so the platform can drive that
+//     workspace WITHOUT shelling into the pod or holding a runtime kubeconfig.
+//     The infrastructure provider's data-plane handler reverse-proxies the
+//     caller's logs/sync/restart calls here, injecting the per-instance control
+//     token. Endpoints:
+//
+//     GET  /healthz  liveness; no auth.
+//     POST /sync     write/delete workspace files and optionally restart. Body:
+//                    {files:[{path,content}], deletePaths:[], restart:"auto"|"always"|""}.
+//                    "auto" restarts only when a startup-affecting file
+//                    (package.json, a lockfile, vite.config.*, server.js)
+//                    actually changed, or the process isn't running.
+//     POST /restart  stop + start the dev process.
+//     GET  /logs     the buffered dev-process output (text/plain).
+//
+// Security posture: file writes are confined to SANDBOX_WORKDIR via os.Root plus
+// path cleaning that rejects absolute paths and "../" escapes; every endpoint
+// except /healthz requires the X-Sandbox-Control-Token header (constant-time
+// compared against SANDBOX_CONTROL_TOKEN, which is read once then cleared from
+// the environment). The image is intentionally stdlib-only — see README.md.
 package main
 
 import (

@@ -121,32 +121,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # PR-only validation that the sandbox runner Dockerfile + build context still
-  # builds. The runner ships with app-studio (built from its ./runner) and is
-  # PUBLISHED — with the app-studio version tags + :latest — by
-  # provider-release.yaml on a `providers/app-studio/v*` tag, not here. Its
-  # Dockerfile.runner COPYs provider-sdk + providers/app-studio, so the context
-  # is the repo root (unlike the provider matrix above).
-  build-sandbox-runner-image:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build sandbox runner image (validation only)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./providers/app-studio/Dockerfile.runner
-          platforms: linux/amd64
-          push: false
-
   build-and-push-agent-image:
     runs-on: ubuntu-latest
     permissions:

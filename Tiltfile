@@ -265,8 +265,6 @@ local_resource(
         'providers/app-studio/client',
         'providers/app-studio/store',
         'providers/app-studio/tenant',
-        'providers/app-studio/runner',
-        'providers/app-studio/Dockerfile.runner',
         'providers/app-studio/go.mod',
         'providers/app-studio/go.sum',
         'providers/app-studio/portal/src',
@@ -321,15 +319,13 @@ local_resource(
     labels=['providers-app-studio'],
 )
 
-# --- App Studio sandbox runner image (live development runtimes) ---
+# --- Sandbox runner image (live development runtimes) ---
+# Owned by the infrastructure provider alongside the sandbox-runner template.
 local_resource(
     'sandbox-runner-image',
     cmd='make load-sandbox-runner-image',
     deps=[
-        'providers/app-studio/Dockerfile.runner',
-        'providers/app-studio/go.mod',
-        'providers/app-studio/go.sum',
-        'providers/app-studio/runner',
+        'providers/infrastructure/sandbox-runner',
     ],
     resource_deps=['kro-mgmt-up'],
     labels=['providers-app-studio'],
