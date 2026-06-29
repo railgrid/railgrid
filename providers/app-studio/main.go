@@ -162,7 +162,13 @@ func runServe() {
 		msgStore,
 		openWorkspaceStore(),
 		os.Getenv("KEDGE_HUB_URL"),
-		os.Getenv("APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY") == "true",
+		// The MCP virtual-workspace endpoint lives on the same hub host as the
+		// GraphQL client above, so it must honor the standard KEDGE_HUB_INSECURE
+		// knob every provider uses for in-cluster hub TLS (the hub serves its
+		// external cert, not one valid for the .svc.cluster.local name). Keep the
+		// MCP-specific override too, for callers that want to scope it narrowly.
+		os.Getenv("APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY") == "true" ||
+			os.Getenv("KEDGE_HUB_INSECURE") == "true",
 	)
 	apiServer.SetAutoApproveAssistantActions(os.Getenv("APP_STUDIO_AUTO_APPROVE_ACTIONS") == "true")
 	if secret := os.Getenv("APP_STUDIO_PREVIEW_TOKEN_SECRET"); secret != "" {

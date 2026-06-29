@@ -202,7 +202,11 @@ func schemaPrefix(crd *apiextensionsv1.CustomResourceDefinition) string {
 			// non-deterministic.
 			data, err := crdsJSONMarshal(v.Schema.OpenAPIV3Schema)
 			if err != nil {
-				_, _ = fmt.Fprintf(h, "%v\n", v.Schema.OpenAPIV3Schema)
+				// Stable, address-free fallback. NEVER use fmt %v here: it
+				// prints pointer-field addresses, which makes the schema name
+				// non-deterministic and leaks a new immutable APIResourceSchema
+				// every reconcile (fills etcd → OOM).
+				_, _ = fmt.Fprintf(h, "marshal-error:%s/%s\n", crd.Name, v.Name)
 				continue
 			}
 			_, _ = h.Write(data)

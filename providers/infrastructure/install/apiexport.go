@@ -305,7 +305,23 @@ func schemaPrefix(crd *apiextensionsv1.CustomResourceDefinition) string {
 	for _, v := range crd.Spec.Versions {
 		fmt.Fprintln(h, v.Name)
 		if v.Schema != nil && v.Schema.OpenAPIV3Schema != nil {
-			fmt.Fprintf(h, "%v\n", v.Schema.OpenAPIV3Schema)
+			// Hash a deterministic JSON serialization. NEVER use fmt %v
+			// here: OpenAPIV3Schema is full of pointer fields (Default,
+			// Items, AdditionalProperties, …) and %v prints their memory
+			// addresses, which change every reconcile. That makes the
+			// APIResourceSchema name non-deterministic, so each reconcile
+			// mints a new immutable schema and leaks the old one — the leak
+			// that filled etcd and OOM-killed it. json.Marshal sorts object
+			// keys and renders pointers by value, so identical content always
+			// yields an identical name. Mirrors controller/template.
+			data, err := json.Marshal(v.Schema.OpenAPIV3Schema)
+			if err != nil {
+				// Should never happen for a JSONSchemaProps. Fall back to a
+				// stable, address-free key rather than %v.
+				fmt.Fprintf(h, "marshal-error:%s/%s\n", crd.Name, v.Name)
+				continue
+			}
+			h.Write(data)
 		}
 	}
 	return "tmpl" + hex.EncodeToString(h.Sum(nil))[:8]
