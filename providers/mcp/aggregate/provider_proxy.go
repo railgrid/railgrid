@@ -44,6 +44,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -57,12 +58,26 @@ import (
 // aggregator stays decoupled from pkg/hub/providers.
 type ProviderEnumerator = func(ctx context.Context) []builder.ProviderTarget
 
+// providerDiscoveryTimeout bounds how long the aggregate waits on ONE
+// provider's tools/list. Discovery runs in parallel (see
+// registerProviderTools), so a slow or hung provider costs at most this
+// long and never blocks the healthy ones — it just drops out of this
+// tools/list and reappears on the next one once it recovers. Kept well
+// under the providerMCPClient's 15s call timeout: discovery should be
+// fast, and a provider that can't list its tools quickly is treated as
+// absent rather than allowed to stall the whole aggregate. A var (not a
+// const) only so tests can lower it.
+var providerDiscoveryTimeout = 8 * time.Second
+
 // registerProviderTools fetches each Ready provider's tools/list and
 // registers them on srv as proxies. Errors against any one provider
 // are logged + skipped — one broken provider must not poison the
-// whole aggregate. The aggregator stays stateless: a fresh server is
-// built per request, so a provider that just became Ready shows up on
-// the very next tools/list from the client.
+// whole aggregate. Discovery is fanned out concurrently with a
+// per-provider deadline so a single slow/hung provider can neither
+// stall the others nor block the aggregate tools/list beyond
+// providerDiscoveryTimeout. The aggregator stays stateless: a fresh
+// server is built per request, so a provider that just became Ready (or
+// recovered) shows up on the very next tools/list from the client.
 func registerProviderTools(ctx context.Context, srv *mcp.Server, cfg Config) {
 	log := klogFromCfg(cfg.Deps)
 	if cfg.Providers == nil {
@@ -84,32 +99,75 @@ func registerProviderTools(ctx context.Context, srv *mcp.Server, cfg Config) {
 	// header required" — same failure mode as the UI hit before we
 	// fixed the bearer-forwarding bug.
 	cli := newProviderMCPClient(cfg.BearerToken, cfg.Cluster)
-	for _, p := range providers {
+
+	// Discover every Ready provider's tools concurrently. A sequential
+	// loop would let one slow/hung provider stall discovery of all the
+	// others (and the aggregate tools/list as a whole) for up to the
+	// client's timeout each; fanning out with a per-provider deadline
+	// caps that cost at providerDiscoveryTimeout, in parallel, and a
+	// failure just drops that one provider. Each goroutine writes only
+	// its own results[i] slot, so no mutex is needed.
+	results := make([]*providerTools, len(providers))
+	var wg sync.WaitGroup
+	for i := range providers {
+		p := providers[i]
 		if !p.Ready || p.MCPURL == "" {
 			log.Info("provider federation: skip (not ready or no MCP URL)", "provider", p.Name, "ready", p.Ready, "mcpURL", p.MCPURL)
 			continue
 		}
-		tools, err := cli.listTools(ctx, p.MCPURL)
-		if err != nil {
-			log.Info("provider federation: tools/list failed (skipping)", "provider", p.Name, "mcpURL", p.MCPURL, "err", err.Error())
+		wg.Add(1)
+		go func(i int, p builder.ProviderTarget) {
+			defer wg.Done()
+			// A panic discovering one provider must not crash the
+			// whole aggregate request.
+			defer func() {
+				if r := recover(); r != nil {
+					log.Info("provider federation: discovery panic recovered", "provider", p.Name, "panic", fmt.Sprint(r))
+				}
+			}()
+			dctx, cancel := context.WithTimeout(ctx, providerDiscoveryTimeout)
+			defer cancel()
+			tools, err := cli.listTools(dctx, p.MCPURL)
+			if err != nil {
+				log.Info("provider federation: tools/list failed (skipping)", "provider", p.Name, "mcpURL", p.MCPURL, "err", err.Error())
+				return
+			}
+			results[i] = &providerTools{provider: p, tools: tools}
+		}(i, p)
+	}
+	wg.Wait()
+
+	// Register sequentially, in the original provider order, so the
+	// aggregate tool list is deterministic across requests. AddTool on a
+	// shared *mcp.Server is not guaranteed goroutine-safe, so registration
+	// stays on this goroutine rather than inside the fan-out above.
+	for _, r := range results {
+		if r == nil {
 			continue
 		}
-		log.Info("provider federation: registering tools", "provider", p.Name, "count", len(tools))
-		for _, t := range tools {
+		log.Info("provider federation: registering tools", "provider", r.provider.Name, "count", len(r.tools))
+		for _, t := range r.tools {
 			func() {
 				// AddTool can panic on schema validation failures
 				// (missing input schema, non-object type, etc).
 				// Recover so one bad provider doesn't poison the
 				// entire aggregate's tool list.
 				defer func() {
-					if r := recover(); r != nil {
-						log.Info("provider federation: AddTool panic recovered", "provider", p.Name, "tool", t.Name, "panic", fmt.Sprint(r))
+					if rec := recover(); rec != nil {
+						log.Info("provider federation: AddTool panic recovered", "provider", r.provider.Name, "tool", t.Name, "panic", fmt.Sprint(rec))
 					}
 				}()
-				registerOneProxyTool(srv, cli, p, t)
+				registerOneProxyTool(srv, cli, r.provider, t)
 			}()
 		}
 	}
+}
+
+// providerTools is one provider's discovered tool set, carried from the
+// concurrent discovery fan-out to the sequential registration pass.
+type providerTools struct {
+	provider builder.ProviderTarget
+	tools    []discoveredTool
 }
 
 // registerOneProxyTool installs a single proxy tool on srv. Naming:
