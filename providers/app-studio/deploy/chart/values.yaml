@@ -39,14 +39,10 @@ providerKubeconfig:
 # infrastructure provider as subresources on the SandboxRunner instance, reached
 # through the hub as the calling user. See docs/app-studio-runtime-decoupling.md.
 
-# Images passed into infrastructure-backed SandboxRunner resources. App Studio
-# creates a SandboxRunner for every project, and its spec requires both images,
-# so the chart fails the install when either is unset (independent of the
-# runtime kubeconfig). They are empty by default so installs do not silently
-# trust mutable development tags — set both to immutable digest references.
-sandboxRunner:
-  runnerImage: ""
-  tokenGeneratorImage: ""
+# The SandboxRunner runner image is NOT configured here — the sandbox-runner
+# template declares it as a schema field with a sane default (the web-app
+# convention). App Studio passes only the project reference. See
+# providers/infrastructure/docs/template-conventions.md.
 
 # Optional preview route deployment settings and companion infrastructure binding.
 # If baseDomain is empty, App Studio does not add the SandboxPreviewHTTPRoute

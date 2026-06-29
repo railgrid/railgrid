@@ -390,6 +390,26 @@ whole point.
   build/test and `go.work` awareness; they are not in the root `./...`.
 - Before merging: `make verify` is the full gate
   (boilerplate + codegen + vet + lint + build + test).
+- **Infrastructure templates declare configurable inputs (container images,
+  versions, sizes) as `spec.schema` fields with sane defaults** — never via
+  `${kedge.*}` env-substitution tokens. Fixed sidecar images (e.g. the
+  control-token `kubectl` job) are hardcoded literals. `${kedge.*}` tokens are
+  reserved for genuinely platform-global values with no universal default (only
+  the exposure Gateway parent today). A missing env must never be able to
+  produce an empty/invalid field. See
+  [`providers/infrastructure/docs/template-conventions.md`](providers/infrastructure/docs/template-conventions.md).
+- **Providers are isolated; never reach into another provider's backend.** A
+  provider's backend layer (its runtime/target clusters and their
+  credentials, databases, internal Services, controllers, kro RGDs) is
+  private to it. A provider must not hold a second credential into another
+  provider's cluster/DB/service, call its internal endpoints directly, or
+  hardcode its backend topology. Cross-provider access goes **only** through
+  the other provider's published `APIExport` resources + virtual-workspace
+  subresources, invoked **as the tenant user** and routed by binding (not by
+  a backend URL). This is what makes BYO compute work and bounds blast
+  radius. See [`docs/providers.md` §"Provider isolation"](docs/providers.md#provider-isolation-the-cross-provider-boundary)
+  and contract 3 in
+  [`docs/provider-connectivity-contract.md`](docs/provider-connectivity-contract.md).
 
 ---
 

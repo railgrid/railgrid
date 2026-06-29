@@ -56,9 +56,10 @@ type Backend struct {
 	// tokens are the platform-config values substituted for reserved ${kedge.*}
 	// placeholders in a Template's backendConfig before the RGD is authored —
 	// platform-wide settings that belong on the backend, not in per-tenant data.
-	// See substituteTokens in rgd.go. Today: the exposure-layer Gateway parent
-	// (${kedge.gatewayName}/${kedge.gatewayNamespace}) and the sandbox runner
-	// images (${kedge.sandboxRunnerImage}/${kedge.sandboxTokenGeneratorImage}).
+	// See substituteTokens in rgd.go. The ONLY tokens are the exposure-layer
+	// Gateway parent (${kedge.gatewayName}/${kedge.gatewayNamespace}); per-instance
+	// inputs like container images are schema fields with defaults, not tokens
+	// (see providers/infrastructure/docs/template-conventions.md).
 	tokens map[string]string
 }
 
@@ -82,10 +83,11 @@ const (
 //
 //   - KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE — the exposure-layer Gateway
 //     parent (defaults "cloudflare-tunnel" / "cfgate-system").
-//   - KEDGE_SANDBOX_RUNNER_IMAGE / KEDGE_SANDBOX_TOKEN_GENERATOR_IMAGE — the
-//     images materialized into SandboxRunner workloads. The platform owns these
-//     (App Studio no longer injects them); deployments should pin immutable
-//     digests. Empty when unset — the chart guards against that at install.
+//
+// Per-instance inputs (container images, etc.) are NOT env tokens — templates
+// declare them as schema fields with sane defaults (e.g. SandboxRunner's
+// spec.runnerImage), the same convention every other template follows. See
+// providers/infrastructure/docs/template-conventions.md.
 func New(runtime dynamic.Interface) *Backend {
 	gatewayName := os.Getenv("KEDGE_GATEWAY_NAME")
 	if gatewayName == "" {
@@ -96,10 +98,8 @@ func New(runtime dynamic.Interface) *Backend {
 		gatewayNamespace = DefaultGatewayNamespace
 	}
 	tokens := map[string]string{
-		gatewayNameToken:           gatewayName,
-		gatewayNamespaceToken:      gatewayNamespace,
-		sandboxRunnerImageToken:    os.Getenv("KEDGE_SANDBOX_RUNNER_IMAGE"),
-		sandboxTokenGeneratorToken: os.Getenv("KEDGE_SANDBOX_TOKEN_GENERATOR_IMAGE"),
+		gatewayNameToken:      gatewayName,
+		gatewayNamespaceToken: gatewayNamespace,
 	}
 	return &Backend{runtime: runtime, tokens: tokens}
 }

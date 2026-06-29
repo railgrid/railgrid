@@ -42,6 +42,7 @@ Same user, same workspace, two different namespaces. The instance is real, the p
 3. **Backends implement a narrow interface, not a data model.** Each backend is responsible for taking a `Template` and serving instances of the corresponding per-template CRD. *How* it does that — RGDs, terraform modules, cloud SDK calls — is its own business.
 4. **kcp is the source of truth for identity.** Tenant = workspace logical-cluster name, embedded in the URL. No headers. No hashing.
 5. **The provider binary owns the platform layer + the backends it ships with.** Today that's one backend (kro). The binary stays small; complexity lives in backends behind the interface.
+6. **The backend layer is private to this provider; other providers reach it only through published APIs.** The runtime/target clusters a backend drives, the credentials to them, the kro RGDs, the internal Services — none of it is reachable by another provider. A consumer (e.g. App Studio) interacts with infrastructure-owned workloads **only** through the `Template`/instance CRs (control plane) and their VW subresources (data plane: `sandboxrunners/{name}/log`, `…/proxy/…`), as the tenant user. No other component holds a credential into the runtime cluster. This is the platform-wide [provider-isolation rule](./providers.md#provider-isolation-the-cross-provider-boundary); the worked example is [`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md).
 
 ## 3. Architecture
 

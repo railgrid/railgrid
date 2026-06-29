@@ -50,7 +50,10 @@ is garbage-collected by the kro template when the `SandboxRunner` instance is
 deleted, and the preview `ReferenceGrant` is materialized by that template too.
 See [`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md) for
 the full design (including BYO compute, where a workspace can be backed by a
-different infrastructure provider / runtime cluster).
+different infrastructure provider / runtime cluster). This is the platform
+[provider-isolation rule](./providers.md#provider-isolation-the-cross-provider-boundary):
+App Studio never reaches into the infrastructure provider's backend — only its
+published `SandboxRunner` CR and subresources.
 
 ## Capability Boundary
 

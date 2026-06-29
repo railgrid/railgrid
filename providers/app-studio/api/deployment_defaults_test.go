@@ -12,31 +12,19 @@ package api
 
 import "testing"
 
-func TestSandboxRunnerValuesOmitImagesWithoutConfiguration(t *testing.T) {
-	t.Setenv("APP_STUDIO_SANDBOX_RUNNER_IMAGE", "")
-	t.Setenv("APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE", "")
+// App Studio supplies only projectRef on a SandboxRunner binding. The runner
+// image is a schema field with a sane default on the sandbox-runner template
+// (the web-app convention), so App Studio never sets it — not even from the
+// legacy env.
+func TestSandboxRunnerValuesSuppliesOnlyProjectRef(t *testing.T) {
+	t.Setenv("APP_STUDIO_SANDBOX_RUNNER_IMAGE", "ghcr.io/faroshq/kedge-sandbox-runner@sha256:runner")
+	t.Setenv("APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE", "registry.example.com/kubectl@sha256:token")
 
 	values := sandboxRunnerValues("demo")
 	if got := values["projectRef"]; got != "demo" {
 		t.Fatalf("projectRef = %q, want demo", got)
 	}
-	if _, ok := values["runnerImage"]; ok {
-		t.Fatal("runnerImage must not default to a mutable development image")
-	}
-	if _, ok := values["tokenGeneratorImage"]; ok {
-		t.Fatal("tokenGeneratorImage must not default to a mutable development image")
-	}
-}
-
-func TestSandboxRunnerValuesUseConfiguredImages(t *testing.T) {
-	t.Setenv("APP_STUDIO_SANDBOX_RUNNER_IMAGE", " ghcr.io/faroshq/kedge-sandbox-runner@sha256:runner ")
-	t.Setenv("APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE", " registry.example.com/kubectl@sha256:token ")
-
-	values := sandboxRunnerValues("demo")
-	if got := values["runnerImage"]; got != "ghcr.io/faroshq/kedge-sandbox-runner@sha256:runner" {
-		t.Fatalf("runnerImage = %q, want configured digest", got)
-	}
-	if got := values["tokenGeneratorImage"]; got != "registry.example.com/kubectl@sha256:token" {
-		t.Fatalf("tokenGeneratorImage = %q, want configured digest", got)
+	if len(values) != 1 {
+		t.Fatalf("sandboxRunnerValues = %#v, want only projectRef (image is a template schema default)", values)
 	}
 }

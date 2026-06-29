@@ -60,6 +60,14 @@ App Studio keeps the **product** concerns: the Project capability contract, the 
 
 ## 2. Design principles
 
+> This work is the reference implementation of the platform-wide
+> [provider-isolation rule](./providers.md#provider-isolation-the-cross-provider-boundary)
+> (contract 3 in [`provider-connectivity-contract.md`](./provider-connectivity-contract.md)):
+> App Studio's `APP_STUDIO_RUNTIME_KUBECONFIG` is a direct credential into
+> another provider's backend — exactly what the rule forbids — and this
+> design replaces it with calls to the infrastructure provider's published
+> subresources.
+
 1. **The runtime cluster has exactly one owner: the infrastructure provider.** Whoever materializes a workload also serves its data plane. No other component holds a runtime credential.
 2. **Data-plane verbs are subresources on the workload instance.** `sandboxrunners/{name}/log` is to a `SandboxRunner` what `pods/log` is to a Pod. This keeps the model k8s-native and routable by binding.
 3. **Routing is binding-driven, never URL-driven.** App Studio never resolves a provider backend URL. It calls a subresource on a resource it is already bound to; kcp routes to the provider that exports it. This is the BYO mechanism.

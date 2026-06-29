@@ -116,6 +116,12 @@ cluster-name prefix (`{tenantCluster}/…`) before forwarding to the engine. One
 isolation enforced at the single choke point. `KEDGE_DEV_ALLOW_TENANT_QUERY` mirrors the
 infrastructure provider's dev escape hatch.
 
+Kuery's relationship to the **edge providers** also follows the platform
+[provider-isolation rule](./providers.md#provider-isolation-the-cross-provider-boundary):
+it consumes `Edge` CRs (a tenant-scoped permission claim) and reaches the clusters
+through the hub's **edges-proxy** as the caller — it never holds a credential into an
+edge provider's backend.
+
 ### MCP tools (the primary consumer)
 
 The provider serves `/mcp` + `/mcp/sse` (proxied at `/services/providers/kuery/mcp`) and

@@ -31,10 +31,8 @@ spec:
         default: "PORT_VALUE=\"$SANDBOX_PORT\"; if [ -z \"$PORT_VALUE\" ]; then PORT_VALUE=3000; fi; if [ -f package.json ]; then npm install --no-audit --no-fund && (npm run dev -- --host 0.0.0.0 --port \"$PORT_VALUE\" || npm start); else npx --yes vite --host 0.0.0.0 --port \"$PORT_VALUE\"; fi"
       runnerImage:
         type: string
-        description: "DEPRECATED and ignored: the runner image is platform-owned and injected by the infrastructure provider from KEDGE_SANDBOX_RUNNER_IMAGE. Retained as an optional field for backward compatibility; removed in a later release."
-      tokenGeneratorImage:
-        type: string
-        description: "DEPRECATED and ignored: the control-token Job image is platform-owned and injected by the infrastructure provider from KEDGE_SANDBOX_TOKEN_GENERATOR_IMAGE. Retained as an optional field for backward compatibility; removed in a later release."
+        description: "Container image for the live development runner. Defaults to the standard kedge runner; override per instance to pin a digest or use a custom runtime."
+        default: "ghcr.io/faroshq/kedge-sandbox-runner:dev"
       port:
         type: integer
         default: 3000
@@ -252,7 +250,7 @@ spec:
                 restartPolicy: OnFailure
                 containers:
                   - name: token
-                    image: ${kedge.sandboxTokenGeneratorImage}
+                    image: bitnami/kubectl
                     command:
                       - /bin/sh
                       - -c
@@ -307,7 +305,7 @@ spec:
                     type: RuntimeDefault
                 containers:
                   - name: runner
-                    image: ${kedge.sandboxRunnerImage}
+                    image: ${schema.spec.runnerImage}
                     env:
                       - name: SANDBOX_WORKDIR
                         value: ${schema.spec.workingDir}

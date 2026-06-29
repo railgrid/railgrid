@@ -52,8 +52,6 @@ Environment variables consumed by the binary:
 | `KEDGE_HUB_TOKEN` | Bearer token for the heartbeat |
 | `KEDGE_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |
 | `KEDGE_PROVIDER_KUBECONFIG` | Provider kubeconfig (kcp front-proxy host + TLS only) |
-| `APP_STUDIO_SANDBOX_RUNNER_IMAGE` | Runner image passed to new `SandboxRunner` resources; use an immutable digest outside local development |
-| `APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE` | kubectl-capable token-generator image passed to new `SandboxRunner` resources; use an immutable digest outside local development |
 | `APP_STUDIO_PREVIEW_BASE_DOMAIN` | Optional DNS zone for companion Sandbox preview routing. |
 | `APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAME` | Gateway resource name to attach each preview `HTTPRoute` to. |
 | `APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAMESPACE` | Namespace of the parent Gateway (defaults to `kedge-preview`). |
@@ -116,6 +114,14 @@ the live data plane (logs, file sync, restart, preview readiness) is served by
 the infrastructure provider as subresources on the `SandboxRunner` instance,
 which App Studio calls through the hub as the requesting user. See
 [`docs/app-studio-runtime-decoupling.md`](../../docs/app-studio-runtime-decoupling.md).
+
+This is the platform
+[provider-isolation rule](../../docs/providers.md#provider-isolation-the-cross-provider-boundary)
+in practice: App Studio reaches infrastructure-owned workloads only through
+the `SandboxRunner` CR and its published subresources — never into the
+infrastructure provider's runtime cluster — which is what lets a tenant be
+backed by a different infrastructure provider (BYO compute) with no App
+Studio change.
 
 When `APP_STUDIO_PREVIEW_BASE_DOMAIN` is set, App Studio also creates a
 `SandboxPreviewHTTPRoute` infrastructure resource beside each `SandboxRunner`.

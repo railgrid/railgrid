@@ -172,6 +172,11 @@ Two consequences:
   [`providers/infrastructure/tenant/client.go`](https://github.com/faroshq/kedge/blob/main/providers/infrastructure/tenant/client.go): the tenant client is
   built per-(tenant, caller) from the request token; the provider's own
   credentials are never used for tenant work.
+- **Federation routes to published endpoints, not backends.** The aggregator
+  reaches each provider through its registered `BackendURL`/`/mcp` surface
+  with the caller's identity forwarded — never into the provider's runtime
+  cluster, DB, or internal Services. This is the cross-provider half of the
+  platform [provider-isolation rule](./providers.md#provider-isolation-the-cross-provider-boundary).
 
 ## Adding a new integration
 

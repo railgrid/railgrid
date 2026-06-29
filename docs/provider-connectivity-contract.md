@@ -1,10 +1,17 @@
 # Provider connectivity contract — how providers connect to the platform
 
-This doc pins down the two contracts every provider should follow for *how it
-reaches data*: the **UI data path** (contract 1) and the **API access path**
-(contract 2). It explains the hub plumbing that enforces them, how the portal
-authenticates, which providers conform today, and where the deliberate
-exceptions are.
+This doc pins down the contracts every provider should follow for *how it
+reaches data*: the **UI data path** (contract 1), the **platform API access
+path** (contract 2), and the **provider-to-provider path** (contract 3). It
+explains the hub plumbing that enforces them, how the portal authenticates,
+which providers conform today, and where the deliberate exceptions are.
+
+Contracts 1 and 2 are about a provider reaching the **platform** (kcp / the
+GraphQL gateway). Contract 3 is about a provider reaching **another
+provider** — and the rule there is that it does so *only* through that
+provider's published API, never into its backend. See
+[`providers.md` §"Provider isolation"](./providers.md#provider-isolation-the-cross-provider-boundary)
+for the principle in full; this doc gives the concrete access mechanics.
 
 It is the companion to [`providers.md`](./providers.md) (the provider plane
 overview), [`provider-scoping.md`](./provider-scoping.md) (Global/Org/Personal
@@ -14,11 +21,14 @@ scoping), and [`security.md`](./security.md) (auth setup).
 
 ## Restore-from-reboot summary
 
-- There are **two** legitimate data paths, not one. UI data flows through the
+- There are **three** legitimate data paths. UI data flows through the
   hub's **GraphQL gateway** (contract 1); backend/controller code reaches kcp
   either as a **non-privileged provider ServiceAccount via an
   APIExportEndpointSlice** *or* as the **caller using their forwarded bearer
-  token**, scoped to the tenant workspace (contract 2).
+  token**, scoped to the tenant workspace (contract 2); and one provider
+  reaches **another** provider only through that provider's **published
+  APIExport resources + VW subresources, as the caller** — never into its
+  backend (contract 3).
 - The hub exposes providers through **two different proxies** with **different
   token handling**: the UI proxy forwards **no token**, the backend proxy
   forwards the caller's `Authorization` header **as-is**.
@@ -57,6 +67,27 @@ API **without any admin/root client**. It uses one of two scoped mechanisms:
 Both 2a and 2b are admin-free. New providers should pick one (or use 2a for
 controllers and 2b for request-driven endpoints, like `code` and
 `infrastructure` do) and never construct a kcp-admin / root client.
+
+**Contract 3 — provider-to-provider path.** When provider A needs something
+provider B owns, A goes through **B's published API**, not B's backend:
+
+- **B's `APIExport` resources** — A binds B's `APIExport` (an `APIBinding`
+  in the tenant workspace) and reads/writes B's CRs over the normal
+  `/clusters/...` path. This is the control-plane channel (spec/status).
+- **B's VW subresources** on those resources (e.g.
+  `sandboxrunners/{name}/log`, `…/proxy/{path}`) — for data-plane verbs
+  (streams, proxies, shells) that aren't plain CRUD. B serves them against
+  *its* backend; A never sees it.
+
+Both are invoked **as the caller** (forwarded bearer token, scoped to the
+workspace — same identity as 2b) and **routed by binding, never by a
+backend URL**. A must never hold a credential into B's runtime cluster /
+database / internal Service, call B's internal endpoints directly, or encode
+B's backend topology in its own config. The owning provider is the single
+holder of its backend credential. This is the access mechanics behind
+[`providers.md` §"Provider isolation"](./providers.md#provider-isolation-the-cross-provider-boundary);
+the canonical example is the App Studio → infrastructure data-plane
+decoupling ([`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md)).
 
 ---
 
@@ -215,6 +246,22 @@ keeps only the CA, and authenticates with the **caller's** bearer token against
 
 ---
 
+## Contract 3 conformance — provider-to-provider via published API only
+
+| Interaction | Mechanism | Verdict |
+|----------|-----------|---------|
+| `app-studio` → `infrastructure` (sandbox data plane) | **Target:** `SandboxRunner` CR (control plane) + `sandboxrunners/{name}/{log,proxy,sync,restart}` VW subresources (data plane), called as the tenant user | ✅ Conforms (after runtime-decoupling) |
+| `app-studio` → runtime cluster (legacy) | held `APP_STUDIO_RUNTIME_KUBECONFIG`, a direct second credential into infrastructure's runtime cluster | ❌ The violation being removed — see [`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md) |
+| `kuery` → `Edge`s | reads bound `Edge` CRs / engages clusters through the hub's edges-proxy as the caller, never the edge provider's backend | ✅ Conforms |
+
+The shape that conforms: address a **bound resource** (or a subresource on
+it), authenticate as the **caller**, and let the binding decide which
+provider's backend answers. The shape that doesn't: a kubeconfig / DSN / URL
+in provider A's config that points straight at provider B's cluster, DB, or
+internal Service.
+
+---
+
 ## Known divergences (and why)
 
 1. **Built-ins are privileged by construction.** `mcp`, `kubernetesedges`, and
@@ -249,6 +296,10 @@ keeps only the CA, and authenticates with the **caller's** bearer token against
       drop the provider's own credential.
 - [ ] Never trust inbound `X-Kedge-*` headers in the provider — the backend
       proxy strips and re-injects them; treat them as hub-asserted only.
+- [ ] To reach **another provider**, bind its `APIExport` and call its CRs /
+      VW subresources as the caller (contract 3). Never hold a credential
+      into another provider's backend (runtime cluster, DB, internal
+      Service) or hardcode its backend URL.
 
 ---
 

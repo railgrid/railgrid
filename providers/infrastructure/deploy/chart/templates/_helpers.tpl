@@ -107,23 +107,3 @@ bootstrap.enabled=true. Two sources:
 kubeconfig
 {{- end -}}
 {{- end -}}
-
-{{/*
-Validate the SandboxRunner image config. Both images are platform-owned; an
-install that sets only one is a misconfiguration (the SandboxRunner workload or
-its control-token Job would reference an empty image). Fail fast at install in
-that case. Leaving BOTH empty is allowed — a provider deployment that does not
-run the App Studio sandbox runtime needs neither — but deployments that do run
-it MUST set both to immutable digests (see values.yaml). Invoked from both serve
-paths (chart Deployment and operator).
-*/}}
-{{- define "infrastructure.validateSandboxImages" -}}
-{{- $runner := .Values.sandboxRunner.runnerImage | default "" -}}
-{{- $token := .Values.sandboxRunner.tokenGeneratorImage | default "" -}}
-{{- if and (ne $runner "") (eq $token "") -}}
-{{- fail "sandboxRunner.runnerImage is set but sandboxRunner.tokenGeneratorImage is empty; set both (immutable digests) or neither" -}}
-{{- end -}}
-{{- if and (ne $token "") (eq $runner "") -}}
-{{- fail "sandboxRunner.tokenGeneratorImage is set but sandboxRunner.runnerImage is empty; set both (immutable digests) or neither" -}}
-{{- end -}}
-{{- end -}}

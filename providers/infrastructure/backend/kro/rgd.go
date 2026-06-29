@@ -30,11 +30,6 @@ import (
 const (
 	gatewayNameToken      = "${kedge.gatewayName}"
 	gatewayNamespaceToken = "${kedge.gatewayNamespace}"
-	// sandboxRunnerImageToken / sandboxTokenGeneratorToken carry the images the
-	// SandboxRunner workload + its control-token Job run. The platform owns them
-	// (App Studio no longer injects them into the instance spec).
-	sandboxRunnerImageToken    = "${kedge.sandboxRunnerImage}"
-	sandboxTokenGeneratorToken = "${kedge.sandboxTokenGeneratorImage}"
 )
 
 const (

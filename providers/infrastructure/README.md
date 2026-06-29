@@ -177,6 +177,16 @@ URL, watches instance CRs across every bound tenant workspace, and — with
 resources on the cluster kro runs in, while the instance object + status stay in
 the tenant workspace.
 
+**This provider is the sole owner of the runtime cluster.** The runtime
+kubeconfig (`/var/run/secrets/kro/kubeconfig`), the kro RGDs, and the
+workloads' internal Services are its private backend layer — no other
+provider holds a credential into them. Consumers (e.g. App Studio) operate
+infrastructure-owned workloads only through the instance CRs (control plane)
+and their VW subresources (data plane: `sandboxrunners/{name}/{log,proxy,…}`),
+as the tenant user. See the platform
+[provider-isolation rule](../../docs/providers.md#provider-isolation-the-cross-provider-boundary)
+and [`app-studio-runtime-decoupling.md`](../../docs/app-studio-runtime-decoupling.md).
+
 ## MCP integration
 
 Add the endpoint to a Claude / Cursor / Cline config separately from

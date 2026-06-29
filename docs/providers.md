@@ -164,6 +164,83 @@ provider's own custom HTTP backend (REST/GraphQL/WS), not for CR traffic.
 
 ---
 
+## Provider isolation (the cross-provider boundary)
+
+**A provider's backend layer is private. Another provider may never reach
+into it. All cross-provider interaction goes through the owning provider's
+*published* API surface.**
+
+This is the single rule that keeps the provider plane composable. State it
+as three parts:
+
+1. **Each provider owns a backend layer, and that layer is private to it.**
+   The "backend layer" is everything behind the provider's published API:
+   its controllers, its runtime/target clusters and the credentials to
+   them, its databases and object stores, its internal Services, its kro
+   RGDs / Terraform / cloud SDK calls — every implementation detail of
+   *how* it materializes and operates what it exports. No other component
+   holds a handle to any of it.
+
+2. **A provider must NOT touch another provider's backend layer.**
+   Concretely, a provider must never:
+   - hold a second credential (kubeconfig, DB DSN, API key) to another
+     provider's runtime cluster, database, or internal service;
+   - call another provider's internal Service / pod / REST endpoint
+     directly, or share its datastore;
+   - encode another provider's backend topology (cluster URLs, namespaces,
+     service names) in its own config.
+
+3. **Cross-provider interaction goes only through the other provider's
+   published interface, as the tenant/caller:**
+   - **kcp `APIExport` resources** — the other provider's CRDs, consumed by
+     binding to its `APIExport` (an `APIBinding` in the tenant workspace)
+     and reading/writing its CRs over the normal `/clusters/...` path.
+     Control-plane state (spec/status) flows this way.
+   - **Virtual-workspace subresources** on those resources — e.g.
+     `sandboxrunners/{name}/log`, `…/proxy/{path}`, `…/exec` — for
+     data-plane verbs (streams, proxies, shells) that aren't plain CRUD.
+     The owning provider serves them against *its* backend; the caller
+     never sees that backend.
+
+   Both are invoked **as the tenant user** (the caller's forwarded bearer
+   token, scoped to the workspace — see contract 2 in
+   [`provider-connectivity-contract.md`](./provider-connectivity-contract.md))
+   and **routed by binding, never by a hardcoded backend URL**. The calling
+   provider resolves *which* provider backs a workspace from the
+   binding/APIExport, not from its own configuration.
+
+**Why the rule pays off:**
+
+- **Substitutability / BYO.** Because the caller addresses a *bound
+  resource* and not a backend URL, the workspace can be backed by a
+  *different instance* of the owning provider — its own runtime cluster,
+  its own APIExport — with **zero change** in the caller. A provider that
+  reached a backend directly would be welded to one deployment.
+- **Single owner per backend.** Exactly one provider holds the credential
+  and the operational responsibility for a given runtime/datastore. No
+  duplicated clients, no two-writers-one-cluster ambiguity.
+- **Contained blast radius.** A provider's compromise or outage is bounded
+  by its published claims, not by who else happens to hold a key into its
+  cluster.
+
+**Reference implementation.** App Studio used to hold
+`APP_STUDIO_RUNTIME_KUBECONFIG` — a direct credential into the
+infrastructure provider's runtime cluster. That is exactly the violation
+this rule forbids. The fix moves the sandbox data plane to **subresources
+on the `SandboxRunner` instance**, served by the infrastructure provider's
+VW; App Studio now calls `sandboxrunners/{name}/{log,proxy,sync,restart}`
+as the tenant user and carries no runtime credential. See
+[`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md).
+
+> Cross-provider *dependency resolution* (ordering, version-compatibility
+> matrices) remains out of scope for v1 (see Non-goals). The isolation rule
+> is about
+> the *access boundary*, not orchestration: a provider may consume another
+> provider's published API, but it owns the failure handling when a
+> prerequisite binding isn't present.
+
+---
+
 ## CRDs
 
 Two new CRDs, both in the kedge API group, both first-party (added to the
@@ -827,6 +904,12 @@ A provider's UI MUST:
 - **Provider→kcp isolation**: provider SAs are scoped to their own
   workspace. Cross-tenant access only via the APIExport mechanism, which
   kcp gates by `permissionClaims`.
+- **Provider→provider isolation**: a provider never holds a credential into
+  another provider's backend (runtime cluster, DB, internal Service). All
+  cross-provider access is through the other provider's published
+  `APIExport` resources + VW subresources, as the tenant user — see
+  §"Provider isolation". This contains blast radius (one owner per backend)
+  and is what makes BYO compute work.
 - **Permission claim gate**: the binding controller refuses any claim not
   marked `tenantScoped`. An override exists
   (`kedge.faros.sh/accept-untrusted-claims=true`) but is admin-only

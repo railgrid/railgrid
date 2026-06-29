@@ -162,27 +162,12 @@ func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
 	}
 }
 
-func TestSubstituteTokensSandboxImages(t *testing.T) {
-	in := []byte(`{"runner":"${kedge.sandboxRunnerImage}","token":"${kedge.sandboxTokenGeneratorImage}"}`)
-	tokens := map[string]string{
-		sandboxRunnerImageToken:    "ghcr.io/faroshq/kedge-sandbox-runner@sha256:abc",
-		sandboxTokenGeneratorToken: "docker.io/bitnami/kubectl@sha256:def",
-	}
-	out := string(substituteTokens(in, tokens))
-	want := `{"runner":"ghcr.io/faroshq/kedge-sandbox-runner@sha256:abc","token":"docker.io/bitnami/kubectl@sha256:def"}`
-	if out != want {
-		t.Errorf("substituteTokens = %s, want %s", out, want)
-	}
-}
-
-// testTokens is the platform-config token map the backend builds from env,
-// with the gateway defaults and placeholder sandbox images, for buildRGD tests.
+// testTokens is the platform-config token map the backend builds from env (the
+// exposure-layer Gateway parent), for buildRGD tests.
 func testTokens() map[string]string {
 	return map[string]string{
-		gatewayNameToken:           DefaultGatewayName,
-		gatewayNamespaceToken:      DefaultGatewayNamespace,
-		sandboxRunnerImageToken:    "ghcr.io/faroshq/kedge-sandbox-runner:test",
-		sandboxTokenGeneratorToken: "docker.io/bitnami/kubectl:test",
+		gatewayNameToken:      DefaultGatewayName,
+		gatewayNamespaceToken: DefaultGatewayNamespace,
 	}
 }
 

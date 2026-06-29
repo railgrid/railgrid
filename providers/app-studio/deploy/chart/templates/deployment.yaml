@@ -1,25 +1,10 @@
 {{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
-{{- $sandboxRunnerImage := .Values.sandboxRunner.runnerImage | default "" -}}
-{{- $sandboxTokenGeneratorImage := .Values.sandboxRunner.tokenGeneratorImage | default "" -}}
 {{- $previewGatewayEnabled := .Values.previewGateway.enabled | default false -}}
 {{- $previewGatewayBaseDomain := .Values.previewGateway.baseDomain | default "" -}}
 {{- $previewGatewayFeatureEnabled := and $previewGatewayEnabled (ne (trim $previewGatewayBaseDomain) "") -}}
 {{- $previewGatewayServiceName := printf "%s-preview-gateway" (include "appstudio.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- if and $previewGatewayFeatureEnabled (not .Values.previewTokenSecretRef.name) -}}
 {{- fail "previewGateway is enabled with baseDomain, but previewTokenSecretRef.name is required for shared preview tokens" -}}
-{{- end -}}
-{{- /*
-App Studio creates a SandboxRunner for every project's development environment,
-and the SandboxRunner spec requires both images. Require them unconditionally so
-a misconfigured install fails here instead of producing invalid SandboxRunner
-resources at runtime. (Image ownership moves to the infrastructure provider in a
-later phase; until then App Studio still passes them through.)
-*/ -}}
-{{- if not $sandboxRunnerImage -}}
-{{- fail "sandboxRunner.runnerImage is required; use an immutable digest reference" -}}
-{{- end -}}
-{{- if not $sandboxTokenGeneratorImage -}}
-{{- fail "sandboxRunner.tokenGeneratorImage is required; use an immutable digest reference" -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -106,12 +91,6 @@ spec:
             # calling user via the forwarded bearer token.
             - name: KEDGE_PROVIDER_KUBECONFIG
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
-            # Always set: the SandboxRunner spec requires both images, and the
-            # template above fails the install when either is unset.
-            - name: APP_STUDIO_SANDBOX_RUNNER_IMAGE
-              value: {{ $sandboxRunnerImage | quote }}
-            - name: APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE
-              value: {{ $sandboxTokenGeneratorImage | quote }}
             {{- if $previewGatewayFeatureEnabled }}
             - name: APP_STUDIO_PREVIEW_BASE_DOMAIN
               value: {{ $previewGatewayBaseDomain | quote }}

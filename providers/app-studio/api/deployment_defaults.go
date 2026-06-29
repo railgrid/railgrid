@@ -67,17 +67,15 @@ func defaultSandboxRunnerBinding(projectName string) aiv1alpha1.ProjectProviderB
 	}
 }
 
+// sandboxRunnerValues are the project-scoped fields App Studio supplies on a
+// SandboxRunner binding. The runner image is NOT one of them: the sandbox-runner
+// template declares spec.runnerImage as a schema field with a sane default (the
+// web-app convention), so App Studio doesn't pass it. See
+// providers/infrastructure/docs/template-conventions.md.
 func sandboxRunnerValues(projectName string) map[string]any {
-	values := map[string]any{
+	return map[string]any{
 		"projectRef": projectName,
 	}
-	if image := sandboxRunnerImage(); image != "" {
-		values["runnerImage"] = image
-	}
-	if image := sandboxTokenGeneratorImage(); image != "" {
-		values["tokenGeneratorImage"] = image
-	}
-	return values
 }
 
 func previewHTTPRouteEnabled() bool {
@@ -130,14 +128,6 @@ func previewBackendServicePort() int64 {
 		return 8080
 	}
 	return port
-}
-
-func sandboxRunnerImage() string {
-	return envValue("APP_STUDIO_SANDBOX_RUNNER_IMAGE")
-}
-
-func sandboxTokenGeneratorImage() string {
-	return envValue("APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE")
 }
 
 func envValue(key string) string {

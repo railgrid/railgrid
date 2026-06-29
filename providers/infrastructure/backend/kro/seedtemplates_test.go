@@ -393,17 +393,19 @@ func TestSandboxRunnerUsesManagedJobForControlToken(t *testing.T) {
 		t.Fatalf("runner container must not mount kube-api-access")
 	}
 
-	// The runner image is platform-owned: it comes from the ${kedge.*} token
-	// the backend substitutes, NOT from the instance spec.
-	if got, _, _ := unstructured.NestedString(runnerContainer, "image"); got != testTokens()[sandboxRunnerImageToken] {
-		t.Fatalf("runner image = %q, want the substituted ${kedge.sandboxRunnerImage} %q", got, testTokens()[sandboxRunnerImageToken])
+	// The runner image is a schema field with a sane default (the web-app
+	// convention) — kro resolves ${schema.spec.runnerImage} per instance.
+	if got, _, _ := unstructured.NestedString(runnerContainer, "image"); got != "${schema.spec.runnerImage}" {
+		t.Fatalf("runner image = %q, want ${schema.spec.runnerImage}", got)
 	}
+	// The control-token Job image is hardcoded (kubectl), like every other
+	// template's control job.
 	tokenContainers := mustNestedSlice(t, tokenGeneratorTemplate, "spec", "template", "spec", "containers")
 	if len(tokenContainers) != 1 {
 		t.Fatalf("tokenGenerator containers = %d, want 1", len(tokenContainers))
 	}
-	if got, _, _ := unstructured.NestedString(tokenContainers[0].(map[string]any), "image"); got != testTokens()[sandboxTokenGeneratorToken] {
-		t.Fatalf("token generator image = %q, want the substituted ${kedge.sandboxTokenGeneratorImage} %q", got, testTokens()[sandboxTokenGeneratorToken])
+	if got, _, _ := unstructured.NestedString(tokenContainers[0].(map[string]any), "image"); got != "bitnami/kubectl" {
+		t.Fatalf("token generator image = %q, want bitnami/kubectl", got)
 	}
 
 	runnerNetwork := findResource(t, rgd, "runnerNetwork")

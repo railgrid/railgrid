@@ -678,7 +678,9 @@ KUERY_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/kuery-runtime.kubeconfig
 # …) diverges from SQLite and passing on SQLite has shipped real query bugs.
 # kuery-db-up starts a throwaway container matching KUERY_DEV_DATABASE_URL.
 KUERY_POSTGRES_CONTAINER ?= kedge-kuery-postgres
-KUERY_POSTGRES_IMAGE ?= postgres:16-alpine
+# Pulled from Google's Docker Hub mirror (same official image, more reliable
+# pulls — Docker Hub has been dropping them with "unexpected EOF").
+KUERY_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
 KUERY_POSTGRES_PORT ?= 55433
 KUERY_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/kuery-postgres
 KUERY_POSTGRES_USER ?= kuery
@@ -862,7 +864,7 @@ APP_STUDIO_SANDBOX_RUNNER_IMAGE ?= $(SANDBOX_RUNNER_IMAGE)
 APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE ?= $(SANDBOX_TOKEN_GENERATOR_IMAGE)
 APP_STUDIO_DEV_DATABASE_URL ?= postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable
 APP_STUDIO_POSTGRES_CONTAINER ?= kedge-app-studio-postgres
-APP_STUDIO_POSTGRES_IMAGE ?= postgres:16-alpine
+APP_STUDIO_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
 APP_STUDIO_POSTGRES_PORT ?= 55432
 APP_STUDIO_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/app-studio-postgres
 APP_STUDIO_POSTGRES_USER ?= appstudio
@@ -1322,6 +1324,14 @@ KRO_IMAGE_TAG ?= v0.0.1-mc.7
 KRO_NAMESPACE ?= kro-system
 KRO_SEED_DIR ?= providers/infrastructure/examples/rgds
 
+# --- Infrastructure template e2e (RGD acceptance against a real kro) ---
+# A throwaway kind cluster running STANDALONE kro (no kcp) — enough to validate
+# that every seeded Template authors a kro graph kro accepts. See
+# providers/infrastructure/backend/kro/e2e_test.go.
+E2E_KRO_KIND_NAME ?= kedge-kro-e2e
+E2E_KRO_KUBECONFIG ?= $(CURDIR)/.kedge-kro-e2e.kubeconfig
+GATEWAY_API_VERSION ?= v1.2.1
+
 ## Bring up the management kro cluster + install kro (fork w/ multicluster) +
 ## register the cluster as a self-member + seed RGDs. Idempotent: re-running
 ## just helm-upgrades the chart and re-applies the RGDs.
@@ -1427,6 +1437,33 @@ dev-kro-seed: ## Apply seed RGDs (providers/infrastructure/examples/rgds/) into 
 dev-kro-down: ## Delete the kedge-kro kind cluster + kubeconfig file
 	-kind delete cluster --name $(KRO_KIND_NAME)
 	-rm -f $(KRO_KIND_KUBECONFIG)
+
+e2e-infrastructure-up: ## Bring up a throwaway kind cluster with Gateway API CRDs + standalone kro for the template e2e
+	@command -v kind >/dev/null || { echo "kind not found; install: brew install kind"; exit 1; }
+	@command -v helm >/dev/null || { echo "helm not found; install: brew install helm"; exit 1; }
+	@if ! kind get clusters | grep -qx "$(E2E_KRO_KIND_NAME)"; then \
+		echo ">>> creating kind cluster $(E2E_KRO_KIND_NAME)"; \
+		kind create cluster --name $(E2E_KRO_KIND_NAME) --kubeconfig $(E2E_KRO_KUBECONFIG); \
+	else \
+		kind get kubeconfig --name $(E2E_KRO_KIND_NAME) > $(E2E_KRO_KUBECONFIG); \
+	fi
+	@echo ">>> installing Gateway API CRDs ($(GATEWAY_API_VERSION)) — templates declare HTTPRoute/ReferenceGrant"
+	KUBECONFIG=$(E2E_KRO_KUBECONFIG) kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/$(GATEWAY_API_VERSION)/standard-install.yaml
+	@echo ">>> installing standalone kro (no kcp) into $(KRO_NAMESPACE)"
+	KUBECONFIG=$(E2E_KRO_KUBECONFIG) helm upgrade --install kro $(KRO_CHART) \
+		--version $(KRO_CHART_VERSION) -n $(KRO_NAMESPACE) --create-namespace \
+		--set image.repository=$(KRO_IMAGE_REPO) --set image.tag=$(KRO_IMAGE_TAG) \
+		--set multicluster.enabled=false --wait --timeout 5m
+
+e2e-infrastructure-down: ## Delete the infra-template e2e kind cluster + kubeconfig
+	-kind delete cluster --name $(E2E_KRO_KIND_NAME)
+	-rm -f $(E2E_KRO_KUBECONFIG)
+
+e2e-infrastructure-run: ## Run the infra template RGD-acceptance e2e against $(E2E_KRO_KUBECONFIG)
+	cd providers/infrastructure && KUBECONFIG=$(E2E_KRO_KUBECONFIG) \
+		go test -tags e2e -count=1 -timeout 15m ./backend/kro/ -run TestE2E -v
+
+e2e-infrastructure: e2e-infrastructure-up e2e-infrastructure-run ## Bring up kro + run the infra template e2e (then `make e2e-infrastructure-down`)
 
 # --- In-cluster variants (no separate kind cluster) ---
 # Used by Tiltfile.cluster, which already manages a kind cluster for kcp.

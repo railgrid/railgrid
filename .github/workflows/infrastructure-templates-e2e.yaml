@@ -1,0 +1,65 @@
+name: Infrastructure Template E2E
+
+# Every seeded infrastructure Template must author a kro ResourceGraphDefinition
+# that kro ACCEPTS, and a sample instance of it must reconcile WITHOUT an apply
+# error. Unit tests only check buildRGD's output; this stands up a real
+# (standalone) kro on kind and, per template, asserts GraphAccepted=True and then
+# creates a sample instance that kro applies cleanly — catching the failures unit
+# tests miss (string-vs-int fields, non-standalone includeWhen expressions, an
+# image that resolved to "" surfacing as "Required value" only at apply time).
+# See providers/infrastructure/backend/kro/e2e_test.go.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'providers/infrastructure/install/templates/**'
+      - 'providers/infrastructure/backend/kro/**'
+      - 'providers/infrastructure/apis/**'
+      - '.github/workflows/infrastructure-templates-e2e.yaml'
+      - 'Makefile'
+  push:
+    branches: [main]
+    paths:
+      - 'providers/infrastructure/install/templates/**'
+      - 'providers/infrastructure/backend/kro/**'
+      - 'providers/infrastructure/apis/**'
+      - '.github/workflows/infrastructure-templates-e2e.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  template-e2e:
+    name: Templates accepted + instances apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: v1.26.1
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The kro fork chart + image live in ghcr under this org; logging in lets
+      # helm/kind pull them whether they are public or org-private.
+      - name: Log in to GHCR for the kro chart
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Bring up kro + run the template e2e
+        run: make e2e-infrastructure
+
+      - name: Tear down the e2e cluster
+        if: always()
+        run: make e2e-infrastructure-down
