@@ -22,8 +22,34 @@ import (
 	"testing"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
+
+func TestProjectAssistantTurnNeedsInfrastructureMCP(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"list instances", "list instances via mcp", true},
+		{"single instance", "show me the status of my instance", true},
+		{"platform vocabulary", "what platform resources do I have?", true},
+		{"mcp mention", "call mcp to enumerate things", true},
+		{"templates", "what templates are available?", true},
+		{"unrelated", "fix the button styling in app.js", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			history := []store.Message{{
+				Role:    aiv1alpha1.ProjectMessageRoleUser,
+				Content: tc.content,
+			}}
+			if got := projectAssistantTurnNeedsInfrastructureMCP(history); got != tc.want {
+				t.Fatalf("projectAssistantTurnNeedsInfrastructureMCP(%q) = %v, want %v", tc.content, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestEinoApprovePlanToolRejectsMissingAllowedOperations(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()

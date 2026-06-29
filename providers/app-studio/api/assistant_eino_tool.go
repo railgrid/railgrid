@@ -135,7 +135,9 @@ func projectAssistantTurnNeedsInfrastructureMCP(history []store.Message) bool {
 		}
 		content := strings.ToLower(strings.TrimSpace(history[i].Content))
 		return containsProjectAssistantTurnKeyword(content, []string{
-			"infrastructure", "infra", "template", "templates", "provision", "database", "postgres", "redis", "supporting resource", "provider",
+			"infrastructure", "infra", "template", "templates", "provision",
+			"instance", "instances", "database", "postgres", "redis",
+			"supporting resource", "provider", "platform", "mcp",
 		})
 	}
 	return false

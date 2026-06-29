@@ -43,6 +43,9 @@ func TestProjectAssistantTurnProfileClassifier(t *testing.T) {
 		{name: "debug fix", message: "Fix the failed fetch error and make it work", want: projectAssistantTurnProfileDebugFix},
 		{name: "fix only fallback", message: "Please fix the login form", want: projectAssistantTurnProfileDebugFix},
 		{name: "implementation", message: "Add a search field to the todo app", want: projectAssistantTurnProfileImplementation},
+		{name: "git push", message: "push my changes to git", want: projectAssistantTurnProfileImplementation},
+		{name: "pull request", message: "open a pull request for this branch", want: projectAssistantTurnProfileImplementation},
+		{name: "merge", message: "merge the feature branch", want: projectAssistantTurnProfileImplementation},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

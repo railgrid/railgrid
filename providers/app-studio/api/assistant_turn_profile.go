@@ -166,6 +166,7 @@ func fallbackProjectAssistantTurnDecisionForMessage(content string) projectAssis
 	}
 	if containsProjectAssistantTurnKeyword(normalized, []string{
 		"build", "add", "change", "update", "implement", "write", "make the app", "create", "remove", "delete", "ship", "commit", "deploy", "provision",
+		"git", "push", "pull request", "branch", "merge",
 	}) {
 		return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileImplementation)
 	}
