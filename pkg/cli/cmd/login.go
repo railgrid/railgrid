@@ -48,6 +48,7 @@ func newLoginCommand() *cobra.Command {
 		hubURL                string
 		insecureSkipTLSVerify bool
 		token                 string
+		interactive           bool
 	)
 
 	cmd := &cobra.Command{
@@ -60,25 +61,42 @@ func newLoginCommand() *cobra.Command {
 			}
 			hubURL = normalizeHubURL(hubURL)
 			if token != "" {
-				return runStaticTokenLogin(hubURL, token, insecureSkipTLSVerify)
+				if err := runStaticTokenLogin(hubURL, token, insecureSkipTLSVerify); err != nil {
+					return err
+				}
+			} else {
+				// Check if hub has OIDC configured before opening browser.
+				oidcEnabled, err := checkHubAuthMode(hubURL, insecureSkipTLSVerify)
+				if err != nil {
+					return err
+				}
+				if !oidcEnabled {
+					return fmt.Errorf("hub at %s does not have OIDC configured — use: kedge login --hub-url %s --token <token>", hubURL, hubURL)
+				}
+				ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
+				defer cancel()
+				if err := runLogin(ctx, hubURL, insecureSkipTLSVerify); err != nil {
+					return err
+				}
 			}
-			// Check if hub has OIDC configured before opening browser.
-			oidcEnabled, err := checkHubAuthMode(hubURL, insecureSkipTLSVerify)
-			if err != nil {
-				return err
+			if interactive {
+				// runUse consults globalInsecureTLS; carry over the login
+				// flag so the org/workspace REST calls hit a self-signed hub
+				// without a second flag.
+				if insecureSkipTLSVerify {
+					globalInsecureTLS = true
+				}
+				fmt.Println()
+				return runUse(cmd.Context(), "", "")
 			}
-			if !oidcEnabled {
-				return fmt.Errorf("hub at %s does not have OIDC configured — use: kedge login --hub-url %s --token <token>", hubURL, hubURL)
-			}
-			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
-			defer cancel()
-			return runLogin(ctx, hubURL, insecureSkipTLSVerify)
+			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&hubURL, "hub-url", "", "Hub server URL (defaults to "+DefaultHubURL+")")
 	cmd.Flags().BoolVar(&insecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification")
 	cmd.Flags().StringVar(&token, "token", "", "Static bearer token (skips OIDC browser flow)")
+	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "After login, interactively pick the organization and workspace")
 
 	return cmd
 }
