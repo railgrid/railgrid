@@ -66,7 +66,8 @@ githubOAuth:
   # origin). Empty broadcasts to "*" — set this in production.
   portalOrigin: ""
   # Comma-separated scopes. Empty → provider default
-  # (repo,read:org,admin:public_key,read:packages).
+  # (repo,delete_repo,read:org,admin:public_key,read:packages). delete_repo is
+  # required for the provider to remove repositories it created.
   scopes: ""
 
 # Tenant credential resolution. Empty → the provider default ("default"), the

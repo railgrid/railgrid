@@ -95,8 +95,9 @@ lets `?tenant=` / `?token=` stand in for the hub-injected identity headers.
 ## Connecting an account
 
 - **Personal Access Token (default):** paste a PAT in the portal's Connections
-  view. A classic PAT needs `repo` (+ `admin:public_key` for deploy keys,
-  `read:org` for org repos, and **`read:packages`** for the repo Packages panel).
+  view. A classic PAT needs `repo` (+ `delete_repo` to remove provider-created
+  repositories, `admin:public_key` for deploy keys, `read:org` for org repos,
+  and **`read:packages`** for the repo Packages panel).
 - **Connect with GitHub (OAuth):** enable the OAuth App (below) and the portal
   shows a one-click button — no copy-paste. OAuth tokens are requested with
   `read:packages` by default so the Packages panel works out of the box.
@@ -306,7 +307,7 @@ the connection token's `read:packages` scope.
 | `GITHUB_OAUTH_CLIENT_SECRET` | (unset) | GitHub OAuth App client secret |
 | `GITHUB_OAUTH_REDIRECT_URL` | (unset) | Absolute callback URL (must end in `/callback`); either the hub `/services/providers/code/oauth/github/callback` proxy route or the provider's own host. `/start` is derived from it |
 | `GITHUB_OAUTH_PORTAL_ORIGIN` | `*` | postMessage target origin (set to the hub origin in prod) |
-| `GITHUB_OAUTH_SCOPES` | `repo,read:org,admin:public_key,read:packages` | Requested OAuth scopes |
+| `GITHUB_OAUTH_SCOPES` | `repo,delete_repo,read:org,admin:public_key,read:packages` | Requested OAuth scopes |
 
 ### `init` subcommand
 
