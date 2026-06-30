@@ -1039,7 +1039,10 @@ func (s *Server) loadProjectMCPAssistantTools(r *http.Request, id identity, _ pr
 	if id.tenantPath == "" {
 		return nil, false, errors.New("tenant context missing")
 	}
-	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
+	if id.clusterID == "" {
+		return nil, false, errors.New("no workspace cluster on request (X-Kedge-Cluster missing) — cannot address the tenant MCP endpoint")
+	}
+	mcpEndpoint := s.mcpEndpoint(id.clusterID)
 	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify)
 	if err != nil {
 		return nil, false, err
@@ -1055,14 +1058,18 @@ func (s *Server) loadProjectMCPAssistantTools(r *http.Request, id identity, _ pr
 }
 
 // mcpEndpoint returns the hub's unified MCPServer virtual-workspace endpoint for
-// the given tenant cluster path. The provider always reaches MCP through the
-// hub (KEDGE_HUB_URL), not its own host.
-func (s *Server) mcpEndpoint(tenantPath string) string {
-	return mcpServerURL(s.hubBase, tenantPath, "default")
+// the given tenant logical-cluster ID. The provider always reaches MCP through
+// the hub (KEDGE_HUB_URL), not its own host. The workspace MUST be addressed by
+// logical-cluster ID (the hub-injected X-Kedge-Cluster), never by workspace
+// path: the hub proxy's membership gate rejects path-form /clusters/<root:...>
+// addressing with a 403 ("address workspaces by cluster ID, not by path").
+func (s *Server) mcpEndpoint(clusterID string) string {
+	return mcpServerURL(s.hubBase, clusterID, "default")
 }
 
 // mcpServerURL mirrors pkg/apiurl.MCPServerURL in the kedge monorepo:
 // {hub}/services/mcpserver/{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp
+// cluster is the workspace's logical-cluster ID, never its path.
 func mcpServerURL(hubBase, cluster, mcpServerName string) string {
 	return strings.TrimRight(hubBase, "/") +
 		fmt.Sprintf("/services/mcpserver/%s/apis/kedge.faros.sh/v1alpha1/mcpservers/%s/mcp", cluster, mcpServerName)

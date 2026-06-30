@@ -154,9 +154,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	serveProxy(w, r, h.runtime, target, req.callerPath)
 }
 
-// parsePath parses /dataplane/clusters/<ws>/<resource>/<name>/<verb>[/<tail...>].
-// The workspace segment may itself contain colons (root:kedge:orgs:acme); it is
-// a single path segment, so no escaping is needed.
+// parsePath parses /dataplane/clusters/<id>/<resource>/<name>/<verb>[/<tail...>].
+// The cluster segment is the workspace's kcp logical-cluster ID (the hub-injected
+// X-Kedge-Cluster that app-studio puts in the URL), NOT a workspace path — the
+// instance getter addresses kcp by /clusters/<id>, which the hub proxy requires.
 func parsePath(p string) (request, bool) {
 	rest := strings.TrimPrefix(p, PathPrefix)
 	if rest == p {

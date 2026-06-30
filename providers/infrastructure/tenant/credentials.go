@@ -50,8 +50,8 @@ func secretNamespace() string {
 // The returned map's keys depend on the cloud — see
 // docs/credentials.md for the convention each template author should
 // adhere to (e.g. aws_access_key_id, gcp_service_account_json).
-func ResolveCloudCredentials(ctx context.Context, factory *ClientFactory, tenantPath, token string) (map[string][]byte, error) {
-	dyn, err := factory.For(tenantPath, token)
+func ResolveCloudCredentials(ctx context.Context, factory *ClientFactory, clusterID, token string) (map[string][]byte, error) {
+	dyn, err := factory.For(clusterID, token)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func ResolveCloudCredentials(ctx context.Context, factory *ClientFactory, tenant
 		if apierrors.IsForbidden(err) {
 			return nil, ErrAPIBindingMissing
 		}
-		return nil, fmt.Errorf("get cloud-credentials in tenant %q: %w", tenantPath, err)
+		return nil, fmt.Errorf("get cloud-credentials in cluster %q: %w", clusterID, err)
 	}
 	return decodeSecretData(obj)
 }

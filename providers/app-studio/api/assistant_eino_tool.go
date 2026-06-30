@@ -252,7 +252,7 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 		Repository:           t.req.Repository,
 		WorkspaceScope:       t.req.WorkspaceScope,
 		ProjectRepositoryRef: t.runState.ProjectRepositoryRef(),
-		MCPEndpoint:          mcpServerURL(t.req.MCPBaseURL, t.req.Identity.tenantPath, "default"),
+		MCPEndpoint:          mcpServerURL(t.req.MCPBaseURL, t.req.Identity.clusterID, "default"),
 		HTTPRequest:          t.req.HTTPRequest,
 		SessionSnapshot:      t.runState.SessionSnapshot(),
 		Arguments:            args,

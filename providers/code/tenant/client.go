@@ -14,9 +14,11 @@ You may obtain a copy of the License at
 // APIExport virtual workspace and never use this factory.
 //
 // The base kubeconfig (the provider's own kcp connection) supplies only the
-// front-proxy host + TLS; its credential is dropped so the factory can never
-// authenticate as the provider. Per request we build a config with that host
-// (cluster segment swapped for the tenant's path) and the caller's bearer token.
+// host + TLS; its credential is dropped so the factory can never authenticate as
+// the provider. Per request we build a config with that host (cluster segment
+// set to the tenant's logical-cluster ID) and the caller's bearer token. The
+// workspace MUST be addressed by ID, never by path: the hub proxy's membership
+// gate rejects path-form /clusters/<root:...> with a 403.
 package tenant
 
 import (
@@ -63,13 +65,15 @@ func NewClientFactory(base *rest.Config) *ClientFactory {
 	}
 }
 
-// For returns a dynamic client scoped to tenantPath, authenticating as the
-// caller via token. Cached per (tenant, token).
-func (f *ClientFactory) For(tenantPath, token string) (dynamic.Interface, error) {
+// For returns a dynamic client scoped to the workspace's logical-cluster ID,
+// authenticating as the caller via token. Cached per (cluster, token). The
+// cluster MUST be the kcp logical-cluster ID (X-Kedge-Cluster), never a
+// workspace path — the hub proxy rejects path-form addressing.
+func (f *ClientFactory) For(clusterID, token string) (dynamic.Interface, error) {
 	if token == "" {
 		return nil, fmt.Errorf("no bearer token on request — cannot act on the tenant's behalf")
 	}
-	key := tenantPath + ":" + hashToken(token)
+	key := clusterID + ":" + hashToken(token)
 
 	f.mu.RLock()
 	dyn, ok := f.hot[key]
@@ -79,13 +83,13 @@ func (f *ClientFactory) For(tenantPath, token string) (dynamic.Interface, error)
 	}
 
 	cfg := &rest.Config{
-		Host:            f.baseHost + "/clusters/" + tenantPath,
+		Host:            f.baseHost + "/clusters/" + clusterID,
 		BearerToken:     token,
 		TLSClientConfig: f.baseTLS,
 	}
 	d, err := dynamic.NewForConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("dynamic client for tenant %q: %w", tenantPath, err)
+		return nil, fmt.Errorf("dynamic client for cluster %q: %w", clusterID, err)
 	}
 
 	f.mu.Lock()

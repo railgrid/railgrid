@@ -36,13 +36,16 @@ func tenantClient(deps Deps, ident identity) (dynamic.Interface, error) {
 	if ident.tenantPath == "" {
 		return nil, errors.New("no tenant identity on this request — bearer token did not resolve to a workspace")
 	}
+	if ident.clusterID == "" {
+		return nil, errors.New("no workspace cluster on this request (X-Kedge-Cluster missing) — cannot address the tenant workspace by ID")
+	}
 	if ident.token == "" {
 		return nil, errors.New("no bearer token on this request — the MCP request must carry the caller's credentials")
 	}
 	if deps.Tenant == nil {
 		return nil, errors.New("tenant client unavailable (provider kubeconfig not set)")
 	}
-	return deps.Tenant.For(ident.tenantPath, ident.token)
+	return deps.Tenant.For(ident.clusterID, ident.token)
 }
 
 type connectionSummary struct {
