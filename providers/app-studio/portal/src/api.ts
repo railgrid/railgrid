@@ -13,6 +13,7 @@ import type {
   ProjectMessagesPage,
   ProviderItem,
 } from './types'
+import type { ProjectCreateReadiness } from './createReadiness'
 
 interface TenantSelection {
   orgUUID: string | null
@@ -591,6 +592,10 @@ export const api = {
     signal?: AbortSignal,
   ): Promise<void> {
     return requestStream(ctx, 'POST', `${baseURL(ctx)}/stream`, body, onEvent, signal)
+  },
+
+  async getProjectCreateReadiness(ctx: KedgeContext | null): Promise<ProjectCreateReadiness> {
+    return request<ProjectCreateReadiness>(ctx, 'GET', `${baseURL(ctx)}/create-readiness`)
   },
 
   async getLLMSettings(ctx: KedgeContext | null): Promise<ProjectLLMSettings> {

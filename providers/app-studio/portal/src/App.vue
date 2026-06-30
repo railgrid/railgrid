@@ -30,6 +30,12 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api, isProjectAPIInitializingError } from './api'
+import {
+  canSubmitCreatePrompt,
+  createSetupItems,
+  gitConnectionReady,
+  type ProjectCreateReadiness,
+} from './createReadiness'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useEscapeKey } from '@/composables/useEscapeKey'
@@ -313,6 +319,9 @@ const followUpAnswers = ref<Record<string, string>>({})
 const followUpBusy = ref<Record<string, boolean>>({})
 const followUpErrors = ref<Record<string, string>>({})
 const toolState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+const createReadiness = ref<ProjectCreateReadiness | null>(null)
+const createReadinessLoading = ref(false)
+const createReadinessError = ref<string | null>(null)
 const workbench = ref(createDefaultWorkbenchState())
 const draggedWorkbenchTabID = ref<string | null>(null)
 const dragOverWorkbenchTabID = ref<string | null>(null)
@@ -359,7 +368,8 @@ const isBuilderVisible = computed(() => !isAppStudioLandingRoute.value || select
 const showNewProjectComposer = computed(() => isCreateRoute.value)
 const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
 const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).length > 0 || Object.keys(followUpBusy.value).length > 0)
-const canStartProjectFromPrompt = computed(() => prompt.value.trim().length > 0)
+const llmConfigured = computed(() => llmSettings.value?.configured ?? false)
+const canStartProjectFromPrompt = computed(() => canSubmitCreatePrompt(prompt.value, createReadiness.value) && llmConfigured.value)
 const canSendPrompt = computed(() => (llmSettings.value?.configured ?? false) && prompt.value.trim().length > 0 && !messageStreaming.value && !assistantResumeBusy.value)
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
 const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'LLM settings'))
@@ -375,6 +385,19 @@ const conversationWorkingLabel = computed(() => {
   if (lastAssistant?.content.trim()) return 'Working'
   return 'Working'
 })
+const gitConnectionCreateReady = computed(() => gitConnectionReady(createReadiness.value))
+const createReadinessChecking = computed(() => createReadinessLoading.value || (!!props.ctx?.token && createReadiness.value === null && !createReadinessError.value))
+const createSetupItemsForPrompt = computed(() => createSetupItems({
+  readiness: createReadiness.value,
+  llmConfigured: llmConfigured.value,
+  checkingGit: createReadinessChecking.value,
+}))
+const createPromptSubmitTitle = computed(() => {
+  if (createSetupItemsForPrompt.value.length > 0) return 'Complete setup before creating a project'
+  return prompt.value.trim() ? 'Create project and send prompt' : 'Describe what you want to build'
+})
+const createSetupVisible = computed(() => createSetupItemsForPrompt.value.length > 0 || !!createReadinessError.value)
+const createSetupErrorMessage = computed(() => createReadinessError.value || '')
 const deleteProjectMessage = computed(() => {
   const project = deleteProjectTarget.value
   if (!project) return ''
@@ -723,6 +746,7 @@ const developmentPreviewUnavailableMessage = computed(() => {
 onMounted(() => {
   void load()
   void loadProviders()
+  void loadCreateReadiness()
   void loadLLMSettings()
   startLandingPlaceholderRotation()
   window.addEventListener('focus', handleDevelopmentPreviewAuthorizationWake)
@@ -742,6 +766,7 @@ watch(
   () => props.ctx?.token,
   () => {
     void loadProviders()
+    void loadCreateReadiness()
     void loadLLMSettings()
   },
 )
@@ -903,6 +928,7 @@ function handleProjectAPIInitializing(err: unknown): boolean {
   initializationRetryTimer = window.setTimeout(() => {
     initializationRetryTimer = undefined
     void load()
+    void loadCreateReadiness()
     void loadLLMSettings()
   }, 2000)
   return true
@@ -935,6 +961,21 @@ async function loadProviders() {
     toolError.value = e instanceof Error ? e.message : String(e)
   } finally {
     providersLoading.value = false
+  }
+}
+
+async function loadCreateReadiness() {
+  if (!props.ctx?.token) return
+  createReadinessLoading.value = true
+  createReadinessError.value = null
+  try {
+    createReadiness.value = await api.getProjectCreateReadiness(props.ctx)
+  } catch (e) {
+    if (handleProjectAPIInitializing(e)) return
+    createReadiness.value = null
+    createReadinessError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    createReadinessLoading.value = false
   }
 }
 
@@ -1211,11 +1252,17 @@ async function clearLLMKey() {
 async function createProjectFromPrompt() {
   const content = prompt.value.trim()
   if (!content) return
-  if (!llmSettings.value?.configured) {
-    openSettings()
-    return
-  }
+  if (!await ensureCreateSetupReady()) return
   await createProjectAndStartConversation(content)
+}
+
+async function ensureCreateSetupReady(): Promise<boolean> {
+  if (!gitConnectionCreateReady.value && !createReadinessLoading.value) {
+    await loadCreateReadiness()
+  }
+  if (gitConnectionCreateReady.value && llmConfigured.value) return true
+  error.value = null
+  return false
 }
 
 async function createProjectAndStartConversation(content: string) {
@@ -2752,6 +2799,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             Back to projects
           </button>
           <button
+            v-if="!showNewProjectComposer"
             type="button"
             class="flex h-9 items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
             title="LLM settings"
@@ -2881,17 +2929,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
         <main class="flex min-h-0 flex-1 items-center justify-center py-4">
           <section class="w-full max-w-[1060px]">
             <div class="mx-auto flex max-w-[760px] flex-col items-center text-center">
-              <span
-                class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-medium"
-                :class="llmSettings?.configured
-                  ? 'border-success/30 bg-success-subtle text-success'
-                  : 'border-warning/30 bg-warning-subtle text-warning'"
-              >
-                <Check v-if="llmSettings?.configured" class="h-3.5 w-3.5" :stroke-width="2" />
-                <Settings2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                {{ llmSettings?.configured ? 'Workspace ready' : 'LLM setup needed' }}
-              </span>
-              <h2 class="mt-5 text-[44px] font-semibold leading-[1.05] text-text-primary md:text-[56px]">
+              <h2 class="text-[44px] font-semibold leading-[1.05] text-text-primary md:text-[56px]">
                 What do you want to build?
               </h2>
               <p class="mt-4 max-w-[62ch] text-[14px] leading-6 text-text-muted">
@@ -2926,16 +2964,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                         <X class="h-3.5 w-3.5" :stroke-width="2" />
                       </button>
                     </span>
-                    <button
-                      v-if="!llmSettings?.configured"
-                      type="button"
-                      class="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
-                      @click="openSettings"
-                    >
-                      <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-                      Set up LLM
-                    </button>
-                    <span v-else class="text-[12px] text-text-muted">
+                    <span v-if="!createSetupVisible" class="text-[12px] text-text-muted">
                       The first message will create the project and start the conversation.
                     </span>
                   </div>
@@ -2943,12 +2972,64 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                     class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 text-[13px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
                     type="submit"
                     :disabled="busy || !canStartProjectFromPrompt"
-                    :title="llmSettings?.configured ? 'Create project and send prompt' : 'Configure LLM settings before creating a project'"
+                    :title="createPromptSubmitTitle"
                   >
-                    <Plus v-if="llmSettings?.configured" class="h-4 w-4" :stroke-width="2" />
-                    <Settings2 v-else class="h-4 w-4" :stroke-width="1.75" />
-                    {{ llmSettings?.configured ? 'Create and send' : 'Set up and send' }}
+                    <Plus class="h-4 w-4" :stroke-width="2" />
+                    Create and send
                   </button>
+                </div>
+              </div>
+              <div
+                v-if="createSetupVisible"
+                class="mt-3 rounded-lg border border-border-subtle bg-surface-raised/70 p-3 text-left"
+              >
+                <div class="mb-2 flex items-center gap-2 text-[12px] font-semibold text-text-primary">
+                  <Settings2 class="h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
+                  Complete setup before creating
+                </div>
+                <div v-if="createSetupErrorMessage" class="mb-2 text-[12px] text-danger">{{ createSetupErrorMessage }}</div>
+                <div class="grid gap-2">
+                  <div
+                    v-for="item in createSetupItemsForPrompt"
+                    :key="item.id"
+                    class="flex min-h-10 flex-wrap items-center justify-between gap-2 rounded-md border border-border-subtle bg-surface px-3 py-2"
+                  >
+                    <div class="flex min-w-0 items-center gap-2">
+                      <span
+                        class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border"
+                        :class="item.status === 'ready'
+                          ? 'border-success/30 bg-success-subtle text-success'
+                          : item.status === 'checking'
+                            ? 'border-warning/30 bg-warning-subtle text-warning'
+                            : 'border-border-subtle bg-surface-raised text-text-muted'"
+                      >
+                        <Check v-if="item.status === 'ready'" class="h-3.5 w-3.5" :stroke-width="2" />
+                        <Loader2 v-else-if="item.status === 'checking'" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                        <GitBranch v-else-if="item.id === 'git'" class="h-3.5 w-3.5" :stroke-width="1.75" />
+                        <Settings2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      </span>
+                      <span class="truncate text-[13px] font-medium text-text-primary">{{ item.label }}</span>
+                    </div>
+                    <span v-if="item.status === 'ready'" class="text-[12px] font-medium text-success">Ready</span>
+                    <span v-else-if="item.status === 'checking'" class="text-[12px] font-medium text-warning">Checking</span>
+                    <a
+                      v-else-if="item.action === 'connect-git'"
+                      :href="CODE_CONNECTIONS_URL"
+                      class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
+                    >
+                      <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      {{ item.actionLabel }}
+                    </a>
+                    <button
+                      v-else-if="item.action === 'setup-llm'"
+                      type="button"
+                      class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
+                      @click="openSettings"
+                    >
+                      <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      {{ item.actionLabel }}
+                    </button>
+                  </div>
                 </div>
               </div>
             </form>

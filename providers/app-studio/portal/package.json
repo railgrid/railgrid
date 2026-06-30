@@ -9,6 +9,7 @@
     "dev": "vite",
     "test:workbench": "node --test src/workbench.test.mjs",
     "test:preview-state": "node --test src/previewState.test.mjs",
+    "test:create-readiness": "node --test src/createReadiness.test.mjs",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

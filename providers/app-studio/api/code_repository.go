@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -68,6 +69,16 @@ type projectRepositoryPlan struct {
 	Description   string
 }
 
+type ProjectCreateReadinessView struct {
+	GitConnection ProjectCreateGitConnectionReadiness `json:"gitConnection"`
+}
+
+type ProjectCreateGitConnectionReadiness struct {
+	Ready         bool   `json:"ready"`
+	ConnectionRef string `json:"connectionRef,omitempty"`
+	Message       string `json:"message,omitempty"`
+}
+
 type codeResourceGetter func(ctx context.Context, gvr schema.GroupVersionResource, name string) (*unstructured.Unstructured, error)
 type codeResourceLister func(ctx context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions) (*unstructured.UnstructuredList, error)
 
@@ -96,6 +107,28 @@ func (s *Server) prepareProjectRepository(ctx context.Context, c *asclient.Clien
 		Name:          repoName,
 		ConnectionRef: connectionRef,
 		Description:   description,
+	}, nil
+}
+
+func projectCreateReadiness(ctx context.Context, c *asclient.Client) (ProjectCreateReadinessView, error) {
+	connectionRef, err := selectCodeConnection(ctx, c, "")
+	if err != nil {
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
+			return ProjectCreateReadinessView{
+				GitConnection: ProjectCreateGitConnectionReadiness{
+					Ready:   false,
+					Message: err.Error(),
+				},
+			}, nil
+		}
+		return ProjectCreateReadinessView{}, err
+	}
+	return ProjectCreateReadinessView{
+		GitConnection: ProjectCreateGitConnectionReadiness{
+			Ready:         true,
+			ConnectionRef: connectionRef,
+		},
 	}, nil
 }
 

@@ -166,6 +166,19 @@ func writeProjectError(w http.ResponseWriter, err error) {
 	writeError(w, err)
 }
 
+func (s *Server) getProjectCreateReadiness(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireProjectClient(w, r)
+	if !ok {
+		return
+	}
+	readiness, err := projectCreateReadiness(r.Context(), c)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, readiness)
+}
+
 func isProjectAPIInitializingError(err error) bool {
 	if err == nil {
 		return false
