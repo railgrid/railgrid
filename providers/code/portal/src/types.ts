@@ -68,6 +68,17 @@ export interface Repository {
   message?: string
 }
 
+// RepositoryDetail is a Repository plus the full status needed to debug one that
+// is stuck "pending": every condition verbatim and observed-vs-current
+// generation (a lag means the controller has not reconciled the latest spec).
+export interface RepositoryDetail extends Repository {
+  repoID?: string
+  generation?: number
+  observedGeneration?: number
+  creationTimestamp?: string
+  conditions: ConditionInfo[]
+}
+
 export interface DeployKey {
   name: string
   repositoryRef: string
@@ -93,7 +104,8 @@ export interface Collaborator {
 // Package is a read-only view of an artifact published under a repository on the
 // host (container image, npm/maven package, …). The code provider's crawler
 // mirrors each into a Package CR (status subresource); the portal reads them via
-// the GraphQL gateway. Observed state only — no readiness/conditions.
+// the GraphQL gateway. Observed state — ready/message surface the crawler's
+// Ready condition so a failed mirror is debuggable from the UI.
 export interface Package {
   name: string
   type: string
@@ -101,6 +113,8 @@ export interface Package {
   htmlURL?: string
   versionCount?: number
   updatedAt?: string
+  ready: boolean
+  message?: string
 }
 
 // PackageRow is a Package plus its owning repository, for the workspace-wide

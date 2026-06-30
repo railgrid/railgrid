@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import type { Connection, ErrorResponse } from '../types'
+import { confirmDialog } from '../components/confirm'
 
 const emit = defineEmits<{ (e: 'open', name: string): void }>()
 
@@ -116,7 +117,13 @@ async function submit() {
 }
 
 async function remove(c: Connection) {
-  if (!confirm(`Delete connection "${c.name}"? Repositories using it will stop reconciling.`)) return
+  const ok = await confirmDialog({
+    title: `Delete connection "${c.name}"?`,
+    message: 'Repositories using it will stop reconciling.',
+    confirmLabel: 'Delete',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await api.deleteConnection(c.name)
     await load()

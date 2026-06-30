@@ -63,7 +63,7 @@ onUnmounted(() => window.clearInterval(timer))
     <div v-else class="panel">
       <table class="table">
         <thead>
-          <tr><th>Repository</th><th>Package</th><th>Type</th><th>Visibility</th><th>Versions</th><th class="right"></th></tr>
+          <tr><th>Repository</th><th>Package</th><th>Type</th><th>Visibility</th><th>Versions</th><th>Status</th><th class="right"></th></tr>
         </thead>
         <tbody>
           <template v-for="g in grouped" :key="g.repositoryRef">
@@ -79,6 +79,10 @@ onUnmounted(() => window.clearInterval(timer))
               <td><span class="badge muted">{{ p.type }}</span></td>
               <td><span class="muted">{{ p.visibility || '—' }}</span></td>
               <td><span class="muted">{{ p.versionCount || 0 }}</span></td>
+              <td>
+                <span v-if="p.ready" class="badge ok">synced</span>
+                <span v-else class="badge warn" :title="p.message">{{ p.message ? 'error' : 'pending' }}</span>
+              </td>
               <td class="right">
                 <a v-if="p.htmlURL" class="link" :href="p.htmlURL" target="_blank" rel="noopener">View ↗</a>
               </td>

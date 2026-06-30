@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
-import type { Collaborator, Connection, DeployKey, ErrorResponse, Package, Repository } from '../types'
+import type { Collaborator, Connection, DeployKey, ErrorResponse, Package, RepositoryDetail } from '../types'
+import ConditionsPanel from '../components/ConditionsPanel.vue'
+import { confirmDialog } from '../components/confirm'
 
 const props = defineProps<{ name: string }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
 
-const repo = ref<Repository | null>(null)
+const repo = ref<RepositoryDetail | null>(null)
 const keys = ref<DeployKey[]>([])
 const collabs = ref<Collaborator[]>([])
 const error = ref<string | null>(null)
@@ -88,13 +90,18 @@ async function loadPackages() {
 
 async function changeConnection() {
   if (!repo.value || selectedConn.value === repo.value.connectionRef) return
-  const msg = ownerWillChange.value
-    ? `Change connection to "${selectedConn.value}"?\n\n` +
-      `Its owner (${newOwner.value}) differs from the current (${currentOwner.value}). ` +
+  const message = ownerWillChange.value
+    ? `Its owner (${newOwner.value}) differs from the current (${currentOwner.value}).\n` +
       `The repository will be re-targeted to that account — a new repo may be created there, ` +
       `and the existing repo on ${currentOwner.value} is left untouched.`
-    : `Change connection to "${selectedConn.value}"?`
-  if (!confirm(msg)) return
+    : 'Only the managing credential changes; the repository stays on the same account.'
+  const ok = await confirmDialog({
+    title: `Change connection to "${selectedConn.value}"?`,
+    message,
+    confirmLabel: 'Change',
+    danger: ownerWillChange.value,
+  })
+  if (!ok) return
   changingConn.value = true
   connError.value = null
   try {
@@ -129,7 +136,12 @@ async function addKey() {
 }
 
 async function removeKey(k: DeployKey) {
-  if (!confirm(`Delete deploy key "${k.title || k.name}"?`)) return
+  const ok = await confirmDialog({
+    title: `Delete deploy key "${k.title || k.name}"?`,
+    confirmLabel: 'Delete',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await api.deleteDeployKey(k.name)
     await load()
@@ -158,7 +170,12 @@ async function addCollab() {
 }
 
 async function removeCollab(c: Collaborator) {
-  if (!confirm(`Remove collaborator "${c.username}"?`)) return
+  const ok = await confirmDialog({
+    title: `Remove collaborator "${c.username}"?`,
+    confirmLabel: 'Remove',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await api.deleteCollaborator(c.name)
     await load()
@@ -219,6 +236,15 @@ onUnmounted(() => window.clearInterval(timer))
         <dt v-if="repo.sshURL">SSH URL</dt><dd v-if="repo.sshURL"><code>{{ repo.sshURL }}</code></dd>
       </dl>
     </div>
+
+    <!-- Conditions -->
+    <ConditionsPanel
+      v-if="repo"
+      :conditions="repo.conditions"
+      :generation="repo.generation"
+      :observed-generation="repo.observedGeneration"
+      empty-text="No conditions yet — the controller has not reconciled this repository."
+    />
 
     <div class="grid-2">
       <!-- Deploy keys -->
@@ -307,7 +333,7 @@ onUnmounted(() => window.clearInterval(timer))
       <p v-else-if="!packages.length" class="empty">No packages published to this repository yet.</p>
       <table v-else class="table">
         <thead>
-          <tr><th>Package</th><th>Type</th><th>Visibility</th><th>Versions</th><th></th></tr>
+          <tr><th>Package</th><th>Type</th><th>Visibility</th><th>Versions</th><th>Status</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="p in packages" :key="p.type + '/' + p.name">
@@ -318,6 +344,10 @@ onUnmounted(() => window.clearInterval(timer))
             <td><span class="badge muted">{{ p.type }}</span></td>
             <td><span class="muted">{{ p.visibility || '—' }}</span></td>
             <td><span class="muted">{{ p.versionCount || 0 }}</span></td>
+            <td>
+              <span v-if="p.ready" class="badge ok">synced</span>
+              <span v-else class="badge warn" :title="p.message">{{ p.message ? 'error' : 'pending' }}</span>
+            </td>
             <td class="right">
               <a v-if="p.htmlURL" class="link" :href="p.htmlURL" target="_blank" rel="noopener">View ↗</a>
             </td>

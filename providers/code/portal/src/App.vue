@@ -7,6 +7,7 @@ import ConnectionDetailView from './views/ConnectionDetailView.vue'
 import RepositoriesView from './views/RepositoriesView.vue'
 import RepoDetailView from './views/RepoDetailView.vue'
 import PackagesView from './views/PackagesView.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
 
 // Sub-path routing (the shell pushes the trailing /providers/code/<sub> segment):
 //   ''  | 'connections'        → Connections
@@ -74,5 +75,7 @@ function navigate(path: string) {
       <RepoDetailView v-else-if="route.repo" :name="route.repo" @back="navigate('repositories')" />
       <RepositoriesView v-else @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
     </template>
+
+    <ConfirmDialog />
   </div>
 </template>

@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import type { Connection, ErrorResponse, Repository } from '../types'
+import { confirmDialog } from '../components/confirm'
 
 const emit = defineEmits<{ (e: 'open', name: string): void }>()
 
@@ -71,7 +72,13 @@ async function submit() {
 }
 
 async function remove(r: Repository) {
-  if (!confirm(`Delete repository "${r.repo}"? This removes it on the git host.`)) return
+  const ok = await confirmDialog({
+    title: `Delete repository "${r.repo}"?`,
+    message: 'This removes the repository on the git host. This cannot be undone.',
+    confirmLabel: 'Delete',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await api.deleteRepository(r.name)
     await load()

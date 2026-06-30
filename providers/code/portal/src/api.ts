@@ -16,6 +16,7 @@ import type {
   Package,
   PackageRow,
   Repository,
+  RepositoryDetail,
 } from './types'
 
 const GROUP = 'code.kedge.faros.sh'
@@ -151,6 +152,27 @@ function repoFromCR(cr: RawCR): Repository {
   }
 }
 
+// repoDetailFromCR is repoFromCR plus the raw status the detail view needs to
+// explain a pending repository: every condition verbatim and observed-vs-current
+// generation.
+function repoDetailFromCR(cr: RawCR): RepositoryDetail {
+  const status = cr.status ?? {}
+  return {
+    ...repoFromCR(cr),
+    repoID: status.repoID ? String(status.repoID) : undefined,
+    generation: typeof cr.metadata.generation === 'number' ? cr.metadata.generation : undefined,
+    observedGeneration: typeof status.observedGeneration === 'number' ? status.observedGeneration : undefined,
+    creationTimestamp: cr.metadata.creationTimestamp,
+    conditions: (status.conditions ?? []).map(c => ({
+      type: c.type,
+      status: c.status,
+      reason: c.reason,
+      message: c.message,
+      lastTransitionTime: (c as KCPCondition & { lastTransitionTime?: string }).lastTransitionTime,
+    })),
+  }
+}
+
 function keyFromCR(cr: RawCR): DeployKey {
   const spec = cr.spec ?? {}
   const status = cr.status ?? {}
@@ -177,6 +199,8 @@ function pkgFromCR(cr: RawCR): Package {
     htmlURL: status.htmlURL ? String(status.htmlURL) : undefined,
     versionCount: typeof status.versionCount === 'number' ? status.versionCount : undefined,
     updatedAt: status.updatedAt ? String(status.updatedAt) : undefined,
+    ready: condTrue(cr, 'Ready'),
+    message: condMsg(cr, 'Ready'),
   }
 }
 
@@ -251,6 +275,9 @@ const F_CONNECTION = `${GQL_META} spec { provider type owner secretRef { name na
 // lastTransitionTime so the detail view can explain why a connection is pending.
 const F_CONNECTION_DETAIL = `metadata { name uid resourceVersion generation creationTimestamp } spec { provider type owner secretRef { name namespace key } baseURL } status { login scopes observedGeneration conditions { type status reason message lastTransitionTime } }`
 const F_REPOSITORY = `${GQL_META} spec { connectionRef name owner visibility description defaultBranch autoInit } status { repoID htmlURL cloneURL sshURL ${GQL_COND} }`
+// Detail fragment: adds generation/observedGeneration and per-condition
+// lastTransitionTime so the detail view can explain why a repository is pending.
+const F_REPOSITORY_DETAIL = `metadata { name uid resourceVersion generation creationTimestamp } spec { connectionRef name owner visibility description defaultBranch autoInit } status { repoID htmlURL cloneURL sshURL observedGeneration conditions { type status reason message lastTransitionTime } }`
 const F_DEPLOYKEY = `${GQL_META} spec { repositoryRef title publicKey readOnly } status { keyID secretRef { name } ${GQL_COND} }`
 const F_COLLABORATOR = `${GQL_META} spec { repositoryRef username permission } status { invitationID ${GQL_COND} }`
 const F_PACKAGE = `${GQL_META} spec { repositoryRef } status { packageName type visibility htmlURL versionCount updatedAt ${GQL_COND} }`
@@ -370,8 +397,8 @@ export const api = {
     return (await gqlList('Repositories', F_REPOSITORY)).map(repoFromCR)
   },
 
-  async getRepository(name: string): Promise<Repository> {
-    return repoFromCR(await gqlGet('Repository', name, F_REPOSITORY))
+  async getRepository(name: string): Promise<RepositoryDetail> {
+    return repoDetailFromCR(await gqlGet('Repository', name, F_REPOSITORY_DETAIL))
   },
 
   async createRepository(input: {

@@ -2,6 +2,8 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import type { ConnectionDetail, ErrorResponse } from '../types'
+import ConditionsPanel from '../components/ConditionsPanel.vue'
+import { confirmDialog } from '../components/confirm'
 
 const props = defineProps<{ name: string }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
@@ -63,19 +65,19 @@ async function load() {
 
 async function remove() {
   if (!conn.value) return
-  if (!confirm(`Delete connection "${conn.value.name}"? Repositories using it will stop reconciling.`)) return
+  const ok = await confirmDialog({
+    title: `Delete connection "${conn.value.name}"?`,
+    message: 'Repositories using it will stop reconciling.',
+    confirmLabel: 'Delete',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await api.deleteConnection(conn.value.name)
     emit('back')
   } catch (e) {
     error.value = (e as ErrorResponse).message
   }
-}
-
-function condClass(status: string): string {
-  if (status === 'True') return 'ok'
-  if (status === 'False') return 'warn'
-  return 'muted'
 }
 
 onMounted(() => {
@@ -141,24 +143,12 @@ onUnmounted(() => window.clearInterval(timer))
       </div>
 
       <!-- Conditions -->
-      <div class="panel">
-        <h3 class="panel-title">Conditions</h3>
-        <p v-if="!conn.conditions.length" class="empty">No conditions yet — the controller has not reconciled this connection.</p>
-        <table v-else class="table">
-          <thead>
-            <tr><th>Type</th><th>Status</th><th>Reason</th><th>Message</th><th>Since</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in conn.conditions" :key="c.type">
-              <td><strong>{{ c.type }}</strong></td>
-              <td><span :class="['badge', condClass(c.status)]">{{ c.status }}</span></td>
-              <td>{{ c.reason || '—' }}</td>
-              <td>{{ c.message || '—' }}</td>
-              <td class="muted">{{ c.lastTransitionTime || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <ConditionsPanel
+        :conditions="conn.conditions"
+        :generation="conn.generation"
+        :observed-generation="conn.observedGeneration"
+        empty-text="No conditions yet — the controller has not reconciled this connection."
+      />
 
       <div class="actions">
         <button class="danger" @click="remove">Delete connection</button>

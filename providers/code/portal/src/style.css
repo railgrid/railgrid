@@ -346,6 +346,66 @@ kedge-provider-code .badge.muted::before {
   display: none;
 }
 
+/* Solid destructive button — emphasis variant for confirm-dialog actions */
+kedge-provider-code button.danger-solid {
+  background: var(--color-danger, #f87171);
+  color: #fff;
+  border: 1px solid var(--color-danger, #f87171);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+kedge-provider-code button.danger-solid:hover {
+  background: var(--color-danger-hover, #ef4444);
+}
+
+/* Confirm dialog (in-app modal replacing window.confirm) */
+kedge-provider-code .modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+}
+kedge-provider-code .modal {
+  width: 100%;
+  max-width: 26rem;
+  background: var(--color-surface-raised, #0d0d14);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.08));
+  border-radius: 12px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+kedge-provider-code .modal-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary, inherit);
+}
+kedge-provider-code .modal-message {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-secondary, #7e7e96);
+}
+kedge-provider-code .modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
 /* Misc text */
 kedge-provider-code .muted {
   color: var(--color-text-muted, #44445a);
