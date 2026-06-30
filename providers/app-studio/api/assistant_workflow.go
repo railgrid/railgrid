@@ -30,6 +30,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -55,6 +56,14 @@ type projectAssistantRuntimeWorkflowInput struct {
 	Repository      *ProjectRepositoryView
 	SessionSnapshot *projectEinoAssistantSessionSnapshot
 	AppDeployment   projectAssistantAppDeploymentRequest
+	// RuntimeResolved is set by the status/preview tool input builders once
+	// they have queried the live development SandboxRunner runtime.
+	// RuntimeHasBinding is false when the project has no sandbox runner
+	// binding yet — i.e. genuinely nothing is deployed. RuntimePreview carries
+	// the readiness state plus the signed preview URL when ready.
+	RuntimeResolved   bool
+	RuntimeHasBinding bool
+	RuntimePreview    projectSandboxPreviewURLResponse
 }
 
 type projectAssistantWorkflowToolInput struct {
@@ -150,6 +159,11 @@ type projectAssistantWorkflowRunContext struct {
 	Repository     *ProjectRepositoryView
 	WorkspaceScope workspace.Scope
 	RunState       *projectEinoAssistantRunState
+	// Identity and Client carry the caller's tenant identity and project
+	// client so runtime/preview tools can query the live development
+	// SandboxRunner runtime instead of returning a placeholder status.
+	Identity identity
+	Client   *asclient.Client
 }
 
 func projectAssistantWorkflowRunContextForRequest(server *Server, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) projectAssistantWorkflowRunContext {
@@ -159,6 +173,8 @@ func projectAssistantWorkflowRunContextForRequest(server *Server, req projectAss
 		Repository:     req.Repository,
 		WorkspaceScope: req.WorkspaceScope,
 		RunState:       runState,
+		Identity:       req.Identity,
+		Client:         req.Client,
 	}
 }
 
@@ -541,8 +557,43 @@ func projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx projectAssistantW
 		if runCtx.RunState != nil {
 			input.SessionSnapshot = runCtx.RunState.SessionSnapshot()
 		}
+		// Resolve the live development SandboxRunner runtime so the status and
+		// preview tools report the real deployment state instead of a static
+		// not_configured placeholder. A nil client (e.g. background runs without
+		// a project client) leaves the input unresolved and the format functions
+		// fall back to the previous not_configured behaviour.
+		if runCtx.Server != nil && runCtx.Client != nil {
+			preview, hasBinding := runCtx.Server.resolveProjectSandboxRuntime(ctx, runCtx.Client, runCtx.Identity, runCtx.Project)
+			input.RuntimeResolved = true
+			input.RuntimeHasBinding = hasBinding
+			input.RuntimePreview = preview
+		}
 		return normalizeProjectAssistantRuntimeWorkflowInput(ctx, input)
 	}
+}
+
+// resolveProjectSandboxRuntime resolves the project's live development
+// SandboxRunner runtime: readiness plus a signed preview URL. The second return
+// is false when the project has no sandbox runner binding yet — i.e. genuinely
+// nothing is deployed — so callers can report not_configured rather than a
+// transient "getting ready" state.
+func (s *Server) resolveProjectSandboxRuntime(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project) (projectSandboxPreviewURLResponse, bool) {
+	if s == nil || c == nil || p == nil {
+		return projectSandboxPreviewURLResponse{}, false
+	}
+	target, ok := projectDevelopmentSyncTarget(p, id)
+	if !ok {
+		return projectSandboxPreviewURLResponse{}, false
+	}
+	preview, err := s.authorizeProjectDevelopmentPreviewTarget(ctx, c, id, p, target)
+	if err != nil {
+		return projectSandboxPreviewURLResponse{
+			Ready:   false,
+			Reason:  "runtime_unavailable",
+			Message: "Runtime status is temporarily unavailable: " + err.Error(),
+		}, true
+	}
+	return preview, true
 }
 
 func readProjectAssistantReadinessWorkflowContext(ctx context.Context, input projectAssistantWorkflowInput) (projectAssistantWorkflowContext, error) {
@@ -648,12 +699,58 @@ func formatProjectAssistantRuntimeStatusResult(ctx context.Context, input projec
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return projectAssistantRuntimeNotConfiguredResult("Runtime deployment status is unavailable because no runtime deployment is recorded.")
+	// No live runtime resolved, or the project has no sandbox runner binding:
+	// nothing is deployed yet.
+	if !input.RuntimeResolved || !input.RuntimeHasBinding {
+		return projectAssistantRuntimeNotConfiguredResult("Runtime deployment status is unavailable because no runtime deployment is recorded.")
+	}
+	preview := input.RuntimePreview
+	if preview.Ready {
+		return &projectAssistantRuntimeWorkflowResult{
+			Status:     "ready",
+			Summary:    "Development runtime is running and serving preview traffic.",
+			Runtime:    &projectAssistantDeploymentRuntime{Status: "ready", URL: preview.PreviewURL},
+			PreviewURL: preview.PreviewURL,
+		}, nil
+	}
+	message := strings.TrimSpace(preview.Message)
+	if message == "" {
+		message = "Development runtime is starting."
+	}
+	return &projectAssistantRuntimeWorkflowResult{
+		Status:  "provisioning",
+		Summary: message,
+		Runtime: &projectAssistantDeploymentRuntime{Status: "starting", Message: message},
+	}, nil
 }
 
 func formatProjectAssistantPreviewURLResult(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (*projectAssistantRuntimeWorkflowResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	// Prefer the live development SandboxRunner preview when it has been
+	// resolved for this run.
+	if input.RuntimeResolved && input.RuntimeHasBinding {
+		preview := input.RuntimePreview
+		if preview.Ready && strings.TrimSpace(preview.PreviewURL) != "" {
+			return &projectAssistantRuntimeWorkflowResult{
+				Status:     "ready",
+				Summary:    "Development preview URL is available.",
+				Runtime:    &projectAssistantDeploymentRuntime{Status: "ready", URL: preview.PreviewURL},
+				PreviewURL: preview.PreviewURL,
+			}, nil
+		}
+		if !preview.Ready {
+			message := strings.TrimSpace(preview.Message)
+			if message == "" {
+				message = "Preview is getting ready."
+			}
+			return &projectAssistantRuntimeWorkflowResult{
+				Status:  "provisioning",
+				Summary: message,
+				Runtime: &projectAssistantDeploymentRuntime{Status: "starting", Message: message},
+			}, nil
+		}
 	}
 	if previewURL := projectAssistantRuntimePreviewURL(input.Project); previewURL != "" {
 		return &projectAssistantRuntimeWorkflowResult{
