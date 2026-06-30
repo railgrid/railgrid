@@ -90,15 +90,21 @@ func registerProviderTools(ctx context.Context, srv *mcp.Server, cfg Config) {
 		return
 	}
 
-	// cfg.Cluster is the tenant workspace path (e.g.
-	// root:kedge:orgs:<uuid>:<wsUUID>) parsed off the MCPServer URL.
-	// The federation client forwards it as X-Kedge-Tenant on every
-	// call so the provider sees the same tenant header it would have
-	// received via the hub backend proxy. Without this, kro_provision
-	// (and any other tenant-scoped tool) 400s with "X-Kedge-Tenant
-	// header required" — same failure mode as the UI hit before we
-	// fixed the bearer-forwarding bug.
-	cli := newProviderMCPClient(cfg.BearerToken, cfg.Cluster)
+	// cfg.Cluster is the workspace's kcp logical-cluster ID parsed off
+	// the MCPServer URL (/services/mcpserver/{cluster}/…). The federation
+	// client forwards it as BOTH X-Kedge-Tenant and X-Kedge-Cluster on
+	// every call so the provider sees the same identity headers it would
+	// have received via the hub backend proxy:
+	//   - X-Kedge-Tenant: without it kro_provision (and any other
+	//     tenant-scoped tool) 400s with "X-Kedge-Tenant header required".
+	//   - X-Kedge-Cluster: post-#381 the code/infrastructure provider MCP
+	//     tools address the tenant workspace by logical-cluster ID via
+	//     this header; without it commit_files (and friends) fail with
+	//     "no workspace cluster on this request (X-Kedge-Cluster missing)".
+	// The hub backend proxy injects X-Kedge-Cluster on /services/providers/*,
+	// but the MCP federation HTTP path bypasses that proxy, so we replicate
+	// the header here.
+	cli := newProviderMCPClient(cfg.BearerToken, cfg.Cluster, cfg.Cluster)
 
 	// Discover every Ready provider's tools concurrently. A sequential
 	// loop would let one slow/hung provider stall discovery of all the
@@ -224,9 +230,10 @@ type providerMCPClient struct {
 	http        *http.Client
 	bearerToken string
 	tenantPath  string // forwarded as X-Kedge-Tenant on each request
+	clusterID   string // forwarded as X-Kedge-Cluster on each request
 }
 
-func newProviderMCPClient(bearerToken, tenantPath string) *providerMCPClient {
+func newProviderMCPClient(bearerToken, tenantPath, clusterID string) *providerMCPClient {
 	return &providerMCPClient{
 		http: &http.Client{
 			Timeout: 15 * time.Second,
@@ -237,6 +244,7 @@ func newProviderMCPClient(bearerToken, tenantPath string) *providerMCPClient {
 		},
 		bearerToken: bearerToken,
 		tenantPath:  tenantPath,
+		clusterID:   clusterID,
 	}
 }
 
@@ -312,13 +320,20 @@ func (c *providerMCPClient) rpc(ctx context.Context, mcpURL, method string, para
 	if c.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 	}
-	// X-Kedge-Tenant is what the hub backend proxy would normally
-	// inject. The federation HTTP path bypasses that proxy (we POST
-	// directly to the provider's :PORT/mcp), so we replicate the
-	// header here. Provider's tenant-scoped tools (kro_provision,
-	// kro_list_instances, …) 400 without it.
+	// X-Kedge-Tenant / X-Kedge-Cluster are what the hub backend proxy
+	// would normally inject. The federation HTTP path bypasses that proxy
+	// (we POST directly to the provider's :PORT/mcp), so we replicate the
+	// headers here. Provider's tenant-scoped tools (kro_provision,
+	// kro_list_instances, …) 400 without X-Kedge-Tenant; the code /
+	// infrastructure provider MCP tools that address the tenant workspace
+	// by logical-cluster ID (commit_files, …) fail with "no workspace
+	// cluster on this request (X-Kedge-Cluster missing)" without
+	// X-Kedge-Cluster.
 	if c.tenantPath != "" {
 		req.Header.Set("X-Kedge-Tenant", c.tenantPath)
+	}
+	if c.clusterID != "" {
+		req.Header.Set("X-Kedge-Cluster", c.clusterID)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
