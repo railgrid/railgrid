@@ -26,10 +26,10 @@ You may obtain a copy of the License at
 //
 //     GET  /healthz  liveness; no auth.
 //     POST /sync     write/delete workspace files and optionally restart. Body:
-//                    {files:[{path,content}], deletePaths:[], restart:"auto"|"always"|""}.
-//                    "auto" restarts only when a startup-affecting file
-//                    (package.json, a lockfile, vite.config.*, server.js)
-//                    actually changed, or the process isn't running.
+//     {files:[{path,content}], deletePaths:[], restart:"auto"|"always"|""}.
+//     "auto" restarts only when a startup-affecting file
+//     (package.json, a lockfile, vite.config.*, server.js)
+//     actually changed, or the process isn't running.
 //     POST /restart  stop + start the dev process.
 //     GET  /logs     the buffered dev-process output (text/plain).
 //
@@ -199,7 +199,11 @@ func (s *runnerServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		content := []byte(f.Content)
-		if isStartupAffectingPath(clean) && workspaceFileContentChanged(root, clean, content) {
+		fileChanged := workspaceFileContentChanged(root, clean, content)
+		if !fileChanged {
+			continue
+		}
+		if isStartupAffectingPath(clean) {
 			startupChanged = true
 		}
 		if err := writeWorkspaceFile(root, clean, content); err != nil {

@@ -931,8 +931,20 @@ local_resource(
     # KRO_KUBECONFIG points at the kind cluster's host kubeconfig (where kro is).
     serve_cmd=('KRO_KUBECONFIG={kro} INFRASTRUCTURE_KUBECONFIG={kc} ' +
                'INFRASTRUCTURE_WORKSPACE_PATH=root:kedge:providers:infrastructure ' +
+               'KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN={preview_domain} ' +
+               'KEDGE_SANDBOX_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAME={preview_gateway} ' +
+               'KEDGE_SANDBOX_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAMESPACE=envoy-gateway-system ' +
+               'KEDGE_SANDBOX_PREVIEW_HTTPROUTE_PARENT_GATEWAY_SECTION_NAME={preview_listener} ' +
+               'KEDGE_SANDBOX_PREVIEW_BACKEND_NAMESPACE={preview_namespace} ' +
+               'KEDGE_SANDBOX_PREVIEW_BACKEND_SERVICE_NAME={preview_backend} ' +
+               'KEDGE_SANDBOX_PREVIEW_BACKEND_SERVICE_PORT=8080 ' +
                'make run-provider-infrastructure').format(
-                   kro=KIND_HOST_KUBECONFIG, kc=KCP_ADMIN_KUBECONFIG),
+                   kro=KIND_HOST_KUBECONFIG, kc=KCP_ADMIN_KUBECONFIG,
+                   preview_domain=app_studio_preview_base_domain,
+                   preview_gateway=app_studio_preview_parent_gateway_name,
+                   preview_listener=app_studio_preview_listener,
+                   preview_namespace=app_studio_preview_namespace,
+                   preview_backend=app_studio_preview_gateway_name),
     deps=[
         'providers/infrastructure/main.go',
         'providers/infrastructure/heartbeat.go',

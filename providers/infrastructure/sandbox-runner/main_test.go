@@ -47,6 +47,39 @@ func TestSyncWritesAndDeletesOnlyWorkspaceRelativePaths(t *testing.T) {
 	}
 }
 
+func TestSyncSkipsUnchangedFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "src.ts"), []byte("same"), 0o644); err != nil {
+		t.Fatalf("write initial file: %v", err)
+	}
+	before, err := os.Stat(filepath.Join(root, "src.ts"))
+	if err != nil {
+		t.Fatalf("stat initial file: %v", err)
+	}
+
+	s := newRunnerServer(&runnerConfig{WorkDir: root, ControlToken: "test-token"})
+	resp := postJSON(t, s, "/sync", syncRequest{
+		Files: []syncFile{{Path: "src.ts", Content: "same"}},
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("sync status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var body syncResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode sync response: %v", err)
+	}
+	if len(body.Changed) != 0 {
+		t.Fatalf("changed = %#v, want empty for unchanged content", body.Changed)
+	}
+	after, err := os.Stat(filepath.Join(root, "src.ts"))
+	if err != nil {
+		t.Fatalf("stat after sync: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("mtime changed for unchanged file: before=%s after=%s", before.ModTime(), after.ModTime())
+	}
+}
+
 func TestSyncRejectsPathTraversal(t *testing.T) {
 	root := t.TempDir()
 	s := newRunnerServer(&runnerConfig{WorkDir: root, ControlToken: "test-token"})

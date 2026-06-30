@@ -59,12 +59,18 @@ func buildDataPlaneHandler(kcpConfig *rest.Config) *dataplane.Handler {
 		log.Printf("data plane: disabled (no runtime cluster config: KRO_KUBECONFIG unset, not in a pod)")
 		return nil
 	}
+	runtimeDyn, err := dynamic.NewForConfig(runtimeCfg)
+	if err != nil {
+		log.Printf("data plane: disabled (runtime dynamic client: %v)", err)
+		return nil
+	}
 
 	log.Printf("data plane: enabled (runtime cluster: %s)", src)
 	return dataplane.NewHandler(
 		&tenantInstanceGetter{factory: tenant.NewClientFactory(kcpConfig)},
 		dataplane.NewTemplateContractGetter(providerDyn),
 		runtime,
+		dataplane.WithPreviewRouteManager(dataplane.NewPreviewRouteManager(runtimeDyn, dataplane.PreviewRouteConfigFromEnv())),
 	)
 }
 
