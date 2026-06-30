@@ -325,7 +325,16 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
 		return nil, commitFilesOutput{}, fmt.Errorf("store RepositoryCommit bundle: %w", err)
 	}
-	_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
+	// Remove the staging copy only when it lives under a different scope
+	// than the controller will read. The RepositoryCommit controller reads
+	// the bundle under storageScope (the commit's kcp.io/cluster ID). When
+	// X-Kedge-Tenant and X-Kedge-Cluster resolve to the same scope — e.g.
+	// the MCP federation forwards the logical-cluster ID as both — then
+	// tenantScope == storageScope, and deleting here would remove the only
+	// bundle copy, leaving the controller to fail with "bundle not found".
+	if tenantScope != storageScope {
+		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
+	}
 	out := commitFilesOutput{
 		RepositoryRef: in.RepositoryRef,
 		Name:          created.GetName(),
