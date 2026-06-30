@@ -30,6 +30,11 @@ type projectAssistantApprovedPlan struct {
 	AcceptanceCriteria []string  `json:"acceptanceCriteria,omitempty"`
 	ApprovedAt         time.Time `json:"approvedAt,omitempty"`
 	ApprovalTool       string    `json:"approvalTool,omitempty"`
+	// AllowAllWrites grants every workspace write tool, on any path, until the
+	// next commit. It is set when the user approves a write prompt directly (as
+	// opposed to a model-supplied plan envelope), so a single "Allow" does not
+	// re-prompt for each subsequent edit.
+	AllowAllWrites bool `json:"allowAllWrites,omitempty"`
 }
 
 type projectEinoAssistantRunState struct {

@@ -65,7 +65,7 @@ func projectAssistantPermissionForToolWithRunState(spec projectAssistantToolSpec
 }
 
 func projectAssistantApprovedPlanActive(plan *projectAssistantApprovedPlan) bool {
-	return plan != nil && len(plan.Operations) > 0
+	return plan != nil && (len(plan.Operations) > 0 || plan.AllowAllWrites)
 }
 
 func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan, toolName string, args map[string]any) bool {
@@ -77,6 +77,11 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
 	default:
 		return false
+	}
+	// A direct user approval of a write prompt grants every write tool on any
+	// path until the next commit, so subsequent edits do not re-prompt.
+	if plan.AllowAllWrites {
+		return true
 	}
 	if !projectAssistantApprovedPlanAllowsOperation(plan, toolName) {
 		return false

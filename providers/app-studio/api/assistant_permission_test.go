@@ -108,6 +108,39 @@ func TestProjectAssistantPlanApprovalAllowsScopedWritesButNotCommit(t *testing.T
 	}
 }
 
+func TestProjectAssistantAllowAllWritesGrantAuthorizesAnyPath(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.ApprovePlan(projectAssistantApprovedPlan{
+		Summary:        "User approved workspace writes until the next commit.",
+		Operations:     []string{projectToolWriteFile, projectToolApplyPatch, projectToolMkdir},
+		AllowAllWrites: true,
+		ApprovedAt:     testProjectAssistantApprovalTime(),
+		ApprovalTool:   "permission_allow_write",
+	})
+
+	for _, path := range []string{"src/App.tsx", "README.md", "deploy/values.yaml"} {
+		decision := projectAssistantPermissionForToolWithRunState(projectAssistantToolSpec{
+			Name: projectToolWriteFile,
+			Risk: projectAssistantToolRiskWrite,
+		}, false, state, map[string]any{
+			"path": path,
+		})
+		if decision != projectAssistantPermissionAllow {
+			t.Fatalf("write permission for %q = %q, want %q", path, decision, projectAssistantPermissionAllow)
+		}
+	}
+
+	commitDecision := projectAssistantPermissionForToolWithRunState(projectAssistantToolSpec{
+		Name: projectToolCommitProjectFiles,
+		Risk: projectAssistantToolRiskCommit,
+	}, false, state, map[string]any{
+		"paths": []any{"src/App.tsx"},
+	})
+	if commitDecision != projectAssistantPermissionAsk {
+		t.Fatalf("commit permission = %q, want %q", commitDecision, projectAssistantPermissionAsk)
+	}
+}
+
 func TestProjectAssistantPlanApprovalWithoutOperationsDoesNotAuthorizeWrites(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.ApprovePlan(projectAssistantApprovedPlan{

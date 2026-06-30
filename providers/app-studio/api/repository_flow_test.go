@@ -2068,9 +2068,11 @@ func TestResumeProjectAssistantRunPersistsAssistantTextBeforeNextPause(t *testin
 			firstCall := chatStreamingCall{Index: 0, ID: "call-first-write", Type: "function"}
 			firstCall.Function.Name = projectToolWriteFile
 			firstCall.Function.Arguments = `{"path":"src/App.tsx","content":"first\n"}`
-			secondCall := chatStreamingCall{Index: 0, ID: "call-second-write", Type: "function"}
-			secondCall.Function.Name = projectToolWriteFile
-			secondCall.Function.Arguments = `{"path":"src/Other.tsx","content":"second\n"}`
+			// Approving the first write grants every write until the next commit,
+			// so the next pause has to come from a tool that still always asks.
+			secondCall := chatStreamingCall{Index: 0, ID: "call-second-runtime", Type: "function"}
+			secondCall.Function.Name = projectToolDeployProjectRuntime
+			secondCall.Function.Arguments = `{"targetRef":"runtime-a","image":"ghcr.io/demo/app:latest","port":8080,"intent":"preview"}`
 			model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
 				{Message: einoschema.AssistantMessage("", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{firstCall}))},
 				{Message: einoschema.AssistantMessage("First change applied. ", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{secondCall}))},
@@ -2160,6 +2162,79 @@ func TestResumeProjectAssistantRunPersistsAssistantTextBeforeNextPause(t *testin
 				t.Fatalf("assistant interrupt = %#v, want pending next approval", interrupt)
 			}
 		})
+	}
+}
+
+func TestResumeProjectAssistantRunAllowingWriteDoesNotRePromptLaterWrites(t *testing.T) {
+	messages := store.NewMemoryStore()
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	workspaceScope := projectWorkspaceScope(id, project.Name)
+
+	firstCall := chatStreamingCall{Index: 0, ID: "call-first-write", Type: "function"}
+	firstCall.Function.Name = projectToolWriteFile
+	firstCall.Function.Arguments = `{"path":"src/App.tsx","content":"first\n"}`
+	secondCall := chatStreamingCall{Index: 0, ID: "call-second-write", Type: "function"}
+	secondCall.Function.Name = projectToolWriteFile
+	secondCall.Function.Arguments = `{"path":"src/Other.tsx","content":"second\n"}`
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+		{Message: einoschema.AssistantMessage("", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{firstCall}))},
+		{Message: einoschema.AssistantMessage("Applied both changes. ", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{secondCall}))},
+		{Message: einoschema.AssistantMessage("All done.", nil)},
+	}}
+	setProjectAssistantModelForTest(server, model)
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "write files"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+
+	_, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	var permissionErr *projectAssistantPermissionRequiredError
+	if !errors.As(err, &permissionErr) {
+		t.Fatalf("generateProjectAssistantStream error = %v, want permission required", err)
+	}
+
+	resp, err := server.resumeProjectAssistantRunWithRepositoryAndClient(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
+		permissionErr.RunID,
+		projectAssistantResumeRequest{
+			RequestID: permissionErr.RequestID,
+			Decision:  string(projectAssistantPermissionAllow),
+		},
+	)
+	if err != nil {
+		t.Fatalf("resumeProjectAssistantRun returned error: %v", err)
+	}
+	if resp.Status != store.AssistantRunStatusCompleted {
+		t.Fatalf("resume status = %q, want %q (second write should auto-approve)", resp.Status, store.AssistantRunStatusCompleted)
+	}
+
+	files, err := workspaces.ListFiles(context.Background(), workspaceScope, workspace.ListOptions{})
+	if err != nil {
+		t.Fatalf("ListFiles returned error: %v", err)
+	}
+	written := map[string]bool{}
+	for _, f := range files.Files {
+		written[f.Path] = true
+	}
+	if !written["src/App.tsx"] || !written["src/Other.tsx"] {
+		t.Fatalf("written files = %v, want both src/App.tsx and src/Other.tsx", written)
 	}
 }
 

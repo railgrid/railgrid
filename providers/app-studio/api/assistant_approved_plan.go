@@ -109,5 +109,6 @@ func mergeProjectAssistantApprovedPlans(existing, next projectAssistantApprovedP
 	merged := next
 	merged.TargetPaths = normalizeProjectAssistantStringList(append(append([]string(nil), existing.TargetPaths...), next.TargetPaths...))
 	merged.Operations = normalizeProjectAssistantStringList(append(append([]string(nil), existing.Operations...), next.Operations...))
+	merged.AllowAllWrites = existing.AllowAllWrites || next.AllowAllWrites
 	return merged
 }

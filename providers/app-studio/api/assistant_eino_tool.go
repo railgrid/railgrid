@@ -382,6 +382,32 @@ func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, ca
 	return result
 }
 
+// grantAllWritesUntilCommit records a blanket write grant after the user
+// approves a write prompt directly, so subsequent edits do not re-prompt until
+// the next commit retires the grant. It merges with any active plan envelope
+// and persists best effort: a failed write only means the user is re-prompted.
+func (t projectEinoAssistantTool) grantAllWritesUntilCommit(ctx context.Context) {
+	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
+		Summary:        "User approved workspace writes until the next commit.",
+		Operations:     []string{projectToolWriteFile, projectToolApplyPatch, projectToolMkdir},
+		AllowAllWrites: true,
+		ApprovalTool:   "permission_allow_write",
+	})
+	if existing := t.runState.ApprovedPlan(); existing != nil {
+		plan = mergeProjectAssistantApprovedPlans(*existing, plan)
+	}
+	t.runState.ApprovePlan(plan)
+	stored := t.runState.ApprovedPlan()
+	if stored == nil {
+		return
+	}
+	persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
+	defer cancelPersist()
+	if err := t.server.saveProjectAssistantApprovedPlan(persistCtx, t.req.MessageScope, stored); err != nil {
+		klog.FromContext(ctx).Error(err, "persist App Studio write grant", "project", t.req.MessageScope.ProjectName)
+	}
+}
+
 func (t projectEinoAssistantTool) appendBuilderEvent(eventType string) {
 	emitProjectAssistantBuilderEvent(t.req.StreamCallbacks, projectAssistantBuilderEventView(eventType))
 }
@@ -439,6 +465,11 @@ func (t projectEinoAssistantTool) resumePermission(ctx context.Context, callID s
 	case projectAssistantPermissionAllow:
 		if data.EditedArguments != nil {
 			args = cloneProjectAssistantToolArguments(data.EditedArguments)
+		}
+		if spec.Risk == projectAssistantToolRiskWrite {
+			// The user approved a write directly. Remember it as a blanket write
+			// grant until the next commit so each later edit does not re-prompt.
+			t.grantAllWritesUntilCommit(ctx)
 		}
 		return t.invokeAllowedTool(ctx, callID, spec, args)
 	case projectAssistantPermissionDeny:
