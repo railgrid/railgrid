@@ -155,8 +155,17 @@ func (h *Handler) redirectWithCookie(w http.ResponseWriter, r *http.Request, pay
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteNoneMode,
-		Expires:  expiresAt,
-		MaxAge:   maxAge,
+		// The portal embeds the preview in a cross-site iframe (the portal and
+		// *.preview.localhost are different sites), so this is a third-party
+		// cookie. Chrome blocks third-party cookies by default, which drops the
+		// cookie after the token→redirect exchange and breaks the preview inside
+		// the portal even though direct (first-party) navigation works. Partitioned
+		// (CHIPS) opts the cookie into partitioned third-party storage keyed by the
+		// top-level portal site, so it is delivered on the post-redirect request
+		// inside the iframe. Requires Secure + SameSite=None (both set above).
+		Partitioned: true,
+		Expires:     expiresAt,
+		MaxAge:      maxAge,
 	})
 
 	query := r.URL.Query()

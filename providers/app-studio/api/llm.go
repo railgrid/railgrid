@@ -49,7 +49,7 @@ const (
 	defaultProjectLLMProvider      = "openai-compatible"
 	defaultProjectLLMBaseURL       = "https://api.openai.com/v1"
 	defaultProjectLLMGoogleBaseURL = "https://generativelanguage.googleapis.com"
-	defaultProjectLLMModel         = "gpt-4o-mini"
+	defaultProjectLLMModel         = "gpt-5.4"
 	projectLLMProviderGoogle       = "google-ai-studio"
 	projectLLMGoogleCloudScope     = "https://www.googleapis.com/auth/cloud-platform"
 

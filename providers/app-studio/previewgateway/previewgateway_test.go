@@ -117,6 +117,9 @@ func TestPreviewGatewayQueryTokenWritesCookieAndRedirects(t *testing.T) {
 	if got, want := cookie.SameSite, http.SameSiteNoneMode; got != want {
 		t.Fatalf("cookie SameSite = %v, want %v", got, want)
 	}
+	if !cookie.Partitioned {
+		t.Fatalf("cookie must be Partitioned (CHIPS) so it survives in the cross-site portal iframe, got %+v", cookie)
+	}
 	if got, want := int64(cookie.Expires.Unix()), payload.ExpiresAt; got != want {
 		t.Fatalf("cookie expiry = %d, want %d", got, want)
 	}

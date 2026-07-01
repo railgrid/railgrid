@@ -146,7 +146,7 @@ interface ProjectDevelopmentPreviewAuthorization {
 const SPLIT_WIDTH_KEY = 'kedge:projects:split-width'
 const OPENAI_COMPATIBLE_PROVIDER = 'openai-compatible'
 const GOOGLE_AI_STUDIO_PROVIDER = 'google-ai-studio'
-const OPENAI_DEFAULT_MODEL = 'gpt-4o-mini'
+const OPENAI_DEFAULT_MODEL = 'gpt-5.4'
 const GEMINI_DEFAULT_MODEL = 'gemini-3.5-flash'
 const GOOGLE_CLOUD_DEFAULT_MODEL = 'google/gemini-3.5-flash'
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com'

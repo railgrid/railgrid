@@ -28,7 +28,61 @@ spec:
         default: "/workspace"
       startCommand:
         type: string
-        default: "PORT_VALUE=\"$SANDBOX_PORT\"; if [ -z \"$PORT_VALUE\" ]; then PORT_VALUE=3000; fi; if [ -f package.json ]; then npm install --no-audit --no-fund && (npm run dev -- --host 0.0.0.0 --port \"$PORT_VALUE\" || npm start); else npx --yes vite --host 0.0.0.0 --port \"$PORT_VALUE\"; fi"
+        # A Vite config shim is written into the workspace and passed via --config
+        # so the dev server accepts the proxied preview Host header. Without it
+        # Vite 5+'s default server.allowedHosts rejects any non-localhost Host (the
+        # request arrives through the data-plane proxy / preview gateway) with
+        # "Blocked request. This host is not allowed", so the preview never becomes
+        # reachable in production. (Locally the preview host ends in .localhost,
+        # which Vite always allows, so the shim is a no-op there.)
+        #
+        # The shim tries to import 'vite' to merge the project's own config (keeping
+        # its plugins) and only force server.host + server.allowedHosts. Crucially
+        # the import is best-effort: when 'vite' cannot be resolved (the no-package
+        # .json / `npx vite` path, where Vite lives under .npm/_npx and not in the
+        # workspace node_modules), it falls back to a plain
+        # { server: { host, allowedHosts } } config -- itself a valid Vite config --
+        # so allowedHosts is applied in that path too. The file lives in the
+        # workspace (not /tmp) because Node resolves the bare `import 'vite'`
+        # relative to the config file's own directory; it is a dotfile added to
+        # .gitignore so it is never committed to the user's repo.
+        #
+        # NOTE 1: this MUST stay a single-line string with NO literal newlines AND
+        # no backslash-n escapes. kro embeds schema defaults into the generated
+        # CRD's OpenAPI schema without JSON-escaping newlines, so a multi-line
+        # block scalar (or a "\n" inside a double-quoted YAML value, which YAML
+        # would unescape to a real newline) makes CRD creation fail with
+        # "invalid character '\n' in string literal" and the RGD never activates.
+        # The shim source is therefore base64-encoded and decoded at runtime, and
+        # the .gitignore append uses `echo` rather than `printf '%s\n'`.
+        #
+        # NOTE 2: this MUST NOT contain any double quotes. kro renders schema
+        # defaults through a `string | default="..."` mini-format that swaps every
+        # inner double quote to a single quote. A shell single-quoted '$VAR' does
+        # NOT expand, so double-quoting a variable here (e.g. --port "$SANDBOX_PORT")
+        # silently ships a literal "$SANDBOX_PORT" to the runner. Use bare $VARs;
+        # $SANDBOX_PORT is always set by the deployment env and $SHIM is a fixed
+        # filename, so neither needs quoting for word-splitting.
+        #
+        # Decoded shim source:
+        #   export default async (env) => {
+        #     const forced = { server: { host: true, allowedHosts: true } }
+        #     let loadConfigFromFile, mergeConfig
+        #     try {
+        #       ({ loadConfigFromFile, mergeConfig } = await import('vite'))
+        #     } catch (e) {
+        #       return forced
+        #     }
+        #     let base = {}
+        #     try {
+        #       const loaded = await loadConfigFromFile(env, undefined, process.cwd())
+        #       if (loaded && loaded.config) base = loaded.config
+        #     } catch (e) {
+        #       console.error('[kedge] could not load project vite config:', e)
+        #     }
+        #     return mergeConfig(base, forced)
+        #   }
+        default: "SHIM=.kedge-vite.config.mjs; printf '%s' 'ZXhwb3J0IGRlZmF1bHQgYXN5bmMgKGVudikgPT4gewogIGNvbnN0IGZvcmNlZCA9IHsgc2VydmVyOiB7IGhvc3Q6IHRydWUsIGFsbG93ZWRIb3N0czogdHJ1ZSB9IH0KICBsZXQgbG9hZENvbmZpZ0Zyb21GaWxlLCBtZXJnZUNvbmZpZwogIHRyeSB7CiAgICAoeyBsb2FkQ29uZmlnRnJvbUZpbGUsIG1lcmdlQ29uZmlnIH0gPSBhd2FpdCBpbXBvcnQoJ3ZpdGUnKSkKICB9IGNhdGNoIChlKSB7CiAgICByZXR1cm4gZm9yY2VkCiAgfQogIGxldCBiYXNlID0ge30KICB0cnkgewogICAgY29uc3QgbG9hZGVkID0gYXdhaXQgbG9hZENvbmZpZ0Zyb21GaWxlKGVudiwgdW5kZWZpbmVkLCBwcm9jZXNzLmN3ZCgpKQogICAgaWYgKGxvYWRlZCAmJiBsb2FkZWQuY29uZmlnKSBiYXNlID0gbG9hZGVkLmNvbmZpZwogIH0gY2F0Y2ggKGUpIHsKICAgIGNvbnNvbGUuZXJyb3IoJ1trZWRnZV0gY291bGQgbm90IGxvYWQgcHJvamVjdCB2aXRlIGNvbmZpZzonLCBlKQogIH0KICByZXR1cm4gbWVyZ2VDb25maWcoYmFzZSwgZm9yY2VkKQp9Cg==' | base64 -d > $SHIM; grep -qxF $SHIM .gitignore 2>/dev/null || echo $SHIM >> .gitignore; if [ -f package.json ]; then npm install --no-audit --no-fund && (npm run dev -- --host 0.0.0.0 --port $SANDBOX_PORT --config $SHIM || npm run dev -- --host 0.0.0.0 --port $SANDBOX_PORT || npm start); else npx --yes vite --host 0.0.0.0 --port $SANDBOX_PORT --config $SHIM || npx --yes vite --host 0.0.0.0 --port $SANDBOX_PORT; fi"
       runnerImage:
         type: string
         description: "Container image for the live development runner. Defaults to the standard kedge runner (published with app-studio releases); override per instance to pin a digest or use a custom runtime."
