@@ -28,6 +28,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -74,6 +75,9 @@ const (
 	projectToolDeployProjectRuntime           = "deploy_project_runtime"
 	projectToolGetRuntimeStatus               = "get_runtime_status"
 	projectToolGetPreviewURL                  = "get_preview_url"
+	projectToolGetRuntimeLogs                 = "get_runtime_logs"
+	projectToolRestartRuntime                 = "restart_runtime"
+	projectToolSetRuntimeEnv                  = "set_runtime_env"
 	projectToolAskFollowUp                    = "ask_follow_up"
 	projectToolRequestProjectPlanApproval     = "request_project_plan_approval"
 	projectToolWriteFile                      = "write_file"
@@ -611,7 +615,19 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return summarizeProjectPlanningWorkflowArgs(args)
 	case projectToolDeployProjectRuntime:
 		return summarizeProjectToolKeyValues(args, []string{"targetRef", "appName", "image", "port", "intent"})
-	case projectToolGetRuntimeStatus, projectToolGetPreviewURL:
+	case projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolRestartRuntime:
+		return ""
+	case projectToolGetRuntimeLogs:
+		return summarizeProjectToolKeyValues(args, []string{"tailLines"})
+	case projectToolSetRuntimeEnv:
+		if env, ok := args["env"].(map[string]any); ok && len(env) > 0 {
+			names := make([]string, 0, len(env))
+			for name := range env {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			return truncateProjectToolInfo(fmt.Sprintf("%d variable(s): %s", len(names), summarizeProjectToolList(names, 5)))
+		}
 		return ""
 	case projectToolAskFollowUp:
 		if questions := projectToolStringList(args["questions"]); len(questions) > 0 {
@@ -695,8 +711,15 @@ func summarizeProjectToolResult(name, result string) string {
 			}
 		case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment:
 			return summarizeProjectReadinessWorkflowResult(decoded)
-		case projectToolDeployProjectRuntime, projectToolGetRuntimeStatus, projectToolGetPreviewURL:
+		case projectToolDeployProjectRuntime, projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolRestartRuntime, projectToolSetRuntimeEnv:
 			return summarizeProjectRuntimeWorkflowResult(decoded)
+		case projectToolGetRuntimeLogs:
+			if lines := projectToolStringList(decoded["lines"]); len(lines) > 0 {
+				return truncateProjectToolInfo(fmt.Sprintf("%d log line(s)", len(lines)))
+			}
+			if summary := projectToolString(decoded["summary"]); summary != "" {
+				return truncateProjectToolInfo(summary)
+			}
 		case projectToolAskFollowUp:
 			if answer := projectToolString(decoded["answer"]); answer != "" {
 				return truncateProjectToolInfo("answered: " + answer)

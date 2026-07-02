@@ -31,6 +31,8 @@ You may obtain a copy of the License at
 //     (package.json, a lockfile, vite.config.*, server.js)
 //     actually changed, or the process isn't running.
 //     POST /restart  stop + start the dev process.
+//     POST /env      set non-secret environment variables for the dev process
+//     and optionally restart it. Body: {env:{KEY:VALUE}, restart:bool}.
 //     GET  /logs     the buffered dev-process output (text/plain).
 //
 // Security posture: file writes are confined to SANDBOX_WORKDIR via os.Root plus
@@ -54,6 +56,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -85,6 +88,17 @@ type syncResponse struct {
 	Phase     string   `json:"phase"`
 	Changed   []string `json:"changed"`
 	Deleted   []string `json:"deleted,omitempty"`
+	Restarted bool     `json:"restarted"`
+}
+
+type envRequest struct {
+	Env     map[string]string `json:"env"`
+	Restart bool              `json:"restart"`
+}
+
+type envResponse struct {
+	Phase     string   `json:"phase"`
+	Applied   []string `json:"applied"`
 	Restarted bool     `json:"restarted"`
 }
 
@@ -157,6 +171,7 @@ func newRunnerServerWithContext(ctx context.Context, cfg *runnerConfig) *runnerS
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/sync", s.handleSync)
 	mux.HandleFunc("/restart", s.handleRestart)
+	mux.HandleFunc("/env", s.handleEnv)
 	mux.HandleFunc("/logs", s.handleLogs)
 	s.mux = mux
 	return s
@@ -295,6 +310,35 @@ func (s *runnerServer) handleRestart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"restarted": true})
 }
 
+func (s *runnerServer) handleEnv(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorizeControl(w, r) {
+		return
+	}
+	var req envRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	applied, err := s.supervisor.setEnv(req.Env)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	restarted := false
+	if req.Restart {
+		if err := s.supervisor.restart(r.Context()); err != nil {
+			http.Error(w, "restart: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		restarted = true
+	}
+	writeJSON(w, http.StatusOK, envResponse{Phase: "EnvUpdated", Applied: applied, Restarted: restarted})
+}
+
 func (s *runnerServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeControl(w, r) {
 		return
@@ -352,6 +396,86 @@ type supervisor struct {
 	mu     sync.Mutex
 	cmd    *exec.Cmd
 	done   chan struct{}
+	// customEnv holds non-secret environment variables set at runtime via /env.
+	// They are merged over the process environment on the next (re)start. They
+	// live only for the lifetime of the pod; a pod restart re-provisions from the
+	// SandboxRunner spec.
+	customEnv map[string]string
+}
+
+// maxRuntimeEnvKeys bounds how many variables a single /env call may set.
+const maxRuntimeEnvKeys = 32
+
+// setEnv records non-secret runtime environment variables to apply on the next
+// dev-process (re)start, returning the applied names sorted. It enforces the
+// non-secret contract at the runner layer (defense-in-depth: /env is reachable
+// with the control token independently of the assistant-side guard): the request
+// must be non-empty and bounded, every name must be a valid POSIX env name, and
+// SANDBOX_* control and secret-looking names are rejected. Validation is
+// all-or-nothing so a bad request never partially mutates the environment.
+func (s *supervisor) setEnv(env map[string]string) ([]string, error) {
+	if len(env) == 0 {
+		return nil, fmt.Errorf("at least one environment variable is required")
+	}
+	if len(env) > maxRuntimeEnvKeys {
+		return nil, fmt.Errorf("at most %d environment variables may be set in one call", maxRuntimeEnvKeys)
+	}
+	for key := range env {
+		name := strings.TrimSpace(key)
+		if !isValidRuntimeEnvName(name) {
+			return nil, fmt.Errorf("invalid environment variable name %q; use letters, digits, and underscores", key)
+		}
+		if strings.HasPrefix(name, "SANDBOX_") {
+			return nil, fmt.Errorf("environment variable %q is reserved for the sandbox runner", name)
+		}
+		if isSecretLikeRuntimeEnvName(name) {
+			return nil, fmt.Errorf("secret-looking environment variable %q cannot be set through /env", name)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.customEnv == nil {
+		s.customEnv = map[string]string{}
+	}
+	applied := make([]string, 0, len(env))
+	for key, value := range env {
+		name := strings.TrimSpace(key)
+		s.customEnv[name] = value
+		applied = append(applied, name)
+	}
+	sort.Strings(applied)
+	return applied, nil
+}
+
+// isValidRuntimeEnvName reports whether name is a valid POSIX environment
+// variable name: a non-empty run of letters, digits, and underscores that does
+// not start with a digit.
+func isValidRuntimeEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r == '_':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isSecretLikeRuntimeEnvName rejects names that look like they carry secret
+// material, mirroring the assistant-side guard so a direct /env caller cannot
+// bypass it. Secrets are configured out of band, not through this path.
+func isSecretLikeRuntimeEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, marker := range []string{"SECRET", "TOKEN", "PASSWORD", "PASSWD", "APIKEY", "API_KEY", "PRIVATE_KEY", "CREDENTIAL", "ACCESS_KEY"} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return upper == "KEY" || strings.HasSuffix(upper, "_KEY")
 }
 
 func newSupervisor(ctx context.Context, cfg *runnerConfig, logs *ringLog) *supervisor {
@@ -412,7 +536,7 @@ func (s *supervisor) startLocked(ctx context.Context) error {
 	}
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-lc", s.config.StartCommand)
 	cmd.Dir = s.config.WorkDir
-	cmd.Env = sanitizedChildEnv(os.Environ())
+	cmd.Env = mergeChildEnv(os.Environ(), s.customEnv)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -444,6 +568,40 @@ func sanitizedChildEnv(env []string) []string {
 	out := make([]string, 0, len(env))
 	for _, entry := range env {
 		if strings.HasPrefix(entry, "SANDBOX_CONTROL_TOKEN=") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// mergeChildEnv layers custom runtime env over the sanitized process
+// environment, overriding an existing entry in place or appending a new one.
+// SANDBOX_* names are skipped so custom env cannot influence the runner control
+// plane. Keys are applied in sorted order for deterministic output.
+func mergeChildEnv(base []string, custom map[string]string) []string {
+	out := sanitizedChildEnv(base)
+	if len(custom) == 0 {
+		return out
+	}
+	index := make(map[string]int, len(out))
+	for i, entry := range out {
+		if idx := strings.IndexByte(entry, '='); idx >= 0 {
+			index[entry[:idx]] = i
+		}
+	}
+	names := make([]string, 0, len(custom))
+	for name := range custom {
+		if name == "" || strings.HasPrefix(name, "SANDBOX_") {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		entry := name + "=" + custom[name]
+		if i, ok := index[name]; ok {
+			out[i] = entry
 			continue
 		}
 		out = append(out, entry)

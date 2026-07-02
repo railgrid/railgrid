@@ -206,15 +206,33 @@ func projectAssistantWorkflowToolSpecs() []projectAssistantToolSpec {
 		},
 		{
 			Name:        projectToolGetRuntimeStatus,
-			Description: "Return a structured not-configured App Studio runtime status until a runtime provider state reader is configured.",
+			Description: "Return the live development runtime status for this project: whether the sandbox is provisioning, starting, serving preview traffic, or not deployed.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			Risk:        projectAssistantToolRiskRead,
 		},
 		{
 			Name:        projectToolGetPreviewURL,
-			Description: "Return a structured not-configured App Studio preview URL result until a runtime provider state reader is configured.",
+			Description: "Return the live development preview URL for this project when the sandbox is serving traffic, or the reason it is not ready yet.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			Risk:        projectAssistantToolRiskRead,
+		},
+		{
+			Name:        projectToolGetRuntimeLogs,
+			Description: "Return recent development runtime logs from the live sandbox so the assistant can diagnose why the app is not building or serving traffic.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"tailLines":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum number of trailing log lines to return (default 200)."}}}`),
+			Risk:        projectAssistantToolRiskRead,
+		},
+		{
+			Name:        projectToolRestartRuntime,
+			Description: "Restart the development runtime's dev process so it picks up new files or configuration. Use this to recover a sandbox that is stuck or crash-looping.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+			Risk:        projectAssistantToolRiskRuntime,
+		},
+		{
+			Name:        projectToolSetRuntimeEnv,
+			Description: "Set non-secret environment variables on the development runtime and restart the dev process so they take effect. Secrets (tokens, passwords, API keys) are rejected and must be configured through the runtime secret settings.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"env":{"type":"object","additionalProperties":{"type":"string"},"minProperties":1,"maxProperties":32,"description":"Non-secret environment variables to set, keyed by name."},"restart":{"type":"boolean","description":"Whether to restart the dev process so the new environment takes effect. Defaults to true."}},"required":["env"]}`),
+			Risk:        projectAssistantToolRiskRuntime,
 		},
 	}
 }
@@ -262,6 +280,12 @@ func newProjectAssistantGraphWorkflowTool(spec projectAssistantToolSpec, runCtx 
 		return newProjectAssistantRuntimeStatusGraphTool(runCtx)
 	case projectToolGetPreviewURL:
 		return newProjectAssistantPreviewURLGraphTool(runCtx)
+	case projectToolGetRuntimeLogs:
+		return newProjectAssistantRuntimeLogsGraphTool(runCtx)
+	case projectToolRestartRuntime:
+		return newProjectAssistantRestartRuntimeGraphTool(runCtx)
+	case projectToolSetRuntimeEnv:
+		return newProjectAssistantSetRuntimeEnvGraphTool(runCtx)
 	default:
 		return nil, fmt.Errorf("project assistant tool %q is not an Eino graph workflow", spec.Name)
 	}
@@ -717,10 +741,17 @@ func formatProjectAssistantRuntimeStatusResult(ctx context.Context, input projec
 	if message == "" {
 		message = "Development runtime is starting."
 	}
+	if reason := strings.TrimSpace(preview.Reason); reason != "" {
+		message = fmt.Sprintf("%s (reason: %s)", message, reason)
+	}
 	return &projectAssistantRuntimeWorkflowResult{
 		Status:  "provisioning",
 		Summary: message,
 		Runtime: &projectAssistantDeploymentRuntime{Status: "starting", Message: message},
+		NextSteps: []string{
+			"Use get_runtime_logs to inspect the dev process startup output and find why it is not serving traffic yet.",
+			"If the process is crash-looping (for example a missing required environment variable), fix the cause and use restart_runtime.",
+		},
 	}, nil
 }
 

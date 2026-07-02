@@ -269,6 +269,90 @@ func TestSupervisorDoesNotExposeControlTokenToChildProcess(t *testing.T) {
 	}
 }
 
+func TestMergeChildEnvOverridesAppendsAndDropsSandbox(t *testing.T) {
+	base := []string{"PATH=/bin", "APP_MODE=prod", "SANDBOX_CONTROL_TOKEN=secret"}
+	got := mergeChildEnv(base, map[string]string{
+		"APP_MODE":     "dev",     // overrides existing in place
+		"FEATURE_FLAG": "on",      // appended
+		"SANDBOX_HACK": "nope",    // dropped: SANDBOX_ prefix
+		"":             "ignored", // dropped: empty name
+	})
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "APP_MODE=dev") || strings.Contains(joined, "APP_MODE=prod") {
+		t.Fatalf("APP_MODE was not overridden in place: %v", got)
+	}
+	if !strings.Contains(joined, "FEATURE_FLAG=on") {
+		t.Fatalf("FEATURE_FLAG was not appended: %v", got)
+	}
+	if strings.Contains(joined, "SANDBOX_HACK") {
+		t.Fatalf("SANDBOX_ custom env must be dropped: %v", got)
+	}
+	if strings.Contains(joined, "SANDBOX_CONTROL_TOKEN") {
+		t.Fatalf("control token must stay stripped: %v", got)
+	}
+}
+
+func TestEnvSetsChildEnvironmentAndRestarts(t *testing.T) {
+	root := t.TempDir()
+	s := newRunnerServer(&runnerConfig{
+		WorkDir:      root,
+		StartCommand: "env > child.env",
+		ControlToken: "test-token",
+	})
+	resp := postJSON(t, s, "/env", envRequest{
+		Env:     map[string]string{"APP_MODE": "dev", "FEATURE_FLAG": "on"},
+		Restart: true,
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("env status = %d, body %s", resp.Code, resp.Body.String())
+	}
+	var decoded envResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode env response: %v", err)
+	}
+	if !decoded.Restarted {
+		t.Fatalf("expected restart, got %+v", decoded)
+	}
+	if strings.Join(decoded.Applied, ",") != "APP_MODE,FEATURE_FLAG" {
+		t.Fatalf("applied = %v, want [APP_MODE FEATURE_FLAG] sorted", decoded.Applied)
+	}
+	defer func() { _ = s.supervisor.stop() }()
+
+	envPath := filepath.Join(root, "child.env")
+	deadline := time.Now().Add(3 * time.Second)
+	var child string
+	for {
+		if raw, err := os.ReadFile(envPath); err == nil {
+			child = string(raw)
+			if strings.Contains(child, "APP_MODE=dev") && strings.Contains(child, "FEATURE_FLAG=on") {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child process did not receive the runtime env:\n%s", child)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestEnvRejectsInvalidReservedAndSecretNames(t *testing.T) {
+	s := newRunnerServer(&runnerConfig{WorkDir: t.TempDir(), ControlToken: "test-token"})
+	cases := map[string]envRequest{
+		"empty":           {Env: map[string]string{}},
+		"invalid name":    {Env: map[string]string{"BAD NAME": "x"}},
+		"invalid equals":  {Env: map[string]string{"A=B": "x"}},
+		"reserved prefix": {Env: map[string]string{"SANDBOX_PORT": "9999"}},
+		"secret-like":     {Env: map[string]string{"SHARED_SECRET": "dev-setup"}},
+		"token-like":      {Env: map[string]string{"API_TOKEN": "abc"}},
+	}
+	for name, req := range cases {
+		resp := postJSON(t, s, "/env", req)
+		if resp.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400; body=%s", name, resp.Code, resp.Body.String())
+		}
+	}
+}
+
 func postJSON(t *testing.T, h http.Handler, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	raw, err := json.Marshal(body)

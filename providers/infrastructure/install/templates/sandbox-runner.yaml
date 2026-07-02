@@ -171,6 +171,11 @@ spec:
         port: control
         upstreamPath: /restart
         methods: ["POST"]
+      env:
+        servicePath: status.controlServiceRef
+        port: control
+        upstreamPath: /env
+        methods: ["POST"]
       proxy:
         servicePath: status.previewServiceRef
         port: preview

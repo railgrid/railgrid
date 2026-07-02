@@ -37,6 +37,7 @@ const (
 	dataPlaneVerbSync    = "sync"
 	dataPlaneVerbRestart = "restart"
 	dataPlaneVerbProxy   = "proxy"
+	dataPlaneVerbEnv     = "env"
 
 	dataPlaneCallTimeout = 30 * time.Second
 )
@@ -96,6 +97,33 @@ func (s *Server) sandboxDataPlanePost(ctx context.Context, id identity, runnerNa
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return body, resp.StatusCode, nil
+}
+
+// sandboxDataPlaneGet sends a GET verb (log) and returns a bounded body + status
+// code. Unlike sandboxDataPlaneStream it collects the response into memory, for
+// callers (assistant tools) that need the payload as a value rather than a
+// stream. maxBytes bounds the body so a large log buffer cannot blow the
+// assistant context.
+func (s *Server) sandboxDataPlaneGet(ctx context.Context, id identity, runnerName, verb string, maxBytes int64) ([]byte, int, error) {
+	callCtx, cancel := context.WithTimeout(ctx, dataPlaneCallTimeout)
+	defer cancel()
+	req, err := s.newSandboxDataPlaneRequest(callCtx, http.MethodGet, id, runnerName, verb, "", nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	resp, err := s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("sandbox data plane %s: %w", verb, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if maxBytes <= 0 {
+		maxBytes = 16 << 20
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}

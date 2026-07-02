@@ -345,7 +345,7 @@ func projectAssistantUIActionKind(name string) string {
 		return projectAssistantUIActionPlan
 	case base == projectToolPlanProjectChanges:
 		return projectAssistantUIActionPlan
-	case base == projectToolCheckProjectReadiness || base == projectToolPrepareProjectDeployment || base == projectToolDeployProjectRuntime || base == projectToolGetRuntimeStatus || base == projectToolGetPreviewURL:
+	case base == projectToolCheckProjectReadiness || base == projectToolPrepareProjectDeployment || base == projectToolDeployProjectRuntime || base == projectToolGetRuntimeStatus || base == projectToolGetPreviewURL || base == projectToolGetRuntimeLogs || base == projectToolRestartRuntime || base == projectToolSetRuntimeEnv:
 		return projectAssistantUIActionRun
 	case base == projectToolCommitProjectFiles || base == projectToolCommitFiles:
 		return projectAssistantUIActionCommit
