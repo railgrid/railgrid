@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": ".test-dist",
+    "rootDir": "src"
+  },
+  "include": [
+    "src/tableRefs.ts",
+    "src/tableRefs.test.ts"
+  ]
+}

@@ -1,16 +1,25 @@
 <script setup lang="ts">
 import { Inbox, AlertCircle } from 'lucide-vue-next'
 
-defineProps<{
+const props = withDefaults(defineProps<{
   columns: Array<{ key: string; label: string }>
   rows: Array<Record<string, unknown>>
   loading?: boolean
   error?: string | null
-}>()
+  emptyText?: string
+  interactive?: boolean
+}>(), {
+  emptyText: 'No data',
+  interactive: true,
+})
 
-defineEmits<{
+const emit = defineEmits<{
   rowClick: [row: Record<string, unknown>]
 }>()
+
+function onRowClick(row: Record<string, unknown>) {
+  if (props.interactive) emit('rowClick', row)
+}
 </script>
 
 <template>
@@ -50,14 +59,16 @@ defineEmits<{
         <tr
           v-for="(row, i) in rows"
           :key="i"
-          class="stagger-item group cursor-pointer border-b border-border-subtle transition-all duration-150 last:border-b-0 hover:bg-accent/[0.03]"
+          class="stagger-item group border-b border-border-subtle transition-all duration-150 last:border-b-0"
+          :class="interactive ? 'cursor-pointer hover:bg-accent/[0.03]' : ''"
           :style="{ animationDelay: `${i * 35}ms` }"
-          @click="$emit('rowClick', row)"
+          @click="onRowClick(row)"
         >
           <td
             v-for="col in columns"
             :key="col.key"
-            class="whitespace-nowrap px-5 py-3 text-[13px] text-text-secondary transition-colors duration-100 group-hover:text-text-primary"
+            class="whitespace-nowrap px-5 py-3 text-[13px] text-text-secondary transition-colors duration-100"
+            :class="interactive ? 'group-hover:text-text-primary' : ''"
           >
             <slot :name="col.key" :value="row[col.key]" :row="row">
               {{ row[col.key] }}
@@ -67,7 +78,7 @@ defineEmits<{
         <tr v-if="rows.length === 0">
           <td :colspan="columns.length" class="py-16 text-center">
             <Inbox class="mx-auto h-8 w-8 text-text-muted/20" :stroke-width="1.25" />
-            <p class="mt-2 text-[12px] text-text-muted">No data</p>
+            <p class="mt-2 text-[12px] text-text-muted">{{ emptyText }}</p>
           </td>
         </tr>
       </tbody>

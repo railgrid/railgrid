@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import type { ConditionInfo } from '../types'
+import { computed } from 'vue'
+import ResourceTable from './ResourceTable.vue'
+import StatusBadge from './StatusBadge.vue'
 
-// ConditionsPanel renders a resource's status conditions verbatim so the
-// reason/message a controller recorded is visible for debugging — shared by the
-// Connection and Repository detail views. observed-vs-current generation, when
-// supplied, surfaces "controller has not caught up" independently of the
-// conditions themselves.
+export interface ConditionInfo {
+  type: string
+  status: string
+  reason?: string
+  message?: string
+  lastTransitionTime?: string
+}
+
 const props = defineProps<{
   conditions: ConditionInfo[]
   generation?: number
@@ -13,45 +18,50 @@ const props = defineProps<{
   emptyText?: string
 }>()
 
-function condClass(status: string): string {
-  if (status === 'True') return 'ok'
-  if (status === 'False') return 'warn'
-  return 'muted'
-}
-
-const reconciled = (): boolean =>
+const reconciled = computed(() =>
   props.observedGeneration === undefined ||
   props.generation === undefined ||
-  props.observedGeneration >= props.generation
+  props.observedGeneration >= props.generation,
+)
+
+const rows = computed<Array<Record<string, unknown>>>(() =>
+  props.conditions.map(condition => ({
+    ...condition,
+    reasonLabel: condition.reason || '-',
+    messageLabel: condition.message || '-',
+    sinceLabel: condition.lastTransitionTime || '-',
+  })),
+)
+
+function conditionTone(status: string): 'success' | 'warning' | 'muted' {
+  if (status === 'True') return 'success'
+  if (status === 'False') return 'warning'
+  return 'muted'
+}
 </script>
 
 <template>
-  <div class="panel">
-    <h3 class="panel-title">Conditions</h3>
-    <p v-if="observedGeneration !== undefined && !reconciled()" class="warn cond-lag">
-      Controller has not caught up — spec generation {{ generation }}, observed {{ observedGeneration }}.
+  <div class="conditions-panel">
+    <h3 class="conditions-title">Conditions</h3>
+    <p v-if="observedGeneration !== undefined && !reconciled" class="conditions-stale">
+      Controller has not caught up - spec generation {{ generation }}, observed {{ observedGeneration }}.
     </p>
-    <p v-if="!conditions.length" class="empty">
-      {{ emptyText || 'No conditions yet — the controller has not reconciled this resource.' }}
-    </p>
-    <table v-else class="table">
-      <thead>
-        <tr><th>Type</th><th>Status</th><th>Reason</th><th>Message</th><th>Since</th></tr>
-      </thead>
-      <tbody>
-        <tr v-for="c in conditions" :key="c.type">
-          <td><strong>{{ c.type }}</strong></td>
-          <td><span :class="['badge', condClass(c.status)]">{{ c.status }}</span></td>
-          <td>{{ c.reason || '—' }}</td>
-          <td class="cond-msg">{{ c.message || '—' }}</td>
-          <td class="muted">{{ c.lastTransitionTime || '—' }}</td>
-        </tr>
-      </tbody>
-    </table>
+    <ResourceTable
+      :columns="[
+        { key: 'type', label: 'Type' },
+        { key: 'status', label: 'Status' },
+        { key: 'reasonLabel', label: 'Reason' },
+        { key: 'messageLabel', label: 'Message' },
+        { key: 'sinceLabel', label: 'Since' },
+      ]"
+      :rows="rows"
+      :interactive="false"
+      :empty-text="emptyText || 'No conditions yet. The controller has not reconciled this resource.'"
+    >
+      <template #type="{ value }"><span class="conditions-type">{{ value }}</span></template>
+      <template #status="{ value }"><StatusBadge :status="String(value)" :tone="conditionTone(String(value))" /></template>
+      <template #messageLabel="{ value }"><span class="conditions-message">{{ value }}</span></template>
+      <template #sinceLabel="{ value }"><span class="conditions-muted">{{ value }}</span></template>
+    </ResourceTable>
   </div>
 </template>
-
-<style scoped>
-.cond-lag { margin: 0 0 0.5rem; }
-.cond-msg { max-width: 40ch; word-break: break-word; }
-</style>

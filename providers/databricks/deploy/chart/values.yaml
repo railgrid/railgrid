@@ -1,0 +1,56 @@
+image:
+  repository: ghcr.io/faroshq/kedge-databricks-provider
+  tag: ""
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 8081
+
+hub:
+  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  tokenSecretRef:
+    name: kedge-databricks-hub-token
+    key: token
+  insecure: false
+
+providerKubeconfig:
+  secretName: kedge-provider-kubeconfig
+
+catalogEntry:
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: ""
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+
+nameOverride: ""
+fullnameOverride: ""
+podLabels: {}
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

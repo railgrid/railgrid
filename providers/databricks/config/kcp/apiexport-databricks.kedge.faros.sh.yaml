@@ -1,0 +1,22 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: databricks.kedge.faros.sh
+spec:
+  resources:
+  - group: databricks.kedge.faros.sh
+    name: connections
+    schema: v260701-fa21f11c.connections.databricks.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: databricks.kedge.faros.sh
+    name: tables
+    schema: v260630-0d050b9c.tables.databricks.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: databricks.kedge.faros.sh
+    name: warehouses
+    schema: v260701-fa21f11c.warehouses.databricks.kedge.faros.sh
+    storage:
+      crd: {}
+status: {}

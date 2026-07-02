@@ -24,4 +24,5 @@ use (
 	./providers/code
 	./providers/kuery
 	./providers/app-studio
+	./providers/databricks
 )

@@ -1,0 +1,40 @@
+{{- if .Values.catalogEntry.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "databricks.fullname" . }}-catalogentry
+  labels:
+    {{- include "databricks.labels" . | nindent 4 }}
+data:
+  catalogentry.yaml: |
+    apiVersion: providers.kedge.faros.sh/v1alpha1
+    kind: CatalogEntry
+    metadata:
+      name: databricks
+    spec:
+      displayName: "Databricks"
+      description: "Expose imported Databricks SQL Warehouse tables to kedge apps."
+      vendor: "kedge"
+      version: {{ .Chart.AppVersion | quote }}
+      category: "Data"
+      iconURL: "/ui/providers/databricks/icon.svg"
+      ui:
+        url: "http://{{ include "databricks.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        indexPath: "/"
+        children:
+          - displayName: Connections
+            builtinRoute: connections
+          - displayName: Warehouses
+            builtinRoute: warehouses
+          - displayName: Tables
+            builtinRoute: tables
+      backend:
+        url: "http://{{ include "databricks.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        healthPath: "/healthz"
+      apiExport:
+        name: "databricks.providers.kedge.faros.sh"
+        permissionClaims:
+          - resource: secrets
+            verbs: [get]
+            tenantScoped: true
+{{- end }}

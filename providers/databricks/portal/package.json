@@ -1,0 +1,22 @@
+{
+  "name": "kedge-provider-databricks-portal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Databricks provider's portal-side micro-frontend for imported Table resources.",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "test:tableRefs": "tsc -p tsconfig.test.json && node .test-dist/tableRefs.test.js",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "lucide-vue-next": "^0.475.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.6.3",
+    "vite": "^6.4.1",
+    "vue-tsc": "^2.1.10"
+  }
+}

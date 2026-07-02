@@ -1,0 +1,36 @@
+# Databricks provider — register with the kedge hub.
+#
+# This provider owns Databricks Connection, Warehouse, and imported Table
+# resources. App Studio consumes existing Table resources by tableRef; import
+# and pinning are handled by this provider or by direct CR creation.
+---
+apiVersion: providers.kedge.faros.sh/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: databricks
+spec:
+  displayName: "Databricks"
+  description: "Expose imported Databricks SQL Warehouse tables to kedge apps."
+  vendor: "kedge"
+  version: "0.1.0"
+  category: "Data"
+  iconURL: "/ui/providers/databricks/icon.svg"
+  ui:
+    url: "http://localhost:8086"
+    indexPath: "/"
+    children:
+      - displayName: Connections
+        builtinRoute: connections
+      - displayName: Warehouses
+        builtinRoute: warehouses
+      - displayName: Tables
+        builtinRoute: tables
+  backend:
+    url: "http://localhost:8086"
+    healthPath: "/healthz"
+  apiExport:
+    name: "databricks.providers.kedge.faros.sh"
+    permissionClaims:
+      - resource: secrets
+        verbs: [get]
+        tenantScoped: true

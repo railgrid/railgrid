@@ -100,6 +100,7 @@ func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req 
 		discovery.Prompt = projectMCPToolsFailurePrompt(err)
 		return discovery
 	}
+	mcpTools = projectAssistantFilterMCPToolsForTurn(mcpTools, req.History)
 	discovery.IncludeCommitBridge = includeCommitBridge
 	discovery.MCPTools = mcpTools
 	allTools := append(registry.Tools(discovery.IncludeCommitBridge), discovery.MCPTools...)
@@ -120,6 +121,8 @@ func projectAssistantTurnPolicyCanUseMCP(policy projectAssistantTurnPolicy, req 
 		projectToolInfrastructureListInstances,
 		projectToolInfrastructureGetInstance,
 		projectToolInfrastructureProvision,
+		projectToolDatabricksListTables,
+		projectToolDatabricksDescribeTable,
 	} {
 		spec, ok := projectAssistantMCPToolSpec(projectMCPTool{Name: name})
 		if ok && policy.AllowsTool(spec) {
@@ -129,17 +132,58 @@ func projectAssistantTurnPolicyCanUseMCP(policy projectAssistantTurnPolicy, req 
 	return false
 }
 
+func projectAssistantFilterMCPToolsForTurn(tools []projectAssistantTool, history []store.Message) []projectAssistantTool {
+	if projectAssistantTurnNeedsDatabricksMCP(history) {
+		return tools
+	}
+	out := tools[:0]
+	for _, tool := range tools {
+		switch tool.Spec().Name {
+		case projectToolDatabricksListTables, projectToolDatabricksDescribeTable:
+			continue
+		default:
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
 func projectAssistantTurnNeedsInfrastructureMCP(history []store.Message) bool {
 	for i := len(history) - 1; i >= 0; i-- {
 		if history[i].Role != aiv1alpha1.ProjectMessageRoleUser {
 			continue
 		}
 		content := strings.ToLower(strings.TrimSpace(history[i].Content))
-		return containsProjectAssistantTurnKeyword(content, []string{
+		if containsProjectAssistantTurnKeyword(content, []string{
 			"infrastructure", "infra", "template", "templates", "provision",
 			"instance", "instances", "database", "postgres", "redis",
 			"supporting resource", "provider", "platform", "mcp",
-		})
+		}) {
+			return true
+		}
+		return projectAssistantTurnNeedsDatabricksMCP(history[i:])
+	}
+	return false
+}
+
+func projectAssistantTurnNeedsDatabricksMCP(history []store.Message) bool {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role != aiv1alpha1.ProjectMessageRoleUser {
+			continue
+		}
+		content := strings.ToLower(strings.TrimSpace(history[i].Content))
+		if containsProjectAssistantTurnKeyword(content, []string{
+			"databricks", "table ref", "table refs", "imported table", "imported tables",
+			"kedge table", "kedge tables", "provider-databricks",
+		}) {
+			return true
+		}
+		if strings.Contains(content, "table") && containsProjectAssistantTurnKeyword(content, []string{
+			"query", "queries", "sample", "samples", "column", "columns", "schema", "metadata", "inspect", "data",
+		}) {
+			return true
+		}
+		return false
 	}
 	return false
 }

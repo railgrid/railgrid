@@ -89,6 +89,8 @@ jobs:
             image: ${{ github.repository_owner }}/kedge-kuery-provider
           - name: app-studio
             image: ${{ github.repository_owner }}/kedge/app-studio-provider
+          - name: databricks
+            image: ${{ github.repository_owner }}/kedge-databricks-provider
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

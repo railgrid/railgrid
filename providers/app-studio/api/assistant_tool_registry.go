@@ -249,12 +249,17 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}
 				oldText, _ := projectToolRawString(req.Arguments["oldText"])
 				newText, _ := projectToolRawString(req.Arguments["newText"])
-				return projectAssistantToolJSONResult(s.workspaces.ApplyPatch(ctx, req.WorkspaceScope, workspace.PatchOptions{
+				opts := workspace.PatchOptions{
 					Path:       projectToolString(req.Arguments["path"]),
 					OldText:    oldText,
 					NewText:    newText,
 					ReplaceAll: projectToolBool(req.Arguments["replaceAll"]),
-				}))
+				}
+				_, _, err = previewProjectWorkspacePatch(ctx, s.workspaces, req.WorkspaceScope, opts)
+				if err != nil {
+					return "", err
+				}
+				return projectAssistantToolJSONResult(s.workspaces.ApplyPatch(ctx, req.WorkspaceScope, opts))
 			},
 		},
 		projectAssistantToolFunc{

@@ -87,6 +87,8 @@ const (
 	projectToolInfrastructureProvision        = "infrastructure__provision"
 	projectToolInfrastructureListInstances    = "infrastructure__list_instances"
 	projectToolInfrastructureGetInstance      = "infrastructure__get_instance"
+	projectToolDatabricksListTables           = "databricks__list_tables"
+	projectToolDatabricksDescribeTable        = "databricks__describe_table"
 )
 
 var (
@@ -1673,12 +1675,24 @@ func projectMCPToolsPrompt(tools []chatTool) string {
 	}
 	var b strings.Builder
 	b.WriteString("Available tools in this workspace:\n")
+	hasDatabricksTools := false
 	for _, tool := range tools {
 		desc := strings.TrimSpace(tool.Function.Description)
 		if desc == "" {
 			desc = "(no description)"
 		}
 		b.WriteString("- " + tool.Function.Name + ": " + desc + "\n")
+		switch strings.TrimSpace(tool.Function.Name) {
+		case projectToolDatabricksListTables, projectToolDatabricksDescribeTable:
+			hasDatabricksTools = true
+		}
+	}
+	if hasDatabricksTools {
+		b.WriteString("Databricks guidance: use existing imported kedge Table resources only. ")
+		b.WriteString("Refer to them by tableRef when designing app data models, inspecting cached table metadata, or asking the user which imported table to use through provider-databricks. ")
+		b.WriteString("Do not call provider backend URLs from generated code. ")
+		b.WriteString("Do not generate application code that queries Databricks tableRefs yet; no App Studio runtime data-access bridge is available in this workspace. ")
+		b.WriteString("Do not create or import Databricks tables from App Studio, and do not embed Databricks credentials or raw warehouse auth config in generated code.\n")
 	}
 	return b.String()
 }
@@ -1758,6 +1772,9 @@ func projectAssistantMCPToolSpec(tool projectMCPTool) (projectAssistantToolSpec,
 		projectToolInfrastructureGetInstance:
 	case projectToolInfrastructureProvision:
 		risk = projectAssistantToolRiskRuntime
+	case projectToolDatabricksListTables,
+		projectToolDatabricksDescribeTable:
+		risk = projectAssistantToolRiskRead
 	default:
 		return projectAssistantToolSpec{}, false
 	}

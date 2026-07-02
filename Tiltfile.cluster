@@ -635,6 +635,7 @@ INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/in
 APP_STUDIO_REWRITE_CMD, APP_STUDIO_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/app-studio/manifest.yaml')
 CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code/manifest.yaml')
 KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/kuery/manifest.yaml')
+DATABRICKS_REWRITE_CMD, DATABRICKS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/databricks/manifest.yaml')
 
 # --- providers-quickstart ---
 local_resource(
@@ -1126,6 +1127,71 @@ local_resource(
     auto_init=False,
     resource_deps=['kedge-hub'],
     labels=['providers-code'],
+)
+
+# --- providers-databricks (Databricks table access) ---
+local_resource(
+    'databricks',
+    cmd='make build-databricks-provider',
+    serve_cmd='make run-provider-databricks',
+    deps=[
+        'providers/databricks/main.go',
+        'providers/databricks/assets.go',
+        'providers/databricks/backend',
+        'providers/databricks/init_cmd.go',
+        'providers/databricks/mcpserver',
+        'providers/databricks/queryapi',
+        'providers/databricks/tenant',
+        'providers/databricks/apis',
+        'providers/databricks/portal/src',
+        'providers/databricks/portal/public',
+        'providers/databricks/portal/package.json',
+        'providers/databricks/portal/vite.config.ts',
+        'providers/databricks/go.mod',
+        'providers/databricks/go.sum',
+        '.kcp/databricks-runtime.kubeconfig',
+    ],
+    resource_deps=['kedge-hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8086, path='/healthz'),
+    ),
+    labels=['providers-databricks'],
+)
+
+local_resource(
+    'databricks-register',
+    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'DATABRICKS_MANIFEST={mf} make install-provider-databricks').format(
+             rewrite=DATABRICKS_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=DATABRICKS_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-databricks'],
+)
+
+local_resource(
+    'databricks-init',
+    cmd=('KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'make init-provider-databricks').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub', 'databricks-register'],
+    labels=['providers-databricks'],
+)
+
+local_resource(
+    'databricks-unregister',
+    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'DATABRICKS_MANIFEST={mf} make uninstall-provider-databricks').format(
+             rewrite=DATABRICKS_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=DATABRICKS_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-databricks'],
 )
 
 # --- Sandbox runner image (live development runtimes) ---

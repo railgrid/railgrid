@@ -1,0 +1,10 @@
+# Provider — declarative provisioning record (admin.kedge.faros.sh, admin-only).
+# The hub's Provider controller creates root:kedge:providers:databricks, its
+# provider ServiceAccount, and the databricks kubeconfig Secret. The APIExport,
+# schemas, and bind grant are created by databricks-provider init.
+apiVersion: admin.kedge.faros.sh/v1alpha1
+kind: Provider
+metadata:
+  name: databricks
+spec:
+  displayName: "Databricks"
