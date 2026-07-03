@@ -56,8 +56,10 @@ type Backend struct {
 	// tokens are the platform-config values substituted for reserved ${kedge.*}
 	// placeholders in a Template's backendConfig before the RGD is authored —
 	// platform-wide settings that belong on the backend, not in per-tenant data.
-	// See substituteTokens in rgd.go. The ONLY tokens are the exposure-layer
-	// Gateway parent (${kedge.gatewayName}/${kedge.gatewayNamespace}); per-instance
+	// See substituteTokens in rgd.go. The tokens are the exposure-layer Gateway
+	// parent (${kedge.gatewayName}/${kedge.gatewayNamespace}) — the ONE Gateway
+	// every template's HTTPRoutes attach to (cfgate cloudflare-tunnel in prod,
+	// envoy locally) — plus ${kedge.sandboxPreviewBaseDomain}; per-instance
 	// inputs like container images are schema fields with defaults, not tokens
 	// (see providers/infrastructure/docs/template-conventions.md).
 	tokens map[string]string
@@ -82,7 +84,8 @@ const (
 // template edit):
 //
 //   - KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE — the exposure-layer Gateway
-//     parent (defaults "cloudflare-tunnel" / "cfgate-system").
+//     parent every template's HTTPRoutes (apps AND sandbox previews) attach to
+//     (defaults "cloudflare-tunnel" / "cfgate-system").
 //
 // Per-instance inputs (container images, etc.) are NOT env tokens — templates
 // declare them as schema fields with sane defaults (e.g. SandboxRunner's
@@ -100,8 +103,24 @@ func New(runtime dynamic.Interface) *Backend {
 	tokens := map[string]string{
 		gatewayNameToken:      gatewayName,
 		gatewayNamespaceToken: gatewayNamespace,
+		// Base domain sandbox preview HTTPRoutes are exposed under. Dedicated
+		// knob so previews can use a different domain than 3-tier apps; falls
+		// back to the app base domain when unset (the common case, where they
+		// coincide). Value-as-is: an empty domain is guarded by the template/chart.
+		sandboxPreviewBaseDomainToken: sandboxPreviewBaseDomain(),
 	}
 	return &Backend{runtime: runtime, tokens: tokens}
+}
+
+// sandboxPreviewBaseDomain resolves the base domain used for sandbox preview
+// HTTPRoute hostnames: KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN when set, else the
+// app base domain KEDGE_APP_BASE_DOMAIN (the common case where previews and
+// apps share a domain, so a deployment need only set one).
+func sandboxPreviewBaseDomain() string {
+	if v := os.Getenv("KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN"); v != "" {
+		return v
+	}
+	return os.Getenv("KEDGE_APP_BASE_DOMAIN")
 }
 
 // Name returns "kro".

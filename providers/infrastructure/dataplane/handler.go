@@ -52,31 +52,15 @@ type InstanceGetter interface {
 // target via the template contract, and reverse-proxies to the runtime cluster
 // the provider owns. Consumers therefore never hold a runtime credential.
 type Handler struct {
-	instances     InstanceGetter
-	contracts     ContractGetter
-	runtime       Runtime
-	previewRoutes PreviewRouteEnsurer
-}
-
-// HandlerOption customizes the data-plane handler.
-type HandlerOption func(*Handler)
-
-// WithPreviewRouteManager installs the infrastructure-owned preview route
-// reconciler. It is only used for SandboxRunner proxy requests.
-func WithPreviewRouteManager(manager PreviewRouteEnsurer) HandlerOption {
-	return func(h *Handler) {
-		h.previewRoutes = manager
-	}
+	instances InstanceGetter
+	contracts ContractGetter
+	runtime   Runtime
 }
 
 // NewHandler wires the handler. Any nil dependency makes the data plane report
 // 503 (the serve process runs without a runtime/kcp config in dev).
-func NewHandler(instances InstanceGetter, contracts ContractGetter, runtime Runtime, opts ...HandlerOption) *Handler {
-	h := &Handler{instances: instances, contracts: contracts, runtime: runtime}
-	for _, opt := range opts {
-		opt(h)
-	}
-	return h
+func NewHandler(instances InstanceGetter, contracts ContractGetter, runtime Runtime) *Handler {
+	return &Handler{instances: instances, contracts: contracts, runtime: runtime}
 }
 
 // request is the parsed addressing of a data-plane call.
@@ -143,14 +127,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.previewRoutes != nil && req.resource == "sandboxrunners" && req.verb == "proxy" {
-		if err := h.previewRoutes.Ensure(r.Context(), instance); err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-	}
-
-	// 5b. Reverse-proxy to the runtime Service the provider owns.
+	// 5b. Reverse-proxy to the runtime Service the provider owns. The public
+	// preview HTTPRoute is created declaratively by the SandboxRunner RGD (same
+	// mechanism as the application template), so there is no per-request route
+	// reconciliation gate here — this internal hop only needs the runtime Service.
 	serveProxy(w, r, h.runtime, target, req.callerPath)
 }
 

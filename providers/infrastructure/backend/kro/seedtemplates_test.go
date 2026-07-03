@@ -238,12 +238,13 @@ func TestSandboxRunnerIncludesManagedPreviewHTTPRoute(t *testing.T) {
 	if httpRoute == nil {
 		t.Fatal("sandbox-runner template missing httpRoute resource")
 	}
-	includeWhen := mustNestedSlice(t, httpRoute, "includeWhen")
-	if len(includeWhen) != 1 || includeWhen[0] != "${schema.spec.previewRouteEnabled}" {
-		t.Fatalf("httpRoute includeWhen = %#v, want previewRouteEnabled gate", includeWhen)
+	// The route is always created now (same as the application template) — no
+	// previewRouteEnabled gate — and there is no cross-namespace ReferenceGrant.
+	if includeWhen, found, _ := unstructured.NestedSlice(httpRoute, "includeWhen"); found && len(includeWhen) > 0 {
+		t.Fatalf("httpRoute must be created unconditionally, got includeWhen = %#v", includeWhen)
 	}
-	if referenceGrant := findResource(t, rgd, "referenceGrant"); referenceGrant != nil {
-		t.Fatal("sandbox-runner template must not create referenceGrant; backend namespace grants are owned by App Studio")
+	if referenceGrant := findResource(t, rgd, "previewReferenceGrant"); referenceGrant != nil {
+		t.Fatal("sandbox-runner template must not create a ReferenceGrant; the backend is a same-namespace Service")
 	}
 
 	httpRouteTemplate := mustNestedMap(t, httpRoute, "template")
@@ -256,8 +257,9 @@ func TestSandboxRunnerIncludesManagedPreviewHTTPRoute(t *testing.T) {
 	if got, found, _ := unstructured.NestedString(httpRouteTemplate, "metadata", "name"); !found || got != "${schema.spec.name}" {
 		t.Fatalf("httpRoute metadata.name = %q (found %v), want %q", got, found, "${schema.spec.name}")
 	}
-	if got, found, _ := unstructured.NestedString(httpRouteTemplate, "metadata", "namespace"); !found || got != "default" {
-		t.Fatalf("httpRoute metadata.namespace = %q (found %v), want default", got, found)
+	// Same namespace as the preview Service (the runtime namespace).
+	if got, found, _ := unstructured.NestedString(httpRouteTemplate, "metadata", "namespace"); !found || got != "${runtimeNamespace.metadata.name}" {
+		t.Fatalf("httpRoute metadata.namespace = %q (found %v), want %q", got, found, "${runtimeNamespace.metadata.name}")
 	}
 
 	parentRefs := mustNestedSlice(t, httpRouteTemplate, "spec", "parentRefs")
@@ -268,19 +270,17 @@ func TestSandboxRunnerIncludesManagedPreviewHTTPRoute(t *testing.T) {
 	if !ok {
 		t.Fatalf("httpRoute parentRef has type %T, want map[string]any", parentRefs[0])
 	}
-	if got, _, _ := unstructured.NestedString(parentRef, "name"); got != "${schema.spec.previewRoute.parentGateway.name}" {
-		t.Fatalf("parentRefs[0].name = %q, want %q", got, "${schema.spec.previewRoute.parentGateway.name}")
+	// Attached to the platform Gateway via the substituted ${kedge.gateway*} tokens.
+	if got, _, _ := unstructured.NestedString(parentRef, "name"); got != DefaultGatewayName {
+		t.Fatalf("parentRefs[0].name = %q, want %q", got, DefaultGatewayName)
 	}
-	if got, _, _ := unstructured.NestedString(parentRef, "namespace"); got != "${schema.spec.previewRoute.parentGateway.namespace}" {
-		t.Fatalf("parentRefs[0].namespace = %q, want %q", got, "${schema.spec.previewRoute.parentGateway.namespace}")
-	}
-	if got, _, _ := unstructured.NestedString(parentRef, "sectionName"); got != "${schema.spec.previewRoute.parentGateway.sectionName}" {
-		t.Fatalf("parentRefs[0].sectionName = %q, want %q", got, "${schema.spec.previewRoute.parentGateway.sectionName}")
+	if got, _, _ := unstructured.NestedString(parentRef, "namespace"); got != DefaultGatewayNamespace {
+		t.Fatalf("parentRefs[0].namespace = %q, want %q", got, DefaultGatewayNamespace)
 	}
 
 	hostnames := mustNestedSlice(t, httpRouteTemplate, "spec", "hostnames")
-	if len(hostnames) == 0 || hostnames[0] != "${schema.spec.previewRoute.host}" {
-		t.Fatalf("httpRoute hostnames = %#v, want first element %q", hostnames, "${schema.spec.previewRoute.host}")
+	if len(hostnames) == 0 || hostnames[0] != "${schema.spec.name}.dev-apps.faros.sh" {
+		t.Fatalf("httpRoute hostnames = %#v, want first element %q (sandboxPreviewBaseDomain token substituted)", hostnames, "${schema.spec.name}.dev-apps.faros.sh")
 	}
 
 	rules := mustNestedSlice(t, httpRouteTemplate, "spec", "rules")
@@ -299,17 +299,16 @@ func TestSandboxRunnerIncludesManagedPreviewHTTPRoute(t *testing.T) {
 	if !ok {
 		t.Fatalf("httpRoute backendRef has type %T, want map[string]any", backendRefs[0])
 	}
-	if got, _, _ := unstructured.NestedString(backendRef, "name"); got != "${schema.spec.previewRoute.backend.serviceName}" {
-		t.Fatalf("backendRef.name = %q, want %q", got, "${schema.spec.previewRoute.backend.serviceName}")
+	// Backend is the sandbox's OWN preview Service; same namespace, so no
+	// namespace field on the backendRef.
+	if got, _, _ := unstructured.NestedString(backendRef, "name"); got != "${previewService.metadata.name}" {
+		t.Fatalf("backendRef.name = %q, want %q", got, "${previewService.metadata.name}")
 	}
-	if got, _, _ := unstructured.NestedString(backendRef, "namespace"); got != "${schema.spec.previewRoute.backend.namespace}" {
-		t.Fatalf("backendRef.namespace = %q, want %q", got, "${schema.spec.previewRoute.backend.namespace}")
+	if got, found, _ := unstructured.NestedString(backendRef, "namespace"); found {
+		t.Fatalf("backendRef.namespace = %q, want none (same-namespace backend)", got)
 	}
-	if got, found, _ := unstructured.NestedFieldNoCopy(backendRef, "port"); !found || fmt.Sprintf("%v", got) != "${schema.spec.previewRoute.backend.servicePort}" {
-		t.Fatalf("backendRef.port = %v (found %v), want %q", got, found, "${schema.spec.previewRoute.backend.servicePort}")
-	}
-	if got, _, _ := unstructured.NestedString(backendRef, "kind"); got != "Service" {
-		t.Fatalf("backendRef.kind = %q, want Service", got)
+	if got, found, _ := unstructured.NestedFieldNoCopy(backendRef, "port"); !found || fmt.Sprintf("%v", got) != "${schema.spec.port}" {
+		t.Fatalf("backendRef.port = %v (found %v), want %q", got, found, "${schema.spec.port}")
 	}
 
 	for _, field := range []string{"host", "url", "httpRouteRef", "gatewayRef", "phase"} {

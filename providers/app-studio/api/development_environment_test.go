@@ -100,20 +100,20 @@ func TestDefaultProjectDevelopmentEnvironmentDoesNotExposeSandboxPreviewHTTPRout
 	}
 }
 
-func TestEnsureProjectProviderResourceOverwritesSandboxRunnerPreviewRouteConfig(t *testing.T) {
+func TestEnsureProjectProviderResourceStripsTenantSuppliedSandboxRunnerPreviewRoute(t *testing.T) {
 	setPreviewHTTPRouteEnv(t)
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "todo"}}
 	binding := defaultSandboxRunnerBinding(project.Name)
+	// A malicious binding tries to inject preview routing. Preview routing is
+	// owned by the infra SandboxRunner RGD, so App Studio must strip these and
+	// only set name/projectRef.
 	binding.Values = projectDeploymentJSONValues(map[string]any{
-		"name":       "tenant-chosen-name",
-		"projectRef": "other-project",
+		"name":                "tenant-chosen-name",
+		"projectRef":          "other-project",
+		"previewRouteEnabled": true,
 		"previewRoute": map[string]any{
 			"host": "evil.example.net",
-			"parentGateway": map[string]any{
-				"name":      "evil-gateway",
-				"namespace": "evil-system",
-			},
 			"backend": map[string]any{
 				"namespace":   "kube-system",
 				"serviceName": "kube-dns",
@@ -135,83 +135,11 @@ func TestEnsureProjectProviderResourceOverwritesSandboxRunnerPreviewRouteConfig(
 	if got, want := spec["projectRef"], project.Name; got != want {
 		t.Fatalf("spec.projectRef = %q, want %q", got, want)
 	}
-	if got, want := spec["previewRouteEnabled"], true; got != want {
-		t.Fatalf("spec.previewRouteEnabled = %v, want %v", got, want)
-	}
-	route, ok := spec["previewRoute"].(map[string]any)
-	if !ok {
-		t.Fatalf("spec.previewRoute = %#v, want object", spec["previewRoute"])
-	}
-	if got, want := route["host"], runnerName+".preview.example.com"; got != want {
-		t.Fatalf("previewRoute.host = %q, want %q", got, want)
-	}
-	if got, want := route["channel"], "development-preview"; got != want {
-		t.Fatalf("previewRoute.channel = %q, want %q", got, want)
-	}
-	if got, want := route["accessMode"], "private"; got != want {
-		t.Fatalf("previewRoute.accessMode = %q, want %q", got, want)
-	}
-	parentGateway, ok := route["parentGateway"].(map[string]any)
-	if !ok {
-		t.Fatalf("previewRoute.parentGateway = %#v, want object", route["parentGateway"])
-	}
-	if got, want := parentGateway["namespace"], "preview-system"; got != want {
-		t.Fatalf("previewRoute.parentGateway.namespace = %q, want %q", got, want)
-	}
-	if got, want := parentGateway["name"], "kedge-preview"; got != want {
-		t.Fatalf("previewRoute.parentGateway.name = %q, want %q", got, want)
-	}
-	if got, want := parentGateway["sectionName"], "https"; got != want {
-		t.Fatalf("previewRoute.parentGateway.sectionName = %q, want %q", got, want)
-	}
-	backend, ok := route["backend"].(map[string]any)
-	if !ok {
-		t.Fatalf("previewRoute.backend = %#v, want object", route["backend"])
-	}
-	if got, want := backend["namespace"], "preview-system"; got != want {
-		t.Fatalf("previewRoute.backend.namespace = %q, want %q", got, want)
-	}
-	if got, want := backend["serviceName"], "preview-gateway"; got != want {
-		t.Fatalf("previewRoute.backend.serviceName = %q, want %q", got, want)
-	}
-	if got, want := backend["servicePort"], int64(9443); got != want {
-		t.Fatalf("previewRoute.backend.servicePort = %#v, want %#v", got, want)
-	}
-	if _, ok := route["target"]; ok {
-		t.Fatalf("previewRoute.target = %#v, want omitted because runtime target comes from SandboxRunner status", route["target"])
-	}
-	if _, ok := route["projectRef"]; ok {
-		t.Fatalf("previewRoute.projectRef = %#v, want omitted", route["projectRef"])
-	}
-}
-
-func TestEnsureProjectProviderResourceDisablesSandboxRunnerPreviewRouteWithoutPlatformConfig(t *testing.T) {
-	t.Setenv("APP_STUDIO_PREVIEW_BASE_DOMAIN", "")
-	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
-	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "todo"}}
-	binding := defaultSandboxRunnerBinding(project.Name)
-	binding.Values = projectDeploymentJSONValues(map[string]any{
-		"previewRouteEnabled": true,
-		"previewRoute": map[string]any{
-			"host": "evil.example.net",
-			"backend": map[string]any{
-				"namespace":   "kube-system",
-				"serviceName": "kube-dns",
-			},
-		},
-	})
-	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme()))
-
-	got, err := ensureProjectProviderResource(context.Background(), client, project, binding, id)
-	if err != nil {
-		t.Fatalf("ensureProjectProviderResource returned error: %v", err)
-	}
-	spec := got.Object["spec"].(map[string]any)
-	if got, want := spec["previewRouteEnabled"], false; got != want {
-		t.Fatalf("spec.previewRouteEnabled = %v, want %v", got, want)
+	if _, ok := spec["previewRouteEnabled"]; ok {
+		t.Fatalf("spec.previewRouteEnabled = %#v, want stripped (RGD owns preview routing)", spec["previewRouteEnabled"])
 	}
 	if _, ok := spec["previewRoute"]; ok {
-		t.Fatalf("spec.previewRoute = %#v, want removed when platform preview routing is disabled", spec["previewRoute"])
+		t.Fatalf("spec.previewRoute = %#v, want stripped (RGD owns preview routing)", spec["previewRoute"])
 	}
 }
 
@@ -663,8 +591,8 @@ func TestAuthorizeProjectDevelopmentPreviewTargetRejectsForgedSandboxRunnerPrevi
 	server := NewWithWorkspace(nil, nil, nil, readyDataPlaneHub(t), false)
 	server.previewSigner = previewtoken.NewSigner([]byte("test-secret"))
 
-	if _, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), client, id, project, projectDevelopmentSyncTargetInfo{ResourceName: runnerName}); err == nil || !strings.Contains(err.Error(), "does not match expected namespace") {
-		t.Fatalf("authorizeProjectDevelopmentPreviewTarget error = %v, want expected namespace rejection", err)
+	if _, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), client, id, project, projectDevelopmentSyncTargetInfo{ResourceName: runnerName}); err == nil || !strings.Contains(err.Error(), "does not match the runtime namespace") {
+		t.Fatalf("authorizeProjectDevelopmentPreviewTarget error = %v, want runtime namespace rejection", err)
 	}
 }
 
@@ -1008,13 +936,10 @@ func testSandboxRunnerWithPreviewRoute(name, project, rawURL string) *unstructur
 		"host":  host,
 		"url":   rawURL,
 		"httpRouteRef": map[string]any{
-			"name":      name,
-			"namespace": sandboxPreviewHTTPRouteNamespace,
-		},
-		"backend": map[string]any{
-			"namespace":   "tenant-controlled",
-			"serviceName": "tenant-backend",
-			"servicePort": int64(1),
+			"name": name,
+			// The HTTPRoute now lives in the sandbox's own runtime namespace
+			// (status.runtimeNamespace), not a shared "default" namespace.
+			"namespace": name,
 		},
 	}, "status", "previewRoute"); err != nil {
 		panic(err)
@@ -1024,13 +949,10 @@ func testSandboxRunnerWithPreviewRoute(name, project, rawURL string) *unstructur
 
 func setPreviewHTTPRouteEnv(t *testing.T) {
 	t.Helper()
+	// App Studio only needs the base domain now (to anti-spoof the reported
+	// preview host). The HTTPRoute + gateway/backend are owned by the infra
+	// provider's SandboxRunner RGD.
 	t.Setenv("APP_STUDIO_PREVIEW_BASE_DOMAIN", "preview.example.com")
-	t.Setenv("APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAME", "kedge-preview")
-	t.Setenv("APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAMESPACE", "preview-system")
-	t.Setenv("APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_SECTION_NAME", "https")
-	t.Setenv("APP_STUDIO_PREVIEW_BACKEND_NAMESPACE", "preview-system")
-	t.Setenv("APP_STUDIO_PREVIEW_BACKEND_SERVICE_NAME", "preview-gateway")
-	t.Setenv("APP_STUDIO_PREVIEW_BACKEND_SERVICE_PORT", "9443")
 }
 
 type previewOverlayProbeEngine struct {

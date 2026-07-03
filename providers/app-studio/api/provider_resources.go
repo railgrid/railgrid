@@ -26,7 +26,6 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/previewtoken"
 )
 
 func (s *Server) reconcileProjectLiveBindings(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) (*aiv1alpha1.Project, error) {
@@ -386,36 +385,13 @@ func normalizeProjectProviderBindingValues(p *aiv1alpha1.Project, binding aiv1al
 		if p != nil {
 			values["projectRef"] = p.Name
 		}
-		normalizeSandboxRunnerPreviewRouteValues(values, resourceName)
-	}
-}
-
-func normalizeSandboxRunnerPreviewRouteValues(values map[string]any, runnerName string) {
-	if !previewHTTPRouteEnabled() {
-		values["previewRouteEnabled"] = false
+		// The preview HTTPRoute is created declaratively by the SandboxRunner
+		// RGD (same mechanism as the application template), so App Studio no
+		// longer sets any previewRoute spec fields. Strip any tenant-supplied
+		// route config so a binding cannot influence preview routing.
+		delete(values, "previewRouteEnabled")
 		delete(values, "previewRoute")
-		return
 	}
-	baseDomain := strings.TrimSuffix(previewtoken.NormalizeHost(previewHTTPRouteBaseDomain()), "/")
-	values["previewRouteEnabled"] = true
-	route := map[string]any{
-		"channel":    previewChannelDevelopment,
-		"accessMode": string(aiv1alpha1.ProjectSharingModePrivate),
-		"parentGateway": map[string]any{
-			"name":        previewHTTPRouteParentGatewayName(),
-			"namespace":   previewHTTPRouteParentGatewayNamespace(),
-			"sectionName": previewHTTPRouteParentGatewaySectionName(),
-		},
-		"backend": map[string]any{
-			"namespace":   previewBackendNamespace(),
-			"serviceName": previewBackendServiceName(),
-			"servicePort": previewBackendServicePort(),
-		},
-	}
-	if runnerName != "" && baseDomain != "" {
-		route["host"] = runnerName + "." + strings.Trim(strings.TrimSpace(baseDomain), ".")
-	}
-	values["previewRoute"] = route
 }
 
 func isSandboxRunnerBinding(binding aiv1alpha1.ProjectProviderBindingSpec) bool {

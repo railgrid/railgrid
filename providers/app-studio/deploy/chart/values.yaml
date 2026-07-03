@@ -48,10 +48,14 @@ providerKubeconfig:
 # If baseDomain is empty, App Studio does not add the SandboxPreviewHTTPRoute
 # companion binding for new projects.
 previewGateway:
-  # Master switch: when true and baseDomain is set, the companion route is
-  # enabled, the provider emits APP_STUDIO_PREVIEW_HTTPROUTE_* env vars, and the
-  # chart creates a preview-gateway workload.
-  enabled: true
+  # Sandbox preview routing is now owned by the infrastructure provider's
+  # SandboxRunner RGD (an HTTPRoute on the platform Gateway backed by the
+  # sandbox's own preview Service). App Studio only needs `baseDomain` to
+  # validate the reported preview host — set it to the same value as the infra
+  # provider's KEDGE_APP_BASE_DOMAIN. The `enabled` switch below only controls
+  # the legacy shared preview-gateway workload, which is no longer in the data
+  # path; leave it off.
+  enabled: false
   baseDomain: ""
   # Parent Gateway references (host traffic fan-in).
   parentGateway:

@@ -106,17 +106,19 @@ type ApplicationSpec struct {
 	// +optional
 	BaseDomain string `json:"baseDomain,omitempty"`
 
-	// Gateway identifies the Gateway API parent the generated HTTPRoutes attach
-	// to. Its name/namespace are substituted for the ${kedge.gatewayName} /
-	// ${kedge.gatewayNamespace} tokens in a Template's backendConfig before the
-	// kro RGD is authored. Empty fields fall back to the in-binary default
-	// ("cloudflare-tunnel" in "cfgate-system").
+	// Gateway identifies the ONE Gateway API parent every template's generated
+	// HTTPRoutes attach to — 3-tier apps and sandbox previews alike (cfgate's
+	// cloudflare-tunnel in prod, an envoy Gateway locally). Its name/namespace
+	// are substituted for the ${kedge.gatewayName} / ${kedge.gatewayNamespace}
+	// tokens in a Template's backendConfig before the kro RGD is authored.
+	// Empty fields fall back to the in-binary default ("cloudflare-tunnel" in
+	// "cfgate-system").
 	// +optional
 	Gateway GatewayRef `json:"gateway,omitempty"`
 }
 
-// GatewayRef points at the platform Gateway (gateway.networking.k8s.io) the
-// `application` template's HTTPRoutes attach to via parentRefs.
+// GatewayRef points at the platform Gateway (gateway.networking.k8s.io) all
+// template HTTPRoutes attach to via parentRefs.
 type GatewayRef struct {
 	// Name of the Gateway. Empty → "cloudflare-tunnel" (the in-binary default).
 	// +optional

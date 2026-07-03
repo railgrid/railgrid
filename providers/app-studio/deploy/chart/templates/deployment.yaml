@@ -91,21 +91,15 @@ spec:
             # calling user via the forwarded bearer token.
             - name: KEDGE_PROVIDER_KUBECONFIG
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
-            {{- if $previewGatewayFeatureEnabled }}
+            {{- if ne (trim $previewGatewayBaseDomain) "" }}
+            # App Studio validates the SandboxRunner's reported preview host is
+            # <runner>.<baseDomain>. The HTTPRoute + routing are owned by the
+            # infrastructure SandboxRunner RGD (on the platform Gateway), so
+            # App Studio only needs the base domain — set it to the same value
+            # as the infra provider's KEDGE_APP_BASE_DOMAIN. No parent-gateway
+            # or shared preview-backend config is used anymore.
             - name: APP_STUDIO_PREVIEW_BASE_DOMAIN
               value: {{ $previewGatewayBaseDomain | quote }}
-            - name: APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAME
-              value: {{ .Values.previewGateway.parentGateway.name | quote }}
-            - name: APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAMESPACE
-              value: {{ .Values.previewGateway.parentGateway.namespace | quote }}
-            - name: APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_SECTION_NAME
-              value: {{ .Values.previewGateway.parentGateway.sectionName | quote }}
-            - name: APP_STUDIO_PREVIEW_BACKEND_NAMESPACE
-              value: {{ default .Release.Namespace .Values.previewGateway.backend.namespace | quote }}
-            - name: APP_STUDIO_PREVIEW_BACKEND_SERVICE_NAME
-              value: {{ default $previewGatewayServiceName .Values.previewGateway.backend.serviceName | quote }}
-            - name: APP_STUDIO_PREVIEW_BACKEND_SERVICE_PORT
-              value: {{ .Values.previewGateway.backend.servicePort | quote }}
             {{- end }}
             - name: APP_STUDIO_WORKSPACE_ROOT
               value: {{ .Values.workspace.path | quote }}

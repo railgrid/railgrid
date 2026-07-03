@@ -147,6 +147,11 @@ app_studio_preview_tls_secret = 'app-studio-preview-localhost-tls'
 app_studio_preview_listener = 'app-studio-preview-https'
 app_studio_preview_base_domain = 'preview.localhost'
 app_studio_preview_public_port = '10443'
+# Base domain the `application` template's 3-tier apps are served under
+# locally. Both apps and sandbox previews attach to the SAME envoy Gateway
+# (app_studio_preview_parent_gateway_name) via distinct listeners — mirroring
+# prod, where both attach to cfgate's cloudflare-tunnel Gateway.
+app_base_domain = 'apps.127.0.0.1.sslip.io'
 
 # The kedge-hub chart deploys namespaced objects (TLS Certificate + Secret,
 # selfsigned Issuer, StatefulSet) into hub_namespace but ships NO Namespace
@@ -277,6 +282,7 @@ spec:
   secretName: %s
   dnsNames:
     - "*.%s"
+    - "*.%s"
   issuerRef:
     name: app-studio-preview-selfsigned
     kind: Issuer
@@ -295,6 +301,18 @@ spec:
   gatewayClassName: eg
   listeners:
     - name: %s
+      hostname: "*.%s"
+      port: %s
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: %s
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: apps-https
       hostname: "*.%s"
       port: %s
       protocol: HTTPS
@@ -410,10 +428,14 @@ spec:
     app_studio_preview_namespace,
     app_studio_preview_tls_secret,
     app_studio_preview_base_domain,
+    app_base_domain,
     app_studio_preview_parent_gateway_name,
     gateway_ip,
     app_studio_preview_listener,
     app_studio_preview_base_domain,
+    app_studio_preview_public_port,
+    app_studio_preview_tls_secret,
+    app_base_domain,
     app_studio_preview_public_port,
     app_studio_preview_tls_secret,
     app_studio_preview_token_secret, app_studio_preview_namespace,
@@ -932,20 +954,18 @@ local_resource(
     # KRO_KUBECONFIG points at the kind cluster's host kubeconfig (where kro is).
     serve_cmd=('KRO_KUBECONFIG={kro} INFRASTRUCTURE_KUBECONFIG={kc} ' +
                'INFRASTRUCTURE_WORKSPACE_PATH=root:kedge:providers:infrastructure ' +
+               'KEDGE_APP_BASE_DOMAIN={apps_domain} ' +
                'KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN={preview_domain} ' +
-               'KEDGE_SANDBOX_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAME={preview_gateway} ' +
-               'KEDGE_SANDBOX_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAMESPACE=envoy-gateway-system ' +
-               'KEDGE_SANDBOX_PREVIEW_HTTPROUTE_PARENT_GATEWAY_SECTION_NAME={preview_listener} ' +
-               'KEDGE_SANDBOX_PREVIEW_BACKEND_NAMESPACE={preview_namespace} ' +
-               'KEDGE_SANDBOX_PREVIEW_BACKEND_SERVICE_NAME={preview_backend} ' +
-               'KEDGE_SANDBOX_PREVIEW_BACKEND_SERVICE_PORT=8080 ' +
+               # The ONE platform Gateway all template HTTPRoutes (apps and
+               # sandbox previews) attach to — locally the envoy Gateway above,
+               # in prod cfgate's cloudflare-tunnel (the in-binary default).
+               'KEDGE_GATEWAY_NAME={gateway} ' +
+               'KEDGE_GATEWAY_NAMESPACE=envoy-gateway-system ' +
                'make run-provider-infrastructure').format(
                    kro=KIND_HOST_KUBECONFIG, kc=KCP_ADMIN_KUBECONFIG,
+                   apps_domain=app_base_domain,
                    preview_domain=app_studio_preview_base_domain,
-                   preview_gateway=app_studio_preview_parent_gateway_name,
-                   preview_listener=app_studio_preview_listener,
-                   preview_namespace=app_studio_preview_namespace,
-                   preview_backend=app_studio_preview_gateway_name),
+                   gateway=app_studio_preview_parent_gateway_name),
     deps=[
         'providers/infrastructure/main.go',
         'providers/infrastructure/heartbeat.go',

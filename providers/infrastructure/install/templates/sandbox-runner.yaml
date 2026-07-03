@@ -95,53 +95,6 @@ spec:
       storageSize:
         type: string
         default: "1Gi"
-      previewRouteEnabled:
-        type: boolean
-        description: "Platform-owned switch for creating the preview HTTPRoute."
-        default: false
-      previewRoute:
-        type: object
-        properties:
-          channel:
-            type: string
-            description: "Preview channel used for grouping routing policy and metadata."
-            default: "development-preview"
-          accessMode:
-            type: string
-            description: "Planned preview access mode for this host."
-            enum: ["private", "shared", "public"]
-            default: "private"
-          host:
-            type: string
-            description: "Public host for the preview HTTPRoute."
-          parentGateway:
-            type: object
-            properties:
-              name:
-                type: string
-                description: "Parent Gateway name that owns this route."
-              namespace:
-                type: string
-                description: "Parent Gateway namespace."
-              sectionName:
-                type: string
-                description: "Listener section name on the parent Gateway."
-                default: "https"
-          backend:
-            type: object
-            properties:
-              namespace:
-                type: string
-                description: "Namespace of the shared preview gateway Service."
-                default: "kedge-preview"
-              serviceName:
-                type: string
-                description: "Preview gateway Service name."
-                default: "sandbox-preview-gateway"
-              servicePort:
-                type: integer
-                description: "Preview gateway Service port."
-                default: 8080
     required:
       - name
       - projectRef
@@ -461,55 +414,38 @@ spec:
               - name: control
                 port: 7070
                 targetPort: control
+      # Preview exposure — identical mechanism to the `application` template:
+      # an HTTPRoute attached to the platform Gateway (${kedge.gatewayName} in
+      # ${kedge.gatewayNamespace}, substituted before the RGD is authored) whose
+      # backend is the sandbox's OWN preview Service in the SAME namespace, so no
+      # cross-namespace ReferenceGrant is needed. The hostname is composed from
+      # the reserved ${kedge.sandboxPreviewBaseDomain} token and the runner name
+      # (which is globally unique), giving <runner>.<baseDomain>. cfgate programs the DNS
+      # record + Cloudflare tunnel route from this hostname. No TLS config here —
+      # TLS terminates at the Gateway edge.
       - id: httpRoute
-        includeWhen:
-          - ${schema.spec.previewRouteEnabled}
         template:
           apiVersion: gateway.networking.k8s.io/v1
           kind: HTTPRoute
           metadata:
             name: ${schema.spec.name}
-            namespace: default
+            namespace: ${runtimeNamespace.metadata.name}
           spec:
             parentRefs:
-              - name: ${schema.spec.previewRoute.parentGateway.name}
-                namespace: ${schema.spec.previewRoute.parentGateway.namespace}
-                sectionName: ${schema.spec.previewRoute.parentGateway.sectionName}
-            hostnames:
-              - ${schema.spec.previewRoute.host}
-            rules:
-              - backendRefs:
-                  - name: ${schema.spec.previewRoute.backend.serviceName}
-                    namespace: ${schema.spec.previewRoute.backend.namespace}
-                    port: ${schema.spec.previewRoute.backend.servicePort}
-                    kind: Service
-      # Allow the preview HTTPRoute (in the "default" namespace) to reference the
-      # shared preview-gateway Service in the backend namespace across the
-      # namespace boundary. Previously App Studio created this ReferenceGrant
-      # imperatively against the runtime cluster; it is now owned by this
-      # template so App Studio no longer needs a runtime-cluster credential.
-      - id: previewReferenceGrant
-        includeWhen:
-          - ${schema.spec.previewRouteEnabled}
-        template:
-          apiVersion: gateway.networking.k8s.io/v1beta1
-          kind: ReferenceGrant
-          metadata:
-            name: ${schema.spec.name}
-            namespace: ${schema.spec.previewRoute.backend.namespace}
-            labels:
-              app.kubernetes.io/name: sandbox-runner
-              app.kubernetes.io/instance: ${schema.spec.name}
-              app.kubernetes.io/managed-by: kedge-infrastructure
-          spec:
-            from:
               - group: gateway.networking.k8s.io
-                kind: HTTPRoute
-                namespace: default
-            to:
-              - group: ""
-                kind: Service
-                name: ${schema.spec.previewRoute.backend.serviceName}
+                kind: Gateway
+                name: ${kedge.gatewayName}
+                namespace: ${kedge.gatewayNamespace}
+            hostnames:
+              - ${schema.spec.name}.${kedge.sandboxPreviewBaseDomain}
+            rules:
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /
+                backendRefs:
+                  - name: ${previewService.metadata.name}
+                    port: ${schema.spec.port}
       - id: runnerNetwork
         template:
           apiVersion: networking.k8s.io/v1

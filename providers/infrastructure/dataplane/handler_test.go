@@ -18,7 +18,6 @@ package dataplane
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -76,19 +75,6 @@ func (f *fakeRuntime) Transport() (http.RoundTripper, error) {
 func (f *fakeRuntime) ControlToken(_ context.Context, namespace, name string) (string, error) {
 	f.gotTokenNamespace, f.gotTokenName = namespace, name
 	return f.token, nil
-}
-
-type fakePreviewRouteManager struct {
-	err error
-
-	calls int
-	got   *unstructured.Unstructured
-}
-
-func (f *fakePreviewRouteManager) Ensure(_ context.Context, instance *unstructured.Unstructured) error {
-	f.calls++
-	f.got = instance
-	return f.err
 }
 
 func newTestHandler(t *testing.T, ig *fakeInstanceGetter, rt *fakeRuntime) *Handler {
@@ -168,58 +154,24 @@ func TestHandlerProxyVerbAppendsCallerPath(t *testing.T) {
 	}
 }
 
-func TestHandlerEnsuresPreviewRouteBeforeProxyingSandboxPreview(t *testing.T) {
+func TestHandlerProxiesSandboxPreviewWithoutRouteGate(t *testing.T) {
+	// The public preview HTTPRoute is now created declaratively by the
+	// SandboxRunner RGD (same as the application template), so the data-plane
+	// proxy has no per-request route-reconciliation gate — a sandbox proxy
+	// request reverse-proxies straight to the runtime preview Service.
 	var gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 	}))
 	defer upstream.Close()
 
-	manager := &fakePreviewRouteManager{}
-	h := NewHandler(
-		&fakeInstanceGetter{instance: runnerInstance(testNamespace)},
-		&fakeContractGetter{contract: sandboxRunnerContract()},
-		&fakeRuntime{host: upstream.URL},
-		WithPreviewRouteManager(manager),
-	)
+	h := newTestHandler(t, &fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeRuntime{host: upstream.URL})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("proxy")+"/assets/app.js")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if manager.calls != 1 {
-		t.Fatalf("preview route ensure calls = %d, want 1", manager.calls)
-	}
-	if manager.got == nil || manager.got.GetName() != "kedge-sandbox-a1c31ddaaaa007d4" {
-		t.Fatalf("preview route manager got instance %#v", manager.got)
-	}
 	if gotPath == "" {
-		t.Fatal("request was not proxied after preview route ensure")
-	}
-}
-
-func TestHandlerReportsPreviewRouteNotReady(t *testing.T) {
-	h := NewHandler(
-		&fakeInstanceGetter{instance: runnerInstance(testNamespace)},
-		&fakeContractGetter{contract: sandboxRunnerContract()},
-		&fakeRuntime{host: "http://unused"},
-		WithPreviewRouteManager(&fakePreviewRouteManager{err: previewRouteNotReady("waiting for ResolvedRefs")}),
-	)
-	rec := doRequest(h, http.MethodGet, dataplaneURL("proxy"))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", rec.Code)
-	}
-}
-
-func TestHandlerFailsClosedWhenPreviewRouteValidationFails(t *testing.T) {
-	h := NewHandler(
-		&fakeInstanceGetter{instance: runnerInstance(testNamespace)},
-		&fakeContractGetter{contract: sandboxRunnerContract()},
-		&fakeRuntime{host: "http://unused"},
-		WithPreviewRouteManager(&fakePreviewRouteManager{err: errors.New("unexpected backend")}),
-	)
-	rec := doRequest(h, http.MethodGet, dataplaneURL("proxy"))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", rec.Code)
+		t.Fatal("request was not proxied")
 	}
 }
 

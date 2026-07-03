@@ -36,8 +36,6 @@ const (
 	projectDevelopmentEnvironmentName   = "development"
 	projectDevelopmentBindingName       = "dev"
 	projectDevelopmentProviderAppStudio = "app-studio"
-	previewChannelDevelopment           = "development-preview"
-	sandboxPreviewHTTPRouteNamespace    = "default"
 	projectSandboxSyncTimeout           = 20 * time.Second
 )
 
@@ -49,11 +47,7 @@ type projectDevelopmentSyncTargetInfo struct {
 }
 
 type sandboxPreviewHTTPRouteInfo struct {
-	URL                string
-	HTTPRouteNamespace string
-	BackendNamespace   string
-	BackendServiceName string
-	ReferenceGrantName string
+	URL string
 }
 
 type projectSandboxSyncFile struct {
@@ -241,44 +235,34 @@ func sandboxRunnerPreviewRoute(obj *unstructured.Unstructured) (sandboxPreviewHT
 	}
 	rawURL, _, _ := unstructured.NestedString(obj.Object, "status", "previewRoute", "url")
 	httpRouteNamespace, _, _ := unstructured.NestedString(obj.Object, "status", "previewRoute", "httpRouteRef", "namespace")
+	runtimeNamespace, _, _ := unstructured.NestedString(obj.Object, "status", "runtimeNamespace")
 	expectedHost := sandboxRunnerPreviewRouteHost(name)
 	if strings.TrimSpace(rawURL) == "" || expectedHost == "" {
-		return sandboxPreviewHTTPRouteInfo{ReferenceGrantName: name}, nil
+		return sandboxPreviewHTTPRouteInfo{}, nil
 	}
 	if host := previewtoken.NormalizeHost(rawURL); host != expectedHost {
 		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox preview route host %q does not match expected host %q", host, expectedHost)
 	}
+	// The HTTPRoute is created by the SandboxRunner RGD in the sandbox's own
+	// runtime namespace (same namespace as the preview Service). Anti-spoof: the
+	// route's namespace must match the runner's recorded runtime namespace.
 	httpRouteNamespace = strings.TrimSpace(httpRouteNamespace)
-	if httpRouteNamespace == "" {
-		httpRouteNamespace = sandboxPreviewHTTPRouteNamespace
-	}
-	if !isExpectedSandboxPreviewHTTPRouteNamespace(obj, httpRouteNamespace) {
-		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox preview HTTPRoute namespace %q does not match expected namespace %q", httpRouteNamespace, sandboxPreviewHTTPRouteNamespace)
+	runtimeNamespace = strings.TrimSpace(runtimeNamespace)
+	if runtimeNamespace == "" || httpRouteNamespace != runtimeNamespace {
+		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox preview HTTPRoute namespace %q does not match the runtime namespace %q", httpRouteNamespace, runtimeNamespace)
 	}
 	return sandboxPreviewHTTPRouteInfo{
-		URL:                previewPublicURL(strings.TrimSpace(rawURL)),
-		HTTPRouteNamespace: httpRouteNamespace,
-		BackendNamespace:   previewBackendNamespace(),
-		BackendServiceName: previewBackendServiceName(),
-		ReferenceGrantName: name,
+		URL: previewPublicURL(strings.TrimSpace(rawURL)),
 	}, nil
 }
 
 func sandboxRunnerPreviewRouteHost(runnerName string) string {
 	runnerName = strings.TrimSpace(runnerName)
 	baseDomain := strings.Trim(previewtoken.NormalizeHost(previewHTTPRouteBaseDomain()), ".")
-	if runnerName == "" || baseDomain == "" || !previewHTTPRouteEnabled() {
+	if runnerName == "" || baseDomain == "" {
 		return ""
 	}
 	return runnerName + "." + baseDomain
-}
-
-func isExpectedSandboxPreviewHTTPRouteNamespace(obj *unstructured.Unstructured, namespace string) bool {
-	namespace = strings.TrimSpace(namespace)
-	if namespace == sandboxPreviewHTTPRouteNamespace {
-		return true
-	}
-	return namespace != "" && namespace == expectedKROPrefixedNamespace(obj, sandboxPreviewHTTPRouteNamespace)
 }
 
 func previewPublicURL(raw string) string {
