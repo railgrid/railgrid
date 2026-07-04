@@ -15,20 +15,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 // App Studio no longer holds a kubeconfig to the runtime cluster. The live
-// development data plane (logs, file sync, restart, preview readiness) is now
-// served by the infrastructure provider as subresources on the SandboxRunner
+// development data plane (logs, file sync, restart, preview readiness) is
+// served by the infrastructure provider as subresources on the workload
 // instance, reached through the hub backend proxy:
 //
-//	{hub}/services/providers/infrastructure/dataplane/clusters/{cluster}/sandboxrunners/{name}/{verb}
+//	{hub}/services/providers/infrastructure/dataplane/clusters/{cluster}/{resource}/{name}/{verb}
+//	{hub}/…/{resource}/{name}/components/{component}/{verb}   (multi-tier templates)
 //
 // The caller's bearer token is forwarded as-is; the infra provider authorizes
 // the request as that caller (a tenant-scoped GET on the instance) and owns the
-// runtime-cluster credential. See docs/app-studio-runtime-decoupling.md.
+// runtime-cluster credential. See docs/app-studio-runtime-decoupling.md and
+// docs/app-studio-template-sandboxes.md §3.
 const (
 	infraDataPlaneProvider = "infrastructure"
 	sandboxRunnersResource = "sandboxrunners"
@@ -42,29 +45,54 @@ const (
 	dataPlaneCallTimeout = 30 * time.Second
 )
 
-// sandboxDataPlaneURL composes the hub URL for a SandboxRunner data-plane verb.
-// tail (with leading slash) is appended after the verb — used only by the open
-// "proxy" verb; the control verbs leave it empty.
-func (s *Server) sandboxDataPlaneURL(clusterID, runnerName, verb, tail string) string {
+// dataPlaneRef addresses one data-plane target: an instance of a resource,
+// optionally scoped to one of its components. An empty Resource defaults to
+// the legacy sandbox runner; an empty Component addresses instance-level
+// verbs.
+type dataPlaneRef struct {
+	Resource  string
+	Name      string
+	Component string
+}
+
+func sandboxDataPlaneRef(runnerName string) dataPlaneRef {
+	return dataPlaneRef{Resource: sandboxRunnersResource, Name: runnerName}
+}
+
+// dataPlaneURL composes the hub URL for a data-plane verb. tail (with leading
+// slash) is appended after the verb — used only by the open "proxy" verb; the
+// control verbs leave it empty. Every addressing segment is path-escaped so a
+// crafted value (a component name with a slash, say) cannot reroute the
+// request; kcp cluster IDs keep their colons (':' is a valid path character
+// PathEscape leaves alone).
+func (s *Server) dataPlaneURL(clusterID string, ref dataPlaneRef, verb, tail string) string {
+	resource := ref.Resource
+	if resource == "" {
+		resource = sandboxRunnersResource
+	}
 	u := strings.TrimRight(s.hubBase, "/") +
-		fmt.Sprintf("/services/providers/%s/dataplane/clusters/%s/%s/%s/%s",
-			infraDataPlaneProvider, clusterID, sandboxRunnersResource, runnerName, verb)
+		fmt.Sprintf("/services/providers/%s/dataplane/clusters/%s/%s/%s",
+			infraDataPlaneProvider, url.PathEscape(clusterID), url.PathEscape(resource), url.PathEscape(ref.Name))
+	if ref.Component != "" {
+		u += "/components/" + url.PathEscape(ref.Component)
+	}
+	u += "/" + url.PathEscape(verb)
 	if tail != "" {
 		u += tail
 	}
 	return u
 }
 
-// newSandboxDataPlaneRequest builds a data-plane request authenticated as the
+// newDataPlaneRequest builds a data-plane request authenticated as the
 // caller (the same bearer token the caller authenticated to App Studio with).
-func (s *Server) newSandboxDataPlaneRequest(ctx context.Context, method string, id identity, runnerName, verb, tail string, body io.Reader) (*http.Request, error) {
+func (s *Server) newDataPlaneRequest(ctx context.Context, method string, id identity, ref dataPlaneRef, verb, tail string, body io.Reader) (*http.Request, error) {
 	if strings.TrimSpace(s.hubBase) == "" {
 		return nil, fmt.Errorf("hub URL is not configured; cannot reach the infrastructure data plane")
 	}
 	if strings.TrimSpace(id.clusterID) == "" {
-		return nil, fmt.Errorf("no workspace cluster on request; cannot address the sandbox runner")
+		return nil, fmt.Errorf("no workspace cluster on request; cannot address the development runtime")
 	}
-	req, err := http.NewRequestWithContext(ctx, method, s.sandboxDataPlaneURL(id.clusterID, runnerName, verb, tail), body)
+	req, err := http.NewRequestWithContext(ctx, method, s.dataPlaneURL(id.clusterID, ref, verb, tail), body)
 	if err != nil {
 		return nil, err
 	}
@@ -80,20 +108,20 @@ func (s *Server) sandboxDataPlaneClient(timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: projectMCPTransport(s.mcpInsecureSkipTLSVerify)}
 }
 
-// sandboxDataPlanePost sends a POST verb (sync, restart) and returns the body +
-// status code. The caller maps non-2xx to an error so the runner's own response
-// surfaces to the UI.
-func (s *Server) sandboxDataPlanePost(ctx context.Context, id identity, runnerName, verb string, payload []byte) ([]byte, int, error) {
+// dataPlanePost sends a POST verb (sync, restart, env) and returns the body +
+// status code. The caller maps non-2xx to an error so the runtime's own
+// response surfaces to the UI.
+func (s *Server) dataPlanePost(ctx context.Context, id identity, ref dataPlaneRef, verb string, payload []byte) ([]byte, int, error) {
 	callCtx, cancel := context.WithTimeout(ctx, dataPlaneCallTimeout)
 	defer cancel()
-	req, err := s.newSandboxDataPlaneRequest(callCtx, http.MethodPost, id, runnerName, verb, "", strings.NewReader(string(payload)))
+	req, err := s.newDataPlaneRequest(callCtx, http.MethodPost, id, ref, verb, "", strings.NewReader(string(payload)))
 	if err != nil {
 		return nil, 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("sandbox data plane %s: %w", verb, err)
+		return nil, 0, fmt.Errorf("development data plane %s: %w", verb, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
@@ -103,21 +131,21 @@ func (s *Server) sandboxDataPlanePost(ctx context.Context, id identity, runnerNa
 	return body, resp.StatusCode, nil
 }
 
-// sandboxDataPlaneGet sends a GET verb (log) and returns a bounded body + status
-// code. Unlike sandboxDataPlaneStream it collects the response into memory, for
+// dataPlaneGet sends a GET verb (log) and returns a bounded body + status
+// code. Unlike dataPlaneStream it collects the response into memory, for
 // callers (assistant tools) that need the payload as a value rather than a
 // stream. maxBytes bounds the body so a large log buffer cannot blow the
 // assistant context.
-func (s *Server) sandboxDataPlaneGet(ctx context.Context, id identity, runnerName, verb string, maxBytes int64) ([]byte, int, error) {
+func (s *Server) dataPlaneGet(ctx context.Context, id identity, ref dataPlaneRef, verb string, maxBytes int64) ([]byte, int, error) {
 	callCtx, cancel := context.WithTimeout(ctx, dataPlaneCallTimeout)
 	defer cancel()
-	req, err := s.newSandboxDataPlaneRequest(callCtx, http.MethodGet, id, runnerName, verb, "", nil)
+	req, err := s.newDataPlaneRequest(callCtx, http.MethodGet, id, ref, verb, "", nil)
 	if err != nil {
 		return nil, 0, err
 	}
 	resp, err := s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("sandbox data plane %s: %w", verb, err)
+		return nil, 0, fmt.Errorf("development data plane %s: %w", verb, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if maxBytes <= 0 {
@@ -130,10 +158,10 @@ func (s *Server) sandboxDataPlaneGet(ctx context.Context, id identity, runnerNam
 	return body, resp.StatusCode, nil
 }
 
-// sandboxDataPlaneStream proxies a streaming GET verb (logs) straight to w,
-// copying the upstream status and content type.
-func (s *Server) sandboxDataPlaneStream(ctx context.Context, id identity, runnerName, verb string, w http.ResponseWriter) error {
-	req, err := s.newSandboxDataPlaneRequest(ctx, http.MethodGet, id, runnerName, verb, "", nil)
+// dataPlaneStream proxies a streaming GET verb (logs) straight to w, copying
+// the upstream status and content type.
+func (s *Server) dataPlaneStream(ctx context.Context, id identity, ref dataPlaneRef, verb string, w http.ResponseWriter) error {
+	req, err := s.newDataPlaneRequest(ctx, http.MethodGet, id, ref, verb, "", nil)
 	if err != nil {
 		return err
 	}
@@ -141,7 +169,7 @@ func (s *Server) sandboxDataPlaneStream(ctx context.Context, id identity, runner
 	// close) ends them.
 	resp, err := s.sandboxDataPlaneClient(0).Do(req)
 	if err != nil {
-		return fmt.Errorf("sandbox data plane %s: %w", verb, err)
+		return fmt.Errorf("development data plane %s: %w", verb, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
@@ -169,12 +197,12 @@ func (s *Server) sandboxDataPlaneStream(ctx context.Context, id identity, runner
 	}
 }
 
-// sandboxDataPlaneProbe performs a GET against the open proxy verb (path tail)
-// and returns the upstream status + a bounded body, for preview readiness.
-func (s *Server) sandboxDataPlaneProbe(ctx context.Context, id identity, runnerName, tail string) (int, []byte, error) {
+// dataPlaneProbe performs a GET against the open proxy verb (path tail) and
+// returns the upstream status + a bounded body, for preview readiness.
+func (s *Server) dataPlaneProbe(ctx context.Context, id identity, ref dataPlaneRef, tail string) (int, []byte, error) {
 	callCtx, cancel := context.WithTimeout(ctx, previewReadinessProbeTimeout)
 	defer cancel()
-	req, err := s.newSandboxDataPlaneRequest(callCtx, http.MethodGet, id, runnerName, dataPlaneVerbProxy, tail, nil)
+	req, err := s.newDataPlaneRequest(callCtx, http.MethodGet, id, ref, dataPlaneVerbProxy, tail, nil)
 	if err != nil {
 		return 0, nil, err
 	}

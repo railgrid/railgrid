@@ -188,25 +188,53 @@ func (s *Server) restartProjectDevelopment(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	target, ok := projectDevelopmentSyncTarget(p, id)
-	if !ok {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox runner binding")
+	target, err := s.projectDevelopmentTarget(r.Context(), c, p, id)
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
-	// Validate the runner exists in the workspace before reaching the data
-	// plane, so a missing runner surfaces as 404 rather than a proxy error.
-	if _, _, err := s.runtimeTargetForProject(r.Context(), c, target.ResourceName); err != nil {
+	// Validate the instance exists in the workspace before reaching the data
+	// plane, so a missing instance surfaces as 404 rather than a proxy error.
+	if err := s.validateDevelopmentInstance(r.Context(), c, target); err != nil {
 		writeRuntimeTargetError(w, err)
 		return
 	}
-	respBody, status, err := s.sandboxDataPlanePost(r.Context(), id, target.ResourceName, dataPlaneVerbRestart, []byte(`{}`))
-	if err != nil {
-		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
+	// Legacy single-runner target: instance-level restart. A ?component=
+	// query restricts a template-backed restart to one component; default is
+	// every component (a template instance has no instance-level restart).
+	if len(target.Components) == 0 {
+		respBody, status, err := s.dataPlanePost(r.Context(), id, target.dataPlaneRefFor(""), dataPlaneVerbRestart, []byte(`{}`))
+		if err != nil {
+			writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(respBody)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(respBody)
+	components := target.sortedComponents()
+	if requested := strings.TrimSpace(r.URL.Query().Get("component")); requested != "" {
+		if _, ok := target.Components[requested]; !ok {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "unknown development component "+requested)
+			return
+		}
+		components = []string{requested}
+	}
+	results := map[string]json.RawMessage{}
+	for _, component := range components {
+		respBody, status, err := s.dataPlanePost(r.Context(), id, target.dataPlaneRefFor(component), dataPlaneVerbRestart, []byte(`{}`))
+		if err != nil {
+			writeStatus(w, http.StatusBadGateway, "BadGateway", "component "+component+": "+err.Error())
+			return
+		}
+		if status < 200 || status >= 300 {
+			writeStatus(w, http.StatusBadGateway, "BadGateway", fmt.Sprintf("component %s restart returned %d: %s", component, status, strings.TrimSpace(string(respBody))))
+			return
+		}
+		results[component] = json.RawMessage(respBody)
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 func (s *Server) logsProjectDevelopment(w http.ResponseWriter, r *http.Request) {
@@ -214,19 +242,31 @@ func (s *Server) logsProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	target, ok := projectDevelopmentSyncTarget(p, id)
-	if !ok {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox runner binding")
+	target, err := s.projectDevelopmentTarget(r.Context(), c, p, id)
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
-	// Validate the runner exists in the workspace first (404 vs proxy error).
-	if _, _, err := s.runtimeTargetForProject(r.Context(), c, target.ResourceName); err != nil {
+	// Validate the instance exists in the workspace first (404 vs proxy error).
+	if err := s.validateDevelopmentInstance(r.Context(), c, target); err != nil {
 		writeRuntimeTargetError(w, err)
 		return
 	}
+	// Template-backed targets stream one component's logs: ?component= picks
+	// it, defaulting to the first declared component.
+	component := ""
+	if len(target.Components) > 0 {
+		component = strings.TrimSpace(r.URL.Query().Get("component"))
+		if component == "" {
+			component = target.sortedComponents()[0]
+		} else if _, ok := target.Components[component]; !ok {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "unknown development component "+component)
+			return
+		}
+	}
 	// Stream logs from the infrastructure provider's data-plane subresource;
 	// it owns the runtime credential and the control-token injection.
-	if err := s.sandboxDataPlaneStream(r.Context(), id, target.ResourceName, dataPlaneVerbLog, w); err != nil {
+	if err := s.dataPlaneStream(r.Context(), id, target.dataPlaneRefFor(component), dataPlaneVerbLog, w); err != nil {
 		// Headers may already be sent on a mid-stream failure; only safe to
 		// write a status when nothing has been flushed yet.
 		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
@@ -239,9 +279,24 @@ func (s *Server) statusProjectDevelopment(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	target, ok := projectDevelopmentSyncTarget(p, id)
-	if !ok {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox runner binding")
+	target, err := s.projectDevelopmentTarget(r.Context(), c, p, id)
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	if len(target.Components) > 0 {
+		res, err := target.instanceResource()
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		obj, err := c.Resource(res, "").Get(r.Context(), target.ResourceName, metav1.GetOptions{})
+		if err != nil {
+			writeRuntimeTargetError(w, err)
+			return
+		}
+		status, _ := obj.Object["status"].(map[string]any)
+		writeJSON(w, http.StatusOK, status)
 		return
 	}
 	_, obj, err := s.runtimeTargetForProject(r.Context(), c, target.ResourceName)
@@ -280,7 +335,7 @@ func (s *Server) previewReadiness(ctx context.Context, id identity, runnerName s
 	notReady := func(reason, message string) projectSandboxPreviewURLResponse {
 		return projectSandboxPreviewURLResponse{Ready: false, Reason: reason, Message: message}
 	}
-	status, body, err := s.sandboxDataPlaneProbe(ctx, id, runnerName, "/")
+	status, body, err := s.dataPlaneProbe(ctx, id, sandboxDataPlaneRef(runnerName), "/")
 	if err != nil {
 		return notReady("service_unavailable", "Preview is getting ready. The sandbox runtime is not reachable yet.")
 	}

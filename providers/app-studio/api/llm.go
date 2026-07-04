@@ -83,6 +83,7 @@ const (
 	projectToolWriteFile                      = "write_file"
 	projectToolApplyPatch                     = "apply_patch"
 	projectToolMkdir                          = "mkdir"
+	projectToolSelectTemplate                 = "select_project_template"
 	projectToolCommitProjectFiles             = "commit_project_files"
 	projectToolCommitFiles                    = "commit_files"
 	projectToolCodeCommitFiles                = "code__commit_files"
@@ -1611,6 +1612,11 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 	b.WriteString("Conversation mode: " + string(profile) + "\n")
 	b.WriteString("Project metadata:\n")
 	b.WriteString("- Name: " + p.Name + "\n")
+	if p.Spec.Template != nil && strings.TrimSpace(p.Spec.Template.Name) != "" {
+		b.WriteString("- Development template: " + strings.TrimSpace(p.Spec.Template.Name) + " (the development environment runs this infrastructure template in development mode; source directories map to its declared components, so keep new code under the component directories)\n")
+	} else {
+		b.WriteString("- Development template: none selected yet. When the user wants to build something whose shape needs more than the default single web sandbox (a backend API, a database, background work), translate their business intent into requirements yourself, pick the matching template via infrastructure__list_templates / infrastructure__describe_template, confirm the recommendation in business terms, and bind it with select_project_template. Only templates that declare development components can back the development environment.\n")
+	}
 	b.WriteString("- Display name: " + p.Spec.DisplayName + "\n")
 	if strings.TrimSpace(p.Spec.Description) != "" {
 		b.WriteString("- Description: " + p.Spec.Description + "\n")

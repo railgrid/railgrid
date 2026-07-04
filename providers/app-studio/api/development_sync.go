@@ -17,6 +17,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,9 +28,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/klog/v2"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/previewtoken"
+	"github.com/faroshq/provider-app-studio/tenant"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -44,6 +49,51 @@ type projectDevelopmentSyncTargetInfo struct {
 	BindingName     string
 	Provider        string
 	ResourceName    string
+
+	// Resource / Kind / APIVersion are the instance coordinates the data
+	// plane and tenant client address (sandboxrunners, or the Project
+	// template's instanceCRD).
+	Resource   string `json:"Resource,omitempty"`
+	Kind       string `json:"Kind,omitempty"`
+	APIVersion string `json:"APIVersion,omitempty"`
+
+	// Components maps a development component name to its workspacePath, for
+	// template-backed projects (docs/app-studio-template-sandboxes.md §4.2).
+	// Empty means the legacy single-runner target: whole-workspace sync to
+	// the instance-level verbs.
+	Components map[string]string `json:"Components,omitempty"`
+}
+
+// instanceResource is the tenant.Resource descriptor for the target instance.
+func (t projectDevelopmentSyncTargetInfo) instanceResource() (tenant.Resource, error) {
+	if t.Resource == "" || t.Resource == sandboxRunnersResource {
+		return sandboxRunnerResource, nil
+	}
+	gv, err := schema.ParseGroupVersion(t.APIVersion)
+	if err != nil {
+		return tenant.Resource{}, fmt.Errorf("target apiVersion %q: %w", t.APIVersion, err)
+	}
+	return providerBindingResource(gv.WithResource(t.Resource), t.Kind), nil
+}
+
+// dataPlaneRefFor addresses the target's instance, optionally scoped to a
+// component.
+func (t projectDevelopmentSyncTargetInfo) dataPlaneRefFor(component string) dataPlaneRef {
+	resource := t.Resource
+	if resource == "" {
+		resource = sandboxRunnersResource
+	}
+	return dataPlaneRef{Resource: resource, Name: t.ResourceName, Component: component}
+}
+
+// sortedComponents returns the component names in deterministic order.
+func (t projectDevelopmentSyncTargetInfo) sortedComponents() []string {
+	names := make([]string, 0, len(t.Components))
+	for name := range t.Components {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 type sandboxPreviewHTTPRouteInfo struct {
@@ -82,6 +132,9 @@ type projectSandboxPreviewURLResponse struct {
 	Reason                string `json:"reason,omitempty"`
 }
 
+// projectDevelopmentSyncTarget resolves the legacy (sandbox-runner) target
+// from the Project spec alone. Template-backed projects resolve through
+// projectDevelopmentTarget, which also reads the Template's component map.
 func projectDevelopmentSyncTarget(p *aiv1alpha1.Project, id identity) (projectDevelopmentSyncTargetInfo, bool) {
 	if p == nil {
 		return projectDevelopmentSyncTargetInfo{}, false
@@ -104,6 +157,7 @@ func projectDevelopmentSyncTarget(p *aiv1alpha1.Project, id identity) (projectDe
 				EnvironmentName: env.Name,
 				BindingName:     binding.Name,
 				Provider:        binding.Provider,
+				Resource:        sandboxRunnersResource,
 			}
 			if target.BindingName == "" {
 				target.BindingName = projectDevelopmentBindingName
@@ -119,14 +173,56 @@ func projectDevelopmentSyncTarget(p *aiv1alpha1.Project, id identity) (projectDe
 	return projectDevelopmentSyncTargetInfo{}, false
 }
 
+// projectDevelopmentTarget resolves the Project's development data-plane
+// target. A template-backed Project (spec.template set) targets its template
+// instance with the Template's component map read live from the tenant
+// catalog; otherwise the legacy sandbox-runner target applies.
+func (s *Server) projectDevelopmentTarget(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) (projectDevelopmentSyncTargetInfo, error) {
+	if p == nil {
+		return projectDevelopmentSyncTargetInfo{}, fmt.Errorf("project is nil")
+	}
+	if p.Spec.Template == nil || strings.TrimSpace(p.Spec.Template.Name) == "" {
+		target, ok := projectDevelopmentSyncTarget(p, id)
+		if !ok {
+			return projectDevelopmentSyncTargetInfo{}, fmt.Errorf("project has no development runtime binding")
+		}
+		return target, nil
+	}
+	info, err := fetchProjectTemplate(ctx, c, p.Spec.Template.Name)
+	if err != nil {
+		return projectDevelopmentSyncTargetInfo{}, fmt.Errorf("read project template %q: %w", p.Spec.Template.Name, err)
+	}
+	// A template-backed target without development components must never fall
+	// through to the legacy sandbox-runner code paths — they would mis-handle
+	// a non-sandbox instance. selectProjectTemplate refuses such templates;
+	// this guards against the template losing its development block later.
+	if len(info.Components) == 0 {
+		return projectDevelopmentSyncTargetInfo{}, fmt.Errorf("project template %q no longer declares development components", info.Name)
+	}
+	name := projectTemplateInstanceName(p)
+	if name == "" {
+		return projectDevelopmentSyncTargetInfo{}, fmt.Errorf("project has no name")
+	}
+	return projectDevelopmentSyncTargetInfo{
+		EnvironmentName: projectDevelopmentEnvironmentName,
+		BindingName:     projectDevelopmentBindingName,
+		Provider:        projectDevelopmentProviderAppStudio,
+		Resource:        info.Resource,
+		Kind:            info.Kind,
+		APIVersion:      info.APIVersion,
+		ResourceName:    name,
+		Components:      info.Components,
+	}, nil
+}
+
 func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
-	target, ok := projectDevelopmentSyncTarget(p, id)
-	if !ok {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox runner binding")
+	target, err := s.projectDevelopmentTarget(r.Context(), c, p, id)
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
 	result, err := s.syncProjectDevelopmentTarget(r.Context(), c, id, p, target)
@@ -142,9 +238,9 @@ func (s *Server) authorizeProjectDevelopmentPreview(w http.ResponseWriter, r *ht
 	if !ok {
 		return
 	}
-	target, ok := projectDevelopmentSyncTarget(p, id)
-	if !ok {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox runner binding")
+	target, err := s.projectDevelopmentTarget(r.Context(), c, p, id)
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
 	preview, err := s.authorizeProjectDevelopmentPreviewTarget(r.Context(), c, id, p, target)
@@ -170,26 +266,105 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(projectSandboxSyncRequest{Files: files, Restart: "auto"})
-	if err != nil {
-		return nil, fmt.Errorf("encode sandbox sync payload: %w", err)
-	}
-	// Validate the runner exists in the workspace first (clear 404 vs proxy err).
-	if _, _, err := s.runtimeTargetForProject(ctx, c, target.ResourceName); err != nil {
+	// Validate the instance exists in the workspace first (clear 404 vs proxy err).
+	if err := s.validateDevelopmentInstance(ctx, c, target); err != nil {
 		return nil, err
 	}
-	body, status, err := s.sandboxDataPlanePost(ctx, id, target.ResourceName, dataPlaneVerbSync, payload)
+
+	// Legacy single-runner target: whole workspace to the instance-level verb.
+	if len(target.Components) == 0 {
+		payload, err := json.Marshal(projectSandboxSyncRequest{Files: files, Restart: "auto"})
+		if err != nil {
+			return nil, fmt.Errorf("encode sandbox sync payload: %w", err)
+		}
+		body, status, err := s.dataPlanePost(ctx, id, target.dataPlaneRefFor(""), dataPlaneVerbSync, payload)
+		if err != nil {
+			return nil, err
+		}
+		if status < 200 || status >= 300 {
+			return nil, fmt.Errorf("sandbox runtime sync returned %d: %s", status, strings.TrimSpace(string(body)))
+		}
+		_ = patchLastSync(ctx, c, target.ResourceName, metav1.Now())
+		return json.RawMessage(body), nil
+	}
+
+	// Template-backed target: route files to each component's own sync verb
+	// by workspacePath prefix (docs/app-studio-template-sandboxes.md §4.2).
+	// Files outside every component (README, docs) sync nowhere.
+	routed := routeProjectSyncFiles(files, target.Components)
+	results := map[string]json.RawMessage{}
+	for _, component := range target.sortedComponents() {
+		payload, err := json.Marshal(projectSandboxSyncRequest{Files: routed[component], Restart: "auto"})
+		if err != nil {
+			return nil, fmt.Errorf("encode %s sync payload: %w", component, err)
+		}
+		body, status, err := s.dataPlanePost(ctx, id, target.dataPlaneRefFor(component), dataPlaneVerbSync, payload)
+		if err != nil {
+			return nil, fmt.Errorf("component %s: %w", component, err)
+		}
+		if status < 200 || status >= 300 {
+			return nil, fmt.Errorf("component %s sync returned %d: %s", component, status, strings.TrimSpace(string(body)))
+		}
+		results[component] = json.RawMessage(body)
+	}
+	aggregated, err := json.Marshal(results)
 	if err != nil {
 		return nil, err
 	}
-	if status < 200 || status >= 300 {
-		return nil, fmt.Errorf("sandbox runtime sync returned %d: %s", status, strings.TrimSpace(string(body)))
+	return aggregated, nil
+}
+
+// validateDevelopmentInstance confirms the target instance exists in the
+// tenant workspace so a missing instance surfaces as a Kubernetes 404 rather
+// than a data-plane proxy error. Legacy sandbox targets additionally apply
+// the runner's status-ref anti-spoof validation.
+func (s *Server) validateDevelopmentInstance(ctx context.Context, c *asclient.Client, target projectDevelopmentSyncTargetInfo) error {
+	if target.Resource == "" || target.Resource == sandboxRunnersResource {
+		_, _, err := s.runtimeTargetForProject(ctx, c, target.ResourceName)
+		return err
 	}
-	_ = patchLastSync(ctx, c, target.ResourceName, metav1.Now())
-	return json.RawMessage(body), nil
+	res, err := target.instanceResource()
+	if err != nil {
+		return err
+	}
+	_, err = c.Resource(res, "").Get(ctx, target.ResourceName, metav1.GetOptions{})
+	return err
+}
+
+// routeProjectSyncFiles groups workspace files by development component: a
+// file under a component's workspacePath syncs to that component with the
+// prefix stripped (the component's PVC holds only its own subtree). "." claims
+// the whole workspace (single-component templates); the Template validation
+// guarantees paths never nest, so a file maps to at most one component.
+func routeProjectSyncFiles(files []projectSandboxSyncFile, components map[string]string) map[string][]projectSandboxSyncFile {
+	out := make(map[string][]projectSandboxSyncFile, len(components))
+	for component, workspacePath := range components {
+		wp := path.Clean(strings.TrimSpace(workspacePath))
+		if wp == "." {
+			out[component] = files
+			continue
+		}
+		prefix := wp + "/"
+		for _, f := range files {
+			if strings.HasPrefix(f.Path, prefix) {
+				out[component] = append(out[component], projectSandboxSyncFile{
+					Path:    strings.TrimPrefix(f.Path, prefix),
+					Content: f.Content,
+				})
+			}
+		}
+	}
+	return out
 }
 
 func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (projectSandboxPreviewURLResponse, error) {
+	// A template-backed development environment keeps its production route
+	// wiring — the instance is exposed at its own public URL (the dev overlay
+	// preserves the HTTPRoute split), so the preview is that URL, not a
+	// signed sandbox-gateway URL. See docs/app-studio-template-sandboxes.md §1.
+	if len(target.Components) > 0 {
+		return s.templateDevelopmentPreview(ctx, c, target)
+	}
 	runtimeTarget, runner, err := s.runtimeTargetForProject(ctx, c, target.ResourceName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -343,7 +518,7 @@ func (s *Server) projectAssistantPreviewRefreshNeeded(_ context.Context, _ works
 
 func shouldSyncDevelopmentAfterTool(name string) bool {
 	switch projectToolBaseName(name) {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir, projectToolSelectTemplate:
 		return true
 	default:
 		return false
@@ -379,16 +554,17 @@ func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project
 }
 
 func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id identity, p *aiv1alpha1.Project, name string) {
-	target, ok := projectDevelopmentSyncTarget(p, id)
-	if !ok {
-		return
-	}
 	lock := s.developmentSyncLock(id, p.Name)
 	lock.Lock()
 	defer lock.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), projectSandboxSyncTimeout)
 	defer cancel()
+	target, err := s.projectDevelopmentTarget(ctx, c, p, id)
+	if err != nil {
+		klog.V(2).Infof("development sync after %s skipped for project %s: %v", projectToolBaseName(name), p.Name, err)
+		return
+	}
 	if _, err := s.syncProjectDevelopmentTarget(ctx, c, id, p, target); err != nil {
-		klog.V(2).Infof("development sandbox sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
+		klog.V(2).Infof("development sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
 	}
 }

@@ -6,7 +6,7 @@ spec:
   resources:
   - group: ai.kedge.faros.sh
     name: projects
-    schema: v260625-49a11a87.projects.ai.kedge.faros.sh
+    schema: v260704-936c379.projects.ai.kedge.faros.sh
     storage:
       crd: {}
 status: {}

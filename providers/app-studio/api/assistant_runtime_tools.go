@@ -73,28 +73,42 @@ type projectSandboxEnvRequest struct {
 }
 
 // projectAssistantRuntimeCallContext resolves the server, caller identity, and
-// SandboxRunner name for a runtime data-plane call. When the project has no
-// runner binding, no runtime client, or the runner is not yet reachable it
-// returns a structured not-ready/blocked result so tools report it rather than
-// erroring the whole turn.
-func projectAssistantRuntimeCallContext(ctx context.Context, runCtx projectAssistantWorkflowRunContext) (*Server, identity, string, *projectAssistantRuntimeWorkflowResult) {
+// development data-plane target for a runtime call. When the project has no
+// development binding, no runtime client, or the instance is not yet reachable
+// it returns a structured not-ready/blocked result so tools report it rather
+// than erroring the whole turn.
+func projectAssistantRuntimeCallContext(ctx context.Context, runCtx projectAssistantWorkflowRunContext) (*Server, identity, projectDevelopmentSyncTargetInfo, *projectAssistantRuntimeWorkflowResult) {
 	if runCtx.Server == nil || runCtx.Client == nil || runCtx.Project == nil {
 		res, _ := projectAssistantRuntimeNotConfiguredResult("Runtime action is unavailable because no runtime client is configured for this run.")
-		return nil, identity{}, "", res
+		return nil, identity{}, projectDevelopmentSyncTargetInfo{}, res
 	}
-	target, ok := projectDevelopmentSyncTarget(runCtx.Project, runCtx.Identity)
-	if !ok {
-		res, _ := projectAssistantRuntimeNotConfiguredResult("Runtime action is unavailable because the project has no sandbox runner binding yet.")
-		return nil, identity{}, "", res
+	target, err := runCtx.Server.projectDevelopmentTarget(ctx, runCtx.Client, runCtx.Project, runCtx.Identity)
+	if err != nil {
+		res, _ := projectAssistantRuntimeNotConfiguredResult("Runtime action is unavailable: " + err.Error())
+		return nil, identity{}, projectDevelopmentSyncTargetInfo{}, res
 	}
-	if _, _, err := runCtx.Server.runtimeTargetForProject(ctx, runCtx.Client, target.ResourceName); err != nil {
-		return nil, identity{}, "", &projectAssistantRuntimeWorkflowResult{
+	if err := runCtx.Server.validateDevelopmentInstance(ctx, runCtx.Client, target); err != nil {
+		return nil, identity{}, projectDevelopmentSyncTargetInfo{}, &projectAssistantRuntimeWorkflowResult{
 			Status:  "unavailable",
 			Summary: "Runtime is not ready yet: " + err.Error(),
 			Runtime: &projectAssistantDeploymentRuntime{Status: "starting", Message: err.Error()},
 		}
 	}
-	return runCtx.Server, runCtx.Identity, target.ResourceName, nil
+	return runCtx.Server, runCtx.Identity, target, nil
+}
+
+// runtimeComponentRefs enumerates the data-plane refs a runtime action fans
+// out to: each declared component for a template-backed target, or the single
+// instance-level ref for the legacy runner. Keys label per-ref results.
+func runtimeComponentRefs(target projectDevelopmentSyncTargetInfo) map[string]dataPlaneRef {
+	if len(target.Components) == 0 {
+		return map[string]dataPlaneRef{"": target.dataPlaneRefFor("")}
+	}
+	out := make(map[string]dataPlaneRef, len(target.Components))
+	for _, component := range target.sortedComponents() {
+		out[component] = target.dataPlaneRefFor(component)
+	}
+	return out
 }
 
 func newProjectAssistantRuntimeLogsGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
@@ -122,7 +136,7 @@ func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext)
 		if tail > projectAssistantRuntimeLogsMaxTail {
 			tail = projectAssistantRuntimeLogsMaxTail
 		}
-		server, id, runner, blocked := projectAssistantRuntimeCallContext(ctx, runCtx)
+		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, runCtx)
 		if blocked != nil {
 			return &projectAssistantRuntimeLogsResult{
 				Status:    blocked.Status,
@@ -131,7 +145,14 @@ func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext)
 				NextSteps: blocked.NextSteps,
 			}, nil
 		}
-		body, status, err := server.sandboxDataPlaneGet(ctx, id, runner, dataPlaneVerbLog, projectAssistantRuntimeLogsMaxBytes)
+		// Template-backed targets: read the first component's logs (a
+		// component-aware tool input is a follow-up; the model can also use
+		// the HTTP surface's ?component=).
+		component := ""
+		if len(target.Components) > 0 {
+			component = target.sortedComponents()[0]
+		}
+		body, status, err := server.dataPlaneGet(ctx, id, target.dataPlaneRefFor(component), dataPlaneVerbLog, projectAssistantRuntimeLogsMaxBytes)
 		if err != nil {
 			return &projectAssistantRuntimeLogsResult{
 				Status:  "unavailable",
@@ -195,26 +216,32 @@ func restartProjectAssistantRuntime(runCtx projectAssistantWorkflowRunContext) f
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		server, id, runner, blocked := projectAssistantRuntimeCallContext(ctx, runCtx)
+		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, runCtx)
 		if blocked != nil {
 			return blocked, nil
 		}
-		body, status, err := server.sandboxDataPlanePost(ctx, id, runner, dataPlaneVerbRestart, []byte(`{}`))
-		if err != nil {
-			return &projectAssistantRuntimeWorkflowResult{
-				Status:  "error",
-				Summary: "Runtime restart failed: " + err.Error(),
-				Runtime: &projectAssistantDeploymentRuntime{Status: "error", Message: err.Error()},
-			}, nil
+		for component, ref := range runtimeComponentRefs(target) {
+			body, status, err := server.dataPlanePost(ctx, id, ref, dataPlaneVerbRestart, []byte(`{}`))
+			label := ""
+			if component != "" {
+				label = " (component " + component + ")"
+			}
+			if err != nil {
+				return &projectAssistantRuntimeWorkflowResult{
+					Status:  "error",
+					Summary: "Runtime restart failed" + label + ": " + err.Error(),
+					Runtime: &projectAssistantDeploymentRuntime{Status: "error", Message: err.Error()},
+				}, nil
+			}
+			if status < 200 || status >= 300 {
+				return &projectAssistantRuntimeWorkflowResult{
+					Status:  "error",
+					Summary: fmt.Sprintf("Runtime restart failed%s (status %d): %s", label, status, truncateProjectToolInfo(string(body))),
+					Runtime: &projectAssistantDeploymentRuntime{Status: "error", Message: truncateProjectToolInfo(string(body))},
+				}, nil
+			}
 		}
-		if status < 200 || status >= 300 {
-			return &projectAssistantRuntimeWorkflowResult{
-				Status:  "error",
-				Summary: fmt.Sprintf("Runtime restart failed (status %d): %s", status, truncateProjectToolInfo(string(body))),
-				Runtime: &projectAssistantDeploymentRuntime{Status: "error", Message: truncateProjectToolInfo(string(body))},
-			}, nil
-		}
-		return projectAssistantRuntimeActionResult(ctx, runCtx, "Runtime restart requested. The sandbox dev process is restarting.", "Runtime restarted and is serving preview traffic."), nil
+		return projectAssistantRuntimeActionResult(ctx, runCtx, "Runtime restart requested. The development process is restarting.", "Runtime restarted and is serving preview traffic."), nil
 	}
 }
 
@@ -277,7 +304,7 @@ func setProjectAssistantRuntimeEnv(runCtx projectAssistantWorkflowRunContext) fu
 				NextSteps: nextSteps,
 			}, nil
 		}
-		server, id, runner, blocked := projectAssistantRuntimeCallContext(ctx, runCtx)
+		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, runCtx)
 		if blocked != nil {
 			return blocked, nil
 		}
@@ -289,20 +316,28 @@ func setProjectAssistantRuntimeEnv(runCtx projectAssistantWorkflowRunContext) fu
 		if err != nil {
 			return nil, fmt.Errorf("encode runtime env request: %w", err)
 		}
-		body, status, err := server.sandboxDataPlanePost(ctx, id, runner, dataPlaneVerbEnv, payload)
-		if err != nil {
-			return &projectAssistantRuntimeWorkflowResult{
-				Status:  "error",
-				Summary: "Runtime environment update failed: " + err.Error(),
-				Runtime: &projectAssistantDeploymentRuntime{Status: "error", Message: err.Error()},
-			}, nil
-		}
-		if status < 200 || status >= 300 {
-			return &projectAssistantRuntimeWorkflowResult{
-				Status:  "error",
-				Summary: fmt.Sprintf("Runtime environment update failed (status %d): %s", status, truncateProjectToolInfo(string(body))),
-				Runtime: &projectAssistantDeploymentRuntime{Status: "error", Message: truncateProjectToolInfo(string(body))},
-			}, nil
+		// Fan the env update out to every component: runtime configuration is
+		// declared per project, and each dev process merges it independently.
+		for component, ref := range runtimeComponentRefs(target) {
+			body, status, err := server.dataPlanePost(ctx, id, ref, dataPlaneVerbEnv, payload)
+			label := ""
+			if component != "" {
+				label = " (component " + component + ")"
+			}
+			if err != nil {
+				return &projectAssistantRuntimeWorkflowResult{
+					Status:  "error",
+					Summary: "Runtime environment update failed" + label + ": " + err.Error(),
+					Runtime: &projectAssistantDeploymentRuntime{Status: "error", Message: err.Error()},
+				}, nil
+			}
+			if status < 200 || status >= 300 {
+				return &projectAssistantRuntimeWorkflowResult{
+					Status:  "error",
+					Summary: fmt.Sprintf("Runtime environment update failed%s (status %d): %s", label, status, truncateProjectToolInfo(string(body))),
+					Runtime: &projectAssistantDeploymentRuntime{Status: "error", Message: truncateProjectToolInfo(string(body))},
+				}, nil
+			}
 		}
 		names := sortedProjectAssistantRuntimeEnvNames(env)
 		summary := fmt.Sprintf("Set %d runtime environment variable(s): %s.", len(names), strings.Join(names, ", "))

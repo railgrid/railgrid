@@ -68,6 +68,16 @@ type ProjectSpec struct {
 	// +optional
 	Repository *ProjectRepositoryBinding `json:"repository,omitempty"`
 
+	// Template names the infrastructure Template whose instance backs this
+	// Project's development environment (docs/app-studio-template-sandboxes.md).
+	// When set, the development binding is generated from the Template's
+	// instanceCRD with kedgeMode: development, and file sync routes per the
+	// Template's declared development components. Empty keeps the legacy
+	// SandboxRunner development binding (transitional; retired with the
+	// sandbox-runner template).
+	// +optional
+	Template *ProjectTemplateSpec `json:"template,omitempty"`
+
 	// Memory stores durable context the AI should consider for this
 	// project. It is edited explicitly through the API in the MVP.
 	// +optional
@@ -111,6 +121,19 @@ type ProjectSharingPolicy struct {
 	// +optional
 	// +kubebuilder:validation:Enum=private;shared;public
 	Mode ProjectSharingMode `json:"mode,omitempty"`
+}
+
+// ProjectTemplateSpec names the infrastructure Template backing the Project's
+// development environment. Everything else — the instance kind to bind, the
+// component/workspacePath map file sync routes by — is read live from the
+// Template CR in the tenant workspace catalog, so template updates apply
+// without a Project write.
+type ProjectTemplateSpec struct {
+	// Name is the Template's catalog name (e.g. "application").
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
 }
 
 // ProjectRepositoryBinding identifies the Code provider Repository created for

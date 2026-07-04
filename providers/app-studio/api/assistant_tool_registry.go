@@ -279,6 +279,35 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
+				Name:        projectToolSelectTemplate,
+				Description: "Bind the project's development environment to an infrastructure template (or switch it). Interview the user about their requirements first (backend? persistent data? background jobs?), inspect candidates with infrastructure__list_templates / infrastructure__describe_template, and confirm the choice with the user before calling this — switching tears the current development environment down and re-provisions it (workspace files and git history are preserved and re-synced).",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"template":{"type":"string","description":"Catalog name of the infrastructure template to back the development environment (e.g. application). The template must declare development components."}},"required":["template"]}`),
+				Risk:        projectAssistantToolRiskWrite,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				if server == nil {
+					return "", errors.New("server is not configured")
+				}
+				if req.Project == nil {
+					return "", errors.New("no project on this run")
+				}
+				c, err := server.clientFor(req.Identity)
+				if err != nil {
+					return "", err
+				}
+				_, info, err := server.selectProjectTemplate(ctx, c, req.Identity, req.Project, projectToolString(req.Arguments["template"]))
+				if err != nil {
+					return "", err
+				}
+				return projectAssistantToolJSONResult(map[string]any{
+					"template":   info.Name,
+					"components": info.Components,
+					"note":       "development environment is re-provisioning in development mode; the workspace will be synced into it automatically",
+				}, nil)
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
 				Name:        projectToolCommitProjectFiles,
 				Description: "Commit selected App Studio workspace text files to the managed git source through the Code provider.",
 				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"repositoryRef":{"type":"string","description":"Managed Code provider Repository resource name."},"paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":%d,"description":"Project-relative workspace file paths to commit."},"message":{"type":"string","description":"Commit message."},"branch":{"type":"string","description":"Optional branch override."}},"required":["repositoryRef","paths"]}`, projectCommitProjectFilesMax)),

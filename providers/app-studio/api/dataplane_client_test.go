@@ -16,34 +16,52 @@ import (
 	"testing"
 )
 
-func TestSandboxDataPlaneURL(t *testing.T) {
+func TestDataPlaneURL(t *testing.T) {
 	s := &Server{hubBase: "https://hub.example/"}
-	got := s.sandboxDataPlaneURL("root:kedge:orgs:acme", "kedge-sandbox-abc", dataPlaneVerbLog, "")
+
+	got := s.dataPlaneURL("root:kedge:orgs:acme", sandboxDataPlaneRef("kedge-sandbox-abc"), dataPlaneVerbLog, "")
 	want := "https://hub.example/services/providers/infrastructure/dataplane/clusters/root:kedge:orgs:acme/sandboxrunners/kedge-sandbox-abc/log"
 	if got != want {
-		t.Fatalf("sandboxDataPlaneURL = %q, want %q", got, want)
+		t.Fatalf("dataPlaneURL = %q, want %q", got, want)
 	}
+
 	// The open proxy verb appends the caller tail after the verb.
-	gotProxy := s.sandboxDataPlaneURL("c1", "r1", dataPlaneVerbProxy, "/assets/app.js")
+	gotProxy := s.dataPlaneURL("c1", sandboxDataPlaneRef("r1"), dataPlaneVerbProxy, "/assets/app.js")
 	wantProxy := "https://hub.example/services/providers/infrastructure/dataplane/clusters/c1/sandboxrunners/r1/proxy/assets/app.js"
 	if gotProxy != wantProxy {
 		t.Fatalf("proxy URL = %q, want %q", gotProxy, wantProxy)
 	}
+
+	// Component verbs address a template instance's component
+	// (docs/app-studio-template-sandboxes.md §3).
+	gotComp := s.dataPlaneURL("c1", dataPlaneRef{Resource: "applications", Name: "shop-dev", Component: "backend"}, dataPlaneVerbSync, "")
+	wantComp := "https://hub.example/services/providers/infrastructure/dataplane/clusters/c1/applications/shop-dev/components/backend/sync"
+	if gotComp != wantComp {
+		t.Fatalf("component URL = %q, want %q", gotComp, wantComp)
+	}
+
+	// An empty resource defaults to the legacy sandbox runner.
+	gotDefault := s.dataPlaneURL("c1", dataPlaneRef{Name: "r1"}, dataPlaneVerbLog, "")
+	wantDefault := "https://hub.example/services/providers/infrastructure/dataplane/clusters/c1/sandboxrunners/r1/log"
+	if gotDefault != wantDefault {
+		t.Fatalf("default-resource URL = %q, want %q", gotDefault, wantDefault)
+	}
 }
 
-func TestNewSandboxDataPlaneRequestRequiresHubAndCluster(t *testing.T) {
+func TestNewDataPlaneRequestRequiresHubAndCluster(t *testing.T) {
 	id := identity{clusterID: "c1", token: "tok"}
+	ref := sandboxDataPlaneRef("r1")
 	// No hub base configured.
-	if _, err := (&Server{}).newSandboxDataPlaneRequest(context.Background(), http.MethodGet, id, "r1", dataPlaneVerbLog, "", nil); err == nil {
+	if _, err := (&Server{}).newDataPlaneRequest(context.Background(), http.MethodGet, id, ref, dataPlaneVerbLog, "", nil); err == nil {
 		t.Fatal("expected error when hubBase is unset")
 	}
 	// No cluster on the request.
 	s := &Server{hubBase: "https://hub.example"}
-	if _, err := s.newSandboxDataPlaneRequest(context.Background(), http.MethodGet, identity{token: "tok"}, "r1", dataPlaneVerbLog, "", nil); err == nil {
+	if _, err := s.newDataPlaneRequest(context.Background(), http.MethodGet, identity{token: "tok"}, ref, dataPlaneVerbLog, "", nil); err == nil {
 		t.Fatal("expected error when clusterID is empty")
 	}
 	// Happy path forwards the caller's bearer token.
-	req, err := s.newSandboxDataPlaneRequest(context.Background(), http.MethodGet, id, "r1", dataPlaneVerbLog, "", nil)
+	req, err := s.newDataPlaneRequest(context.Background(), http.MethodGet, id, ref, dataPlaneVerbLog, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

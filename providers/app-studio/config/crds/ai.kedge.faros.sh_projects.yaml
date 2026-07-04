@@ -205,6 +205,24 @@ spec:
                         type: string
                     type: object
                 type: object
+              template:
+                description: |-
+                  Template names the infrastructure Template whose instance backs this
+                  Project's development environment (docs/app-studio-template-sandboxes.md).
+                  When set, the development binding is generated from the Template's
+                  instanceCRD with kedgeMode: development, and file sync routes per the
+                  Template's declared development components. Empty keeps the legacy
+                  SandboxRunner development binding (transitional; retired with the
+                  sandbox-runner template).
+                properties:
+                  name:
+                    description: Name is the Template's catalog name (e.g. "application").
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
             required:
             - displayName
             type: object
