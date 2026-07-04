@@ -46,6 +46,7 @@ import (
 	"github.com/faroshq/provider-code/controller/deploykey"
 	"github.com/faroshq/provider-code/controller/packages"
 	"github.com/faroshq/provider-code/controller/repository"
+	"github.com/faroshq/provider-code/controller/repositorycheckout"
 	"github.com/faroshq/provider-code/controller/repositorycommit"
 	"github.com/faroshq/provider-code/install"
 	codescheme "github.com/faroshq/provider-code/scheme"
@@ -106,6 +107,9 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 	}
 	if err := (&repositorycommit.Reconciler{Backends: registry, Bundles: bundles}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("repositorycommit controller: %w", err)
+	}
+	if err := (&repositorycheckout.Reconciler{Backends: registry, Bundles: bundles}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("repositorycheckout controller: %w", err)
 	}
 	if err := (&deploykey.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("deploykey controller: %w", err)

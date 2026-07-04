@@ -121,6 +121,38 @@ type RepositoryCommitter interface {
 	CommitFiles(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository, input RepositoryCommitInput) (RepositoryCommitResult, error)
 }
 
+// RepositoryCheckoutInput bounds a text-tree read. Zero limits apply the
+// backend's defaults; the caller (the RepositoryCheckout controller) sets
+// them from the platform's workspace bounds.
+type RepositoryCheckoutInput struct {
+	// Ref is the branch, tag, or commit SHA to read; empty means the
+	// repository's default branch.
+	Ref string
+	// MaxFiles caps how many files the checkout returns.
+	MaxFiles int
+	// MaxFileBytes caps one file's size; larger files are skipped.
+	MaxFileBytes int64
+	// MaxTotalBytes caps the checkout's total content size; files beyond it
+	// are skipped.
+	MaxTotalBytes int64
+}
+
+// RepositoryCheckoutResult is the text tree a backend read: UTF-8 files plus
+// the paths it skipped (binary, oversized, over the caps).
+type RepositoryCheckoutResult struct {
+	Ref       string
+	CommitSHA string
+	Files     []RepositoryCommitFile
+	Skipped   []string
+}
+
+// RepositoryReader is an OPTIONAL capability for backends that can read a
+// repository's text tree without a local git clone — the CommitFiles flow in
+// reverse, consumed by App Studio workspace hydration and repo import.
+type RepositoryReader interface {
+	CheckoutFiles(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository, input RepositoryCheckoutInput) (RepositoryCheckoutResult, error)
+}
+
 // GitBackend is the seam between the controllers and a concrete git host.
 // Every method is idempotent: the reconciler calls it on every pass for a
 // given generation, so a backend MUST treat "already in the desired state"

@@ -84,6 +84,7 @@ const (
 	projectToolApplyPatch                     = "apply_patch"
 	projectToolMkdir                          = "mkdir"
 	projectToolSelectTemplate                 = "select_project_template"
+	projectToolHydrateWorkspace               = "hydrate_workspace"
 	projectToolCommitProjectFiles             = "commit_project_files"
 	projectToolCommitFiles                    = "commit_files"
 	projectToolCodeCommitFiles                = "code__commit_files"

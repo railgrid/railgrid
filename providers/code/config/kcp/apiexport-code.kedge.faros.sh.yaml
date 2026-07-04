@@ -30,6 +30,11 @@ spec:
     storage:
       crd: {}
   - group: code.kedge.faros.sh
+    name: repositorycheckouts
+    schema: v260704-6d52bca.repositorycheckouts.code.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: code.kedge.faros.sh
     name: repositorycommits
     schema: v260614-fbb1248.repositorycommits.code.kedge.faros.sh
     storage:
