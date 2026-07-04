@@ -308,6 +308,28 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
+				Name:        projectToolHydrateWorkspace,
+				Description: "Replace-load the project workspace from the project's git repository (the durable source of truth): existing files are overwritten with the repository's text tree, workspace-only files stay. Use after a template switch, to recover a lost workspace, or when the user wants the repository state back. Uncommitted workspace changes to tracked files are lost — confirm with the user first.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"ref":{"type":"string","description":"Branch, tag, or commit SHA to hydrate from; defaults to the repository default branch."}}}`),
+				Risk:        projectAssistantToolRiskWrite,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				if req.Project == nil {
+					return "", errors.New("no project on this run")
+				}
+				resp, err := s.hydrateWorkspaceFromRepository(ctx, req.Identity, req.Project, req.HTTPRequest, projectToolString(req.Arguments["ref"]))
+				if err != nil {
+					return "", err
+				}
+				return projectAssistantToolJSONResult(resp, nil)
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
 				Name:        projectToolCommitProjectFiles,
 				Description: "Commit selected App Studio workspace text files to the managed git source through the Code provider.",
 				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"repositoryRef":{"type":"string","description":"Managed Code provider Repository resource name."},"paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":%d,"description":"Project-relative workspace file paths to commit."},"message":{"type":"string","description":"Commit message."},"branch":{"type":"string","description":"Optional branch override."}},"required":["repositoryRef","paths"]}`, projectCommitProjectFilesMax)),

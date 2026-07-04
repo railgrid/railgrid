@@ -47,6 +47,11 @@ const (
 
 	projectRepositoryProjectLabel = "app-studio.ai.kedge.faros.sh/project"
 
+	// projectRepositoryAdoptedAnnotation marks a Repository App Studio
+	// adopted (repository import) rather than created — deleting the project
+	// releases the claim but never deletes an adopted repository.
+	projectRepositoryAdoptedAnnotation = "app-studio.ai.kedge.faros.sh/adopted"
+
 	projectRepositoryStatusReady             = "Ready"
 	projectRepositoryStatusProvisioning      = "Provisioning"
 	projectRepositoryStatusFailed            = "Failed"
@@ -67,6 +72,11 @@ type projectRepositoryPlan struct {
 	Name          string
 	ConnectionRef string
 	Description   string
+
+	// Adopted marks a plan built from an EXISTING Repository CR (repository
+	// import): creation claims it instead of creating one, and cleanup
+	// releases the claim instead of deleting the repository.
+	Adopted bool
 }
 
 type ProjectCreateReadinessView struct {
@@ -108,6 +118,94 @@ func (s *Server) prepareProjectRepository(ctx context.Context, c *asclient.Clien
 		ConnectionRef: connectionRef,
 		Description:   description,
 	}, nil
+}
+
+// adoptProjectRepository builds a repository plan from an EXISTING Repository
+// CR (repository import). The repository must not already back another App
+// Studio project.
+func adoptProjectRepository(ctx context.Context, c *asclient.Client, repositoryRef string) (projectRepositoryPlan, error) {
+	repositoryRef = strings.TrimSpace(repositoryRef)
+	if repositoryRef == "" {
+		return projectRepositoryPlan{}, newValidationError("existingRepositoryRef is empty")
+	}
+	repo, err := c.Resource(codeRepositoryResource, "").Get(ctx, repositoryRef, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return projectRepositoryPlan{}, newValidationError(fmt.Sprintf("Code repository %q not found", repositoryRef))
+		}
+		return projectRepositoryPlan{}, codeProviderRequestError("get Code repository", err)
+	}
+	if claimedBy := strings.TrimSpace(repo.GetLabels()[projectRepositoryProjectLabel]); claimedBy != "" {
+		return projectRepositoryPlan{}, newValidationError(fmt.Sprintf("Code repository %q already backs App Studio project %q", repositoryRef, claimedBy))
+	}
+	name, _, _ := unstructured.NestedString(repo.Object, "spec", "name")
+	connectionRef, _, _ := unstructured.NestedString(repo.Object, "spec", "connectionRef")
+	if strings.TrimSpace(connectionRef) == "" {
+		return projectRepositoryPlan{}, newValidationError(fmt.Sprintf("Code repository %q has no connectionRef", repositoryRef))
+	}
+	if strings.TrimSpace(name) == "" {
+		name = repositoryRef
+	}
+	return projectRepositoryPlan{
+		Ref:           repositoryRef,
+		Name:          strings.TrimSpace(name),
+		ConnectionRef: strings.TrimSpace(connectionRef),
+		Adopted:       true,
+	}, nil
+}
+
+// claimProjectRepository stamps the project claim onto an adopted Repository.
+func claimProjectRepository(ctx context.Context, c *asclient.Client, projectName string, plan projectRepositoryPlan) error {
+	repo, err := c.Resource(codeRepositoryResource, "").Get(ctx, plan.Ref, metav1.GetOptions{})
+	if err != nil {
+		return codeProviderRequestError("get Code repository", err)
+	}
+	if claimedBy := strings.TrimSpace(repo.GetLabels()[projectRepositoryProjectLabel]); claimedBy != "" && claimedBy != projectName {
+		return newValidationError(fmt.Sprintf("Code repository %q already backs App Studio project %q", plan.Ref, claimedBy))
+	}
+	labels := repo.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[projectRepositoryProjectLabel] = projectName
+	repo.SetLabels(labels)
+	annotations := repo.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations[projectRepositoryProjectAnnotation] = projectName
+	annotations[projectRepositoryAdoptedAnnotation] = "true"
+	repo.SetAnnotations(annotations)
+	if _, err := c.Resource(codeRepositoryResource, "").Update(ctx, repo, metav1.UpdateOptions{}); err != nil {
+		return codeProviderRequestError("claim Code repository", err)
+	}
+	return nil
+}
+
+// releaseProjectRepository removes the project claim from an adopted
+// Repository (project cleanup/deletion). Best-effort semantics at call sites.
+func releaseProjectRepository(ctx context.Context, c *asclient.Client, repositoryRef string) error {
+	repo, err := c.Resource(codeRepositoryResource, "").Get(ctx, repositoryRef, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	labels := repo.GetLabels()
+	delete(labels, projectRepositoryProjectLabel)
+	repo.SetLabels(labels)
+	annotations := repo.GetAnnotations()
+	delete(annotations, projectRepositoryProjectAnnotation)
+	delete(annotations, projectRepositoryAdoptedAnnotation)
+	repo.SetAnnotations(annotations)
+	_, err = c.Resource(codeRepositoryResource, "").Update(ctx, repo, metav1.UpdateOptions{})
+	return err
+}
+
+// repositoryAdopted reports whether the Repository carries the adopted marker.
+func repositoryAdopted(repo *unstructured.Unstructured) bool {
+	return repo != nil && strings.EqualFold(strings.TrimSpace(repo.GetAnnotations()[projectRepositoryAdoptedAnnotation]), "true")
 }
 
 func projectCreateReadiness(ctx context.Context, c *asclient.Client) (ProjectCreateReadinessView, error) {

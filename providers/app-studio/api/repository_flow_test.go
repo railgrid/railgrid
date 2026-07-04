@@ -167,6 +167,7 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 		"apply_patch",
 		"mkdir",
 		"select_project_template",
+		"hydrate_workspace",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("tool names = %v, want %v", got, want)

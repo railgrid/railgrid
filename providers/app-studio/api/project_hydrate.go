@@ -18,6 +18,7 @@ You may obtain a copy of the License at
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"net/http"
 	"strings"
 
+	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -60,31 +62,71 @@ type checkoutToolResult struct {
 	Skipped []string `json:"skipped"`
 }
 
-// hydrateProjectWorkspace is POST /api/projects/{project}/hydrate-workspace:
-// read the project repository's text tree through the Code provider and write
-// it into the workspace (existing files are overwritten; workspace-only files
-// are left in place). A development sync follows so the running environment
-// picks the tree up.
-func (s *Server) hydrateProjectWorkspace(w http.ResponseWriter, r *http.Request) {
-	c, id, p, ok := s.requireProjectWithClient(w, r)
-	if !ok {
-		return
-	}
-	_ = c
+// hydrateWorkspaceFromRepository is the shared repo→workspace core used by
+// the HTTP endpoint, the assistant tool, and repository import at project
+// creation. It reads the project repository's text tree through the Code
+// provider's checkout tool (as the caller — httpReq carries the caller's
+// Authorization) and writes it into the workspace: existing files are
+// overwritten, workspace-only files are left in place. On success it kicks a
+// development sync so the running environment picks the tree up.
+func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity, p *aiv1alpha1.Project, httpReq *http.Request, ref string) (projectHydrateResponse, error) {
 	if s.workspaces == nil {
-		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "project workspace store is not configured")
-		return
+		return projectHydrateResponse{}, errors.New("project workspace store is not configured")
 	}
 	repositoryRef := ""
 	if p.Spec.Repository != nil {
 		repositoryRef = strings.TrimSpace(p.Spec.Repository.RepositoryRef)
 	}
 	if repositoryRef == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no Code repository to hydrate from")
-		return
+		return projectHydrateResponse{}, newValidationError("project has no Code repository to hydrate from")
 	}
 	if strings.TrimSpace(id.clusterID) == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request — cannot address the tenant MCP endpoint")
+		return projectHydrateResponse{}, newValidationError("no workspace cluster on request — cannot address the tenant MCP endpoint")
+	}
+
+	args := map[string]any{"repositoryRef": repositoryRef}
+	if ref = strings.TrimSpace(ref); ref != "" {
+		args["ref"] = ref
+	}
+	raw, err := callProjectMCPTool(ctx, s.mcpEndpoint(id.clusterID), httpReq, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeCheckoutRepository, args)
+	if err != nil {
+		return projectHydrateResponse{}, fmt.Errorf("checkout repository: %w", err)
+	}
+	var checkout checkoutToolResult
+	if err := json.Unmarshal([]byte(raw), &checkout); err != nil {
+		return projectHydrateResponse{}, fmt.Errorf("decode checkout result: %w", err)
+	}
+
+	scope := projectWorkspaceScope(id, p.Name)
+	resp := projectHydrateResponse{
+		RepositoryRef: repositoryRef,
+		Ref:           checkout.Ref,
+		CommitSHA:     checkout.CommitSHA,
+		Skipped:       checkout.Skipped,
+	}
+	for _, f := range checkout.Files {
+		if _, err := s.workspaces.WriteFile(ctx, scope, workspace.WriteOptions{Path: f.Path, Content: f.Content}); err != nil {
+			resp.Skipped = append(resp.Skipped, fmt.Sprintf("%s (workspace: %v)", f.Path, err))
+			continue
+		}
+		resp.Written = append(resp.Written, f.Path)
+	}
+
+	// Push the hydrated tree into the live development environment.
+	go s.syncDevelopmentAfterMutation(id, p.DeepCopy(), projectToolHydrateWorkspace)
+
+	return resp, nil
+}
+
+// hydrateProjectWorkspace is POST /api/projects/{project}/hydrate-workspace.
+func (s *Server) hydrateProjectWorkspace(w http.ResponseWriter, r *http.Request) {
+	_, id, p, ok := s.requireProjectWithClient(w, r)
+	if !ok {
+		return
+	}
+	if s.workspaces == nil {
+		// A server configuration gap, not an upstream failure — 503, not 502.
+		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "project workspace store is not configured")
 		return
 	}
 	var req projectHydrateRequest
@@ -96,39 +138,15 @@ func (s *Server) hydrateProjectWorkspace(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-
-	args := map[string]any{"repositoryRef": repositoryRef}
-	if ref := strings.TrimSpace(req.Ref); ref != "" {
-		args["ref"] = ref
-	}
-	raw, err := callProjectMCPTool(r.Context(), s.mcpEndpoint(id.clusterID), r, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeCheckoutRepository, args)
+	resp, err := s.hydrateWorkspaceFromRepository(r.Context(), id, p, r, req.Ref)
 	if err != nil {
-		writeStatus(w, http.StatusBadGateway, "BadGateway", "checkout repository: "+err.Error())
-		return
-	}
-	var checkout checkoutToolResult
-	if err := json.Unmarshal([]byte(raw), &checkout); err != nil {
-		writeStatus(w, http.StatusBadGateway, "BadGateway", "decode checkout result: "+err.Error())
-		return
-	}
-
-	scope := projectWorkspaceScope(id, p.Name)
-	resp := projectHydrateResponse{
-		RepositoryRef: repositoryRef,
-		Ref:           checkout.Ref,
-		CommitSHA:     checkout.CommitSHA,
-		Skipped:       checkout.Skipped,
-	}
-	for _, f := range checkout.Files {
-		if _, err := s.workspaces.WriteFile(r.Context(), scope, workspace.WriteOptions{Path: f.Path, Content: f.Content}); err != nil {
-			resp.Skipped = append(resp.Skipped, fmt.Sprintf("%s (workspace: %v)", f.Path, err))
-			continue
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
 		}
-		resp.Written = append(resp.Written, f.Path)
+		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
+		return
 	}
-
-	// Push the hydrated tree into the live development environment.
-	go s.syncDevelopmentAfterMutation(id, p.DeepCopy(), projectToolHydrateWorkspace)
-
 	writeJSON(w, http.StatusOK, resp)
 }
