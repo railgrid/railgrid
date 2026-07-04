@@ -154,6 +154,81 @@ spec:
 
                   See docs/app-studio-runtime-decoupling.md for the end-to-end design.
                 properties:
+                  components:
+                    additionalProperties:
+                      description: |-
+                        TemplateDataPlaneComponent is one component's verb set. Endpoint
+                        resolution is identical to instance-level endpoints — servicePath is an
+                        absolute status dot-path (per-component Services land under
+                        status.components.<name>.* by backend convention, but any status path
+                        inside the runtime namespace is valid).
+                      properties:
+                        endpoints:
+                          additionalProperties:
+                            description: |-
+                              TemplateDataPlaneEndpoint describes one data-plane verb: either a value served
+                              straight from the instance status (FromStatus), or a reverse proxy to a
+                              Service in the instance's runtime namespace.
+                            properties:
+                              fromStatus:
+                                description: |-
+                                  FromStatus serves this verb from the instance CR status with no runtime
+                                  hop (e.g. a "status" verb that just returns status). When true, the proxy
+                                  fields below are ignored.
+                                type: boolean
+                              methods:
+                                description: |-
+                                  Methods is the allowed HTTP method allowlist for this verb. Empty allows
+                                  GET only. Ignored when FromStatus.
+                                items:
+                                  type: string
+                                type: array
+                              port:
+                                description: |-
+                                  Port is the Service port name to target (e.g. "control", "preview").
+                                  Required unless FromStatus.
+                                maxLength: 63
+                                type: string
+                              servicePath:
+                                description: |-
+                                  ServicePath is the status dot-path to a {name, namespace} object naming the
+                                  Service to proxy to (e.g. "status.controlServiceRef"). When the ref omits a
+                                  namespace it defaults to RuntimeNamespacePath; a namespace that differs
+                                  from RuntimeNamespacePath is rejected. Required unless FromStatus.
+                                maxLength: 256
+                                type: string
+                              stream:
+                                description: |-
+                                  Stream marks a long-lived response (e.g. log follow) so the provider
+                                  disables response buffering and request timeouts. Ignored when FromStatus.
+                                type: boolean
+                              upgrade:
+                                description: |-
+                                  Upgrade allows HTTP connection upgrades (WebSocket / SPDY exec /
+                                  port-forward) through this verb's proxy. Ignored when FromStatus.
+                                type: boolean
+                              upstreamPath:
+                                description: |-
+                                  UpstreamPath is prepended to the caller-supplied path when composing the
+                                  service-proxy URL (e.g. "/logs"). Defaults to "/". Ignored when FromStatus.
+                                maxLength: 256
+                                type: string
+                            type: object
+                          description: Endpoints maps a verb name to how it resolves
+                            for this component.
+                          minProperties: 1
+                          type: object
+                      required:
+                      - endpoints
+                      type: object
+                    description: |-
+                      Components maps a component name to that component's own verb set,
+                      served as …/<resource>/<name>/components/<component>/<verb>. Used by
+                      multi-tier templates so a caller can sync the backend and restart the
+                      frontend independently. Component names should match the template's
+                      spec.development components where both are declared. Every endpoint
+                      resolves and is namespace-confined exactly like an instance-level one.
+                    type: object
                   endpoints:
                     additionalProperties:
                       description: |-
@@ -206,10 +281,10 @@ spec:
                           type: string
                       type: object
                     description: |-
-                      Endpoints maps a verb name — the subresource the provider serves, e.g.
-                      "log", "proxy", "sync", "restart", "status" — to how it resolves. At least
-                      one entry is required when DataPlane is set.
-                    minProperties: 1
+                      Endpoints maps an instance-level verb name — the subresource the
+                      provider serves, e.g. "log", "proxy", "sync", "restart", "status" — to
+                      how it resolves. At least one of Endpoints and Components must be
+                      non-empty when DataPlane is set.
                     type: object
                   runtimeNamespacePath:
                     description: |-
@@ -229,8 +304,6 @@ spec:
                       confined to RuntimeNamespacePath like every other ref.
                     maxLength: 256
                     type: string
-                required:
-                - endpoints
                 type: object
               description:
                 description: |-
@@ -238,6 +311,146 @@ spec:
                   display name in catalog cards.
                 maxLength: 2048
                 type: string
+              development:
+                description: |-
+                  Development optionally declares how instances of this template run in
+                  development mode: which graph components can be hot-swapped to
+                  platform-managed dev images with a hot-reload agent, where each
+                  component's source lives in the project workspace, and how each reloads.
+                  A template with a Development block can have instances provisioned with
+                  kedgeMode: development (the platform-reserved instance spec field the
+                  Template controller injects); templates without one are
+                  production-only.
+
+                  See docs/app-studio-template-sandboxes.md for the end-to-end design.
+                properties:
+                  components:
+                    additionalProperties:
+                      description: |-
+                        TemplateDevelopmentComponent describes one hot-swappable component of the
+                        graph in development mode.
+                      properties:
+                        devImage:
+                          description: |-
+                            DevImage is the platform-managed toolchain image the component's
+                            workload runs in development mode, in place of the user-supplied
+                            production image. MUST be a ${kedge.devImage.<toolchain>} token — the
+                            backend resolves it from provider configuration; tenants never choose
+                            dev images.
+                          maxLength: 128
+                          pattern: ^\$\{kedge\.devImage\.[a-z][a-z0-9-]*\}$
+                          type: string
+                        port:
+                          description: |-
+                            Port is the named container port (from the production workload) the
+                            dev process serves on. The overlay keeps the production Service and
+                            route wiring pointed at it. Empty means the component serves no
+                            traffic (e.g. a worker).
+                          maxLength: 63
+                          type: string
+                        reload:
+                          description: |-
+                            Reload declares the component's reload procedure, executed by the dev
+                            agent on file sync. Empty means strategy "process" with no rules.
+                          properties:
+                            rules:
+                              description: |-
+                                Rules name path patterns that require a command BEFORE the process
+                                (re)starts — dependency installs, code generation. Evaluated in order;
+                                every matching rule's command runs.
+                              items:
+                                description: |-
+                                  TemplateDevelopmentReloadRule pairs changed-path patterns with the command
+                                  the dev agent must run before restarting the process.
+                                properties:
+                                  command:
+                                    description: Command runs in the component's workingDir
+                                      before the process restart.
+                                    maxLength: 4096
+                                    type: string
+                                  paths:
+                                    description: |-
+                                      Paths are glob patterns, relative to the component's workingDir, that
+                                      trigger this rule (e.g. "package.json", "requirements*.txt").
+                                    items:
+                                      type: string
+                                    minItems: 1
+                                    type: array
+                                required:
+                                - command
+                                - paths
+                                type: object
+                              type: array
+                            strategy:
+                              description: |-
+                                Strategy is the baseline action after a sync: "process" restarts the
+                                supervised dev process (default; a no-op for servers that hot-reload
+                                themselves — the agent only restarts when a rule fires or the process
+                                died), "container" restarts the whole container (the escape hatch for
+                                toolchains that cannot reload in place).
+                              enum:
+                              - process
+                              - container
+                              type: string
+                          type: object
+                        startCommand:
+                          description: |-
+                            StartCommand launches the component's dev process (hot reload is the
+                            process's own job — vite, uvicorn --reload, air). The dev agent wraps
+                            and supervises it.
+                          maxLength: 4096
+                          type: string
+                        workingDir:
+                          description: |-
+                            WorkingDir is where the component's workspace PVC is mounted and its
+                            dev process runs. Defaults to /workspace.
+                          maxLength: 256
+                          type: string
+                        workspacePath:
+                          description: |-
+                            WorkspacePath is the project workspace / repository subdirectory whose
+                            files belong to this component ("." for a single-component template).
+                            App Studio routes file sync by these prefixes, and the scaffold follows
+                            this layout. Relative, no leading slash, no "..".
+                          maxLength: 256
+                          type: string
+                      required:
+                      - devImage
+                      - startCommand
+                      - workspacePath
+                      type: object
+                    description: |-
+                      Components maps a component name to its development behavior. Each key
+                      MUST name a workload resource the template's graph emits (by the
+                      backend's component→resource naming convention, e.g. "frontend" names
+                      the graph resource with id "frontend"). Components not listed here run
+                      exactly as declared in production mode — a dev sandbox keeps its real
+                      database. Keys must match ^[a-z][a-z0-9-]*$.
+                    minProperties: 1
+                    type: object
+                  scaffold:
+                    description: |-
+                      Scaffold optionally names starter code for a fresh project built on
+                      this template. Its layout MUST match the components' workspacePaths and
+                      it SHOULD ship CI workflows that build each component's production
+                      image (see docs/app-studio-template-sandboxes.md §4.1a). Consumed by
+                      App Studio at project bootstrap; opaque to the infrastructure provider.
+                    properties:
+                      ref:
+                        description: Ref pins a branch or tag. Empty means the repository
+                          default branch.
+                        maxLength: 128
+                        type: string
+                      repository:
+                        description: Repository is the git URL of the scaffold.
+                        maxLength: 2048
+                        type: string
+                    required:
+                    - repository
+                    type: object
+                required:
+                - components
+                type: object
               displayName:
                 description: |-
                   DisplayName is the human-readable name surfaced in the portal

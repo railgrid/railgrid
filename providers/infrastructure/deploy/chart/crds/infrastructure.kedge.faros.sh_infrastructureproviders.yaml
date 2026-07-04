@@ -102,6 +102,32 @@ spec:
                         type: string
                     type: object
                 type: object
+              development:
+                description: |-
+                  Development configures the platform-managed development-mode images
+                  (docs/app-studio-template-sandboxes.md): the kedge-dev-agent injector
+                  and the per-toolchain dev images substituted for
+                  ${kedge.devImage.<toolchain>} tokens. Maps onto the serve container's
+                  KEDGE_DEV_AGENT_IMAGE / KEDGE_DEV_IMAGE_<TOOLCHAIN> env vars. Optional;
+                  the node toolchain and the agent have in-binary defaults. These images
+                  run tenant code — production should pin digests.
+                properties:
+                  agentImage:
+                    description: |-
+                      AgentImage is the injector image carrying the static kedge-dev-agent
+                      binary (KEDGE_DEV_AGENT_IMAGE). Empty → the in-binary default.
+                    maxLength: 512
+                    type: string
+                  images:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Images maps a toolchain name (the <toolchain> in a template's
+                      ${kedge.devImage.<toolchain>} token; lowercase, dashes) to its image
+                      (KEDGE_DEV_IMAGE_<TOOLCHAIN>). A template referencing an unconfigured
+                      toolchain (other than the defaulted "node") fails setup.
+                    type: object
+                type: object
               hub:
                 description: Hub configures the provider's heartbeat target. Optional.
                 properties:

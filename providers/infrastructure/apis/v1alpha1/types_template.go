@@ -209,6 +209,152 @@ type TemplateSpec struct {
 	// See docs/app-studio-runtime-decoupling.md for the end-to-end design.
 	// +optional
 	DataPlane *TemplateDataPlane `json:"dataPlane,omitempty"`
+
+	// Development optionally declares how instances of this template run in
+	// development mode: which graph components can be hot-swapped to
+	// platform-managed dev images with a hot-reload agent, where each
+	// component's source lives in the project workspace, and how each reloads.
+	// A template with a Development block can have instances provisioned with
+	// kedgeMode: development (the platform-reserved instance spec field the
+	// Template controller injects); templates without one are
+	// production-only.
+	//
+	// See docs/app-studio-template-sandboxes.md for the end-to-end design.
+	// +optional
+	Development *TemplateDevelopment `json:"development,omitempty"`
+}
+
+// Platform-reserved instance spec field the Template controller injects into
+// every per-template CRD. Tenants set it to development only when the
+// Template declares a Development block (the injected enum enforces this).
+const (
+	// KedgeModeField is the reserved instance spec property name. Templates
+	// MUST NOT declare it in spec.schema themselves.
+	KedgeModeField = "kedgeMode"
+	// KedgeModeProduction runs the graph exactly as declared.
+	KedgeModeProduction = "production"
+	// KedgeModeDevelopment hot-swaps the declared development components to
+	// platform-managed dev images with the dev agent.
+	KedgeModeDevelopment = "development"
+)
+
+// TemplateDevelopment is the development-mode contract for a template's
+// instances. The backend synthesizes the dev overlay from it mechanically at
+// RGD build time — template authors write this block, never a second graph.
+type TemplateDevelopment struct {
+	// Components maps a component name to its development behavior. Each key
+	// MUST name a workload resource the template's graph emits (by the
+	// backend's component→resource naming convention, e.g. "frontend" names
+	// the graph resource with id "frontend"). Components not listed here run
+	// exactly as declared in production mode — a dev sandbox keeps its real
+	// database. Keys must match ^[a-z][a-z0-9-]*$.
+	// +required
+	// +kubebuilder:validation:MinProperties=1
+	Components map[string]TemplateDevelopmentComponent `json:"components"`
+
+	// Scaffold optionally names starter code for a fresh project built on
+	// this template. Its layout MUST match the components' workspacePaths and
+	// it SHOULD ship CI workflows that build each component's production
+	// image (see docs/app-studio-template-sandboxes.md §4.1a). Consumed by
+	// App Studio at project bootstrap; opaque to the infrastructure provider.
+	// +optional
+	Scaffold *TemplateDevelopmentScaffold `json:"scaffold,omitempty"`
+}
+
+// TemplateDevelopmentComponent describes one hot-swappable component of the
+// graph in development mode.
+type TemplateDevelopmentComponent struct {
+	// WorkspacePath is the project workspace / repository subdirectory whose
+	// files belong to this component ("." for a single-component template).
+	// App Studio routes file sync by these prefixes, and the scaffold follows
+	// this layout. Relative, no leading slash, no "..".
+	// +required
+	// +kubebuilder:validation:MaxLength=256
+	WorkspacePath string `json:"workspacePath"`
+
+	// DevImage is the platform-managed toolchain image the component's
+	// workload runs in development mode, in place of the user-supplied
+	// production image. MUST be a ${kedge.devImage.<toolchain>} token — the
+	// backend resolves it from provider configuration; tenants never choose
+	// dev images.
+	// +required
+	// +kubebuilder:validation:Pattern=`^\$\{kedge\.devImage\.[a-z][a-z0-9-]*\}$`
+	// +kubebuilder:validation:MaxLength=128
+	DevImage string `json:"devImage"`
+
+	// WorkingDir is where the component's workspace PVC is mounted and its
+	// dev process runs. Defaults to /workspace.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	WorkingDir string `json:"workingDir,omitempty"`
+
+	// StartCommand launches the component's dev process (hot reload is the
+	// process's own job — vite, uvicorn --reload, air). The dev agent wraps
+	// and supervises it.
+	// +required
+	// +kubebuilder:validation:MaxLength=4096
+	StartCommand string `json:"startCommand"`
+
+	// Port is the named container port (from the production workload) the
+	// dev process serves on. The overlay keeps the production Service and
+	// route wiring pointed at it. Empty means the component serves no
+	// traffic (e.g. a worker).
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	Port string `json:"port,omitempty"`
+
+	// Reload declares the component's reload procedure, executed by the dev
+	// agent on file sync. Empty means strategy "process" with no rules.
+	// +optional
+	Reload *TemplateDevelopmentReload `json:"reload,omitempty"`
+}
+
+// TemplateDevelopmentReload is the declared reload procedure for one
+// component: what the dev agent does after files change.
+type TemplateDevelopmentReload struct {
+	// Strategy is the baseline action after a sync: "process" restarts the
+	// supervised dev process (default; a no-op for servers that hot-reload
+	// themselves — the agent only restarts when a rule fires or the process
+	// died), "container" restarts the whole container (the escape hatch for
+	// toolchains that cannot reload in place).
+	// +optional
+	// +kubebuilder:validation:Enum=process;container
+	Strategy string `json:"strategy,omitempty"`
+
+	// Rules name path patterns that require a command BEFORE the process
+	// (re)starts — dependency installs, code generation. Evaluated in order;
+	// every matching rule's command runs.
+	// +optional
+	Rules []TemplateDevelopmentReloadRule `json:"rules,omitempty"`
+}
+
+// TemplateDevelopmentReloadRule pairs changed-path patterns with the command
+// the dev agent must run before restarting the process.
+type TemplateDevelopmentReloadRule struct {
+	// Paths are glob patterns, relative to the component's workingDir, that
+	// trigger this rule (e.g. "package.json", "requirements*.txt").
+	// +required
+	// +kubebuilder:validation:MinItems=1
+	Paths []string `json:"paths"`
+
+	// Command runs in the component's workingDir before the process restart.
+	// +required
+	// +kubebuilder:validation:MaxLength=4096
+	Command string `json:"command"`
+}
+
+// TemplateDevelopmentScaffold names the starter-code repository for projects
+// built on this template.
+type TemplateDevelopmentScaffold struct {
+	// Repository is the git URL of the scaffold.
+	// +required
+	// +kubebuilder:validation:MaxLength=2048
+	Repository string `json:"repository"`
+
+	// Ref pins a branch or tag. Empty means the repository default branch.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	Ref string `json:"ref,omitempty"`
 }
 
 // TemplateDataPlane is the declarative contract for an instance's live data
@@ -236,9 +382,30 @@ type TemplateDataPlane struct {
 	// +kubebuilder:validation:MaxLength=256
 	TokenSecretPath string `json:"tokenSecretPath,omitempty"`
 
-	// Endpoints maps a verb name — the subresource the provider serves, e.g.
-	// "log", "proxy", "sync", "restart", "status" — to how it resolves. At least
-	// one entry is required when DataPlane is set.
+	// Endpoints maps an instance-level verb name — the subresource the
+	// provider serves, e.g. "log", "proxy", "sync", "restart", "status" — to
+	// how it resolves. At least one of Endpoints and Components must be
+	// non-empty when DataPlane is set.
+	// +optional
+	Endpoints map[string]TemplateDataPlaneEndpoint `json:"endpoints,omitempty"`
+
+	// Components maps a component name to that component's own verb set,
+	// served as …/<resource>/<name>/components/<component>/<verb>. Used by
+	// multi-tier templates so a caller can sync the backend and restart the
+	// frontend independently. Component names should match the template's
+	// spec.development components where both are declared. Every endpoint
+	// resolves and is namespace-confined exactly like an instance-level one.
+	// +optional
+	Components map[string]TemplateDataPlaneComponent `json:"components,omitempty"`
+}
+
+// TemplateDataPlaneComponent is one component's verb set. Endpoint
+// resolution is identical to instance-level endpoints — servicePath is an
+// absolute status dot-path (per-component Services land under
+// status.components.<name>.* by backend convention, but any status path
+// inside the runtime namespace is valid).
+type TemplateDataPlaneComponent struct {
+	// Endpoints maps a verb name to how it resolves for this component.
 	// +required
 	// +kubebuilder:validation:MinProperties=1
 	Endpoints map[string]TemplateDataPlaneEndpoint `json:"endpoints"`
@@ -427,6 +594,7 @@ const (
 const (
 	ReasonReconciling       = "Reconciling"
 	ReasonReady             = "Ready"
+	ReasonInvalidSpec       = "InvalidSpec"
 	ReasonBackendNotFound   = "BackendNotFound"
 	ReasonBackendError      = "BackendError"
 	ReasonCRDError          = "CRDError"

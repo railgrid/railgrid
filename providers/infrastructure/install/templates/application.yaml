@@ -158,7 +158,7 @@ spec:
       # ── Frontend tier (the only tier exposed, behind oauth2-proxy) ──
       frontendImage:
         type: string
-        description: "Container image for the public-facing frontend."
+        description: "Container image for the public-facing frontend. Required in production mode; ignored (and may be omitted) when kedgeMode is development — dev mode runs the platform dev image against the project workspace."
       frontendPort:
         type: integer
         default: 8080
@@ -172,7 +172,7 @@ spec:
       # ── Backend tier (internal; reachable only via cluster DNS) ──
       backendImage:
         type: string
-        description: "Container image for the internal backend/API tier."
+        description: "Container image for the internal backend/API tier. Required in production mode; ignored (and may be omitted) when kedgeMode is development."
       backendPort:
         type: integer
         default: 8080
@@ -249,8 +249,113 @@ spec:
         description: "Computed by the platform — do NOT set."
     required:
       - name
-      - frontendImage
-      - backendImage
+    # Images are only required when the instance actually runs them: production
+    # mode. Development mode (the platform-injected kedgeMode field) swaps the
+    # tier images for platform dev images, so a dev-only project needs none.
+    # Enforced on the kcp-side CRD; kedgeMode defaults to "production".
+    x-kubernetes-validations:
+      - rule: "(has(self.kedgeMode) && self.kedgeMode == 'development') || (has(self.frontendImage) && has(self.backendImage))"
+        message: "frontendImage and backendImage are required in production mode"
+
+  # ── Development mode (docs/app-studio-template-sandboxes.md) ──────────
+  # Declares how instances run when provisioned with kedgeMode: development:
+  # the frontend and backend tiers hot-swap to platform dev images running the
+  # kedge-dev-agent against per-component workspace PVCs, while Postgres (and
+  # the oauth gate, if enabled) run exactly as in production. The kro backend
+  # synthesizes the overlay from this block — there is no second graph.
+  #
+  # v1 dev shape is node on both tiers (the scaffold ships a node frontend +
+  # node backend); per-instance toolchain selection is a follow-up. The
+  # frontend start command reuses the sandbox-runner vite shim (same base64,
+  # same single-line/no-double-quote constraints do NOT apply here — this
+  # lands in a Deployment env value — but the shim itself is proven, so it is
+  # carried verbatim): it forces server.host + server.allowedHosts so the dev
+  # server accepts the proxied preview Host header.
+  development:
+    components:
+      frontend:
+        workspacePath: web
+        devImage: "${kedge.devImage.node}"
+        workingDir: /workspace
+        startCommand: "SHIM=.kedge-vite.config.mjs; printf '%s' 'ZXhwb3J0IGRlZmF1bHQgYXN5bmMgKGVudikgPT4gewogIGNvbnN0IGZvcmNlZCA9IHsgc2VydmVyOiB7IGhvc3Q6IHRydWUsIGFsbG93ZWRIb3N0czogdHJ1ZSB9IH0KICBsZXQgbG9hZENvbmZpZ0Zyb21GaWxlLCBtZXJnZUNvbmZpZwogIHRyeSB7CiAgICAoeyBsb2FkQ29uZmlnRnJvbUZpbGUsIG1lcmdlQ29uZmlnIH0gPSBhd2FpdCBpbXBvcnQoJ3ZpdGUnKSkKICB9IGNhdGNoIChlKSB7CiAgICByZXR1cm4gZm9yY2VkCiAgfQogIGxldCBiYXNlID0ge30KICB0cnkgewogICAgY29uc3QgbG9hZGVkID0gYXdhaXQgbG9hZENvbmZpZ0Zyb21GaWxlKGVudiwgdW5kZWZpbmVkLCBwcm9jZXNzLmN3ZCgpKQogICAgaWYgKGxvYWRlZCAmJiBsb2FkZWQuY29uZmlnKSBiYXNlID0gbG9hZGVkLmNvbmZpZwogIH0gY2F0Y2ggKGUpIHsKICAgIGNvbnNvbGUuZXJyb3IoJ1trZWRnZV0gY291bGQgbm90IGxvYWQgcHJvamVjdCB2aXRlIGNvbmZpZzonLCBlKQogIH0KICByZXR1cm4gbWVyZ2VDb25maWcoYmFzZSwgZm9yY2VkKQp9Cg==' | base64 -d > $SHIM; grep -qxF $SHIM .gitignore 2>/dev/null || echo $SHIM >> .gitignore; if [ -f package.json ]; then (npm run dev -- --host 0.0.0.0 --port $PORT --config $SHIM || npm run dev -- --host 0.0.0.0 --port $PORT || npm start); else npx --yes vite --host 0.0.0.0 --port $PORT --config $SHIM || npx --yes vite --host 0.0.0.0 --port $PORT; fi"
+        port: frontend
+        reload:
+          strategy: process
+          rules:
+            - paths: ["package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml"]
+              command: "npm install --no-audit --no-fund"
+      backend:
+        workspacePath: api
+        devImage: "${kedge.devImage.node}"
+        workingDir: /workspace
+        startCommand: "npm run dev || npm start"
+        port: backend
+        reload:
+          strategy: process
+          rules:
+            - paths: ["package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml"]
+              command: "npm install --no-audit --no-fund"
+
+  # ── Data plane (development mode) ─────────────────────────────────────
+  # Per-component control verbs, served as
+  # …/applications/<name>/components/{frontend,backend}/{sync,restart,log,env}.
+  # The status paths they resolve through (status.components.*, controlSecretRef,
+  # runtimeNamespace) are published by the synthesized dev overlay, so in
+  # production mode these verbs answer 409 instance-not-ready — the data plane
+  # is a development-mode surface.
+  dataPlane:
+    runtimeNamespacePath: status.runtimeNamespace
+    tokenSecretPath: status.controlSecretRef
+    endpoints:
+      status:
+        fromStatus: true
+    components:
+      frontend:
+        endpoints:
+          sync:
+            servicePath: status.components.frontend.controlServiceRef
+            port: control
+            upstreamPath: /sync
+            methods: ["POST"]
+          restart:
+            servicePath: status.components.frontend.controlServiceRef
+            port: control
+            upstreamPath: /restart
+            methods: ["POST"]
+          env:
+            servicePath: status.components.frontend.controlServiceRef
+            port: control
+            upstreamPath: /env
+            methods: ["POST"]
+          log:
+            servicePath: status.components.frontend.controlServiceRef
+            port: control
+            upstreamPath: /logs
+            methods: ["GET"]
+            stream: true
+      backend:
+        endpoints:
+          sync:
+            servicePath: status.components.backend.controlServiceRef
+            port: control
+            upstreamPath: /sync
+            methods: ["POST"]
+          restart:
+            servicePath: status.components.backend.controlServiceRef
+            port: control
+            upstreamPath: /restart
+            methods: ["POST"]
+          env:
+            servicePath: status.components.backend.controlServiceRef
+            port: control
+            upstreamPath: /env
+            methods: ["POST"]
+          log:
+            servicePath: status.components.backend.controlServiceRef
+            port: control
+            upstreamPath: /logs
+            methods: ["GET"]
+            stream: true
 
   # ── backendConfig: the kro resource graph ─────────────────────────────
   # Interpreted by the kro backend. Every resource sets namespace: default —

@@ -141,6 +141,18 @@ spec:
             - name: KEDGE_GATEWAY_NAMESPACE
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.development.agentImage }}
+            # Dev-mode agent injector image (${kedge.devAgentImage}).
+            - name: KEDGE_DEV_AGENT_IMAGE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- range $toolchain, $image := .Values.development.images }}
+            {{- if $image }}
+            # Dev-mode toolchain image (${kedge.devImage.{{ $toolchain }}}).
+            - name: KEDGE_DEV_IMAGE_{{ $toolchain | upper | replace "-" "_" }}
+              value: {{ $image | quote }}
+            {{- end }}
+            {{- end }}
           volumeMounts:
             - name: kedge-provider-kubeconfig
               mountPath: /var/run/secrets/kedge

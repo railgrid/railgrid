@@ -91,6 +91,32 @@ type InfrastructureProviderSpec struct {
 	// off (see ApplicationSpec).
 	// +optional
 	Application ApplicationSpec `json:"application,omitempty"`
+
+	// Development configures the platform-managed development-mode images
+	// (docs/app-studio-template-sandboxes.md): the kedge-dev-agent injector
+	// and the per-toolchain dev images substituted for
+	// ${kedge.devImage.<toolchain>} tokens. Maps onto the serve container's
+	// KEDGE_DEV_AGENT_IMAGE / KEDGE_DEV_IMAGE_<TOOLCHAIN> env vars. Optional;
+	// the node toolchain and the agent have in-binary defaults. These images
+	// run tenant code — production should pin digests.
+	// +optional
+	Development DevelopmentSpec `json:"development,omitempty"`
+}
+
+// DevelopmentSpec configures the dev-mode image set.
+type DevelopmentSpec struct {
+	// AgentImage is the injector image carrying the static kedge-dev-agent
+	// binary (KEDGE_DEV_AGENT_IMAGE). Empty → the in-binary default.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	AgentImage string `json:"agentImage,omitempty"`
+
+	// Images maps a toolchain name (the <toolchain> in a template's
+	// ${kedge.devImage.<toolchain>} token; lowercase, dashes) to its image
+	// (KEDGE_DEV_IMAGE_<TOOLCHAIN>). A template referencing an unconfigured
+	// toolchain (other than the defaulted "node") fails setup.
+	// +optional
+	Images map[string]string `json:"images,omitempty"`
 }
 
 // ApplicationSpec configures the `application` template exposure layer. The

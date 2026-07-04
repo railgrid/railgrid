@@ -40,6 +40,17 @@ const (
 	// apps.127.0.0.1.sslip.io while previews use preview.localhost. Unset leaves
 	// it empty (REST-only/dev), same as the other value-as-is tokens.
 	sandboxPreviewBaseDomainToken = "${kedge.sandboxPreviewBaseDomain}"
+
+	// devImageTokenPrefix is the reserved token family template authors put in
+	// spec.development.components[].devImage — ${kedge.devImage.<toolchain>},
+	// resolved from KEDGE_DEV_IMAGE_<TOOLCHAIN>. Platform-managed: tenants
+	// never pick dev images (docs/app-studio-template-sandboxes.md §1).
+	devImageTokenPrefix = "${kedge.devImage."
+
+	// devAgentImageToken is the injector image carrying the static
+	// kedge-dev-agent binary every dev-mode component runs
+	// (KEDGE_DEV_AGENT_IMAGE).
+	devAgentImageToken = "${kedge.devAgentImage}"
 )
 
 const (
@@ -82,6 +93,16 @@ func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstruct
 	resources, status, err := backendConfig(tmpl, tokens)
 	if err != nil {
 		return nil, err
+	}
+
+	// A development block extends the graph with the mechanically synthesized
+	// dev overlay (mode-gated dev workloads, workspace PVCs, control plane)
+	// and injects the kedgeMode field into the RGD schema. See devoverlay.go.
+	if tmpl.Spec.Development != nil {
+		resources, status, err = applyDevOverlay(tmpl, simpleSpec, resources, status, tokens)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	schemaBlock := map[string]any{

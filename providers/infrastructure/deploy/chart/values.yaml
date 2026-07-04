@@ -58,6 +58,22 @@ application:
     name: "cloudflare-tunnel"
     namespace: "cfgate-system"
 
+# Development-mode images (docs/app-studio-template-sandboxes.md). These run
+# TENANT code, so production deployments should pin them by digest. Empty
+# values fall back to the in-binary defaults (node → the kedge sandbox-runner
+# image, agent → ghcr.io/faroshq/kedge-dev-agent:latest).
+development:
+  # The injector image carrying the static kedge-dev-agent binary
+  # (KEDGE_DEV_AGENT_IMAGE).
+  agentImage: ""
+  # Toolchain image per ${kedge.devImage.<toolchain>} token — each key K maps
+  # to KEDGE_DEV_IMAGE_<K>. A template referencing an unconfigured toolchain
+  # (other than node) fails setup with a pointer to the missing env var.
+  images:
+    node: ""
+    # python: "docker.io/library/python:3.12-slim"
+    # go: "docker.io/library/golang:1.26"
+
 # Container images are NOT configured here. Templates declare them as schema
 # fields with sane defaults (e.g. the sandbox-runner's spec.runnerImage defaults
 # to the standard kedge runner) — the same convention every template follows.

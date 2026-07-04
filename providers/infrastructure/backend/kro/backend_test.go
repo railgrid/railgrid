@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package kro
 
 import (
+	"maps"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -163,13 +164,15 @@ func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
 }
 
 // testTokens is the platform-config token map the backend builds from env (the
-// exposure-layer Gateway parent), for buildRGD tests.
+// exposure-layer Gateway parent + the dev-overlay images), for buildRGD tests.
 func testTokens() map[string]string {
-	return map[string]string{
+	tokens := map[string]string{
 		gatewayNameToken:              DefaultGatewayName,
 		gatewayNamespaceToken:         DefaultGatewayNamespace,
 		sandboxPreviewBaseDomainToken: "dev-apps.faros.sh",
 	}
+	maps.Copy(tokens, devImageTokens())
+	return tokens
 }
 
 func TestBuildRGDRequiresBackendConfig(t *testing.T) {

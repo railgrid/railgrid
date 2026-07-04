@@ -129,6 +129,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.writeStatus(ctx, &tmpl, patchBase)
 	}
 
+	// Structural rules kubebuilder markers can't express (development
+	// component names/paths, data-plane component cross-refs). Invalid specs
+	// don't fix themselves on retry, so surface the condition and stop.
+	if err := tmpl.Spec.ValidateDevelopment(); err != nil {
+		setCondition(&tmpl, infrav1alpha1.ConditionReady, metav1.ConditionFalse,
+			infrav1alpha1.ReasonInvalidSpec, err.Error())
+		return r.writeStatus(ctx, &tmpl, patchBase)
+	}
+
 	// Step 1: per-template CRD. Build from the Template's instanceCRD
 	// + schema and apply with the dynamic client.
 	if err := r.ensurePerTemplateCRD(ctx, &tmpl); err != nil {
@@ -327,6 +336,10 @@ func buildPerTemplateCRD(tmpl *infrav1alpha1.Template) (*apiextensionsv1.CustomR
 		return nil, fmt.Errorf("decode spec.schema as JSONSchemaProps: %w", err)
 	}
 
+	if err := injectKedgeMode(&spec, tmpl); err != nil {
+		return nil, err
+	}
+
 	openAPI := apiextensionsv1.JSONSchemaProps{
 		Type: "object",
 		Properties: map[string]apiextensionsv1.JSONSchemaProps{
@@ -376,6 +389,33 @@ func buildPerTemplateCRD(tmpl *infrav1alpha1.Template) (*apiextensionsv1.CustomR
 		},
 	}
 	return crd, nil
+}
+
+// injectKedgeMode adds the platform-reserved kedgeMode property to the
+// instance spec schema. Every per-template CRD gets it; the enum only admits
+// "development" when the Template declares a development block, so an invalid
+// mode is rejected by the apiserver rather than by controller logic. The
+// property is reserved: a Template that declares it itself is rejected.
+func injectKedgeMode(spec *apiextensionsv1.JSONSchemaProps, tmpl *infrav1alpha1.Template) error {
+	if _, exists := spec.Properties[infrav1alpha1.KedgeModeField]; exists {
+		return fmt.Errorf("spec.schema declares reserved property %q; the platform injects it", infrav1alpha1.KedgeModeField)
+	}
+	modes := []apiextensionsv1.JSON{{Raw: []byte(`"` + infrav1alpha1.KedgeModeProduction + `"`)}}
+	description := "Platform-reserved provisioning mode. This template is production-only."
+	if tmpl.Spec.Development != nil {
+		modes = append(modes, apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.KedgeModeDevelopment + `"`)})
+		description = "Platform-reserved provisioning mode. In development mode the declared development components run platform-managed dev images with the hot-reload agent; everything else runs as declared."
+	}
+	if spec.Properties == nil {
+		spec.Properties = map[string]apiextensionsv1.JSONSchemaProps{}
+	}
+	spec.Properties[infrav1alpha1.KedgeModeField] = apiextensionsv1.JSONSchemaProps{
+		Type:        "string",
+		Description: description,
+		Enum:        modes,
+		Default:     &apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.KedgeModeProduction + `"`)},
+	}
+	return nil
 }
 
 // templateInstanceStatusSchema is the status shape every per-template CRD

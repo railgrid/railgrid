@@ -82,7 +82,7 @@ spec:
         #     }
         #     return mergeConfig(base, forced)
         #   }
-        default: "SHIM=.kedge-vite.config.mjs; printf '%s' 'ZXhwb3J0IGRlZmF1bHQgYXN5bmMgKGVudikgPT4gewogIGNvbnN0IGZvcmNlZCA9IHsgc2VydmVyOiB7IGhvc3Q6IHRydWUsIGFsbG93ZWRIb3N0czogdHJ1ZSB9IH0KICBsZXQgbG9hZENvbmZpZ0Zyb21GaWxlLCBtZXJnZUNvbmZpZwogIHRyeSB7CiAgICAoeyBsb2FkQ29uZmlnRnJvbUZpbGUsIG1lcmdlQ29uZmlnIH0gPSBhd2FpdCBpbXBvcnQoJ3ZpdGUnKSkKICB9IGNhdGNoIChlKSB7CiAgICByZXR1cm4gZm9yY2VkCiAgfQogIGxldCBiYXNlID0ge30KICB0cnkgewogICAgY29uc3QgbG9hZGVkID0gYXdhaXQgbG9hZENvbmZpZ0Zyb21GaWxlKGVudiwgdW5kZWZpbmVkLCBwcm9jZXNzLmN3ZCgpKQogICAgaWYgKGxvYWRlZCAmJiBsb2FkZWQuY29uZmlnKSBiYXNlID0gbG9hZGVkLmNvbmZpZwogIH0gY2F0Y2ggKGUpIHsKICAgIGNvbnNvbGUuZXJyb3IoJ1trZWRnZV0gY291bGQgbm90IGxvYWQgcHJvamVjdCB2aXRlIGNvbmZpZzonLCBlKQogIH0KICByZXR1cm4gbWVyZ2VDb25maWcoYmFzZSwgZm9yY2VkKQp9Cg==' | base64 -d > $SHIM; grep -qxF $SHIM .gitignore 2>/dev/null || echo $SHIM >> .gitignore; if [ -f package.json ]; then npm install --no-audit --no-fund && (npm run dev -- --host 0.0.0.0 --port $SANDBOX_PORT --config $SHIM || npm run dev -- --host 0.0.0.0 --port $SANDBOX_PORT || npm start); else npx --yes vite --host 0.0.0.0 --port $SANDBOX_PORT --config $SHIM || npx --yes vite --host 0.0.0.0 --port $SANDBOX_PORT; fi"
+        default: &sandboxStartCommand "SHIM=.kedge-vite.config.mjs; printf '%s' 'ZXhwb3J0IGRlZmF1bHQgYXN5bmMgKGVudikgPT4gewogIGNvbnN0IGZvcmNlZCA9IHsgc2VydmVyOiB7IGhvc3Q6IHRydWUsIGFsbG93ZWRIb3N0czogdHJ1ZSB9IH0KICBsZXQgbG9hZENvbmZpZ0Zyb21GaWxlLCBtZXJnZUNvbmZpZwogIHRyeSB7CiAgICAoeyBsb2FkQ29uZmlnRnJvbUZpbGUsIG1lcmdlQ29uZmlnIH0gPSBhd2FpdCBpbXBvcnQoJ3ZpdGUnKSkKICB9IGNhdGNoIChlKSB7CiAgICByZXR1cm4gZm9yY2VkCiAgfQogIGxldCBiYXNlID0ge30KICB0cnkgewogICAgY29uc3QgbG9hZGVkID0gYXdhaXQgbG9hZENvbmZpZ0Zyb21GaWxlKGVudiwgdW5kZWZpbmVkLCBwcm9jZXNzLmN3ZCgpKQogICAgaWYgKGxvYWRlZCAmJiBsb2FkZWQuY29uZmlnKSBiYXNlID0gbG9hZGVkLmNvbmZpZwogIH0gY2F0Y2ggKGUpIHsKICAgIGNvbnNvbGUuZXJyb3IoJ1trZWRnZV0gY291bGQgbm90IGxvYWQgcHJvamVjdCB2aXRlIGNvbmZpZzonLCBlKQogIH0KICByZXR1cm4gbWVyZ2VDb25maWcoYmFzZSwgZm9yY2VkKQp9Cg==' | base64 -d > $SHIM; grep -qxF $SHIM .gitignore 2>/dev/null || echo $SHIM >> .gitignore; if [ -f package.json ]; then npm install --no-audit --no-fund && (npm run dev -- --host 0.0.0.0 --port $SANDBOX_PORT --config $SHIM || npm run dev -- --host 0.0.0.0 --port $SANDBOX_PORT || npm start); else npx --yes vite --host 0.0.0.0 --port $SANDBOX_PORT --config $SHIM || npx --yes vite --host 0.0.0.0 --port $SANDBOX_PORT; fi"
       runnerImage:
         type: string
         description: "Container image for the live development runner. Defaults to the standard kedge runner (published with app-studio releases); override per instance to pin a digest or use a custom runtime."
@@ -98,6 +98,23 @@ spec:
     required:
       - name
       - projectRef
+  # Development contract (docs/app-studio-template-sandboxes.md). The sandbox
+  # runner IS a dev runner, so this re-expresses it as a single-component
+  # development-mode template. Inert in Phase 0 — the dev overlay that consumes
+  # it lands with the backend synthesis (Phase 1); until then the graph below
+  # keeps materializing the runner exactly as before.
+  development:
+    components:
+      # Component name binds to the graph workload by the overlay convention
+      # (runner → runnerDeployment).
+      runner:
+        workspacePath: "."
+        devImage: "${kedge.devImage.node}"
+        workingDir: /workspace
+        startCommand: *sandboxStartCommand
+        port: preview
+        reload:
+          strategy: process
   # Live data-plane verbs the provider serves as subresources on a SandboxRunner
   # instance (sandboxrunners/<name>/{log,sync,restart,proxy,status}). Each verb
   # resolves to a runtime Service/Secret read from the instance status below;
@@ -137,6 +154,35 @@ spec:
         upgrade: true
       status:
         fromStatus: true
+    # Component-scoped verbs (…/sandboxrunners/<name>/components/runner/<verb>)
+    # for the single "runner" component, resolving to the same control Service
+    # as the flat verbs above. The flat verbs stay until every consumer speaks
+    # the component form (retired with the sandbox-runner template itself — see
+    # docs/app-studio-template-sandboxes.md §7 Phase 4).
+    components:
+      runner:
+        endpoints:
+          log:
+            servicePath: status.controlServiceRef
+            port: control
+            upstreamPath: /logs
+            methods: ["GET"]
+            stream: true
+          sync:
+            servicePath: status.controlServiceRef
+            port: control
+            upstreamPath: /sync
+            methods: ["POST"]
+          restart:
+            servicePath: status.controlServiceRef
+            port: control
+            upstreamPath: /restart
+            methods: ["POST"]
+          env:
+            servicePath: status.controlServiceRef
+            port: control
+            upstreamPath: /env
+            methods: ["POST"]
   backendConfig:
     resources:
       - id: runtimeNamespace

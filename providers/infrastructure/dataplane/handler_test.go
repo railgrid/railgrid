@@ -249,6 +249,44 @@ func TestHandlerUnavailableWhenDepsNil(t *testing.T) {
 	}
 }
 
+func TestHandlerProxiesComponentVerb(t *testing.T) {
+	var gotPath, gotControlToken string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotControlToken = r.Header.Get(controlTokenHeader)
+	}))
+	defer upstream.Close()
+
+	ns := "kedge-tenant-shop"
+	ig := &fakeInstanceGetter{instance: applicationInstance(ns)}
+	rt := &fakeRuntime{host: upstream.URL, token: "control-secret-token"}
+	h := NewHandler(ig, &fakeContractGetter{contract: applicationContract()}, rt)
+
+	rec := doRequest(h, http.MethodPost, PathPrefix+"clusters/ws/applications/shop/components/backend/sync")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	wantPath := "/api/v1/namespaces/" + ns + "/services/shop-backend-control:control/proxy/sync"
+	if gotPath != wantPath {
+		t.Errorf("upstream path = %q, want %q", gotPath, wantPath)
+	}
+	if gotControlToken != "control-secret-token" {
+		t.Errorf("control token header = %q, want injected token", gotControlToken)
+	}
+
+	// Method allowlist applies per component verb.
+	rec = doRequest(h, http.MethodGet, PathPrefix+"clusters/ws/applications/shop/components/backend/sync")
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET component sync: status = %d, want 405", rec.Code)
+	}
+
+	// Unknown component is a conflict (contract mismatch), not a proxy.
+	rec = doRequest(h, http.MethodPost, PathPrefix+"clusters/ws/applications/shop/components/worker/sync")
+	if rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusConflict {
+		t.Errorf("unknown component: status = %d, want 405/409", rec.Code)
+	}
+}
+
 func TestParsePath(t *testing.T) {
 	for _, tc := range []struct {
 		path string
@@ -265,9 +303,21 @@ func TestParsePath(t *testing.T) {
 			want: request{workspace: "ws", resource: "sandboxrunners", name: "r1", verb: "proxy", callerPath: "/assets/app.js"},
 			ok:   true,
 		},
-		{path: PathPrefix + "clusters/ws/sandboxrunners/r1", ok: false},   // no verb
-		{path: "/other/clusters/ws/sandboxrunners/r1/log", ok: false},     // wrong prefix
-		{path: PathPrefix + "clusters//sandboxrunners/r1/log", ok: false}, // empty ws
+		{
+			path: PathPrefix + "clusters/ws/applications/shop/components/backend/sync",
+			want: request{workspace: "ws", resource: "applications", name: "shop", component: "backend", verb: "sync"},
+			ok:   true,
+		},
+		{
+			path: PathPrefix + "clusters/ws/applications/shop/components/frontend/log/tail",
+			want: request{workspace: "ws", resource: "applications", name: "shop", component: "frontend", verb: "log", callerPath: "/tail"},
+			ok:   true,
+		},
+		{path: PathPrefix + "clusters/ws/sandboxrunners/r1", ok: false},              // no verb
+		{path: "/other/clusters/ws/sandboxrunners/r1/log", ok: false},                // wrong prefix
+		{path: PathPrefix + "clusters//sandboxrunners/r1/log", ok: false},            // empty ws
+		{path: PathPrefix + "clusters/ws/applications/shop/components/", ok: false},  // no component
+		{path: PathPrefix + "clusters/ws/applications/shop/components/be", ok: false}, // component without verb
 	} {
 		got, ok := parsePath(tc.path)
 		if ok != tc.ok {

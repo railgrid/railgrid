@@ -29,7 +29,9 @@ package kro
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -109,7 +111,47 @@ func New(runtime dynamic.Interface) *Backend {
 		// coincide). Value-as-is: an empty domain is guarded by the template/chart.
 		sandboxPreviewBaseDomainToken: sandboxPreviewBaseDomain(),
 	}
+	maps.Copy(tokens, devImageTokens())
 	return &Backend{runtime: runtime, tokens: tokens}
+}
+
+// DefaultNodeDevImage / DefaultDevAgentImage back the dev-overlay images when
+// the env knobs are unset, so a stock deployment (and local dev) can run
+// node-toolchain sandboxes out of the box. Production should pin digests via
+// KEDGE_DEV_IMAGE_NODE / KEDGE_DEV_AGENT_IMAGE (they run tenant code — see
+// docs/app-studio-template-sandboxes.md §9).
+const (
+	DefaultNodeDevImage  = "ghcr.io/faroshq/kedge-sandbox-runner:latest"
+	DefaultDevAgentImage = "ghcr.io/faroshq/kedge-dev-agent:latest"
+)
+
+// devImageTokens collects the platform-managed dev-mode images: every
+// KEDGE_DEV_IMAGE_<TOOLCHAIN> env var becomes ${kedge.devImage.<toolchain>}
+// (underscores → dashes, lowercased), plus the agent injector image. The node
+// toolchain and the agent get in-binary defaults; any other toolchain a
+// template references without configuration fails that template's setup with
+// a pointer to the missing env var (see applyDevOverlay).
+func devImageTokens() map[string]string {
+	out := map[string]string{
+		devImageTokenPrefix + "node}": DefaultNodeDevImage,
+		devAgentImageToken:            DefaultDevAgentImage,
+	}
+	const envPrefix = "KEDGE_DEV_IMAGE_"
+	for _, kv := range os.Environ() {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || v == "" || !strings.HasPrefix(k, envPrefix) {
+			continue
+		}
+		toolchain := strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(k, envPrefix), "_", "-"))
+		if toolchain == "" {
+			continue
+		}
+		out[devImageTokenPrefix+toolchain+"}"] = v
+	}
+	if v := os.Getenv("KEDGE_DEV_AGENT_IMAGE"); v != "" {
+		out[devAgentImageToken] = v
+	}
+	return out
 }
 
 // sandboxPreviewBaseDomain resolves the base domain used for sandbox preview

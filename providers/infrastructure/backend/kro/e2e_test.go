@@ -263,8 +263,11 @@ func e2eInstance(t *testing.T, tmpl *infrav1alpha1.Template, runID string) *unst
 // e2eInstanceName returns a per-run-unique instance name so child objects from
 // one run never collide with a prior run's on a reused cluster. sandbox-runner's
 // name is constrained to ^kedge-sandbox-[a-f0-9]{16}$, so it takes the 16-hex
-// runID verbatim; every other template suffixes its base name with a short slice
-// of it (still a valid DNS label).
+// runID verbatim; every other template suffixes its base name with the LOW
+// half of it. The low half, not the high: the runID is a hex UnixNano, whose
+// top 32 bits change every ~4s — two instances created seconds apart (the
+// dev-mode e2e's production/development pair) would collide on runID[:8], and
+// the second create would silently adopt the first's terminating instance.
 func e2eInstanceName(tmplName string, spec map[string]any, runID string) string {
 	if tmplName == "sandbox-runner" {
 		return "kedge-sandbox-" + runID
@@ -273,7 +276,7 @@ func e2eInstanceName(tmplName string, spec map[string]any, runID string) string 
 	if base == "" {
 		base = "e2e-" + tmplName
 	}
-	return base + "-" + runID[:8]
+	return base + "-" + runID[8:]
 }
 
 // mergeSpec deep-merges src into dst (nested maps recurse; other values

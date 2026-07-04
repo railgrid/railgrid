@@ -75,10 +75,10 @@ type objectRef struct {
 	Name      string
 }
 
-// Resolve resolves a single verb of the contract against the instance. It
-// returns an error when the verb is unknown, the contract is malformed, a
-// required status ref is absent, or a resolved ref escapes the runtime
-// namespace.
+// Resolve resolves a single instance-level verb of the contract against the
+// instance. It returns an error when the verb is unknown, the contract is
+// malformed, a required status ref is absent, or a resolved ref escapes the
+// runtime namespace.
 func Resolve(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured, verb string) (ResolvedTarget, error) {
 	if contract == nil {
 		return ResolvedTarget{}, fmt.Errorf("template declares no data plane")
@@ -90,7 +90,33 @@ func Resolve(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.U
 	if !ok {
 		return ResolvedTarget{}, fmt.Errorf("data-plane verb %q is not declared by this template", verb)
 	}
+	return resolveEndpoint(contract, instance, endpoint, verb)
+}
 
+// ResolveComponent resolves a component-scoped verb
+// (…/components/<component>/<verb>). Resolution and namespace confinement are
+// identical to instance-level verbs; only the endpoint lookup gains a level.
+func ResolveComponent(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured, component, verb string) (ResolvedTarget, error) {
+	if contract == nil {
+		return ResolvedTarget{}, fmt.Errorf("template declares no data plane")
+	}
+	if instance == nil {
+		return ResolvedTarget{}, fmt.Errorf("instance is nil")
+	}
+	comp, ok := contract.Components[component]
+	if !ok {
+		return ResolvedTarget{}, fmt.Errorf("data-plane component %q is not declared by this template", component)
+	}
+	endpoint, ok := comp.Endpoints[verb]
+	if !ok {
+		return ResolvedTarget{}, fmt.Errorf("data-plane verb %q is not declared by component %q", verb, component)
+	}
+	return resolveEndpoint(contract, instance, endpoint, component+"/"+verb)
+}
+
+// resolveEndpoint resolves one endpoint declaration; verb names the endpoint
+// in errors (bare verb, or "component/verb").
+func resolveEndpoint(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured, endpoint infrav1alpha1.TemplateDataPlaneEndpoint, verb string) (ResolvedTarget, error) {
 	if endpoint.FromStatus {
 		return ResolvedTarget{FromStatus: true}, nil
 	}
@@ -137,9 +163,9 @@ func Resolve(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.U
 	return target, nil
 }
 
-// MethodAllowed reports whether method is permitted for the named verb. An
-// empty Methods list allows GET only (matching the API doc). Unknown verbs are
-// not allowed.
+// MethodAllowed reports whether method is permitted for the named
+// instance-level verb. An empty Methods list allows GET only (matching the
+// API doc). Unknown verbs are not allowed.
 func MethodAllowed(contract *infrav1alpha1.TemplateDataPlane, verb, method string) bool {
 	if contract == nil {
 		return false
@@ -148,6 +174,26 @@ func MethodAllowed(contract *infrav1alpha1.TemplateDataPlane, verb, method strin
 	if !ok {
 		return false
 	}
+	return endpointMethodAllowed(endpoint, method)
+}
+
+// ComponentMethodAllowed is MethodAllowed for a component-scoped verb.
+func ComponentMethodAllowed(contract *infrav1alpha1.TemplateDataPlane, component, verb, method string) bool {
+	if contract == nil {
+		return false
+	}
+	comp, ok := contract.Components[component]
+	if !ok {
+		return false
+	}
+	endpoint, ok := comp.Endpoints[verb]
+	if !ok {
+		return false
+	}
+	return endpointMethodAllowed(endpoint, method)
+}
+
+func endpointMethodAllowed(endpoint infrav1alpha1.TemplateDataPlaneEndpoint, method string) bool {
 	method = strings.ToUpper(strings.TrimSpace(method))
 	if len(endpoint.Methods) == 0 {
 		return method == http.MethodGet

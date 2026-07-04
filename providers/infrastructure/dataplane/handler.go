@@ -68,6 +68,7 @@ type request struct {
 	workspace  string
 	resource   string
 	name       string
+	component  string // empty for instance-level verbs
 	verb       string
 	callerPath string // remaining path beyond the verb (open-proxy tail)
 }
@@ -108,14 +109,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Method allowlist for the verb.
-	if !MethodAllowed(contract, req.verb, r.Method) {
-		http.Error(w, "method "+r.Method+" not allowed for verb "+req.verb, http.StatusMethodNotAllowed)
-		return
+	// 3+4. Method allowlist, then resolve the verb to a concrete runtime
+	// target (namespace-confined). Component verbs differ only in lookup.
+	var target ResolvedTarget
+	if req.component != "" {
+		if !ComponentMethodAllowed(contract, req.component, req.verb, r.Method) {
+			http.Error(w, "method "+r.Method+" not allowed for verb "+req.component+"/"+req.verb, http.StatusMethodNotAllowed)
+			return
+		}
+		target, err = ResolveComponent(contract, instance, req.component, req.verb)
+	} else {
+		if !MethodAllowed(contract, req.verb, r.Method) {
+			http.Error(w, "method "+r.Method+" not allowed for verb "+req.verb, http.StatusMethodNotAllowed)
+			return
+		}
+		target, err = Resolve(contract, instance, req.verb)
 	}
-
-	// 4. Resolve the verb to a concrete runtime target (namespace-confined).
-	target, err := Resolve(contract, instance, req.verb)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -134,18 +143,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	serveProxy(w, r, h.runtime, target, req.callerPath)
 }
 
-// parsePath parses /dataplane/clusters/<id>/<resource>/<name>/<verb>[/<tail...>].
+// parsePath parses
+//
+//	/dataplane/clusters/<id>/<resource>/<name>/<verb>[/<tail...>]
+//	/dataplane/clusters/<id>/<resource>/<name>/components/<component>/<verb>[/<tail...>]
+//
 // The cluster segment is the workspace's kcp logical-cluster ID (the hub-injected
 // X-Kedge-Cluster that app-studio puts in the URL), NOT a workspace path — the
 // instance getter addresses kcp by /clusters/<id>, which the hub proxy requires.
+// "components" is reserved as a verb name by the second form.
 func parsePath(p string) (request, bool) {
 	rest := strings.TrimPrefix(p, PathPrefix)
 	if rest == p {
 		return request{}, false
 	}
 	rest = strings.TrimPrefix(rest, "clusters/")
-	parts := strings.SplitN(rest, "/", 5)
-	// parts: [ws, resource, name, verb, tail?]
+	parts := strings.SplitN(rest, "/", 4)
+	// parts: [ws, resource, name, verbAndTail]
 	if len(parts) < 4 {
 		return request{}, false
 	}
@@ -153,13 +167,31 @@ func parsePath(p string) (request, bool) {
 		workspace: strings.TrimSpace(parts[0]),
 		resource:  strings.TrimSpace(parts[1]),
 		name:      strings.TrimSpace(parts[2]),
-		verb:      strings.TrimSpace(parts[3]),
+	}
+	verbAndTail := parts[3]
+	if trimmed, isComponent := strings.CutPrefix(verbAndTail, "components/"); isComponent {
+		seg := strings.SplitN(trimmed, "/", 3)
+		// seg: [component, verb, tail?]
+		if len(seg) < 2 {
+			return request{}, false
+		}
+		req.component = strings.TrimSpace(seg[0])
+		req.verb = strings.TrimSpace(seg[1])
+		if req.component == "" {
+			return request{}, false
+		}
+		if len(seg) == 3 {
+			req.callerPath = "/" + seg[2]
+		}
+	} else {
+		seg := strings.SplitN(verbAndTail, "/", 2)
+		req.verb = strings.TrimSpace(seg[0])
+		if len(seg) == 2 {
+			req.callerPath = "/" + seg[1]
+		}
 	}
 	if req.workspace == "" || req.resource == "" || req.name == "" || req.verb == "" {
 		return request{}, false
-	}
-	if len(parts) == 5 {
-		req.callerPath = "/" + parts[4]
 	}
 	return req, true
 }

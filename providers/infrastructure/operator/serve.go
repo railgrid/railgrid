@@ -13,6 +13,9 @@ package operator
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -94,6 +97,17 @@ func EnsureProviderServe(
 	}
 	if cr.Spec.Application.Gateway.Namespace != "" {
 		env = append(env, corev1.EnvVar{Name: "KEDGE_GATEWAY_NAMESPACE", Value: cr.Spec.Application.Gateway.Namespace})
+	}
+	// Dev-mode image set (${kedge.devAgentImage} / ${kedge.devImage.*}); empty
+	// values fall back to the in-binary defaults (node toolchain + agent).
+	if cr.Spec.Development.AgentImage != "" {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_DEV_AGENT_IMAGE", Value: cr.Spec.Development.AgentImage})
+	}
+	for _, toolchain := range slices.Sorted(maps.Keys(cr.Spec.Development.Images)) {
+		if image := cr.Spec.Development.Images[toolchain]; image != "" {
+			envName := "KEDGE_DEV_IMAGE_" + strings.ToUpper(strings.ReplaceAll(toolchain, "-", "_"))
+			env = append(env, corev1.EnvVar{Name: envName, Value: image})
+		}
 	}
 	volMounts := []corev1.VolumeMount{
 		{Name: "provider-kubeconfig", MountPath: "/var/run/secrets/kedge/provider", ReadOnly: true},
