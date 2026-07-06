@@ -31,7 +31,6 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/previewtoken"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/tenant"
 	"github.com/faroshq/provider-app-studio/workspace"
@@ -48,7 +47,6 @@ type Server struct {
 	workspaces                   *workspace.FileStore
 	hubBase                      string
 	mcpInsecureSkipTLSVerify     bool
-	previewSigner                *previewtoken.Signer
 	autoApproveActions           bool
 	assistantEngine              projectAssistantEngine
 	assistantTurnRouter          projectAssistantTurnRouter
@@ -71,17 +69,10 @@ func NewWithWorkspace(gql *tenant.GraphQLClient, msgStore store.Store, workspace
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
-		previewSigner:            previewtoken.NewSigner(nil),
 	}
 	s.assistantEngine = NewEinoAssistantEngine(s)
 	s.assistantRunManager = newProjectAssistantRunManager()
 	return s
-}
-
-func (s *Server) SetPreviewTokenSecret(secret []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.previewSigner = previewtoken.NewSigner(secret)
 }
 
 func (s *Server) SetAutoApproveAssistantActions(enabled bool) {
@@ -145,6 +136,8 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects", s.createProject).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/stream", s.createProjectStartStream).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/create-readiness", s.getProjectCreateReadiness).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/development-templates", s.listDevelopmentTemplates).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/import-repositories", s.listImportRepositories).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/llm-settings", s.getProjectLLMSettings).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/llm-settings", s.patchProjectLLMSettings).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}", s.getProject).Methods(http.MethodGet)

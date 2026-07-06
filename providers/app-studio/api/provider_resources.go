@@ -12,8 +12,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -40,9 +38,6 @@ func (s *Server) reconcileProjectLiveBindings(ctx context.Context, c *asclient.C
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderResource || binding.ResourceRef == nil {
 				continue
 			}
-			if isSandboxPreviewHTTPRouteBinding(binding) {
-				continue
-			}
 			if _, err := ensureProjectProviderResource(ctx, c, p, binding, id); err != nil {
 				return nil, err
 			}
@@ -52,9 +47,6 @@ func (s *Server) reconcileProjectLiveBindings(ctx context.Context, c *asclient.C
 }
 
 func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, id identity) (*unstructured.Unstructured, error) {
-	if isSandboxPreviewHTTPRouteBinding(binding) {
-		return nil, fmt.Errorf("sandbox preview HTTPRoute bindings are no longer reconciled")
-	}
 	gvr, err := projectProviderResourceGVR(binding.ResourceRef)
 	if err != nil {
 		return nil, err
@@ -67,7 +59,6 @@ func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *a
 	if name == "" {
 		return nil, fmt.Errorf("provider binding %q has no resource name", binding.Name)
 	}
-	normalizeProjectProviderBindingValues(p, binding, values, name)
 	spec := map[string]any{}
 	for key, value := range values {
 		spec[key] = value
@@ -210,9 +201,6 @@ func projectLiveEnvironmentStatuses(ctx context.Context, c *asclient.Client, p *
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderResource || binding.ResourceRef == nil {
 				continue
 			}
-			if isSandboxPreviewHTTPRouteBinding(binding) {
-				continue
-			}
 			envStatus.Bindings = append(envStatus.Bindings, projectProviderBindingStatus(ctx, c, p, binding, id))
 		}
 		if len(envStatus.Bindings) == 0 {
@@ -254,14 +242,8 @@ func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 		return status
 	}
 	status.Phase = projectProviderResourcePhase(obj)
-	if isSandboxRunnerBinding(binding) {
-		if route, err := sandboxRunnerPreviewRoute(obj); err == nil && route.URL != "" {
-			status.PreviewURL = route.URL
-		}
-	} else if !isSandboxRunnerBinding(binding) {
-		if previewURL, _, _ := unstructured.NestedString(obj.Object, "status", "previewURL"); previewURL != "" {
-			status.PreviewURL = previewURL
-		}
+	if previewURL, _, _ := unstructured.NestedString(obj.Object, "status", "previewURL"); previewURL != "" {
+		status.PreviewURL = previewURL
 	}
 	if url, _, _ := unstructured.NestedString(obj.Object, "status", "url"); url != "" {
 		status.URL = url
@@ -354,13 +336,7 @@ func projectProviderBindingValues(binding aiv1alpha1.ProjectProviderBindingSpec)
 	return values, nil
 }
 
-func projectProviderBindingResourceName(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, values map[string]any, id identity) string {
-	if isSandboxRunnerBinding(binding) && p != nil && strings.TrimSpace(id.tenantPath) != "" && strings.TrimSpace(p.Name) != "" {
-		return sandboxRunnerResourceName(id.tenantPath, p.Name)
-	}
-	if isSandboxPreviewHTTPRouteBinding(binding) && p != nil && strings.TrimSpace(id.tenantPath) != "" && strings.TrimSpace(p.Name) != "" {
-		return sandboxPreviewHTTPRouteResourceName(id.tenantPath, p.Name)
-	}
+func projectProviderBindingResourceName(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, values map[string]any, _ identity) string {
 	if binding.ResourceRef != nil && strings.TrimSpace(binding.ResourceRef.Name) != "" {
 		return strings.TrimSpace(binding.ResourceRef.Name)
 	}
@@ -376,59 +352,6 @@ func projectProviderBindingResourceName(p *aiv1alpha1.Project, binding aiv1alpha
 		return ""
 	}
 	return projectName + "-" + bindingName
-}
-
-func normalizeProjectProviderBindingValues(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, values map[string]any, resourceName string) {
-	switch {
-	case isSandboxRunnerBinding(binding):
-		values["name"] = resourceName
-		if p != nil {
-			values["projectRef"] = p.Name
-		}
-		// The preview HTTPRoute is created declaratively by the SandboxRunner
-		// RGD (same mechanism as the application template), so App Studio no
-		// longer sets any previewRoute spec fields. Strip any tenant-supplied
-		// route config so a binding cannot influence preview routing.
-		delete(values, "previewRouteEnabled")
-		delete(values, "previewRoute")
-	}
-}
-
-func isSandboxRunnerBinding(binding aiv1alpha1.ProjectProviderBindingSpec) bool {
-	if strings.TrimSpace(binding.Provider) != projectDevelopmentProviderAppStudio || binding.ResourceRef == nil {
-		return false
-	}
-	gv, err := schema.ParseGroupVersion(strings.TrimSpace(binding.ResourceRef.APIVersion))
-	if err != nil {
-		return false
-	}
-	return gv.Group == "infrastructure.kedge.faros.sh" &&
-		gv.Version == "v1alpha1" &&
-		strings.TrimSpace(binding.ResourceRef.Kind) == "SandboxRunner" &&
-		strings.TrimSpace(binding.ResourceRef.Resource) == "sandboxrunners"
-}
-
-func isSandboxPreviewHTTPRouteBinding(binding aiv1alpha1.ProjectProviderBindingSpec) bool {
-	if strings.TrimSpace(binding.Provider) != projectDevelopmentProviderAppStudio || binding.ResourceRef == nil {
-		return false
-	}
-	gv, err := schema.ParseGroupVersion(strings.TrimSpace(binding.ResourceRef.APIVersion))
-	if err != nil {
-		return false
-	}
-	return gv.Group == "infrastructure.kedge.faros.sh" &&
-		gv.Version == "v1alpha1" &&
-		strings.TrimSpace(binding.ResourceRef.Kind) == "SandboxPreviewHTTPRoute" &&
-		strings.TrimSpace(binding.ResourceRef.Resource) == "sandboxpreviewhttproutes"
-}
-
-func sandboxRunnerResourceName(tenantPath, projectName string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(tenantPath) + "\x00" + strings.TrimSpace(projectName)))
-	return "kedge-sandbox-" + hex.EncodeToString(sum[:8])
-}
-
-func sandboxPreviewHTTPRouteResourceName(tenantPath, projectName string) string {
-	return sandboxRunnerResourceName(tenantPath, projectName) + "-preview"
 }
 
 func nestedStringMap(obj map[string]any, fields ...string) (map[string]string, bool) {

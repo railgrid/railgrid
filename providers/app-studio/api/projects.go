@@ -75,6 +75,7 @@ type ProjectView struct {
 	DisplayName  string                        `json:"displayName"`
 	Description  string                        `json:"description,omitempty"`
 	Phase        string                        `json:"phase,omitempty"`
+	Template     string                        `json:"template,omitempty"`
 	Repository   *ProjectRepositoryView        `json:"repository,omitempty"`
 	Memory       aiv1alpha1.ProjectMemory      `json:"memory,omitempty"`
 	Sharing      aiv1alpha1.ProjectSharingSpec `json:"sharing,omitempty"`
@@ -1443,6 +1444,9 @@ func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project,
 		Sharing:      effectiveProjectSharingSpec(p.Spec.Sharing),
 		Environments: projectEnvironmentViews(p),
 		CreatedAt:    p.CreationTimestamp.Time,
+	}
+	if p.Spec.Template != nil {
+		view.Template = strings.TrimSpace(p.Spec.Template.Name)
 	}
 	if p.Status.UpdatedAt != nil {
 		t := p.Status.UpdatedAt.Time

@@ -1,11 +1,4 @@
 {{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
-{{- $previewGatewayEnabled := .Values.previewGateway.enabled | default false -}}
-{{- $previewGatewayBaseDomain := .Values.previewGateway.baseDomain | default "" -}}
-{{- $previewGatewayFeatureEnabled := and $previewGatewayEnabled (ne (trim $previewGatewayBaseDomain) "") -}}
-{{- $previewGatewayServiceName := printf "%s-preview-gateway" (include "appstudio.fullname" .) | trunc 63 | trimSuffix "-" -}}
-{{- if and $previewGatewayFeatureEnabled (not .Values.previewTokenSecretRef.name) -}}
-{{- fail "previewGateway is enabled with baseDomain, but previewTokenSecretRef.name is required for shared preview tokens" -}}
-{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -91,25 +84,8 @@ spec:
             # calling user via the forwarded bearer token.
             - name: KEDGE_PROVIDER_KUBECONFIG
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
-            {{- if ne (trim $previewGatewayBaseDomain) "" }}
-            # App Studio validates the SandboxRunner's reported preview host is
-            # <runner>.<baseDomain>. The HTTPRoute + routing are owned by the
-            # infrastructure SandboxRunner RGD (on the platform Gateway), so
-            # App Studio only needs the base domain — set it to the same value
-            # as the infra provider's KEDGE_APP_BASE_DOMAIN. No parent-gateway
-            # or shared preview-backend config is used anymore.
-            - name: APP_STUDIO_PREVIEW_BASE_DOMAIN
-              value: {{ $previewGatewayBaseDomain | quote }}
-            {{- end }}
             - name: APP_STUDIO_WORKSPACE_ROOT
               value: {{ .Values.workspace.path | quote }}
-            {{- if .Values.previewTokenSecretRef.name }}
-            - name: APP_STUDIO_PREVIEW_TOKEN_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.previewTokenSecretRef.name }}
-                  key: {{ .Values.previewTokenSecretRef.key }}
-            {{- end }}
             {{- if .Values.store.databaseURL }}
             - name: APP_STUDIO_DATABASE_URL
               value: {{ .Values.store.databaseURL | quote }}

@@ -22,7 +22,6 @@ import (
 // and its pluralization.
 var (
 	secretResource         = tenant.Resource{GVR: secretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
-	sandboxRunnerResource  = tenant.Resource{GVR: sandboxRunnerGVR, Kind: "SandboxRunner", Plural: "SandboxRunners"}
 	codeConnectionResource = tenant.Resource{GVR: codeConnectionsGVR, Kind: "Connection", Plural: "Connections"}
 	codeRepositoryResource = tenant.Resource{GVR: codeRepositoriesGVR, Kind: "Repository", Plural: "Repositories"}
 )

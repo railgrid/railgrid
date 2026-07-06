@@ -90,8 +90,8 @@ const (
 //     (defaults "cloudflare-tunnel" / "cfgate-system").
 //
 // Per-instance inputs (container images, etc.) are NOT env tokens — templates
-// declare them as schema fields with sane defaults (e.g. SandboxRunner's
-// spec.runnerImage), the same convention every other template follows. See
+// declare them as schema fields with sane defaults (e.g. simple-webapp's
+// spec.image), the same convention every other template follows. See
 // providers/infrastructure/docs/template-conventions.md.
 func New(runtime dynamic.Interface) *Backend {
 	gatewayName := os.Getenv("KEDGE_GATEWAY_NAME")
@@ -105,11 +105,6 @@ func New(runtime dynamic.Interface) *Backend {
 	tokens := map[string]string{
 		gatewayNameToken:      gatewayName,
 		gatewayNamespaceToken: gatewayNamespace,
-		// Base domain sandbox preview HTTPRoutes are exposed under. Dedicated
-		// knob so previews can use a different domain than 3-tier apps; falls
-		// back to the app base domain when unset (the common case, where they
-		// coincide). Value-as-is: an empty domain is guarded by the template/chart.
-		sandboxPreviewBaseDomainToken: sandboxPreviewBaseDomain(),
 	}
 	maps.Copy(tokens, devImageTokens())
 	return &Backend{runtime: runtime, tokens: tokens}
@@ -121,7 +116,10 @@ func New(runtime dynamic.Interface) *Backend {
 // KEDGE_DEV_IMAGE_NODE / KEDGE_DEV_AGENT_IMAGE (they run tenant code — see
 // docs/app-studio-template-sandboxes.md §9).
 const (
-	DefaultNodeDevImage  = "ghcr.io/faroshq/kedge-sandbox-runner:latest"
+	// DefaultNodeDevImage is a plain node toolchain image — the dev agent is
+	// injected by init container, so nothing kedge-specific is baked in
+	// (bookworm, not slim: dev flows need git and the usual build tools).
+	DefaultNodeDevImage  = "docker.io/library/node:22-bookworm"
 	DefaultDevAgentImage = "ghcr.io/faroshq/kedge-dev-agent:latest"
 )
 
@@ -152,17 +150,6 @@ func devImageTokens() map[string]string {
 		out[devAgentImageToken] = v
 	}
 	return out
-}
-
-// sandboxPreviewBaseDomain resolves the base domain used for sandbox preview
-// HTTPRoute hostnames: KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN when set, else the
-// app base domain KEDGE_APP_BASE_DOMAIN (the common case where previews and
-// apps share a domain, so a deployment need only set one).
-func sandboxPreviewBaseDomain() string {
-	if v := os.Getenv("KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN"); v != "" {
-		return v
-	}
-	return os.Getenv("KEDGE_APP_BASE_DOMAIN")
 }
 
 // Name returns "kro".

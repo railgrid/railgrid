@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -597,17 +598,28 @@ func projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx projectAssistantW
 }
 
 // resolveProjectSandboxRuntime resolves the project's live development
-// SandboxRunner runtime: readiness plus a signed preview URL. The second return
-// is false when the project has no sandbox runner binding yet — i.e. genuinely
-// nothing is deployed — so callers can report not_configured rather than a
-// transient "getting ready" state.
+// runtime: readiness plus the preview URL. The second return is false when
+// the project has no development template bound yet — i.e. genuinely nothing
+// is deployed — so callers can report not_configured rather than a transient
+// "getting ready" state.
 func (s *Server) resolveProjectSandboxRuntime(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project) (projectSandboxPreviewURLResponse, bool) {
 	if s == nil || c == nil || p == nil {
 		return projectSandboxPreviewURLResponse{}, false
 	}
-	target, ok := projectDevelopmentSyncTarget(p, id)
-	if !ok {
-		return projectSandboxPreviewURLResponse{}, false
+	target, err := s.projectDevelopmentTarget(ctx, c, p, id)
+	if err != nil {
+		// Only the "no template selected yet" validation error means nothing is
+		// deployed. Anything else (template deleted, catalog unreadable, …) is a
+		// bound-but-unavailable runtime and must not masquerade as not_configured.
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
+			return projectSandboxPreviewURLResponse{}, false
+		}
+		return projectSandboxPreviewURLResponse{
+			Ready:   false,
+			Reason:  "runtime_unavailable",
+			Message: "Runtime status is temporarily unavailable: " + err.Error(),
+		}, true
 	}
 	preview, err := s.authorizeProjectDevelopmentPreviewTarget(ctx, c, id, p, target)
 	if err != nil {

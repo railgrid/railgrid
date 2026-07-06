@@ -331,7 +331,7 @@ local_resource(
         'providers/app-studio/deploy/chart/values.yaml',
         'providers/app-studio/.env',
     ],
-    resource_deps=['hub', 'app-studio-db', 'sandbox-runner-image'],
+    resource_deps=['hub', 'app-studio-db', 'dev-agent-image'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8085, path='/healthz'),
@@ -376,13 +376,14 @@ local_resource(
     labels=['providers-app-studio'],
 )
 
-# --- Sandbox runner image (live development runtimes) ---
-# Owned by the infrastructure provider alongside the sandbox-runner template.
+# --- Dev agent image (template-native development mode) ---
+# The static control binary injected into dev-mode components; owned by the
+# infrastructure provider (docs/app-studio-template-sandboxes.md §2).
 local_resource(
-    'sandbox-runner-image',
-    cmd='make load-sandbox-runner-image',
+    'dev-agent-image',
+    cmd='make load-dev-agent-image',
     deps=[
-        'providers/infrastructure/sandbox-runner',
+        'providers/infrastructure/dev-agent',
     ],
     resource_deps=['kro-mgmt-up'],
     labels=['providers-app-studio'],

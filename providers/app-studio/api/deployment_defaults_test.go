@@ -12,19 +12,19 @@ package api
 
 import "testing"
 
-// App Studio supplies only projectRef on a SandboxRunner binding. The runner
-// image is a schema field with a sane default on the sandbox-runner template
-// (the web-app convention), so App Studio never sets it — not even from the
-// legacy env.
-func TestSandboxRunnerValuesSuppliesOnlyProjectRef(t *testing.T) {
-	t.Setenv("APP_STUDIO_SANDBOX_RUNNER_IMAGE", "ghcr.io/faroshq/kedge-sandbox-runner@sha256:runner")
-	t.Setenv("APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE", "registry.example.com/kubectl@sha256:token")
-
-	values := sandboxRunnerValues("demo")
-	if got := values["projectRef"]; got != "demo" {
-		t.Fatalf("projectRef = %q, want demo", got)
+// New projects carry no development binding and no template: the environment
+// stays empty until select_project_template / PUT /template binds one. The
+// legacy always-on SandboxRunner default is gone (no-compat decision,
+// docs/app-studio-template-sandboxes.md §7 Phase 4).
+func TestDefaultProjectSpecStartsWithoutDevelopmentBinding(t *testing.T) {
+	spec := defaultProjectSpec("demo", "Demo", "", nil)
+	if spec.Template != nil {
+		t.Fatalf("spec.template = %+v, want nil until selection", spec.Template)
 	}
-	if len(values) != 1 {
-		t.Fatalf("sandboxRunnerValues = %#v, want only projectRef (image is a template schema default)", values)
+	if got := len(spec.Environments); got != 1 {
+		t.Fatalf("environments = %d, want 1", got)
+	}
+	if got := len(spec.Environments[0].Bindings); got != 0 {
+		t.Fatalf("development bindings = %d, want none until a template is selected", got)
 	}
 }

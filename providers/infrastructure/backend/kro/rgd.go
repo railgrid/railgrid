@@ -30,16 +30,6 @@ import (
 const (
 	gatewayNameToken      = "${kedge.gatewayName}"
 	gatewayNamespaceToken = "${kedge.gatewayNamespace}"
-	// sandboxPreviewBaseDomainToken is the base domain sandbox preview HTTPRoutes
-	// are exposed under (KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN, falling back to
-	// KEDGE_APP_BASE_DOMAIN). The sandbox-runner template composes the preview
-	// host as ${schema.spec.name}.${kedge.sandboxPreviewBaseDomain} so kro
-	// interpolates the per-instance runner name after this token resolves. It is
-	// a dedicated knob (not the app domain) so a deployment can serve sandbox
-	// previews on a different domain than 3-tier apps — e.g. locally apps stay on
-	// apps.127.0.0.1.sslip.io while previews use preview.localhost. Unset leaves
-	// it empty (REST-only/dev), same as the other value-as-is tokens.
-	sandboxPreviewBaseDomainToken = "${kedge.sandboxPreviewBaseDomain}"
 
 	// devImageTokenPrefix is the reserved token family template authors put in
 	// spec.development.components[].devImage — ${kedge.devImage.<toolchain>},
@@ -179,14 +169,6 @@ func substituteTokens(raw []byte, tokens map[string]string) []byte {
 	}
 	if resolved[gatewayNamespaceToken] == "" {
 		resolved[gatewayNamespaceToken] = DefaultGatewayNamespace
-	}
-	// The sandbox preview base domain has no in-binary default (it is
-	// deployment-specific), but it must still always be substituted — otherwise
-	// an unset value would leave a literal ${kedge.sandboxPreviewBaseDomain} in
-	// the authored RGD, which kro would reject as an unknown reference.
-	// Missing → empty (the chart guards prod).
-	if _, ok := resolved[sandboxPreviewBaseDomainToken]; !ok {
-		resolved[sandboxPreviewBaseDomainToken] = ""
 	}
 	for token, value := range resolved {
 		raw = bytes.ReplaceAll(raw, []byte(token), []byte(value))

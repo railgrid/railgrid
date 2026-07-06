@@ -81,6 +81,12 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 		return projectAssistantToolBundleRepo
 	case projectToolAskFollowUp, projectToolRequestProjectPlanApproval:
 		return projectAssistantToolBundleCollaboration
+	// Template selection shapes the development ENVIRONMENT, not workspace
+	// files — it must be callable from the requirements-interview turns
+	// (exploration/debugging), not only full implementation turns, or the
+	// model narrates a choice it cannot make.
+	case projectToolSelectTemplate:
+		return projectAssistantToolBundleWorkflow
 	case projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureProvision, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance:
 		return projectAssistantToolBundleInfrastructure
 	}

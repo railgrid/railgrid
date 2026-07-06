@@ -24,7 +24,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/workspace"
@@ -116,6 +120,44 @@ func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity
 	go s.syncDevelopmentAfterMutation(id, p.DeepCopy(), projectToolHydrateWorkspace)
 
 	return resp, nil
+}
+
+// projectImportRepositoryView is one Code repository a new project can be
+// imported from (unclaimed by any App Studio project).
+type projectImportRepositoryView struct {
+	Ref           string `json:"ref"`
+	Name          string `json:"name,omitempty"`
+	ConnectionRef string `json:"connectionRef,omitempty"`
+	HTMLURL       string `json:"htmlURL,omitempty"`
+}
+
+// listImportRepositories is GET /api/projects/import-repositories: Code
+// repositories in the workspace that no App Studio project claims — the
+// candidates for CreateProjectRequest.existingRepositoryRef.
+func (s *Server) listImportRepositories(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireProjectClient(w, r)
+	if !ok {
+		return
+	}
+	list, err := c.Resource(codeRepositoryResource, "").List(r.Context(), metav1.ListOptions{})
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	out := make([]projectImportRepositoryView, 0, len(list.Items))
+	for i := range list.Items {
+		repo := &list.Items[i]
+		if strings.TrimSpace(repo.GetLabels()[projectRepositoryProjectLabel]) != "" {
+			continue
+		}
+		view := projectImportRepositoryView{Ref: repo.GetName()}
+		view.Name, _, _ = unstructured.NestedString(repo.Object, "spec", "name")
+		view.ConnectionRef, _, _ = unstructured.NestedString(repo.Object, "spec", "connectionRef")
+		view.HTMLURL, _, _ = unstructured.NestedString(repo.Object, "status", "htmlURL")
+		out = append(out, view)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Ref < out[j].Ref })
+	writeJSON(w, http.StatusOK, map[string]any{"repositories": out})
 }
 
 // hydrateProjectWorkspace is POST /api/projects/{project}/hydrate-workspace.

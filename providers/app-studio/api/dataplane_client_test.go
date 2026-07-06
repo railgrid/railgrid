@@ -19,15 +19,15 @@ import (
 func TestDataPlaneURL(t *testing.T) {
 	s := &Server{hubBase: "https://hub.example/"}
 
-	got := s.dataPlaneURL("root:kedge:orgs:acme", sandboxDataPlaneRef("kedge-sandbox-abc"), dataPlaneVerbLog, "")
-	want := "https://hub.example/services/providers/infrastructure/dataplane/clusters/root:kedge:orgs:acme/sandboxrunners/kedge-sandbox-abc/log"
+	got := s.dataPlaneURL("root:kedge:orgs:acme", dataPlaneRef{Resource: "applications", Name: "shop-dev"}, dataPlaneVerbLog, "")
+	want := "https://hub.example/services/providers/infrastructure/dataplane/clusters/root:kedge:orgs:acme/applications/shop-dev/log"
 	if got != want {
 		t.Fatalf("dataPlaneURL = %q, want %q", got, want)
 	}
 
 	// The open proxy verb appends the caller tail after the verb.
-	gotProxy := s.dataPlaneURL("c1", sandboxDataPlaneRef("r1"), dataPlaneVerbProxy, "/assets/app.js")
-	wantProxy := "https://hub.example/services/providers/infrastructure/dataplane/clusters/c1/sandboxrunners/r1/proxy/assets/app.js"
+	gotProxy := s.dataPlaneURL("c1", dataPlaneRef{Resource: "applications", Name: "r1"}, dataPlaneVerbProxy, "/assets/app.js")
+	wantProxy := "https://hub.example/services/providers/infrastructure/dataplane/clusters/c1/applications/r1/proxy/assets/app.js"
 	if gotProxy != wantProxy {
 		t.Fatalf("proxy URL = %q, want %q", gotProxy, wantProxy)
 	}
@@ -39,18 +39,11 @@ func TestDataPlaneURL(t *testing.T) {
 	if gotComp != wantComp {
 		t.Fatalf("component URL = %q, want %q", gotComp, wantComp)
 	}
-
-	// An empty resource defaults to the legacy sandbox runner.
-	gotDefault := s.dataPlaneURL("c1", dataPlaneRef{Name: "r1"}, dataPlaneVerbLog, "")
-	wantDefault := "https://hub.example/services/providers/infrastructure/dataplane/clusters/c1/sandboxrunners/r1/log"
-	if gotDefault != wantDefault {
-		t.Fatalf("default-resource URL = %q, want %q", gotDefault, wantDefault)
-	}
 }
 
 func TestNewDataPlaneRequestRequiresHubAndCluster(t *testing.T) {
 	id := identity{clusterID: "c1", token: "tok"}
-	ref := sandboxDataPlaneRef("r1")
+	ref := dataPlaneRef{Resource: "applications", Name: "r1"}
 	// No hub base configured.
 	if _, err := (&Server{}).newDataPlaneRequest(context.Background(), http.MethodGet, id, ref, dataPlaneVerbLog, "", nil); err == nil {
 		t.Fatal("expected error when hubBase is unset")

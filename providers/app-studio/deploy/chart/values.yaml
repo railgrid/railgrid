@@ -44,50 +44,6 @@ providerKubeconfig:
 # convention). App Studio passes only the project reference. See
 # providers/infrastructure/docs/template-conventions.md.
 
-# Optional preview route deployment settings and companion infrastructure binding.
-# If baseDomain is empty, App Studio does not add the SandboxPreviewHTTPRoute
-# companion binding for new projects.
-previewGateway:
-  # Sandbox preview routing is now owned by the infrastructure provider's
-  # SandboxRunner RGD (an HTTPRoute on the platform Gateway backed by the
-  # sandbox's own preview Service). App Studio only needs `baseDomain` to
-  # validate the reported preview host — set it to the same value as the infra
-  # provider's KEDGE_APP_BASE_DOMAIN. The `enabled` switch below only controls
-  # the legacy shared preview-gateway workload, which is no longer in the data
-  # path; leave it off.
-  enabled: false
-  baseDomain: ""
-  # Parent Gateway references (host traffic fan-in).
-  parentGateway:
-    name: "kedge-preview"
-    namespace: "kedge-preview"
-    sectionName: "https"
-  # Shared preview-gateway Service reached by all HTTPRoute resources.
-  # When namespace is unset, the chart uses the Helm release namespace. When
-  # serviceName is unset, the chart uses its rendered preview-gateway service
-  # name.
-  backend:
-    namespace: ""
-    serviceName: ""
-    servicePort: 8080
-  # Dedicated workload that runs `app-studio preview-gateway`.
-  replicaCount: 1
-  service:
-    type: ClusterIP
-    port: 8080
-  serviceAccount:
-    create: true
-    name: ""
-  resources: {}
-  rbac:
-    create: true
-
-# Optional shared secret for signed preview URLs. When unset, the pod generates
-# an in-memory secret on startup; configure this for multi-replica deployments.
-previewTokenSecretRef:
-  name: ""
-  key: token
-
 # App Studio chat-message persistence. Prefer databaseURLSecretRef in
 # production; inMemoryMessageStore is an explicit non-durable fallback only.
 store:

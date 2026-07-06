@@ -1,7 +1,10 @@
 import type {
+  DevelopmentTemplate,
+  ImportRepository,
   KedgeContext,
   ListResponse,
   Project,
+  ProjectHydrateResult,
   ProjectAssistantResumeResponse,
   ProjectAssistantUIComponent,
   ProjectAssistantUIEvent,
@@ -580,14 +583,66 @@ export const api = {
 
   async createProject(
     ctx: KedgeContext | null,
-    body: { displayName?: string; description?: string; prompt?: string; connectionRef?: string },
+    body: {
+      displayName?: string
+      description?: string
+      prompt?: string
+      connectionRef?: string
+      existingRepositoryRef?: string
+    },
   ): Promise<Project> {
     return request<Project>(ctx, 'POST', baseURL(ctx), body)
   },
 
+  async listDevelopmentTemplates(ctx: KedgeContext | null): Promise<DevelopmentTemplate[]> {
+    const body = await request<{ templates: DevelopmentTemplate[] }>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/development-templates`,
+    )
+    return body.templates ?? []
+  },
+
+  async listImportRepositories(ctx: KedgeContext | null): Promise<ImportRepository[]> {
+    const body = await request<{ repositories: ImportRepository[] }>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/import-repositories`,
+    )
+    return body.repositories ?? []
+  },
+
+  async setProjectTemplate(
+    ctx: KedgeContext | null,
+    name: string,
+    template: string,
+  ): Promise<{ template: string; components: Record<string, string> }> {
+    return request<{ template: string; components: Record<string, string> }>(
+      ctx,
+      'PUT',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/template`,
+      { template },
+    )
+  },
+
+  async hydrateWorkspace(ctx: KedgeContext | null, name: string, ref?: string): Promise<ProjectHydrateResult> {
+    return request<ProjectHydrateResult>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/hydrate-workspace`,
+      ref ? { ref } : {},
+    )
+  },
+
   async createProjectStream(
     ctx: KedgeContext | null,
-    body: { displayName?: string; description?: string; prompt: string; connectionRef?: string },
+    body: {
+      displayName?: string
+      description?: string
+      prompt: string
+      connectionRef?: string
+      existingRepositoryRef?: string
+    },
     onEvent: (event: ProjectMessageStreamEvent) => void,
     signal?: AbortSignal,
   ): Promise<void> {

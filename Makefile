@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-sandbox-runner docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio load-sandbox-runner-image build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -872,15 +872,12 @@ APP_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 APP_STUDIO_KCP_SERVER ?= https://localhost:6443
 APP_STUDIO_WORKSPACE_PATH ?= root:kedge:providers:app-studio
 APP_STUDIO_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/app-studio-provider.kubeconfig
-APP_STUDIO_RUNTIME_KUBECONFIG ?= $(KRO_KIND_KUBECONFIG)
 APP_STUDIO_SCHEMAS_DIR ?= providers/app-studio/deploy/chart/files/schemas
 APP_STUDIO_MANIFEST ?= providers/app-studio/manifest.yaml
 APP_STUDIO_PROVIDER_MANIFEST ?= providers/app-studio/provider.yaml
 APP_STUDIO_DATABASE_URL ?=
 APP_STUDIO_IN_MEMORY_MESSAGE_STORE ?=
 APP_STUDIO_AUTO_APPROVE_ACTIONS ?= true
-APP_STUDIO_SANDBOX_RUNNER_IMAGE ?= $(SANDBOX_RUNNER_IMAGE)
-APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE ?= $(SANDBOX_TOKEN_GENERATOR_IMAGE)
 APP_STUDIO_DEV_DATABASE_URL ?= postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable
 APP_STUDIO_POSTGRES_CONTAINER ?= kedge-app-studio-postgres
 APP_STUDIO_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
@@ -920,7 +917,6 @@ run-provider-infrastructure: build-infrastructure-provider ## Run the infrastruc
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 	INFRASTRUCTURE_KUBECONFIG=$${INFRASTRUCTURE_KUBECONFIG:-$$( [ -f "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" ] && echo "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" )} \
 	KEDGE_APP_BASE_DOMAIN=$${KEDGE_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
-	KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN=$${KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN:-preview.localhost} \
 	KEDGE_GATEWAY_NAME=$${KEDGE_GATEWAY_NAME:-cloudflare-tunnel} \
 	KEDGE_GATEWAY_NAMESPACE=$${KEDGE_GATEWAY_NAMESPACE:-cfgate-system} \
 		$(BINDIR)/infrastructure-provider
@@ -1031,20 +1027,15 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 	@echo "Starting App Studio provider on :$(APP_STUDIO_PORT)"
 	@echo "  hub:   $(APP_STUDIO_HUB_URL)"
 	@echo "  token: $(APP_STUDIO_TOKEN)"
-	@echo "  runtime: $${APP_STUDIO_RUNTIME_KUBECONFIG:-$(APP_STUDIO_RUNTIME_KUBECONFIG)}"
 	@# Auto-source providers/app-studio/.env (gitignored) so local store/LLM
 	@# overrides reach Tilt and make without a manual export. See .env.example.
 	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
 	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
 	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
 	APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS:-$(APP_STUDIO_AUTO_APPROVE_ACTIONS)}"; \
-	APP_STUDIO_SANDBOX_RUNNER_IMAGE="$${APP_STUDIO_SANDBOX_RUNNER_IMAGE:-$(APP_STUDIO_SANDBOX_RUNNER_IMAGE)}"; \
-	APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE="$${APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE:-$(APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE)}"; \
 	if [ "$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-}" = "true" ]; then \
 		echo "  store: in-memory (non-durable)"; \
 		echo "  auto-approve actions: $${APP_STUDIO_AUTO_APPROVE_ACTIONS}"; \
-		echo "  sandbox runner image: $${APP_STUDIO_SANDBOX_RUNNER_IMAGE}"; \
-		echo "  sandbox token image: $${APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE}"; \
 		APP_STUDIO_DATABASE_URL= \
 		PORT=$(APP_STUDIO_PORT) \
 		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
@@ -1052,30 +1043,22 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 		KEDGE_HUB_INSECURE=true \
 		KEDGE_PROVIDER_NAME=app-studio \
 		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_PROVIDER_KUBECONFIG)" "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
-		APP_STUDIO_RUNTIME_KUBECONFIG=$${APP_STUDIO_RUNTIME_KUBECONFIG:-$$( [ -f "$(APP_STUDIO_RUNTIME_KUBECONFIG)" ] && echo "$(APP_STUDIO_RUNTIME_KUBECONFIG)" )} \
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
 		APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS}" \
-		APP_STUDIO_SANDBOX_RUNNER_IMAGE="$${APP_STUDIO_SANDBOX_RUNNER_IMAGE}" \
-		APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE="$${APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE}" \
-		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
+				APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 			$(BINDIR)/app-studio-provider; \
 	else \
 		echo "  store: $${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}"; \
 		echo "  auto-approve actions: $${APP_STUDIO_AUTO_APPROVE_ACTIONS}"; \
-		echo "  sandbox runner image: $${APP_STUDIO_SANDBOX_RUNNER_IMAGE}"; \
-		echo "  sandbox token image: $${APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE}"; \
 		PORT=$(APP_STUDIO_PORT) \
 		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
 		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 		KEDGE_HUB_INSECURE=true \
 		KEDGE_PROVIDER_NAME=app-studio \
 		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_PROVIDER_KUBECONFIG)" "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
-		APP_STUDIO_RUNTIME_KUBECONFIG=$${APP_STUDIO_RUNTIME_KUBECONFIG:-$$( [ -f "$(APP_STUDIO_RUNTIME_KUBECONFIG)" ] && echo "$(APP_STUDIO_RUNTIME_KUBECONFIG)" )} \
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
 		APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS}" \
-		APP_STUDIO_SANDBOX_RUNNER_IMAGE="$${APP_STUDIO_SANDBOX_RUNNER_IMAGE}" \
-		APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE="$${APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE}" \
-		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
+				APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 			$(BINDIR)/app-studio-provider; \
 	fi
 
@@ -1130,24 +1113,6 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(APP_STUDIO_MANIFEST) -f $(APP_STUDIO_PROVIDER_MANIFEST)
-
-# --- Sandbox runner image (live development runtimes) ---
-# Owned by the infrastructure provider alongside the `sandbox-runner` template
-# it serves. Self-contained build context (its own go.mod, stdlib-only).
-SANDBOX_RUNNER_DIR ?= providers/infrastructure/sandbox-runner
-SANDBOX_RUNNER_IMAGE ?= ghcr.io/faroshq/kedge-sandbox-runner:latest
-SANDBOX_TOKEN_GENERATOR_IMAGE ?= docker.io/bitnami/kubectl@sha256:b9f4412e53f09d76b0991cdd29c0feff4c1d1e112b307e0ab155e5b050a9f4ec
-SANDBOX_RUNNER_PLATFORM ?= linux/$(ARCH)
-
-docker-build-sandbox-runner: ## Build the sandbox runner image used by SandboxRunner pods
-	docker build -f $(SANDBOX_RUNNER_DIR)/Dockerfile \
-		--platform $(SANDBOX_RUNNER_PLATFORM) \
-		--provenance=false \
-		-t $(SANDBOX_RUNNER_IMAGE) $(SANDBOX_RUNNER_DIR)
-
-load-sandbox-runner-image: docker-build-sandbox-runner ## Load the sandbox runner image into the local kind runtime cluster
-	@echo ">>> loading $(SANDBOX_RUNNER_IMAGE) into kind cluster $(KRO_KIND_NAME)"
-	kind load docker-image $(SANDBOX_RUNNER_IMAGE) --name $(KRO_KIND_NAME)
 
 # --- Dev agent image (template-native development mode) ---
 # The static control binary an init container injects into any dev-mode

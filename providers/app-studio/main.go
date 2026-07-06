@@ -41,7 +41,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/faroshq/provider-app-studio/api"
-	"github.com/faroshq/provider-app-studio/previewgateway"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/tenant"
 	"github.com/faroshq/provider-app-studio/workspace"
@@ -79,37 +78,21 @@ func loadProviderConfig() (*rest.Config, error) {
 	return nil, fmt.Errorf("no kubeconfig found (set KEDGE_PROVIDER_KUBECONFIG)")
 }
 
-func loadPreviewGatewayConfig() (*rest.Config, error) {
-	if path := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_GATEWAY_KUBECONFIG")); path != "" {
-		cfg, err := clientcmd.BuildConfigFromFlags("", path)
-		if err != nil {
-			return nil, fmt.Errorf("loading preview gateway kubeconfig %s: %w", path, err)
-		}
-		return cfg, nil
-	}
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("loading preview gateway in-cluster config: %w", err)
-	}
-	return cfg, nil
-}
-
 // Subcommands:
 //
 //	app-studio init   — one-shot: apply APIResourceSchemas, APIExport,
 //	    APIExportEndpointSlice, and bind grant into the provider workspace using
 //	    KEDGE_PROVIDER_KUBECONFIG. See init_cmd.go.
 //	app-studio serve  — runtime (default).
-//	app-studio preview-gateway — proxy private sandbox previews to runtime.
 func main() {
 	os.Exit(runMain(os.Args[1:]))
 }
 
 func runMain(args []string) int {
-	return runMainWith(args, runInitCmd, runServe, runPreviewGateway, os.Stderr)
+	return runMainWith(args, runInitCmd, runServe, os.Stderr)
 }
 
-func runMainWith(args []string, initCmd func(context.Context) error, serve func(), previewGateway func(), stderr io.Writer) int {
+func runMainWith(args []string, initCmd func(context.Context) error, serve func(), stderr io.Writer) int {
 	if len(args) > 0 {
 		switch args[0] {
 		case "init":
@@ -123,11 +106,8 @@ func runMainWith(args []string, initCmd func(context.Context) error, serve func(
 		case "serve":
 			serve()
 			return 0
-		case "preview-gateway":
-			previewGateway()
-			return 0
 		default:
-			fmt.Fprintf(stderr, "unknown subcommand: %s\nusage: app-studio [init|serve|preview-gateway]\n", args[0])
+			fmt.Fprintf(stderr, "unknown subcommand: %s\nusage: app-studio [init|serve]\n", args[0])
 			return 2
 		}
 	}
@@ -171,13 +151,10 @@ func runServe() {
 			os.Getenv("KEDGE_HUB_INSECURE") == "true",
 	)
 	apiServer.SetAutoApproveAssistantActions(os.Getenv("APP_STUDIO_AUTO_APPROVE_ACTIONS") == "true")
-	if secret := os.Getenv("APP_STUDIO_PREVIEW_TOKEN_SECRET"); secret != "" {
-		apiServer.SetPreviewTokenSecret([]byte(secret))
-	}
-	// App Studio no longer holds a runtime-cluster kubeconfig: the sandbox data
-	// plane (logs/sync/restart/preview) is served by the infrastructure provider
-	// as subresources on the SandboxRunner instance, reached through the hub as
-	// the calling user. See docs/app-studio-runtime-decoupling.md.
+	// App Studio holds no runtime-cluster kubeconfig: the development data
+	// plane (logs/sync/restart) is served by the infrastructure provider as
+	// subresources on the template instance, reached through the hub as the
+	// calling user. See docs/app-studio-template-sandboxes.md.
 
 	handler, err := newHandler(apiServer)
 	if err != nil {
@@ -208,47 +185,6 @@ func runServe() {
 	}
 }
 
-func runPreviewGateway() {
-	port := envOr("PORT", "8080")
-
-	secret := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_TOKEN_SECRET"))
-	if secret == "" {
-		log.Fatal("APP_STUDIO_PREVIEW_TOKEN_SECRET is required for preview-gateway")
-	}
-
-	cfg, err := loadPreviewGatewayConfig()
-	if err != nil {
-		log.Fatalf("preview-gateway config: %v", err)
-	}
-	gateway, err := previewgateway.NewFromConfig(cfg, []byte(secret))
-	if err != nil {
-		log.Fatalf("preview-gateway handler: %v", err)
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	srv := &http.Server{
-		Addr:              ":" + port,
-		Handler:           logMiddleware(gateway),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	go func() {
-		log.Printf("app-studio preview-gateway listening on :%s", port)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("preview-gateway server: %v", err)
-		}
-	}()
-
-	<-ctx.Done()
-	log.Printf("shutting down")
-	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdown); err != nil {
-		log.Printf("shutdown error: %v", err)
-	}
-}
 
 // newHandler builds the combined backend-API + portal handler. apiServer may be
 // nil (the portal still serves), which keeps the asset tests independent of the

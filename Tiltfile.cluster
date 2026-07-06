@@ -324,106 +324,6 @@ spec:
       allowedRoutes:
         namespaces:
           from: All
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: %s
-  namespace: %s
-type: Opaque
-stringData:
-  token: dev-app-studio-preview-token-secret
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: %s
-  namespace: %s
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: %s
-rules:
-  - apiGroups: [""]
-    resources: ["services"]
-    verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: %s
-subjects:
-  - kind: ServiceAccount
-    name: %s
-    namespace: %s
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: %s
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: %s
-  namespace: %s
-  labels:
-    app.kubernetes.io/name: %s
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: %s
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: %s
-    spec:
-      serviceAccountName: %s
-      containers:
-        - name: preview-gateway
-          image: %s
-          args: ["preview-gateway"]
-          ports:
-            - name: http
-              containerPort: 8080
-              protocol: TCP
-          env:
-            - name: PORT
-              value: "8080"
-            - name: APP_STUDIO_PREVIEW_TOKEN_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: %s
-                  key: token
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            periodSeconds: 5
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 20
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: %s
-  namespace: %s
-  labels:
-    app.kubernetes.io/name: %s
-spec:
-  type: ClusterIP
-  selector:
-    app.kubernetes.io/name: %s
-  ports:
-    - name: http
-      port: 8080
-      targetPort: http
-      protocol: TCP
 '''.strip() % (
     app_studio_preview_namespace,
     app_studio_preview_tls_secret,
@@ -438,26 +338,7 @@ spec:
     app_base_domain,
     app_studio_preview_public_port,
     app_studio_preview_tls_secret,
-    app_studio_preview_token_secret, app_studio_preview_namespace,
-    app_studio_preview_gateway_name, app_studio_preview_namespace,
-    app_studio_preview_gateway_name,
-    app_studio_preview_gateway_name,
-    app_studio_preview_gateway_name, app_studio_preview_namespace,
-    app_studio_preview_gateway_name,
-    app_studio_preview_gateway_name, app_studio_preview_namespace, app_studio_preview_gateway_name,
-    app_studio_preview_gateway_name,
-    app_studio_preview_gateway_name,
-    app_studio_preview_gateway_name,
-    app_studio_provider_image,
-    app_studio_preview_token_secret,
-    app_studio_preview_gateway_name, app_studio_preview_namespace, app_studio_preview_gateway_name,
-    app_studio_preview_gateway_name,
 )))
-
-k8s_resource(
-    app_studio_preview_gateway_name,
-    labels=['providers-app-studio'],
-)
 
 local_resource(
     'app-studio-preview-port-forward',
@@ -472,7 +353,6 @@ while true; do
   sleep 2
 done
 '''.strip(),
-    resource_deps=[app_studio_preview_gateway_name],
     labels=['providers-app-studio'],
 )
 
@@ -735,26 +615,12 @@ local_resource(
     # The tenant client needs the kcp front-proxy host+TLS (it drops the
     # credential and acts as the caller). In the in-cluster hub flow the
     # provider runs on the host, so point it at the operator-issued admin
-    # kubeconfig (kcp.localhost:8443).
-    serve_cmd=('KEDGE_PROVIDER_KUBECONFIG={kc} APP_STUDIO_RUNTIME_KUBECONFIG={kind} ' +
-               'APP_STUDIO_PREVIEW_BASE_DOMAIN={preview_domain} ' +
-               'APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAME={preview_gateway} ' +
-               'APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAMESPACE=envoy-gateway-system ' +
-               'APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_SECTION_NAME={preview_listener} ' +
-               'APP_STUDIO_PREVIEW_BACKEND_NAMESPACE={preview_namespace} ' +
-               'APP_STUDIO_PREVIEW_BACKEND_SERVICE_NAME={preview_backend} ' +
-               'APP_STUDIO_PREVIEW_BACKEND_SERVICE_PORT=8080 ' +
-               'APP_STUDIO_PREVIEW_PUBLIC_PORT={preview_public_port} ' +
-               'APP_STUDIO_PREVIEW_TOKEN_SECRET=dev-app-studio-preview-token-secret ' +
+    # kubeconfig (kcp.localhost:8443). Development previews are the template
+    # instance's own public URL (docs/app-studio-template-sandboxes.md) — no
+    # preview-gateway env.
+    serve_cmd=('KEDGE_PROVIDER_KUBECONFIG={kc} ' +
                'make run-provider-app-studio').format(
-                   kc=KCP_ADMIN_KUBECONFIG,
-                   kind=KIND_HOST_KUBECONFIG,
-                   preview_domain=app_studio_preview_base_domain,
-                   preview_gateway=app_studio_preview_parent_gateway_name,
-                   preview_listener=app_studio_preview_listener,
-                   preview_namespace=app_studio_preview_namespace,
-                   preview_backend=app_studio_preview_gateway_name,
-                   preview_public_port=app_studio_preview_public_port),
+                   kc=KCP_ADMIN_KUBECONFIG),
     deps=[
         'providers/app-studio/main.go',
         'providers/app-studio/heartbeat.go',
@@ -775,9 +641,7 @@ local_resource(
     resource_deps=[
         'kedge-hub',
         'app-studio-db',
-        'sandbox-runner-image',
-        app_studio_preview_gateway_name,
-        'app-studio-preview-port-forward',
+        'dev-agent-image',
     ],
     readiness_probe=probe(
         period_secs=5,
@@ -955,16 +819,14 @@ local_resource(
     serve_cmd=('KRO_KUBECONFIG={kro} INFRASTRUCTURE_KUBECONFIG={kc} ' +
                'INFRASTRUCTURE_WORKSPACE_PATH=root:kedge:providers:infrastructure ' +
                'KEDGE_APP_BASE_DOMAIN={apps_domain} ' +
-               'KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN={preview_domain} ' +
-               # The ONE platform Gateway all template HTTPRoutes (apps and
-               # sandbox previews) attach to — locally the envoy Gateway above,
-               # in prod cfgate's cloudflare-tunnel (the in-binary default).
+               # The ONE platform Gateway all template HTTPRoutes attach to —
+               # locally the envoy Gateway above, in prod cfgate's
+               # cloudflare-tunnel (the in-binary default).
                'KEDGE_GATEWAY_NAME={gateway} ' +
                'KEDGE_GATEWAY_NAMESPACE=envoy-gateway-system ' +
                'make run-provider-infrastructure').format(
                    kro=KIND_HOST_KUBECONFIG, kc=KCP_ADMIN_KUBECONFIG,
                    apps_domain=app_base_domain,
-                   preview_domain=app_studio_preview_base_domain,
                    gateway=app_studio_preview_parent_gateway_name),
     deps=[
         'providers/infrastructure/main.go',
@@ -1214,14 +1076,15 @@ local_resource(
     labels=['providers-databricks'],
 )
 
-# --- Sandbox runner image (live development runtimes) ---
-# Owned by the infrastructure provider alongside the sandbox-runner template.
+# --- Dev agent image (template-native development mode) ---
+# The static control binary injected into dev-mode components; owned by the
+# infrastructure provider (docs/app-studio-template-sandboxes.md §2).
 local_resource(
-    'sandbox-runner-image',
-    cmd=('KRO_KIND_NAME={name} make load-sandbox-runner-image').format(
+    'dev-agent-image',
+    cmd=('KRO_KIND_NAME={name} make load-dev-agent-image').format(
         name=cluster_name),
     deps=[
-        'providers/infrastructure/sandbox-runner',
+        'providers/infrastructure/dev-agent',
     ],
     labels=['providers-app-studio'],
 )

@@ -54,6 +54,8 @@ import {
 } from './workbench'
 import { developmentPreviewDisplayPhase, developmentPreviewSyncStatus } from './previewState'
 import type {
+  DevelopmentTemplate,
+  ImportRepository,
   KedgeContext,
   Project,
   ProjectAssistantResumeResponse,
@@ -322,6 +324,14 @@ const toolState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const createReadiness = ref<ProjectCreateReadiness | null>(null)
 const createReadinessLoading = ref(false)
 const createReadinessError = ref<string | null>(null)
+const importRepositories = ref<ImportRepository[]>([])
+const importSelectedRepository = ref('')
+const importBusy = ref(false)
+const importError = ref<string | null>(null)
+const developmentTemplates = ref<DevelopmentTemplate[]>([])
+const developmentTemplateSelection = ref('')
+const developmentTemplateBusy = ref(false)
+const developmentHydrateBusy = ref(false)
 const workbench = ref(createDefaultWorkbenchState())
 const draggedWorkbenchTabID = ref<string | null>(null)
 const dragOverWorkbenchTabID = ref<string | null>(null)
@@ -748,6 +758,8 @@ onMounted(() => {
   void loadProviders()
   void loadCreateReadiness()
   void loadLLMSettings()
+  void loadImportRepositories()
+  void loadDevelopmentTemplates()
   startLandingPlaceholderRotation()
   window.addEventListener('focus', handleDevelopmentPreviewAuthorizationWake)
   window.addEventListener('online', handleDevelopmentPreviewAuthorizationWake)
@@ -768,12 +780,15 @@ watch(
     void loadProviders()
     void loadCreateReadiness()
     void loadLLMSettings()
+    void loadImportRepositories()
+    void loadDevelopmentTemplates()
   },
 )
 
 watch(
   () => selected.value?.name,
   () => {
+    developmentTemplateSelection.value = selected.value?.template ?? ''
     developmentSyncStatus.value = null
     developmentSyncError.value = null
     developmentPreviewAuthorizationError.value = null
@@ -987,6 +1002,108 @@ async function loadLLMSettings() {
   } catch (e) {
     if (handleProjectAPIInitializing(e)) return
     llmStatus.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function loadImportRepositories() {
+  if (!props.ctx?.token) return
+  try {
+    importRepositories.value = await api.listImportRepositories(props.ctx)
+  } catch (e) {
+    if (handleProjectAPIInitializing(e)) return
+    // Import stays hidden when the list is unavailable; not a landing error.
+    importRepositories.value = []
+  }
+}
+
+async function loadDevelopmentTemplates() {
+  if (!props.ctx?.token) return
+  try {
+    developmentTemplates.value = await api.listDevelopmentTemplates(props.ctx)
+  } catch (e) {
+    if (handleProjectAPIInitializing(e)) return
+    developmentTemplates.value = []
+  }
+}
+
+// importRepositoryProject creates a project on top of an existing Code
+// repository: the backend adopts the repository and hydrates the workspace
+// from its default branch.
+async function importRepositoryProject() {
+  const repositoryRef = importSelectedRepository.value
+  if (!repositoryRef || importBusy.value) return
+  importBusy.value = true
+  importError.value = null
+  try {
+    const project = await api.createProject(props.ctx, { existingRepositoryRef: repositoryRef })
+    importSelectedRepository.value = ''
+    selected.value = project
+    resetWorkbench()
+    props.navigate(encodeURIComponent(project.name))
+    void load()
+    void loadImportRepositories()
+  } catch (e) {
+    importError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    importBusy.value = false
+  }
+}
+
+// applyDevelopmentTemplate binds (or switches) the project's development
+// environment onto the selected template; the backend re-provisions in
+// development mode and re-syncs the workspace.
+async function applyDevelopmentTemplate() {
+  const projectName = selected.value?.name
+  const template = developmentTemplateSelection.value
+  if (!projectName || !template || developmentTemplateBusy.value) return
+  // Switching templates re-provisions the development environment; the
+  // workspace and git repository survive, but the running instance does not.
+  if (!window.confirm(`Switch the development environment to the "${template}" template? The current development instance will be replaced (your code stays in the workspace and git).`)) return
+  developmentTemplateBusy.value = true
+  developmentSyncError.value = null
+  developmentSyncStatus.value = null
+  try {
+    const result = await api.setProjectTemplate(props.ctx, projectName, template)
+    // Re-fetch the project: applying a template creates or replaces the
+    // development environment/binding, and the preview/logs/sync UI keys off
+    // developmentBinding — a local template patch would leave it stale.
+    try {
+      const project = await api.getProject(props.ctx, projectName)
+      if (selected.value?.name === projectName) selected.value = project
+    } catch {
+      if (selected.value?.name === projectName) {
+        selected.value = { ...selected.value, template: result.template }
+      }
+    }
+    developmentSyncStatus.value = `Development environment is switching to the ${result.template} template.`
+  } catch (e) {
+    developmentSyncError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    developmentTemplateBusy.value = false
+  }
+}
+
+// hydrateDevelopmentWorkspace replace-loads the workspace from the project's
+// git repository (the durable source of truth) and re-syncs the runtime.
+async function hydrateDevelopmentWorkspace() {
+  const projectName = selected.value?.name
+  if (!projectName || developmentHydrateBusy.value) return
+  // Hydration overwrites workspace files with the repository's tree.
+  if (!window.confirm('Load the workspace from the git repository? Files in the workspace will be overwritten with the repository versions (workspace-only files are kept).')) return
+  developmentHydrateBusy.value = true
+  developmentSyncError.value = null
+  developmentSyncStatus.value = null
+  try {
+    const result = await api.hydrateWorkspace(props.ctx, projectName)
+    const written = result.written?.length ?? 0
+    const skipped = result.skipped?.length ?? 0
+    developmentSyncStatus.value = skipped > 0
+      ? `Loaded ${written} file(s) from the repository (${skipped} skipped).`
+      : `Loaded ${written} file(s) from the repository.`
+  } catch (e) {
+    developmentSyncError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    developmentHydrateBusy.value = false
   }
 }
 
@@ -3056,6 +3173,36 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               </button>
             </div>
 
+            <div v-if="importRepositories.length > 0" class="mt-6 rounded-md border border-border-subtle bg-surface p-3">
+              <div class="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase text-text-muted">
+                <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Or import an existing repository
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <select
+                  v-model="importSelectedRepository"
+                  class="h-8 min-w-[220px] flex-1 rounded-md border border-border-subtle bg-surface px-2 text-[12px] text-text-primary"
+                >
+                  <option value="" disabled>Select a repository…</option>
+                  <option v-for="repo in importRepositories" :key="repo.ref" :value="repo.ref">
+                    {{ repo.name || repo.ref }}
+                  </option>
+                </select>
+                <button
+                  type="button"
+                  class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                  :disabled="!importSelectedRepository || importBusy"
+                  @click="importRepositoryProject"
+                >
+                  <Loader2 v-if="importBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                  Import
+                </button>
+              </div>
+              <div v-if="importError" class="mt-2 rounded-md border border-danger/30 bg-danger-subtle p-2 text-[12px] text-danger">
+                {{ importError }}
+              </div>
+            </div>
+
             <div class="mt-6">
               <div class="mb-2 text-[11px] font-semibold uppercase text-text-muted">Example prompts</div>
               <div class="flex flex-wrap gap-2">
@@ -3628,6 +3775,41 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               <StatusBadge :status="developmentPreviewPhase" />
             </div>
             <div class="ml-auto flex shrink-0 items-center gap-2">
+              <template v-if="developmentTemplates.length > 0">
+                <select
+                  v-model="developmentTemplateSelection"
+                  class="h-8 max-w-[180px] rounded-md border border-border-subtle bg-surface px-2 text-[12px] text-text-secondary"
+                  title="Infrastructure template backing this development environment"
+                  :disabled="developmentTemplateBusy"
+                >
+                  <option value="" disabled>{{ selected?.template ? selected.template : 'Choose template…' }}</option>
+                  <option v-for="tpl in developmentTemplates" :key="tpl.name" :value="tpl.name">
+                    {{ tpl.displayName || tpl.name }}
+                  </option>
+                </select>
+                <button
+                  v-if="developmentTemplateSelection && developmentTemplateSelection !== (selected?.template ?? '')"
+                  type="button"
+                  class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-3 text-[12px] font-medium text-text-primary transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  :disabled="developmentTemplateBusy"
+                  title="Switch the development environment onto this template. Code is preserved in git and re-synced."
+                  @click="applyDevelopmentTemplate"
+                >
+                  <Loader2 v-if="developmentTemplateBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                  Apply
+                </button>
+              </template>
+              <button
+                type="button"
+                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="!selected || developmentHydrateBusy"
+                title="Replace-load the workspace from the project's git repository and re-sync"
+                @click="hydrateDevelopmentWorkspace"
+              >
+                <Loader2 v-if="developmentHydrateBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                <GitBranch v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Load from git
+              </button>
               <button
                 type="button"
                 class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"

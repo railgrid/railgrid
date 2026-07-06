@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -257,9 +258,6 @@ func (s *Server) deleteProjectDevelopmentBindingResources(ctx context.Context, c
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderResource || binding.ResourceRef == nil {
 				continue
 			}
-			if isSandboxPreviewHTTPRouteBinding(binding) {
-				continue
-			}
 			gvr, err := projectProviderResourceGVR(binding.ResourceRef)
 			if err != nil {
 				return err
@@ -314,6 +312,68 @@ func (s *Server) templateDevelopmentPreview(ctx context.Context, c *asclient.Cli
 }
 
 // --- HTTP surface -----------------------------------------------------------
+
+// projectDevelopmentTemplateView is one catalog entry the portal offers when
+// selecting (or switching) a project's development template.
+type projectDevelopmentTemplateView struct {
+	Name        string            `json:"name"`
+	DisplayName string            `json:"displayName,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Category    string            `json:"category,omitempty"`
+	Components  map[string]string `json:"components"`
+}
+
+// listDevelopmentTemplates is GET /api/projects/development-templates: the
+// tenant catalog filtered to templates that can back a development
+// environment (those declaring development components). The portal's
+// template picker reads this instead of the raw infrastructure catalog.
+func (s *Server) listDevelopmentTemplates(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireProjectClient(w, r)
+	if !ok {
+		return
+	}
+	serveDevelopmentTemplates(w, r, c)
+}
+
+// serveDevelopmentTemplates is the client-independent part of the handler,
+// split from the auth plumbing so tests can drive it over HTTP.
+func serveDevelopmentTemplates(w http.ResponseWriter, r *http.Request, c *asclient.Client) {
+	list, err := c.Resource(templateResource, "").List(r.Context(), metav1.ListOptions{})
+	if err != nil {
+		// Same mapping as the other /api/projects handlers: workspace
+		// initialization gets 503 + Retry-After, kcp API errors keep their
+		// status, instead of a blanket 502.
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"templates": developmentTemplateViews(list.Items)})
+}
+
+// developmentTemplateViews filters the raw Template list down to templates
+// declaring development components and shapes them for the portal picker,
+// sorted by name for stable ordering. Templates with a malformed spec are
+// skipped, never surfaced as errors — a broken catalog entry must not hide
+// the rest of the catalog.
+func developmentTemplateViews(items []unstructured.Unstructured) []projectDevelopmentTemplateView {
+	out := make([]projectDevelopmentTemplateView, 0, len(items))
+	for i := range items {
+		obj := &items[i]
+		info, err := projectTemplateInfoFromUnstructured(obj)
+		if err != nil || len(info.Components) == 0 {
+			continue
+		}
+		view := projectDevelopmentTemplateView{
+			Name:       info.Name,
+			Components: info.Components,
+		}
+		view.DisplayName, _, _ = unstructured.NestedString(obj.Object, "spec", "displayName")
+		view.Description, _, _ = unstructured.NestedString(obj.Object, "spec", "description")
+		view.Category, _, _ = unstructured.NestedString(obj.Object, "spec", "category")
+		out = append(out, view)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
 
 type projectTemplateSelectRequest struct {
 	Template string `json:"template"`

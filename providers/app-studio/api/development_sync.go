@@ -14,25 +14,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
 	"path"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/klog/v2"
-
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
-	"github.com/faroshq/provider-app-studio/previewtoken"
 	"github.com/faroshq/provider-app-studio/tenant"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
@@ -66,9 +59,6 @@ type projectDevelopmentSyncTargetInfo struct {
 
 // instanceResource is the tenant.Resource descriptor for the target instance.
 func (t projectDevelopmentSyncTargetInfo) instanceResource() (tenant.Resource, error) {
-	if t.Resource == "" || t.Resource == sandboxRunnersResource {
-		return sandboxRunnerResource, nil
-	}
 	gv, err := schema.ParseGroupVersion(t.APIVersion)
 	if err != nil {
 		return tenant.Resource{}, fmt.Errorf("target apiVersion %q: %w", t.APIVersion, err)
@@ -79,11 +69,7 @@ func (t projectDevelopmentSyncTargetInfo) instanceResource() (tenant.Resource, e
 // dataPlaneRefFor addresses the target's instance, optionally scoped to a
 // component.
 func (t projectDevelopmentSyncTargetInfo) dataPlaneRefFor(component string) dataPlaneRef {
-	resource := t.Resource
-	if resource == "" {
-		resource = sandboxRunnersResource
-	}
-	return dataPlaneRef{Resource: resource, Name: t.ResourceName, Component: component}
+	return dataPlaneRef{Resource: t.Resource, Name: t.ResourceName, Component: component}
 }
 
 // sortedComponents returns the component names in deterministic order.
@@ -94,10 +80,6 @@ func (t projectDevelopmentSyncTargetInfo) sortedComponents() []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-type sandboxPreviewHTTPRouteInfo struct {
-	URL string
 }
 
 type projectSandboxSyncFile struct {
@@ -132,61 +114,16 @@ type projectSandboxPreviewURLResponse struct {
 	Reason                string `json:"reason,omitempty"`
 }
 
-// projectDevelopmentSyncTarget resolves the legacy (sandbox-runner) target
-// from the Project spec alone. Template-backed projects resolve through
-// projectDevelopmentTarget, which also reads the Template's component map.
-func projectDevelopmentSyncTarget(p *aiv1alpha1.Project, id identity) (projectDevelopmentSyncTargetInfo, bool) {
-	if p == nil {
-		return projectDevelopmentSyncTargetInfo{}, false
-	}
-	for _, env := range p.Spec.Environments {
-		if strings.TrimSpace(env.Name) != projectDevelopmentEnvironmentName {
-			continue
-		}
-		if env.Mode != "" && env.Mode != aiv1alpha1.ProjectEnvironmentModeLive {
-			continue
-		}
-		for _, binding := range env.Bindings {
-			if strings.TrimSpace(binding.Provider) != projectDevelopmentProviderAppStudio {
-				continue
-			}
-			if !isSandboxRunnerBinding(binding) {
-				continue
-			}
-			target := projectDevelopmentSyncTargetInfo{
-				EnvironmentName: env.Name,
-				BindingName:     binding.Name,
-				Provider:        binding.Provider,
-				Resource:        sandboxRunnersResource,
-			}
-			if target.BindingName == "" {
-				target.BindingName = projectDevelopmentBindingName
-			}
-			values, _ := projectProviderBindingValues(binding)
-			target.ResourceName = projectProviderBindingResourceName(p, binding, values, id)
-			if target.ResourceName == "" {
-				return projectDevelopmentSyncTargetInfo{}, false
-			}
-			return target, true
-		}
-	}
-	return projectDevelopmentSyncTargetInfo{}, false
-}
-
 // projectDevelopmentTarget resolves the Project's development data-plane
-// target. A template-backed Project (spec.template set) targets its template
-// instance with the Template's component map read live from the tenant
-// catalog; otherwise the legacy sandbox-runner target applies.
-func (s *Server) projectDevelopmentTarget(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) (projectDevelopmentSyncTargetInfo, error) {
+// target: the template instance, with the Template's component map read live
+// from the tenant catalog. A project without a bound template has no
+// development environment.
+func (s *Server) projectDevelopmentTarget(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, _ identity) (projectDevelopmentSyncTargetInfo, error) {
 	if p == nil {
 		return projectDevelopmentSyncTargetInfo{}, fmt.Errorf("project is nil")
 	}
 	if p.Spec.Template == nil || strings.TrimSpace(p.Spec.Template.Name) == "" {
-		target, ok := projectDevelopmentSyncTarget(p, id)
-		if !ok {
-			return projectDevelopmentSyncTargetInfo{}, fmt.Errorf("project has no development runtime binding")
-		}
-		return target, nil
+		return projectDevelopmentSyncTargetInfo{}, newValidationError("project has no development template yet — select one first")
 	}
 	info, err := fetchProjectTemplate(ctx, c, p.Spec.Template.Name)
 	if err != nil {
@@ -271,24 +208,7 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		return nil, err
 	}
 
-	// Legacy single-runner target: whole workspace to the instance-level verb.
-	if len(target.Components) == 0 {
-		payload, err := json.Marshal(projectSandboxSyncRequest{Files: files, Restart: "auto"})
-		if err != nil {
-			return nil, fmt.Errorf("encode sandbox sync payload: %w", err)
-		}
-		body, status, err := s.dataPlanePost(ctx, id, target.dataPlaneRefFor(""), dataPlaneVerbSync, payload)
-		if err != nil {
-			return nil, err
-		}
-		if status < 200 || status >= 300 {
-			return nil, fmt.Errorf("sandbox runtime sync returned %d: %s", status, strings.TrimSpace(string(body)))
-		}
-		_ = patchLastSync(ctx, c, target.ResourceName, metav1.Now())
-		return json.RawMessage(body), nil
-	}
-
-	// Template-backed target: route files to each component's own sync verb
+	// Route files to each component's own sync verb
 	// by workspacePath prefix (docs/app-studio-template-sandboxes.md §4.2).
 	// Files outside every component (README, docs) sync nowhere.
 	routed := routeProjectSyncFiles(files, target.Components)
@@ -316,13 +236,8 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 
 // validateDevelopmentInstance confirms the target instance exists in the
 // tenant workspace so a missing instance surfaces as a Kubernetes 404 rather
-// than a data-plane proxy error. Legacy sandbox targets additionally apply
-// the runner's status-ref anti-spoof validation.
+// than a data-plane proxy error.
 func (s *Server) validateDevelopmentInstance(ctx context.Context, c *asclient.Client, target projectDevelopmentSyncTargetInfo) error {
-	if target.Resource == "" || target.Resource == sandboxRunnersResource {
-		_, _, err := s.runtimeTargetForProject(ctx, c, target.ResourceName)
-		return err
-	}
 	res, err := target.instanceResource()
 	if err != nil {
 		return err
@@ -357,140 +272,12 @@ func routeProjectSyncFiles(files []projectSandboxSyncFile, components map[string
 	return out
 }
 
-func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (projectSandboxPreviewURLResponse, error) {
-	// A template-backed development environment keeps its production route
-	// wiring — the instance is exposed at its own public URL (the dev overlay
-	// preserves the HTTPRoute split), so the preview is that URL, not a
-	// signed sandbox-gateway URL. See docs/app-studio-template-sandboxes.md §1.
-	if len(target.Components) > 0 {
-		return s.templateDevelopmentPreview(ctx, c, target)
-	}
-	runtimeTarget, runner, err := s.runtimeTargetForProject(ctx, c, target.ResourceName)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return projectSandboxPreviewURLResponse{
-				Ready:   false,
-				Reason:  "sandbox_runner_not_found",
-				Message: "Preview is getting ready. The sandbox runner has not been created yet.",
-			}, nil
-		}
-		return projectSandboxPreviewURLResponse{}, err
-	}
-	preview := s.previewReadiness(ctx, id, target.ResourceName)
-	if !preview.Ready {
-		return preview, nil
-	}
-	route, err := sandboxRunnerPreviewRoute(runner)
-	if err != nil {
-		return projectSandboxPreviewURLResponse{}, err
-	}
-	if strings.TrimSpace(route.URL) == "" {
-		return projectSandboxPreviewURLResponse{
-			Ready:   false,
-			Reason:  "sandbox_preview_route_not_ready",
-			Message: "Preview is getting ready. The sandbox preview route does not have a URL yet.",
-		}, nil
-	}
-	// The cross-namespace ReferenceGrant that lets the preview HTTPRoute target
-	// the shared preview-gateway Service is now materialized by the
-	// sandbox-runner kro template on the runtime cluster (App Studio no longer
-	// writes to that cluster). See providers/infrastructure/install/templates/
-	// sandbox-runner.yaml.
-	preview.PreviewURL, preview.PreviewTokenExpiresAt = s.signedProjectPreviewURLAndExpiry(p.Name, id, target, runtimeTarget, route.URL, aiv1alpha1.ProjectSharingModePrivate)
-	return preview, nil
-}
-
-func sandboxRunnerPreviewRoute(obj *unstructured.Unstructured) (sandboxPreviewHTTPRouteInfo, error) {
-	if obj == nil {
-		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox runner is nil")
-	}
-	name, err := sandboxRunnerInstanceName(obj)
-	if err != nil {
-		return sandboxPreviewHTTPRouteInfo{}, err
-	}
-	rawURL, _, _ := unstructured.NestedString(obj.Object, "status", "previewRoute", "url")
-	httpRouteNamespace, _, _ := unstructured.NestedString(obj.Object, "status", "previewRoute", "httpRouteRef", "namespace")
-	runtimeNamespace, _, _ := unstructured.NestedString(obj.Object, "status", "runtimeNamespace")
-	expectedHost := sandboxRunnerPreviewRouteHost(name)
-	if strings.TrimSpace(rawURL) == "" || expectedHost == "" {
-		return sandboxPreviewHTTPRouteInfo{}, nil
-	}
-	if host := previewtoken.NormalizeHost(rawURL); host != expectedHost {
-		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox preview route host %q does not match expected host %q", host, expectedHost)
-	}
-	// The HTTPRoute is created by the SandboxRunner RGD in the sandbox's own
-	// runtime namespace (same namespace as the preview Service). Anti-spoof: the
-	// route's namespace must match the runner's recorded runtime namespace.
-	httpRouteNamespace = strings.TrimSpace(httpRouteNamespace)
-	runtimeNamespace = strings.TrimSpace(runtimeNamespace)
-	if runtimeNamespace == "" || httpRouteNamespace != runtimeNamespace {
-		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox preview HTTPRoute namespace %q does not match the runtime namespace %q", httpRouteNamespace, runtimeNamespace)
-	}
-	return sandboxPreviewHTTPRouteInfo{
-		URL: previewPublicURL(strings.TrimSpace(rawURL)),
-	}, nil
-}
-
-func sandboxRunnerPreviewRouteHost(runnerName string) string {
-	runnerName = strings.TrimSpace(runnerName)
-	baseDomain := strings.Trim(previewtoken.NormalizeHost(previewHTTPRouteBaseDomain()), ".")
-	if runnerName == "" || baseDomain == "" {
-		return ""
-	}
-	return runnerName + "." + baseDomain
-}
-
-func previewPublicURL(raw string) string {
-	port := previewPublicPort()
-	if raw == "" || port == "" {
-		return raw
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.Port() != "" {
-		return raw
-	}
-	u.Host = net.JoinHostPort(u.Hostname(), port)
-	return u.String()
-}
-
-func previewPublicPort() string {
-	value := envValue("APP_STUDIO_PREVIEW_PUBLIC_PORT")
-	if value == "" {
-		return ""
-	}
-	port, err := strconv.ParseInt(value, 10, 32)
-	if err != nil || port < 1 || port > 65535 {
-		return ""
-	}
-	return strconv.FormatInt(port, 10)
-}
-
-func (s *Server) signedProjectPreviewURLAndExpiry(projectName string, id identity, target projectDevelopmentSyncTargetInfo, runtimeTarget runtimeTarget, previewBaseURL string, accessMode aiv1alpha1.ProjectSharingMode) (string, string) {
-	u, err := url.Parse(strings.TrimSpace(previewBaseURL))
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", ""
-	}
-	u.Path = "/"
-	u.RawQuery = ""
-	host := previewtoken.NormalizeHost(u.Host)
-	token, expiresAt, err := s.previewSigner.Sign(previewtoken.Payload{
-		ProjectName:        projectName,
-		TenantPath:         id.tenantPath,
-		ResourceName:       target.ResourceName,
-		Subject:            id.user,
-		Host:               host,
-		RuntimeNamespace:   runtimeTarget.Preview.Namespace,
-		PreviewServiceName: runtimeTarget.Preview.Name,
-		PreviewPortName:    runtimeTarget.Preview.PortName,
-		AccessMode:         string(accessMode),
-	})
-	if err != nil {
-		return "", ""
-	}
-	q := u.Query()
-	q.Set(previewtoken.QueryParam, token)
-	u.RawQuery = q.Encode()
-	return u.String(), expiresAt.Format(time.RFC3339)
+// authorizeProjectDevelopmentPreviewTarget resolves the preview for a
+// development environment: the template instance's own public URL — the dev
+// overlay keeps the production route wiring, so the dev instance is served
+// where a production one would be. See docs/app-studio-template-sandboxes.md §1.
+func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c *asclient.Client, _ identity, _ *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (projectSandboxPreviewURLResponse, error) {
+	return s.templateDevelopmentPreview(ctx, c, target)
 }
 
 func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.Scope) ([]projectSandboxSyncFile, error) {

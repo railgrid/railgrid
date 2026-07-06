@@ -34,7 +34,6 @@ import (
 // docs/app-studio-template-sandboxes.md §3.
 const (
 	infraDataPlaneProvider = "infrastructure"
-	sandboxRunnersResource = "sandboxrunners"
 
 	dataPlaneVerbLog     = "log"
 	dataPlaneVerbSync    = "sync"
@@ -46,17 +45,12 @@ const (
 )
 
 // dataPlaneRef addresses one data-plane target: an instance of a resource,
-// optionally scoped to one of its components. An empty Resource defaults to
-// the legacy sandbox runner; an empty Component addresses instance-level
-// verbs.
+// optionally scoped to one of its components. An empty Component addresses
+// instance-level verbs.
 type dataPlaneRef struct {
 	Resource  string
 	Name      string
 	Component string
-}
-
-func sandboxDataPlaneRef(runnerName string) dataPlaneRef {
-	return dataPlaneRef{Resource: sandboxRunnersResource, Name: runnerName}
 }
 
 // dataPlaneURL composes the hub URL for a data-plane verb. tail (with leading
@@ -66,13 +60,9 @@ func sandboxDataPlaneRef(runnerName string) dataPlaneRef {
 // request; kcp cluster IDs keep their colons (':' is a valid path character
 // PathEscape leaves alone).
 func (s *Server) dataPlaneURL(clusterID string, ref dataPlaneRef, verb, tail string) string {
-	resource := ref.Resource
-	if resource == "" {
-		resource = sandboxRunnersResource
-	}
 	u := strings.TrimRight(s.hubBase, "/") +
 		fmt.Sprintf("/services/providers/%s/dataplane/clusters/%s/%s/%s",
-			infraDataPlaneProvider, url.PathEscape(clusterID), url.PathEscape(resource), url.PathEscape(ref.Name))
+			infraDataPlaneProvider, url.PathEscape(clusterID), url.PathEscape(ref.Resource), url.PathEscape(ref.Name))
 	if ref.Component != "" {
 		u += "/components/" + url.PathEscape(ref.Component)
 	}
@@ -91,6 +81,12 @@ func (s *Server) newDataPlaneRequest(ctx context.Context, method string, id iden
 	}
 	if strings.TrimSpace(id.clusterID) == "" {
 		return nil, fmt.Errorf("no workspace cluster on request; cannot address the development runtime")
+	}
+	// An empty resource or name would produce a URL with a hollow path segment
+	// and surface as a confusing 404/bad-gateway from the hub — fail fast with
+	// the real cause instead.
+	if strings.TrimSpace(ref.Resource) == "" || strings.TrimSpace(ref.Name) == "" {
+		return nil, fmt.Errorf("development target is incomplete (resource %q, name %q); the project's template binding did not resolve", ref.Resource, ref.Name)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, s.dataPlaneURL(id.clusterID, ref, verb, tail), body)
 	if err != nil {
@@ -197,23 +193,3 @@ func (s *Server) dataPlaneStream(ctx context.Context, id identity, ref dataPlane
 	}
 }
 
-// dataPlaneProbe performs a GET against the open proxy verb (path tail) and
-// returns the upstream status + a bounded body, for preview readiness.
-func (s *Server) dataPlaneProbe(ctx context.Context, id identity, ref dataPlaneRef, tail string) (int, []byte, error) {
-	callCtx, cancel := context.WithTimeout(ctx, previewReadinessProbeTimeout)
-	defer cancel()
-	req, err := s.newDataPlaneRequest(callCtx, http.MethodGet, id, ref, dataPlaneVerbProxy, tail, nil)
-	if err != nil {
-		return 0, nil, err
-	}
-	resp, err := s.sandboxDataPlaneClient(previewReadinessProbeTimeout).Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return resp.StatusCode, nil, err
-	}
-	return resp.StatusCode, body, nil
-}

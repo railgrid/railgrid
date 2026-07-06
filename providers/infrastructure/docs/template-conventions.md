@@ -15,8 +15,8 @@ invalid field into a materialized resource.
 
 | Kind | How to express it | Example |
 |---|---|---|
-| **Per-instance, configurable** (image, version, size, replicas) | `spec.schema` field **with a `default`**; the resource references `${schema.spec.<field>}` | `simple-webapp.spec.image` (`default: "nginx:latest"`); `sandbox-runner.spec.runnerImage` (`default: "ghcr.io/faroshq/kedge-sandbox-runner:latest"`); `postgres-database.spec.version` |
-| **Fixed sidecar / tooling image** (not user-facing) | **hardcoded literal** in the resource | the control-token `bitnami/kubectl` job (sandbox-runner, database, redis, application); `quay.io/oauth2-proxy/oauth2-proxy:v7.6.0` |
+| **Per-instance, configurable** (image, version, size, replicas) | `spec.schema` field **with a `default`**; the resource references `${schema.spec.<field>}` | `simple-webapp.spec.image` (`default: "nginx:latest"`); `postgres-database.spec.version` |
+| **Fixed sidecar / tooling image** (not user-facing) | **hardcoded literal** in the resource | the control-token `bitnami/kubectl` job (database, redis, application); `quay.io/oauth2-proxy/oauth2-proxy:v7.6.0` |
 | **Platform-global, no universal default** | a reserved `${kedge.*}` substitution token, resolved by the kro backend from env | the exposure Gateway parent: `${kedge.gatewayName}` / `${kedge.gatewayNamespace}` (the **only** tokens that exist) |
 
 ## Why not `${kedge.*}` env tokens for images?

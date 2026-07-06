@@ -119,6 +119,7 @@ export interface Project {
   displayName: string
   description?: string
   phase?: string
+  template?: string
   repository?: {
     ref: string
     name?: string
@@ -196,4 +197,33 @@ export interface ProviderItem {
 
 export interface ListResponse<T> {
   items: T[]
+}
+
+// One infrastructure template that can back a development environment
+// (declares development components). Served by
+// GET /api/projects/development-templates.
+export interface DevelopmentTemplate {
+  name: string
+  displayName?: string
+  description?: string
+  category?: string
+  components: Record<string, string>
+}
+
+// One Code repository a new project can be imported from (unclaimed).
+// Served by GET /api/projects/import-repositories.
+export interface ImportRepository {
+  ref: string
+  name?: string
+  connectionRef?: string
+  htmlURL?: string
+}
+
+// Result of POST /api/projects/{name}/hydrate-workspace.
+export interface ProjectHydrateResult {
+  repositoryRef: string
+  ref?: string
+  commitSHA?: string
+  written?: string[]
+  skipped?: string[]
 }
