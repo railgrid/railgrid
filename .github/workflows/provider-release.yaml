@@ -78,6 +78,25 @@ jobs:
             ${{ env.REGISTRY }}/${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.version }}
             ${{ env.REGISTRY }}/${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.semver }}
 
+      # The infrastructure provider ships a companion image: the dev-agent its
+      # kro backend injects into development-mode pods (providers/infrastructure/
+      # dev-agent, a scratch image carrying one static binary). It versions with
+      # the provider — publish it on the same tag so deployments can pin
+      # KEDGE_DEV_AGENT_IMAGE / development.agentImage to vX.Y.Z, and refresh
+      # :latest, which backs the in-binary default for stock deployments.
+      - name: Build and push dev-agent image
+        if: steps.tag.outputs.provider == 'infrastructure'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./providers/infrastructure/dev-agent
+          file: ./providers/infrastructure/dev-agent/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:${{ steps.tag.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:${{ steps.tag.outputs.semver }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:latest
+
       - name: Install Helm
         uses: azure/setup-helm@v3
         with:

@@ -355,9 +355,14 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 
 	initContainers, _ := podSpec["initContainers"].([]any)
 	initContainers = append(initContainers, map[string]any{
-		"name":    "kedge-dev-agent",
-		"image":   agentImage,
-		"command": []any{"/kedge-dev-agent", "--install", devAgentBinDir},
+		"name":  "kedge-dev-agent",
+		"image": agentImage,
+		// The default-for-:latest Always policy would force a registry pull
+		// even when the image is side-loaded (kind/local dev) and fail the pod
+		// if the registry copy is missing. Production pins digests via
+		// KEDGE_DEV_AGENT_IMAGE, where IfNotPresent is equivalent.
+		"imagePullPolicy": "IfNotPresent",
+		"command":         []any{"/kedge-dev-agent", "--install", devAgentBinDir},
 		"volumeMounts": []any{
 			map[string]any{"name": "kedge-dev-agent-bin", "mountPath": devAgentBinDir},
 		},
