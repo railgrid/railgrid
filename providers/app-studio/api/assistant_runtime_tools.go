@@ -194,15 +194,19 @@ func boundedRuntimeLogLines(raw string, tail int) []string {
 	return lines
 }
 
+type projectAssistantRuntimeRestartToolInput struct {
+	Component string `json:"component,omitempty" jsonschema_description:"Restart only this development component (e.g. \"api\" or \"web\"). Omit to restart every component."`
+}
+
 func newProjectAssistantRestartRuntimeGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
-	workflow := compose.NewWorkflow[*projectAssistantRuntimeStatusToolInput, *projectAssistantRuntimeWorkflowResult]()
+	workflow := compose.NewWorkflow[*projectAssistantRuntimeRestartToolInput, *projectAssistantRuntimeWorkflowResult]()
 	workflow.AddLambdaNode("restart-runtime", compose.InvokableLambda(restartProjectAssistantRuntime(runCtx))).
 		AddInput(compose.START)
 	workflow.End().AddInput("restart-runtime")
 	innerTool, err := graphtool.NewInvokableGraphTool(
 		workflow,
 		projectToolRestartRuntime,
-		"Restart the development runtime's dev process so it picks up new files or configuration. Use this to recover a sandbox that is stuck or crash-looping.",
+		"Restart the development runtime's dev process so it picks up new files or configuration. Use this to recover a sandbox that is stuck or crash-looping. Pass component to restart a single component of a multi-component app.",
 		compose.WithGraphName("app-studio-restart-runtime"),
 	)
 	if err != nil {
@@ -211,8 +215,8 @@ func newProjectAssistantRestartRuntimeGraphTool(runCtx projectAssistantWorkflowR
 	return approvaltool.InvokableApprovableTool{InvokableTool: innerTool}, nil
 }
 
-func restartProjectAssistantRuntime(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeStatusToolInput) (*projectAssistantRuntimeWorkflowResult, error) {
-	return func(ctx context.Context, _ *projectAssistantRuntimeStatusToolInput) (*projectAssistantRuntimeWorkflowResult, error) {
+func restartProjectAssistantRuntime(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeRestartToolInput) (*projectAssistantRuntimeWorkflowResult, error) {
+	return func(ctx context.Context, input *projectAssistantRuntimeRestartToolInput) (*projectAssistantRuntimeWorkflowResult, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -220,7 +224,19 @@ func restartProjectAssistantRuntime(runCtx projectAssistantWorkflowRunContext) f
 		if blocked != nil {
 			return blocked, nil
 		}
-		for component, ref := range runtimeComponentRefs(target) {
+		refs := runtimeComponentRefs(target)
+		if input != nil && strings.TrimSpace(input.Component) != "" {
+			component := strings.TrimSpace(input.Component)
+			ref, ok := refs[component]
+			if !ok {
+				return &projectAssistantRuntimeWorkflowResult{
+					Status:  "error",
+					Summary: fmt.Sprintf("Unknown component %q; this app's components are: %s.", component, strings.Join(target.sortedComponents(), ", ")),
+				}, nil
+			}
+			refs = map[string]dataPlaneRef{component: ref}
+		}
+		for component, ref := range refs {
 			body, status, err := server.dataPlanePost(ctx, id, ref, dataPlaneVerbRestart, []byte(`{}`))
 			label := ""
 			if component != "" {

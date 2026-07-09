@@ -1157,11 +1157,16 @@ func TestStreamProjectAssistantPersistsPermissionTimelineMessage(t *testing.T) {
 	if len(actions) != 1 || actions[0].Status != "awaiting_approval" || actions[0].Kind != projectAssistantUIActionEdit {
 		t.Fatalf("assistant actions = %#v, want pending edit disclosure", actions)
 	}
+	// Tool-level transparency: the action names the tool and its summarized
+	// arguments (path + byte count — never the file contents).
+	if actions[0].Tool != projectToolWriteFile || !strings.Contains(actions[0].Arguments, "src/App.tsx") {
+		t.Fatalf("assistant action disclosure = %#v, want tool name and summarized arguments", actions[0])
+	}
 	interrupt := projectAssistantUIInterruptFromMetadata(assistant.Metadata[projectMessageMetadataAssistantInterrupt])
 	if interrupt == nil || interrupt.Status != "pending" || interrupt.Action == nil || interrupt.Action.RunID == "" || interrupt.Action.RequestID == "" {
 		t.Fatalf("assistant interrupt = %#v, want pending resume handle", interrupt)
 	}
-	assertProjectAssistantMetadataDoesNotContain(t, assistant.Metadata, "src/App.tsx", "hello", "permission_required", "waiting_for_permission")
+	assertProjectAssistantMetadataDoesNotContain(t, assistant.Metadata, "hello", "permission_required", "waiting_for_permission")
 }
 
 func TestStreamProjectAssistantPersistsPermissionTimelineAfterStreamWriteFailure(t *testing.T) {
@@ -1225,7 +1230,7 @@ func TestStreamProjectAssistantPersistsPermissionTimelineAfterStreamWriteFailure
 	if assistant.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission || len(actions) != 1 || actions[0].Status != "awaiting_approval" || interrupt == nil || interrupt.Action == nil {
 		t.Fatalf("assistant metadata = %#v, want pending permission with checkpoint after stream write failure", assistant.Metadata)
 	}
-	assertProjectAssistantMetadataDoesNotContain(t, assistant.Metadata, "src/App.tsx", "hello", "permission_required", "waiting_for_permission")
+	assertProjectAssistantMetadataDoesNotContain(t, assistant.Metadata, "hello", "permission_required", "waiting_for_permission")
 }
 
 type projectAssistantPermissionFixture struct {
@@ -2563,7 +2568,11 @@ func TestResumeProjectAssistantRunRejectsStaleRepositoryBinding(t *testing.T) {
 	if len(updatedActions) != 1 || updatedActions[0].Status != "failed" {
 		t.Fatalf("updated actions = %#v, want failed stale binding action", updatedActions)
 	}
-	assertProjectAssistantMetadataDoesNotContain(t, updatedMessage.Metadata, "repository binding changed")
+	// Failed tools disclose their reason: the user sees WHY the commit did
+	// not happen instead of an opaque "Commit failed".
+	if !strings.Contains(updatedActions[0].Detail, "repository binding changed") {
+		t.Fatalf("updated action detail = %q, want the stale-binding reason disclosed", updatedActions[0].Detail)
+	}
 }
 
 func TestResumeProjectAssistantRunPreemptsToolBatchAfterApprovedPermission(t *testing.T) {

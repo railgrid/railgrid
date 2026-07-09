@@ -34,6 +34,15 @@ catalogEntry:
 providerKubeconfig:
   secretName: kedge-provider-kubeconfig
 
+# Assistant chat behavior.
+assistant:
+  # How much tool-level detail the chat disclosures show.
+  #   "" / "summary" (default) — tool names + per-tool sanitized summaries
+  #     (paths, queries, counts — never raw file contents or secrets).
+  #   "minimal" — fully opaque generic labels only ("Edited files"), for
+  #     deployments whose users should not see implementation detail.
+  toolDisclosure: ""
+
 # App Studio no longer holds a kubeconfig to the runtime cluster. The sandbox
 # data plane (sync, logs, restart, preview readiness) is served by the
 # infrastructure provider as subresources on the SandboxRunner instance, reached

@@ -33,6 +33,12 @@ export interface ProjectAssistantUIAction {
   label: string
   summary?: string
   count?: number
+  /** Actual tool name (e.g. read_project_file) — shown so users can see what ran. */
+  tool?: string
+  /** Summarized tool arguments. */
+  arguments?: string
+  /** Summarized tool result (or error) — the expandable output. */
+  detail?: string
 }
 
 export interface ProjectAssistantUIComponent {

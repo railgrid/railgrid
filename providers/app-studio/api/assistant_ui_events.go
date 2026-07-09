@@ -16,7 +16,20 @@ limitations under the License.
 
 package api
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+// projectAssistantToolDisclosureMinimal switches the chat back to the fully
+// opaque pre-disclosure behavior: generic action labels only, no tool names,
+// no summarized input/output. For deployments whose users should not see
+// implementation detail. Set APP_STUDIO_TOOL_DISCLOSURE=minimal; the default
+// ("summary") disclosure shows tool names plus the per-tool summarizer
+// output — paths, queries, counts — never raw file contents or secrets.
+var projectAssistantToolDisclosureMinimal = strings.EqualFold(
+	strings.TrimSpace(os.Getenv("APP_STUDIO_TOOL_DISCLOSURE")), "minimal")
 
 const projectAssistantUIRootComponentID = "root-col"
 const projectAssistantUIDevelopmentPreviewRefreshKey = "development.previewRefreshNeeded"
@@ -85,6 +98,13 @@ type projectAssistantUIAction struct {
 	Label   string `json:"label"`
 	Summary string `json:"summary,omitempty"`
 	Count   int    `json:"count,omitempty"`
+	// Tool-level transparency: the actual tool name, its (summarized)
+	// arguments, and the (summarized) result or error — so the portal can
+	// show WHAT ran and what came back, expandable on demand, instead of
+	// only a generic "Completed actions" label.
+	Tool      string `json:"tool,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 type projectAssistantUIDataModelUpdate struct {
@@ -254,11 +274,56 @@ func projectAssistantUIFollowUpInterruptRequestEvent(surfaceID string, followUp 
 }
 
 func projectAssistantUIActionFromToolCall(toolCall projectToolCallStreamEvent) projectAssistantUIAction {
-	return projectAssistantUIActionFromFields(toolCall.ID, toolCall.Name, toolCall.Status)
+	action := projectAssistantUIActionFromFields(toolCall.ID, toolCall.Name, toolCall.Status)
+	return discloseProjectAssistantUIAction(action, toolCall.Name, toolCall.Arguments, toolCall.Summary, toolCall.Error)
 }
 
 func projectAssistantUIActionFromAssistantToolCall(toolCall projectAssistantToolCall) projectAssistantUIAction {
-	return projectAssistantUIActionFromFields(toolCall.ID, toolCall.Name, toolCall.Status)
+	action := projectAssistantUIActionFromFields(toolCall.ID, toolCall.Name, toolCall.Status)
+	return discloseProjectAssistantUIAction(action, toolCall.Name, toolCall.Arguments, toolCall.Summary, toolCall.Error)
+}
+
+// discloseProjectAssistantUIAction attaches tool-level transparency to an
+// action per the deployment's disclosure mode. Minimal mode keeps actions at
+// the generic label ("Edited files · 1 edit action") only.
+func discloseProjectAssistantUIAction(action projectAssistantUIAction, name, arguments, summary, errText string) projectAssistantUIAction {
+	if projectAssistantToolDisclosureMinimal {
+		return action
+	}
+	action.Tool = strings.TrimSpace(name)
+	action.Arguments = projectAssistantUIActionToolArguments(name, arguments)
+	action.Detail = strings.TrimSpace(summary)
+	if action.Detail == "" {
+		action.Detail = strings.TrimSpace(errText)
+	}
+	return action
+}
+
+// projectAssistantUIActionToolArguments guards the disclosure boundary: the
+// stream pipeline sends pre-summarized arguments (paths/counts, no file
+// contents), but if a raw JSON argument payload ever reaches an action, run
+// it through the per-tool summarizer instead of disclosing it verbatim.
+//
+// The summarizer's default case (unknown/MCP tools with no bespoke summary)
+// falls back to marshaling the full argument map, which can carry large or
+// sensitive fields (file contents, secrets). Drop any output that still looks
+// like a raw JSON object/array so the "never raw file contents or secrets"
+// boundary holds even for tools without a dedicated summary.
+func projectAssistantUIActionToolArguments(name, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !looksLikeRawJSON(raw) {
+		return raw
+	}
+	summarized := strings.TrimSpace(summarizeProjectToolArguments(name, raw))
+	if looksLikeRawJSON(summarized) {
+		return ""
+	}
+	return summarized
+}
+
+func looksLikeRawJSON(s string) bool {
+	s = strings.TrimSpace(s)
+	return strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")
 }
 
 func projectAssistantUIActionFromPermission(permission projectAssistantPermission) projectAssistantUIAction {

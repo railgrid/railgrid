@@ -112,6 +112,8 @@ interface ProjectAssistantSurfaceCard {
   id: string
   role: string
   body: string
+  tool?: string
+  output?: string
 }
 type AssistantTraceItemStatus = 'running' | 'complete' | 'waiting' | 'error'
 interface AssistantTraceItem {
@@ -120,6 +122,8 @@ interface AssistantTraceItem {
   label: string
   detail: string
   status: AssistantTraceItemStatus
+  tool?: string
+  output?: string
 }
 type ProjectMessageView = ProjectMessage & {
   viewStatus?: ProjectMessageViewStatus
@@ -2694,7 +2698,18 @@ function assistantActionCards(actions?: ProjectAssistantActionView[]): ProjectAs
     id: action.id,
     role: assistantActionCardRole(action),
     body: action.summary ? `${action.label}\n${action.summary}` : action.label,
+    tool: action.tool,
+    output: assistantActionOutput(action),
   }))
+}
+
+// assistantActionOutput renders the expandable per-tool transcript: what the
+// tool was called with and what it returned (or the error).
+function assistantActionOutput(action: ProjectAssistantActionView): string {
+  const parts: string[] = []
+  if (action.arguments) parts.push(`args: ${action.arguments}`)
+  if (action.detail) parts.push(action.detail)
+  return parts.join('\n')
 }
 
 function assistantActionCardRole(action: ProjectAssistantActionView): string {
@@ -2717,8 +2732,11 @@ function assistantTraceItems(message: ProjectMessageView): AssistantTraceItem[] 
       id: card.id,
       role: card.role,
       label,
-      detail: lines.slice(1).join('\n') || lines[0] || card.role,
+      // Prefer the real tool output over the generic count text.
+      detail: card.output || lines.slice(1).join('\n') || lines[0] || card.role,
       status: assistantTraceStatus(card.role),
+      tool: card.tool,
+      output: card.output,
     }
   })
 }
@@ -2748,7 +2766,11 @@ function assistantTraceLabel(value: string): string {
 }
 
 function assistantTraceSummary(message: ProjectMessageView): string {
-  const labels = assistantTraceItems(message).map((item) => item.label).filter(Boolean)
+  // Prefer the concrete tool names over the generic kind labels so the
+  // collapsed row already says WHAT ran (read_project_file · write_file …).
+  const labels = assistantTraceItems(message)
+    .map((item) => item.tool || item.label)
+    .filter(Boolean)
   if (labels.length === 0) return ''
   const visible = labels.slice(0, 3).join(' · ')
   return labels.length > 3 ? `${visible} · ${labels.length - 3} more` : visible
@@ -3420,6 +3442,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                           <Check v-else class="h-3.5 w-3.5" :stroke-width="2" />
                         </span>
                         <span class="min-w-0 truncate font-medium text-text-primary">{{ item.label }}</span>
+                        <span v-if="item.tool" class="shrink-0 rounded bg-surface-overlay px-1.5 py-0.5 font-mono text-[10px] text-text-muted">{{ item.tool }}</span>
                         <span class="ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">{{ item.role }}</span>
                       </div>
                       <div

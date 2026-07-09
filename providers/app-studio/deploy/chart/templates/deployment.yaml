@@ -100,6 +100,13 @@ spec:
             - name: APP_STUDIO_IN_MEMORY_MESSAGE_STORE
               value: "true"
             {{- end }}
+            {{- with .Values.assistant.toolDisclosure }}
+            # "minimal" hides tool names and summarized input/output from the
+            # chat (opaque business-user mode); default "summary" shows tool
+            # names + sanitized summaries (never raw file contents).
+            - name: APP_STUDIO_TOOL_DISCLOSURE
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.store.messageRetention }}
             - name: APP_STUDIO_MESSAGE_RETENTION
               value: {{ .Values.store.messageRetention | quote }}

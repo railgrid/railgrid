@@ -394,9 +394,12 @@ whole point.
   versions, sizes) as `spec.schema` fields with sane defaults** — never via
   `${kedge.*}` env-substitution tokens. Fixed sidecar images (e.g. the
   control-token `kubectl` job) are hardcoded literals. `${kedge.*}` tokens are
-  reserved for genuinely platform-global values with no universal default (only
-  the exposure Gateway parent today). A missing env must never be able to
-  produce an empty/invalid field. See
+  reserved for the handful of genuinely platform-global values with no universal
+  default: the exposure Gateway parent (`${kedge.gatewayName}` /
+  `${kedge.gatewayNamespace}`), the dev-overlay images
+  (`${kedge.devImage.<toolchain>}` / `${kedge.devAgentImage}`), and the
+  exposure-URL port suffix (`${kedge.appPublicPort}`). A missing env must never
+  be able to produce an empty/invalid field. See
   [`providers/infrastructure/docs/template-conventions.md`](providers/infrastructure/docs/template-conventions.md).
 - **Providers are isolated; never reach into another provider's backend.** A
   provider's backend layer (its runtime/target clusters and their

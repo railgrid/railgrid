@@ -209,14 +209,41 @@ func TestProjectAssistantSemanticTurnClassifierRejectsToolCalls(t *testing.T) {
 	}
 }
 
-func TestProjectAssistantTurnProfileClassifierUsesLatestUserMessage(t *testing.T) {
+// The fallback merges the recent user messages escalate-only: once the user
+// has instructed work ("Add a dashboard"), a follow-up that reads as guidance
+// or a terse continuation must not downgrade the turn to a toolless profile —
+// that stranded instructed tasks ("go for it" → "I need access to the
+// files"). Mutations stay behind plan approval regardless of profile.
+func TestProjectAssistantTurnProfileClassifierKeepsStandingIntent(t *testing.T) {
 	got := classifyProjectAssistantTurnProfile([]store.Message{
 		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "Add a dashboard"},
 		{Role: aiv1alpha1.ProjectMessageRoleAssistant, Content: "I can do that."},
 		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "Actually, how should I think about the design?"},
 	})
+	if got != projectAssistantTurnProfileImplementation {
+		t.Fatalf("profile = %q, want implementation kept from the standing instruction", got)
+	}
+
+	// Terse continuations inherit the instruction even when they carry no
+	// keyword of their own ("just check in your workspace" reads as
+	// exploration in isolation).
+	got = classifyProjectAssistantTurnProfile([]store.Message{
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "wire the /api proxy in the web component"},
+		{Role: aiv1alpha1.ProjectMessageRoleAssistant, Content: "I need to inspect the files first."},
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "just check in your workspace."},
+	})
+	if got != projectAssistantTurnProfileImplementation {
+		t.Fatalf("profile = %q, want implementation kept across terse continuation", got)
+	}
+
+	// A conversation with no instruction anywhere stays advisory/toolless.
+	got = classifyProjectAssistantTurnProfile([]store.Message{
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "How should I think about the architecture?"},
+		{Role: aiv1alpha1.ProjectMessageRoleAssistant, Content: "Here are the tradeoffs."},
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "What about the design approach?"},
+	})
 	if got != projectAssistantTurnProfileGuidance {
-		t.Fatalf("profile = %q, want latest user guidance", got)
+		t.Fatalf("profile = %q, want guidance for a purely advisory conversation", got)
 	}
 }
 
@@ -295,6 +322,31 @@ func TestProjectAssistantModePromptsPutBuilderGuidanceOnlyOnWriteProfiles(t *tes
 				t.Fatalf("%s prompt should not contain builder approval/commit guidance:\n%s", profile, prompt)
 			}
 		})
+	}
+}
+
+// The bound template is the app's environment contract — the prompt must
+// direct the model to describe THAT template (agent.usage) before reasoning
+// about what infrastructure the app has, and must forbid concluding a
+// declared backing service (e.g. the application template's Postgres +
+// injected DATABASE_URL) is missing just because the code doesn't use it.
+func TestProjectAssistantPromptTreatsBoundTemplateAsEnvironmentContract(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo-project"
+	project.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "application"}
+	repository := &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true}
+
+	prompt := projectSystemPrompt(project, repository, projectAssistantTurnProfileImplementation)
+	for _, want := range []string{
+		"Development template: application",
+		"ENVIRONMENT CONTRACT",
+		"infrastructure__describe_template on THIS template",
+		"DATABASE_URL",
+		"do not conclude a declared service is missing",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
 	}
 }
 
@@ -480,6 +532,49 @@ func TestProjectAssistantTurnPolicyAllowsRuntimeReadsForRuntimeStateExploration(
 		if policy.AllowsTool(spec) {
 			t.Fatalf("runtime-state exploration policy allowed mutating tool %s", name)
 		}
+	}
+}
+
+// The regression this guards: a run that starts as a discussion question is
+// checkpointed with a toolless policy; when the user's follow-up answer is an
+// instruction ("go for it"), the resume must escalate to the re-routed
+// profile — and an in-flight implementation run must never downgrade because
+// a follow-up reads as chit-chat.
+func TestEscalateProjectAssistantTurnPolicy(t *testing.T) {
+	discussion := projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDiscussion)
+	implementation := projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation)
+
+	if got := escalateProjectAssistantTurnPolicy(discussion, implementation); got.profile != projectAssistantTurnProfileImplementation {
+		t.Errorf("discussion + implementation = %q, want escalation to implementation", got.profile)
+	}
+	if got := escalateProjectAssistantTurnPolicy(implementation, discussion); got.profile != projectAssistantTurnProfileImplementation {
+		t.Errorf("implementation + discussion = %q, must not downgrade", got.profile)
+	}
+	// Empty next policy (resume without a re-routed decision, e.g. a plain
+	// approve/deny) keeps the checkpoint policy untouched.
+	if got := escalateProjectAssistantTurnPolicy(implementation, projectAssistantTurnPolicy{}); got.profile != projectAssistantTurnProfileImplementation {
+		t.Errorf("implementation + empty = %q, want implementation", got.profile)
+	}
+	// requiresRuntimeState is sticky in both directions (OR).
+	withRuntime := projectAssistantTurnPolicy{profile: projectAssistantTurnProfileExploration, requiresRuntimeState: true}
+	if got := escalateProjectAssistantTurnPolicy(withRuntime, discussion); !got.requiresRuntimeState {
+		t.Error("runtime-state requirement lost on merge with discussion")
+	}
+	if got := escalateProjectAssistantTurnPolicy(discussion, withRuntime); !got.requiresRuntimeState {
+		t.Error("runtime-state requirement not gained from next policy")
+	}
+	// The escalated policy actually grants tools a discussion policy denies.
+	escalated := escalateProjectAssistantTurnPolicy(discussion, implementation)
+	registry := projectAssistantLocalToolRegistry(nil)
+	spec, ok := registry.Spec(projectToolReadProjectFile)
+	if !ok {
+		t.Fatalf("tool %s missing from registry", projectToolReadProjectFile)
+	}
+	if discussion.AllowsTool(spec) {
+		t.Fatal("discussion policy unexpectedly allows workspace reads")
+	}
+	if !escalated.AllowsTool(spec) {
+		t.Fatal("escalated policy still denies workspace reads")
 	}
 }
 

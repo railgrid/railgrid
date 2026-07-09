@@ -1263,6 +1263,17 @@ func mergeProjectAssistantUIAction(existing, next projectAssistantUIAction) proj
 	if next.Count == 0 {
 		next.Count = existing.Count
 	}
+	// A tool call streams as started (name+arguments) then finished
+	// (result/error) — keep whichever side each event carried.
+	if next.Tool == "" {
+		next.Tool = existing.Tool
+	}
+	if next.Arguments == "" {
+		next.Arguments = existing.Arguments
+	}
+	if next.Detail == "" {
+		next.Detail = existing.Detail
+	}
 	return next
 }
 

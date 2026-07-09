@@ -125,16 +125,43 @@ func projectAssistantFallbackTurnRouter(_ context.Context, req projectAssistantT
 	return fallbackProjectAssistantTurnDecision(req.History), nil
 }
 
+// fallbackProjectAssistantTurnDecision classifies without a model. Terse
+// follow-ups ("do it", "just check the workspace") carry the conversation's
+// STANDING intent, not a fresh one — classifying the last message in
+// isolation strands an instructed task in a read-only profile. So the
+// fallback merges the keyword decisions of the recent user messages,
+// escalate-only: the most permissive recent profile wins. This widens which
+// tools the model may attempt, not what it may do — mutations stay behind
+// the plan-approval gate.
 func fallbackProjectAssistantTurnDecision(history []store.Message) projectAssistantTurnDecision {
-	for i := len(history) - 1; i >= 0; i-- {
+	const window = 5
+	merged := projectAssistantTurnDecision{}
+	seen := 0
+	for i := len(history) - 1; i >= 0 && seen < window; i-- {
 		if history[i].Role != aiv1alpha1.ProjectMessageRoleUser {
 			continue
 		}
-		if content := strings.TrimSpace(history[i].Content); content != "" {
-			return fallbackProjectAssistantTurnDecisionForMessage(content)
+		content := strings.TrimSpace(history[i].Content)
+		if content == "" {
+			continue
 		}
+		decision := fallbackProjectAssistantTurnDecisionForMessage(content)
+		if seen == 0 {
+			merged = decision
+		} else {
+			if projectAssistantTurnProfileRank(decision.Profile) > projectAssistantTurnProfileRank(merged.Profile) {
+				merged.Profile = decision.Profile
+			}
+			merged.RequiresCurrentState = merged.RequiresCurrentState || decision.RequiresCurrentState
+			merged.RequiresRuntimeState = merged.RequiresRuntimeState || decision.RequiresRuntimeState
+			merged.RequestsMutation = merged.RequestsMutation || decision.RequestsMutation
+		}
+		seen++
 	}
-	return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileDiscussion)
+	if seen == 0 {
+		return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileDiscussion)
+	}
+	return merged
 }
 
 func fallbackProjectAssistantTurnDecisionForMessage(content string) projectAssistantTurnDecision {
@@ -167,6 +194,14 @@ func fallbackProjectAssistantTurnDecisionForMessage(content string) projectAssis
 	if containsProjectAssistantTurnKeyword(normalized, []string{
 		"build", "add", "change", "update", "implement", "write", "make the app", "create", "remove", "delete", "ship", "commit", "deploy", "provision",
 		"git", "push", "pull request", "branch", "merge",
+		"wire", "hook up", "set up", "setup", "configure", "connect", "integrate", "install", "refactor", "rename", "migrate", "enable", "disable",
+		// Runtime actions are mutations too — "reload the backend container"
+		// must not land in a toolless profile.
+		"restart", "reload", "redeploy", "rebuild", "bounce",
+		// Continuation imperatives: the user is telling the assistant to
+		// execute what the conversation already established.
+		"do it", "do that", "do this", "go for it", "go ahead", "proceed", "do whats needed", "do what's needed",
+		"dont stop", "don't stop", "keep going", "continue", "finish it", "get it done", "just do",
 	}) {
 		return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileImplementation)
 	}
@@ -386,6 +421,35 @@ func (p projectAssistantTurnPolicy) AllowsTool(spec projectAssistantToolSpec) bo
 	default:
 		return false
 	}
+}
+
+// projectAssistantTurnProfileRank orders profiles by tool permissiveness so a
+// resumed run can escalate its policy but never silently downgrade mid-run.
+func projectAssistantTurnProfileRank(profile projectAssistantTurnProfile) int {
+	switch normalizeProjectAssistantTurnProfile(profile) {
+	case projectAssistantTurnProfileImplementation, projectAssistantTurnProfileDebugFix:
+		return 3
+	case projectAssistantTurnProfileDebugging:
+		return 2
+	case projectAssistantTurnProfileExploration:
+		return 1
+	default: // discussion, guidance, unknown
+		return 0
+	}
+}
+
+// escalateProjectAssistantTurnPolicy merges the run's saved policy with a
+// fresh routing decision, keeping the more permissive profile. A run that
+// began as a discussion question must gain tools when the user's follow-up is
+// an instruction ("go for it"); the reverse — losing tools because a
+// follow-up reads as chit-chat — would strand an in-flight fix.
+func escalateProjectAssistantTurnPolicy(current, next projectAssistantTurnPolicy) projectAssistantTurnPolicy {
+	merged := current
+	if projectAssistantTurnProfileRank(next.profile) > projectAssistantTurnProfileRank(current.profile) {
+		merged.profile = normalizeProjectAssistantTurnProfile(next.profile)
+	}
+	merged.requiresRuntimeState = current.requiresRuntimeState || next.requiresRuntimeState
+	return normalizeProjectAssistantTurnPolicy(merged, projectAssistantTurnProfileDiscussion)
 }
 
 func projectAssistantToolsForTurnProfile(tools []projectAssistantTool, profile projectAssistantTurnProfile) []projectAssistantTool {

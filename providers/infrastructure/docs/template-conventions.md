@@ -17,7 +17,7 @@ invalid field into a materialized resource.
 |---|---|---|
 | **Per-instance, configurable** (image, version, size, replicas) | `spec.schema` field **with a `default`**; the resource references `${schema.spec.<field>}` | `simple-webapp.spec.image` (`default: "nginx:latest"`); `postgres-database.spec.version` |
 | **Fixed sidecar / tooling image** (not user-facing) | **hardcoded literal** in the resource | the control-token `bitnami/kubectl` job (database, redis, application); `quay.io/oauth2-proxy/oauth2-proxy:v7.6.0` |
-| **Platform-global, no universal default** | a reserved `${kedge.*}` substitution token, resolved by the kro backend from env | the exposure Gateway parent: `${kedge.gatewayName}` / `${kedge.gatewayNamespace}` (the **only** tokens that exist) |
+| **Platform-global, no universal default** | a reserved `${kedge.*}` substitution token, resolved by the kro backend from env | the exposure Gateway parent `${kedge.gatewayName}` / `${kedge.gatewayNamespace}`; the dev-overlay images `${kedge.devImage.<toolchain>}` / `${kedge.devAgentImage}`; the exposure-URL port suffix `${kedge.appPublicPort}` (empty in prod, `:10443` on local kind) |
 
 ## Why not `${kedge.*}` env tokens for images?
 
@@ -37,9 +37,15 @@ They were tried for the sandbox runner and removed. The failure modes:
   images; an env-token outlier is one more thing to wire (chart env, operator
   passthrough, dev Makefile) and one more thing to forget.
 
-`${kedge.*}` tokens remain only for the exposure Gateway, which is genuinely one
-platform-wide value with no sane universal default and is referenced identically
-by every app's `HTTPRoute`.
+`${kedge.*}` tokens are reserved for the handful of genuinely platform-wide
+values that have no sane universal default and are referenced identically across
+apps: the exposure Gateway (`${kedge.gatewayName}` / `${kedge.gatewayNamespace}`,
+every `HTTPRoute`), the dev-overlay images (`${kedge.devImage.<toolchain>}` /
+`${kedge.devAgentImage}`, injected only in development mode), and the exposure-URL
+port suffix (`${kedge.appPublicPort}`, empty in production). All of these are
+platform config, never per-tenant inputs — which is exactly why they are env
+tokens rather than schema fields. A per-instance value (an app's own image,
+version, size) is never a `${kedge.*}` token.
 
 ## Checklist for a new template
 

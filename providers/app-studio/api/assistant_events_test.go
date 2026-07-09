@@ -205,6 +205,38 @@ func TestProjectAssistantStreamWriterMapsStatusToUIDataModelUpdate(t *testing.T)
 	}
 }
 
+// Minimal disclosure mode (APP_STUDIO_TOOL_DISCLOSURE=minimal) restores the
+// fully opaque contract from #322: generic labels only — no tool names,
+// paths, or error text anywhere in the streamed UI.
+func TestProjectAssistantStreamWriterMinimalDisclosureHidesToolDetail(t *testing.T) {
+	prev := projectAssistantToolDisclosureMinimal
+	projectAssistantToolDisclosureMinimal = true
+	t.Cleanup(func() { projectAssistantToolDisclosureMinimal = prev })
+
+	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
+		Type: projectAssistantEventToolCallFinished,
+		ToolCall: &projectAssistantToolCall{
+			ID:        "tool-1",
+			Name:      "write_file",
+			Status:    "succeeded",
+			Summary:   "Wrote src/App.tsx",
+			Arguments: `{"path":"src/App.tsx"}`,
+			Error:     "warning only",
+		},
+	})
+	if err != nil {
+		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("events = %#v, want beginRendering and opaque tool result card", got)
+	}
+	assertA2UICard(t, got[1], "tool result", "Edited files")
+	assertNoRawAssistantTrace(t, got, "src/App.tsx", "write_file", "warning only")
+}
+
+// Tool disclosure contract: the chat shows WHICH tool ran and its summarized
+// arguments/result (summarizers emit paths/counts, never file contents or
+// secrets); raw error text stays hidden when a result summary exists.
 func TestProjectAssistantStreamWriterMapsToolCallToSafeDisclosure(t *testing.T) {
 	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
 		Type: projectAssistantEventToolCallFinished,
@@ -221,14 +253,35 @@ func TestProjectAssistantStreamWriterMapsToolCallToSafeDisclosure(t *testing.T) 
 		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("events = %#v, want beginRendering and safe tool result card", got)
+		t.Fatalf("events = %#v, want beginRendering and tool result card", got)
 	}
 	event := got[1]
 	if event.Type != "" || event.SurfaceUpdate == nil {
-		t.Fatalf("event = %#v, want safe surfaceUpdate UI event", event)
+		t.Fatalf("event = %#v, want surfaceUpdate UI event", event)
 	}
 	assertA2UICard(t, event, "tool result", "Edited files")
-	assertNoRawAssistantTrace(t, got, "src/App.tsx", "warning only", "write_file")
+	assertA2UICard(t, event, "tool result", "write_file")
+	assertA2UICard(t, event, "tool result", "Wrote src/App.tsx")
+	assertNoRawAssistantTrace(t, got, "warning only")
+}
+
+// Disclosure boundary: an unknown/MCP tool has no bespoke argument summary, so
+// the summarizer falls back to marshaling the whole arg map — which could carry
+// file contents or secrets. That raw-JSON fallback must be dropped, not shown.
+func TestProjectAssistantUIActionToolArgumentsDropsRawJSONFallback(t *testing.T) {
+	// A tool with a dedicated summarizer yields a safe, non-JSON summary.
+	if got := projectAssistantUIActionToolArguments(projectToolReadProjectFile, `{"path":"src/App.tsx"}`); !strings.Contains(got, "src/App.tsx") || looksLikeRawJSON(got) {
+		t.Errorf("read_project_file arguments = %q, want a non-JSON path summary", got)
+	}
+	// An unknown tool falls through to json.Marshal(args); the guard must drop
+	// the raw payload rather than leak content/secrets.
+	if got := projectAssistantUIActionToolArguments("some__mcp_tool", `{"content":"secret file body","token":"abc123"}`); got != "" {
+		t.Errorf("unknown-tool arguments = %q, want empty (raw JSON fallback dropped)", got)
+	}
+	// Already-summarized (non-JSON) input passes through untouched.
+	if got := projectAssistantUIActionToolArguments("some__mcp_tool", "path api/server.js; 12 bytes"); got != "path api/server.js; 12 bytes" {
+		t.Errorf("pre-summarized arguments = %q, want passthrough", got)
+	}
 }
 
 func TestProjectAssistantStreamWriterSkipsLowValueFinishedInspectionProgress(t *testing.T) {
@@ -252,7 +305,8 @@ func TestProjectAssistantStreamWriterSkipsLowValueFinishedInspectionProgress(t *
 		t.Fatalf("event = %#v, want safe surfaceUpdate UI event", event)
 	}
 	assertA2UICard(t, event, "tool result", "Inspected project")
-	assertNoRawAssistantTrace(t, got, "src/App.tsx", "read_project_file")
+	assertA2UICard(t, event, "tool result", "read_project_file")
+	assertA2UICard(t, event, "tool result", "Read src/App.tsx")
 }
 
 func TestProjectAssistantStreamWriterMapsPermissionCheckpointToInterruptRequest(t *testing.T) {
@@ -320,7 +374,10 @@ func TestProjectAssistantMessageMetadataStoresSafeUIModel(t *testing.T) {
 		t.Fatalf("marshal metadata: %v", err)
 	}
 	payload := string(raw)
-	for _, value := range []string{"src/App.tsx", "secret", "raw tool failure", "waiting_for_permission", "permission_required"} {
+	// Tool name and summarized arguments/result are disclosed by design; the
+	// permission Input payload (raw file contents / secrets), raw error text
+	// behind a summary, and checkpoint internals must never leak.
+	for _, value := range []string{"secret", "raw tool failure", "waiting_for_permission", "permission_required"} {
 		if strings.Contains(payload, value) {
 			t.Fatalf("metadata leaked %q in %s", value, payload)
 		}

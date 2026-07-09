@@ -247,10 +247,18 @@ func (w *projectAssistantStreamWriter) nextMessageComponentIDs() (string, string
 }
 
 func projectAssistantUIToolCardText(action projectAssistantUIAction) string {
-	if action.Summary != "" {
-		return action.Label + "\n" + action.Summary
+	header := action.Label
+	if action.Tool != "" {
+		header += " · " + action.Tool
 	}
-	return action.Label
+	body := action.Detail
+	if body == "" {
+		body = action.Summary
+	}
+	if body != "" {
+		return header + "\n" + body
+	}
+	return header
 }
 
 func projectAssistantUIEventIsEmpty(ui projectAssistantUIEvent) bool {

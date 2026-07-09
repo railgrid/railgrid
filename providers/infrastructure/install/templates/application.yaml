@@ -849,10 +849,14 @@ spec:
     # The HTTPRoute is always created (only its backend changes by mode).
     # Per-tier readiness lets the portal show progress. No secret values are
     # surfaced.
+    # ${kedge.appPublicPort} is substituted by the kro backend BEFORE kro sees
+    # this CEL: "" in production (443 implied), ":<port>" when the Gateway is
+    # only reachable on a forwarded port (local kind). The empty case leaves a
+    # harmless `+ ""` in the expression.
     status:
-      url: ${"https://" + httpRoute.spec.hostnames[0]}
+      url: ${"https://" + httpRoute.spec.hostnames[0] + "${kedge.appPublicPort}"}
       host: ${httpRoute.spec.hostnames[0]}
-      redirectURL: ${"https://" + httpRoute.spec.hostnames[0] + "/oauth2/callback"}
+      redirectURL: ${"https://" + httpRoute.spec.hostnames[0] + "${kedge.appPublicPort}" + "/oauth2/callback"}
       frontendReady: ${frontendDeployment.status.readyReplicas}
       backendReady: ${backendDeployment.status.readyReplicas}
       databaseReady: ${dbStatefulSet.status.readyReplicas}

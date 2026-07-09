@@ -163,6 +163,25 @@ func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
 	}
 }
 
+func TestSubstituteTokensAppPublicPort(t *testing.T) {
+	// The status.url CEL embeds the token inside a quoted CEL string; both
+	// values must yield a valid expression.
+	in := []byte(`{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \"${kedge.appPublicPort}\"}"}`)
+
+	// Local kind: KEDGE_APP_PUBLIC_PORT=10443 → ":10443" suffix.
+	out := string(substituteTokens(in, map[string]string{appPublicPortToken: ":10443"}))
+	if want := `{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \":10443\"}"}`; out != want {
+		t.Errorf("with port: substituteTokens = %s, want %s", out, want)
+	}
+
+	// Production (token unset in the caller's map): the placeholder must not
+	// leak — it resolves to the empty string.
+	out = string(substituteTokens(in, map[string]string{}))
+	if want := `{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \"\"}"}`; out != want {
+		t.Errorf("without port: substituteTokens = %s, want %s", out, want)
+	}
+}
+
 // testTokens is the platform-config token map the backend builds from env (the
 // exposure-layer Gateway parent + the dev-overlay images), for buildRGD tests.
 func testTokens() map[string]string {
@@ -182,5 +201,33 @@ func TestBuildRGDRequiresBackendConfig(t *testing.T) {
 	// no BackendConfig
 	if _, err := buildRGD(tmpl, testTokens()); err == nil {
 		t.Fatal("expected error when backendConfig is missing")
+	}
+}
+
+func TestAppPublicPortSuffix(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"unset", "", ""},
+		{"bare port", "10443", ":10443"},
+		{"leading colon tolerated", ":10443", ":10443"},
+		{"whitespace trimmed", "  8080  ", ":8080"},
+		{"lower bound", "1", ":1"},
+		{"upper bound", "65535", ":65535"},
+		{"zero rejected", "0", ""},
+		{"out of range rejected", "70000", ""},
+		{"non-numeric rejected", "abc", ""},
+		{"double colon rejected", "::10443", ""},
+		{"path injection rejected", "10443/foo", ""},
+		{"quote injection rejected", `10443"`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := appPublicPortSuffix(tt.raw); got != tt.want {
+				t.Errorf("appPublicPortSuffix(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
 	}
 }

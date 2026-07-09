@@ -41,6 +41,13 @@ const (
 	// kedge-dev-agent binary every dev-mode component runs
 	// (KEDGE_DEV_AGENT_IMAGE).
 	devAgentImageToken = "${kedge.devAgentImage}"
+
+	// appPublicPortToken is the ":<port>" suffix templates append to
+	// synthesized exposure URLs (status.url). Empty in production — the
+	// Gateway serves on 443 and the URL implies it — and ":10443" style when
+	// the Gateway is only reachable on a forwarded port (local kind).
+	// Resolved from KEDGE_APP_PUBLIC_PORT (the bare port number).
+	appPublicPortToken = "${kedge.appPublicPort}"
 )
 
 const (
@@ -169,6 +176,12 @@ func substituteTokens(raw []byte, tokens map[string]string) []byte {
 	}
 	if resolved[gatewayNamespaceToken] == "" {
 		resolved[gatewayNamespaceToken] = DefaultGatewayNamespace
+	}
+	// Unlike the tokens above, empty is the CORRECT production value here
+	// (no port suffix). Force the key so the placeholder never leaks into
+	// the RGD when a caller's token map omits it.
+	if _, ok := resolved[appPublicPortToken]; !ok {
+		resolved[appPublicPortToken] = ""
 	}
 	for token, value := range resolved {
 		raw = bytes.ReplaceAll(raw, []byte(token), []byte(value))

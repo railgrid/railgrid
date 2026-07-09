@@ -422,7 +422,10 @@ k8s_yaml(helm(
         # /bonkers admin access for the dev static token (resolves to
         # static-dev-toke@kedge.local — see proxy.ensureStaticTokenUserOnce).
         'hub.adminUsers={static-dev-toke@kedge.local}',
-        'hub.portalFrameSources={https://*.%s:%s}' % (app_studio_preview_base_domain, app_studio_preview_public_port),
+        # Development previews render the app's own exposure URL (status.url)
+        # in the portal iframe — allow the local apps domain on the envoy
+        # port-forward. (preview.localhost was the deleted preview-gateway.)
+        'hub.portalFrameSources={https://*.%s:%s}' % (app_base_domain, app_studio_preview_public_port),
         # Make *.kcp.localhost resolve to the Envoy gateway from the hub pod,
         # so the operator-issued kubeconfigs work in-cluster unchanged.
         'hostAliases[0].ip=%s' % gateway_ip,
@@ -619,6 +622,9 @@ local_resource(
     # instance's own public URL (docs/app-studio-template-sandboxes.md) — no
     # preview-gateway env.
     serve_cmd=('KEDGE_PROVIDER_KUBECONFIG={kc} ' +
+               # Opaque chat disclosures (generic labels, no tool names /
+               # summarized output) — drop this to get full summary disclosure.
+               'APP_STUDIO_TOOL_DISCLOSURE=minimal ' +
                'make run-provider-app-studio').format(
                    kc=KCP_ADMIN_KUBECONFIG),
     deps=[
@@ -824,10 +830,15 @@ local_resource(
                # cloudflare-tunnel (the in-binary default).
                'KEDGE_GATEWAY_NAME={gateway} ' +
                'KEDGE_GATEWAY_NAMESPACE=envoy-gateway-system ' +
+               # Locally the Gateway is only reachable via the envoy
+               # port-forward — templates append this to status.url
+               # (${kedge.appPublicPort}); prod leaves it unset (443).
+               'KEDGE_APP_PUBLIC_PORT={port} ' +
                'make run-provider-infrastructure').format(
                    kro=KIND_HOST_KUBECONFIG, kc=KCP_ADMIN_KUBECONFIG,
                    apps_domain=app_base_domain,
-                   gateway=app_studio_preview_parent_gateway_name),
+                   gateway=app_studio_preview_parent_gateway_name,
+                   port=app_studio_preview_public_port),
     deps=[
         'providers/infrastructure/main.go',
         'providers/infrastructure/heartbeat.go',

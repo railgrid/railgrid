@@ -134,8 +134,13 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	}))
 	resumeRunReq := req
 	resumeRunReq.Continuation = &state
-	resumeRunReq.TurnPolicy = runState.TurnPolicy()
+	// The checkpoint restores the policy the run STARTED with; req.TurnPolicy
+	// carries the (optional) re-routed decision for this resume. Escalate-only
+	// merge: a "go for it" follow-up gains implementation tools, but an
+	// in-flight fix never loses tools to a chatty-looking reply.
+	resumeRunReq.TurnPolicy = escalateProjectAssistantTurnPolicy(runState.TurnPolicy(), req.TurnPolicy)
 	resumeRunReq.TurnProfile = resumeRunReq.TurnPolicy.profile
+	runState.SetTurnPolicy(resumeRunReq.TurnPolicy)
 	checkpointStore := newProjectEinoAssistantCheckpointStoreWithCheckpoint(state.Eino.CheckpointID, state.Eino.Checkpoint)
 	turn := newProjectAssistantTurnItem(projectAssistantTurnResume, req.Identity, req.Project.Name)
 	turn.RequestID = strings.TrimSpace(resumeReq.RequestID)
