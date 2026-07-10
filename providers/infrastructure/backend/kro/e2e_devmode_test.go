@@ -63,7 +63,9 @@ import (
 // NOT need — dev mode swaps the tier images for platform dev images, so the
 // instance is created without them to prove the graph renders regardless.
 var e2eDevImageStripped = map[string][]string{
-	"application": {"frontendImage", "backendImage"},
+	"application":   {"frontendImage", "backendImage"},
+	"simple-webapp": {"image"},
+	"worker":        {"image"},
 }
 
 func TestE2EDevelopmentMode(t *testing.T) {

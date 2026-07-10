@@ -141,6 +141,12 @@ spec:
             - name: KEDGE_GATEWAY_NAMESPACE
               value: {{ . | quote }}
             {{- end }}
+            {{- if not .Values.tenantLimitRange.enabled }}
+            # Opt out of stamping the kedge-defaults LimitRange into tenant
+            # namespaces (for clusters that manage resource policy themselves).
+            - name: KEDGE_TENANT_LIMITRANGE
+              value: "disabled"
+            {{- end }}
             {{- with .Values.development.agentImage }}
             # Dev-mode agent injector image (${kedge.devAgentImage}).
             - name: KEDGE_DEV_AGENT_IMAGE

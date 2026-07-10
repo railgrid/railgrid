@@ -1,0 +1,116 @@
+apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: cron-job
+spec:
+  displayName: "Scheduled job"
+  description: "A container that runs on a cron schedule and exits — CronJob only, no Service, no URL. Reports, cleanups, periodic syncs."
+  category: Workloads
+  version: 0.1.0
+  backend: kro
+  # One-click provision defaults for the portal form. busybox's default
+  # entrypoint exits 0 immediately, so the sample schedule visibly produces
+  # completed Jobs with zero external setup.
+  sampleValues:
+    name: demo-job
+    image: busybox:stable
+    schedule: "*/30 * * * *"
+  # Operational guidance for AI agents discovering this template over MCP.
+  agent:
+    usage: |
+      Runs ONE container on a cron schedule; each run must do its work and
+      EXIT 0. Choose this for periodic work — reports, cleanups, backups,
+      syncs. It is the opposite lifecycle of the worker template (a process
+      that runs forever): a cron-job container that never exits will pile up
+      overlapping-forbidden runs, not "keep running".
+
+      YOU SUPPLY exactly one container image whose ENTRYPOINT performs the
+      task and exits: 0 on success, non-zero on failure (failed runs are
+      retried up to 3 times, then recorded as a failed Job). There is no
+      command/args input — bake the task into the image entrypoint.
+
+      SCHEDULE: standard 5-field cron (schedule input, default "0 * * * *" =
+      hourly, evaluated in UTC). Concurrent runs are forbidden — if a run is
+      still going when the next tick fires, the new run is skipped. Runs may
+      occasionally fire late or be skipped; the task must be idempotent and
+      tolerate that.
+
+      This template has NO development mode — develop and test the image
+      elsewhere, then provision it here. No network exposure; durable state
+      belongs in a database template instance.
+
+      INPUTS you set when provisioning: name, image (both required); schedule.
+    outputs:
+      - "status.schedule — the active cron schedule."
+  # ── Portal presentation ───────────────────────────────────────────────
+  view:
+    columns:
+      - header: Schedule
+        path: spec.schedule
+        type: code
+    detail:
+      - title: Configuration
+        fields:
+          - label: Schedule
+            path: status.schedule
+            type: code
+          - label: Image
+            path: spec.image
+            type: code
+  instanceCRD:
+    group: infrastructure.kedge.faros.sh
+    version: v1alpha1
+    resource: scheduledjobs
+    kind: ScheduledJob
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        description: "Logical name; used as the CronJob name in the tenant namespace."
+      image:
+        type: string
+        description: "Container image whose entrypoint performs the task and exits (0 = success)."
+      schedule:
+        type: string
+        default: "0 * * * *"
+        description: "Standard 5-field cron expression, evaluated in UTC. Default: hourly."
+    required:
+      - name
+      - image
+
+  # ── backendConfig: the kro resource graph ─────────────────────────────
+  # namespace: default is remapped to the per-tenant namespace on the runtime
+  # cluster — same convention as every seed template.
+  backendConfig:
+    resources:
+      - id: cronJob
+        template:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: ${schema.spec.name}
+            namespace: default
+          spec:
+            schedule: ${schema.spec.schedule}
+            # A run still going when the next tick fires wins; the new run is
+            # skipped. Matches the agent contract above.
+            concurrencyPolicy: Forbid
+            successfulJobsHistoryLimit: 3
+            failedJobsHistoryLimit: 1
+            jobTemplate:
+              spec:
+                backoffLimit: 3
+                template:
+                  metadata:
+                    labels:
+                      app: ${schema.spec.name}
+                  spec:
+                    restartPolicy: Never
+                    containers:
+                      - name: job
+                        image: ${schema.spec.image}
+    # Echoed from the materialized CronJob (this kro fork forbids ${schema.*}
+    # in status — status may reference resources only).
+    status:
+      schedule: ${cronJob.spec.schedule}
