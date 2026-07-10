@@ -82,8 +82,7 @@ const (
 // e2eMinimalSpecs supplies a valid instance spec for templates that ship no
 // sampleValues (those that do — application, database — use them directly).
 var e2eMinimalSpecs = map[string]map[string]any{
-	"redis-cache":    {"name": "e2e-redis"},
-	"simple-webapp":  {"name": "e2e-web"},
+	"redis-cache": {"name": "e2e-redis"},
 }
 
 // e2ePlatformStamped are spec fields a platform component normally writes onto an
@@ -99,6 +98,10 @@ var e2ePlatformStamped = map[string]map[string]any{
 	"application": {
 		"expose":                map[string]any{"fqdn": "demo.e2e.test"},
 		"credentialsSecretName": "demo-oidc",
+	},
+	// simple-webapp is exposure-only: the controller stamps just expose.fqdn.
+	"simple-webapp": {
+		"expose": map[string]any{"fqdn": "web.e2e.test"},
 	},
 }
 

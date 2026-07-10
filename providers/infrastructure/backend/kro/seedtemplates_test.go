@@ -115,6 +115,56 @@ func TestSeedTemplatesIncludeStandaloneDatabase(t *testing.T) {
 	}
 }
 
+// TestSeedTemplatesSimpleWebappIsDevelopmentCapable pins the simple-webapp
+// contract App Studio depends on: a single dev component ("app") claiming the
+// workspace root, the synthesized dev overlay in the RGD, public exposure via
+// HTTPRoute, and the status fields the preview (status.url) and data plane
+// (controlSecretRef, components) resolve through.
+func TestSeedTemplatesSimpleWebappIsDevelopmentCapable(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "install", "templates", "simple-webapp.yaml"))
+	if err != nil {
+		t.Fatalf("read simple-webapp seed template: %v", err)
+	}
+	tmpl := decodeTemplate(t, raw)
+	if got, want := tmpl.Spec.InstanceCRD.Kind, "SimpleWebApp"; got != want {
+		t.Fatalf("instance kind = %q, want %q", got, want)
+	}
+	if tmpl.Spec.Development == nil {
+		t.Fatal("simple-webapp declares no spec.development — it cannot back an App Studio project")
+	}
+	comp, ok := tmpl.Spec.Development.Components["app"]
+	if !ok {
+		t.Fatalf("development components = %v, want key %q", tmpl.Spec.Development.Components, "app")
+	}
+	if got, want := comp.WorkspacePath, "."; got != want {
+		t.Fatalf("app component workspacePath = %q, want %q (whole workspace)", got, want)
+	}
+	if tmpl.Spec.DataPlane == nil {
+		t.Fatal("simple-webapp declares no dataPlane — sync/log/restart verbs would 404")
+	}
+	if _, ok := tmpl.Spec.DataPlane.Components["app"]; !ok {
+		t.Fatal("simple-webapp declares no dataPlane component for app — sync/log/restart verbs would 404")
+	}
+
+	rgd, err := buildRGD(tmpl, testTokens())
+	if err != nil {
+		t.Fatalf("buildRGD(simple-webapp): %v", err)
+	}
+	for _, id := range []string{"appDeployment", "appService", "httpRoute", "appDevDeployment", "appDevWorkspace", "appDevControlService", "kedgeDevControlSecret"} {
+		if findResource(t, rgd, id) == nil {
+			t.Fatalf("simple-webapp RGD missing %s resource", id)
+		}
+	}
+	if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "spec", "kedgeMode"); !found {
+		t.Fatal("simple-webapp RGD schema missing kedgeMode (dev overlay not applied)")
+	}
+	for _, field := range []string{"url", "host", "ready", "runtimeNamespace", "controlSecretRef", "components"} {
+		if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "status", field); !found {
+			t.Fatalf("simple-webapp status missing %s", field)
+		}
+	}
+}
+
 func TestSeedTemplatesDoNotExposeStandaloneSandboxPreviewHTTPRoute(t *testing.T) {
 	path := filepath.Join("..", "..", "install", "templates", "sandbox-preview-httproute.yaml")
 	if _, err := os.Stat(path); !os.IsNotExist(err) {

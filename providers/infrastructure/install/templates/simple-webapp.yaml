@@ -3,51 +3,194 @@ kind: Template
 metadata:
   name: simple-webapp
 spec:
-  displayName: "Simple webapp"
-  description: "A web application — Deployment + Service, nginx by default. Scales via the replicas input."
+  displayName: "Simple web app"
+  description: "A single-container web app on a public URL — Deployment + Service + HTTPRoute. No backend tiers, no database. Development-capable: can back an App Studio project with a hot-reload dev server."
   category: Workloads
-  version: 0.1.0
+  version: 0.2.0
   backend: kro
+  # One-click provision defaults for the portal form. nginx serves its welcome
+  # page on port 80, so "Provision → see it working" needs zero external setup.
+  sampleValues:
+    name: demo-site
+    image: nginx:latest
+    port: 80
+  # Operational guidance for AI agents discovering this template over MCP. Not
+  # shown in the portal UI — it tells an LLM how to use the template and where
+  # its outputs land.
+  agent:
+    usage: |
+      Deploys ONE container serving HTTP on ONE public URL. Choose this for
+      frontend-only or single-process apps — static sites, single-page apps, a
+      self-contained server — when there is no separate backend tier and no
+      managed database. If the app needs an API tier + Postgres, use the
+      "application" template instead; if it only needs a standalone database or
+      cache next to an existing runtime, use "database" or "redis-cache".
+
+      PRODUCTION MODE — you supply exactly one container image (the image
+      input) and nothing else:
+        • Plain HTTP server, any language/base image. Bind to 0.0.0.0 on the
+          port input (default 8080), NOT 127.0.0.1, or the platform cannot
+          route to it.
+        • Stateless — no persistent disk. Pods may be restarted or scaled
+          (the replicas input).
+        • The platform provisions the Service, the public route, and the URL;
+          you do NOT create Services, Ingresses, or routes.
+
+      DEVELOPMENT MODE (the platform-injected kedgeMode field): the image input
+      is ignored (and may be omitted) — the platform runs a Node.js dev
+      container against the project workspace and serves it on the same public
+      URL a production instance would get. The whole project workspace is the
+      app (workspacePath "."); a package.json with a dev script (vite et al)
+      is auto-detected, otherwise vite is bootstrapped directly.
+
+      INPUTS you set when provisioning: name (required); image (required in
+      production, ignored in development), port, replicas, expose.hostnamePrefix.
+      The platform stamps spec.expose.fqdn — do not set it.
+    outputs:
+      - "status.url — the public HTTPS URL the app is served on (status.host = bare hostname)."
+      - "status.ready — ready replica count for the app Deployment."
+  # ── Portal presentation ───────────────────────────────────────────────
+  view:
+    columns:
+      - header: URL
+        value: "${status.url}"
+        type: link
+    detail:
+      - title: Access
+        fields:
+          - label: URL
+            value: "${status.url}"
+            type: link
+          - label: Hostname
+            path: status.host
+            type: code
+      - title: Readiness
+        fields:
+          - label: App
+            path: status.ready
   instanceCRD:
     group: infrastructure.kedge.faros.sh
     version: v1alpha1
     resource: simplewebapps
     kind: SimpleWebApp
+  # ── Tenant-facing inputs ──────────────────────────────────────────────
+  # spec.expose.fqdn is populated by the instance controller, NOT the tenant
+  # (same convention as the application template): the public hostname,
+  # computed as <prefix|name>-<tenantHash>.<appBaseDomain>. The RGD references
+  # it for the HTTPRoute hostname.
   schema:
     type: object
     properties:
       name:
         type: string
-        description: "Logical name; used as Deployment + Service name in the tenant namespace."
+        description: "Logical name; used as the resource-name prefix in the tenant namespace and the default hostname prefix."
+      image:
+        type: string
+        description: "Container image serving HTTP. Required in production mode; ignored (and may be omitted) when kedgeMode is development — dev mode runs the platform dev image against the project workspace."
+      port:
+        type: integer
+        default: 8080
+        description: "Port the container listens on (dev mode: the port the dev server must bind)."
       replicas:
         type: integer
         default: 1
         minimum: 1
         maximum: 10
-      image:
-        type: string
-        default: "nginx:latest"
-      port:
-        type: integer
-        default: 80
-      serviceType:
-        type: string
-        enum: ["ClusterIP", "NodePort", "LoadBalancer"]
-        default: "ClusterIP"
+      # default: {} so nested defaults apply and the controller can stamp fqdn
+      # onto an instance that omitted the expose object.
+      expose:
+        type: object
+        default: {}
+        properties:
+          hostnamePrefix:
+            type: string
+            pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            maxLength: 50
+            description: "Left-most DNS label. Defaults to .name. Final host = <prefix>-<tenantHash>.<appBaseDomain>."
+          fqdn:
+            type: string
+            description: "Computed by the platform — do NOT set. The public hostname the app is served on."
     required:
       - name
+    # The image is only required when the instance actually runs it: production
+    # mode. Development mode swaps the workload onto the platform dev image, so
+    # a dev-only project needs none. Enforced on the kcp-side CRD; kedgeMode
+    # defaults to "production".
+    x-kubernetes-validations:
+      - rule: "(has(self.kedgeMode) && self.kedgeMode == 'development') || has(self.image)"
+        message: "image is required in production mode"
+
+  # ── Development mode (docs/app-studio-template-sandboxes.md) ──────────
+  # Single component claiming the whole project workspace (workspacePath "."),
+  # so an App Studio project's files land at the dev container's /workspace
+  # root. The start command reuses the proven vite shim from the application
+  # template's frontend tier: it forces server.host + server.allowedHosts so
+  # the dev server accepts the proxied preview Host header.
+  development:
+    components:
+      app:
+        workspacePath: .
+        devImage: "${kedge.devImage.node}"
+        workingDir: /workspace
+        startCommand: "SHIM=.kedge-vite.config.mjs; printf '%s' 'ZXhwb3J0IGRlZmF1bHQgYXN5bmMgKGVudikgPT4gewogIGNvbnN0IGZvcmNlZCA9IHsgc2VydmVyOiB7IGhvc3Q6IHRydWUsIGFsbG93ZWRIb3N0czogdHJ1ZSB9IH0KICBsZXQgbG9hZENvbmZpZ0Zyb21GaWxlLCBtZXJnZUNvbmZpZwogIHRyeSB7CiAgICAoeyBsb2FkQ29uZmlnRnJvbUZpbGUsIG1lcmdlQ29uZmlnIH0gPSBhd2FpdCBpbXBvcnQoJ3ZpdGUnKSkKICB9IGNhdGNoIChlKSB7CiAgICByZXR1cm4gZm9yY2VkCiAgfQogIGxldCBiYXNlID0ge30KICB0cnkgewogICAgY29uc3QgbG9hZGVkID0gYXdhaXQgbG9hZENvbmZpZ0Zyb21GaWxlKGVudiwgdW5kZWZpbmVkLCBwcm9jZXNzLmN3ZCgpKQogICAgaWYgKGxvYWRlZCAmJiBsb2FkZWQuY29uZmlnKSBiYXNlID0gbG9hZGVkLmNvbmZpZwogIH0gY2F0Y2ggKGUpIHsKICAgIGNvbnNvbGUuZXJyb3IoJ1trZWRnZV0gY291bGQgbm90IGxvYWQgcHJvamVjdCB2aXRlIGNvbmZpZzonLCBlKQogIH0KICByZXR1cm4gbWVyZ2VDb25maWcoYmFzZSwgZm9yY2VkKQp9Cg==' | base64 -d > $SHIM; grep -qxF $SHIM .gitignore 2>/dev/null || echo $SHIM >> .gitignore; if [ -f package.json ]; then (npm run dev -- --host 0.0.0.0 --port $PORT --config $SHIM || npm run dev -- --host 0.0.0.0 --port $PORT || npm start); else npx --yes vite --host 0.0.0.0 --port $PORT --config $SHIM || npx --yes vite --host 0.0.0.0 --port $PORT; fi"
+        port: app
+        reload:
+          strategy: process
+          rules:
+            - paths: ["package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml"]
+              command: "npm install --no-audit --no-fund"
+
+  # ── Data plane (development mode) ─────────────────────────────────────
+  # Per-component control verbs, served as
+  # …/simplewebapps/<name>/components/app/{sync,restart,log,env}. The status
+  # paths they resolve through are published by the synthesized dev overlay,
+  # so in production mode these verbs answer 409 instance-not-ready.
+  dataPlane:
+    runtimeNamespacePath: status.runtimeNamespace
+    tokenSecretPath: status.controlSecretRef
+    endpoints:
+      status:
+        fromStatus: true
+    components:
+      app:
+        endpoints:
+          sync:
+            servicePath: status.components.app.controlServiceRef
+            port: control
+            upstreamPath: /sync
+            methods: ["POST"]
+          restart:
+            servicePath: status.components.app.controlServiceRef
+            port: control
+            upstreamPath: /restart
+            methods: ["POST"]
+          env:
+            servicePath: status.components.app.controlServiceRef
+            port: control
+            upstreamPath: /env
+            methods: ["POST"]
+          log:
+            servicePath: status.components.app.controlServiceRef
+            port: control
+            upstreamPath: /logs
+            methods: ["GET"]
+            stream: true
+
+  # ── backendConfig: the kro resource graph ─────────────────────────────
+  # Every resource sets namespace: default — the control-plane/data-plane split
+  # materializes these on the runtime cluster and remaps that to the per-tenant
+  # namespace. ${kedge.gatewayName} / ${kedge.gatewayNamespace} are substituted
+  # for the platform's configured Gateway API parent before the RGD is authored.
   backendConfig:
     resources:
-      - id: deployment
+      # The graph id follows the dev-overlay convention: component "app" →
+      # workload id "appDeployment".
+      - id: appDeployment
         template:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
             name: ${schema.spec.name}
-            # Required: the instance CRD is cluster-scoped, so kro demands an
-            # explicit namespace on every namespaced child (it has no instance
-            # namespace to inherit). "default" is remapped to the per-tenant
-            # namespace on the runtime cluster — same convention as redis-cache.
             namespace: default
           spec:
             replicas: ${schema.spec.replicas}
@@ -64,7 +207,7 @@ spec:
                     image: ${schema.spec.image}
                     ports:
                       - containerPort: ${schema.spec.port}
-      - id: service
+      - id: appService
         template:
           apiVersion: v1
           kind: Service
@@ -72,9 +215,43 @@ spec:
             name: ${schema.spec.name}
             namespace: default
           spec:
-            type: ${schema.spec.serviceType}
+            type: ClusterIP
             selector:
               app: ${schema.spec.name}
             ports:
               - port: ${schema.spec.port}
                 targetPort: ${schema.spec.port}
+
+      # ──────────────── HTTPRoute (Gateway API exposure layer) ────────────────
+      # Attaches to the platform Gateway; TLS terminates at the Gateway edge,
+      # which programs the DNS record + tunnel route from this hostname.
+      - id: httpRoute
+        template:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: ${schema.spec.name}
+            namespace: default
+          spec:
+            parentRefs:
+              - group: gateway.networking.k8s.io
+                kind: Gateway
+                name: ${kedge.gatewayName}
+                namespace: ${kedge.gatewayNamespace}
+            hostnames:
+              - ${schema.spec.expose.fqdn}
+            rules:
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /
+                backendRefs:
+                  - name: ${schema.spec.name}
+                    port: ${schema.spec.port}
+    # url/host are read from the HTTPRoute (this kro fork forbids ${schema.*}
+    # in status), same as the application template. ${kedge.appPublicPort} is
+    # substituted by the kro backend before kro sees this CEL.
+    status:
+      url: ${"https://" + httpRoute.spec.hostnames[0] + "${kedge.appPublicPort}"}
+      host: ${httpRoute.spec.hostnames[0]}
+      ready: ${appDeployment.status.readyReplicas}

@@ -6,26 +6,29 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package application reconciles Application instances across every tenant
-// workspace that enabled the infrastructure provider, through the provider's
-// APIExport virtual workspace (the same cross-tenant rail the kuery provider's
-// engagement controller uses).
+// Package application reconciles exposed template instances across every
+// tenant workspace that enabled the infrastructure provider, through the
+// provider's APIExport virtual workspace (the same cross-tenant rail the
+// kuery provider's engagement controller uses).
 //
-// The kro fork materializes an Application's workloads on the runtime cluster
+// The kro fork materializes an instance's workloads on the runtime cluster
 // from the RGD, but two things the RGD can't produce itself need a controller:
 //
 //   - spec.expose.fqdn — the public hostname, <prefix|name>-<tenantHash>.<base>.
 //     kro can't derive a tenant hash in-graph, so the controller stamps it onto
 //     spec; the RGD then reads ${schema.spec.expose.fqdn} for the HTTPRoute
-//     hostname and the oauth2-proxy redirect URL.
-//   - the OIDC client secret — it must land as a Secret beside the oauth2-proxy
-//     pod on the runtime cluster WITHOUT sitting in the CR spec in clear text.
-//     The controller bridges it into cloud-credentials-<name> in the per-tenant
-//     runtime namespace (BYO: read from the tenant's cloud-credentials Secret;
-//     Platform SSO: minted via Dex — wired in a follow-up).
+//     hostname (and, on Application, the oauth2-proxy redirect URL). Every
+//     exposed instance kind (Application, SimpleWebApp) needs this.
+//   - the OIDC client secret (Application only) — it must land as a Secret
+//     beside the oauth2-proxy pod on the runtime cluster WITHOUT sitting in
+//     the CR spec in clear text. The controller bridges it into
+//     cloud-credentials-<name> in the per-tenant runtime namespace (BYO: read
+//     from the tenant's cloud-credentials Secret; Platform SSO: minted via
+//     Dex — wired in a follow-up).
 //
 // Cleanup is finalizer-driven: the bridged Secret lives on a different cluster
-// than the instance, so cross-cluster ownerRefs don't apply.
+// than the instance, so cross-cluster ownerRefs don't apply. Exposure-only
+// kinds create no cross-cluster state and carry no finalizer.
 package application
 
 import (
@@ -60,10 +63,31 @@ import (
 	"github.com/faroshq/provider-infrastructure/kro"
 )
 
-// appGVK is read with unstructured so the controller doesn't depend on a
-// generated client for the per-template CRD (its schema is authored at runtime
-// by the Template controller).
-var appGVK = schema.GroupVersionKind{Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Kind: "Application"}
+// Instance kinds are read with unstructured so the controller doesn't depend
+// on generated clients for the per-template CRDs (their schemas are authored
+// at runtime by the Template controller).
+var (
+	appGVK    = schema.GroupVersionKind{Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Kind: "Application"}
+	webappGVK = schema.GroupVersionKind{Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Kind: "SimpleWebApp"}
+)
+
+// instanceKind pairs an exposed instance GVK with the treatment it needs.
+// oidc kinds get the credentialsSecretName stamp, the OIDC secret bridge, and
+// the finalizer guarding that cross-cluster Secret; exposure-only kinds get
+// just the fqdn stamp.
+type instanceKind struct {
+	name string // controller name, unique per kind
+	gvk  schema.GroupVersionKind
+	oidc bool
+}
+
+// instanceKinds is every template instance kind the controller reconciles.
+// A new exposed template (spec.expose + HTTPRoute in its graph) is one line
+// here — oidc only when its graph runs an oauth2-proxy gate.
+var instanceKinds = []instanceKind{
+	{name: "infra-application", gvk: appGVK, oidc: true},
+	{name: "infra-simplewebapp", gvk: webappGVK, oidc: false},
+}
 
 // secretGVK is used to Get/Create Secrets via the controller-runtime client
 // (tenant side) and shape the bridged Secret (runtime side).
@@ -162,27 +186,38 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("creating multicluster manager: %w", err)
 	}
 
-	app := &unstructured.Unstructured{}
-	app.SetGroupVersionKind(appGVK)
-	if err := mcbuilder.ControllerManagedBy(mgr).
-		Named("infra-application").
-		For(app).
-		Complete(c); err != nil {
-		return nil, fmt.Errorf("registering application reconciler: %w", err)
+	for _, k := range instanceKinds {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(k.gvk)
+		if err := mcbuilder.ControllerManagedBy(mgr).
+			Named(k.name).
+			For(obj).
+			Complete(&instanceReconciler{c: c, kind: k}); err != nil {
+			return nil, fmt.Errorf("registering %s reconciler: %w", k.gvk.Kind, err)
+		}
 	}
 
 	c.mgr = mgr
 	return c, nil
 }
 
+// instanceReconciler reconciles one instance kind; the shared Controller
+// carries the config and cross-kind helpers.
+type instanceReconciler struct {
+	c    *Controller
+	kind instanceKind
+}
+
 // Start runs the multicluster manager (blocking).
 func (c *Controller) Start(ctx context.Context) error { return c.mgr.Start(ctx) }
 
-// Reconcile stamps the computed fqdn + credentialsSecretName onto the
-// instance and bridges the OIDC client secret onto the runtime cluster.
-func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+// Reconcile stamps the computed fqdn (and, for oidc kinds,
+// credentialsSecretName) onto the instance and bridges the OIDC client secret
+// onto the runtime cluster.
+func (r *instanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+	c := r.c
 	tenant := string(req.ClusterName)
-	log := klog.FromContext(ctx).WithValues("cluster", tenant, "application", req.Name)
+	log := klog.FromContext(ctx).WithValues("cluster", tenant, "kind", r.kind.gvk.Kind, "instance", req.Name)
 
 	cl, err := c.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -191,12 +226,21 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	tenantClient := cl.GetClient()
 
 	app := &unstructured.Unstructured{}
-	app.SetGroupVersionKind(appGVK)
+	app.SetGroupVersionKind(r.kind.gvk)
 	if err := tenantClient.Get(ctx, req.NamespacedName, app); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Exposure-only kinds: stamp the fqdn and stop — no cross-cluster state,
+	// no finalizer, nothing to clean up on deletion.
+	if !r.kind.oidc {
+		if !app.GetDeletionTimestamp().IsZero() {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, c.stampSpec(ctx, tenantClient, tenant, app, false)
 	}
 
 	// Deletion: clean up the cross-cluster bridged Secret, then drop the
@@ -224,7 +268,7 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	// 1. Stamp spec.expose.fqdn + spec.credentialsSecretName (idempotent).
-	if err := c.stampSpec(ctx, tenantClient, tenant, app); err != nil {
+	if err := c.stampSpec(ctx, tenantClient, tenant, app, true); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -268,27 +312,34 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	return ctrl.Result{}, nil
 }
 
-// stampSpec computes the fqdn + bridged-Secret name and writes them onto the
-// instance spec if not already set. Idempotent: a no-op once both are stamped.
-func (c *Controller) stampSpec(ctx context.Context, tenantClient client.Client, tenant string, app *unstructured.Unstructured) error {
+// stampSpec computes the fqdn (and, when withCredentials, the bridged-Secret
+// name) and writes them onto the instance spec if not already set. Idempotent:
+// a no-op once everything is stamped. Exposure-only kinds don't declare
+// credentialsSecretName in their schema, so stamping it would be pruned —
+// they stamp only the fqdn.
+func (c *Controller) stampSpec(ctx context.Context, tenantClient client.Client, tenant string, app *unstructured.Unstructured, withCredentials bool) error {
 	prefix := nestedString(app, "spec", "expose", "hostnamePrefix")
 	curFQDN := nestedString(app, "spec", "expose", "fqdn")
-	curSecret := nestedString(app, "spec", "credentialsSecretName")
 
 	fqdn, err := apps.Host(prefix, app.GetName(), tenant, c.cfg.BaseDomain)
 	if err != nil {
 		return fmt.Errorf("computing fqdn: %w", err)
 	}
-	wantSecret := kro.CredentialsSecretName(app.GetName())
 
-	if curFQDN == fqdn && curSecret == wantSecret {
+	current := curFQDN == fqdn
+	if withCredentials {
+		current = current && nestedString(app, "spec", "credentialsSecretName") == kro.CredentialsSecretName(app.GetName())
+	}
+	if current {
 		return nil
 	}
 	if err := unstructured.SetNestedField(app.Object, fqdn, "spec", "expose", "fqdn"); err != nil {
 		return fmt.Errorf("set spec.expose.fqdn: %w", err)
 	}
-	if err := unstructured.SetNestedField(app.Object, wantSecret, "spec", "credentialsSecretName"); err != nil {
-		return fmt.Errorf("set spec.credentialsSecretName: %w", err)
+	if withCredentials {
+		if err := unstructured.SetNestedField(app.Object, kro.CredentialsSecretName(app.GetName()), "spec", "credentialsSecretName"); err != nil {
+			return fmt.Errorf("set spec.credentialsSecretName: %w", err)
+		}
 	}
 	if err := tenantClient.Update(ctx, app); err != nil {
 		return fmt.Errorf("stamping spec: %w", err)

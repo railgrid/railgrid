@@ -29,6 +29,9 @@ spec:
       Deploys a 3-tier web app on ONE public URL: UI at `/`, API at `/api/*`, and a
       managed PostgreSQL database. Choose this to ship a containerized web app with
       a relational DB behind a single endpoint when you can supply both images.
+      For a frontend-only or single-container app with no API tier and no database
+      (a static site, an SPA, a self-contained server), prefer the simple-webapp
+      template — it is also development-capable and carries none of this weight.
 
       YOU SUPPLY exactly two container images — frontendImage and backendImage —
       and nothing else app-side. The platform provisions Postgres, injects the DB

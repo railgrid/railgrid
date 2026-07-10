@@ -8,6 +8,29 @@ spec:
   category: Databases
   version: 0.1.0
   backend: kro
+  sampleValues:
+    name: cache
+    size: small
+  # Operational guidance for AI agents discovering this template over MCP —
+  # same convention as the database template.
+  agent:
+    usage: |
+      Provisions only a Redis instance: a credentials Secret, password
+      generator Job, StatefulSet, and ClusterIP Service. Choose this when an
+      app already has a runtime or development environment and needs a
+      standalone cache or ephemeral key-value store, without deploying a new
+      web app stack.
+
+      Consumers read the full connection URI from Secret
+      `<name>-credentials`, key `uri`. The URI has the form
+      `redis://:<password>@<name>:6379`. Redis may not be ready the moment a
+      consuming app starts — retry the initial connection. This template does
+      not expose Redis publicly, and persistent=false (the default) means data
+      does not survive a restart.
+    outputs:
+      - "status.host / status.port — the in-cluster Service endpoint for Redis."
+      - "status.ready — ready replica count for the Redis StatefulSet."
+      - "status.connectionSecretRef — Secret '<name>-credentials' containing host, port, password, and uri keys. Secret values are not surfaced in status."
   instanceCRD:
     group: infrastructure.kedge.faros.sh
     version: v1alpha1
