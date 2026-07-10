@@ -81,9 +81,7 @@ const (
 
 // e2eMinimalSpecs supplies a valid instance spec for templates that ship no
 // sampleValues (those that do — application, database — use them directly).
-var e2eMinimalSpecs = map[string]map[string]any{
-	"redis-cache": {"name": "e2e-redis"},
-}
+var e2eMinimalSpecs = map[string]map[string]any{}
 
 // e2ePlatformStamped are spec fields a platform component normally writes onto an
 // instance before kro reconciles it — values the user does NOT supply (the

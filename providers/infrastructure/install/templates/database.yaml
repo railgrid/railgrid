@@ -33,6 +33,33 @@ spec:
       - "status.host / status.port - the in-cluster Service endpoint for PostgreSQL."
       - "status.ready - ready replica count for the Postgres StatefulSet."
       - "status.connectionSecretRef - Secret '<name>-db-credentials' containing host, port, user, dbname, password, and uri keys. Secret values are not surfaced in status."
+  # ── Portal presentation ───────────────────────────────────────────────
+  view:
+    columns:
+      - header: Version
+        path: spec.version
+        type: badge
+    detail:
+      - title: Connection
+        fields:
+          - label: Host
+            path: status.host
+            type: code
+          - label: Port
+            path: status.port
+            type: code
+          - label: Credentials secret
+            path: status.connectionSecretRef.name
+            type: code
+      - title: Configuration
+        fields:
+          - label: Postgres version
+            path: spec.version
+            type: badge
+      - title: Readiness
+        fields:
+          - label: Database
+            path: status.ready
   instanceCRD:
     group: infrastructure.kedge.faros.sh
     version: v1alpha1

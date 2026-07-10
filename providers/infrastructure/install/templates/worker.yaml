@@ -1,0 +1,161 @@
+apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: worker
+spec:
+  displayName: "Background worker"
+  description: "A long-running background process — Deployment only, no Service, no URL. Queue consumers, bots, pollers. Development-capable: can back an App Studio project with a hot-reload dev process."
+  category: Workloads
+  version: 0.1.0
+  backend: kro
+  # One-click provision defaults for the portal form. nginx is a stand-in
+  # long-running process that always starts; a real worker replaces it.
+  sampleValues:
+    name: demo-worker
+    image: nginx:latest
+  # Operational guidance for AI agents discovering this template over MCP.
+  agent:
+    usage: |
+      Runs ONE container as a long-running background process with NO network
+      exposure: no Service, no route, no URL. Choose this for queue consumers,
+      chat/Discord/Telegram bots, pollers, and schedulers that run
+      continuously. It is NOT reachable over HTTP — if the app must serve
+      requests, use simple-webapp (one container + URL) or application
+      (frontend + API + database). For work that runs on a schedule and exits,
+      use the cron-job template instead.
+
+      PRODUCTION MODE — you supply exactly one container image (the image
+      input) and nothing else:
+        • The entrypoint must run FOREVER; a process that exits is restarted
+          (crash-looping is treated as failure, not completion).
+        • Stateless — no persistent disk. Pods may be restarted or scaled
+          (the replicas input). Durable state belongs in a database template
+          instance; read its connection URI from the Secret it publishes.
+        • Configuration comes from your image; there is no platform-injected
+          env.
+
+      DEVELOPMENT MODE (the platform-injected kedgeMode field): the image
+      input is ignored (and may be omitted) — the platform runs a Node.js dev
+      container against the project workspace (workspacePath "."). The dev
+      process is `npm run dev` (falling back to `npm start`); logs and
+      restarts are available through the project's development runtime verbs.
+
+      INPUTS you set when provisioning: name (required); image (required in
+      production, ignored in development), replicas.
+    outputs:
+      - "status.ready — ready replica count for the worker Deployment."
+  # ── Portal presentation ───────────────────────────────────────────────
+  view:
+    detail:
+      - title: Readiness
+        fields:
+          - label: Worker
+            path: status.ready
+  instanceCRD:
+    group: infrastructure.kedge.faros.sh
+    version: v1alpha1
+    resource: workers
+    kind: Worker
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        description: "Logical name; used as the Deployment name in the tenant namespace."
+      image:
+        type: string
+        description: "Container image running the background process. Required in production mode; ignored (and may be omitted) when kedgeMode is development — dev mode runs the platform dev image against the project workspace."
+      replicas:
+        type: integer
+        default: 1
+        minimum: 1
+        maximum: 5
+    required:
+      - name
+    # The image is only required when the instance actually runs it: production
+    # mode. Enforced on the kcp-side CRD; kedgeMode defaults to "production".
+    x-kubernetes-validations:
+      - rule: "(has(self.kedgeMode) && self.kedgeMode == 'development') || has(self.image)"
+        message: "image is required in production mode"
+
+  # ── Development mode (docs/app-studio-template-sandboxes.md) ──────────
+  # Single component claiming the whole project workspace. The component
+  # declares no port — a worker serves no traffic; the dev overlay still
+  # injects the control port for sync/logs/restart.
+  development:
+    components:
+      worker:
+        workspacePath: .
+        devImage: "${kedge.devImage.node}"
+        workingDir: /workspace
+        startCommand: "npm run dev || npm start"
+        reload:
+          strategy: process
+          rules:
+            - paths: ["package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml"]
+              command: "npm install --no-audit --no-fund"
+
+  # ── Data plane (development mode) ─────────────────────────────────────
+  # Per-component control verbs, served as
+  # …/workers/<name>/components/worker/{sync,restart,log,env}. Production
+  # mode answers 409 instance-not-ready — the data plane is a
+  # development-mode surface.
+  dataPlane:
+    runtimeNamespacePath: status.runtimeNamespace
+    tokenSecretPath: status.controlSecretRef
+    endpoints:
+      status:
+        fromStatus: true
+    components:
+      worker:
+        endpoints:
+          sync:
+            servicePath: status.components.worker.controlServiceRef
+            port: control
+            upstreamPath: /sync
+            methods: ["POST"]
+          restart:
+            servicePath: status.components.worker.controlServiceRef
+            port: control
+            upstreamPath: /restart
+            methods: ["POST"]
+          env:
+            servicePath: status.components.worker.controlServiceRef
+            port: control
+            upstreamPath: /env
+            methods: ["POST"]
+          log:
+            servicePath: status.components.worker.controlServiceRef
+            port: control
+            upstreamPath: /logs
+            methods: ["GET"]
+            stream: true
+
+  # ── backendConfig: the kro resource graph ─────────────────────────────
+  # namespace: default is remapped to the per-tenant namespace on the runtime
+  # cluster — same convention as every seed template. The graph id follows
+  # the dev-overlay convention: component "worker" → id "workerDeployment".
+  backendConfig:
+    resources:
+      - id: workerDeployment
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${schema.spec.name}
+            namespace: default
+          spec:
+            replicas: ${schema.spec.replicas}
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}
+              spec:
+                containers:
+                  - name: worker
+                    image: ${schema.spec.image}
+    status:
+      ready: ${workerDeployment.status.readyReplicas}

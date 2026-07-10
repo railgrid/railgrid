@@ -58,6 +58,14 @@ application:
     name: "cloudflare-tunnel"
     namespace: "cfgate-system"
 
+# Default container resource policy stamped into every tenant namespace as a
+# LimitRange named "kedge-defaults" (defaultRequest 50m/128Mi, default limit
+# 500m/512Mi, max 2cpu/2Gi per container). Create-only — operators may
+# hand-tune a tenant's copy without it being overwritten. Disable when the
+# runtime cluster manages its own resource policy.
+tenantLimitRange:
+  enabled: true
+
 # Development-mode images (docs/app-studio-template-sandboxes.md). These run
 # TENANT code, so production deployments should pin them by digest. Empty
 # values fall back to the in-binary defaults (node → the kedge sandbox-runner

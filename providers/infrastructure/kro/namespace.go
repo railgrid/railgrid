@@ -22,7 +22,23 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-var namespaceGVR = schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}
+var (
+	namespaceGVR  = schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}
+	limitRangeGVR = schema.GroupVersionResource{Version: "v1", Resource: "limitranges"}
+)
+
+const (
+	// tenantLimitRangeName is the LimitRange every tenant namespace gets on
+	// creation. Create-only: an operator may hand-tune a tenant's copy and we
+	// never fight them over it.
+	tenantLimitRangeName = "kedge-defaults"
+
+	// tenantLimitRangeDisableEnv opts the platform out of stamping the
+	// LimitRange (KEDGE_TENANT_LIMITRANGE=disabled) — for runtime clusters
+	// that manage resource policy themselves (their own LimitRange/Kyverno/
+	// quota tooling).
+	tenantLimitRangeDisableEnv = "KEDGE_TENANT_LIMITRANGE"
+)
 
 // tenantNamespaceName derives a deterministic namespace name from a
 // kcp workspace path. SHA256-truncated to 12 hex chars so it's
@@ -96,8 +112,68 @@ func (c *realClient) EnsureTenantNamespace(ctx context.Context, tenantPath strin
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return "", fmt.Errorf("create namespace %s: %w", name, err)
 	}
+	if err := c.ensureTenantLimitRange(ctx, tenantPath, name); err != nil {
+		return "", err
+	}
 	c.nsCache.Store(tenantPath, name)
 	return name, nil
+}
+
+// ensureTenantLimitRange stamps the default container resource policy into a
+// tenant namespace. No seed template pins its own CPU/memory (except where a
+// knob is explicitly wired, e.g. redis-cache's size), so without this a
+// tenant workload on the shared runtime cluster is unbounded — the
+// noisy-neighbor hole. The LimitRange closes it at admission time:
+//
+//   - containers with no resources get defaultRequest 50m/128Mi and a
+//     default limit of 500m/512Mi;
+//   - a container may still ask for more explicitly, but never past max
+//     (2 CPU / 2Gi) — the per-container ceiling of the platform's dev-grade
+//     tier.
+//
+// Create-only and sitting BEFORE the nsCache store, so a provider restart
+// retrofits namespaces created before this policy existed, while an
+// operator's hand-tuned copy is never overwritten. Disable with
+// KEDGE_TENANT_LIMITRANGE=disabled when the runtime cluster manages its own
+// resource policy.
+func (c *realClient) ensureTenantLimitRange(ctx context.Context, tenantPath, namespace string) error {
+	if os.Getenv(tenantLimitRangeDisableEnv) == "disabled" {
+		return nil
+	}
+	lr := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "LimitRange",
+		"metadata": map[string]any{
+			"name":      tenantLimitRangeName,
+			"namespace": namespace,
+			"labels": map[string]any{
+				LabelTenant:    tenantHash(tenantPath),
+				LabelManagedBy: ManagedByValue,
+			},
+		},
+		"spec": map[string]any{
+			"limits": []any{map[string]any{
+				"type": "Container",
+				"defaultRequest": map[string]any{
+					"cpu":    "50m",
+					"memory": "128Mi",
+				},
+				"default": map[string]any{
+					"cpu":    "500m",
+					"memory": "512Mi",
+				},
+				"max": map[string]any{
+					"cpu":    "2",
+					"memory": "2Gi",
+				},
+			}},
+		},
+	}}
+	_, err := c.dyn.Resource(limitRangeGVR).Namespace(namespace).Create(ctx, lr, metav1.CreateOptions{})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create limitrange %s/%s: %w", namespace, tenantLimitRangeName, err)
+	}
+	return nil
 }
 
 // toUnstructured marshals a typed object into the unstructured shape

@@ -4,9 +4,9 @@ metadata:
   name: redis-cache
 spec:
   displayName: "Redis cache"
-  description: "A Redis instance for caching workloads. StatefulSet + Service; size knob picks the memory limit."
+  description: "A Redis instance for caching workloads — StatefulSet + Service; the size knob picks the memory bucket. Ephemeral: data does not survive a restart."
   category: Databases
-  version: 0.1.0
+  version: 0.2.0
   backend: kro
   sampleValues:
     name: cache
@@ -25,12 +25,46 @@ spec:
       `<name>-credentials`, key `uri`. The URI has the form
       `redis://:<password>@<name>:6379`. Redis may not be ready the moment a
       consuming app starts — retry the initial connection. This template does
-      not expose Redis publicly, and persistent=false (the default) means data
-      does not survive a restart.
+      not expose Redis publicly.
+
+      Redis is EPHEMERAL here: no persistence is configured, so a pod restart
+      loses all data. Treat it strictly as a cache — never as a system of
+      record; durable state belongs in the database template. The size input
+      picks the container memory bucket: small=64Mi, medium=256Mi, large=1Gi.
     outputs:
       - "status.host / status.port — the in-cluster Service endpoint for Redis."
       - "status.ready — ready replica count for the Redis StatefulSet."
       - "status.connectionSecretRef — Secret '<name>-credentials' containing host, port, password, and uri keys. Secret values are not surfaced in status."
+  # ── Portal presentation ───────────────────────────────────────────────
+  view:
+    columns:
+      - header: Size
+        path: spec.size
+        type: badge
+    detail:
+      - title: Connection
+        fields:
+          - label: Host
+            path: status.host
+            type: code
+          - label: Port
+            path: status.port
+            type: code
+          - label: Credentials secret
+            path: status.connectionSecretRef.name
+            type: code
+      - title: Configuration
+        fields:
+          - label: Size
+            path: spec.size
+            type: badge
+          - label: Redis version
+            path: spec.version
+            type: badge
+      - title: Readiness
+        fields:
+          - label: Redis
+            path: status.ready
   instanceCRD:
     group: infrastructure.kedge.faros.sh
     version: v1alpha1
@@ -46,14 +80,11 @@ spec:
         type: string
         enum: ["small", "medium", "large"]
         default: "small"
-        description: "Memory bucket (64Mi / 256Mi / 1Gi)."
+        description: "Memory bucket, wired to the container's memory request+limit (small=64Mi, medium=256Mi, large=1Gi)."
       version:
         type: string
         enum: ["6", "7"]
         default: "7"
-      persistent:
-        type: boolean
-        default: false
     required:
       - name
   # backendConfig is interpreted by the kro backend. Every resource sets
@@ -168,7 +199,17 @@ spec:
                 containers:
                   - name: redis
                     image: redis:${schema.spec.version}
-                    command: ["redis-server", "--requirepass", "$(REDIS_PASSWORD)"]
+                    # maxmemory sits ~25% under the container limit (working
+                    # memory + fragmentation headroom) with LRU eviction, so
+                    # a full cache evicts instead of OOM-killing the pod.
+                    command:
+                      - redis-server
+                      - --requirepass
+                      - $(REDIS_PASSWORD)
+                      - --maxmemory
+                      - '${schema.spec.size == "small" ? "48mb" : (schema.spec.size == "medium" ? "192mb" : "768mb")}'
+                      - --maxmemory-policy
+                      - allkeys-lru
                     env:
                       - name: REDIS_PASSWORD
                         valueFrom:
@@ -177,6 +218,16 @@ spec:
                             key: password
                     ports:
                       - containerPort: 6379
+                    # The size bucket bounds the container: memory request ==
+                    # limit (Redis is memory, an OOM-kill under the limit is
+                    # the contract working). Single-quoted: the CEL ternaries
+                    # contain ": " which YAML would otherwise read as mappings.
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: '${schema.spec.size == "small" ? "64Mi" : (schema.spec.size == "medium" ? "256Mi" : "1Gi")}'
+                      limits:
+                        memory: '${schema.spec.size == "small" ? "64Mi" : (schema.spec.size == "medium" ? "256Mi" : "1Gi")}'
       - id: service
         template:
           apiVersion: v1
