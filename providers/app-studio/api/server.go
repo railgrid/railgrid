@@ -23,6 +23,7 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"net/http"
 	"sync"
 
@@ -53,7 +54,11 @@ type Server struct {
 	assistantRunManager          *projectAssistantRunManager
 	developmentSyncLocks         map[string]*sync.Mutex
 	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string)
-	mu                           sync.Mutex
+	// previewEdgeProbe + edgeReadyURLs implement the preview edge-readiness
+	// gate (see preview_edge.go). Nil probe → the real HTTPS probe.
+	previewEdgeProbe func(context.Context, string) error
+	edgeReadyURLs    edgeReadyURLsCache
+	mu               sync.Mutex
 }
 
 // New constructs a Server.
