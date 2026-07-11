@@ -102,16 +102,28 @@ func applyQuickstartManifest(t *testing.T) *unstructured.Unstructured {
 	gvr := schema.GroupVersionResource{
 		Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
 	}
-	created, err := cl.Resource(gvr).Create(ctxWithTimeout(t, 10*time.Second), obj, metav1.CreateOptions{})
-	if apierrors.IsAlreadyExists(err) {
-		got, err := cl.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), obj.GetName(), metav1.GetOptions{})
-		if err != nil {
-			t.Fatalf("get existing CatalogEntry: %v", err)
+	// The hub reports /readyz before the catalog APIs in
+	// root:kedge:providers are fully servable (same startup race
+	// loginStaticTokenAndGetCluster documents), so on a slow runner the
+	// first Create can fail with "the server could not find the requested
+	// resource". Retry until the API is up rather than failing the suite.
+	var created *unstructured.Unstructured
+	if !waitForCondition(t, 90*time.Second, func() (bool, string) {
+		var err error
+		created, err = cl.Resource(gvr).Create(ctxWithTimeout(t, 10*time.Second), obj, metav1.CreateOptions{})
+		if err == nil {
+			return true, ""
 		}
-		return got
-	}
-	if err != nil {
-		t.Fatalf("create CatalogEntry: %v", err)
+		if apierrors.IsAlreadyExists(err) {
+			created, err = cl.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), obj.GetName(), metav1.GetOptions{})
+			if err == nil {
+				return true, ""
+			}
+			return false, "get existing CatalogEntry: " + err.Error()
+		}
+		return false, "create CatalogEntry: " + err.Error()
+	}) {
+		t.Fatal("CatalogEntry never became creatable (catalog API not servable?)")
 	}
 	return created
 }

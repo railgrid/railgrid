@@ -611,6 +611,21 @@ e2e-provider-flags: build-hub ## Run --providers flag mechanics suite
 ## Run both provider suites back-to-back (sequential — they share port 2380).
 e2e-provider-all: e2e-provider e2e-provider-flags ## Run provider + provider-flags suites sequentially
 
+## Infrastructure provider e2e (embedded kcp + infrastructure-provider
+## init/serve subprocesses). Covers the kcp-side surface the kind/kro
+## template e2e can't: provisioning, init bootstrap + template seeding, the
+## Template controller chain via the stub backend, retired-template
+## enforcement, and the tenant catalog read through an APIBinding. Shares
+## the embedded-kcp etcd port 2380 with the other subprocess suites — do
+## not run them concurrently.
+E2E_INFRA_PROVIDER_TIMEOUT ?= 15m
+e2e-infra-provider: build-hub build-infrastructure-provider ## Run infrastructure provider e2e suite
+	@test -z "$$(lsof -ti :19453 :16453 :18086 :2380 2>/dev/null)" || { \
+		echo "ports 19453/16453/18086/2380 are in use; stop any running kedge-hub/infrastructure-provider first"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
 ## Tilt-cluster suite: runs against an ALREADY-RUNNING operator-deployed,
 ## multi-shard Tilt stack (start it in another terminal with `make tilt-cluster`).
 ## Unlike the other e2e suites it does NOT spawn its own processes — it connects

@@ -197,12 +197,15 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 	want := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{Name: RuntimeRoleName},
 		Rules: []rbacv1.PolicyRule{
-			// Templates — read + status patch. The Template
-			// controller patches status on every reconcile pass.
+			// Templates — read + status patch, plus delete: the
+			// controller enforces retirement of removed platform
+			// templates by deleting them on sight
+			// (controller/template/retired.go). Finalizer add/remove
+			// (update) comes from the wildcard rule below.
 			{
 				APIGroups: []string{"infrastructure.kedge.faros.sh"},
 				Resources: []string{"templates"},
-				Verbs:     []string{"get", "list", "watch"},
+				Verbs:     []string{"get", "list", "watch", "delete"},
 			},
 			{
 				APIGroups: []string{"infrastructure.kedge.faros.sh"},
@@ -250,13 +253,13 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 				Resources: []string{"cachedresources"},
 				Verbs:     []string{"get", "list", "watch"},
 			},
-			// CRD reads so the controller can check Established
-			// condition without trying to write CRDs (init owns
-			// CRD writes).
+			// CRDs: the controller authors the per-template CRD on
+			// reconcile and deletes it in the finalize chain when a
+			// Template is removed (deletePerTemplateCRD).
 			{
 				APIGroups: []string{"apiextensions.k8s.io"},
 				Resources: []string{"customresourcedefinitions"},
-				Verbs:     []string{"get", "list", "watch", "create", "update"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "delete"},
 			},
 		},
 	}
