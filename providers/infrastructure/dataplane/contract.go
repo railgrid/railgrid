@@ -31,7 +31,7 @@ import (
 )
 
 // ContractGetter returns the data-plane contract for an instance resource
-// (the lowercase plural, e.g. "sandboxrunners"). Returns a nil contract with no
+// (the lowercase plural, e.g. "simplewebapps"). Returns a nil contract with no
 // error when the template declares no data plane, and an error when no template
 // owns the resource.
 type ContractGetter interface {

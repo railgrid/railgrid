@@ -44,8 +44,7 @@ type projectDevelopmentSyncTargetInfo struct {
 	ResourceName    string
 
 	// Resource / Kind / APIVersion are the instance coordinates the data
-	// plane and tenant client address (sandboxrunners, or the Project
-	// template's instanceCRD).
+	// plane and tenant client address (the Project template's instanceCRD).
 	Resource   string `json:"Resource,omitempty"`
 	Kind       string `json:"Kind,omitempty"`
 	APIVersion string `json:"APIVersion,omitempty"`

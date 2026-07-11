@@ -246,6 +246,65 @@ func TestReconcileBackendNotFound(t *testing.T) {
 	}
 }
 
+// TestReconcileRetiredTemplateIsSwept pins the retirement mechanism
+// (retired.go): a Template whose name is on the retired list — e.g. left
+// behind in a workspace seeded before the template was removed from the
+// catalog — is deleted by the reconciler itself and dismantled through the
+// normal finalize chain (backend teardown + CRD/APIExport cleanup), without
+// any operator action.
+func TestReconcileRetiredTemplateIsSwept(t *testing.T) {
+	if _, ok := retiredTemplates["sandbox-runner"]; !ok {
+		t.Fatal("sandbox-runner is no longer on the retired list; pick another retired name for this test")
+	}
+	tmpl := newTestTemplate(t, "sandbox-runner")
+	tmpl.Spec.InstanceCRD.Kind = "SandboxRunner"
+	tmpl.Spec.InstanceCRD.Resource = "sandboxrunners"
+	r, dyn, stb := newTestReconciler(t, tmpl)
+
+	reconcileUntilSettled(t, r, "sandbox-runner")
+
+	// The Template must be gone — deleted by the controller, finalizer
+	// removed by the finalize chain.
+	var post infrav1alpha1.Template
+	if err := r.Client.Get(context.Background(), types.NamespacedName{Name: "sandbox-runner"}, &post); err == nil {
+		t.Fatalf("retired template still present after reconcile (deletionTimestamp=%v, finalizers=%v)",
+			post.DeletionTimestamp, post.Finalizers)
+	}
+
+	// The finalize chain ran: the backend saw a teardown, and no
+	// per-template CRD or APIExport entry survives. Retirement fires before
+	// the CRD is ever authored on a fresh workspace, so absence — not
+	// deletion — is the invariant.
+	if len(stb.SeenTeardowns) < 1 {
+		t.Fatalf("expected the finalize chain to call TeardownTemplate; got %v", stb.SeenTeardowns)
+	}
+	if _, err := dyn.Resource(crdGVR).Get(context.Background(), perTemplateCRDName(tmpl), metav1.GetOptions{}); err == nil {
+		t.Fatal("per-template CRD exists for a retired template")
+	}
+	export, err := dyn.Resource(apiExportGVR).Get(context.Background(), APIExportName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get APIExport: %v", err)
+	}
+	resources, err := getAPIExportResources(export)
+	if err != nil {
+		t.Fatalf("decode resources: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Fatalf("APIExport still carries entries for a retired template: %v", resources)
+	}
+
+	// Re-applying the retired template must sweep it again — retirement is
+	// enforced by the watch loop, not a one-shot migration.
+	again := newTestTemplate(t, "sandbox-runner")
+	if err := r.Client.Create(context.Background(), again); err != nil {
+		t.Fatalf("re-create retired template: %v", err)
+	}
+	reconcileUntilSettled(t, r, "sandbox-runner")
+	if err := r.Client.Get(context.Background(), types.NamespacedName{Name: "sandbox-runner"}, &post); err == nil {
+		t.Fatal("re-applied retired template survived reconciliation")
+	}
+}
+
 func TestReconcileDelete(t *testing.T) {
 	tmpl := newTestTemplate(t, "delgone")
 	r, dyn, stb := newTestReconciler(t, tmpl)

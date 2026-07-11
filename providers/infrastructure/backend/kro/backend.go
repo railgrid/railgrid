@@ -62,7 +62,8 @@ type Backend struct {
 	// See substituteTokens in rgd.go. The tokens are the exposure-layer Gateway
 	// parent (${kedge.gatewayName}/${kedge.gatewayNamespace}) — the ONE Gateway
 	// every template's HTTPRoutes attach to (cfgate cloudflare-tunnel in prod,
-	// envoy locally) — plus ${kedge.sandboxPreviewBaseDomain}; per-instance
+	// envoy locally) — plus ${kedge.appPublicPort} and the dev-overlay images
+	// (${kedge.devImage.<toolchain>}, ${kedge.devAgentImage}); per-instance
 	// inputs like container images are schema fields with defaults, not tokens
 	// (see providers/infrastructure/docs/template-conventions.md).
 	tokens map[string]string
@@ -87,16 +88,16 @@ const (
 // template edit):
 //
 //   - KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE — the exposure-layer Gateway
-//     parent every template's HTTPRoutes (apps AND sandbox previews) attach to
-//     (defaults "cloudflare-tunnel" / "cfgate-system").
+//     parent every template's HTTPRoutes attach to (defaults
+//     "cloudflare-tunnel" / "cfgate-system").
 //   - KEDGE_APP_PUBLIC_PORT — bare port number appended (as ":<port>") to
 //     synthesized exposure URLs via ${kedge.appPublicPort}. Unset in
 //     production (443 implied); local kind sets 10443 (the envoy
 //     port-forward).
 //
 // Per-instance inputs (container images, etc.) are NOT env tokens — templates
-// declare them as schema fields with sane defaults (e.g. simple-webapp's
-// spec.image), the same convention every other template follows. See
+// declare them as schema fields (e.g. simple-webapp's spec.image, database's
+// spec.version), the same convention every other template follows. See
 // providers/infrastructure/docs/template-conventions.md.
 func New(runtime dynamic.Interface) *Backend {
 	gatewayName := os.Getenv("KEDGE_GATEWAY_NAME")

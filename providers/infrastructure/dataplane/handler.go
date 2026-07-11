@@ -46,7 +46,7 @@ type InstanceGetter interface {
 //
 //	/dataplane/clusters/<ws>/<resource>/<name>/<verb>[/<caller-path...>]
 //
-// e.g. /dataplane/clusters/root:kedge:orgs:acme/sandboxrunners/kedge-sandbox-…/log
+// e.g. /dataplane/clusters/root:kedge:orgs:acme/simplewebapps/my-site-dev/components/app/log
 //
 // It authorizes the caller against the instance, resolves the verb to a runtime
 // target via the template contract, and reverse-proxies to the runtime cluster
@@ -137,9 +137,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5b. Reverse-proxy to the runtime Service the provider owns. The public
-	// preview HTTPRoute is created declaratively by the SandboxRunner RGD (same
-	// mechanism as the application template), so there is no per-request route
-	// reconciliation gate here — this internal hop only needs the runtime Service.
+	// preview HTTPRoute is created declaratively by the template's RGD, so
+	// there is no per-request route reconciliation gate here — this internal
+	// hop only needs the runtime Service.
 	serveProxy(w, r, h.runtime, target, req.callerPath)
 }
 

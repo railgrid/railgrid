@@ -29,8 +29,8 @@ import (
 	"github.com/cloudwego/eino/compose"
 )
 
-// Runtime data-plane assistant tools. These wire the existing SandboxRunner
-// data-plane verbs (log, restart, env) to the project assistant so it can
+// Runtime data-plane assistant tools. These wire the development data-plane
+// verbs (log, restart, env) to the project assistant so it can
 // diagnose and drive the live development sandbox instead of only guessing at
 // its state. They mirror the runtime status/preview graph tools: read-only
 // tools (logs) run unwrapped, runtime-mutating tools (restart, env) are wrapped
@@ -65,8 +65,8 @@ type projectAssistantRuntimeEnvToolInput struct {
 	Restart *bool             `json:"restart,omitempty" jsonschema_description:"Whether to restart the dev process so the new environment takes effect. Defaults to true."`
 }
 
-// projectSandboxEnvRequest is the data-plane payload for the SandboxRunner env
-// verb; the infrastructure provider forwards it to the in-pod runner.
+// projectSandboxEnvRequest is the data-plane payload for the env verb; the
+// infrastructure provider forwards it to the in-pod dev agent.
 type projectSandboxEnvRequest struct {
 	Env     map[string]string `json:"env"`
 	Restart bool              `json:"restart"`

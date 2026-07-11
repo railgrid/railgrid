@@ -72,9 +72,9 @@ type ProjectSpec struct {
 	// Project's development environment (docs/app-studio-template-sandboxes.md).
 	// When set, the development binding is generated from the Template's
 	// instanceCRD with kedgeMode: development, and file sync routes per the
-	// Template's declared development components. Empty keeps the legacy
-	// SandboxRunner development binding (transitional; retired with the
-	// sandbox-runner template).
+	// Template's declared development components. Empty means the project has
+	// no development environment yet — one must be selected before any
+	// development runtime surface (sync, preview, logs) works.
 	// +optional
 	Template *ProjectTemplateSpec `json:"template,omitempty"`
 

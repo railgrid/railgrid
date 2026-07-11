@@ -80,7 +80,8 @@ const (
 )
 
 // e2eMinimalSpecs supplies a valid instance spec for templates that ship no
-// sampleValues (those that do — application, database — use them directly).
+// sampleValues. Currently empty — every seed template ships sampleValues —
+// but kept as the escape hatch for a future template that can't.
 var e2eMinimalSpecs = map[string]map[string]any{}
 
 // e2ePlatformStamped are spec fields a platform component normally writes onto an
@@ -118,8 +119,7 @@ func TestE2ESeedTemplates(t *testing.T) {
 	dyn, mapper := e2eClients(t)
 	// A per-run nonce makes every instance (and therefore every child object)
 	// uniquely named, so re-running against a reused cluster can't collide with a
-	// previous run's not-yet-garbage-collected objects. 16 hex digits because
-	// sandbox-runner's name must match ^kedge-sandbox-[a-f0-9]{16}$.
+	// previous run's not-yet-garbage-collected objects.
 	runID := fmt.Sprintf("%016x", time.Now().UnixNano())
 	dir := filepath.Join("..", "..", "install", "templates")
 	entries, err := os.ReadDir(dir)
@@ -280,10 +280,9 @@ func e2eInstance(t *testing.T, tmpl *infrav1alpha1.Template, runID string) *unst
 }
 
 // e2eInstanceName returns a per-run-unique instance name so child objects from
-// one run never collide with a prior run's on a reused cluster. sandbox-runner's
-// name is constrained to ^kedge-sandbox-[a-f0-9]{16}$, so it takes the 16-hex
-// runID verbatim; every other template suffixes its base name with the LOW
-// half of it. The low half, not the high: the runID is a hex UnixNano, whose
+// one run never collide with a prior run's on a reused cluster. Each template
+// suffixes its base name with the LOW half of the hex-UnixNano runID.
+// The low half, not the high: the runID's
 // top 32 bits change every ~4s — two instances created seconds apart (the
 // dev-mode e2e's production/development pair) would collide on runID[:8], and
 // the second create would silently adopt the first's terminating instance.

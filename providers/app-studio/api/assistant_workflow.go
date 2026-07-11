@@ -58,8 +58,8 @@ type projectAssistantRuntimeWorkflowInput struct {
 	SessionSnapshot *projectEinoAssistantSessionSnapshot
 	AppDeployment   projectAssistantAppDeploymentRequest
 	// RuntimeResolved is set by the status/preview tool input builders once
-	// they have queried the live development SandboxRunner runtime.
-	// RuntimeHasBinding is false when the project has no sandbox runner
+	// they have queried the live development runtime.
+	// RuntimeHasBinding is false when the project has no development
 	// binding yet — i.e. genuinely nothing is deployed. RuntimePreview carries
 	// the readiness state plus the signed preview URL when ready.
 	RuntimeResolved   bool
@@ -162,7 +162,7 @@ type projectAssistantWorkflowRunContext struct {
 	RunState       *projectEinoAssistantRunState
 	// Identity and Client carry the caller's tenant identity and project
 	// client so runtime/preview tools can query the live development
-	// SandboxRunner runtime instead of returning a placeholder status.
+	// runtime instead of returning a placeholder status.
 	Identity identity
 	Client   *asclient.Client
 }
@@ -582,7 +582,7 @@ func projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx projectAssistantW
 		if runCtx.RunState != nil {
 			input.SessionSnapshot = runCtx.RunState.SessionSnapshot()
 		}
-		// Resolve the live development SandboxRunner runtime so the status and
+		// Resolve the live development runtime so the status and
 		// preview tools report the real deployment state instead of a static
 		// not_configured placeholder. A nil client (e.g. background runs without
 		// a project client) leaves the input unresolved and the format functions
@@ -771,8 +771,8 @@ func formatProjectAssistantPreviewURLResult(ctx context.Context, input projectAs
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// Prefer the live development SandboxRunner preview when it has been
-	// resolved for this run.
+	// Prefer the live development preview when it has been resolved for
+	// this run.
 	if input.RuntimeResolved && input.RuntimeHasBinding {
 		preview := input.RuntimePreview
 		if preview.Ready && strings.TrimSpace(preview.PreviewURL) != "" {

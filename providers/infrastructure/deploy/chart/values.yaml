@@ -68,8 +68,8 @@ tenantLimitRange:
 
 # Development-mode images (docs/app-studio-template-sandboxes.md). These run
 # TENANT code, so production deployments should pin them by digest. Empty
-# values fall back to the in-binary defaults (node → the kedge sandbox-runner
-# image, agent → ghcr.io/faroshq/kedge-dev-agent:latest).
+# values fall back to the in-binary defaults (node → docker.io/library/node:22-bookworm,
+# agent → ghcr.io/faroshq/kedge-dev-agent:latest).
 development:
   # The injector image carrying the static kedge-dev-agent binary
   # (KEDGE_DEV_AGENT_IMAGE).
@@ -83,8 +83,8 @@ development:
     # go: "docker.io/library/golang:1.26"
 
 # Container images are NOT configured here. Templates declare them as schema
-# fields with sane defaults (e.g. the sandbox-runner's spec.runnerImage defaults
-# to the standard kedge runner) — the same convention every template follows.
+# fields with sane defaults (e.g. the database template's spec.version defaults
+# to "16") — the same convention every template follows.
 # See providers/infrastructure/docs/template-conventions.md. Override per instance, or edit the
 # template default, to pin a digest.
 

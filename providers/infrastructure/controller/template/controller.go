@@ -118,6 +118,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Retired platform templates are deleted on sight (see retired.go).
+	// AFTER the finalizer add so the deletion runs the full finalize chain,
+	// BEFORE the backend lookup so a retired template whose backend is no
+	// longer registered still gets swept instead of parking on a
+	// BackendNotFound condition.
+	if reason, retired := retiredTemplates[tmpl.Name]; retired {
+		logger.Info("deleting retired platform template", "reason", reason)
+		if err := r.Client.Delete(ctx, &tmpl); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete retired template: %w", err)
+		}
+		return ctrl.Result{}, nil // the deletion event re-enters via finalize
+	}
+
 	// Look up backend FIRST so a typo on spec.backend never causes a
 	// CRD to be created without a corresponding handler.
 	b, ok := r.Backends.Get(tmpl.Spec.Backend)

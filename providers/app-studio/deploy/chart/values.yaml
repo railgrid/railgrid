@@ -43,14 +43,15 @@ assistant:
   #     deployments whose users should not see implementation detail.
   toolDisclosure: ""
 
-# App Studio no longer holds a kubeconfig to the runtime cluster. The sandbox
-# data plane (sync, logs, restart, preview readiness) is served by the
-# infrastructure provider as subresources on the SandboxRunner instance, reached
-# through the hub as the calling user. See docs/app-studio-runtime-decoupling.md.
+# App Studio no longer holds a kubeconfig to the runtime cluster. The
+# development data plane (sync, logs, restart, preview readiness) is served by
+# the infrastructure provider as subresources on the project's template
+# instance, reached through the hub as the calling user.
+# See docs/app-studio-runtime-decoupling.md.
 
-# The SandboxRunner runner image is NOT configured here — the sandbox-runner
-# template declares it as a schema field with a sane default (the web-app
-# convention). App Studio passes only the project reference. See
+# Development runtime images are NOT configured here — the infrastructure
+# provider owns them (its chart's development.images / KEDGE_DEV_IMAGE_*).
+# App Studio passes only the project reference. See
 # providers/infrastructure/docs/template-conventions.md.
 
 # App Studio chat-message persistence. Prefer databaseURLSecretRef in
