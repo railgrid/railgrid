@@ -308,7 +308,19 @@ func (s *Server) templateDevelopmentPreview(ctx context.Context, c *asclient.Cli
 			Message: "Preview is getting ready. The development environment does not have a URL yet.",
 		}, nil
 	}
-	return projectSandboxPreviewURLResponse{Ready: true, PreviewURL: strings.TrimSpace(url)}, nil
+	// status.url exists as soon as the HTTPRoute does, but the Gateway edge
+	// (DNS + TLS certificate at Cloudflare) can take minutes to provision —
+	// until then the URL is a broken iframe. Keep reporting "provisioning"
+	// until the edge actually serves it (see preview_edge.go).
+	url = strings.TrimSpace(url)
+	if !s.previewEdgeReady(ctx, url) {
+		return projectSandboxPreviewURLResponse{
+			Ready:   false,
+			Reason:  previewReasonEdgeProvisioning,
+			Message: previewEdgeProvisioningMessage,
+		}, nil
+	}
+	return projectSandboxPreviewURLResponse{Ready: true, PreviewURL: url}, nil
 }
 
 // --- HTTP surface -----------------------------------------------------------
