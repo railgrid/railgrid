@@ -13,16 +13,13 @@ permissions:
 jobs:
   # Subprocess provider suites: hub with embedded kcp + provider binaries as
   # host processes, driven over HTTP + kcp dynamic clients. No kind, no Helm,
-  # no Docker — the cheapest full-kcp coverage we have.
-  #
-  # NOTE: the older quickstart suite (make e2e-provider) predates the
-  # provider bootstrap refactor (Provider CR + provider-run init) and fails
-  # against the current hub — it is deliberately NOT wired here until it is
-  # modernized onto the same bootstrap the infraprovider suite uses.
+  # no Docker — the cheapest full-kcp coverage we have. The suites share the
+  # embedded kcp's fixed etcd port (2380), so they run sequentially in one
+  # job rather than as a matrix.
   e2e-providers:
     name: Provider suites (embedded kcp subprocesses)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +29,9 @@ jobs:
 
       - name: Run infrastructure provider e2e
         run: make e2e-infra-provider
+
+      - name: Run quickstart provider e2e
+        run: make e2e-provider
 
   e2e-standalone:
     name: Standalone (embedded kcp + static token)

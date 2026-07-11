@@ -16,10 +16,14 @@ limitations under the License.
 
 // Package provider implements an end-to-end suite for the kedge provider
 // extension surface. It starts the kedge-hub with embedded kcp and the
-// reference quickstart provider as host subprocesses, then exercises the
-// full lifecycle: catalog provisioning (sub-workspace + APIResourceSchema
-// + APIExport + RBAC), the /api/providers and /ui|services/providers
-// proxies, tenant Enable via direct APIBinding, and heartbeat freshness.
+// reference quickstart provider as host subprocesses, following the current
+// bootstrap flow: Provider + CatalogEntry applied into
+// root:kedge:system:providers (the hub's Provider controller materializes
+// the sub-workspace + SA + provider-token), then `quickstart-provider init`
+// with the minted SA kubeconfig (APIExport + schemas + bind grant), then
+// serve. The tests exercise the full lifecycle: catalog provisioning, the
+// /api/providers and /ui|services/providers proxies, tenant Enable via
+// direct APIBinding, and heartbeat freshness.
 //
 // Runs without kind/Helm/Dex. Intentionally lighter-weight than the
 // standalone suite so iteration on the provider plumbing is fast.
@@ -27,6 +31,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -39,6 +44,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // Suite-shared state populated by TestMain.
@@ -105,25 +113,7 @@ func TestMain(m *testing.M) {
 	}
 	fmt.Fprintf(os.Stderr, "hub started (pid=%d, log=%s)\n", hubCmd.Process.Pid, hubLog.Name())
 
-	provLog, _ := os.Create(filepath.Join(dataDir, "provider.log"))
-	provCmd := exec.Command(filepath.Join(repoRoot, "bin", "quickstart-provider"))
-	provCmd.Env = append(os.Environ(),
-		"PORT="+providerPort,
-		"KEDGE_HUB_URL="+hubURL,
-		"KEDGE_HUB_TOKEN="+staticToken,
-		"KEDGE_PROVIDER_NAME=quickstart",
-	)
-	provCmd.Stdout = provLog
-	provCmd.Stderr = provLog
-	provCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := provCmd.Start(); err != nil {
-		killGroup(hubCmd)
-		fmt.Fprintln(os.Stderr, "start provider:", err)
-		os.Exit(1)
-	}
-	fmt.Fprintf(os.Stderr, "quickstart-provider started (pid=%d, port=:%s)\n", provCmd.Process.Pid, providerPort)
-
-	// Cleanup on any exit path.
+	var provCmd *exec.Cmd
 	cleanup := func() {
 		killGroup(hubCmd)
 		killGroup(provCmd)
@@ -140,11 +130,6 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "hub never ready:", err)
 		os.Exit(1)
 	}
-	if err := waitReady("http://127.0.0.1:"+providerPort+"/healthz", 10*time.Second); err != nil {
-		cleanup()
-		fmt.Fprintln(os.Stderr, "quickstart never ready:", err)
-		os.Exit(1)
-	}
 
 	// Snapshot the admin token from the kubeconfig the hub just wrote.
 	tok, err := extractToken(filepath.Join(dataDir, "kcp", "admin.kubeconfig"))
@@ -155,9 +140,134 @@ func TestMain(m *testing.M) {
 	}
 	adminToken = tok
 
+	// Provisioning: Provider + CatalogEntry into root:kedge:system:providers
+	// (mirrors `make install-provider-quickstart`); the hub's Provider
+	// controller materializes root:kedge:providers:quickstart, the provider
+	// SA, and the provider-token Secret.
+	if err := applyQuickstartManifests(); err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "apply quickstart manifests:", err)
+		os.Exit(1)
+	}
+
+	// Mint the SA runtime kubeconfig from the provider-token Secret (mirrors
+	// `make init-provider-quickstart`) and run `quickstart-provider init` —
+	// the APIExport/schemas/bind-grant come from init, not the hub.
+	runtimeKubeconfig := filepath.Join(dataDir, "quickstart-runtime.kubeconfig")
+	if err := mintRuntimeKubeconfig(runtimeKubeconfig, 2*time.Minute); err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "mint runtime kubeconfig:", err)
+		os.Exit(1)
+	}
+	initLog, err := os.Create(filepath.Join(dataDir, "init.log"))
+	if err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "create init.log:", err)
+		os.Exit(1)
+	}
+	initCmd := exec.Command(filepath.Join(repoRoot, "bin", "quickstart-provider"), "init")
+	initCmd.Env = append(os.Environ(),
+		"KEDGE_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
+		"QUICKSTART_WORKSPACE_PATH="+workspacePath,
+		// The greetings APIResourceSchema the chart ships — init reads the
+		// schemas dir to author the APIExport's resources.
+		"KEDGE_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "quickstart", "deploy", "chart", "files", "schemas"),
+	)
+	initCmd.Stdout = initLog
+	initCmd.Stderr = initLog
+	if err := initCmd.Run(); err != nil {
+		cleanup()
+		fmt.Fprintf(os.Stderr, "quickstart init failed: %v (log: %s)\n", err, initLog.Name())
+		os.Exit(1)
+	}
+
+	provLog, err := os.Create(filepath.Join(dataDir, "provider.log"))
+	if err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "create provider.log:", err)
+		os.Exit(1)
+	}
+	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "quickstart-provider"))
+	provCmd.Env = append(os.Environ(),
+		"PORT="+providerPort,
+		"KEDGE_HUB_URL="+hubURL,
+		"KEDGE_HUB_TOKEN="+staticToken,
+		"KEDGE_PROVIDER_NAME=quickstart",
+	)
+	provCmd.Stdout = provLog
+	provCmd.Stderr = provLog
+	provCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := provCmd.Start(); err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "start provider:", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "quickstart-provider started (pid=%d, port=:%s)\n", provCmd.Process.Pid, providerPort)
+
+	if err := waitReady("http://127.0.0.1:"+providerPort+"/healthz", 30*time.Second); err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "quickstart never ready:", err)
+		os.Exit(1)
+	}
+
 	code := m.Run()
 	cleanup()
 	os.Exit(code)
+}
+
+// mintRuntimeKubeconfig waits for the Provider controller to populate the
+// provider-token Secret in the sub-workspace and writes a workspace-scoped
+// kubeconfig around it — the same credential the provider pod mounts.
+func mintRuntimeKubeconfig(path string, timeout time.Duration) error {
+	cl, err := kcpDynamicRaw(workspacePath, adminToken)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(timeout)
+	var token string
+	var lastErr string
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		sec, err := cl.Resource(secretGVR).Namespace("default").Get(ctx, "provider-token", metav1.GetOptions{})
+		cancel()
+		if err != nil {
+			lastErr = err.Error()
+		} else {
+			enc, _, _ := unstructured.NestedString(sec.Object, "data", "token")
+			if enc != "" {
+				raw, err := base64.StdEncoding.DecodeString(enc)
+				if err != nil {
+					return fmt.Errorf("decode provider-token: %w", err)
+				}
+				token = string(raw)
+				break
+			}
+			lastErr = "provider-token Secret exists but token not yet populated"
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if token == "" {
+		return fmt.Errorf("provider-token never populated: %s", lastErr)
+	}
+	kc := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: kedge
+  cluster:
+    server: %s/clusters/%s
+    insecure-skip-tls-verify: true
+contexts:
+- name: kedge
+  context:
+    cluster: kedge
+    user: kedge
+current-context: kedge
+users:
+- name: kedge
+  user:
+    token: %s
+`, kcpServer, workspacePath, token)
+	return os.WriteFile(path, []byte(kc), 0o600)
 }
 
 // build runs `make build-hub build-quickstart-provider` so the test runs

@@ -42,10 +42,36 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/util/identity"
 )
 
+// workspacePath is the provider sub-workspace the hub's Provider controller
+// materializes from provider.yaml.
+const workspacePath = "root:kedge:providers:quickstart"
+
+var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
+
 // providersWorkspaceClient returns a dynamic client targeting
-// root:kedge:providers (where CatalogEntry resources live).
+// root:kedge:providers (the parent workspace holding the provider
+// sub-workspace objects).
 func providersWorkspaceClient(t *testing.T) dynamic.Interface {
 	return kcpDynamic(t, "root:kedge:providers", adminToken)
+}
+
+// systemProvidersClient returns a dynamic client targeting
+// root:kedge:system:providers — where Provider + CatalogEntry live since the
+// provider bootstrap refactor.
+func systemProvidersClient(t *testing.T) dynamic.Interface {
+	return kcpDynamic(t, "root:kedge:system:providers", adminToken)
+}
+
+// kcpDynamicRaw is kcpDynamic for non-test callers (TestMain bootstrap).
+func kcpDynamicRaw(clusterPath, token string) (dynamic.Interface, error) {
+	cfg := &rest.Config{
+		Host:        kcpServer + "/clusters/" + clusterPath,
+		BearerToken: token,
+		TLSClientConfig: rest.TLSClientConfig{
+			Insecure: true, // dev cert is self-signed
+		},
+	}
+	return dynamic.NewForConfig(cfg)
 }
 
 // providerSubClient returns a dynamic client targeting
@@ -71,71 +97,77 @@ func kcpDynamic(t *testing.T, clusterPath, token string) dynamic.Interface {
 	return c
 }
 
-// applyManifest applies providers/quickstart/manifest.yaml into the
-// providers workspace as admin. Idempotent: handles AlreadyExists.
-func applyQuickstartManifest(t *testing.T) *unstructured.Unstructured {
-	t.Helper()
-	cl := providersWorkspaceClient(t)
-	manifest, err := os.ReadFile(filepath.Join(repoRoot, "providers", "quickstart", "manifest.yaml"))
+// applyQuickstartManifests applies provider.yaml (kind Provider) +
+// manifest.yaml (kind CatalogEntry) into root:kedge:system:providers,
+// mirroring `make install-provider-quickstart`. Called from TestMain. The
+// hub reports /readyz before those APIs are fully servable, so creates are
+// retried until the API answers.
+func applyQuickstartManifests() error {
+	cl, err := kcpDynamicRaw("root:kedge:system:providers", adminToken)
 	if err != nil {
-		t.Fatalf("read manifest: %v", err)
+		return fmt.Errorf("dynamic client: %w", err)
 	}
-	// The manifest is a single YAML document but has leading comments and
-	// a `---` document separator. Walk line-by-line and start at the first
-	// `apiVersion:` line — sigs.k8s.io/yaml then parses cleanly.
-	idx := bytes.Index(manifest, []byte("\napiVersion:"))
-	if idx < 0 {
-		t.Fatal("manifest has no apiVersion line")
+	gvrByKind := map[string]schema.GroupVersionResource{
+		"Provider":     {Group: "admin.kedge.faros.sh", Version: "v1alpha1", Resource: "providers"},
+		"CatalogEntry": {Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries"},
 	}
-	doc := manifest[idx+1:]
-	obj := &unstructured.Unstructured{}
-	if err := yaml.Unmarshal(doc, &obj.Object); err != nil {
-		t.Fatalf("parse manifest: %v", err)
-	}
-	// Override ui.url and backend.url to the test's provider port. The
-	// committed manifest targets :8081 (matching `make run-provider-
-	// quickstart`), but the suite intentionally runs the binary on :18081
-	// to keep test ports separate from dev-loop ports.
-	overrideURL := "http://localhost:" + providerPort
-	_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "ui", "url")
-	_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "backend", "url")
-	gvr := schema.GroupVersionResource{
-		Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
-	}
-	// The hub reports /readyz before the catalog APIs in
-	// root:kedge:providers are fully servable (same startup race
-	// loginStaticTokenAndGetCluster documents), so on a slow runner the
-	// first Create can fail with "the server could not find the requested
-	// resource". Retry until the API is up rather than failing the suite.
-	var created *unstructured.Unstructured
-	if !waitForCondition(t, 90*time.Second, func() (bool, string) {
-		var err error
-		created, err = cl.Resource(gvr).Create(ctxWithTimeout(t, 10*time.Second), obj, metav1.CreateOptions{})
-		if err == nil {
-			return true, ""
+	for _, file := range []string{"provider.yaml", "manifest.yaml"} {
+		raw, err := os.ReadFile(filepath.Join(repoRoot, "providers", "quickstart", file))
+		if err != nil {
+			return fmt.Errorf("read %s: %w", file, err)
 		}
-		if apierrors.IsAlreadyExists(err) {
-			created, err = cl.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), obj.GetName(), metav1.GetOptions{})
-			if err == nil {
-				return true, ""
+		for _, doc := range bytes.Split(raw, []byte("\n---")) {
+			if !bytes.Contains(doc, []byte("apiVersion:")) {
+				continue
 			}
-			return false, "get existing CatalogEntry: " + err.Error()
+			obj := &unstructured.Unstructured{}
+			if err := yaml.Unmarshal(doc, &obj.Object); err != nil {
+				return fmt.Errorf("parse %s: %w", file, err)
+			}
+			if obj.GetKind() == "" {
+				continue
+			}
+			gvr, ok := gvrByKind[obj.GetKind()]
+			if !ok {
+				return fmt.Errorf("%s: unexpected kind %q", file, obj.GetKind())
+			}
+			if obj.GetKind() == "CatalogEntry" {
+				// The committed manifest targets :8081 (`make
+				// run-provider-quickstart`); the suite runs on :18081 to
+				// keep test ports separate from dev-loop ports.
+				overrideURL := "http://localhost:" + providerPort
+				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "ui", "url"); err != nil {
+					return fmt.Errorf("%s: override spec.ui.url: %w", file, err)
+				}
+				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "backend", "url"); err != nil {
+					return fmt.Errorf("%s: override spec.backend.url: %w", file, err)
+				}
+			}
+			deadline := time.Now().Add(90 * time.Second)
+			for {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				_, err = cl.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
+				cancel()
+				if err == nil || apierrors.IsAlreadyExists(err) {
+					break
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("create %s %s: %w", obj.GetKind(), obj.GetName(), err)
+				}
+				time.Sleep(2 * time.Second)
+			}
 		}
-		return false, "create CatalogEntry: " + err.Error()
-	}) {
-		t.Fatal("CatalogEntry never became creatable (catalog API not servable?)")
 	}
-	return created
+	return nil
 }
 
-// TestACatalogProvisioning is the first test (name-sorted) so the rest can
-// assume the catalog entry exists. Asserts every kcp-side artefact the
-// catalog controller is supposed to materialize.
+// TestACatalogProvisioning asserts every kcp-side artefact provisioning is
+// supposed to leave behind. TestMain already applied Provider + CatalogEntry
+// (into root:kedge:system:providers) and ran `quickstart-provider init`, so
+// the sub-workspace artifacts here come from the Provider controller + init.
 func TestACatalogProvisioning(t *testing.T) {
-	applyQuickstartManifest(t)
-
-	// Wait for status.conditions[Ready] == True.
-	cl := providersWorkspaceClient(t)
+	// Wait for status.conditions[Ready] == True on the CatalogEntry.
+	cl := systemProvidersClient(t)
 	gvr := schema.GroupVersionResource{
 		Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
 	}
