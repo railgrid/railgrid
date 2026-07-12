@@ -1,0 +1,58 @@
+# Agents provider — register with the kedge hub.
+#
+# The agents provider hosts long-running personal AI agents: chat, scheduled
+# and heartbeat runs, tool use, and durable memory. It is standalone — its only
+# hard dependencies are the hub and Postgres. Compute- and storage-backed
+# features (the claude-code runner, the file workspace) light up only when the
+# infrastructure provider is present, so infrastructure is an OPTIONAL
+# dependency and is intentionally not listed under spec.dependencies.
+#
+# Apply this against the kcp workspace where the kedge.faros.sh APIExport is
+# bound (typically root:kedge:providers when running embedded kcp for dev):
+#
+#   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
+#
+# For local dev the provider binary runs on the host (PORT=8087, Tiltfile
+# run-provider-agents target) and the hub reverse-proxies both the portal
+# bundle and the /api backend to the loopback URLs below. In-cluster, the Helm
+# chart renders the Service DNS instead, e.g.
+#   url: http://agents.agents.svc.cluster.local:8087
+#
+# This CatalogEntry registers routing and references apiExport.name. The
+# provider's init command creates the APIExport, schemas, endpoint slice, and
+# bind grant from deploy/chart/files/schemas.
+---
+apiVersion: providers.kedge.faros.sh/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: agents
+  annotations:
+    providers.kedge.faros.sh/builtin: "false"
+spec:
+  displayName: "Agents"
+  description: "Long-running personal AI agents: chat, scheduled runs, tools, and durable memory."
+  vendor: "kedge"
+  version: "0.1.0"
+  category: "AI"
+  iconURL: "/ui/providers/agents/icon.svg"
+  ui:
+    # Dev loopback port (PORT / Tiltfile run-provider-agents). 8087 to avoid
+    # colliding with quickstart (8081), kuery (8084), and app-studio (8085).
+    url: "http://localhost:8087"
+    indexPath: "/"
+  backend:
+    # The hub backend proxy forwards /services/providers/agents/* here,
+    # injecting the verified X-Kedge-Tenant/X-Kedge-User headers and the
+    # caller's bearer token. The provider serves /api/* + /healthz.
+    url: "http://localhost:8087"
+    healthPath: "/healthz"
+
+  apiExport:
+    name: "agents.kedge.faros.sh"
+    # The provider stores per-workspace model credentials and per-connection
+    # secrets in Secrets in the tenant workspace; the claim lets it read/write
+    # them as the calling user.
+    permissionClaims:
+      - resource: secrets
+        verbs: ["get", "list", "watch", "create", "update", "delete"]
+        tenantScoped: true

@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path"
 	"sort"
 	"strconv"
@@ -587,8 +588,75 @@ func (b *Backend) ListPackages(ctx context.Context, conn *codev1alpha1.Connectio
 			if p.GetRepository() == nil || !strings.EqualFold(p.GetRepository().GetName(), repo.Spec.Name) {
 				continue
 			}
-			out = append(out, packageInfo(p))
+			info := packageInfo(p)
+			// Resolve versions (tags + digest) and the pullable image path for
+			// image packages so callers can map a build tag to a deployable
+			// reference. Best-effort: a versions failure must not drop the
+			// package from the crawl.
+			if pt == "container" || pt == "docker" {
+				info.ImageRepository = "ghcr.io/" + strings.ToLower(org) + "/" + strings.ToLower(p.GetName())
+				if versions, err := listPackageVersions(ctx, c, org, pt, p.GetName()); err == nil {
+					info.Versions = versions
+				}
+			}
+			out = append(out, info)
 		}
+	}
+	return out, nil
+}
+
+// packageVersionsMax bounds how many recent versions we resolve per package —
+// enough to cover recent build tags without unbounded API paging.
+const packageVersionsMax = 100
+
+// listPackageVersions returns a package's versions (most recent first, bounded)
+// with their tags and digest. Tries the organization endpoint, falling back to
+// the user endpoint on the "owner is a user" signal, like listPackagesOfType.
+func listPackageVersions(ctx context.Context, c *gogithub.Client, org, pkgType, pkgName string) ([]backend.PackageVersion, error) {
+	// Package names can contain "/" (e.g. "repo/component"); the API path
+	// segment must be escaped.
+	name := url.PathEscape(pkgName)
+	opt := &gogithub.PackageListOptions{ListOptions: gogithub.ListOptions{PerPage: packageVersionsMax}}
+	asUser := false
+	var versions []*gogithub.PackageVersion
+	for {
+		var (
+			page []*gogithub.PackageVersion
+			resp *gogithub.Response
+			err  error
+		)
+		if asUser {
+			page, resp, err = c.Users.PackageGetAllVersions(ctx, org, pkgType, name, opt)
+		} else {
+			page, resp, err = c.Organizations.PackageGetAllVersions(ctx, org, pkgType, name, opt)
+			if err != nil && isNotOrg(resp) {
+				asUser = true
+				continue
+			}
+		}
+		if err != nil {
+			return nil, classify(resp, err)
+		}
+		versions = append(versions, page...)
+		if resp == nil || resp.NextPage == 0 || len(versions) >= packageVersionsMax {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+
+	out := make([]backend.PackageVersion, 0, len(versions))
+	for _, v := range versions {
+		created := ""
+		if t := v.GetCreatedAt(); !t.IsZero() {
+			created = t.UTC().Format(time.RFC3339)
+		}
+		pv := backend.PackageVersion{Digest: v.GetName(), CreatedAt: created}
+		if meta := v.GetMetadata(); meta != nil {
+			if container := meta.GetContainer(); container != nil {
+				pv.Tags = container.Tags
+			}
+		}
+		out = append(out, pv)
 	}
 	return out, nil
 }

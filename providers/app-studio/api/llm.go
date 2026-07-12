@@ -73,7 +73,6 @@ const (
 	projectToolPlanProjectChanges             = "plan_project_changes"
 	projectToolCheckProjectReadiness          = "check_project_readiness"
 	projectToolPrepareProjectDeployment       = "prepare_project_deployment"
-	projectToolDeployProjectRuntime           = "deploy_project_runtime"
 	projectToolGetRuntimeStatus               = "get_runtime_status"
 	projectToolGetPreviewURL                  = "get_preview_url"
 	projectToolGetRuntimeLogs                 = "get_runtime_logs"
@@ -500,7 +499,7 @@ func projectLinkedRepositoryRef(p *aiv1alpha1.Project) string {
 	return strings.TrimSpace(p.Spec.Repository.RepositoryRef)
 }
 
-func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, args map[string]any) (string, error) {
+func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, scope workspace.Scope, project *aiv1alpha1.Project, projectRepositoryRef, mcpEndpoint string, r *http.Request, args map[string]any) (string, error) {
 	projectRepositoryRef = strings.TrimSpace(projectRepositoryRef)
 	if projectRepositoryRef == "" {
 		return "", errors.New("project repository is not configured")
@@ -568,7 +567,14 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 	if err != nil {
 		return "", err
 	}
-	return s.reconcileProjectBuildConfigAfterCommit(ctx, id, scope, projectRepositoryRef, mcpEndpoint, r, args, resp)
+	// Keep the CI build wired in and current: idempotent, a no-op when the
+	// workflow is already present (so no extra commit in steady state), and it
+	// self-heals a missing/stale workflow. Best-effort — a failure here never
+	// fails the user's source commit. No-op for template-less projects.
+	if projectToolCallResultStatus(projectToolCodeCommitFiles, resp) == "succeeded" {
+		_, _ = s.ensureProjectBuildConfig(ctx, id, project, r)
+	}
+	return resp, nil
 }
 
 func ensureProjectToolCallIDs(toolCalls []chatToolCall) {
@@ -622,8 +628,6 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return summarizeProjectToolKeyValues(args, []string{"query", "maxResults"})
 	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment:
 		return summarizeProjectPlanningWorkflowArgs(args)
-	case projectToolDeployProjectRuntime:
-		return summarizeProjectToolKeyValues(args, []string{"targetRef", "appName", "image", "port", "intent"})
 	case projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolRestartRuntime:
 		return ""
 	case projectToolGetRuntimeLogs:
@@ -720,7 +724,7 @@ func summarizeProjectToolResult(name, result string) string {
 			}
 		case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment:
 			return summarizeProjectReadinessWorkflowResult(decoded)
-		case projectToolDeployProjectRuntime, projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolRestartRuntime, projectToolSetRuntimeEnv:
+		case projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolRestartRuntime, projectToolSetRuntimeEnv:
 			return summarizeProjectRuntimeWorkflowResult(decoded)
 		case projectToolGetRuntimeLogs:
 			if lines := projectToolStringList(decoded["lines"]); len(lines) > 0 {
@@ -1682,7 +1686,7 @@ func appendProjectAssistantBuilderPrompt(b *strings.Builder, repoRef string) {
 	b.WriteString("Use check_project_readiness before mutating or verifying existing work so repository, memory, workspace context, and recommended checks come from the App Studio graph workflow. ")
 	b.WriteString("When a named App Studio tool is deferred, load it first with tool_search using select:<tool_name>, then call the loaded tool. ")
 	b.WriteString("Use prepare_project_deployment before discussing deployment handoff so build artifact readiness, blockers, and runtime handoff constraints come from the App Studio graph workflow. ")
-	b.WriteString("Use deploy_project_runtime, get_runtime_status, and get_preview_url only as App Studio runtime graph workflows; they return structured not_configured blockers until a tenant RuntimeTarget exists. ")
+	b.WriteString("To take a project to production, use promote_project (see the build/promote guidance above). Use get_runtime_status and get_preview_url as App Studio runtime graph workflows for the development sandbox. ")
 	b.WriteString("For supporting infrastructure, use infrastructure__list_templates before naming any available template, infrastructure__describe_template before recommending values, and infrastructure__provision only after the user explicitly asks to create supporting infrastructure and the permission flow approves the call. ")
 	appendProjectAssistantTemplateFitPrompt(b)
 	b.WriteString("When the user asks for a supporting capability such as persistent data, first decide whether the current sandbox app can satisfy the development need before provisioning infrastructure. ")
@@ -1697,6 +1701,10 @@ func appendProjectAssistantBuilderPrompt(b *strings.Builder, repoRef string) {
 	b.WriteString("The tool creates a visible RepositoryCommit request; use concise commit messages and include every generated source/config file needed for the app to run. ")
 	b.WriteString("Do not paste large file contents into user-facing answers; summarize what you inspected instead. ")
 	b.WriteString("Do not create another repository for this Project unless the user explicitly asks for a different repository.\n")
+	b.WriteString("Building for launch: the container-image build runs in GitHub Actions, wired into the repository automatically when the project's template is bound. Committing source triggers a per-component image build; when the user wants to launch (go to production / ship a long-running app), make sure the app is committed, then call check_project_build to verify the build. ")
+	b.WriteString("Treat check_project_build as the build-doctor loop: status \"built\" means every launchable component has an image and the app is ready to launch; \"incomplete\" or \"none\" means some or all builds are still running or have failed. On a non-built status, re-check after a short pause; if components stay unbuilt, call get_build_logs to see WHY the build failed (the failed job's log tail), fix that component's build inputs (its workspace subdirectory, package.json build/start scripts, what Railpack expects for that stack), commit the fix, and re-check. For a build that failed for a transient reason rather than a code problem, use rebuild_project to re-run it without a code change. Iterate until status is \"built\" before launching. ")
+	b.WriteString("Do not claim the app is built, published, or ready to launch unless check_project_build reports status \"built\".\n")
+	b.WriteString("Going to production: when the user wants to launch / go live / ship a long-running app, use promote_project. Promotion stands up a SEPARATE production instance of the project's template (its own URL) from the built images, running alongside the development sandbox — it does not replace or stop the sandbox, and it is repeatable (promote again to redeploy newer builds). Only promote when check_project_build is \"built\"; confirm with the user first, and surface the production URL from the returned environment status once it is serving.\n")
 }
 
 func appendProjectAssistantTemplateFitPrompt(b *strings.Builder) {

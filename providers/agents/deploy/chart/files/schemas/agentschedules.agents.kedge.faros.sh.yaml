@@ -1,0 +1,149 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260712-dabfd8e.agentschedules.agents.kedge.faros.sh
+spec:
+  group: agents.kedge.faros.sh
+  names:
+    kind: AgentSchedule
+    listKind: AgentScheduleList
+    plural: agentschedules
+    shortNames:
+    - agtsched
+    singular: agentschedule
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.agentRef
+      name: Agent
+      type: string
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.schedule
+      name: Schedule
+      type: string
+    - jsonPath: .status.nextRun
+      name: NextRun
+      type: date
+    - jsonPath: .spec.suspend
+      name: Suspended
+      type: boolean
+    name: v1alpha1
+    schema:
+      description: |-
+        AgentSchedule triggers an agent to run on its own clock: a recurring cron
+        task, a one-shot wakeup, or a periodic heartbeat. The provider's in-process
+        scheduler owns fire times and reliability; this resource is the spec.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: AgentScheduleSpec is the user-authored schedule configuration.
+          properties:
+            agentRef:
+              description: AgentRef names the Agent this schedule drives.
+              maxLength: 253
+              minLength: 1
+              type: string
+            checklist:
+              description: |-
+                Checklist is the standing markdown the agent reviews on each heartbeat
+                pulse. Only used for heartbeat schedules.
+              maxLength: 32768
+              type: string
+            retry:
+              description: Retry overrides the default retry policy for runs from
+                this schedule.
+              properties:
+                maxAttempts:
+                  description: |-
+                    MaxAttempts is the number of tries for a transient failure before the run
+                    is marked failed. Zero uses the provider default (3).
+                  format: int32
+                  minimum: 0
+                  type: integer
+              type: object
+            runAt:
+              description: RunAt is the one-shot fire time for wakeup schedules (RFC3339).
+              format: date-time
+              type: string
+            schedule:
+              description: |-
+                Schedule is a 5-field cron expression for cron and heartbeat types. For
+                wakeup type it is empty and RunAt is used instead.
+              maxLength: 253
+              type: string
+            suspend:
+              description: Suspend halts firing without deleting the schedule.
+              type: boolean
+            task:
+              description: Task is the prompt run on each fire for cron and wakeup
+                schedules.
+              maxLength: 32768
+              type: string
+            timeZone:
+              description: |-
+                TimeZone is the IANA timezone the cron expression is evaluated in (e.g.
+                "Europe/Vilnius"). Empty means UTC.
+              maxLength: 64
+              type: string
+            type:
+              description: Type is cron, wakeup, or heartbeat.
+              enum:
+              - cron
+              - wakeup
+              - heartbeat
+              type: string
+          required:
+          - agentRef
+          - type
+          type: object
+        status:
+          description: AgentScheduleStatus is the observed schedule state.
+          properties:
+            consecutiveFailures:
+              description: |-
+                ConsecutiveFailures counts back-to-back failed runs; drives extended
+                backoff and eventual disable.
+              format: int32
+              type: integer
+            disabledReason:
+              description: |-
+                DisabledReason is set when the scheduler disables the schedule on a
+                permanent error (revoked credential, deleted agent).
+              type: string
+            lastRun:
+              description: LastRun is the most recent fire time.
+              format: date-time
+              type: string
+            lastRunID:
+              description: LastRunID references the AgentRun produced by the most
+                recent fire.
+              maxLength: 128
+              type: string
+            nextRun:
+              description: NextRun is the next planned fire time.
+              format: date-time
+              type: string
+          type: object
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

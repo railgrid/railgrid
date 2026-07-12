@@ -1,0 +1,135 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: agenttriggers.agents.kedge.faros.sh
+spec:
+  group: agents.kedge.faros.sh
+  names:
+    kind: AgentTrigger
+    listKind: AgentTriggerList
+    plural: agenttriggers
+    shortNames:
+    - agttrig
+    singular: agenttrigger
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.agentRef
+      name: Agent
+      type: string
+    - jsonPath: .spec.source
+      name: Source
+      type: string
+    - jsonPath: .status.lastFired
+      name: LastFired
+      type: date
+    - jsonPath: .spec.suspend
+      name: Suspended
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AgentTrigger fires an agent run on an external event — the event-based half
+          of automation, complementing the time-based AgentSchedule. Webhook sources
+          get a hub-routed inbound endpoint; other sources subscribe through a
+          Connection.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AgentTriggerSpec is the user-authored trigger configuration.
+            properties:
+              agentRef:
+                description: AgentRef names the Agent this trigger drives.
+                maxLength: 253
+                minLength: 1
+                type: string
+              connectionRef:
+                description: |-
+                  ConnectionRef names the Connection backing non-webhook sources (channel,
+                  github, connection). Empty for webhook sources.
+                maxLength: 253
+                type: string
+              filter:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Filter narrows which events fire the trigger. Keys are source-specific:
+                  e.g. "eventType" and "labels" for github, "match" (regex) for channel,
+                  "path" or "header.<name>" for webhook.
+                type: object
+              source:
+                description: |-
+                  Source is where events come from: webhook, channel, email, github, or
+                  connection.
+                enum:
+                - webhook
+                - channel
+                - email
+                - github
+                - connection
+                type: string
+              suspend:
+                description: Suspend halts firing without deleting the trigger.
+                type: boolean
+              task:
+                description: |-
+                  Task is the prompt run when the trigger fires. The event payload is made
+                  available to the run as additional input.
+                maxLength: 32768
+                type: string
+            required:
+            - agentRef
+            - source
+            type: object
+          status:
+            description: AgentTriggerStatus is the observed trigger state.
+            properties:
+              consecutiveFailures:
+                description: ConsecutiveFailures counts back-to-back failed runs from
+                  this trigger.
+                format: int32
+                type: integer
+              disabledReason:
+                description: |-
+                  DisabledReason is set when the provider disables the trigger on a
+                  permanent error (deleted agent, revoked connection).
+                type: string
+              lastFired:
+                description: LastFired is the most recent time an event fired a run.
+                format: date-time
+                type: string
+              lastRunID:
+                description: LastRunID references the AgentRun produced by the most
+                  recent event.
+                maxLength: 128
+                type: string
+              webhookPath:
+                description: WebhookPath is the hub-relative inbound endpoint for
+                  webhook sources.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

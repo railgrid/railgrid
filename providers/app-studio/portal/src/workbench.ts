@@ -48,7 +48,7 @@ const builtInTabs: Record<WorkbenchBuiltInTab, WorkbenchTabDescriptor> = {
   publishing: {
     id: 'publishing',
     kind: 'publishing',
-    title: 'Publishing',
+    title: 'Publish & Promote',
     closeable: true,
   },
   launcher: {

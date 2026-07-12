@@ -50,7 +50,7 @@ func TestProjectAssistantPermissionPolicy(t *testing.T) {
 
 func TestProjectAssistantRuntimePermissionIgnoresAutoApprove(t *testing.T) {
 	decision := projectAssistantPermissionForToolWithPolicy(projectAssistantToolSpec{
-		Name: projectToolDeployProjectRuntime,
+		Name: projectToolRestartRuntime,
 		Risk: projectAssistantToolRiskRuntime,
 	}, true)
 	if decision != projectAssistantPermissionAsk {

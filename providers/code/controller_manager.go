@@ -46,6 +46,7 @@ import (
 	"github.com/faroshq/provider-code/controller/deploykey"
 	"github.com/faroshq/provider-code/controller/packages"
 	"github.com/faroshq/provider-code/controller/repository"
+	"github.com/faroshq/provider-code/controller/repositorybuildstatus"
 	"github.com/faroshq/provider-code/controller/repositorycheckout"
 	"github.com/faroshq/provider-code/controller/repositorycommit"
 	"github.com/faroshq/provider-code/install"
@@ -119,6 +120,9 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 	}
 	if err := (&packages.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("packages controller: %w", err)
+	}
+	if err := (&repositorybuildstatus.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("repositorybuildstatus controller: %w", err)
 	}
 
 	go func() {

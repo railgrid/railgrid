@@ -65,6 +65,7 @@ var (
 	codeConnectionsGVR       = codeSchemeGroupVersion.WithResource("connections")
 	codeRepositoriesGVR      = codeSchemeGroupVersion.WithResource("repositories")
 	codeRepositoryCommitsGVR = codeSchemeGroupVersion.WithResource("repositorycommits")
+	codePackagesGVR          = codeSchemeGroupVersion.WithResource("packages")
 )
 
 type projectRepositoryPlan struct {

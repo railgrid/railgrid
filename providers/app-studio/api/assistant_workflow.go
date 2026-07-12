@@ -24,11 +24,9 @@ import (
 	"net/url"
 	"strings"
 
-	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
 	"github.com/cloudwego/eino-examples/adk/common/tool/graphtool"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
-	"github.com/cloudwego/eino/schema"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -36,12 +34,6 @@ import (
 )
 
 const projectAssistantWorkflowMaxResultBytes = 4096
-
-func init() {
-	// GraphTool checkpoints serialize the original model input while waiting
-	// for Eino approval wrapper resume.
-	schema.RegisterName[*projectAssistantRuntimeDeployToolInput]("faros_app_studio_runtime_deploy_tool_input")
-}
 
 type projectAssistantWorkflowInput struct {
 	Server         *Server
@@ -56,7 +48,6 @@ type projectAssistantRuntimeWorkflowInput struct {
 	Project         *aiv1alpha1.Project
 	Repository      *ProjectRepositoryView
 	SessionSnapshot *projectEinoAssistantSessionSnapshot
-	AppDeployment   projectAssistantAppDeploymentRequest
 	// RuntimeResolved is set by the status/preview tool input builders once
 	// they have queried the live development runtime.
 	// RuntimeHasBinding is false when the project has no development
@@ -70,14 +61,6 @@ type projectAssistantRuntimeWorkflowInput struct {
 type projectAssistantWorkflowToolInput struct {
 	IncludeFiles *bool `json:"includeFiles,omitempty" jsonschema_description:"Whether to include a bounded current workspace file list."`
 	MaxFiles     int   `json:"maxFiles,omitempty" jsonschema_description:"Maximum workspace file paths to include when includeFiles is true."`
-}
-
-type projectAssistantRuntimeDeployToolInput struct {
-	TargetRef string `json:"targetRef,omitempty" jsonschema_description:"RuntimeTarget name or reference that should run this app."`
-	AppName   string `json:"appName,omitempty" jsonschema_description:"Optional runtime app name; defaults to the App Studio project name."`
-	Image     string `json:"image,omitempty" jsonschema_description:"OCI image to deploy."`
-	Port      int64  `json:"port,omitempty" jsonschema_description:"Container port exposed by the app."`
-	Intent    string `json:"intent,omitempty" jsonschema_description:"Deployment intent, such as preview or production."`
 }
 
 type projectAssistantRuntimeStatusToolInput struct{}
@@ -131,21 +114,12 @@ type projectAssistantDeploymentRuntime struct {
 }
 
 type projectAssistantRuntimeWorkflowResult struct {
-	Status        string                                `json:"status"`
-	Summary       string                                `json:"summary"`
-	AppDeployment *projectAssistantAppDeploymentRequest `json:"appDeployment,omitempty"`
-	Runtime       *projectAssistantDeploymentRuntime    `json:"runtime,omitempty"`
-	PreviewURL    string                                `json:"previewURL,omitempty"`
-	Blockers      []string                              `json:"blockers,omitempty"`
-	NextSteps     []string                              `json:"nextSteps,omitempty"`
-}
-
-type projectAssistantAppDeploymentRequest struct {
-	TargetRef string `json:"targetRef,omitempty"`
-	AppName   string `json:"appName,omitempty"`
-	Image     string `json:"image,omitempty"`
-	Port      int64  `json:"port,omitempty"`
-	Intent    string `json:"intent,omitempty"`
+	Status     string                             `json:"status"`
+	Summary    string                             `json:"summary"`
+	Runtime    *projectAssistantDeploymentRuntime `json:"runtime,omitempty"`
+	PreviewURL string                             `json:"previewURL,omitempty"`
+	Blockers   []string                           `json:"blockers,omitempty"`
+	NextSteps  []string                           `json:"nextSteps,omitempty"`
 }
 
 type projectAssistantWorkflowRepo struct {
@@ -198,12 +172,6 @@ func projectAssistantWorkflowToolSpecs() []projectAssistantToolSpec {
 			Description: "Prepare deterministic App Studio deployment handoff context from project memory, repository status, workspace files, build checks, and runtime handoff constraints.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"includeFiles":{"type":"boolean","description":"Whether to include a bounded current workspace file list."},"maxFiles":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum workspace file paths to include when includeFiles is true."}}}`),
 			Risk:        projectAssistantToolRiskRead,
-		},
-		{
-			Name:        projectToolDeployProjectRuntime,
-			Description: "Create a deterministic AppDeployment handoff request from an OCI image, runtime target, port, and intent; returns structured blockers until a runtime provider is configured.",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"targetRef":{"type":"string","description":"RuntimeTarget name or reference that should run this app."},"appName":{"type":"string","description":"Optional runtime app name; defaults to the App Studio project name."},"image":{"type":"string","description":"OCI image to deploy."},"port":{"type":"integer","minimum":1,"maximum":65535,"description":"Container port exposed by the app."},"intent":{"type":"string","enum":["preview","production"],"description":"Deployment intent."}},"required":["targetRef","image","port"]}`),
-			Risk:        projectAssistantToolRiskRuntime,
 		},
 		{
 			Name:        projectToolGetRuntimeStatus,
@@ -275,8 +243,6 @@ func newProjectAssistantGraphWorkflowTool(spec projectAssistantToolSpec, runCtx 
 		return newProjectAssistantReadinessGraphTool(runCtx)
 	case projectToolPrepareProjectDeployment:
 		return newProjectAssistantPrepareDeploymentGraphTool(runCtx)
-	case projectToolDeployProjectRuntime:
-		return newProjectAssistantDeployRuntimeGraphTool(runCtx)
 	case projectToolGetRuntimeStatus:
 		return newProjectAssistantRuntimeStatusGraphTool(runCtx)
 	case projectToolGetPreviewURL:
@@ -354,25 +320,6 @@ func newProjectAssistantPrepareDeploymentGraphTool(runCtx projectAssistantWorkfl
 		"Prepare deterministic App Studio deployment handoff context from project memory, repository status, workspace files, build checks, and runtime handoff constraints.",
 		compose.WithGraphName("app-studio-prepare-project-deployment"),
 	)
-}
-
-func newProjectAssistantDeployRuntimeGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
-	workflow := compose.NewWorkflow[*projectAssistantRuntimeDeployToolInput, *projectAssistantRuntimeWorkflowResult]()
-	workflow.AddLambdaNode("normalize", compose.InvokableLambda(projectAssistantRuntimeWorkflowInputFromDeployTool(runCtx))).
-		AddInput(compose.START)
-	workflow.AddLambdaNode("format-runtime-deployment", compose.InvokableLambda(formatProjectAssistantRuntimeDeploymentResult)).
-		AddInput("normalize")
-	workflow.End().AddInput("format-runtime-deployment")
-	innerTool, err := graphtool.NewInvokableGraphTool[*projectAssistantRuntimeDeployToolInput, *projectAssistantRuntimeWorkflowResult](
-		workflow,
-		projectToolDeployProjectRuntime,
-		"Create a deterministic AppDeployment handoff request from an OCI image, runtime target, port, and intent; returns structured blockers until a runtime provider is configured.",
-		compose.WithGraphName("app-studio-deploy-project-runtime"),
-	)
-	if err != nil {
-		return nil, err
-	}
-	return approvaltool.InvokableApprovableTool{InvokableTool: innerTool}, nil
 }
 
 func newProjectAssistantRuntimeStatusGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
@@ -538,39 +485,7 @@ func normalizeProjectAssistantRuntimeWorkflowInput(ctx context.Context, input pr
 		return projectAssistantRuntimeWorkflowInput{}, fmt.Errorf("project is required")
 	}
 	input.SessionSnapshot = cloneProjectEinoAssistantSessionSnapshot(input.SessionSnapshot)
-	input.AppDeployment.TargetRef = strings.TrimSpace(input.AppDeployment.TargetRef)
-	input.AppDeployment.AppName = strings.TrimSpace(input.AppDeployment.AppName)
-	if input.AppDeployment.AppName == "" {
-		input.AppDeployment.AppName = strings.TrimSpace(input.Project.Name)
-	}
-	input.AppDeployment.Image = strings.TrimSpace(input.AppDeployment.Image)
-	input.AppDeployment.Intent = strings.ToLower(strings.TrimSpace(input.AppDeployment.Intent))
-	if input.AppDeployment.Intent == "" {
-		input.AppDeployment.Intent = "preview"
-	}
 	return input, nil
-}
-
-func projectAssistantRuntimeWorkflowInputFromDeployTool(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeDeployToolInput) (projectAssistantRuntimeWorkflowInput, error) {
-	return func(ctx context.Context, args *projectAssistantRuntimeDeployToolInput) (projectAssistantRuntimeWorkflowInput, error) {
-		input := projectAssistantRuntimeWorkflowInput{
-			Project:    runCtx.Project,
-			Repository: runCtx.Repository,
-		}
-		if runCtx.RunState != nil {
-			input.SessionSnapshot = runCtx.RunState.SessionSnapshot()
-		}
-		if args != nil {
-			input.AppDeployment = projectAssistantAppDeploymentRequest{
-				TargetRef: strings.TrimSpace(args.TargetRef),
-				AppName:   strings.TrimSpace(args.AppName),
-				Image:     strings.TrimSpace(args.Image),
-				Port:      args.Port,
-				Intent:    strings.TrimSpace(args.Intent),
-			}
-		}
-		return normalizeProjectAssistantRuntimeWorkflowInput(ctx, input)
-	}
 }
 
 func projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeStatusToolInput) (projectAssistantRuntimeWorkflowInput, error) {
@@ -701,35 +616,6 @@ func formatProjectAssistantReadinessWorkflowResult(ctx context.Context, input pr
 	return result, nil
 }
 
-func formatProjectAssistantRuntimeDeploymentResult(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (*projectAssistantRuntimeWorkflowResult, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	result := &projectAssistantRuntimeWorkflowResult{
-		Status:        "blocked",
-		AppDeployment: &input.AppDeployment,
-		Runtime:       projectAssistantRuntimeNotConfigured(),
-		Summary:       "Runtime deployment is blocked because no App Studio runtime provider is configured.",
-		Blockers:      []string{"Runtime provider is not configured."},
-		NextSteps: []string{
-			"Configure a tenant-isolated RuntimeTarget before creating an AppDeployment.",
-			"Use prepare_project_deployment to verify build artifact readiness before retrying runtime deployment.",
-		},
-	}
-	if input.AppDeployment.TargetRef == "" {
-		result.Blockers = append(result.Blockers, "Runtime targetRef is required.")
-	}
-	if input.AppDeployment.Image == "" {
-		result.Blockers = append(result.Blockers, "Build artifact image is required.")
-	}
-	if input.AppDeployment.Port <= 0 {
-		result.Blockers = append(result.Blockers, "Container port is required.")
-	}
-	if input.AppDeployment.Intent != "preview" && input.AppDeployment.Intent != "production" {
-		result.Blockers = append(result.Blockers, "Deployment intent must be preview or production.")
-	}
-	return result, nil
-}
 
 func formatProjectAssistantRuntimeStatusResult(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (*projectAssistantRuntimeWorkflowResult, error) {
 	if err := ctx.Err(); err != nil {

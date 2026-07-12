@@ -226,6 +226,8 @@ func (r *Reconciler) updateStatus(ctx context.Context, c client.Client, pkg *cod
 		HTMLURL:            info.HTMLURL,
 		VersionCount:       info.VersionCount,
 		UpdatedAt:          info.UpdatedAt,
+		ImageRepository:    info.ImageRepository,
+		Versions:           packageVersions(info.Versions),
 		LastSyncTime:       &now,
 		Conditions:         pkg.Status.Conditions,
 	}
@@ -278,8 +280,53 @@ func packageStatusEqual(a, b codev1alpha1.PackageStatus) bool {
 		a.HTMLURL == b.HTMLURL &&
 		a.VersionCount == b.VersionCount &&
 		a.UpdatedAt == b.UpdatedAt &&
+		a.ImageRepository == b.ImageRepository &&
 		a.ObservedGeneration == b.ObservedGeneration &&
+		packageVersionsEqual(a.Versions, b.Versions) &&
 		apimeta.IsStatusConditionTrue(a.Conditions, codev1alpha1.ConditionReady)
+}
+
+// packageVersions maps backend versions onto the CRD status shape.
+func packageVersions(versions []backend.PackageVersion) []codev1alpha1.PackageVersion {
+	if len(versions) == 0 {
+		return nil
+	}
+	out := make([]codev1alpha1.PackageVersion, 0, len(versions))
+	for _, v := range versions {
+		out = append(out, codev1alpha1.PackageVersion{
+			Digest:    v.Digest,
+			Tags:      v.Tags,
+			CreatedAt: v.CreatedAt,
+		})
+	}
+	return out
+}
+
+// packageVersionsEqual compares two version lists (order-sensitive, as the host
+// returns most-recent-first) so the crawler skips a status write when the set of
+// published versions and their tags is unchanged.
+func packageVersionsEqual(a, b []codev1alpha1.PackageVersion) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Digest != b[i].Digest || a[i].CreatedAt != b[i].CreatedAt || !stringsEqual(a[i].Tags, b[i].Tags) {
+			return false
+		}
+	}
+	return true
+}
+
+func stringsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // packageObjectName builds a deterministic, RFC1123-safe object name for a

@@ -99,10 +99,14 @@ func FromEnv() (cfg Config, enabled bool, err error) {
 	}
 	scopes := os.Getenv("GITHUB_OAUTH_SCOPES")
 	if scopes == "" {
+		// workflow is REQUIRED to commit files under .github/workflows/ — GitHub
+		// rejects writing any workflow file without it (surfaced as a misleading
+		// 404 on the Git Data API), and App Studio scaffolds a build workflow
+		// into every project repo, so without this the whole CI-wiring fails.
 		// read:packages lets the portal list the packages published under a repo.
 		// delete_repo is required to remove repositories the provider created;
 		// the `repo` scope alone grants full control but NOT deletion.
-		scopes = "repo,delete_repo,read:org,admin:public_key,read:packages"
+		scopes = "repo,workflow,delete_repo,read:org,admin:public_key,read:packages"
 	}
 	for _, s := range strings.Split(scopes, ",") {
 		if s = strings.TrimSpace(s); s != "" {

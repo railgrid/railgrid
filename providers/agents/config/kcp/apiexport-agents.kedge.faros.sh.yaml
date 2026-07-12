@@ -1,0 +1,32 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: agents.kedge.faros.sh
+spec:
+  resources:
+  - group: agents.kedge.faros.sh
+    name: agentruns
+    schema: v260712-dabfd8e.agentruns.agents.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: agents.kedge.faros.sh
+    name: agents
+    schema: v260712-dabfd8e.agents.agents.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: agents.kedge.faros.sh
+    name: agentschedules
+    schema: v260712-dabfd8e.agentschedules.agents.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: agents.kedge.faros.sh
+    name: agenttriggers
+    schema: v260712-dabfd8e.agenttriggers.agents.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: agents.kedge.faros.sh
+    name: connections
+    schema: v260712-dabfd8e.connections.agents.kedge.faros.sh
+    storage:
+      crd: {}
+status: {}

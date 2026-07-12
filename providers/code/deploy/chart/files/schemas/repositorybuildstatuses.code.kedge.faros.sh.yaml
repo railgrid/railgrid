@@ -1,0 +1,219 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260712-dabfd8e.repositorybuildstatuses.code.kedge.faros.sh
+spec:
+  group: code.kedge.faros.sh
+  names:
+    categories:
+    - kedge
+    kind: RepositoryBuildStatus
+    listKind: RepositoryBuildStatusList
+    plural: repositorybuildstatuses
+    shortNames:
+    - gbuildstatus
+    singular: repositorybuildstatus
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.repositoryRef
+      name: Repository
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.run.conclusion
+      name: Conclusion
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      description: |-
+        RepositoryBuildStatus is a transient request to inspect (or re-run) a
+        managed Repository's CI build workflow through the host's Actions API. It is
+        the credentialed read the tenant-facing MCP layer cannot do itself: the
+        controller resolves the Connection credential, queries the host, and writes
+        the run status — including failed jobs' log tails — back onto status. The
+        build-doctor consumes it to diagnose and retry a broken build.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: RepositoryBuildStatusSpec is the desired inspection/re-run
+            request.
+          properties:
+            action:
+              description: Action selects status (default) or rerun.
+              enum:
+              - status
+              - rerun
+              type: string
+            maxLogLines:
+              description: MaxLogLines caps the failure-log tail per failed job (status
+                action).
+              maximum: 1000
+              minimum: 1
+              type: integer
+            ref:
+              description: |-
+                Ref is the commit SHA to inspect (status) or the branch to re-run on
+                (rerun). Empty inspects the most recent run / re-runs the default branch.
+              maxLength: 255
+              type: string
+            repositoryRef:
+              description: RepositoryRef names the Repository (same workspace) whose
+                build to inspect.
+              maxLength: 253
+              minLength: 1
+              type: string
+            workflowFileName:
+              description: |-
+                WorkflowFileName is the workflow file to inspect or dispatch
+                (e.g. "kedge-app-studio-build.yml").
+              maxLength: 255
+              minLength: 1
+              type: string
+          required:
+          - repositoryRef
+          - workflowFileName
+          type: object
+        status:
+          description: RepositoryBuildStatusStatus is the observed result.
+          properties:
+            completedAt:
+              format: date-time
+              type: string
+            conditions:
+              items:
+                description: Condition contains details for one aspect of the current
+                  state of this API Resource.
+                properties:
+                  lastTransitionTime:
+                    description: |-
+                      lastTransitionTime is the last time the condition transitioned from one status to another.
+                      This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                    format: date-time
+                    type: string
+                  message:
+                    description: |-
+                      message is a human readable message indicating details about the transition.
+                      This may be an empty string.
+                    maxLength: 32768
+                    type: string
+                  observedGeneration:
+                    description: |-
+                      observedGeneration represents the .metadata.generation that the condition was set based upon.
+                      For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                      with respect to the current state of the instance.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  reason:
+                    description: |-
+                      reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                      Producers of specific condition types may define expected values and meanings for this field,
+                      and whether the values are considered a guaranteed API.
+                      The value should be a CamelCase string.
+                      This field may not be empty.
+                    maxLength: 1024
+                    minLength: 1
+                    pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                    type: string
+                  status:
+                    description: status of the condition, one of True, False, Unknown.
+                    enum:
+                    - "True"
+                    - "False"
+                    - Unknown
+                    type: string
+                  type:
+                    description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                    maxLength: 316
+                    pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                    type: string
+                required:
+                - lastTransitionTime
+                - message
+                - reason
+                - status
+                - type
+                type: object
+              type: array
+              x-kubernetes-list-map-keys:
+              - type
+              x-kubernetes-list-type: map
+            dispatched:
+              description: Dispatched is true when a rerun action successfully fired.
+              type: boolean
+            observedGeneration:
+              format: int64
+              type: integer
+            phase:
+              description: Phase is the coarse status for clients that do not parse
+                conditions.
+              type: string
+            run:
+              description: Run is the inspected run (status action).
+              properties:
+                conclusion:
+                  type: string
+                found:
+                  description: Found is false when no run exists for the request.
+                  type: boolean
+                headSHA:
+                  type: string
+                htmlURL:
+                  type: string
+                jobs:
+                  items:
+                    description: RepositoryBuildStatusJob is one job of the inspected
+                      run.
+                    properties:
+                      conclusion:
+                        description: Conclusion is success | failure | cancelled |
+                          ... | "" while running.
+                        type: string
+                      failureLog:
+                        description: FailureLog is a bounded tail of the job's logs,
+                          set only for a failed job.
+                        type: string
+                      name:
+                        type: string
+                      status:
+                        description: Status is queued | in_progress | completed.
+                        type: string
+                    type: object
+                  type: array
+                runID:
+                  format: int64
+                  type: integer
+                status:
+                  type: string
+              required:
+              - found
+              type: object
+          type: object
+      required:
+      - spec
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

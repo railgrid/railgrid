@@ -1,5 +1,24 @@
 {
   "permissions": {
+    "allow": [
+      "Skill(deep-research)",
+      "Skill(deep-research:*)",
+      "WebFetch(domain:www.cloudwego.io)",
+      "WebFetch(domain:aider.chat)",
+      "WebFetch(domain:docs.openhands.dev)",
+      "WebFetch(domain:www.openhands.dev)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:blog.stackblitz.com)",
+      "WebFetch(domain:blog.replit.com)",
+      "WebFetch(domain:docs.replit.com)",
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:openai.com)",
+      "WebFetch(domain:opencode.ai)",
+      "WebFetch(domain:replit.com)",
+      "WebFetch(domain:support.bolt.new)",
+      "WebFetch(domain:cursor.com)",
+      "WebFetch(domain:*)"
+    ],
     "additionalDirectories": [
       "/Users/mjudeikis/go/src/github.com/kcp-dev/kcp/pkg/reconciler/apis/apibinding"
     ]

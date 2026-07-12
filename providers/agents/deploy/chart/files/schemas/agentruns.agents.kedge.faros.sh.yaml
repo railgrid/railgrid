@@ -1,0 +1,147 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260712-dabfd8e.agentruns.agents.kedge.faros.sh
+spec:
+  group: agents.kedge.faros.sh
+  names:
+    kind: AgentRun
+    listKind: AgentRunList
+    plural: agentruns
+    shortNames:
+    - agtrun
+    singular: agentrun
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.agentRef
+      name: Agent
+      type: string
+    - jsonPath: .spec.trigger
+      name: Trigger
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      description: |-
+        AgentRun records one execution of an agent. The transcript and resumable
+        checkpoint live in the provider store; this resource is the durable index
+        entry with status and usage for API and portal consumption.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: AgentRunSpec is the run request.
+          properties:
+            agentRef:
+              description: AgentRef names the Agent that executed.
+              maxLength: 253
+              minLength: 1
+              type: string
+            input:
+              description: Input is the prompt or task text for this run.
+              maxLength: 32768
+              type: string
+            parentRunID:
+              description: |-
+                ParentRunID references the AgentRun that spawned this one via delegation.
+                Empty for top-level runs.
+              maxLength: 128
+              type: string
+            scheduleRef:
+              description: ScheduleRef names the AgentSchedule that fired this run,
+                when applicable.
+              maxLength: 253
+              type: string
+            sessionID:
+              description: SessionID groups runs into a conversation for transcript
+                continuity.
+              maxLength: 128
+              type: string
+            trigger:
+              description: |-
+                Trigger is what initiated the run: chat, schedule, heartbeat, wakeup,
+                event, api, channel, or delegation.
+              enum:
+              - chat
+              - schedule
+              - heartbeat
+              - wakeup
+              - event
+              - api
+              - channel
+              - delegation
+              type: string
+            triggerRef:
+              description: TriggerRef names the AgentTrigger that fired this run,
+                for event runs.
+              maxLength: 253
+              type: string
+          required:
+          - agentRef
+          - trigger
+          type: object
+        status:
+          description: AgentRunStatus is the observed run state.
+          properties:
+            attempt:
+              description: Attempt is the 1-based retry attempt number.
+              format: int32
+              type: integer
+            finishedAt:
+              description: FinishedAt is when execution ended.
+              format: date-time
+              type: string
+            message:
+              description: Message carries a failure reason or a short result summary.
+              maxLength: 4096
+              type: string
+            phase:
+              description: Phase is Pending, Running, PendingApproval, Succeeded,
+                Failed, or Aborted.
+              type: string
+            startedAt:
+              description: StartedAt is when execution began.
+              format: date-time
+              type: string
+            usage:
+              description: Usage reports token and cost consumption for this run.
+              properties:
+                inputTokens:
+                  description: InputTokens consumed by the run.
+                  format: int64
+                  type: integer
+                outputTokens:
+                  description: OutputTokens produced by the run.
+                  format: int64
+                  type: integer
+                usd:
+                  description: USD is the run's estimated cost in US dollars.
+                  type: string
+              type: object
+          type: object
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

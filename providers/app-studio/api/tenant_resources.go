@@ -24,6 +24,7 @@ var (
 	secretResource         = tenant.Resource{GVR: secretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
 	codeConnectionResource = tenant.Resource{GVR: codeConnectionsGVR, Kind: "Connection", Plural: "Connections"}
 	codeRepositoryResource = tenant.Resource{GVR: codeRepositoriesGVR, Kind: "Repository", Plural: "Repositories"}
+	codePackageResource    = tenant.Resource{GVR: codePackagesGVR, Kind: "Package", Plural: "Packages"}
 )
 
 // codeResourceFor maps a code-provider GVR to its descriptor, for the

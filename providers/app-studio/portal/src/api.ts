@@ -14,6 +14,8 @@ import type {
   ProjectMessageStreamControlEvent,
   ProjectMessageStreamEvent,
   ProjectMessagesPage,
+  ProjectPromotionReadiness,
+  ProjectPromoteResult,
   ProviderItem,
 } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
@@ -631,6 +633,27 @@ export const api = {
       'POST',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/hydrate-workspace`,
       ref ? { ref } : {},
+    )
+  },
+
+  async getPromotion(ctx: KedgeContext | null, name: string): Promise<ProjectPromotionReadiness> {
+    return request<ProjectPromotionReadiness>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/promotion`,
+    )
+  },
+
+  async promoteProject(
+    ctx: KedgeContext | null,
+    name: string,
+    values?: Record<string, unknown>,
+  ): Promise<ProjectPromoteResult> {
+    return request<ProjectPromoteResult>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/promote`,
+      values ? { values } : {},
     )
   },
 

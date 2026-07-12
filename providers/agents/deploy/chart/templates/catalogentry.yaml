@@ -1,0 +1,55 @@
+{{- define "agents.catalogEntry" -}}
+apiVersion: providers.kedge.faros.sh/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: agents
+  annotations:
+    providers.kedge.faros.sh/builtin: "false"
+spec:
+  displayName: "Agents"
+  description: "Long-running personal AI agents: chat, scheduled runs, tools, and durable memory."
+  vendor: "kedge"
+  version: {{ .Chart.AppVersion | quote }}
+  category: "AI"
+  iconURL: "/ui/providers/agents/icon.svg"
+  # infrastructure is an OPTIONAL runtime dependency (file workspace, claude-code
+  # runner) discovered at runtime, not a hard dependency — so it is intentionally
+  # not listed here. The provider is fully functional against a bare hub.
+  ui:
+    url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "agents.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.uiURL | quote }}
+    indexPath: "/"
+  backend:
+    # The hub backend proxy forwards /services/providers/agents/* here,
+    # injecting the verified X-Kedge-Tenant/X-Kedge-User headers and the
+    # caller's bearer token. The provider serves /api/* + /healthz.
+    url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "agents.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
+    healthPath: "/healthz"
+  # Reference-only: the APIExport, schemas, slice, and bind grant are created by
+  # this chart's init container (provider `init`, via the kedge-provider-sdk).
+  apiExport:
+    name: "agents.kedge.faros.sh"
+    permissionClaims:
+      - resource: secrets
+        verbs: ["get", "list", "watch", "create", "update", "delete"]
+        tenantScoped: true
+{{- end -}}
+
+{{- if .Values.catalogEntry.enabled -}}
+{{- if .Values.catalogEntry.renderAsConfigMap }}
+# CatalogEntry registers this provider with the kedge hub for routing + the
+# portal Enable flow. It is a kcp resource (providers.kedge.faros.sh/v1alpha1),
+# so it MUST NOT be applied to the hosting cluster where this chart installs.
+# Instead the chart renders it into a ConfigMap that the init container mounts
+# and applies into the provider workspace via the provider kubeconfig
+# (KEDGE_CATALOGENTRY_FILE -> sdkinstall.Bootstrap).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agents.fullname" . }}-catalogentry
+  labels:
+    {{- include "agents.labels" . | nindent 4 }}
+data:
+  catalogentry.yaml: |
+{{ include "agents.catalogEntry" . | indent 4 }}
+{{- end }}
+{{- end }}

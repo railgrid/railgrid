@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -139,6 +139,12 @@ build-app-studio-provider-portal: ## Build the App Studio provider's micro-front
 build-app-studio-provider: build-app-studio-provider-portal ## Build the App Studio provider binary (portal embedded)
 	cd providers/app-studio && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/app-studio-provider .
 
+build-agents-provider-portal: ## Build the agents provider's micro-frontend (Vite + TS → portal/dist)
+	cd providers/agents/portal && npm install --no-audit --no-fund && npm run build
+
+build-agents-provider: build-agents-provider-portal ## Build the agents provider binary (portal embedded)
+	cd providers/agents && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/agents-provider .
+
 build-code-provider-portal: ## Build the code provider's micro-frontend (Vite + Vue → portal/dist)
 	cd providers/code/portal && npm install --no-audit --no-fund && npm run build
 
@@ -182,9 +188,22 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
-	@for r in connections repositories repositorycommits repositorycheckouts deploykeys collaborators packages; do \
+	@for r in connections repositories repositorycommits repositorycheckouts repositorybuildstatuses deploykeys collaborators packages; do \
 		cp providers/code/config/kcp/apiresourceschema-$$r.code.kedge.faros.sh.yaml \
 		   providers/code/deploy/chart/files/schemas/$$r.code.kedge.faros.sh.yaml; \
+	done
+	./hack/ensure-boilerplate.sh
+
+codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the agents provider's local API (+ chart schemas)
+	@mkdir -p providers/agents/config/crds providers/agents/config/kcp providers/agents/deploy/chart/files/schemas
+	cd providers/agents && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
+	./$(KCP_APIGEN_GEN) --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
+	@for r in agents connections agentschedules agenttriggers agentruns; do \
+		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.kedge.faros.sh.yaml \
+		   providers/agents/deploy/chart/files/schemas/$$r.agents.kedge.faros.sh.yaml; \
 	done
 	./hack/ensure-boilerplate.sh
 
@@ -902,6 +921,20 @@ APP_STUDIO_POSTGRES_USER ?= appstudio
 APP_STUDIO_POSTGRES_PASSWORD ?= appstudio
 APP_STUDIO_POSTGRES_DB ?= appstudio
 
+# --- agents provider (long-running personal AI agents) ---
+AGENTS_PORT ?= 8087
+AGENTS_HUB_URL ?= https://localhost:9443
+AGENTS_TOKEN ?= $(STATIC_AUTH_TOKEN)
+AGENTS_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
+AGENTS_KCP_SERVER ?= https://localhost:6443
+AGENTS_WORKSPACE_PATH ?= root:kedge:providers:agents
+AGENTS_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/agents-provider.kubeconfig
+AGENTS_SCHEMAS_DIR ?= providers/agents/deploy/chart/files/schemas
+AGENTS_MANIFEST ?= providers/agents/manifest.yaml
+AGENTS_PROVIDER_MANIFEST ?= providers/agents/provider.yaml
+# Postgres store backend is not wired yet; dev runs use the in-memory store.
+AGENTS_IN_MEMORY_STORE ?= true
+
 ## Run the infrastructure provider binary locally. Heartbeats to the hub on
 ## $(KROMC_HUB_URL); TLS verification skipped (dev cert is self-signed).
 ## KRO_KUBECONFIG is left unset by default → provider serves the baked-in
@@ -1128,6 +1161,67 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(APP_STUDIO_MANIFEST) -f $(APP_STUDIO_PROVIDER_MANIFEST)
+
+## --- agents provider dev targets (mirror app-studio; in-memory store) ---
+
+run-provider-agents: build-agents-provider ## Run the agents provider (requires: make run-hub-embedded-static + make install-provider-agents + make init-provider-agents)
+	@echo "Starting agents provider on :$(AGENTS_PORT)"
+	@echo "  hub:   $(AGENTS_HUB_URL)"
+	@echo "  store: in-memory (non-durable; Postgres backend not wired yet)"
+	@# Auto-source providers/agents/.env (gitignored) for local overrides.
+	set -a; [ -f providers/agents/.env ] && . ./providers/agents/.env || true; set +a; \
+	PORT=$(AGENTS_PORT) \
+	KEDGE_HUB_URL=$(AGENTS_HUB_URL) \
+	KEDGE_HUB_TOKEN=$(AGENTS_TOKEN) \
+	KEDGE_HUB_INSECURE=true \
+	KEDGE_PROVIDER_NAME=agents \
+	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(AGENTS_PROVIDER_KUBECONFIG)" "$(AGENTS_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+	AGENTS_IN_MEMORY_STORE=$(AGENTS_IN_MEMORY_STORE) \
+		$(BINDIR)/agents-provider
+
+install-provider-agents: ## Apply agents Provider + CatalogEntry into root:kedge:providers
+	@test -f $(AGENTS_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(AGENTS_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	kubectl --kubeconfig=$(AGENTS_KCP_KUBECONFIG) \
+		--server=$(AGENTS_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--insecure-skip-tls-verify \
+		apply -f $(AGENTS_PROVIDER_MANIFEST) -f $(AGENTS_MANIFEST)
+
+init-provider-agents: build-agents-provider ## Bootstrap agents APIExport + write dev provider kubeconfig
+	@test -f $(AGENTS_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(AGENTS_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	@echo "Reading provider-token from $(AGENTS_WORKSPACE_PATH) and writing $(AGENTS_PROVIDER_KUBECONFIG)"
+	@TOKEN=$$(kubectl --kubeconfig=$(AGENTS_KCP_KUBECONFIG) \
+		--server=$(AGENTS_KCP_SERVER)/clusters/$(AGENTS_WORKSPACE_PATH) \
+		--insecure-skip-tls-verify \
+		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
+	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
+	mkdir -p $(KCP_DATA_DIR); \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+		"$(AGENTS_KCP_SERVER)/clusters/$(AGENTS_WORKSPACE_PATH)" "$$TOKEN" \
+		> $(AGENTS_PROVIDER_KUBECONFIG)
+	@echo "Running agents-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
+	KEDGE_PROVIDER_KUBECONFIG=$(AGENTS_PROVIDER_KUBECONFIG) \
+	AGENTS_WORKSPACE_PATH=$(AGENTS_WORKSPACE_PATH) \
+	KEDGE_SCHEMAS_DIR=$(AGENTS_SCHEMAS_DIR) \
+		$(BINDIR)/agents-provider init
+
+uninstall-provider-agents: ## Delete the agents CatalogEntry + Provider
+	@test -f $(AGENTS_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(AGENTS_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	-kubectl --kubeconfig=$(AGENTS_KCP_KUBECONFIG) \
+		--server=$(AGENTS_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--insecure-skip-tls-verify \
+		delete -f $(AGENTS_MANIFEST) -f $(AGENTS_PROVIDER_MANIFEST)
 
 # --- Dev agent image (template-native development mode) ---
 # The static control binary an init container injects into any dev-mode

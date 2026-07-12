@@ -55,6 +55,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&RepositoryCommitList{},
 		&RepositoryCheckout{},
 		&RepositoryCheckoutList{},
+		&RepositoryBuildStatus{},
+		&RepositoryBuildStatusList{},
 		&DeployKey{},
 		&DeployKeyList{},
 		&Collaborator{},

@@ -21,12 +21,17 @@ spec:
       crd: {}
   - group: code.kedge.faros.sh
     name: packages
-    schema: v260610-5e5c7f8.packages.code.kedge.faros.sh
+    schema: v260712-dabfd8e.packages.code.kedge.faros.sh
     storage:
       crd: {}
   - group: code.kedge.faros.sh
     name: repositories
     schema: v260609-fc69fa2.repositories.code.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: code.kedge.faros.sh
+    name: repositorybuildstatuses
+    schema: v260712-dabfd8e.repositorybuildstatuses.code.kedge.faros.sh
     storage:
       crd: {}
   - group: code.kedge.faros.sh

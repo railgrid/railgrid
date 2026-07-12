@@ -306,13 +306,13 @@ func TestEinoAssistantEngineProfileFiltersReadOnlyAndRuntimeTools(t *testing.T) 
 			name:       "exploration",
 			profile:    projectAssistantTurnProfileExploration,
 			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile},
-			wantReject: []string{projectToolGetRuntimeStatus, projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles},
+			wantReject: []string{projectToolGetRuntimeStatus, projectToolRestartRuntime, projectToolWriteFile, projectToolCommitProjectFiles},
 		},
 		{
 			name:       "debugging",
 			profile:    projectAssistantTurnProfileDebugging,
 			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolGetPreviewURL},
-			wantReject: []string{projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles},
+			wantReject: []string{projectToolRestartRuntime, projectToolWriteFile, projectToolCommitProjectFiles},
 		},
 		{
 			name:    "runtime-state exploration",
@@ -322,7 +322,7 @@ func TestEinoAssistantEngineProfileFiltersReadOnlyAndRuntimeTools(t *testing.T) 
 				requiresRuntimeState: true,
 			},
 			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolGetPreviewURL},
-			wantReject: []string{projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles},
+			wantReject: []string{projectToolRestartRuntime, projectToolWriteFile, projectToolCommitProjectFiles},
 		},
 	}
 
@@ -801,7 +801,7 @@ func TestProjectEinoAssistantToolInfoClassifiesProductWorkflowBundles(t *testing
 		},
 		{
 			name: "runtime",
-			spec: projectAssistantToolSpec{Name: "deploy_project_runtime", Risk: projectAssistantToolRiskRuntime},
+			spec: projectAssistantToolSpec{Name: "restart_runtime", Risk: projectAssistantToolRiskRuntime},
 			want: projectAssistantToolBundleRuntime,
 		},
 		{
@@ -956,8 +956,8 @@ func TestEinoAssistantEngineRequiresPermissionForRuntimeGraphTool(t *testing.T) 
 	if !errors.As(err, &permissionErr) {
 		t.Fatalf("StreamProjectAssistant error = %v, want runtime permission required", err)
 	}
-	if permissionErr.ToolName != projectToolDeployProjectRuntime {
-		t.Fatalf("permission tool = %q, want %s", permissionErr.ToolName, projectToolDeployProjectRuntime)
+	if permissionErr.ToolName != projectToolRestartRuntime {
+		t.Fatalf("permission tool = %q, want %s", permissionErr.ToolName, projectToolRestartRuntime)
 	}
 	if countProjectAssistantEvents(assistantEvents, projectAssistantEventPermissionNeeded) != 1 || countProjectAssistantEvents(assistantEvents, projectAssistantEventCheckpointSaved) != 1 {
 		t.Fatalf("assistant events = %#v, want one permission and one checkpoint", assistantEvents)
@@ -970,7 +970,7 @@ func TestEinoAssistantEngineRequiresPermissionForRuntimeGraphTool(t *testing.T) 
 	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil {
 		t.Fatalf("decode checkpoint returned error: %v", err)
 	}
-	if checkpoint.Eino == nil || checkpoint.Eino.InterruptType != projectAssistantInterruptTypeApproval || checkpoint.Eino.ToolName != projectToolDeployProjectRuntime {
+	if checkpoint.Eino == nil || checkpoint.Eino.InterruptType != projectAssistantInterruptTypeApproval || checkpoint.Eino.ToolName != projectToolRestartRuntime {
 		t.Fatalf("checkpoint eino state = %#v, want runtime approval checkpoint", checkpoint.Eino)
 	}
 
@@ -1863,7 +1863,7 @@ func (m *deployRuntimeEinoChatModel) Generate(ctx context.Context, input []*sche
 			ID:   "call-deploy-runtime",
 			Type: "function",
 			Function: schema.FunctionCall{
-				Name:      projectToolDeployProjectRuntime,
+				Name:      projectToolRestartRuntime,
 				Arguments: `{"targetRef":"runtime-1","image":"example.com/demo:latest","port":3000,"intent":"preview"}`,
 			},
 		}}), nil

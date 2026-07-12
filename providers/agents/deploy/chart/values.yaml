@@ -1,0 +1,62 @@
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/faroshq/kedge/agents-provider
+  tag: ""
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 8087
+
+# When true, the chart renders the CatalogEntry (which registers the provider
+# with the hub) into a ConfigMap that the init container applies into the
+# provider workspace via the provider kubeconfig. The CatalogEntry is a kcp
+# resource, so it is NOT applied to the hosting cluster this chart installs into.
+catalogEntry:
+  enabled: true
+  renderAsConfigMap: true
+  uiURL: ""
+  backendURL: ""
+
+# Secret holding the workspace-admin kubeconfig minted by the platform admin
+# via /bonkers (admin onboarding). Consumed by both the init container and the
+# serve container. Key must be "kubeconfig".
+providerKubeconfig:
+  secretName: kedge-provider-kubeconfig
+
+# Durable store. Postgres is the agents provider's only hard dependency beyond
+# the hub; inMemoryStore is an explicit non-durable fallback for dev only.
+store:
+  databaseURL: ""
+  databaseURLSecretRef:
+    name: ""
+    key: database-url
+  inMemoryStore: false
+  # Optional at-rest encryption for message/transcript content.
+  messageEncryptionKeysSecretRef:
+    name: ""
+    key: keys
+
+hub:
+  url: "http://kedge-hub.kedge.svc.cluster.local:8080"
+  insecure: false
+  tokenSecretRef:
+    name: ""
+    key: token
+
+podLabels: {}
+podAnnotations: {}
+podSecurityContext:
+  fsGroup: 65532
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

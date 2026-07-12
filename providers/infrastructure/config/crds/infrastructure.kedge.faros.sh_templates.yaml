@@ -340,6 +340,21 @@ spec:
                           maxLength: 128
                           pattern: ^\$\{kedge\.devImage\.[a-z][a-z0-9-]*\}$
                           type: string
+                        imageInput:
+                          description: |-
+                            ImageInput names the production schema input this component's built
+                            image feeds when the project is launched (e.g. "frontendImage" for the
+                            frontend component, "image" for a single-component template). It is the
+                            link between a development component and the production image field that
+                            runs it: App Studio builds one OCI image per component (build context =
+                            WorkspacePath) and, on launch, sets each named input to that component's
+                            built digest before provisioning the instance with kedgeMode:
+                            production. Empty means the component produces no launchable image (e.g.
+                            a worker developed in-cluster but not yet promotable). Must match a
+                            top-level property of the template's production schema.
+                          maxLength: 253
+                          pattern: ^[a-zA-Z][a-zA-Z0-9]*$
+                          type: string
                         port:
                           description: |-
                             Port is the named container port (from the production workload) the

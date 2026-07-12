@@ -97,7 +97,7 @@ test('publishing is a closeable built-in tab that opens from the launcher catalo
   assert.deepEqual(withPublishing.tabs[withPublishing.tabs.length - 1], {
     id: 'publishing',
     kind: 'publishing',
-    title: 'Publishing',
+    title: 'Publish & Promote',
     closeable: true,
   })
   assert.equal(withPublishing.activeTabID, 'publishing')

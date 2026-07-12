@@ -1,0 +1,176 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260712-dabfd8e.connections.agents.kedge.faros.sh
+spec:
+  group: agents.kedge.faros.sh
+  names:
+    kind: Connection
+    listKind: ConnectionList
+    plural: connections
+    shortNames:
+    - conn
+    singular: connection
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      description: |-
+        Connection is a named credential to an external system. The secret material
+        lives in a tenant-workspace Secret (kedge-agents-conn-<name>); this resource
+        carries only the type and non-secret configuration.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: ConnectionSpec is the user-authored connection configuration.
+          properties:
+            allowedHosts:
+              description: |-
+                AllowedHosts restricts which hosts the web/http tools may reach when this
+                connection is in scope. Empty means the provider default policy applies.
+              items:
+                type: string
+              type: array
+            auth:
+              default: secret
+              description: |-
+                Auth selects how credentials are obtained: "secret" (default) reads a
+                static token from the referenced Secret; "oauth" runs the provider's
+                authorize/callback flow and refreshes the token automatically.
+              enum:
+              - secret
+              - oauth
+              type: string
+            baseURL:
+              description: |-
+                BaseURL is the endpoint for http, mcp, and self-hosted github/slack
+                connections. Ignored by types that have a fixed endpoint.
+              maxLength: 2048
+              type: string
+            channel:
+              description: |-
+                Channel identifies the destination for messaging connections: a Telegram
+                chat ID, a Slack channel ID, or an email address for smtp.
+              maxLength: 253
+              type: string
+            config:
+              additionalProperties:
+                type: string
+              description: Config carries additional non-secret, type-specific settings.
+              type: object
+            displayName:
+              description: DisplayName is a human-readable label for the connection.
+              maxLength: 128
+              type: string
+            oauth:
+              description: OAuth configures the flow when Auth is "oauth". Ignored
+                otherwise.
+              properties:
+                authorizeURL:
+                  description: |-
+                    AuthorizeURL and TokenURL override the provider preset endpoints (for
+                    self-hosted GitHub Enterprise or Slack, or a custom provider).
+                  maxLength: 2048
+                  type: string
+                provider:
+                  description: 'Provider names the OAuth provider preset: "github",
+                    "google", "slack".'
+                  enum:
+                  - github
+                  - google
+                  - slack
+                  type: string
+                scopes:
+                  description: Scopes requested during authorization.
+                  items:
+                    type: string
+                  type: array
+                tokenURL:
+                  maxLength: 2048
+                  type: string
+              required:
+              - provider
+              type: object
+            secretRef:
+              description: |-
+                SecretRef names the tenant-workspace Secret holding this connection's
+                credentials. Defaults to kedge-agents-conn-<connection-name> when empty.
+              maxLength: 253
+              type: string
+            type:
+              description: |-
+                Type selects the integration: github, mcp, websearch, http, telegram,
+                slack, or smtp.
+              enum:
+              - github
+              - mcp
+              - websearch
+              - http
+              - telegram
+              - slack
+              - smtp
+              type: string
+          required:
+          - type
+          type: object
+        status:
+          description: ConnectionStatus is the observed connection state.
+          properties:
+            message:
+              description: Message explains a non-Ready phase.
+              type: string
+            oauthConnected:
+              description: |-
+                OAuthConnected reports whether an oauth-auth connection has a valid,
+                refreshable token. Always false for secret-auth connections.
+              type: boolean
+            phase:
+              description: Phase is Ready when the referenced Secret exists and validates,
+                or Error.
+              type: string
+            tokenExpiresAt:
+              description: TokenExpiresAt is when the current OAuth access token expires.
+              format: date-time
+              type: string
+            updatedAt:
+              description: UpdatedAt reflects the latest status observation.
+              format: date-time
+              type: string
+            webhookPath:
+              description: |-
+                WebhookPath is the hub-relative inbound webhook path for messaging
+                connections that receive events (telegram, slack). Empty for outbound-only
+                or non-messaging types.
+              type: string
+          type: object
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

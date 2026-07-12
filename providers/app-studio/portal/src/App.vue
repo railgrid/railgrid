@@ -21,7 +21,6 @@ import {
   RefreshCw,
   Search,
   Send,
-  Settings,
   Settings2,
   Square,
   Trash2,
@@ -68,6 +67,7 @@ import type {
   ProjectMessage,
   ProjectRepositoryCommit,
   ProjectMessageStreamEvent,
+  ProjectPromotionReadiness,
   ProviderItem,
 } from './types'
 
@@ -318,6 +318,15 @@ const developmentPreviewAuthorizationKey = ref('')
 const developmentPreviewTokenExpiresAt = ref('')
 const developmentPreviewFrameKey = ref(0)
 const publishingAccess = ref<'public' | 'members' | 'private'>('members')
+
+// Promote to Prod (the publishing tab's real action): read build readiness +
+// the live production environment, and stand up / redeploy production.
+const promotion = ref<ProjectPromotionReadiness | null>(null)
+const promotionBusy = ref(false)
+const promotionError = ref<string | null>(null)
+const promotionValuesText = ref('')
+const promotionAdvancedOpen = ref(false)
+let promotionPollTimer: number | undefined
 const conversationStatus = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
 const permissionErrors = ref<Record<string, string>>({})
@@ -616,8 +625,8 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
   },
   {
     id: 'builtin:publishing',
-    title: 'Publishing',
-    subtitle: 'Prepare a shareable production URL',
+    title: 'Publish & Promote',
+    subtitle: 'Check the build and promote your app to production',
     icon: Globe,
     builtInTab: 'publishing',
   },
@@ -1086,6 +1095,107 @@ async function applyDevelopmentTemplate() {
     developmentTemplateBusy.value = false
   }
 }
+
+const promotionBuild = computed(() => promotion.value?.build ?? null)
+const promotionBuildStatus = computed(() => promotion.value?.build?.status ?? '')
+const promotionBuildLabel = computed(() => {
+  switch (promotionBuildStatus.value) {
+    case 'built':
+      return 'Built'
+    case 'incomplete':
+      return 'Partly built'
+    case 'none':
+      return 'No image yet'
+    case 'unsupported':
+      return 'No template'
+    default:
+      return 'Unknown'
+  }
+})
+const promotionComponents = computed(() => promotion.value?.build?.components ?? [])
+const canPromote = computed(() => !!promotion.value?.promotable && !promotionBusy.value)
+const productionBinding = computed(() => promotion.value?.production ?? null)
+const productionURL = computed(() => productionBinding.value?.url ?? '')
+const productionPhase = computed(() => productionBinding.value?.phase ?? '')
+const promoteButtonLabel = computed(() => {
+  if (promotionBusy.value) return 'Promoting…'
+  return productionBinding.value ? 'Redeploy to production' : 'Promote to production'
+})
+
+function clearPromotionPoll() {
+  if (promotionPollTimer !== undefined) {
+    window.clearTimeout(promotionPollTimer)
+    promotionPollTimer = undefined
+  }
+}
+
+function schedulePromotionPoll() {
+  clearPromotionPoll()
+  const prod = promotion.value?.production
+  // Poll while production is still coming up so the URL appears without a
+  // manual refresh; stop once it is serving.
+  const provisioning = !!prod && prod.phase !== 'Ready' && !prod.url
+  if (provisioning) {
+    promotionPollTimer = window.setTimeout(loadPromotion, 4000)
+  }
+}
+
+async function loadPromotion() {
+  const name = selected.value?.name
+  if (!name) {
+    promotion.value = null
+    clearPromotionPoll()
+    return
+  }
+  try {
+    promotion.value = await api.getPromotion(props.ctx, name)
+    promotionError.value = null
+  } catch (err) {
+    if (!isProjectAPIInitializingError(err)) {
+      promotionError.value = err instanceof Error ? err.message : String(err)
+    }
+  }
+  schedulePromotionPoll()
+}
+
+async function promoteToProd() {
+  const name = selected.value?.name
+  if (!name || !canPromote.value) return
+  let values: Record<string, unknown> | undefined
+  const text = promotionValuesText.value.trim()
+  if (text) {
+    try {
+      values = JSON.parse(text) as Record<string, unknown>
+    } catch {
+      promotionError.value = 'Production settings must be valid JSON (an object of template inputs).'
+      return
+    }
+  }
+  promotionBusy.value = true
+  promotionError.value = null
+  try {
+    await api.promoteProject(props.ctx, name, values)
+    await loadPromotion()
+  } catch (err) {
+    promotionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    promotionBusy.value = false
+  }
+}
+
+// Load promotion status when the publishing tab opens or the project changes.
+watch(
+  () => [activeWorkbenchTab.value?.kind, selected.value?.name] as const,
+  ([kind]) => {
+    if (kind === 'publishing') {
+      void loadPromotion()
+    } else {
+      clearPromotionPoll()
+    }
+  },
+)
+
+onBeforeUnmount(clearPromotionPoll)
 
 // hydrateDevelopmentWorkspace replace-loads the workspace from the project's
 // git repository (the durable source of truth) and re-syncs the runtime.
@@ -1819,10 +1929,6 @@ function openWorkbenchLauncherItem(item: WorkbenchLauncherItem) {
   if (item.builtInTab) {
     openBuiltInWorkbenchTab(item.builtInTab)
   }
-}
-
-function resetPublishingSettings() {
-  publishingAccess.value = 'members'
 }
 
 function activateWorkbenchTabByID(tabID: string) {
@@ -3943,6 +4049,87 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
           </section>
 
           <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
+            <div class="flex min-w-0 items-start justify-between gap-2">
+              <div class="min-w-0">
+                <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Build</div>
+                <div class="text-[12px] leading-5 text-text-muted">
+                  Committing your app writes a GitHub Actions workflow into the repository; GitHub builds and publishes a container image per component and records the versions back here. Promote once every component is built.
+                </div>
+              </div>
+              <StatusBadge :status="promotionBuildLabel" />
+            </div>
+
+            <p v-if="promotionBuild?.note" class="text-[12px] leading-5 text-text-secondary">
+              {{ promotionBuild.note }}
+            </p>
+
+            <ul v-if="promotionComponents.length" class="grid gap-1.5">
+              <li
+                v-for="component in promotionComponents"
+                :key="component.name"
+                class="flex items-center justify-between gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-[12px]"
+              >
+                <span class="flex min-w-0 items-center gap-2">
+                  <span
+                    class="inline-block h-2 w-2 shrink-0 rounded-full"
+                    :class="component.built ? 'bg-emerald-500' : 'bg-amber-500'"
+                  />
+                  <span class="font-medium text-text-primary">{{ component.name }}</span>
+                </span>
+                <span class="truncate text-text-muted" :title="component.image || 'not built yet'">
+                  {{ component.built ? (component.digest || component.image) : 'not built' }}
+                </span>
+              </li>
+            </ul>
+          </section>
+
+          <section
+            v-if="productionBinding"
+            class="grid gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3"
+          >
+            <div class="flex min-w-0 items-start justify-between gap-2">
+              <div class="min-w-0">
+                <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Production</div>
+                <div class="text-[12px] leading-5 text-text-muted">The long-running production deployment of this app.</div>
+              </div>
+              <StatusBadge :status="productionPhase || 'Provisioning'" />
+            </div>
+            <div class="flex items-center gap-2 text-[12px]">
+              <Globe class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" />
+              <a
+                v-if="productionURL"
+                :href="productionURL"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="min-w-0 truncate font-medium text-accent hover:underline"
+              >{{ productionURL }}</a>
+              <span v-else class="text-text-muted">Production URL will appear here once it is serving traffic.</span>
+            </div>
+          </section>
+
+          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
+            <button
+              type="button"
+              class="flex w-full items-center justify-between gap-2 text-left"
+              @click="promotionAdvancedOpen = !promotionAdvancedOpen"
+            >
+              <span class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Production settings (optional)</span>
+              <span class="text-[11px] text-text-muted">{{ promotionAdvancedOpen ? 'Hide' : 'Show' }}</span>
+            </button>
+            <div v-if="promotionAdvancedOpen" class="grid gap-1.5">
+              <p class="text-[11px] leading-4 text-text-muted">
+                Template production inputs as JSON (for example ports or replicas). Leave blank to use the template defaults. Image versions, the instance name, and production mode are set automatically.
+              </p>
+              <textarea
+                v-model="promotionValuesText"
+                class="min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 font-mono text-[12px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                placeholder='{ "frontendPort": 8080 }'
+                spellcheck="false"
+              />
+            </div>
+          </section>
+
+          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
             <div class="flex items-center justify-between gap-2">
               <div>
                 <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Access</div>
@@ -3966,24 +4153,33 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             </div>
           </section>
 
+          <div v-if="promotionError" class="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-[12px] leading-5 text-danger">
+            {{ promotionError }}
+          </div>
+
           <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-1">
-            <div class="text-[12px] text-text-muted">Publishing is a setup preview; no production resources are created from this panel yet.</div>
+            <div class="text-[12px] text-text-muted">
+              Promotion creates a production deployment alongside your sandbox; the sandbox keeps running. You can redeploy any time.
+            </div>
             <div class="flex items-center gap-2">
               <button
                 type="button"
-                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
-                @click="resetPublishingSettings"
+                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="promotionBusy"
+                @click="loadPromotion"
               >
-                <Settings class="h-3.5 w-3.5" :stroke-width="1.75" />
-                Adjust settings
+                <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                Refresh
               </button>
               <button
                 type="button"
                 class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-4 text-[12px] font-semibold text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                disabled
-                title="Publishing workflow is not connected yet"
+                :disabled="!canPromote"
+                :title="canPromote ? '' : 'Commit your app and wait for every component image to build first'"
+                @click="promoteToProd"
               >
-                Publish
+                <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                {{ promoteButtonLabel }}
               </button>
             </div>
           </div>

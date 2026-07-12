@@ -1,0 +1,195 @@
+/*
+ * Agents provider element styles.
+ *
+ * Injected as a single <style> tag by main.ts. The element renders in LIGHT
+ * DOM (no Shadow DOM) so the portal's :root design tokens (--color-accent,
+ * --color-surface-raised, etc.) cascade in — palette + light/dark parity with
+ * the rest of the platform without re-declaring tokens. Every selector is
+ * namespaced under the kedge-provider-agents tag so nothing leaks into the
+ * portal. Values mirror the platform tokens (see portal/src/assets/main.css)
+ * with fallbacks for the standalone debug page.
+ */
+
+kedge-provider-agents { display: block; }
+
+kedge-provider-agents .agents-app {
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  display: flex; flex-direction: column; gap: 16px; min-height: 520px;
+  color: var(--color-text-primary, inherit);
+}
+
+/* --- tabs / nav --- */
+kedge-provider-agents .agents-nav {
+  display: flex; align-items: center; gap: 4px;
+  border-bottom: 1px solid var(--color-border-default, rgba(0, 0, 0, 0.1));
+  padding-bottom: 10px;
+}
+kedge-provider-agents .agents-nav-spacer { flex: 1; }
+kedge-provider-agents .agents-navbtn {
+  background: transparent; color: var(--color-text-secondary, currentColor); border: 0;
+  cursor: pointer; padding: 7px 14px; border-radius: 8px; font: inherit; font-weight: 500;
+  transition: background 0.12s, color 0.12s;
+}
+kedge-provider-agents .agents-navbtn:hover {
+  color: var(--color-text-primary, inherit);
+  background: var(--color-surface-hover, rgba(0, 0, 0, 0.04));
+}
+kedge-provider-agents .agents-navbtn.sel {
+  color: var(--color-accent, #6d4fe0); background: var(--color-accent-subtle, rgba(109, 79, 224, 0.08));
+  font-weight: 600;
+}
+kedge-provider-agents .agents-view { flex: 1; }
+
+/* --- badges / model pill --- */
+kedge-provider-agents .agents-model {
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--color-border-default, transparent);
+  background: var(--color-surface-overlay, transparent);
+  color: var(--color-text-secondary, inherit);
+}
+kedge-provider-agents .agents-model.ok {
+  border-color: var(--color-success, #10b981); color: var(--color-success, #10b981);
+  background: var(--color-success-subtle, transparent);
+}
+kedge-provider-agents .agents-model.warn {
+  border-color: var(--color-warning, #d97706); color: var(--color-warning, #d97706);
+  background: var(--color-warning-subtle, transparent);
+}
+kedge-provider-agents .agents-note {
+  padding: 10px 12px; border-radius: 10px; cursor: pointer; font-size: 13px;
+  border: 1px solid var(--color-accent, #6d4fe0);
+  background: var(--color-accent-subtle, rgba(109, 79, 224, 0.08));
+  color: var(--color-text-primary, inherit);
+}
+
+/* --- form controls --- */
+kedge-provider-agents input,
+kedge-provider-agents select,
+kedge-provider-agents textarea {
+  padding: 8px 10px; border-radius: 8px; font: inherit; color: inherit;
+  background: var(--color-surface, transparent);
+  border: 1px solid var(--color-border-default, rgba(0, 0, 0, 0.1));
+}
+kedge-provider-agents input:focus,
+kedge-provider-agents select:focus,
+kedge-provider-agents textarea:focus {
+  outline: none; border-color: var(--color-accent, #6d4fe0);
+  box-shadow: 0 0 0 3px var(--color-accent-subtle, rgba(109, 79, 224, 0.15));
+}
+kedge-provider-agents button {
+  padding: 8px 14px; border-radius: 8px; border: 0; cursor: pointer; font: inherit; font-weight: 600;
+  background: var(--color-accent, #6d4fe0); color: #fff;
+  transition: background 0.12s, opacity 0.12s;
+}
+kedge-provider-agents button:hover { background: var(--color-accent-hover, #5b3fd0); }
+kedge-provider-agents button:disabled { opacity: 0.5; cursor: default; }
+kedge-provider-agents button.secondary {
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.05));
+  color: var(--color-text-secondary, inherit);
+  border: 1px solid var(--color-border-default, transparent);
+}
+kedge-provider-agents button.secondary:hover {
+  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
+  color: var(--color-text-primary, inherit);
+}
+
+/* --- panels --- */
+kedge-provider-agents .agents-panel { display: flex; flex-direction: column; gap: 14px; max-width: 920px; }
+kedge-provider-agents .agents-panel h3 { margin: 0; font-size: 15px; font-weight: 600; }
+kedge-provider-agents .agents-panel h4 {
+  margin: 4px 0 0; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--color-text-secondary, currentColor);
+}
+kedge-provider-agents .agents-panel > p { margin: 0; }
+kedge-provider-agents .agents-panel form {
+  display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 12px;
+  background: var(--color-surface-raised, #fff);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
+}
+kedge-provider-agents .agents-panel label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+kedge-provider-agents .agents-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* --- tables --- */
+kedge-provider-agents .agents-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+kedge-provider-agents .agents-table th {
+  text-align: left; padding: 8px 10px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--color-text-secondary, currentColor);
+  border-bottom: 1px solid var(--color-border-default, rgba(0, 0, 0, 0.1));
+}
+kedge-provider-agents .agents-table td {
+  padding: 9px 10px; border-bottom: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
+  vertical-align: middle;
+}
+kedge-provider-agents .agents-table tr:hover td { background: var(--color-surface-hover, rgba(0, 0, 0, 0.02)); }
+kedge-provider-agents .agents-row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+kedge-provider-agents .agents-row-actions button { padding: 5px 10px; font-size: 12px; font-weight: 500; }
+
+/* --- agents (chat) view --- */
+kedge-provider-agents .agents-root {
+  display: grid; grid-template-columns: 260px 1fr; gap: 20px; height: 100%; min-height: 460px;
+}
+kedge-provider-agents .agents-side {
+  display: flex; flex-direction: column; gap: 12px;
+  border-right: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06)); padding-right: 20px;
+}
+kedge-provider-agents .agents-list { list-style: none; margin: 0; padding: 0; flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
+kedge-provider-agents .agents-item {
+  padding: 9px 10px; border-radius: 10px; cursor: pointer;
+  border: 1px solid transparent; display: flex; flex-direction: column; gap: 6px;
+}
+kedge-provider-agents .agents-item:hover { background: var(--color-surface-hover, rgba(0, 0, 0, 0.04)); }
+kedge-provider-agents .agents-item.sel {
+  background: var(--color-accent-subtle, rgba(109, 79, 224, 0.08));
+  border-color: var(--color-accent, #6d4fe0);
+}
+kedge-provider-agents .agents-item-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+kedge-provider-agents .agents-name { font-weight: 600; }
+kedge-provider-agents .agents-x {
+  background: transparent; color: var(--color-text-muted, inherit); border: 0; cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 0 4px;
+}
+kedge-provider-agents .agents-x:hover { background: transparent; color: var(--color-danger, #ef4444); }
+kedge-provider-agents .agents-cred { width: 100%; font-size: 12px; padding: 5px 8px; }
+kedge-provider-agents .agents-create { display: flex; flex-direction: column; gap: 8px; padding: 0; border: 0; background: none; }
+
+kedge-provider-agents .agents-main { min-width: 0; display: flex; }
+kedge-provider-agents .agents-empty, kedge-provider-agents .agents-chat { flex: 1; display: flex; flex-direction: column; }
+kedge-provider-agents .agents-empty { align-items: center; justify-content: center; text-align: center; }
+kedge-provider-agents .agents-chat-head h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+kedge-provider-agents .agents-log { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 4px 0; min-height: 240px; }
+kedge-provider-agents .agents-msg { display: flex; flex-direction: column; gap: 4px; }
+kedge-provider-agents .agents-role { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted, inherit); }
+kedge-provider-agents .agents-body {
+  padding: 9px 12px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; max-width: 80%;
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+}
+kedge-provider-agents .agents-msg.user { align-items: flex-end; }
+kedge-provider-agents .agents-msg.user .agents-body {
+  background: var(--color-accent-subtle, rgba(109, 79, 224, 0.1));
+  border: 1px solid var(--color-accent, transparent);
+}
+kedge-provider-agents .agents-chat-form { display: flex; gap: 8px; padding-top: 10px; }
+kedge-provider-agents .agents-chat-form input { flex: 1; }
+
+/* --- misc --- */
+kedge-provider-agents .muted { color: var(--color-text-muted, inherit); }
+kedge-provider-agents code {
+  padding: 1px 5px; border-radius: 4px; font-size: 12px;
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.05));
+  color: var(--color-text-secondary, currentColor);
+}
+kedge-provider-agents .agents-err {
+  padding: 9px 11px; border-radius: 8px; font-size: 13px;
+  border: 1px solid var(--color-danger, #ef4444);
+  background: var(--color-danger-subtle, rgba(239, 68, 68, 0.08));
+  color: var(--color-danger, #ef4444);
+}
+kedge-provider-agents .agents-msg-note { font-size: 13px; color: var(--color-text-secondary, inherit); }
+
+@media (max-width: 680px) {
+  kedge-provider-agents .agents-root { grid-template-columns: 1fr; }
+  kedge-provider-agents .agents-grid2 { grid-template-columns: 1fr; }
+}

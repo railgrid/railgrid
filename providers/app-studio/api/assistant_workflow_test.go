@@ -57,11 +57,6 @@ func TestProjectAssistantWorkflowToolsAreEinoGraphTools(t *testing.T) {
 			t.Fatalf("%s tool type = %s, want Eino graphtool.InvokableGraphTool", toolName, toolType)
 		}
 	}
-	tool := einoToolByNameForTest(t, tools, projectToolDeployProjectRuntime)
-	toolType := reflect.TypeOf(tool).String()
-	if !strings.Contains(toolType, "tool.InvokableApprovableTool") {
-		t.Fatalf("%s tool type = %s, want Eino InvokableApprovableTool wrapping graph tool", projectToolDeployProjectRuntime, toolType)
-	}
 }
 
 func einoToolByNameForTest(t *testing.T, tools []einotool.BaseTool, name string) einotool.BaseTool {
@@ -142,7 +137,6 @@ func TestProjectAssistantRuntimeWorkflowToolsRegistered(t *testing.T) {
 		wantPerm   projectAssistantPermissionDecision
 		wantBundle projectAssistantToolBundle
 	}{
-		{name: "deploy_project_runtime", wantRisk: projectAssistantToolRiskRuntime, wantPerm: projectAssistantPermissionAsk, wantBundle: projectAssistantToolBundleRuntime},
 		{name: "get_runtime_status", wantRisk: projectAssistantToolRiskRead, wantPerm: projectAssistantPermissionAllow, wantBundle: projectAssistantToolBundleRuntime},
 		{name: "get_preview_url", wantRisk: projectAssistantToolRiskRead, wantPerm: projectAssistantPermissionAllow, wantBundle: projectAssistantToolBundleRuntime},
 	}
@@ -363,56 +357,6 @@ func TestProjectAssistantPrepareDeploymentWorkflowDoesNotMutateWorkspace(t *test
 	}
 	if strings.Join(workflowTestFilePaths(before.Files), "\n") != strings.Join(workflowTestFilePaths(after.Files), "\n") {
 		t.Fatalf("files changed from %#v to %#v", before.Files, after.Files)
-	}
-}
-
-func TestProjectAssistantDeployRuntimeWorkflowReportsMissingRuntimeProvider(t *testing.T) {
-	project := projectWithRepository("demo-repo", "demo", "github")
-	project.Name = "demo"
-	project.Spec.DisplayName = "Demo App"
-	result, err := formatProjectAssistantRuntimeDeploymentResult(context.Background(), projectAssistantRuntimeWorkflowInput{
-		Project:    project,
-		Repository: &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
-		AppDeployment: projectAssistantAppDeploymentRequest{
-			TargetRef: "default-web",
-			Image:     "registry.example.com/demo/app:abc123",
-			Port:      8080,
-			Intent:    "preview",
-		},
-	})
-	if err != nil {
-		t.Fatalf("deploy runtime workflow returned error: %v", err)
-	}
-	raw, err := json.Marshal(result)
-	if err != nil {
-		t.Fatalf("encode result: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("decode result: %v\n%s", err, raw)
-	}
-	if got := projectToolString(decoded["status"]); got != "blocked" {
-		t.Fatalf("status = %q, want blocked", got)
-	}
-	if !containsString(projectToolStringList(decoded["blockers"]), "Runtime provider is not configured.") {
-		t.Fatalf("blockers = %#v, want runtime provider blocker", decoded["blockers"])
-	}
-	deployment, ok := decoded["appDeployment"].(map[string]any)
-	if !ok {
-		t.Fatalf("appDeployment = %#v, want object", decoded["appDeployment"])
-	}
-	if got := projectToolString(deployment["targetRef"]); got != "default-web" {
-		t.Fatalf("targetRef = %q, want default-web", got)
-	}
-	if got := projectToolString(deployment["image"]); got != "registry.example.com/demo/app:abc123" {
-		t.Fatalf("image = %q, want requested image", got)
-	}
-	if got, _ := projectToolNumber(deployment["port"]); got != 8080 {
-		t.Fatalf("port = %d, want 8080", got)
-	}
-	runtime, ok := decoded["runtime"].(map[string]any)
-	if !ok || projectToolString(runtime["status"]) != "not_configured" {
-		t.Fatalf("runtime = %#v, want not_configured object", decoded["runtime"])
 	}
 }
 

@@ -278,6 +278,7 @@ spec:
     components:
       frontend:
         workspacePath: web
+        imageInput: frontendImage
         devImage: "${kedge.devImage.node}"
         workingDir: /workspace
         startCommand: "SHIM=.kedge-vite.config.mjs; printf '%s' 'ZXhwb3J0IGRlZmF1bHQgYXN5bmMgKGVudikgPT4gewogIGNvbnN0IGZvcmNlZCA9IHsgc2VydmVyOiB7IGhvc3Q6IHRydWUsIGFsbG93ZWRIb3N0czogdHJ1ZSB9IH0KICBsZXQgbG9hZENvbmZpZ0Zyb21GaWxlLCBtZXJnZUNvbmZpZwogIHRyeSB7CiAgICAoeyBsb2FkQ29uZmlnRnJvbUZpbGUsIG1lcmdlQ29uZmlnIH0gPSBhd2FpdCBpbXBvcnQoJ3ZpdGUnKSkKICB9IGNhdGNoIChlKSB7CiAgICByZXR1cm4gZm9yY2VkCiAgfQogIGxldCBiYXNlID0ge30KICB0cnkgewogICAgY29uc3QgbG9hZGVkID0gYXdhaXQgbG9hZENvbmZpZ0Zyb21GaWxlKGVudiwgdW5kZWZpbmVkLCBwcm9jZXNzLmN3ZCgpKQogICAgaWYgKGxvYWRlZCAmJiBsb2FkZWQuY29uZmlnKSBiYXNlID0gbG9hZGVkLmNvbmZpZwogIH0gY2F0Y2ggKGUpIHsKICAgIGNvbnNvbGUuZXJyb3IoJ1trZWRnZV0gY291bGQgbm90IGxvYWQgcHJvamVjdCB2aXRlIGNvbmZpZzonLCBlKQogIH0KICByZXR1cm4gbWVyZ2VDb25maWcoYmFzZSwgZm9yY2VkKQp9Cg==' | base64 -d > $SHIM; grep -qxF $SHIM .gitignore 2>/dev/null || echo $SHIM >> .gitignore; if [ -f package.json ]; then (npm run dev -- --host 0.0.0.0 --port $PORT --config $SHIM || npm run dev -- --host 0.0.0.0 --port $PORT || npm start); else npx --yes vite --host 0.0.0.0 --port $PORT --config $SHIM || npx --yes vite --host 0.0.0.0 --port $PORT; fi"
@@ -289,6 +290,7 @@ spec:
               command: "npm install --no-audit --no-fund"
       backend:
         workspacePath: api
+        imageInput: backendImage
         devImage: "${kedge.devImage.node}"
         workingDir: /workspace
         startCommand: "npm run dev || npm start"

@@ -1,0 +1,20 @@
+apiVersion: v2
+name: kedge-agents-provider
+description: |
+  Agents provider chart. Ships the provider Deployment, Service, and
+  CatalogEntry for long-running personal AI agents. Configure durable storage
+  with store.databaseURLSecretRef (Postgres is the only hard dependency beyond
+  the hub).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+icon: https://example.com/agents-icon.png
+keywords:
+  - kedge
+  - agents
+  - ai
+home: https://github.com/faroshq/kedge
+sources:
+  - https://github.com/faroshq/kedge/tree/main/providers/agents
+maintainers:
+  - name: kedge maintainers

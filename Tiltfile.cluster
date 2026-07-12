@@ -495,6 +495,7 @@ kubectl create secret generic kcp-static-tokens -n default \
 #                            management kind cluster that kro runs in
 #   providers-code         — git repository manager (port :8083)
 #   providers-kuery        — fleet query engine (port :8084)
+#   providers-agents       — long-running personal AI agents (port :8087)
 #
 # Each provider has three resources:
 #   <name>            build + serve; auto-restarts on src change
@@ -541,6 +542,7 @@ APP_STUDIO_REWRITE_CMD, APP_STUDIO_MANIFEST_REWRITTEN = rewrite_manifest_cmd('pr
 CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code/manifest.yaml')
 KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/kuery/manifest.yaml')
 DATABRICKS_REWRITE_CMD, DATABRICKS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/databricks/manifest.yaml')
+AGENTS_REWRITE_CMD, AGENTS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/agents/manifest.yaml')
 
 # --- providers-quickstart ---
 local_resource(
@@ -597,6 +599,77 @@ local_resource(
     auto_init=False,
     resource_deps=['kedge-hub'],
     labels=['providers-quickstart'],
+)
+
+# --- providers-agents ---
+# Long-running personal AI agents. Same host-binary shape as quickstart; the
+# manifest host URL is rewritten to the in-cluster hub. Standalone — only hard
+# dep is the hub (in-memory store in dev until the Postgres backend is wired).
+local_resource(
+    'agents',
+    cmd='make build-agents-provider',
+    serve_cmd='make run-provider-agents',
+    deps=[
+        'providers/agents/main.go',
+        'providers/agents/heartbeat.go',
+        'providers/agents/assets.go',
+        'providers/agents/init_cmd.go',
+        'providers/agents/api',
+        'providers/agents/channels',
+        'providers/agents/apis',
+        'providers/agents/client',
+        'providers/agents/engine',
+        'providers/agents/llm',
+        'providers/agents/store',
+        'providers/agents/tenant',
+        'providers/agents/go.mod',
+        'providers/agents/portal/src',
+        'providers/agents/portal/package.json',
+        'providers/agents/portal/vite.config.ts',
+    ],
+    resource_deps=['kedge-hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8087, path='/healthz'),
+    ),
+    labels=['providers-agents'],
+)
+
+local_resource(
+    'agents-register',
+    cmd=('{rewrite} && AGENTS_KCP_KUBECONFIG={kc} ' +
+         'AGENTS_KCP_SERVER={sv} AGENTS_MANIFEST={mf} ' +
+         'make install-provider-agents').format(
+             rewrite=AGENTS_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=AGENTS_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-agents'],
+)
+
+local_resource(
+    'agents-init',
+    cmd=('AGENTS_KCP_KUBECONFIG={kc} AGENTS_KCP_SERVER={sv} ' +
+         'make init-provider-agents').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub', 'agents-register'],
+    labels=['providers-agents'],
+)
+
+local_resource(
+    'agents-unregister',
+    cmd=('{rewrite} && AGENTS_KCP_KUBECONFIG={kc} ' +
+         'AGENTS_KCP_SERVER={sv} AGENTS_MANIFEST={mf} ' +
+         'make uninstall-provider-agents').format(
+             rewrite=AGENTS_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=AGENTS_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-agents'],
 )
 
 # --- providers-app-studio ---

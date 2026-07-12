@@ -86,6 +86,7 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
 #                            management kind cluster that kro runs in
 #   providers-code         — git repository manager (port :8083)
 #   providers-kuery        — fleet query engine (port :8084)
+#   providers-agents       — long-running personal AI agents (port :8087)
 #
 # Each provider has three resources:
 #   <name>            build + serve; auto-restarts on src change
@@ -374,6 +375,71 @@ local_resource(
     auto_init=False,
     resource_deps=['hub'],
     labels=['providers-app-studio'],
+)
+
+# --- providers-agents ---
+# Long-running personal AI agents (chat, scheduled runs, tools, durable memory).
+# Standalone: only hard deps are the hub and a store (in-memory in dev until the
+# Postgres backend is wired). No app-studio/infrastructure dependency.
+local_resource(
+    'agents',
+    cmd='make build-agents-provider',
+    serve_cmd='make run-provider-agents',
+    deps=[
+        'providers/agents/main.go',
+        'providers/agents/heartbeat.go',
+        'providers/agents/assets.go',
+        'providers/agents/init_cmd.go',
+        'providers/agents/api',
+        'providers/agents/channels',
+        'providers/agents/apis',
+        'providers/agents/client',
+        'providers/agents/engine',
+        'providers/agents/llm',
+        'providers/agents/store',
+        'providers/agents/tenant',
+        'providers/agents/go.mod',
+        'providers/agents/go.sum',
+        'providers/agents/portal/src',
+        'providers/agents/portal/package.json',
+        'providers/agents/portal/vite.config.ts',
+        'providers/agents/.env',
+    ],
+    resource_deps=['hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8087, path='/healthz'),
+    ),
+    labels=['providers-agents'],
+)
+
+local_resource(
+    'agents-register',
+    cmd='make install-provider-agents',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-agents'],
+)
+
+# Creates the agents APIExport (+ schemas + endpoint slice + bind grant) so
+# tenants can Enable it. Run AFTER agents-register.
+local_resource(
+    'agents-init',
+    cmd='make init-provider-agents',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub', 'agents-register'],
+    labels=['providers-agents'],
+)
+
+local_resource(
+    'agents-unregister',
+    cmd='make uninstall-provider-agents',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['providers-agents'],
 )
 
 # --- Dev agent image (template-native development mode) ---

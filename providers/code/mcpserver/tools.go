@@ -143,6 +143,7 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 
 	registerWriteTools(srv, deps, ident)
 	registerCheckoutTools(srv, deps, ident)
+	registerBuildStatusTools(srv, deps, ident)
 }
 
 func list(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource) ([]unstructured.Unstructured, error) {

@@ -99,10 +99,31 @@ type PackageInfo struct {
 	Visibility string
 	// HTMLURL links to the package's browser page.
 	HTMLURL string
+	// ImageRepository is the pullable registry path (no tag/digest) for image
+	// packages, e.g. "ghcr.io/owner/repo/component" — combine with a version's
+	// Digest to form a deployable reference. Empty for non-image packages.
+	ImageRepository string
 	// VersionCount is how many versions the host reports (0 when unknown).
 	VersionCount int64
 	// UpdatedAt is the last-updated time in RFC3339, or "" when unknown.
 	UpdatedAt string
+	// Versions is a bounded, most-recent-first list of the package's published
+	// versions with their tags and digest. Populated for container/docker
+	// packages (empty for ecosystems without a digest/tag model, or when the
+	// backend does not resolve versions). Lets consumers map a build tag (e.g.
+	// "sha-<commit>") to an immutable image digest without any other datastore.
+	Versions []PackageVersion
+}
+
+// PackageVersion is one published version of a package: an immutable digest and
+// the tags currently pointing at it (a container image push creates one).
+type PackageVersion struct {
+	// Digest is the version's immutable content digest, e.g. "sha256:…".
+	Digest string
+	// Tags are the tags pointing at this digest (e.g. "sha-<commit>", "latest").
+	Tags []string
+	// CreatedAt is the version's creation time in RFC3339, or "" when unknown.
+	CreatedAt string
 }
 
 // PackageLister is an OPTIONAL capability a backend may implement to expose the
@@ -113,6 +134,53 @@ type PackageInfo struct {
 type PackageLister interface {
 	// ListPackages returns the packages linked to repo. Idempotent, read-only.
 	ListPackages(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository) ([]PackageInfo, error)
+}
+
+// WorkflowRunQuery identifies the CI run to inspect.
+type WorkflowRunQuery struct {
+	// WorkflowFileName is the workflow file (e.g. "kedge-app-studio-build.yml").
+	WorkflowFileName string
+	// HeadSHA optionally pins the commit; empty means the most recent run.
+	HeadSHA string
+	// MaxLogLines caps the failure-log tail returned per failed job.
+	MaxLogLines int
+}
+
+// WorkflowJobStatus is one job of a workflow run.
+type WorkflowJobStatus struct {
+	Name       string
+	Status     string // queued | in_progress | completed
+	Conclusion string // success | failure | cancelled | ... | "" while running
+	// FailureLog is a bounded tail of the job's logs, populated only for a
+	// failed job so the caller can see why it broke.
+	FailureLog string
+}
+
+// WorkflowRunStatus is the observed state of a CI run for a commit.
+type WorkflowRunStatus struct {
+	// Found is false when no run exists for the query (e.g. the workflow has
+	// never run for that commit) — not an error.
+	Found      bool
+	RunID      int64
+	HTMLURL    string
+	HeadSHA    string
+	Status     string // queued | in_progress | completed
+	Conclusion string // success | failure | ... | "" while running
+	Jobs       []WorkflowJobStatus
+}
+
+// WorkflowRunReader is an OPTIONAL capability: read a workflow's latest run for
+// a commit, including failed jobs' log tails. Consumed by the build-doctor so a
+// failing build can be diagnosed, not just detected.
+type WorkflowRunReader interface {
+	LatestWorkflowRun(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository, query WorkflowRunQuery) (WorkflowRunStatus, error)
+}
+
+// WorkflowDispatcher is an OPTIONAL capability: re-run a workflow without a code
+// change (the workflow must declare workflow_dispatch), so a flaky/failed build
+// can be retried.
+type WorkflowDispatcher interface {
+	DispatchWorkflow(ctx context.Context, conn *codev1alpha1.Connection, cred Credential, repo *codev1alpha1.Repository, workflowFileName, ref string) error
 }
 
 // RepositoryCommitter is an OPTIONAL capability for backends that can write

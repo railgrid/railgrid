@@ -111,6 +111,21 @@ type PackageStatus struct {
 	// +kubebuilder:validation:MaxLength=64
 	UpdatedAt string `json:"updatedAt,omitempty"`
 
+	// ImageRepository is the pullable registry path (no tag/digest) for image
+	// packages, e.g. "ghcr.io/owner/repo/component". Combine with a version's
+	// digest to form a deployable reference. Empty for non-image packages.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	ImageRepository string `json:"imageRepository,omitempty"`
+
+	// Versions is a bounded, most-recent-first list of the package's published
+	// versions with their tags and digest (populated for container/docker
+	// packages). It lets consumers resolve a build tag such as "sha-<commit>"
+	// to an immutable image digest.
+	// +optional
+	// +kubebuilder:validation:MaxItems=100
+	Versions []PackageVersion `json:"versions,omitempty"`
+
 	// LastSyncTime is when the crawler last refreshed this package from the host.
 	// +optional
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
@@ -120,6 +135,25 @@ type PackageStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// PackageVersion is one published version of a package: an immutable digest and
+// the tags pointing at it (a container image push creates one version).
+type PackageVersion struct {
+	// Digest is the version's immutable content digest, e.g. "sha256:…".
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	Digest string `json:"digest,omitempty"`
+
+	// Tags are the tags pointing at this digest (e.g. "sha-<commit>", "latest").
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	Tags []string `json:"tags,omitempty"`
+
+	// CreatedAt is the version's creation time in RFC3339, or "" when unknown.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	CreatedAt string `json:"createdAt,omitempty"`
 }
 
 // LabelRepository is set by the PackageController on every Package, mirroring

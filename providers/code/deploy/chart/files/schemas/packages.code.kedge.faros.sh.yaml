@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260610-5e5c7f8.packages.code.kedge.faros.sh
+  name: v260712-dabfd8e.packages.code.kedge.faros.sh
 spec:
   group: code.kedge.faros.sh
   names:
@@ -151,6 +151,13 @@ spec:
               description: HTMLURL links to the package's browser page.
               maxLength: 2048
               type: string
+            imageRepository:
+              description: |-
+                ImageRepository is the pullable registry path (no tag/digest) for image
+                packages, e.g. "ghcr.io/owner/repo/component". Combine with a version's
+                digest to form a deployable reference. Empty for non-image packages.
+              maxLength: 512
+              type: string
             lastSyncTime:
               description: LastSyncTime is when the crawler last refreshed this package
                 from the host.
@@ -181,6 +188,37 @@ spec:
                 unknown).
               format: int64
               type: integer
+            versions:
+              description: |-
+                Versions is a bounded, most-recent-first list of the package's published
+                versions with their tags and digest (populated for container/docker
+                packages). It lets consumers resolve a build tag such as "sha-<commit>"
+                to an immutable image digest.
+              items:
+                description: |-
+                  PackageVersion is one published version of a package: an immutable digest and
+                  the tags pointing at it (a container image push creates one version).
+                properties:
+                  createdAt:
+                    description: CreatedAt is the version's creation time in RFC3339,
+                      or "" when unknown.
+                    maxLength: 64
+                    type: string
+                  digest:
+                    description: Digest is the version's immutable content digest,
+                      e.g. "sha256:…".
+                    maxLength: 256
+                    type: string
+                  tags:
+                    description: Tags are the tags pointing at this digest (e.g. "sha-<commit>",
+                      "latest").
+                    items:
+                      type: string
+                    maxItems: 64
+                    type: array
+                type: object
+              maxItems: 100
+              type: array
             visibility:
               description: Visibility is "public", "internal", or "private" (host-reported;
                 may be empty).

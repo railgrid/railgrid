@@ -1,0 +1,12 @@
+# Provider — declarative provisioning record (admin.kedge.faros.sh, admin-only).
+# The hub's Provider controller creates root:kedge:providers:agents, its
+# "provider" ServiceAccount, and the agents-kubeconfig Secret in
+# root:kedge:system:providers. The APIExport/schemas/bind-grant come from the
+# agents provider's own `init`; routing/UI from the companion CatalogEntry
+# (Helm-rendered from deploy/chart/templates/catalogentry.yaml).
+apiVersion: admin.kedge.faros.sh/v1alpha1
+kind: Provider
+metadata:
+  name: agents
+spec:
+  displayName: "Agents"

@@ -303,6 +303,21 @@ type TemplateDevelopmentComponent struct {
 	// +kubebuilder:validation:MaxLength=63
 	Port string `json:"port,omitempty"`
 
+	// ImageInput names the production schema input this component's built
+	// image feeds when the project is launched (e.g. "frontendImage" for the
+	// frontend component, "image" for a single-component template). It is the
+	// link between a development component and the production image field that
+	// runs it: App Studio builds one OCI image per component (build context =
+	// WorkspacePath) and, on launch, sets each named input to that component's
+	// built digest before provisioning the instance with kedgeMode:
+	// production. Empty means the component produces no launchable image (e.g.
+	// a worker developed in-cluster but not yet promotable). Must match a
+	// top-level property of the template's production schema.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z][a-zA-Z0-9]*$`
+	ImageInput string `json:"imageInput,omitempty"`
+
 	// Reload declares the component's reload procedure, executed by the dev
 	// agent on file sync. Empty means strategy "process" with no rules.
 	// +optional

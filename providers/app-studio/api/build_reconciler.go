@@ -24,86 +24,93 @@ import (
 	"net/http"
 	"strings"
 
+	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 const (
 	projectBuildConfigPath          = ".kedge/build.json"
 	projectBuildWorkflowPath        = ".github/workflows/kedge-app-studio-build.yml"
-	projectBuildArtifactPath        = ".kedge/build-artifact.json"
-	projectBuildArtifactName        = "kedge-app-studio-build"
 	projectBuildConfigCommitMessage = "chore(app-studio): configure Railpack build"
 	projectBuildBuilderRailpack     = "railpack"
 	projectBuildRailpackAction      = "iloveitaly/github-action-railpack@167ed71230addc378f3fb13122046c09f71c0e5f"
+
+	// projectBuildConfigSchema is the per-component build contract: one image
+	// per template development component, keyed by the production imageInput it
+	// feeds on launch.
+	projectBuildConfigSchema = "app-studio.build/v1alpha2"
 )
 
 type projectBuildReconcileResponse struct {
 	Status       string   `json:"status"`
 	Builder      string   `json:"builder"`
-	Profile      string   `json:"profile,omitempty"`
+	Template     string   `json:"template,omitempty"`
+	Components   []string `json:"components,omitempty"`
 	Files        []string `json:"files,omitempty"`
 	CommitResult string   `json:"commitResult,omitempty"`
 	Reason       string   `json:"reason,omitempty"`
 	Error        string   `json:"error,omitempty"`
 }
 
-type projectBuildConfigDocument struct {
-	SchemaVersion string                    `json:"schemaVersion"`
-	ManagedBy     string                    `json:"managedBy"`
-	Builder       string                    `json:"builder"`
-	Profile       string                    `json:"profile"`
-	Railpack      projectBuildRailpackBlock `json:"railpack"`
-	CI            projectBuildCIBlock       `json:"ci"`
-	Image         projectBuildImageBlock    `json:"image"`
-}
-
-type projectBuildRailpackBlock struct {
-	ActionRef string `json:"actionRef"`
-	Context   string `json:"context"`
-}
-
 type projectBuildCIBlock struct {
 	Provider     string `json:"provider"`
 	WorkflowPath string `json:"workflowPath"`
-	ArtifactName string `json:"artifactName"`
-	ArtifactPath string `json:"artifactPath"`
 }
 
-type projectBuildImageBlock struct {
-	Registry         string `json:"registry"`
-	PackagePattern   string `json:"packagePattern"`
-	TagPattern       string `json:"tagPattern"`
-	DeploymentRef    string `json:"deploymentRef"`
-	EvidenceContract string `json:"evidenceContract"`
+// ensureProjectBuildConfig proactively writes the build workflow into the
+// project's git repository so a build is wired in as soon as the project has a
+// template and a repository — not only after the user happens to commit app
+// code. Idempotent (a no-op when the managed files are already current) and a
+// no-op when the project has no repository yet or no launchable components.
+// httpReq carries the caller's Authorization for the git commit.
+func (s *Server) ensureProjectBuildConfig(ctx context.Context, id identity, p *aiv1alpha1.Project, httpReq *http.Request) (*projectBuildReconcileResponse, error) {
+	repoRef := projectLinkedRepositoryRef(p)
+	if repoRef == "" || strings.TrimSpace(id.clusterID) == "" {
+		return nil, nil
+	}
+	scope := projectWorkspaceScope(id, p.Name)
+	return s.reconcileProjectBuildConfig(ctx, id, scope, p, repoRef, s.mcpEndpoint(id.clusterID), httpReq, map[string]any{})
 }
 
-func (s *Server) reconcileProjectBuildConfigAfterCommit(ctx context.Context, id identity, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, args map[string]any, commitResult string) (string, error) {
-	if projectBuildReconcileIsSelfCommit(args) {
-		return commitResult, nil
-	}
-	if projectToolCallResultStatus(projectToolCodeCommitFiles, commitResult) != "succeeded" {
-		return commitResult, nil
+func (s *Server) reconcileProjectBuildConfig(ctx context.Context, id identity, scope workspace.Scope, project *aiv1alpha1.Project, projectRepositoryRef, mcpEndpoint string, r *http.Request, args map[string]any) (*projectBuildReconcileResponse, error) {
+	// A template-backed project builds one image per launchable development
+	// component (build context = the component's workspacePath). Template-less
+	// (legacy) projects keep the single whole-repo image derived from a
+	// detected language profile.
+	template, components, cerr := s.resolveProjectBuildComponents(ctx, id, project)
+	if cerr != nil {
+		// The project names a template but its build components could not be
+		// resolved: skip rather than emit a wrong single-image build. The
+		// source commit already succeeded; the assistant sees the reason.
+		return &projectBuildReconcileResponse{
+			Status:   "skipped",
+			Builder:  projectBuildBuilderRailpack,
+			Template: template,
+			Reason:   "template build components could not be resolved: " + cerr.Error(),
+		}, nil
 	}
 
-	buildResult, err := s.reconcileProjectBuildConfig(ctx, id, scope, projectRepositoryRef, mcpEndpoint, r, args)
-	if err != nil {
-		return "", err
+	// Only template-backed projects with launchable components build: there is
+	// one image per component. A project with no such components (no template
+	// yet) has nothing to build.
+	if len(components) == 0 {
+		return nil, nil
 	}
-	if buildResult == nil {
-		return commitResult, nil
+	desired := projectManagedBuildFilesComponents(template, components)
+	componentNames := make([]string, 0, len(components))
+	for _, c := range components {
+		componentNames = append(componentNames, c.Name)
 	}
-	return projectCommitFilesBuildResponse(commitResult, buildResult), nil
-}
+	// stamp decorates every response with the shared build context (template,
+	// component names) so callers see which shape the config targets.
+	stamp := func(resp *projectBuildReconcileResponse) *projectBuildReconcileResponse {
+		resp.Builder = projectBuildBuilderRailpack
+		resp.Template = template
+		resp.Components = componentNames
+		return resp
+	}
 
-func (s *Server) reconcileProjectBuildConfig(ctx context.Context, id identity, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, args map[string]any) (*projectBuildReconcileResponse, error) {
-	fileList, err := s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{Limit: workspace.MaxListLimit})
-	if err != nil {
-		return nil, err
-	}
-	profile := projectBuildProfile(fileList)
-	desired := projectManagedBuildFiles(profile)
 	changed := make([]workspace.File, 0, len(desired))
-
 	for _, f := range desired {
 		read, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: f.Path, MaxBytes: workspace.MaxWriteBytes})
 		switch {
@@ -119,12 +126,10 @@ func (s *Server) reconcileProjectBuildConfig(ctx context.Context, id identity, s
 	}
 
 	if len(changed) == 0 {
-		return &projectBuildReconcileResponse{
-			Status:  "current",
-			Builder: projectBuildBuilderRailpack,
-			Profile: profile,
-			Reason:  "managed build configuration is already current",
-		}, nil
+		return stamp(&projectBuildReconcileResponse{
+			Status: "current",
+			Reason: "managed build configuration is already current",
+		}), nil
 	}
 
 	files := make([]map[string]string, 0, len(changed))
@@ -144,124 +149,111 @@ func (s *Server) reconcileProjectBuildConfig(ctx context.Context, id identity, s
 	}
 	resp, err := callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeCommitFiles, commitArgs)
 	if err != nil {
-		return &projectBuildReconcileResponse{
-			Status:  "failed",
-			Builder: projectBuildBuilderRailpack,
-			Profile: profile,
-			Files:   paths,
-			Error:   err.Error(),
-		}, nil
+		return stamp(&projectBuildReconcileResponse{
+			Status: "failed",
+			Files:  paths,
+			Error:  err.Error(),
+		}), nil
 	}
 	status := projectToolCallResultStatus(projectToolCodeCommitFiles, resp)
 	if status != "succeeded" {
-		return &projectBuildReconcileResponse{
+		return stamp(&projectBuildReconcileResponse{
 			Status:       status,
-			Builder:      projectBuildBuilderRailpack,
-			Profile:      profile,
 			Files:        paths,
 			CommitResult: resp,
-		}, nil
+		}), nil
 	}
 	for _, f := range changed {
 		if _, err := s.workspaces.WriteFile(ctx, scope, workspace.WriteOptions{Path: f.Path, Content: f.Content}); err != nil {
 			return nil, err
 		}
 	}
-	return &projectBuildReconcileResponse{
+	return stamp(&projectBuildReconcileResponse{
 		Status:       "committed",
-		Builder:      projectBuildBuilderRailpack,
-		Profile:      profile,
 		Files:        paths,
 		CommitResult: resp,
-	}, nil
+	}), nil
 }
 
-func projectBuildReconcileIsSelfCommit(args map[string]any) bool {
-	if projectToolString(args["message"]) == projectBuildConfigCommitMessage {
-		return true
+// resolveProjectBuildComponents returns the bound template name and its
+// launchable build components. A template-less project yields ("", nil, nil)
+// so the caller skips (nothing to build). A project that names a template whose
+// build components cannot be resolved yields a non-nil error so the caller
+// surfaces it rather than silently skipping.
+func (s *Server) resolveProjectBuildComponents(ctx context.Context, id identity, project *aiv1alpha1.Project) (string, []projectBuildComponent, error) {
+	if project == nil || project.Spec.Template == nil {
+		return "", nil, nil
 	}
-	paths := projectToolStringList(args["paths"])
-	if len(paths) == 0 {
-		return false
+	name := strings.TrimSpace(project.Spec.Template.Name)
+	if name == "" {
+		return "", nil, nil
 	}
-	for _, p := range paths {
-		clean, err := workspace.CleanProjectPath(p)
-		if err != nil || !projectManagedBuildPath(clean) {
-			return false
-		}
+	c, err := s.clientFor(id)
+	if err != nil {
+		return name, nil, err
 	}
-	return true
+	info, err := fetchProjectTemplate(ctx, c, name)
+	if err != nil {
+		return name, nil, err
+	}
+	return name, projectBuildComponents(info), nil
 }
 
-func projectManagedBuildPath(path string) bool {
-	switch path {
-	case projectBuildConfigPath, projectBuildWorkflowPath:
-		return true
-	default:
-		return false
-	}
-}
-
-func projectManagedBuildFiles(profile string) []workspace.File {
+func projectManagedBuildFilesComponents(template string, components []projectBuildComponent) []workspace.File {
 	return []workspace.File{
-		{Path: projectBuildConfigPath, Content: projectBuildConfigJSON(profile)},
-		{Path: projectBuildWorkflowPath, Content: projectBuildWorkflowYAML()},
+		{Path: projectBuildConfigPath, Content: projectBuildConfigJSONComponents(template, components)},
+		{Path: projectBuildWorkflowPath, Content: projectBuildWorkflowYAMLComponents(components)},
 	}
 }
 
-func projectBuildProfile(fileList workspace.FileList) string {
-	paths := map[string]struct{}{}
-	for _, f := range fileList.Files {
-		paths[f.Path] = struct{}{}
-	}
-	switch {
-	case projectHasPath(paths, "package.json"):
-		return "node"
-	case projectHasPath(paths, "pyproject.toml"), projectHasPath(paths, "requirements.txt"):
-		return "python"
-	case projectHasPath(paths, "go.mod"):
-		return "go"
-	case projectHasPath(paths, "Cargo.toml"):
-		return "rust"
-	case projectHasPath(paths, "composer.json"):
-		return "php"
-	case projectHasPath(paths, "pom.xml"), projectHasPath(paths, "build.gradle"), projectHasPath(paths, "build.gradle.kts"), projectHasPath(paths, "gradlew"):
-		return "java"
-	case projectHasPath(paths, "index.html"):
-		return "static"
-	default:
-		return "auto"
-	}
+type projectBuildConfigComponent struct {
+	Name           string `json:"name"`
+	Context        string `json:"context"`
+	ImageInput     string `json:"imageInput"`
+	PackagePattern string `json:"packagePattern"`
 }
 
-func projectHasPath(paths map[string]struct{}, path string) bool {
-	_, ok := paths[path]
-	return ok
+type projectBuildConfigDocumentV2 struct {
+	SchemaVersion  string                        `json:"schemaVersion"`
+	ManagedBy      string                        `json:"managedBy"`
+	Builder        string                        `json:"builder"`
+	Template       string                        `json:"template"`
+	RailpackAction string                        `json:"railpackAction"`
+	CI             projectBuildCIBlock           `json:"ci"`
+	Registry       string                        `json:"registry"`
+	TagPattern     string                        `json:"tagPattern"`
+	Components     []projectBuildConfigComponent `json:"components"`
 }
 
-func projectBuildConfigJSON(profile string) string {
-	doc := projectBuildConfigDocument{
-		SchemaVersion: "app-studio.build/v1alpha1",
-		ManagedBy:     "app-studio",
-		Builder:       projectBuildBuilderRailpack,
-		Profile:       profile,
-		Railpack: projectBuildRailpackBlock{
-			ActionRef: projectBuildRailpackAction,
-			Context:   ".",
-		},
+// projectBuildComponentPackagePattern is the ghcr.io package a component's
+// image is published under: one repository per component so tiers never
+// collide. {owner}/{repo} resolve at build time from GITHUB_REPOSITORY.
+func projectBuildComponentPackagePattern(component string) string {
+	return "ghcr.io/{owner}/{repo}/" + component
+}
+
+func projectBuildConfigJSONComponents(template string, components []projectBuildComponent) string {
+	doc := projectBuildConfigDocumentV2{
+		SchemaVersion:  projectBuildConfigSchema,
+		ManagedBy:      "app-studio",
+		Builder:        projectBuildBuilderRailpack,
+		Template:       template,
+		RailpackAction: projectBuildRailpackAction,
 		CI: projectBuildCIBlock{
 			Provider:     "github-actions",
 			WorkflowPath: projectBuildWorkflowPath,
-			ArtifactName: projectBuildArtifactName,
-			ArtifactPath: projectBuildArtifactPath,
 		},
-		Image: projectBuildImageBlock{
-			Registry:         "ghcr.io",
-			PackagePattern:   "ghcr.io/{owner}/{repo}",
-			TagPattern:       "sha-{commitSHA}",
-			DeploymentRef:    "digest",
-			EvidenceContract: projectBuildArtifactPath,
-		},
+		Registry:   "ghcr.io",
+		TagPattern: "sha-{commitSHA}",
+	}
+	doc.Components = make([]projectBuildConfigComponent, 0, len(components))
+	for _, c := range components {
+		doc.Components = append(doc.Components, projectBuildConfigComponent{
+			Name:           c.Name,
+			Context:        c.Context,
+			ImageInput:     c.ImageInput,
+			PackagePattern: projectBuildComponentPackagePattern(c.Name),
+		})
 	}
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -270,42 +262,12 @@ func projectBuildConfigJSON(profile string) string {
 	return string(out) + "\n"
 }
 
-func projectCommitFilesBuildResponse(commitResult string, buildResult *projectBuildReconcileResponse) string {
-	payload := map[string]any{}
-	if err := json.Unmarshal([]byte(commitResult), &payload); err != nil {
-		if phase := projectCommitResultPhase(commitResult); phase != "" {
-			payload["phase"] = phase
-		}
-		payload["commitResult"] = commitResult
-	}
-	payload["buildConfiguration"] = buildResult
-	out, err := json.Marshal(payload)
-	if err != nil {
-		return commitResult
-	}
-	return string(out)
-}
-
-func projectCommitResultPhase(commitResult string) string {
-	var parsed struct {
-		Phase string `json:"phase"`
-	}
-	if err := json.Unmarshal([]byte(commitResult), &parsed); err == nil && strings.TrimSpace(parsed.Phase) != "" {
-		return parsed.Phase
-	}
-	switch projectToolCallResultStatus(projectToolCodeCommitFiles, commitResult) {
-	case "succeeded":
-		return "Succeeded"
-	case "running":
-		return "Running"
-	case "failed":
-		return "Failed"
-	default:
-		return ""
-	}
-}
-
-func projectBuildWorkflowYAML() string {
+// projectBuildWorkflowYAMLComponents renders the per-component build workflow:
+// a matrix job builds and pushes one Railpack image per component (context =
+// its workspace subdirectory) to ghcr, tagged sha-<commit>. That is all it
+// does — the published packages are the source of truth, read back through the
+// Code provider's Package resources; nothing is written into the repository.
+func projectBuildWorkflowYAMLComponents(components []projectBuildComponent) string {
 	lines := []string{
 		"name: App Studio Build",
 		"",
@@ -321,8 +283,20 @@ func projectBuildWorkflowYAML() string {
 		"",
 		"jobs:",
 		"  build:",
-		"    name: Build OCI image with Railpack",
+		"    name: Build ${{ matrix.component }} image with Railpack",
 		"    runs-on: ubuntu-latest",
+		"    strategy:",
+		"      fail-fast: false",
+		"      matrix:",
+		"        include:",
+	}
+	for _, c := range components {
+		lines = append(lines,
+			"          - component: "+projectBuildYAMLQuote(c.Name),
+			"            context: "+projectBuildYAMLQuote(c.Context),
+		)
+	}
+	lines = append(lines,
 		"    steps:",
 		"      - name: Check out repository",
 		"        uses: actions/checkout@v4",
@@ -331,10 +305,10 @@ func projectBuildWorkflowYAML() string {
 		"        id: image",
 		"        shell: bash",
 		"        run: |",
-		"          image=\"ghcr.io/${GITHUB_REPOSITORY,,}\"",
-		"          tag=\"sha-${GITHUB_SHA}\"",
+		"          repo=\"${GITHUB_REPOSITORY,,}\"",
+		"          image=\"ghcr.io/${repo}/${{ matrix.component }}\"",
 		"          echo \"name=${image}\" >> \"$GITHUB_OUTPUT\"",
-		"          echo \"tag=${tag}\" >> \"$GITHUB_OUTPUT\"",
+		"          echo \"tag=sha-${GITHUB_SHA}\" >> \"$GITHUB_OUTPUT\"",
 		"",
 		"      - name: Log in to GitHub Container Registry",
 		"        uses: docker/login-action@v3",
@@ -346,41 +320,21 @@ func projectBuildWorkflowYAML() string {
 		"      - name: Build and push image with Railpack",
 		"        uses: " + projectBuildRailpackAction,
 		"        with:",
-		"          context: .",
+		"          context: ${{ matrix.context }}",
 		"          push: true",
 		"          cache: true",
 		"          cache_tag: ${{ steps.image.outputs.name }}:buildcache",
 		"          tags: |",
 		"            ${{ steps.image.outputs.name }}:${{ steps.image.outputs.tag }}",
-		"",
-		"      - name: Capture build evidence",
-		"        shell: bash",
-		"        env:",
-		"          BUILD_ARTIFACT_PATH: " + projectBuildArtifactPath,
-		"        run: |",
-		"          set -euo pipefail",
-		"          image=\"${{ steps.image.outputs.name }}\"",
-		"          tag=\"${{ steps.image.outputs.tag }}\"",
-		"          digest=\"$(docker buildx imagetools inspect \"${image}:${tag}\" --format '{{json .Manifest.Digest}}' | tr -d '\"')\"",
-		"          mkdir -p .kedge",
-		"          cat > \"$BUILD_ARTIFACT_PATH\" <<JSON",
-		"          {",
-		"            \"commit\": \"${GITHUB_SHA}\",",
-		"            \"image\": \"${image}@${digest}\",",
-		"            \"digest\": \"${digest}\",",
-		"            \"tag\": \"${tag}\",",
-		"            \"registry\": \"ghcr.io\",",
-		"            \"package\": \"${image}\",",
-		"            \"builder\": \"railpack\"",
-		"          }",
-		"          JSON",
-		"",
-		"      - name: Upload build evidence",
-		"        uses: actions/upload-artifact@v4",
-		"        with:",
-		"          name: " + projectBuildArtifactName,
-		"          path: " + projectBuildArtifactPath,
-		"          if-no-files-found: error",
-	}
+		"            ${{ steps.image.outputs.name }}:latest",
+	)
 	return strings.Join(lines, "\n") + "\n"
 }
+
+// projectBuildYAMLQuote double-quotes a matrix scalar so values like "." (a
+// single-component context) parse as strings, not YAML nulls or floats.
+func projectBuildYAMLQuote(v string) string {
+	return "\"" + strings.ReplaceAll(v, "\"", "\\\"") + "\""
+}
+
+

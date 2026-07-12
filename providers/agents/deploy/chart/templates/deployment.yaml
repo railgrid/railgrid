@@ -1,0 +1,149 @@
+{{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agents.fullname" . }}
+  labels:
+    {{- include "agents.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agents.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agents.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "agents.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # Bootstrap the provider workspace (schemas, APIExport, slice, bind
+        # grant) with the onboarded workspace-admin kubeconfig. Schemas baked at
+        # /etc/kedge/schemas (Dockerfile). Idempotent.
+        - name: init
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["init"]
+          env:
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: KEDGE_SCHEMAS_DIR
+              value: /etc/kedge/schemas
+            {{- if $catalogEntryConfigMap }}
+            - name: KEDGE_CATALOGENTRY_FILE
+              value: /etc/kedge/catalogentry/catalogentry.yaml
+            {{- end }}
+          volumeMounts:
+            - name: kedge-provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
+            {{- if $catalogEntryConfigMap }}
+            - name: catalogentry
+              mountPath: /etc/kedge/catalogentry
+              readOnly: true
+            {{- end }}
+      containers:
+        - name: provider
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8087
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          env:
+            - name: PORT
+              value: "8087"
+            - name: KEDGE_HUB_URL
+              value: {{ .Values.hub.url | quote }}
+            - name: KEDGE_PROVIDER_NAME
+              value: "agents"
+            # Provider kubeconfig — used for the kcp front-proxy host + TLS
+            # only; the tenant client drops its credential and acts as the
+            # calling user via the forwarded bearer token.
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            {{- if .Values.store.databaseURL }}
+            - name: AGENTS_DATABASE_URL
+              value: {{ .Values.store.databaseURL | quote }}
+            {{- else if .Values.store.databaseURLSecretRef.name }}
+            - name: AGENTS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.store.databaseURLSecretRef.name }}
+                  key: {{ .Values.store.databaseURLSecretRef.key }}
+            {{- end }}
+            {{- if .Values.store.inMemoryStore }}
+            - name: AGENTS_IN_MEMORY_STORE
+              value: "true"
+            {{- end }}
+            {{- if .Values.store.messageEncryptionKeysSecretRef.name }}
+            - name: AGENTS_MESSAGE_ENCRYPTION_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.store.messageEncryptionKeysSecretRef.name }}
+                  key: {{ .Values.store.messageEncryptionKeysSecretRef.key }}
+            {{- end }}
+            {{- if .Values.hub.insecure }}
+            - name: KEDGE_HUB_INSECURE
+              value: "true"
+            {{- end }}
+            {{- if .Values.hub.tokenSecretRef.name }}
+            - name: KEDGE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.tokenSecretRef.name }}
+                  key: {{ .Values.hub.tokenSecretRef.key }}
+            {{- end }}
+          volumeMounts:
+            # The onboarded workspace-admin kubeconfig; the SA token inside is
+            # what the tenant client presents to reach tenant workspaces.
+            - name: kedge-provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        # Required input: the workspace-admin kubeconfig minted via /bonkers
+        # (admin onboarding), consumed by both init and serve. The onboard
+        # response stores it under key "kubeconfig".
+        - name: kedge-provider-kubeconfig
+          secret:
+            secretName: {{ .Values.providerKubeconfig.secretName }}
+            items:
+              - key: kubeconfig
+                path: kedge-provider-kubeconfig
+        {{- if $catalogEntryConfigMap }}
+        - name: catalogentry
+          configMap:
+            name: {{ include "agents.fullname" . }}-catalogentry
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

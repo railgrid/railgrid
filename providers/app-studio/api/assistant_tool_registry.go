@@ -295,10 +295,13 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				if err != nil {
 					return "", err
 				}
-				_, info, err := server.selectProjectTemplate(ctx, c, req.Identity, req.Project, projectToolString(req.Arguments["template"]))
+				updated, info, err := server.selectProjectTemplate(ctx, c, req.Identity, req.Project, projectToolString(req.Arguments["template"]))
 				if err != nil {
 					return "", err
 				}
+				// Wire the CI build into the repository now that a template is
+				// bound (best-effort; a no-op without a repository).
+				_, _ = server.ensureProjectBuildConfig(ctx, req.Identity, updated, req.HTTPRequest)
 				return projectAssistantToolJSONResult(map[string]any{
 					"template":   info.Name,
 					"components": info.Components,
@@ -330,6 +333,98 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
+				Name:        projectToolCheckProjectBuild,
+				Description: "Check whether the project's launchable components have a built container image recorded in git. The per-component build runs in CI after commit_files and, on success, commits per-component image digests back to the repository; this tool reads them. Use it after committing to confirm the build succeeded before launching, and to drive the build-fix loop: status \"built\" means every component has an image (ready to launch); \"incomplete\"/\"none\" means some or all builds are still running or have failed — re-check shortly, and if they stay unbuilt inspect the failing component's build inputs and commit a fix.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+				Risk:        projectAssistantToolRiskRead,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				if req.Project == nil {
+					return "", errors.New("no project on this run")
+				}
+				c, err := server.clientFor(req.Identity)
+				if err != nil {
+					return "", err
+				}
+				result, err := s.checkProjectBuild(ctx, c, req.Identity, req.Project)
+				if err != nil {
+					return "", err
+				}
+				return projectAssistantToolJSONResult(result, nil)
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:        projectToolGetBuildLogs,
+				Description: "Inspect the project's latest CI build run to see WHY it failed: the run status and conclusion, each component job's outcome, and a log tail for any failed job. Use this when check_project_build reports \"none\" or \"incomplete\" to diagnose the failure before fixing it. Optionally pass a commit SHA to inspect that commit's run.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"ref":{"type":"string","description":"Commit SHA to inspect; defaults to the most recent run."}}}`),
+				Risk:        projectAssistantToolRiskRead,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				if req.Project == nil {
+					return "", errors.New("no project on this run")
+				}
+				return s.getProjectBuildLogs(ctx, req.Identity, req.Project, req.HTTPRequest, projectToolString(req.Arguments["ref"]))
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:        projectToolRebuildProject,
+				Description: "Re-run the project's build workflow without a code change, to retry a flaky or failed build. Use this only when the build failed for a transient reason (not a code problem — fix code problems by committing a fix, which rebuilds automatically). Optionally pass a branch to re-run on.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"ref":{"type":"string","description":"Branch to re-run on; defaults to the repository default branch."}}}`),
+				Risk:        projectAssistantToolRiskRuntime,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				if req.Project == nil {
+					return "", errors.New("no project on this run")
+				}
+				return s.rebuildProject(ctx, req.Identity, req.Project, req.HTTPRequest, projectToolString(req.Arguments["ref"]))
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:        projectToolPromoteProject,
+				Description: "Promote the project to production: stand up (or redeploy) a long-running production instance of the project's template from its built container images, running alongside the development sandbox on its own URL. Requires a green build — call check_project_build first and only promote when status is \"built\". Optional values carry the template's production settings (ports, replicas, auth); the image digests, instance name, and production mode are set automatically. Confirm with the user before promoting.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"values":{"type":"object","description":"Optional production template inputs (e.g. ports, replicas, oidc). Image fields, name, and kedgeMode are platform-owned and ignored here."}}}`),
+				Risk:        projectAssistantToolRiskRuntime,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				if req.Project == nil {
+					return "", errors.New("no project on this run")
+				}
+				c, err := server.clientFor(req.Identity)
+				if err != nil {
+					return "", err
+				}
+				var values map[string]any
+				if raw, ok := req.Arguments["values"].(map[string]any); ok {
+					values = raw
+				}
+				_, resp, err := s.promoteProject(ctx, c, req.Identity, req.Project, req.HTTPRequest, values)
+				if err != nil {
+					return "", err
+				}
+				return projectAssistantToolJSONResult(resp, nil)
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
 				Name:        projectToolCommitProjectFiles,
 				Description: "Commit selected App Studio workspace text files to the managed git source through the Code provider.",
 				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"repositoryRef":{"type":"string","description":"Managed Code provider Repository resource name."},"paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":%d,"description":"Project-relative workspace file paths to commit."},"message":{"type":"string","description":"Commit message."},"branch":{"type":"string","description":"Optional branch override."}},"required":["repositoryRef","paths"]}`, projectCommitProjectFilesMax)),
@@ -340,7 +435,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				if err != nil {
 					return "", err
 				}
-				return s.commitProjectWorkspaceFiles(ctx, req.Identity, req.WorkspaceScope, req.ProjectRepositoryRef, req.MCPEndpoint, req.HTTPRequest, req.Arguments)
+				return s.commitProjectWorkspaceFiles(ctx, req.Identity, req.WorkspaceScope, req.Project, req.ProjectRepositoryRef, req.MCPEndpoint, req.HTTPRequest, req.Arguments)
 			},
 		},
 	)

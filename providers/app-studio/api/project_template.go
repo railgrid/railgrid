@@ -64,6 +64,12 @@ type projectTemplateInfo struct {
 	// ("." claims the whole workspace). Non-empty iff the template declares
 	// spec.development.
 	Components map[string]string
+
+	// ImageInputs maps a development component name to the production schema
+	// input its built image feeds on launch (TemplateDevelopmentComponent
+	// .imageInput). A component absent here (empty imageInput) produces no
+	// launchable image. Keyed identically to Components.
+	ImageInputs map[string]string
 }
 
 // fetchProjectTemplate reads the named Template from the tenant workspace
@@ -102,6 +108,7 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 	}
 	if found && len(components) > 0 {
 		info.Components = make(map[string]string, len(components))
+		info.ImageInputs = make(map[string]string, len(components))
 		for name, raw := range components {
 			comp, ok := raw.(map[string]any)
 			if !ok {
@@ -113,9 +120,44 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 				return projectTemplateInfo{}, fmt.Errorf("template %q development component %q has no workspacePath", info.Name, name)
 			}
 			info.Components[name] = wp
+			if img, _ := comp["imageInput"].(string); strings.TrimSpace(img) != "" {
+				info.ImageInputs[name] = strings.TrimSpace(img)
+			}
 		}
 	}
 	return info, nil
+}
+
+// projectBuildComponent is one launchable component of a template-backed
+// project: the App Studio build derives one OCI image from Context (the
+// component's workspace subdirectory) and, on launch, sets ImageInput to that
+// image. Only components whose template declares an imageInput are buildable.
+type projectBuildComponent struct {
+	// Name is the template development component key (e.g. "frontend").
+	Name string
+	// Context is the build context: the component's workspacePath relative to
+	// the repository root ("." for a whole-repo, single-component template).
+	Context string
+	// ImageInput is the production schema field the built image feeds on
+	// launch (e.g. "frontendImage", or "image" for a single-component app).
+	ImageInput string
+}
+
+// projectBuildComponents returns the launchable components of a template,
+// sorted by name for deterministic build config and workflow output. A
+// template with development components but no imageInputs (e.g. a worker-only
+// dev template) yields none.
+func projectBuildComponents(info projectTemplateInfo) []projectBuildComponent {
+	out := make([]projectBuildComponent, 0, len(info.ImageInputs))
+	for name, imageInput := range info.ImageInputs {
+		out = append(out, projectBuildComponent{
+			Name:       name,
+			Context:    info.Components[name],
+			ImageInput: imageInput,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // projectTemplateInstanceNameMaxBase bounds the project-name part of the
@@ -129,6 +171,21 @@ const projectTemplateInstanceNameMaxBase = 30
 // Project's template-backed development environment. Deterministic so
 // re-selection and status lookups converge without storing the name.
 func projectTemplateInstanceName(p *aiv1alpha1.Project) string {
+	return projectTemplateScopedInstanceName(p, "dev")
+}
+
+// projectTemplateProdInstanceName is the deterministic instance name for a
+// Project's template-backed production environment — the sibling of the dev
+// instance, so a project runs a "<base>-dev" and a "<base>-prod" instance of
+// the same template side by side.
+func projectTemplateProdInstanceName(p *aiv1alpha1.Project) string {
+	return projectTemplateScopedInstanceName(p, "prod")
+}
+
+// projectTemplateScopedInstanceName derives a deterministic, DNS-safe instance
+// name "<base>-<scope>" from the project name, truncating with a content hash
+// when the project name is long (child resources suffix this further).
+func projectTemplateScopedInstanceName(p *aiv1alpha1.Project, scope string) string {
 	if p == nil || strings.TrimSpace(p.Name) == "" {
 		return ""
 	}
@@ -137,7 +194,7 @@ func projectTemplateInstanceName(p *aiv1alpha1.Project) string {
 		sum := sha256.Sum256([]byte(base))
 		base = strings.TrimRight(base[:projectTemplateInstanceNameMaxBase-9], "-") + "-" + hex.EncodeToString(sum[:4])
 	}
-	return base + "-dev"
+	return base + "-" + scope
 }
 
 // projectTemplateDevBinding builds the development binding for a
@@ -423,6 +480,11 @@ func (s *Server) putProjectTemplate(w http.ResponseWriter, r *http.Request) {
 	// non-fatal (the instance may still be provisioning — the post-mutation
 	// sync hook and manual sync retry).
 	go s.syncDevelopmentAfterMutation(id, updated, "select_project_template")
+
+	// Wire the CI build into the repository now that the project has a template
+	// (and, if bound, a repository). Best-effort: build setup can also be
+	// triggered from the Publish & Promote tab or the next commit.
+	_, _ = s.ensureProjectBuildConfig(r.Context(), id, updated, r)
 
 	raw, _ := json.Marshal(updated)
 	writeJSON(w, http.StatusOK, projectTemplateSelectResponse{

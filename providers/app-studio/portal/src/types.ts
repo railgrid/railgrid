@@ -233,3 +233,41 @@ export interface ProjectHydrateResult {
   written?: string[]
   skipped?: string[]
 }
+
+// One launchable component's build state, from GET /api/projects/{name}/promotion.
+export interface ProjectBuildComponent {
+  name: string
+  imageInput: string
+  built: boolean
+  image?: string
+  digest?: string
+}
+
+// Deterministic build status: built | incomplete | none | unsupported.
+export interface ProjectBuildCheck {
+  status: string
+  commit?: string
+  builder?: string
+  registry?: string
+  components?: ProjectBuildComponent[]
+  missing?: string[]
+  note: string
+}
+
+// Result of GET /api/projects/{name}/promotion — gates the Promote to Prod
+// action and reports the live production environment.
+export interface ProjectPromotionReadiness {
+  template?: string
+  instance?: string
+  promotable: boolean
+  build: ProjectBuildCheck
+  production?: ProjectProviderBinding
+}
+
+// Result of POST /api/projects/{name}/promote.
+export interface ProjectPromoteResult {
+  environment: string
+  instance: string
+  commit?: string
+  components?: ProjectBuildComponent[]
+}
