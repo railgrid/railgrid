@@ -19,9 +19,11 @@ COPY api ./api
 COPY channels ./channels
 COPY client ./client
 COPY engine ./engine
+COPY executor ./executor
 COPY llm ./llm
 COPY store ./store
 COPY tenant ./tenant
+COPY tools ./tools
 COPY --from=portal /portal/dist ./portal/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/agents-provider .
 

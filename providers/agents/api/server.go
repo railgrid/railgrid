@@ -15,6 +15,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -62,16 +63,22 @@ type Server struct {
 	started time.Time
 }
 
-// New constructs the server and opens the durable store. With no DatabaseURL
-// (or InMemoryStore set) it falls back to the in-memory backend so the provider
-// boots against a bare hub. The Postgres backend lands with the engine wiring.
+// New constructs the server and opens the durable store: Postgres when a
+// DatabaseURL is configured (production), the in-memory backend otherwise
+// (bare-hub dev; explicitly forced by InMemoryStore).
 func New(ctx context.Context, cfg Config) (*Server, error) {
-	var st store.Store = store.NewMemoryStore()
-	if cfg.DatabaseURL != "" && !cfg.InMemoryStore {
-		// Postgres backend is added alongside the engine; until then, a
-		// configured DSN logs a notice and uses the in-memory store so dev
-		// environments still boot.
-		log.Printf("agents: AGENTS_DATABASE_URL set but Postgres store not wired yet — using in-memory store")
+	var st store.Store
+	switch {
+	case cfg.DatabaseURL != "" && !cfg.InMemoryStore:
+		ps, err := store.OpenPostgres(ctx, cfg.DatabaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("opening Postgres store: %w", err)
+		}
+		st = ps
+		log.Printf("agents: using Postgres store")
+	default:
+		st = store.NewMemoryStore()
+		log.Printf("agents: using in-memory store (non-durable — set AGENTS_DATABASE_URL for persistence)")
 	}
 	if err := st.EnsureSchema(ctx); err != nil {
 		return nil, err
@@ -149,6 +156,15 @@ func (s *Server) Routes() http.Handler {
 	// Inbound trigger webhooks — token-authenticated, no tenant headers
 	// (external senders reach this through the hub's anonymous forwarding).
 	mux.HandleFunc("POST /webhooks/triggers/{cluster}/{name}/{token}", s.webhookTrigger)
+
+	// Channel inbound (M6): chat with an agent FROM Telegram/Slack.
+	mux.HandleFunc("POST /webhooks/channels/{cluster}/{name}/{token}", s.webhookChannel)
+	mux.HandleFunc("POST /api/connections/{name}/enable-inbound", s.enableInbound)
+
+	// OAuth connections (M7): authorize (per-request) + public callback
+	// (anonymous — the signed state is the auth).
+	mux.HandleFunc("POST /api/connections/{name}/oauth/authorize", s.oauthAuthorize)
+	mux.HandleFunc("GET /oauth/callback", s.oauthCallback)
 
 	return mux
 }

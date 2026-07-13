@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -932,8 +932,14 @@ AGENTS_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/agents-provider.kubeconfig
 AGENTS_SCHEMAS_DIR ?= providers/agents/deploy/chart/files/schemas
 AGENTS_MANIFEST ?= providers/agents/manifest.yaml
 AGENTS_PROVIDER_MANIFEST ?= providers/agents/provider.yaml
-# Postgres store backend is not wired yet; dev runs use the in-memory store.
-AGENTS_IN_MEMORY_STORE ?= true
+# Durable store: dev runs use a local Postgres container by default (mirrors
+# app-studio). Set AGENTS_IN_MEMORY_STORE=true for a non-durable quick run.
+AGENTS_IN_MEMORY_STORE ?=
+AGENTS_DEV_DATABASE_URL ?= postgres://agents:agents@localhost:55434/agents?sslmode=disable
+AGENTS_POSTGRES_CONTAINER ?= kedge-agents-postgres
+AGENTS_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
+AGENTS_POSTGRES_PORT ?= 55434
+AGENTS_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/agents-postgres
 
 ## Run the infrastructure provider binary locally. Heartbeats to the hub on
 ## $(KROMC_HUB_URL); TLS verification skipped (dev cert is self-signed).
@@ -1162,21 +1168,50 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		--insecure-skip-tls-verify \
 		delete -f $(APP_STUDIO_MANIFEST) -f $(APP_STUDIO_PROVIDER_MANIFEST)
 
-## --- agents provider dev targets (mirror app-studio; in-memory store) ---
+## --- agents provider dev targets (mirror app-studio) ---
 
-run-provider-agents: build-agents-provider ## Run the agents provider (requires: make run-hub-embedded-static + make install-provider-agents + make init-provider-agents)
+## Start/reuse a local Postgres container for the agents durable store. Skips
+## when AGENTS_IN_MEMORY_STORE=true or AGENTS_DATABASE_URL points elsewhere.
+agents-db-up:
+	@set -a; [ -f providers/agents/.env ] && . ./providers/agents/.env || true; set +a; \
+	if [ "$${AGENTS_IN_MEMORY_STORE:-$(AGENTS_IN_MEMORY_STORE)}" = "true" ]; then \
+		echo "agents: in-memory store — skipping Postgres"; exit 0; fi; \
+	if [ -n "$${AGENTS_DATABASE_URL:-}" ]; then \
+		echo "agents: external AGENTS_DATABASE_URL set — skipping dev Postgres"; exit 0; fi; \
+	if docker ps --format '{{.Names}}' | grep -q '^$(AGENTS_POSTGRES_CONTAINER)$$'; then \
+		echo "agents postgres already running on :$(AGENTS_POSTGRES_PORT)"; exit 0; fi; \
+	if docker ps -a --format '{{.Names}}' | grep -q '^$(AGENTS_POSTGRES_CONTAINER)$$'; then \
+		docker start $(AGENTS_POSTGRES_CONTAINER); exit 0; fi; \
+	mkdir -p $(AGENTS_POSTGRES_DATA_DIR); \
+	docker run -d --name $(AGENTS_POSTGRES_CONTAINER) \
+		-e POSTGRES_USER=agents -e POSTGRES_PASSWORD=agents -e POSTGRES_DB=agents \
+		-p $(AGENTS_POSTGRES_PORT):5432 \
+		-v $(AGENTS_POSTGRES_DATA_DIR):/var/lib/postgresql/data \
+		$(AGENTS_POSTGRES_IMAGE)
+
+agents-db-down: ## Stop and remove the agents dev Postgres container
+	-docker rm -f $(AGENTS_POSTGRES_CONTAINER)
+
+run-provider-agents: build-agents-provider agents-db-up ## Run the agents provider (requires: make run-hub-embedded-static + make install-provider-agents + make init-provider-agents)
 	@echo "Starting agents provider on :$(AGENTS_PORT)"
 	@echo "  hub:   $(AGENTS_HUB_URL)"
-	@echo "  store: in-memory (non-durable; Postgres backend not wired yet)"
 	@# Auto-source providers/agents/.env (gitignored) for local overrides.
 	set -a; [ -f providers/agents/.env ] && . ./providers/agents/.env || true; set +a; \
+	AGENTS_IN_MEMORY_STORE="$${AGENTS_IN_MEMORY_STORE:-$(AGENTS_IN_MEMORY_STORE)}"; \
+	if [ "$$AGENTS_IN_MEMORY_STORE" = "true" ]; then \
+		echo "  store: in-memory (non-durable)"; AGENTS_DATABASE_URL=; \
+	else \
+		AGENTS_DATABASE_URL="$${AGENTS_DATABASE_URL:-$(AGENTS_DEV_DATABASE_URL)}"; \
+		echo "  store: $$AGENTS_DATABASE_URL"; \
+	fi; \
 	PORT=$(AGENTS_PORT) \
 	KEDGE_HUB_URL=$(AGENTS_HUB_URL) \
 	KEDGE_HUB_TOKEN=$(AGENTS_TOKEN) \
 	KEDGE_HUB_INSECURE=true \
 	KEDGE_PROVIDER_NAME=agents \
 	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(AGENTS_PROVIDER_KUBECONFIG)" "$(AGENTS_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
-	AGENTS_IN_MEMORY_STORE=$(AGENTS_IN_MEMORY_STORE) \
+	AGENTS_DATABASE_URL="$$AGENTS_DATABASE_URL" \
+	AGENTS_IN_MEMORY_STORE="$$AGENTS_IN_MEMORY_STORE" \
 		$(BINDIR)/agents-provider
 
 install-provider-agents: ## Apply agents Provider + CatalogEntry into root:kedge:providers

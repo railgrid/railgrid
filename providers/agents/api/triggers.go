@@ -151,7 +151,11 @@ func (s *Server) runTriggerNow(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "this trigger has no task to run")
 		return
 	}
-	res, err := s.executeTask(r.Context(), c, id.scope(agent.Name), agent, "trigger:"+name, task, agentsv1alpha1.RunTriggerEvent, "", nil)
+	res, err := s.executeTask(r.Context(), taskRun{
+		Creds: c, CR: clientCR{c}, Scope: id.scope(agent.Name), Agent: agent,
+		SessionID: "trigger:" + name, Task: task, Trigger: agentsv1alpha1.RunTriggerEvent, SourceName: name,
+		EdgesEndpoint: s.edgesEndpoint(id.clusterID), EdgesToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+	})
 	if err != nil {
 		if s.credentialsError(err) {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", "no model configured — assign one on the Models tab")

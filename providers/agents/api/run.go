@@ -22,6 +22,7 @@ import (
 	"github.com/faroshq/provider-agents/engine"
 	"github.com/faroshq/provider-agents/llm"
 	"github.com/faroshq/provider-agents/store"
+	"github.com/faroshq/provider-agents/tools"
 )
 
 // ErrBudgetExceeded is returned when an agent has spent its budget for the
@@ -79,45 +80,78 @@ type runResult struct {
 	} `json:"usage"`
 }
 
+// taskRun bundles everything one agent execution needs. Creds reads the model
+// credential (per-request: tenant client acting as the user; background: the
+// virtual-workspace getter). ParentRunID links sub-agent (delegation) runs.
+// Edges* configure the optional hub-MCP edges family (interactive runs only —
+// it authenticates as the calling user).
+type taskRun struct {
+	Creds llm.SecretGetter
+	CR    tools.CRAccess
+	Scope store.Scope
+	Agent *agentsv1alpha1.Agent
+
+	SessionID   string
+	Task        string
+	Trigger     string
+	SourceName  string // schedule/trigger/connection that fired this run
+	ParentRunID string
+
+	EdgesEndpoint string // hub mcpserver MCP URL ("" → edges family absent)
+	EdgesToken    string
+	EdgesInsecure bool
+
+	OnDelta func(string)
+	OnTool  func(engine.ToolEvent)
+}
+
 // executeTask runs one agent turn to completion against a task prompt,
 // persisting the transcript and run record. It is the shared execution path
-// for chat, run-now, background schedule fires, and webhook events. creds is
-// only used to read the agent's model-credential Secret — per-request callers
-// pass the tenant client (acting as the user), background callers pass a
-// virtual-workspace-backed getter. onDelta is optional (nil = non-streaming).
-func (s *Server) executeTask(
-	ctx context.Context,
-	creds llm.SecretGetter,
-	scope store.Scope,
-	agent *agentsv1alpha1.Agent,
-	sessionID, task, trigger, scheduleRef string,
-	onDelta func(string),
-) (runResult, error) {
+// for chat, run-now, background fires, channel messages, and delegation.
+func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error) {
+	scope, agent := run.Scope, run.Agent
 	now := time.Now().UTC()
 	if err := s.checkBudget(ctx, scope, agent, now); err != nil {
 		return runResult{}, err
 	}
 
-	model, err := s.buildChatModelCtx(ctx, creds, agent)
+	model, err := s.buildChatModelCtx(ctx, run.Creds, agent)
 	if err != nil {
 		return runResult{}, err
 	}
+	sessionID := run.SessionID
 	if sessionID == "" {
-		sessionID = trigger // e.g. schedules share a per-trigger session
+		sessionID = run.Trigger // e.g. schedules share a per-trigger session
 	}
 
 	runID := uuid.NewString()
+
+	// Assemble the agent's tools for this trigger class (policy + approvals +
+	// audit + delegation); MCP sessions are released when the run ends.
+	toolset, closeTools := s.buildToolset(ctx, tools.Deps{
+		Store: s.store, Scope: scope, Agent: agent, CR: run.CR,
+		Secrets: run.Creds, ConnSecretName: connectionSecretName,
+		RunID: runID,
+	}, run)
+	defer closeTools()
+
+	maxIters := 16
+	if v := int(agent.Spec.Limits.MaxToolTurns); v > 0 {
+		maxIters = min(v, 32)
+	}
+
 	_ = s.store.AppendMessage(ctx, scope, store.Message{
 		ID: uuid.NewString(), AgentName: agent.Name, SessionID: sessionID, RunID: runID,
-		Role: "user", Content: task, CreatedAt: now,
+		Role: "user", Content: run.Task, CreatedAt: now,
 	})
 	_ = s.store.SaveRun(ctx, scope, store.Run{
-		ID: runID, AgentName: agent.Name, SessionID: sessionID, Trigger: trigger,
-		Phase: store.RunPhaseRunning, Input: task, CreatedAt: now, UpdatedAt: now, StartedAt: &now,
+		ID: runID, AgentName: agent.Name, SessionID: sessionID, Trigger: run.Trigger,
+		ParentRunID: run.ParentRunID,
+		Phase:       store.RunPhaseRunning, Input: run.Task, CreatedAt: now, UpdatedAt: now, StartedAt: &now,
 	})
 
-	msgs := s.assembleTurnCtx(ctx, scope, agent, sessionID, task)
-	res, err := s.engine.StreamTurn(ctx, model, msgs, onDelta)
+	msgs := s.assembleTurnCtx(ctx, scope, agent, sessionID, run.Task)
+	res, err := s.engine.StreamTurnWithTools(ctx, model, msgs, toolset, maxIters, run.OnDelta, run.OnTool)
 	end := time.Now().UTC()
 	if err != nil {
 		if run, gerr := s.store.GetRun(ctx, scope, runID); gerr == nil {

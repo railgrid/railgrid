@@ -148,7 +148,11 @@ func (s *Server) runScheduleNow(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "this schedule has no task/checklist to run")
 		return
 	}
-	res, err := s.executeTask(r.Context(), c, id.scope(agent.Name), agent, "schedule:"+name, task, trigger, name, nil)
+	res, err := s.executeTask(r.Context(), taskRun{
+		Creds: c, CR: clientCR{c}, Scope: id.scope(agent.Name), Agent: agent,
+		SessionID: "schedule:" + name, Task: task, Trigger: trigger, SourceName: name,
+		EdgesEndpoint: s.edgesEndpoint(id.clusterID), EdgesToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+	})
 	if err != nil {
 		if s.credentialsError(err) {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", "no model configured — open Model settings to add one")

@@ -46,8 +46,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/channels"
+	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/executor"
 	"github.com/faroshq/provider-agents/llm"
 	"github.com/faroshq/provider-agents/store"
@@ -205,6 +205,7 @@ func (b *background) loop(ctx context.Context) {
 				continue
 			}
 			b.tick(ctx)
+			b.refreshOAuthTokens(ctx)
 		}
 	}
 }
@@ -376,9 +377,25 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	}
 
 	scope := b.scopeFor(ctx, job.ClusterID, agent.Name)
-	res, runErr := b.server.executeTask(ctx, vwSecrets{dyn}, scope, agent, job.SessionID, job.Task, job.Trigger, job.SourceName, nil)
+	res, runErr := b.server.executeTask(ctx, taskRun{
+		Creds: vwSecrets{dyn}, CR: vwCR{dyn}, Scope: scope, Agent: agent,
+		SessionID: job.SessionID, Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
+	})
 
 	b.recordOutcome(ctx, job, res.RunID, runErr)
+
+	// Channel conversations reply through the SOURCE connection — the chat
+	// the user is standing in — not the notify connection.
+	if job.Kind == executor.KindChannel {
+		if runErr != nil {
+			b.replyToChannel(ctx, dyn, job.SourceName, "⚠️ "+runErr.Error())
+			return runErr
+		}
+		if out := strings.TrimSpace(res.Content); out != "" {
+			b.replyToChannel(ctx, dyn, job.SourceName, truncate(out, 3500))
+		}
+		return nil
+	}
 
 	// Notify: schedule/wakeup output always; heartbeat only when actionable.
 	if runErr != nil {
@@ -453,9 +470,15 @@ func (b *background) notify(ctx context.Context, dyn dynamic.Interface, agent *a
 	if connName == "" {
 		return
 	}
+	b.replyToChannel(ctx, dyn, connName, text)
+}
+
+// replyToChannel sends text through a named messaging connection to its
+// configured chat/channel (the outbound half of channel conversations).
+func (b *background) replyToChannel(ctx context.Context, dyn dynamic.Interface, connName, text string) {
 	cu, err := dyn.Resource(agentsclient.ConnectionGVR).Get(ctx, connName, metav1.GetOptions{})
 	if err != nil {
-		log.Printf("background: notify connection %q: %v", connName, err)
+		log.Printf("background: channel connection %q: %v", connName, err)
 		return
 	}
 	conn, err := fromU[agentsv1alpha1.Connection](cu)
@@ -471,7 +494,7 @@ func (b *background) notify(ctx context.Context, dyn dynamic.Interface, agent *a
 	if err := channels.Send(ctx, channels.Message{
 		Type: conn.Spec.Type, Token: token, Target: conn.Spec.Channel, Config: conn.Spec.Config, Text: text,
 	}); err != nil {
-		log.Printf("background: notify via %q failed: %v", connName, err)
+		log.Printf("background: send via %q failed: %v", connName, err)
 	}
 }
 

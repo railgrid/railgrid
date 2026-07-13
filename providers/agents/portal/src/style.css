@@ -193,3 +193,20 @@ kedge-provider-agents .agents-msg-note { font-size: 13px; color: var(--color-tex
   kedge-provider-agents .agents-root { grid-template-columns: 1fr; }
   kedge-provider-agents .agents-grid2 { grid-template-columns: 1fr; }
 }
+
+kedge-provider-agents .agents-webhook { margin-top: 4px; }
+kedge-provider-agents .agents-webhook code { font-size: 10px; word-break: break-all; }
+
+kedge-provider-agents .agents-toolrow {
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-size: 11px; padding: 6px 10px; border-radius: 8px; word-break: break-all;
+  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+  border-left: 2px solid var(--color-accent, #6d4fe0);
+  color: var(--color-text-secondary, inherit);
+  max-width: 90%;
+}
+kedge-provider-agents .agents-msg.tool.err .agents-toolrow {
+  border-left-color: var(--color-danger, #ef4444);
+}
+
+kedge-provider-agents .agents-inbound-on { color: var(--color-success, #10b981); font-weight: 700; }

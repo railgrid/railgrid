@@ -21,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
+	"github.com/faroshq/provider-agents/engine"
 	"github.com/faroshq/provider-agents/llm"
 )
 
@@ -274,10 +275,20 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	res, err := s.executeTask(r.Context(), c, id.scope(name), agent, req.SessionID, req.Message,
-		agentsv1alpha1.RunTriggerChat, "", func(delta string) {
+	res, err := s.executeTask(r.Context(), taskRun{
+		Creds: c, CR: clientCR{c}, Scope: id.scope(name), Agent: agent,
+		SessionID: req.SessionID, Task: req.Message, Trigger: agentsv1alpha1.RunTriggerChat,
+		EdgesEndpoint: s.edgesEndpoint(id.clusterID), EdgesToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+		OnDelta: func(delta string) {
 			sse("delta", map[string]string{"text": delta})
-		})
+		},
+		OnTool: func(ev engine.ToolEvent) {
+			sse("tool", map[string]any{
+				"name": ev.Name, "args": clipArgs(ev.Args), "result": clipArgs(ev.Result),
+				"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
+			})
+		},
+	})
 	if err != nil {
 		if s.credentialsError(err) {
 			sse("error", map[string]string{"message": "no model configured — open Model settings to add one"})
@@ -291,6 +302,17 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		"content": res.Content,
 		"usage":   map[string]int64{"inputTokens": res.Usage.InputTokens, "outputTokens": res.Usage.OutputTokens},
 	})
+}
+
+// edgesEndpoint is the hub's aggregate MCP virtual endpoint for a workspace
+// cluster — the edges tool family (kube + SSH tools) dials it as the calling
+// user. Uses the conventional "default" MCPServer; empty when the hub URL or
+// cluster is unknown.
+func (s *Server) edgesEndpoint(clusterID string) string {
+	if s.cfg.HubURL == "" || clusterID == "" {
+		return ""
+	}
+	return strings.TrimRight(s.cfg.HubURL, "/") + "/services/mcpserver/" + clusterID + "/apis/kedge.faros.sh/v1alpha1/mcpservers/default/mcp"
 }
 
 // errNoCredential signals that an agent has no model credential assigned.

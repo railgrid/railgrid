@@ -29,8 +29,8 @@ interface Schedule {
 }
 interface Connection {
   metadata: { name: string }
-  spec: { type: string; displayName?: string; baseURL?: string; channel?: string }
-  status?: { phase?: string }
+  spec: { type: string; displayName?: string; baseURL?: string; channel?: string; auth?: string }
+  status?: { phase?: string; webhookPath?: string; oauthConnected?: boolean }
 }
 interface Trigger {
   metadata: { name: string }
@@ -46,8 +46,9 @@ interface InboxItem {
   createdAt: string
 }
 interface ChatMessage {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'tool'
   content: string
+  error?: boolean
 }
 
 type Tab = 'agents' | 'schedules' | 'triggers' | 'connections' | 'inbox' | 'models'
@@ -240,6 +241,15 @@ export class AgentsElement extends HTMLElement {
       this._render()
     }
   }
+  private async _setNotify(name: string, notifyConnection: string): Promise<void> {
+    try {
+      await this._send('PUT', `/api/agents/${encodeURIComponent(name)}`, { notifyConnection })
+      await this._loadAgents()
+    } catch (e) {
+      this._error = 'Notify update failed: ' + (e as Error).message
+      this._render()
+    }
+  }
   private async _createCredential(body: Record<string, unknown>): Promise<void> {
     this._modelsMsg = 'Saving…'
     this._render()
@@ -339,6 +349,37 @@ export class AgentsElement extends HTMLElement {
     }
     this._render()
   }
+  private async _oauthConnect(name: string): Promise<void> {
+    try {
+      const res = await this._send<{ authorizeURL: string }>(
+        'POST',
+        `/api/connections/${encodeURIComponent(name)}/oauth/authorize`,
+        { publicBaseURL: location.origin },
+      )
+      window.open(res.authorizeURL, '_blank', 'noopener')
+      this._note = 'Authorize in the opened tab, then refresh Connections.'
+      this._render()
+    } catch (e) {
+      this._note = `OAuth connect failed: ${(e as Error).message}`
+      this._render()
+    }
+  }
+  private async _enableInbound(name: string): Promise<void> {
+    this._note = `Enabling inbound for ${name}…`
+    this._render()
+    try {
+      const res = await this._send<{ webhookURL: string; registered: boolean; note: string }>(
+        'POST',
+        `/api/connections/${encodeURIComponent(name)}/enable-inbound`,
+        { publicBaseURL: location.origin },
+      )
+      this._note = `${res.registered ? '✅' : 'ℹ️'} ${res.note} URL: ${res.webhookURL}`
+      await this._loadConnections()
+    } catch (e) {
+      this._note = `Enable inbound failed: ${(e as Error).message}`
+      this._render()
+    }
+  }
   private async _createTrigger(body: Record<string, unknown>): Promise<void> {
     try {
       await this._send('POST', '/api/triggers', body)
@@ -410,6 +451,16 @@ export class AgentsElement extends HTMLElement {
           if (!ev) continue
           if (ev.event === 'delta' && ev.data?.text) {
             assistant.content += ev.data.text
+            this._render()
+          } else if (ev.event === 'tool' && ev.data?.name) {
+            // Insert the tool row before the (streaming) assistant bubble so
+            // the transcript reads: narration → tool → continued answer.
+            const row: ChatMessage = {
+              role: 'tool',
+              error: !!ev.data.error,
+              content: `${ev.data.name}(${ev.data.args || ''}) → ${ev.data.result || ''}`,
+            }
+            this._messages.splice(this._messages.length - 1, 0, row)
             this._render()
           } else if (ev.event === 'error') {
             this._error = ev.data?.message || 'stream error'
@@ -565,7 +616,10 @@ export class AgentsElement extends HTMLElement {
             this._messages.length
               ? this._messages
                   .map(
-                    (m) => `<div class="agents-msg ${m.role}"><div class="agents-role">${m.role}</div><div class="agents-body">${escapeHTML(m.content) || (this._streaming && m.role === 'assistant' ? '…' : '')}</div></div>`,
+                    (m) =>
+                      m.role === 'tool'
+                        ? `<div class="agents-msg tool ${m.error ? 'err' : ''}"><div class="agents-toolrow">🔧 ${escapeHTML(m.content)}</div></div>`
+                        : `<div class="agents-msg ${m.role}"><div class="agents-role">${m.role}</div><div class="agents-body">${escapeHTML(m.content) || (this._streaming && m.role === 'assistant' ? '…' : '')}</div></div>`,
                   )
                   .join('')
               : `<p class="muted">No messages yet. Say hi.</p>`
@@ -578,7 +632,7 @@ export class AgentsElement extends HTMLElement {
     this.querySelectorAll<HTMLElement>('.agents-item').forEach((el) =>
       el.addEventListener('click', (e) => {
         const t = e.target as HTMLElement
-        if (t.dataset.del || t.dataset.reassign || t.closest('[data-reassign]')) return
+        if (t.dataset.del || t.dataset.reassign || t.dataset.notify || t.closest('[data-reassign],[data-notify]')) return
         this._select(el.dataset.name!)
       }),
     )
@@ -628,7 +682,7 @@ export class AgentsElement extends HTMLElement {
     return `
       <div class="agents-panel">
         <h3>Schedules</h3>
-        <p class="muted">Cron and heartbeat schedules run an agent on a timer; wakeups fire once. Use <strong>Run now</strong> to test. (Autonomous background firing is wired via the scheduler service.)</p>
+        <p class="muted">Cron and heartbeat schedules fire autonomously on the provider's clock (cadence ~30s); wakeups fire once at their time. Use <strong>Run now</strong> to test immediately. Set a <em>notify</em> connection on the agent to receive background output on Telegram/Slack/email.</p>
         <table class="agents-table">
           <thead><tr><th>Name</th><th>Agent</th><th>Type</th><th>Schedule</th><th>Next</th><th></th></tr></thead>
           <tbody>
@@ -694,7 +748,7 @@ export class AgentsElement extends HTMLElement {
     return `
       <div class="agents-panel">
         <h3>Connections</h3>
-        <p class="muted">Named credentials for external systems. Tool families and channels light up per agent from these. The secret is stored in a Secret in your workspace.</p>
+        <p class="muted">Named credentials for external systems. Tool families and channels light up per agent from these; the secret lives in a Secret in your workspace. For Telegram/Slack, <strong>Inbound</strong> lets you chat with an agent from the channel — messages route to the agent whose <em>notify</em> dropdown points at that connection (commands: <code>/new</code>, <code>/status</code>).</p>
         <table class="agents-table">
           <thead><tr><th>Name</th><th>Type</th><th>Endpoint / channel</th><th></th></tr></thead>
           <tbody>
@@ -704,9 +758,15 @@ export class AgentsElement extends HTMLElement {
                     .map(
                       (c) => `<tr>
                         <td>${escapeHTML(c.spec.displayName || c.metadata.name)}</td>
-                        <td>${escapeHTML(c.spec.type)}</td>
-                        <td>${escapeHTML(c.spec.baseURL || c.spec.channel || '—')}</td>
-                        <td class="agents-row-actions">${['telegram', 'slack', 'smtp'].includes(c.spec.type) ? `<button data-testconn="${escapeHTML(c.metadata.name)}">Test</button>` : ''}<button class="secondary" data-delconn="${escapeHTML(c.metadata.name)}">Delete</button></td>
+                        <td>${escapeHTML(c.spec.type)}${c.status?.webhookPath ? ` <span class="agents-inbound-on" title="Inbound enabled">⇄</span>` : ''}${c.status?.oauthConnected ? ` <span class="agents-inbound-on" title="OAuth connected">🔗</span>` : ''}</td>
+                        <td>${escapeHTML(c.spec.baseURL || c.spec.channel || '—')}${c.status?.webhookPath ? `<div class="agents-webhook"><code title="Platform events POST here">${escapeHTML(c.status.webhookPath)}</code></div>` : ''}</td>
+                        <td class="agents-row-actions">${
+                          c.spec.auth === 'oauth' ? `<button data-oauth="${escapeHTML(c.metadata.name)}" title="Authorize with the provider">Connect</button>` : ''
+                        }${
+                          ['telegram', 'slack'].includes(c.spec.type)
+                            ? `<button data-inbound="${escapeHTML(c.metadata.name)}" title="Chat with the bound agent from this channel">Inbound</button>`
+                            : ''
+                        }${['telegram', 'slack', 'smtp'].includes(c.spec.type) ? `<button data-testconn="${escapeHTML(c.metadata.name)}">Test</button>` : ''}<button class="secondary" data-delconn="${escapeHTML(c.metadata.name)}">Delete</button></td>
                       </tr>`,
                     )
                     .join('')
@@ -721,8 +781,14 @@ export class AgentsElement extends HTMLElement {
             <label>Type<select name="type">${CONNECTION_TYPES.map((t) => `<option value="${t}">${t}</option>`).join('')}</select></label>
             <label>Base URL / endpoint<input name="baseURL" placeholder="https://api.githubcopilot.com/mcp" /></label>
             <label>Channel / chat id<input name="channel" placeholder="(telegram/slack/smtp)" /></label>
+            <label>Auth<select name="auth"><option value="secret">Token (paste)</option><option value="oauth">OAuth app (Connect flow)</option></select></label>
+            <label class="agents-oauth-only" hidden>OAuth provider<select name="oauthProvider"><option value="github">github</option><option value="google">google</option><option value="slack">slack</option></select></label>
           </div>
-          <label>Secret (token / API key / bot token)<input name="secret" type="password" autocomplete="off" placeholder="stored in kedge-agents-conn-<name>" /></label>
+          <label class="agents-secret-only">Secret (token / API key / bot token)<input name="secret" type="password" autocomplete="off" placeholder="stored in kedge-agents-conn-<name>" /></label>
+          <div class="agents-grid2 agents-oauth-only" hidden>
+            <label>Client ID<input name="clientID" autocomplete="off" /></label>
+            <label>Client secret<input name="clientSecret" type="password" autocomplete="off" /></label>
+          </div>
           <button>Create connection</button>
         </form>
       </div>`
@@ -734,11 +800,26 @@ export class AgentsElement extends HTMLElement {
       }),
     )
     this.querySelectorAll<HTMLElement>('[data-testconn]').forEach((el) => el.addEventListener('click', () => void this._testConnection(el.dataset.testconn!)))
+    this.querySelectorAll<HTMLElement>('[data-inbound]').forEach((el) => el.addEventListener('click', () => void this._enableInbound(el.dataset.inbound!)))
+    this.querySelectorAll<HTMLElement>('[data-oauth]').forEach((el) => el.addEventListener('click', () => void this._oauthConnect(el.dataset.oauth!)))
     const f = this.querySelector<HTMLFormElement>('.agents-conn-form')
-    f?.addEventListener('submit', (e) => {
+    if (!f) return
+    const authSel = f.querySelector<HTMLSelectElement>('select[name=auth]')!
+    const syncAuth = () => {
+      const oauth = authSel.value === 'oauth'
+      f.querySelectorAll<HTMLElement>('.agents-oauth-only').forEach((el) => (el.hidden = !oauth))
+      f.querySelectorAll<HTMLElement>('.agents-secret-only').forEach((el) => (el.hidden = oauth))
+    }
+    authSel.addEventListener('change', syncAuth)
+    syncAuth()
+    f.addEventListener('submit', (e) => {
       e.preventDefault()
       const g = (n: string) => (f.querySelector<HTMLInputElement | HTMLSelectElement>(`[name=${n}]`)?.value || '').trim()
-      void this._createConnection({ name: g('name'), type: g('type'), baseURL: g('baseURL'), channel: g('channel'), secret: g('secret') })
+      void this._createConnection({
+        name: g('name'), type: g('type'), baseURL: g('baseURL'), channel: g('channel'),
+        secret: g('secret'), auth: g('auth'),
+        oauthProvider: g('oauthProvider'), clientID: g('clientID'), clientSecret: g('clientSecret'),
+      })
     })
   }
 
@@ -761,7 +842,7 @@ export class AgentsElement extends HTMLElement {
                       (t) => `<tr>
                         <td>${escapeHTML(t.metadata.name)}${t.spec.suspend ? ' <span class="muted">(suspended)</span>' : ''}</td>
                         <td>${escapeHTML(t.spec.agentRef)}</td>
-                        <td>${escapeHTML(t.spec.source)}</td>
+                        <td>${escapeHTML(t.spec.source)}${t.status?.webhookPath ? `<div class="agents-webhook"><code title="POST an event payload here">${escapeHTML(t.status.webhookPath)}</code></div>` : ''}</td>
                         <td>${escapeHTML(t.spec.connectionRef || '—')}</td>
                         <td class="agents-row-actions"><button data-firetrig="${escapeHTML(t.metadata.name)}">Fire</button><button class="secondary" data-deltrig="${escapeHTML(t.metadata.name)}">Delete</button></td>
                       </tr>`,

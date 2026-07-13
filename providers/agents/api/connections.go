@@ -44,6 +44,14 @@ type createConnectionRequest struct {
 	// Secret is the connection credential (PAT, API key, bot token). Written to
 	// a per-connection Secret; never returned on reads.
 	Secret string `json:"secret,omitempty"`
+	// Auth: "secret" (default, pasted token) or "oauth" (Connect flow using an
+	// OAuth app the user brings).
+	Auth string `json:"auth,omitempty"`
+	// OAuth app credentials + provider (github|google|slack) for auth: oauth.
+	OAuthProvider string   `json:"oauthProvider,omitempty"`
+	OAuthScopes   []string `json:"oauthScopes,omitempty"`
+	ClientID      string   `json:"clientID,omitempty"`
+	ClientSecret  string   `json:"clientSecret,omitempty"`
 }
 
 func connectionSecretName(conn string) string { return "kedge-agents-conn-" + conn }
@@ -76,14 +84,31 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 
 	secretRef := connectionSecretName(req.Name)
 
-	// Write the credential Secret first (best-effort create-or-update) so the
-	// Connection references a populated Secret.
+	// Write the credential Secret first so the Connection references a
+	// populated Secret. Token auth stores the pasted secret; OAuth stores the
+	// user's OAuth-app credentials (the Connect flow adds the tokens later).
+	auth := strings.TrimSpace(req.Auth)
+	if auth == "" {
+		auth = "secret"
+	}
+	secretData := map[string]string{}
 	if strings.TrimSpace(req.Secret) != "" {
+		secretData["token"] = strings.TrimSpace(req.Secret)
+	}
+	if auth == "oauth" {
+		if strings.TrimSpace(req.ClientID) == "" || strings.TrimSpace(req.ClientSecret) == "" {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "oauth connections need clientID and clientSecret (from your OAuth app)")
+			return
+		}
+		secretData["client_id"] = strings.TrimSpace(req.ClientID)
+		secretData["client_secret"] = strings.TrimSpace(req.ClientSecret)
+	}
+	if len(secretData) > 0 {
 		sec := &corev1.Secret{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 			ObjectMeta: metav1.ObjectMeta{Name: secretRef, Namespace: llm.SecretNamespace},
 			Type:       corev1.SecretTypeOpaque,
-			StringData: map[string]string{"token": strings.TrimSpace(req.Secret)},
+			StringData: secretData,
 		}
 		if _, err := c.ApplySecret(r.Context(), sec); err != nil {
 			writeResourceError(w, err)
@@ -96,12 +121,23 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 		Spec: agentsv1alpha1.ConnectionSpec{
 			Type:        req.Type,
 			DisplayName: req.DisplayName,
-			Auth:        "secret",
+			Auth:        auth,
 			SecretRef:   secretRef,
 			BaseURL:     req.BaseURL,
 			Channel:     req.Channel,
 			Config:      req.Config,
 		},
+	}
+	if auth == "oauth" {
+		provider := strings.TrimSpace(req.OAuthProvider)
+		if provider == "" && req.Type == agentsv1alpha1.ConnectionTypeGitHub {
+			provider = "github"
+		}
+		if provider == "" {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "oauthProvider is required (github, google, or slack)")
+			return
+		}
+		conn.Spec.OAuth = &agentsv1alpha1.ConnectionOAuth{Provider: provider, Scopes: req.OAuthScopes}
 	}
 	out, err := c.Connections().Create(r.Context(), conn, metav1.CreateOptions{})
 	if err != nil {

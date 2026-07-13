@@ -61,41 +61,89 @@ Inbox, Models.
   message.
 - **Approvals inbox surface** — list + approve/deny API and tab (populated once
   the tool loop raises approvals — see gaps).
+- **Background executor** — schedules fire **autonomously**. The provider reads
+  its APIExportEndpointSlice (via `KEDGE_PROVIDER_KUBECONFIG`) to discover the
+  APIExport virtual workspace, polls `AgentSchedule` CRs across all bound tenant
+  workspaces (~30s, `AGENTS_SCHEDULER_INTERVAL`), claims each fire with an
+  optimistic status update (multi-replica safe), and executes through an
+  **interface-based executor** (`executor` package: serializable `Job` +
+  `Handler`; in-process worker pool today, deliberately swappable for a durable
+  engine like Temporal later). Includes timezone-aware cron, one-shot wakeups,
+  quiet heartbeats (notify only when actionable), disable-after-5-failures, and
+  per-job watchdog timeouts.
+- **Background notify** — output/failure of background runs is delivered to the
+  agent's `defaultNotifyConnection` (Telegram/Slack/SMTP), settable per agent in
+  the UI.
+- **Trigger webhooks (inbound)** — webhook/github triggers get an HMAC-tokenized
+  URL (shown in the Triggers tab): external `POST`s fire the agent with the
+  event payload, no tenant auth needed.
+
+- **Tool loop** — agents call tools mid-conversation via a real tool-call loop
+  in the engine (bind → call → observe → continue, bounded by
+  `limits.maxToolTurns`, default 16). Families shipped:
+  - `core`: `memory_save/list`, `schedule_create` (cron/wakeup — agents
+    schedule *themselves*), `schedules_list`, `notify`, `ask` (posts a question
+    to the inbox + channel).
+  - `web`: `web_fetch` (SSRF-guarded at dial time — blocks private/loopback,
+    defeats DNS rebinding) and `web_search` (Brave-compatible `websearch`
+    connection).
+  - `mcp`/`github`: any `mcp` connection is dialed via the official MCP Go SDK
+    and its tools exposed as `<connection>__<tool>`; a `github` connection with
+    a PAT gets the hosted GitHub MCP server's full toolset with zero config.
+  Per-trigger policy applies (interactive: all families by default; background:
+  core+web only — connection-backed families need explicit grants), every call
+  lands in the audit log, `requireApproval` patterns gate tools through the
+  inbox (approve once → one call), and tool calls render live in the chat UI.
+
+- **Channel inbound** — chat with an agent *from* Telegram/Slack. Each
+  messaging connection gets an HMAC-tokenized inbound webhook (**Inbound**
+  button on the Connections tab; Telegram is registered automatically via
+  `setWebhook`, Slack shows the URL to paste into Event Subscriptions).
+  Messages route to the agent whose *notify* dropdown points at the connection
+  (override: connection config `agent`), run with the full interactive
+  toolset, and reply in the same chat. Loop protection (bot messages ignored),
+  configured-chat-only security, and `/new` + `/status` session commands.
+
+- **Approvals + questions over the channel** — approval requests push to the
+  agent's channel; `/inbox` lists pending items, `/approve N` / `/deny N`
+  resolve approvals (one approval authorizes one tool call), `/answer N <text>`
+  answers agent questions — all from Telegram/Slack.
+- **Sub-agent delegation** — the `delegate` tool: agents listed in
+  `spec.delegates` can be handed a scoped task; the child runs through the
+  same execution path with `parentRunID` lineage, its usage rolls into the
+  parent's budget, fan-out is capped at 3 per run, and delegated runs cannot
+  delegate further (depth 1).
+- **OAuth connections** — `auth: oauth` with GitHub/Google/Slack presets:
+  bring your OAuth app (client id/secret), click **Connect**, authorize, and
+  the callback stores access+refresh tokens in the connection Secret under
+  the same `token` key the tool families read. The background loop refreshes
+  tokens ~15min before expiry. State is HMAC-signed (no server-side session).
+- **Edges family** — the hub's aggregate MCP endpoint (kube clusters + SSH
+  servers, MCPServer "default") exposed as `edges__*` tools, dialed as the
+  calling user. Interactive runs only (background runs have no user token).
 
 ### Not yet implemented
 
-These are designed below but not built. They fall into a few dependency groups:
+These are designed below but not built:
 
-1. **Background executor (the big one).** The provider cannot yet execute a run
-   *without* an incoming user request, because that needs a provider-service-
-   account, cross-tenant client (the `providers/infrastructure/controller_manager.go`
-   pattern: a controller-runtime manager watching CRs across bound tenant
-   workspaces via the APIExport virtual workspace). Everything autonomous waits
-   on this one piece:
-   - **Autonomous schedule firing** — cron/wakeup/heartbeat schedules only run
-     via "Run now" today; the timed in-process scheduler (claims, backoff,
-     watchdog, timezone) is not wired.
-   - **Trigger webhooks** — `AgentTrigger` webhook/channel/github sources have no
-     inbound endpoint firing runs yet; only "Fire now" works.
-   - **Channel inbound** — messaging connections can send (notify) but do not yet
-     receive (webhook → chat run), so you can't chat with an agent *from*
-     Telegram/Slack.
-2. **Tool loop.** Agents cannot yet *call* tools mid-conversation. The tool
-   families (`core`, `web`, `github`, `mcp`, `files`, `edges`), per-trigger tool
-   policy, and autonomy gating are unbuilt. Connections are stored but not
-   executed. This also gates:
-   - **Sub-agent delegation** (the `delegate`/`ask` core tools).
-   - **Inbox population** — approvals/questions only appear once tools that need
-     sign-off run.
-   - **Heartbeat usefulness** — heartbeats run a prompt but have no tools to
-     check anything with.
-3. **OAuth connections.** `Connection.auth: oauth` + the authorize/callback/
-   refresh flow and the `agents_oauth` state table are unbuilt; connections use
-   pasted secrets (`auth: secret`) only.
-4. **Postgres store backend.** Only the in-memory backend exists
-   (`store/memory.go`); `store/postgres.go` is not written, so transcripts,
-   runs, memory, inbox, and usage **do not survive a provider restart**. Dev
-   runs with `AGENTS_IN_MEMORY_STORE=true`.
+1. **Files family (M9).** Blocked on the `agent-workspace` Template landing in
+   the **infrastructure provider** (PVC + file-access pod + dataplane
+   subresources — the sandbox-runner successor). The agents-side tool family
+   is straightforward once that exists.
+2. **Channel niceties.** `/compact`, inbound email, Slack signing-secret
+   verification (URL token is the auth today), multi-chat routing.
+3. **Tool-loop leftovers.** Resumable approval-interrupted runs (an
+   approval-gated call still returns "approve and retry" instead of
+   pausing/resuming) and auto-injected memories (recalled via `memory_list`
+   today). Trigger filters/idempotency remain minimal.
+4. ~~Postgres store backend~~ — **built.** `store/postgres.go` implements the
+   full Store (transcripts, runs, memories, inbox, audit, usage, tenant refs)
+   with idempotent schema creation; selected automatically when
+   `AGENTS_DATABASE_URL` is set. Dev runs get a local container via
+   `make agents-db-up` (port 55434 — 55432/55433 are app-studio/kuery), wired
+   as the `agents-db` Tilt resource. Verified against a live database
+   (integration tests gated on `AGENTS_TEST_POSTGRES_DSN`). Still missing
+   here: at-rest encryption of message/memory content.
 5. **Model providers beyond OpenAI-compatible.** `llm.BuildModel` implements
    only the OpenAI-compatible path (covers OpenAI, Anthropic via its compat
    endpoint, OpenRouter, …). Native Gemini/Vertex is unbuilt.
@@ -441,23 +489,26 @@ reflect the 2026-07-12 state (see [Implementation status](#implementation-status
    **Done** except: Postgres backend (in-memory only), tool approvals in chat
    (needs the tool loop), at-rest encryption. Model creds became *named
    credentials* (own Secret each), not the single `kedge-agents-llm`.
-3. ◑ **Scheduler** — `AgentSchedule` CRUD + tab + synchronous **Run now** done.
-   **Not done:** the timed in-process scheduler (claims, backoff, watchdog,
-   timezone firing) — needs the background executor.
-4. ◑ **Tools + policy** — `Connection` CRUD + tab done. **Not done:** the tool
-   loop itself (`core`/`web`/`github`/`mcp` families actually executing),
-   per-trigger policy, `autonomy` gating, audit-log wiring.
-5. ◑ **Delegation + inbox** — inbox API + tab (list/approve/deny) done.
-   **Not done:** sub-agent delegation (`delegate`/`ask`, `parentRunID`, budget
-   rollup) and inbox *population* — both need the tool loop.
-6. ◑ **Channels + heartbeats** — outbound notify (Telegram/Slack/SMTP) + a
-   per-connection **Test** send done. **Not done:** inbound webhook (chat from a
-   channel), approvals over channel, the heartbeat *behavior* (needs tools),
-   session commands.
-7. ◑ **Event triggers + OAuth** — `AgentTrigger` CRUD + tab + **Fire now** done.
-   **Not done:** the inbound webhook endpoints that fire runs (background
-   executor), filters/idempotency, and the entire OAuth flow (authorize +
-   callback + refresh, `agents_oauth` table).
+3. ✅ **Scheduler** — CRUD + tab + Run now, and **autonomous firing** via the
+   background executor: timezone-aware cron/wakeup/heartbeat, optimistic status
+   claims, watchdog timeout, disable-after-5-failures. (Exponential retry
+   backoff between failures is simplified to fail-and-count.)
+4. ✅ **Tools + policy** — the tool loop executes `core`/`web`/`github`/`mcp`
+   families with per-trigger policy defaults, `requireApproval` gating through
+   the inbox, and audit logging; tool calls render live in chat. (`autonomy`
+   field not yet enforced beyond the interactive/background split.)
+5. ◑ **Delegation + inbox** — inbox API + tab done and now *populated* (the
+   `ask` tool and approval-gated tools post items). **Not done:** sub-agent
+   delegation (`delegate`, `parentRunID` lineage, budget rollup) and
+   pause/resume on approval.
+6. ✅ **Channels + heartbeats** — outbound notify (Telegram/Slack/SMTP), Test
+   send, background-run delivery, quiet heartbeats, **inbound chat from
+   Telegram/Slack** (webhook + routing + replies), and `/new`/`/status`
+   session commands. (Approvals *over the channel* and `/compact` remain.)
+7. ◑ **Event triggers + OAuth** — CRUD + tab + **Fire now** + **inbound
+   HMAC-tokenized webhooks** (external POST → run, URL shown in the UI) done.
+   **Not done:** filters/idempotency, channel/connection event subscriptions,
+   and the entire OAuth flow (authorize + callback + refresh, `agents_oauth`).
 8. ✅ **Budgets** — per-agent token/USD caps enforced before every run, with a
    clear over-budget message. (Compaction and usage *alerts* not built.)
 9. ⬜ **Workspace + GitHub** — `agent-workspace` Template in infrastructure,

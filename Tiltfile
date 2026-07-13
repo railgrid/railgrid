@@ -379,8 +379,17 @@ local_resource(
 
 # --- providers-agents ---
 # Long-running personal AI agents (chat, scheduled runs, tools, durable memory).
-# Standalone: only hard deps are the hub and a store (in-memory in dev until the
-# Postgres backend is wired). No app-studio/infrastructure dependency.
+# Standalone: only hard deps are the hub and the durable store (local Postgres
+# container via agents-db). No app-studio/infrastructure dependency.
+local_resource(
+    'agents-db',
+    cmd='make agents-db-up',
+    deps=[
+        'providers/agents/.env',
+    ],
+    labels=['providers-agents'],
+)
+
 local_resource(
     'agents',
     cmd='make build-agents-provider',
@@ -395,6 +404,8 @@ local_resource(
         'providers/agents/apis',
         'providers/agents/client',
         'providers/agents/engine',
+        'providers/agents/executor',
+        'providers/agents/tools',
         'providers/agents/llm',
         'providers/agents/store',
         'providers/agents/tenant',
@@ -405,7 +416,7 @@ local_resource(
         'providers/agents/portal/vite.config.ts',
         'providers/agents/.env',
     ],
-    resource_deps=['hub'],
+    resource_deps=['hub', 'agents-db'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8087, path='/healthz'),
@@ -439,6 +450,14 @@ local_resource(
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
+    labels=['providers-agents'],
+)
+
+local_resource(
+    'agents-db-down',
+    cmd='make agents-db-down',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
     labels=['providers-agents'],
 )
 

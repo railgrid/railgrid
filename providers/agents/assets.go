@@ -42,7 +42,7 @@ func withPortal(apiHandler http.Handler) (http.Handler, error) {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// API, health, and inbound webhooks are owned by the API handler.
-		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/webhooks/") || r.URL.Path == "/healthz" {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/webhooks/") || strings.HasPrefix(r.URL.Path, "/oauth/") || r.URL.Path == "/healthz" {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}

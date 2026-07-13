@@ -72,3 +72,98 @@ func TestStreamTurn_NilModel(t *testing.T) {
 		t.Fatal("expected error for nil model")
 	}
 }
+
+// toolMockModel implements ToolCallingChatModel: the first response asks for a
+// tool call, the second (after the observation) produces the final answer.
+type toolMockModel struct {
+	mockModel
+	calls      int
+	boundTools []*schema.ToolInfo
+	sawToolMsg bool
+}
+
+func (m *toolMockModel) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCallingChatModel, error) {
+	m.boundTools = tools
+	return m, nil
+}
+
+func (m *toolMockModel) Stream(_ context.Context, in []*schema.Message, _ ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.calls++
+	for _, msg := range in {
+		if msg.Role == schema.Tool {
+			m.sawToolMsg = true
+		}
+	}
+	if m.calls == 1 {
+		idx := 0
+		return schema.StreamReaderFromArray([]*schema.Message{
+			{Role: schema.Assistant, Content: "Checking… "},
+			{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+				Index: &idx, ID: "tc-1",
+				Function: schema.FunctionCall{Name: "get_weather", Arguments: `{"city":"Vilnius"}`},
+			}}},
+		}), nil
+	}
+	return schema.StreamReaderFromArray([]*schema.Message{
+		{Role: schema.Assistant, Content: "It is sunny in Vilnius.", ResponseMeta: &schema.ResponseMeta{
+			Usage: &schema.TokenUsage{PromptTokens: 20, CompletionTokens: 6},
+		}},
+	}), nil
+}
+
+func TestStreamTurnWithTools_ExecutesToolAndContinues(t *testing.T) {
+	m := &toolMockModel{}
+	var toolEvents []ToolEvent
+	var gotArgs string
+
+	res, err := New().StreamTurnWithTools(context.Background(), m,
+		[]Message{{Role: RoleUser, Content: "weather in vilnius?"}},
+		[]Tool{{
+			Name: "get_weather", Desc: "current weather",
+			Params: map[string]Param{"city": {Type: "string", Desc: "city name", Required: true}},
+			Exec: func(_ context.Context, args string) (string, error) {
+				gotArgs = args
+				return "sunny, 24C", nil
+			},
+		}},
+		8, nil, func(ev ToolEvent) { toolEvents = append(toolEvents, ev) })
+	if err != nil {
+		t.Fatalf("StreamTurnWithTools: %v", err)
+	}
+	if m.calls != 2 {
+		t.Fatalf("model called %d times, want 2 (tool round-trip)", m.calls)
+	}
+	if !m.sawToolMsg {
+		t.Fatal("tool observation was not fed back to the model")
+	}
+	if gotArgs != `{"city":"Vilnius"}` {
+		t.Fatalf("tool got args %q", gotArgs)
+	}
+	if len(toolEvents) != 1 || toolEvents[0].Name != "get_weather" || toolEvents[0].Err {
+		t.Fatalf("tool events wrong: %+v", toolEvents)
+	}
+	if !strings.Contains(res.Content, "sunny in Vilnius") {
+		t.Fatalf("final content %q", res.Content)
+	}
+	if len(m.boundTools) != 1 || m.boundTools[0].Name != "get_weather" {
+		t.Fatalf("tools not bound: %+v", m.boundTools)
+	}
+	if res.Usage.OutputTokens != 6 {
+		t.Fatalf("usage %+v", res.Usage)
+	}
+}
+
+func TestStreamTurnWithTools_UnknownToolReportsError(t *testing.T) {
+	m := &toolMockModel{}
+	var evs []ToolEvent
+	_, err := New().StreamTurnWithTools(context.Background(), m,
+		[]Message{{Role: RoleUser, Content: "hi"}},
+		[]Tool{{Name: "other_tool", Desc: "x", Exec: func(context.Context, string) (string, error) { return "", nil }}},
+		8, nil, func(ev ToolEvent) { evs = append(evs, ev) })
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(evs) != 1 || !evs[0].Err || !strings.Contains(evs[0].Result, "unknown tool") {
+		t.Fatalf("expected unknown-tool error event, got %+v", evs)
+	}
+}

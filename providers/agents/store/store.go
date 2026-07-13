@@ -194,6 +194,8 @@ type Store interface {
 	AppendMessage(ctx context.Context, scope Scope, msg Message) error
 	ListMessages(ctx context.Context, scope Scope, sessionID string, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, sessionID string, limit int) ([]Message, error)
+	// DeleteSession wipes one session's transcript (the "/new" channel command).
+	DeleteSession(ctx context.Context, scope Scope, sessionID string) error
 
 	// Runs (durable, resumable).
 	SaveRun(ctx context.Context, scope Scope, run Run) error

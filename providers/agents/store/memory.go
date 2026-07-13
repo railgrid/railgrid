@@ -144,6 +144,16 @@ func (m *MemoryStore) LoadRecentMessages(_ context.Context, scope Scope, session
 	return all, nil
 }
 
+func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID string) error {
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.messages, sessionKey(scope, sessionID))
+	return nil
+}
+
 func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	if err := scope.withAgent(); err != nil {
 		return err
