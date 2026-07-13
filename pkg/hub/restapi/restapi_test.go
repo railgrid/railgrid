@@ -306,9 +306,25 @@ func newTestManager(t *testing.T, objects ...runtime.Object) (*Manager, *fakeOps
 	// underlying client). Lets us seed UMI objects whose default
 	// pluralization (usermembershipindexs) wouldn't match the
 	// canonical GVR (usermembershipindices).
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind)
-	client := kedgeclient.NewFromDynamic(dyn)
+	// Users are seeded as typed objects at construction so the fake's
+	// typed List reactor can convert them back — resolveUser relies on
+	// List for email/rbacIdentity lookups. Objects seeded post-hoc via
+	// the dynamic client's Create (below) are stored unstructured, which
+	// the fake's typed List can't convert. Org/UMI don't need List, and
+	// UMI in particular must be seeded via Create to dodge the fake's
+	// default (wrong) pluralization — see the comment above.
+	var typedSeed []runtime.Object
+	var createSeed []runtime.Object
 	for _, obj := range objects {
+		if _, isUser := obj.(*tenancyv1alpha1.User); isUser {
+			typedSeed = append(typedSeed, obj)
+		} else {
+			createSeed = append(createSeed, obj)
+		}
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind, typedSeed...)
+	client := kedgeclient.NewFromDynamic(dyn)
+	for _, obj := range createSeed {
 		seedObject(t, client, obj)
 	}
 	ops := newFakeOps()
@@ -591,7 +607,11 @@ func TestAddOrgMembership_UpdatesCRAndUMI(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
 		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
 	}
-	mgr, ops, _ := newTestManager(t, org)
+	bob := &tenancyv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "bob"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "bob@example.com"},
+	}
+	mgr, ops, _ := newTestManager(t, org, bob)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
 	defer srv.Close()
 
@@ -610,6 +630,114 @@ func TestAddOrgMembership_UpdatesCRAndUMI(t *testing.T) {
 	idx, _ := mgr.client.UserMembershipIndices().Get(context.Background(), "bob", metav1.GetOptions{})
 	if len(idx.Spec.Entries) != 1 || idx.Spec.Entries[0].Role != "member" {
 		t.Errorf("UMI: %#v", idx)
+	}
+}
+
+// TestAddOrgMembership_ResolvesEmail covers the prod bug where an admin
+// typed an email into "Add member": the email must resolve to the User
+// CR name so the Membership CR / UMI are named with a valid RFC1123
+// name instead of tripping a kcp Invalid error (opaque 400).
+func TestAddOrgMembership_ResolvesEmail(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+	}
+	bob := &tenancyv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "user-bob"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "Bob@Example.com", RBACIdentity: "kedge:bob@example.com"},
+	}
+	mgr, ops, _ := newTestManager(t, org, bob)
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+	defer srv.Close()
+
+	// Mixed-case email exercises the case-insensitive match.
+	body, _ := json.Marshal(MembershipAddRequest{User: "bob@example.com", Role: "admin"})
+	resp, err := http.Post(srv.URL+"/api/orgs/org-a/memberships", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("status: got %d, want 201", resp.StatusCode)
+	}
+	// Everything must be keyed on the User CR name, not the email.
+	if ops.orgMemberships["org-a"]["user-bob"] != "admin" {
+		t.Errorf("membership not keyed by User name: %v", ops.orgMemberships)
+	}
+	idx, err := mgr.client.UserMembershipIndices().Get(context.Background(), "user-bob", metav1.GetOptions{})
+	if err != nil || len(idx.Spec.Entries) != 1 {
+		t.Errorf("UMI not named after User CR: %#v (err %v)", idx, err)
+	}
+}
+
+// TestAddOrgMembership_UnknownUser404 asserts an unresolvable identifier
+// gets a clean 404 rather than a leaked kcp error.
+func TestAddOrgMembership_UnknownUser404(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+	}
+	mgr, _, _ := newTestManager(t, org)
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+	defer srv.Close()
+
+	body, _ := json.Marshal(MembershipAddRequest{User: "nobody@example.com", Role: "member"})
+	resp, err := http.Post(srv.URL+"/api/orgs/org-a/memberships", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestWorkspaceMembership_AddGrantsAccess covers granting a user access
+// to an existing workspace: the add path resolves the email, writes a
+// workspace-scope UMI row (keyed by the User CR name), and grants the
+// matching kcp RBAC so the GraphQL gateway lets them in.
+//
+// The list projection (listWorkspaceMemberships across all UMIs) can't
+// be exercised here: dynamicfake's typed List can't convert objects
+// created at runtime via the dynamic client (they're stored
+// unstructured — Get works, typed List doesn't). Against real kcp the
+// dynamic client returns an UnstructuredList that round-trips fine.
+func TestWorkspaceMembership_AddGrantsAccess(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+	}
+	bob := &tenancyv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "user-bob"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "bob@example.com", RBACIdentity: "kedge:bob@example.com"},
+	}
+	mgr, ops, _ := newTestManager(t, org, bob)
+	// The workspace must exist for the RBAC grant + display-name lookup.
+	if err := ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1"); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	// Add by email — must resolve to the User CR name.
+	body, _ := json.Marshal(MembershipAddRequest{User: "bob@example.com", Role: "member"})
+	resp, err := http.Post(srv.URL+"/api/orgs/org-a/workspaces/ws-1/memberships", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("add status: got %d, want 201", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// kcp RBAC granted under the resolved rbacIdentity.
+	if !ops.workspaceAdmins[wsKey{"org-a", "ws-1"}]["kedge:bob@example.com"] {
+		t.Errorf("workspace RBAC not granted: %v", ops.workspaceAdmins)
+	}
+	// UMI ws-scope row keyed by User CR name.
+	idx, err := mgr.client.UserMembershipIndices().Get(context.Background(), "user-bob", metav1.GetOptions{})
+	if err != nil || len(idx.Spec.Entries) != 1 || idx.Spec.Entries[0].WorkspaceUUID != "ws-1" {
+		t.Errorf("UMI ws-row missing: %#v (err %v)", idx, err)
 	}
 }
 

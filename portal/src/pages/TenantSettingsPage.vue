@@ -371,6 +371,90 @@ async function onLeaveOrg() {
   }
 }
 
+// ===== Workspace members (scoped to the active workspace) =====
+
+const wsMembers = ref<MemberRow[]>([])
+const wsMembersLoading = ref(false)
+const newWsMemberUser = ref('')
+const newWsMemberRole = ref<'admin' | 'member'>('member')
+const wsMemberBusy = ref<Record<string, boolean>>({})
+
+async function reloadWsMembers() {
+  if (!tenant.orgUUID || !tenant.workspaceUUID) {
+    wsMembers.value = []
+    return
+  }
+  wsMembersLoading.value = true
+  try {
+    wsMembers.value = await tenant.listWorkspaceMembers(tenant.orgUUID, tenant.workspaceUUID)
+  } finally {
+    wsMembersLoading.value = false
+  }
+}
+
+// Reload when the Members tab is active and the org/workspace changes.
+watch([() => tenant.orgUUID, () => tenant.workspaceUUID, tab], async ([org, ws, t]) => {
+  if (t === 'members' && org && ws) await reloadWsMembers()
+})
+
+async function onAddWsMember() {
+  const u = newWsMemberUser.value.trim()
+  if (!u || !tenant.orgUUID || !tenant.workspaceUUID) return
+  wsMemberBusy.value = { ...wsMemberBusy.value, __new__: true }
+  try {
+    const ok = await tenant.addWorkspaceMember(tenant.orgUUID, tenant.workspaceUUID, u, newWsMemberRole.value)
+    if (ok) {
+      flash('info', `Added ${u} to the workspace as ${newWsMemberRole.value}.`)
+      newWsMemberUser.value = ''
+      newWsMemberRole.value = 'member'
+      await reloadWsMembers()
+    } else {
+      flash('error', tenant.error ?? 'Failed to add workspace member.')
+    }
+  } finally {
+    const next = { ...wsMemberBusy.value }
+    delete next['__new__']
+    wsMemberBusy.value = next
+  }
+}
+
+async function onChangeWsMemberRole(user: string, role: 'admin' | 'member') {
+  if (!tenant.orgUUID || !tenant.workspaceUUID) return
+  wsMemberBusy.value = { ...wsMemberBusy.value, [user]: true }
+  try {
+    const ok = await tenant.patchWorkspaceMemberRole(tenant.orgUUID, tenant.workspaceUUID, user, role)
+    if (ok) {
+      flash('info', `Updated ${user}'s workspace role to ${role}.`)
+      await reloadWsMembers()
+    } else {
+      flash('error', tenant.error ?? 'Failed to update role.')
+    }
+  } finally {
+    const next = { ...wsMemberBusy.value }
+    delete next[user]
+    wsMemberBusy.value = next
+  }
+}
+
+async function onRemoveWsMember(user: string) {
+  if (!tenant.orgUUID || !tenant.workspaceUUID) return
+  if (!window.confirm(`Remove ${user} from this workspace?`)) return
+  wsMemberBusy.value = { ...wsMemberBusy.value, [user]: true }
+  try {
+    const ok = await tenant.removeWorkspaceMember(tenant.orgUUID, tenant.workspaceUUID, user)
+    if (ok) {
+      flash('info', `Removed ${user} from the workspace.`)
+      await reloadWsMembers()
+    } else {
+      flash('error', tenant.error ?? 'Failed to remove workspace member.')
+    }
+  } finally {
+    const next = { ...wsMemberBusy.value }
+    delete next[user]
+    wsMemberBusy.value = next
+  }
+}
+
 // ===== Service Accounts tab =====
 
 const sas = ref<SARow[]>([])
@@ -827,7 +911,8 @@ function fmtDate(s?: string | null): string {
           <h2 class="mb-3 text-sm font-semibold text-text-primary">Add member</h2>
           <p class="mb-3 text-[12px] text-text-muted">
             Adding a member to the organization grants them access to the org context; per-workspace
-            access is managed inside each workspace.
+            access is managed inside each workspace. The person must have signed in at least once so
+            their account exists.
           </p>
           <div v-if="!tenant.orgUUID" class="text-sm text-text-muted">Select an organization first.</div>
           <div v-else class="flex flex-wrap items-center gap-2">
@@ -914,6 +999,95 @@ function fmtDate(s?: string | null): string {
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <!-- Workspace members: grant access to an existing workspace -->
+        <div class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5">
+          <h2 class="mb-1 text-sm font-semibold text-text-primary">Workspace members</h2>
+          <p class="mb-3 text-[12px] text-text-muted">
+            Grant someone access to the
+            <span v-if="tenant.activeWorkspace" class="font-medium text-text-secondary">
+              “{{ tenant.activeWorkspace.displayName || tenant.activeWorkspace.uuid }}”
+            </span>
+            workspace selected on the left. Org membership alone doesn’t reveal any workspace — a
+            member sees a workspace only after they’re added here.
+          </p>
+
+          <div v-if="!tenant.orgUUID || !tenant.workspaceUUID" class="text-sm text-text-muted">
+            Select an organization and workspace on the left first.
+          </div>
+          <template v-else>
+            <div class="mb-4 flex flex-wrap items-center gap-2">
+              <input
+                v-model="newWsMemberUser"
+                class="flex-1 min-w-[200px] rounded-md border border-border-default/50 bg-surface-overlay/60 px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
+                placeholder="email or user UUID"
+                @keyup.enter="onAddWsMember"
+              />
+              <select
+                v-model="newWsMemberRole"
+                class="rounded-md border border-border-default/50 bg-surface-overlay/60 px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
+              >
+                <option value="member">member</option>
+                <option value="admin">admin</option>
+              </select>
+              <button
+                class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 text-[12px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-60"
+                :disabled="!!wsMemberBusy.__new__ || !newWsMemberUser.trim()"
+                @click="onAddWsMember"
+              >
+                <Loader2 v-if="wsMemberBusy.__new__" class="h-3 w-3 animate-spin" :stroke-width="2" />
+                <Plus v-else class="h-3 w-3" :stroke-width="2" />
+                Add
+              </button>
+            </div>
+
+            <div v-if="wsMembersLoading" class="text-sm text-text-muted">Loading members…</div>
+            <div v-else-if="wsMembers.length === 0" class="text-sm text-text-muted">
+              No workspace members yet.
+            </div>
+            <table v-else class="w-full text-sm">
+              <thead>
+                <tr class="text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                  <th class="py-2 pr-3">User</th>
+                  <th class="py-2 pr-3">Role</th>
+                  <th class="py-2 pr-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-border-default/30">
+                <tr v-for="m in wsMembers" :key="m.user">
+                  <td class="py-2 pr-3">
+                    <div class="flex items-center gap-2">
+                      <UserIcon class="h-3.5 w-3.5 text-text-muted/70" :stroke-width="1.75" />
+                      <span class="font-mono text-[12px] text-text-secondary">{{ m.user }}</span>
+                    </div>
+                  </td>
+                  <td class="py-2 pr-3">
+                    <select
+                      class="rounded-md border border-border-default/50 bg-surface-overlay/60 px-2 py-1 text-[12px] text-text-primary focus:border-accent focus:outline-none disabled:opacity-60"
+                      :value="m.role"
+                      :disabled="!!wsMemberBusy[m.user]"
+                      @change="(e) => onChangeWsMemberRole(m.user, (e.target as HTMLSelectElement).value as 'admin' | 'member')"
+                    >
+                      <option value="member">member</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </td>
+                  <td class="py-2 pr-0 text-right">
+                    <button
+                      class="rounded-md border border-danger/30 bg-danger-subtle px-2 py-1 text-[11px] font-medium text-danger hover:bg-danger/15 disabled:opacity-50"
+                      :disabled="!!wsMemberBusy[m.user]"
+                      @click="onRemoveWsMember(m.user)"
+                    >
+                      <Loader2 v-if="wsMemberBusy[m.user]" class="inline h-3 w-3 animate-spin" :stroke-width="2" />
+                      <Trash2 v-else class="inline h-3 w-3" :stroke-width="2" />
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
         </div>
       </section>
 

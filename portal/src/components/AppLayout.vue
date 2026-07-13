@@ -6,6 +6,7 @@ import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import { useTenantStore } from '@/stores/tenant'
 import TerminalDock from '@/components/TerminalDock.vue'
 import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
+import UserProfileModal from '@/components/UserProfileModal.vue'
 import TenantContextChip from '@/components/TenantContextChip.vue'
 import ThemeSwitch from '@/components/ThemeSwitch.vue'
 import FirstWorkspaceWizard from '@/components/FirstWorkspaceWizard.vue'
@@ -174,6 +175,7 @@ function handleLogout() {
 }
 
 const showCliModal = ref(false)
+const showProfileModal = ref(false)
 
 // --- Draggable dock with edge-snap (all 4 edges) ---
 type DockMode = 'float' | 'left' | 'right' | 'top' | 'bottom'
@@ -531,10 +533,15 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
       </div>
 
       <!-- Status -->
-      <div v-if="auth.user" class="flex items-center gap-2 px-3 py-1.5">
+      <button
+        v-if="auth.user"
+        class="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-surface-overlay/50"
+        title="Show your identity (email / user ID)"
+        @click="showProfileModal = true"
+      >
         <div class="h-1.5 w-1.5 rounded-full bg-success flex-shrink-0" />
-        <span class="font-mono text-[9px] text-text-muted truncate">{{ auth.user.email }}</span>
-      </div>
+        <span class="font-mono text-[9px] text-text-muted truncate hover:text-accent">{{ auth.user.email }}</span>
+      </button>
       <span class="px-3 font-mono text-[9px] tabular-nums text-text-muted/50">
         {{ timeStr }}
       </span>
@@ -663,10 +670,15 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
       <span class="px-0.5 font-mono text-[9px] tabular-nums tracking-wider text-text-muted/50">
         {{ timeStr }}
       </span>
-      <div v-if="auth.user" class="flex items-center gap-1 rounded-full border border-border-subtle bg-surface-overlay/50 px-2 py-1 backdrop-blur">
+      <button
+        v-if="auth.user"
+        class="flex items-center gap-1 rounded-full border border-border-subtle bg-surface-overlay/50 px-2 py-1 backdrop-blur transition-colors hover:border-accent/40"
+        title="Show your identity (email / user ID)"
+        @click="showProfileModal = true"
+      >
         <div class="h-1.5 w-1.5 rounded-full bg-success" />
-        <span class="font-mono text-[9px] text-text-muted">{{ auth.user.email }}</span>
-      </div>
+        <span class="font-mono text-[9px] text-text-muted hover:text-accent">{{ auth.user.email }}</span>
+      </button>
 
       <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
@@ -811,10 +823,15 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         <span class="px-0.5 font-mono text-[9px] tabular-nums tracking-wider text-text-muted/50">
           {{ timeStr }}
         </span>
-        <div v-if="auth.user" class="flex items-center gap-1 rounded-full border border-border-subtle bg-surface-overlay/50 px-2 py-1 backdrop-blur">
+        <button
+          v-if="auth.user"
+          class="flex items-center gap-1 rounded-full border border-border-subtle bg-surface-overlay/50 px-2 py-1 backdrop-blur transition-colors hover:border-accent/40"
+          title="Show your identity (email / user ID)"
+          @click="showProfileModal = true"
+        >
           <div class="h-1.5 w-1.5 rounded-full bg-success" />
-          <span class="font-mono text-[9px] text-text-muted">{{ auth.user.email }}</span>
-        </div>
+          <span class="font-mono text-[9px] text-text-muted hover:text-accent">{{ auth.user.email }}</span>
+        </button>
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
@@ -842,6 +859,9 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
     <!-- CLI quickstart modal -->
     <CliQuickstartModal v-if="showCliModal" @close="showCliModal = false" />
+
+    <!-- User identity modal (email / user ID for sharing) -->
+    <UserProfileModal v-if="showProfileModal" @close="showProfileModal = false" />
   </div>
 </template>
 

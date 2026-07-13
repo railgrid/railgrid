@@ -30,6 +30,19 @@ import { authFetch } from '@/auth/session'
 
 const STORAGE_KEY = 'kedge:portal:tenant'
 
+// statusMessage pulls the human-readable `.message` out of the hub's
+// kube-style Status envelope (see restapi.writeStatus) so callers can
+// surface the real reason instead of a bare HTTP code. Returns '' when
+// the body isn't a Status envelope or can't be parsed.
+async function statusMessage(resp: Response): Promise<string> {
+  try {
+    const data = (await resp.clone().json()) as { message?: string }
+    return data?.message ?? ''
+  } catch {
+    return ''
+  }
+}
+
 interface PersistedTenant {
   orgUUID: string | null
   workspaceUUID: string | null
@@ -462,7 +475,8 @@ export const useTenantStore = defineStore('tenant', () => {
       body: JSON.stringify({ user, role }),
     })
     if (!resp.ok) {
-      error.value = `failed to add member: ${resp.status}`
+      const msg = await statusMessage(resp)
+      error.value = msg ? `failed to add member: ${msg}` : `failed to add member: ${resp.status}`
       return false
     }
     return true
@@ -504,6 +518,82 @@ export const useTenantStore = defineStore('tenant', () => {
       return false
     }
     await fetchOrgs()
+    return true
+  }
+
+  // ===== Workspace membership =====
+  // Org membership only grants the org context; a member sees a
+  // workspace only once they have a workspace-scope row here (the
+  // backend also grants the matching kcp RBAC so the GraphQL gateway
+  // lets them in). This is how you grant access to an *existing*
+  // workspace — creating one grants the creator automatically.
+
+  async function listWorkspaceMembers(targetOrgUUID: string, wsUUID: string): Promise<MemberRow[]> {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships`, {
+      headers: { 'X-Kedge-Org': targetOrgUUID, 'X-Kedge-Workspace': wsUUID },
+    })
+    if (!resp.ok) {
+      error.value = `failed to list workspace members: ${resp.status}`
+      return []
+    }
+    const data = (await resp.json()) as { items: MemberRow[] }
+    return data.items ?? []
+  }
+
+  async function addWorkspaceMember(
+    targetOrgUUID: string,
+    wsUUID: string,
+    user: string,
+    role: 'admin' | 'member',
+  ): Promise<boolean> {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Kedge-Org': targetOrgUUID,
+        'X-Kedge-Workspace': wsUUID,
+      },
+      body: JSON.stringify({ user, role }),
+    })
+    if (!resp.ok) {
+      const msg = await statusMessage(resp)
+      error.value = msg ? `failed to add member: ${msg}` : `failed to add member: ${resp.status}`
+      return false
+    }
+    return true
+  }
+
+  async function patchWorkspaceMemberRole(
+    targetOrgUUID: string,
+    wsUUID: string,
+    user: string,
+    role: 'admin' | 'member',
+  ): Promise<boolean> {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships/${user}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Kedge-Org': targetOrgUUID,
+        'X-Kedge-Workspace': wsUUID,
+      },
+      body: JSON.stringify({ role }),
+    })
+    if (!resp.ok) {
+      error.value = `failed to patch member role: ${resp.status}`
+      return false
+    }
+    return true
+  }
+
+  async function removeWorkspaceMember(targetOrgUUID: string, wsUUID: string, user: string): Promise<boolean> {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships/${user}`, {
+      method: 'DELETE',
+      headers: { 'X-Kedge-Org': targetOrgUUID, 'X-Kedge-Workspace': wsUUID },
+    })
+    if (!resp.ok) {
+      error.value = `failed to remove member: ${resp.status}`
+      return false
+    }
     return true
   }
 
@@ -673,6 +763,10 @@ export const useTenantStore = defineStore('tenant', () => {
     patchOrgMemberRole,
     removeOrgMember,
     leaveOrg,
+    listWorkspaceMembers,
+    addWorkspaceMember,
+    patchWorkspaceMemberRole,
+    removeWorkspaceMember,
     // actions: service accounts
     listServiceAccounts,
     createServiceAccount,

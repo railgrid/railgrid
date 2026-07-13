@@ -42,7 +42,8 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
   --hub-external-url=https://localhost:9443 \
   --dev-mode -v 4 \
   --static-auth-token=dev-token \
-  --admin-users=static-dev-toke@kedge.local \
+  --static-auth-token=dev-token2 \
+  --admin-users=static-dev-token@kedge.local \
   --embedded-kcp \
   --kcp-root-dir=.kcp \
   --kcp-secure-port=6443 \

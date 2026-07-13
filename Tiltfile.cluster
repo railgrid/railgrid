@@ -418,10 +418,12 @@ k8s_yaml(helm(
         'hub.embeddedGraphQL=true',
         # Match the plain Tiltfile's App Studio in-memory message store wiring.
         'hub.appStudio.inMemoryMessageStore=true',
-        'hub.staticAuthTokens={dev-token}',
-        # /bonkers admin access for the dev static token (resolves to
-        # static-dev-toke@kedge.local — see proxy.ensureStaticTokenUserOnce).
-        'hub.adminUsers={static-dev-toke@kedge.local}',
+        'hub.staticAuthTokens={dev-token,dev-token2}',
+        # /bonkers admin access for the first dev static token (resolves to
+        # static-dev-token@kedge.local — see proxy.ensureStaticTokenUserOnce).
+        # dev-token2 is intentionally left off the allowlist so it acts as a
+        # plain, non-admin second user for membership/user-adding tests.
+        'hub.adminUsers={static-dev-token@kedge.local}',
         # Development previews render the app's own exposure URL (status.url)
         # in the portal iframe — allow the local apps domain on the envoy
         # port-forward. (preview.localhost was the deleted preview-gateway.)
@@ -470,9 +472,15 @@ local_resource(
     'kcp-static-tokens',
     cmd='''
 set -eu
-TOKEN=dev-token
-HASH=$(printf 'static-token/%s' "$TOKEN" | openssl dgst -sha256 | awk '{print $NF}' | cut -c1-16)
-CSV="$TOKEN,kedge:static:$HASH,$HASH,system:authenticated"
+# One CSV line per static token. Keep this list in sync with hub.staticAuthTokens
+# above — kcp only authenticates tokens present here, so a token the hub forwards
+# but that is missing from this Secret gets 401 Unauthorized (not 403).
+CSV=""
+for TOKEN in dev-token dev-token2; do
+  HASH=$(printf 'static-token/%s' "$TOKEN" | openssl dgst -sha256 | awk '{print $NF}' | cut -c1-16)
+  CSV="${CSV}${TOKEN},kedge:static:${HASH},${HASH},system:authenticated
+"
+done
 kubectl create secret generic kcp-static-tokens -n default \
   --from-literal=token.csv="$CSV" \
   --dry-run=client -o yaml | kubectl apply -f -

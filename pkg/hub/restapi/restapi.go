@@ -41,11 +41,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
@@ -479,6 +481,50 @@ func (m *Manager) removeUMIEntry(ctx context.Context, userName, orgUUID, wsUUID 
 		idx.Spec.Entries = next
 		return true
 	})
+}
+
+// resolveUser maps a caller-supplied member identifier to the
+// canonical User CR. The identifier may be the User CR name
+// (user-xxxxx), the user's email, their rbacIdentity, or their display
+// name — the portal "Add member" field invites an email or a UUID.
+//
+// This resolution is load-bearing: the Membership CR and the
+// UserMembershipIndex are both named after the User CR name (see
+// EnsureOrgMembership and mutateUMI). An email can't be a valid RFC1123
+// object name, so writing it verbatim makes kcp reject the Create with
+// an Invalid error that surfaces to the portal as an opaque 400. By
+// resolving to user.Name first we always write a valid name, and a
+// caller who typed something that matches no User gets a clean 404.
+func (m *Manager) resolveUser(ctx context.Context, identifier string) (*tenancyv1alpha1.User, error) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return nil, newValidationError("user is required")
+	}
+	// Fast path: the identifier is already a User CR name. Tolerate
+	// Invalid/BadRequest here too — an email routed through Get can trip
+	// name validation rather than a clean NotFound — and fall through to
+	// the scan in that case.
+	if u, err := m.client.Users().Get(ctx, identifier, metav1.GetOptions{}); err == nil {
+		return u, nil
+	} else if !apierrors.IsNotFound(err) && !apierrors.IsInvalid(err) && !apierrors.IsBadRequest(err) {
+		return nil, err
+	}
+	// Scan by email / rbacIdentity / display name (all case-insensitive).
+	list, err := m.client.Users().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	want := strings.ToLower(identifier)
+	for i := range list.Items {
+		u := &list.Items[i]
+		if strings.ToLower(u.Spec.Email) == want ||
+			strings.ToLower(u.Spec.RBACIdentity) == want ||
+			strings.ToLower(u.Spec.Name) == want {
+			return u, nil
+		}
+	}
+	return nil, apierrors.NewNotFound(
+		schema.GroupResource{Group: "tenants.kedge.faros.sh", Resource: "users"}, identifier)
 }
 
 // ===== shared response types =====

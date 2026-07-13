@@ -20,7 +20,6 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
@@ -70,18 +69,22 @@ func (h *Handler) addOrgMembership(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.User == "" {
-		writeError(w, newValidationError("user is required"))
-		return
-	}
 	if req.Role != tenancyv1alpha1.MembershipRoleAdmin && req.Role != tenancyv1alpha1.MembershipRoleMember {
 		writeError(w, newValidationError("role must be admin or member"))
 		return
 	}
 	orgUUID := mux.Vars(r)["org"]
 
+	// Resolve the identifier (email / UUID / rbacIdentity) to the User CR
+	// so every object we write below is named after a valid User name.
+	target, err := h.mgr.resolveUser(r.Context(), req.User)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
 	// Write the Membership CR in the Org workspace.
-	if err := h.mgr.bootstrapper.EnsureOrgMembership(r.Context(), orgUUID, req.User, req.Role); err != nil {
+	if err := h.mgr.bootstrapper.EnsureOrgMembership(r.Context(), orgUUID, target.Name, req.Role); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -91,7 +94,7 @@ func (h *Handler) addOrgMembership(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := h.mgr.upsertUMIEntry(r.Context(), req.User, tenancyv1alpha1.MembershipIndexEntry{
+	if err := h.mgr.upsertUMIEntry(r.Context(), target.Name, tenancyv1alpha1.MembershipIndexEntry{
 		OrgUUID:        orgUUID,
 		OrgDisplayName: org.Spec.DisplayName,
 		OrgCreatedAt:   org.CreationTimestamp,
@@ -102,7 +105,7 @@ func (h *Handler) addOrgMembership(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, MembershipView{
-		User: req.User, Role: req.Role, OrgUUID: orgUUID, OrgDisplayName: org.Spec.DisplayName,
+		User: target.Name, Role: req.Role, OrgUUID: orgUUID, OrgDisplayName: org.Spec.DisplayName,
 	})
 }
 
@@ -211,39 +214,37 @@ func (h *Handler) selfLeaveOrg(w http.ResponseWriter, r *http.Request) {
 // ===== Workspace-scope Membership (UMI-only) =====
 
 // listWorkspaceMemberships returns the workspace-scope members.
-// Because workspace-scope Memberships don't have an in-workspace CR
-// (the workspace WorkspaceType no longer binds tenants.kedge.faros.sh
-// per PR #211), the source of truth is each member's UMI. We can't
-// scan every user's UMI cheaply, so v1 lists nothing concrete —
-// returning the workspace-scope memberships requires a watch /
-// reverse index we haven't built yet.
-//
-// Open follow-up: build a Workspace → []user reverse index, OR move
-// workspace-scope Memberships back into the Org workspace with a
-// workspaceRef. For now this endpoint returns the caller's own row
-// only, which covers the portal "am I in this Workspace?" case.
+// Workspace-scope Memberships don't have an in-workspace CR (the
+// workspace WorkspaceType no longer binds tenants.kedge.faros.sh per
+// PR #211), so the source of truth is each member's UMI. The hub
+// client has cluster-wide read on the UMIs in root:kedge:users, so we
+// list them all and project the rows matching this (org, workspace).
+// This is O(users) — fine at current scale; swap for a Workspace →
+// []user reverse index (or a workspaceRef CR in the Org) if the user
+// count grows large.
 func (h *Handler) listWorkspaceMemberships(w http.ResponseWriter, r *http.Request) {
 	tc, ok := h.requireTenantContext(w, r, true, false)
 	if !ok {
 		return
 	}
-	idx, err := h.mgr.client.UserMembershipIndices().Get(r.Context(), tc.User, metav1.GetOptions{})
+	list, err := h.mgr.client.UserMembershipIndices().List(r.Context(), metav1.ListOptions{})
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			writeJSON(w, http.StatusOK, ListResponse[MembershipView]{Items: []MembershipView{}})
-			return
-		}
 		writeError(w, err)
 		return
 	}
-	out := make([]MembershipView, 0, 1)
-	for _, e := range idx.Spec.Entries {
-		if e.OrgUUID == tc.OrgUUID && e.WorkspaceUUID == tc.WorkspaceUUID {
+	out := make([]MembershipView, 0)
+	for i := range list.Items {
+		idx := &list.Items[i]
+		for _, e := range idx.Spec.Entries {
+			if e.OrgUUID != tc.OrgUUID || e.WorkspaceUUID != tc.WorkspaceUUID || e.SoftDeletedAt != nil {
+				continue
+			}
 			out = append(out, MembershipView{
-				User: tc.User, Role: e.Role,
+				User: idx.Name, Role: e.Role,
 				OrgUUID: e.OrgUUID, WorkspaceUUID: e.WorkspaceUUID,
 				OrgDisplayName: e.OrgDisplayName, WorkspaceDisplayName: e.WorkspaceDisplayName,
 			})
+			break
 		}
 	}
 	writeJSON(w, http.StatusOK, ListResponse[MembershipView]{Items: out})
@@ -260,12 +261,15 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.User == "" {
-		writeError(w, newValidationError("user is required"))
-		return
-	}
 	if req.Role != tenancyv1alpha1.MembershipRoleAdmin && req.Role != tenancyv1alpha1.MembershipRoleMember {
 		writeError(w, newValidationError("role must be admin or member"))
+		return
+	}
+	// Resolve the identifier (email / UUID / rbacIdentity) to the User CR
+	// before writing anything named after it.
+	target, err := h.mgr.resolveUser(r.Context(), req.User)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	// Pull Org+Workspace display names for the UMI projection.
@@ -282,18 +286,13 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 	// cluster-admin (see serviceaccounts.buildCRB); we follow the same
 	// posture until the kedge:workspace:admin/member ClusterRoles are
 	// bootstrapped.
-	target, err := h.mgr.client.Users().Get(r.Context(), req.User, metav1.GetOptions{})
-	if err != nil {
-		writeError(w, err)
-		return
-	}
 	if target.Spec.RBACIdentity != "" {
 		if err := h.mgr.bootstrapper.EnsureChildWorkspaceAdmin(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, target.Spec.RBACIdentity); err != nil {
 			writeError(w, err)
 			return
 		}
 	}
-	if err := h.mgr.upsertUMIEntry(r.Context(), req.User, tenancyv1alpha1.MembershipIndexEntry{
+	if err := h.mgr.upsertUMIEntry(r.Context(), target.Name, tenancyv1alpha1.MembershipIndexEntry{
 		OrgUUID:              tc.OrgUUID,
 		OrgDisplayName:       org.Spec.DisplayName,
 		OrgCreatedAt:         org.CreationTimestamp,
@@ -305,7 +304,7 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusCreated, MembershipView{
-		User: req.User, Role: req.Role,
+		User: target.Name, Role: req.Role,
 		OrgUUID: tc.OrgUUID, WorkspaceUUID: tc.WorkspaceUUID,
 		OrgDisplayName: org.Spec.DisplayName, WorkspaceDisplayName: dn,
 	})

@@ -467,6 +467,27 @@ func isConflictError(err error) bool {
 		strings.Contains(errMsg, "please apply your changes to the latest version")
 }
 
+// sanitizeTokenSlug turns an arbitrary static token into a stable, email-safe
+// slug. Unlike a fixed-length prefix, it preserves the full token, so tokens
+// that share a prefix (e.g. "dev-token" / "dev-token2") map to distinct slugs
+// and therefore distinct users. Characters outside [a-z0-9-] are folded to '-'.
+func sanitizeTokenSlug(token string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(token) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	s := strings.Trim(b.String(), "-")
+	if s == "" {
+		s = "token"
+	}
+	return s
+}
+
 // ensureStaticTokenUserOnce is the single-attempt logic for ensureStaticTokenUser.
 func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash string) (*tenancyv1alpha1.User, error) {
 	labelSelector := fmt.Sprintf("tenants.kedge.faros.sh/sub=%s", subHash)
@@ -501,10 +522,12 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 	// List above and both create a user with a different random name, so the
 	// AlreadyExists guard never fires and we get duplicate users for one token.
 	// A stable name makes a racing create collide → AlreadyExists → reuse.
-	tokenPrefix := token
-	if len(tokenPrefix) > 8 {
-		tokenPrefix = tokenPrefix[:8]
-	}
+	//
+	// Derive the human-facing email/display slug from the FULL token (sanitized),
+	// not a fixed-length prefix: two tokens that share a prefix (e.g. "dev-token"
+	// and "dev-token2") would otherwise collapse to the same email, which — since
+	// --admin-users matches on email — also leaks admin between distinct users.
+	tokenSlug := sanitizeTokenSlug(token)
 	userName := "static-user-" + subHash[:16]
 
 	user := &tenancyv1alpha1.User{
@@ -516,8 +539,8 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
-			Email:        fmt.Sprintf("static-%s@kedge.local", tokenPrefix),
-			Name:         fmt.Sprintf("Static Token User (%s...)", tokenPrefix),
+			Email:        fmt.Sprintf("static-%s@kedge.local", tokenSlug),
+			Name:         fmt.Sprintf("Static Token User (%s)", tokenSlug),
 			RBACIdentity: fmt.Sprintf("kedge:static:%s", subHash[:16]),
 		},
 	}
