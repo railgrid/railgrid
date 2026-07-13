@@ -264,6 +264,26 @@ export interface ProjectPromotionReadiness {
   production?: ProjectProviderBinding
 }
 
+// One of the four project lifecycle checkpoints (template, git, ci, production).
+// state: done | pending | blocked | error.
+export interface ProjectCheckpoint {
+  key: string
+  label: string
+  state: string
+  reason?: string
+  remediation?: {
+    kind: string // auto | manual
+    tool?: string
+    actionUrl?: string
+    message?: string
+  }
+}
+
+// Result of GET /api/projects/{name}/checkpoints.
+export interface ProjectCheckpoints {
+  items: ProjectCheckpoint[]
+}
+
 // Result of POST /api/projects/{name}/promote.
 export interface ProjectPromoteResult {
   environment: string

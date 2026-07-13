@@ -14,6 +14,7 @@ import type {
   ProjectMessageStreamControlEvent,
   ProjectMessageStreamEvent,
   ProjectMessagesPage,
+  ProjectCheckpoints,
   ProjectPromotionReadiness,
   ProjectPromoteResult,
   ProviderItem,
@@ -641,6 +642,14 @@ export const api = {
       ctx,
       'GET',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/promotion`,
+    )
+  },
+
+  async getCheckpoints(ctx: KedgeContext | null, name: string): Promise<ProjectCheckpoints> {
+    return request<ProjectCheckpoints>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/checkpoints`,
     )
   },
 

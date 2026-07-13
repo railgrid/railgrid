@@ -333,6 +333,28 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
+				Name:        projectToolGetCheckpoints,
+				Description: "Report the project's four lifecycle checkpoints — Template bound, Git established, CI committed, Production running — each with a state (done/pending/blocked/error), a human-readable reason, and remediation. Use this at the start of a session, or whenever the user asks \"where is this project\"/\"what's left\", to decide what to do next: for a pending checkpoint whose remediation.kind is \"auto\", call the named remediation.tool to advance it; for \"manual\", tell the user the exact action to take (e.g. promotion is a button the user clicks). Prefer advancing checkpoints in order (template → git → ci → production).",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+				Risk:        projectAssistantToolRiskRead,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				if req.Project == nil {
+					return "", errors.New("no project on this run")
+				}
+				c, err := server.clientFor(req.Identity)
+				if err != nil {
+					return "", err
+				}
+				return projectAssistantToolJSONResult(s.projectCheckpoints(ctx, c, req.Identity, req.Project), nil)
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
 				Name:        projectToolCheckProjectBuild,
 				Description: "Check whether the project's launchable components have a built container image recorded in git. The per-component build runs in CI after commit_files and, on success, commits per-component image digests back to the repository; this tool reads them. Use it after committing to confirm the build succeeded before launching, and to drive the build-fix loop: status \"built\" means every component has an image (ready to launch); \"incomplete\"/\"none\" means some or all builds are still running or have failed — re-check shortly, and if they stay unbuilt inspect the failing component's build inputs and commit a fix.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),

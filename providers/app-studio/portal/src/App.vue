@@ -37,6 +37,7 @@ import {
 } from './createReadiness'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import CheckpointChip from '@/components/CheckpointChip.vue'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import {
   activateWorkbenchTab,
@@ -68,6 +69,7 @@ import type {
   ProjectRepositoryCommit,
   ProjectMessageStreamEvent,
   ProjectPromotionReadiness,
+  ProjectCheckpoint,
   ProviderItem,
 } from './types'
 
@@ -321,6 +323,7 @@ const publishingAccess = ref<'public' | 'members' | 'private'>('members')
 
 // Promote to Prod (the publishing tab's real action): read build readiness +
 // the live production environment, and stand up / redeploy production.
+const checkpoints = ref<ProjectCheckpoint[]>([])
 const promotion = ref<ProjectPromotionReadiness | null>(null)
 const promotionBusy = ref(false)
 const promotionError = ref<string | null>(null)
@@ -1158,6 +1161,43 @@ async function loadPromotion() {
   schedulePromotionPoll()
 }
 
+// Lifecycle checkpoints (Template / Git / CI / Production) shown as header chips.
+async function loadCheckpoints() {
+  const name = selected.value?.name
+  if (!name) {
+    checkpoints.value = []
+    return
+  }
+  try {
+    const resp = await api.getCheckpoints(props.ctx, name)
+    checkpoints.value = resp.items ?? []
+  } catch (err) {
+    if (!isProjectAPIInitializingError(err)) {
+      checkpoints.value = []
+    }
+  }
+}
+
+// Clicking a not-yet-done checkpoint chip advances it: "auto" remediation seeds
+// the assistant with a request to fix it; "manual" routes the user to the
+// action they must take themselves (connect Git, click Promote).
+function actOnCheckpoint(cp: ProjectCheckpoint) {
+  const rem = cp.remediation
+  if (!rem) return
+  if (rem.kind === 'manual') {
+    if (cp.key === 'production') {
+      openBuiltInWorkbenchTab('publishing')
+      return
+    }
+    const url = rem.actionUrl || (cp.key === 'git' ? CODE_CONNECTIONS_URL : '')
+    if (url) window.location.assign(url)
+    return
+  }
+  // auto: seed the chat composer so the user can review and send.
+  const detail = cp.remediation?.message || cp.reason || ''
+  prompt.value = `Advance the "${cp.label}" checkpoint${detail ? `: ${detail}` : '.'}`
+}
+
 async function promoteToProd() {
   const name = selected.value?.name
   if (!name || !canPromote.value) return
@@ -1176,6 +1216,7 @@ async function promoteToProd() {
   try {
     await api.promoteProject(props.ctx, name, values)
     await loadPromotion()
+    void loadCheckpoints()
   } catch (err) {
     promotionError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -1193,6 +1234,16 @@ watch(
       clearPromotionPoll()
     }
   },
+)
+
+// Refresh lifecycle checkpoints whenever the open project changes.
+watch(
+  () => selected.value?.name,
+  (name) => {
+    if (name) void loadCheckpoints()
+    else checkpoints.value = []
+  },
+  { immediate: true },
 )
 
 onBeforeUnmount(clearPromotionPoll)
@@ -2107,6 +2158,9 @@ async function sendMessage() {
     conversationStatus.value = ''
     messageStreaming.value = false
     busy.value = false
+    // The assistant may have advanced a checkpoint (selected a template,
+    // committed CI, …); refresh the header chips to reflect it.
+    void loadCheckpoints()
   }
 }
 
@@ -3385,6 +3439,14 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               <span class="truncate">{{ selected?.description || selected?.name || 'App Studio project' }}</span>
             </template>
           </div>
+        </div>
+        <div v-if="checkpoints.length" class="hidden shrink-0 items-center gap-1.5 sm:flex">
+          <CheckpointChip
+            v-for="cp in checkpoints"
+            :key="cp.key"
+            :checkpoint="cp"
+            @act="actOnCheckpoint"
+          />
         </div>
         <button
           type="button"
