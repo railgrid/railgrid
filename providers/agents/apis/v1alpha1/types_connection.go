@@ -30,6 +30,7 @@ const (
 	ConnectionTypeTelegram  = "telegram"
 	ConnectionTypeSlack     = "slack"
 	ConnectionTypeSMTP      = "smtp"
+	ConnectionTypeDiscord   = "discord"
 )
 
 // +genclient
@@ -56,9 +57,9 @@ type Connection struct {
 // ConnectionSpec is the user-authored connection configuration.
 type ConnectionSpec struct {
 	// Type selects the integration: github, mcp, websearch, http, telegram,
-	// slack, or smtp.
+	// slack, smtp, or discord.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=github;mcp;websearch;http;telegram;slack;smtp
+	// +kubebuilder:validation:Enum=github;mcp;websearch;http;telegram;slack;smtp;discord
 	Type string `json:"type"`
 
 	// DisplayName is a human-readable label for the connection.

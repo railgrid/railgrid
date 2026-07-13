@@ -76,7 +76,7 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 	case agentsv1alpha1.ConnectionTypeGitHub, agentsv1alpha1.ConnectionTypeMCP,
 		agentsv1alpha1.ConnectionTypeWebSearch, agentsv1alpha1.ConnectionTypeHTTP,
 		agentsv1alpha1.ConnectionTypeTelegram, agentsv1alpha1.ConnectionTypeSlack,
-		agentsv1alpha1.ConnectionTypeSMTP:
+		agentsv1alpha1.ConnectionTypeSMTP, agentsv1alpha1.ConnectionTypeDiscord:
 	default:
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "unsupported connection type "+req.Type)
 		return
@@ -96,12 +96,22 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 		secretData["token"] = strings.TrimSpace(req.Secret)
 	}
 	if auth == "oauth" {
-		if strings.TrimSpace(req.ClientID) == "" || strings.TrimSpace(req.ClientSecret) == "" {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "oauth connections need clientID and clientSecret (from your OAuth app)")
-			return
+		provider := strings.TrimSpace(req.OAuthProvider)
+		if provider == "" && req.Type == agentsv1alpha1.ConnectionTypeGitHub {
+			provider = "github"
 		}
-		secretData["client_id"] = strings.TrimSpace(req.ClientID)
-		secretData["client_secret"] = strings.TrimSpace(req.ClientSecret)
+		_, platformApp := s.platformOAuthApp(provider)
+		if strings.TrimSpace(req.ClientID) == "" || strings.TrimSpace(req.ClientSecret) == "" {
+			// Allowed when the operator configured a platform OAuth app for this
+			// provider (mirrors the code provider's env-configured app).
+			if !platformApp {
+				writeStatus(w, http.StatusBadRequest, "BadRequest", "oauth connections need clientID and clientSecret, or a platform OAuth app configured for "+provider)
+				return
+			}
+		} else {
+			secretData["client_id"] = strings.TrimSpace(req.ClientID)
+			secretData["client_secret"] = strings.TrimSpace(req.ClientSecret)
+		}
 	}
 	if len(secretData) > 0 {
 		sec := &corev1.Secret{
@@ -147,6 +157,75 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, out)
 }
 
+// updateConnectionRequest patches an existing connection. Pointer fields mean
+// callers change only what they send (rename, update the webhook URL / target,
+// rotate the token). A non-empty Secret rotates the credential; empty keeps it.
+type updateConnectionRequest struct {
+	DisplayName *string            `json:"displayName,omitempty"`
+	BaseURL     *string            `json:"baseURL,omitempty"`
+	Channel     *string            `json:"channel,omitempty"`
+	Config      *map[string]string `json:"config,omitempty"`
+	Secret      *string            `json:"secret,omitempty"`
+}
+
+func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireClient(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	conn, err := c.Connections().Get(r.Context(), name, metav1.GetOptions{})
+	if err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	var req updateConnectionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
+		return
+	}
+	if req.DisplayName != nil {
+		conn.Spec.DisplayName = strings.TrimSpace(*req.DisplayName)
+	}
+	if req.BaseURL != nil {
+		conn.Spec.BaseURL = strings.TrimSpace(*req.BaseURL)
+	}
+	if req.Channel != nil {
+		conn.Spec.Channel = strings.TrimSpace(*req.Channel)
+	}
+	if req.Config != nil {
+		conn.Spec.Config = *req.Config
+	}
+	out, err := c.Connections().Update(r.Context(), conn, metav1.UpdateOptions{})
+	if err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	// Rotate the token when a new secret is provided, preserving any other keys
+	// already in the Secret (e.g. OAuth client_id/client_secret).
+	if req.Secret != nil && strings.TrimSpace(*req.Secret) != "" {
+		data := map[string]string{"token": strings.TrimSpace(*req.Secret)}
+		if existing, gerr := c.GetSecret(r.Context(), llm.SecretNamespace, connectionSecretName(name)); gerr == nil {
+			for k, v := range existing.Data {
+				if k != "token" {
+					data[k] = string(v)
+				}
+			}
+		}
+		sec := &corev1.Secret{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+			ObjectMeta: metav1.ObjectMeta{Name: connectionSecretName(name), Namespace: llm.SecretNamespace},
+			Type:       corev1.SecretTypeOpaque,
+			StringData: data,
+		}
+		if _, serr := c.ApplySecret(r.Context(), sec); serr != nil {
+			writeResourceError(w, serr)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // testConnection sends a test message through a messaging connection
 // (telegram/slack/smtp) so the user can verify the credential works.
 func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
@@ -161,9 +240,10 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch conn.Spec.Type {
-	case agentsv1alpha1.ConnectionTypeTelegram, agentsv1alpha1.ConnectionTypeSlack, agentsv1alpha1.ConnectionTypeSMTP:
+	case agentsv1alpha1.ConnectionTypeTelegram, agentsv1alpha1.ConnectionTypeSlack,
+		agentsv1alpha1.ConnectionTypeSMTP, agentsv1alpha1.ConnectionTypeDiscord:
 	default:
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "test send is only for messaging connections (telegram, slack, smtp)")
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "test send is only for messaging connections (telegram, slack, smtp, discord)")
 		return
 	}
 	token := ""

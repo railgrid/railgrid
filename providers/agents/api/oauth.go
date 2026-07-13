@@ -29,6 +29,8 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
@@ -66,6 +68,30 @@ var oauthPresets = map[string]oauthPreset{
 		TokenURL:     "https://slack.com/api/oauth.v2.access",
 		ScopeSep:     ",",
 	},
+}
+
+// platformOAuthApp returns the operator-configured OAuth app for a provider,
+// if any (github/google/slack), read from env at startup.
+func (s *Server) platformOAuthApp(provider string) (OAuthApp, bool) {
+	app, ok := s.cfg.OAuthApps[provider]
+	if !ok || app.ClientID == "" || app.ClientSecret == "" {
+		return OAuthApp{}, false
+	}
+	return app, true
+}
+
+// oauthClientCreds resolves the (clientID, clientSecret) for an exchange:
+// the connection's own BYO app credentials take precedence; otherwise the
+// platform app for the provider (env-configured). Returns ok=false when
+// neither is available.
+func (s *Server) oauthClientCreds(provider, connClientID, connClientSecret string) (id, secret string, ok bool) {
+	if connClientID != "" && connClientSecret != "" {
+		return connClientID, connClientSecret, true
+	}
+	if app, has := s.platformOAuthApp(provider); has {
+		return app.ClientID, app.ClientSecret, true
+	}
+	return "", "", false
 }
 
 // resolvePreset returns the preset for a connection, honoring spec overrides
@@ -161,9 +187,9 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "publicBaseURL is required (the portal origin)")
 		return
 	}
-	clientID := s.connectionSecretValue(r, c, name, "client_id")
-	if clientID == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "connection secret has no client_id — recreate the connection with your OAuth app credentials")
+	clientID, _, credsOK := s.oauthClientCreds(conn.Spec.OAuth.Provider, s.connectionSecretValue(r, c, name, "client_id"), s.connectionSecretValue(r, c, name, "client_secret"))
+	if !credsOK {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "no OAuth app credentials — the operator hasn't configured a platform "+conn.Spec.OAuth.Provider+" app, so this connection needs its own client id/secret")
 		return
 	}
 	redirect := base + "/services/providers/agents/oauth/callback"
@@ -229,12 +255,20 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	sec, err := (vwSecrets{dyn}).GetSecret(r.Context(), llm.SecretNamespace, connectionSecretName(st.Connection))
-	if err != nil {
-		http.Error(w, "connection secret unavailable", http.StatusInternalServerError)
+	// The connection Secret is optional: platform-app connections have none
+	// until we create it below (nothing was pasted at creation), so a missing
+	// Secret is normal — read the BYO client id/secret best-effort and fall
+	// back to the platform app.
+	var secClientID, secClientSecret string
+	if sec, gerr := (vwSecrets{dyn}).GetSecret(r.Context(), llm.SecretNamespace, connectionSecretName(st.Connection)); gerr == nil {
+		secClientID = string(sec.Data["client_id"])
+		secClientSecret = string(sec.Data["client_secret"])
+	}
+	clientID, clientSecret, credsOK := s.oauthClientCreds(conn.Spec.OAuth.Provider, secClientID, secClientSecret)
+	if !credsOK {
+		http.Error(w, "no OAuth app credentials available", http.StatusBadRequest)
 		return
 	}
-	clientID, clientSecret := string(sec.Data["client_id"]), string(sec.Data["client_secret"])
 
 	tok, err := exchangeOAuthCode(r.Context(), preset.TokenURL, clientID, clientSecret, code, st.Redirect)
 	if err != nil {
@@ -338,9 +372,28 @@ func postOAuthForm(ctx context.Context, tokenURL string, form url.Values) (oauth
 	return tok, nil
 }
 
-// updateSecretKeys merges keys into an existing tenant Secret via the VW.
+// updateSecretKeys merges keys into a tenant Secret via the VW, creating the
+// Secret if it does not exist yet. Platform-app OAuth connections have no
+// pre-existing Secret (nothing was pasted at creation), so the OAuth callback
+// relies on this upsert to persist the exchanged tokens.
 func updateSecretKeys(ctx context.Context, dyn dynamic.Interface, name string, updates map[string]string) error {
-	u, err := dyn.Resource(agentsclient.SecretGVR).Namespace(llm.SecretNamespace).Get(ctx, name, metav1.GetOptions{})
+	res := dyn.Resource(agentsclient.SecretGVR).Namespace(llm.SecretNamespace)
+	u, err := res.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		data := map[string]any{}
+		for k, v := range updates {
+			data[k] = base64.StdEncoding.EncodeToString([]byte(v))
+		}
+		sec := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata":   map[string]any{"name": name, "namespace": llm.SecretNamespace},
+			"type":       string(corev1.SecretTypeOpaque),
+			"data":       data,
+		}}
+		_, cerr := res.Create(ctx, sec, metav1.CreateOptions{})
+		return cerr
+	}
 	if err != nil {
 		return err
 	}
@@ -354,7 +407,7 @@ func updateSecretKeys(ctx context.Context, dyn dynamic.Interface, name string, u
 	if err := unstructured.SetNestedMap(u.Object, data, "data"); err != nil {
 		return err
 	}
-	_, err = dyn.Resource(agentsclient.SecretGVR).Namespace(llm.SecretNamespace).Update(ctx, u, metav1.UpdateOptions{})
+	_, err = res.Update(ctx, u, metav1.UpdateOptions{})
 	return err
 }
 
@@ -394,7 +447,11 @@ func (b *background) refreshOAuthTokens(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		tok, err := refreshOAuthToken(ctx, preset.TokenURL, string(sec.Data["client_id"]), string(sec.Data["client_secret"]), refresh)
+		cid, csec, credsOK := b.server.oauthClientCreds(conn.Spec.OAuth.Provider, string(sec.Data["client_id"]), string(sec.Data["client_secret"]))
+		if !credsOK {
+			continue
+		}
+		tok, err := refreshOAuthToken(ctx, preset.TokenURL, cid, csec, refresh)
 		if err != nil {
 			log.Printf("background: oauth refresh for %s/%s failed: %v", cluster, conn.Name, err)
 			continue
@@ -412,6 +469,19 @@ func (b *background) refreshOAuthTokens(ctx context.Context) {
 		}
 		log.Printf("background: refreshed oauth token for %s/%s", cluster, conn.Name)
 	}
+}
+
+// listOAuthProviders reports which providers have a platform-wide OAuth app
+// configured (so the UI can offer one-click Connect without asking for client
+// id/secret). No tenant needed — this is provider-global config.
+func (s *Server) listOAuthProviders(w http.ResponseWriter, _ *http.Request) {
+	out := map[string]bool{}
+	for _, p := range []string{"github", "google", "slack"} {
+		if _, ok := s.platformOAuthApp(p); ok {
+			out[p] = true
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providers": out})
 }
 
 // connectionSecretValue reads one key from a connection's Secret as the caller.

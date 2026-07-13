@@ -51,6 +51,18 @@ type Config struct {
 	WebhookKey string
 	// SchedulerInterval is the background poll cadence (default 30s).
 	SchedulerInterval time.Duration
+	// OAuthApps holds platform-wide OAuth app credentials by provider
+	// (github/google/slack), configured once by the operator via env. When a
+	// provider has an app here, connections of that provider Connect with no
+	// per-connection client id/secret — mirroring the code provider. Empty →
+	// users bring their own OAuth app credentials per connection.
+	OAuthApps map[string]OAuthApp
+}
+
+// OAuthApp is one platform-wide OAuth application's credentials.
+type OAuthApp struct {
+	ClientID     string
+	ClientSecret string
 }
 
 // Server holds the provider's backend dependencies.
@@ -134,18 +146,21 @@ func (s *Server) Routes() http.Handler {
 	// Schedules (M3): cron / wakeup / heartbeat, plus synchronous "run now".
 	mux.HandleFunc("GET /api/schedules", s.listSchedules)
 	mux.HandleFunc("POST /api/schedules", s.createSchedule)
+	mux.HandleFunc("PUT /api/schedules/{name}", s.updateSchedule)
 	mux.HandleFunc("DELETE /api/schedules/{name}", s.deleteSchedule)
 	mux.HandleFunc("POST /api/schedules/{name}/run", s.runScheduleNow)
 
 	// Connections (M4/M6): named external credentials + messaging test-send.
 	mux.HandleFunc("GET /api/connections", s.listConnections)
 	mux.HandleFunc("POST /api/connections", s.createConnection)
+	mux.HandleFunc("PUT /api/connections/{name}", s.updateConnection)
 	mux.HandleFunc("DELETE /api/connections/{name}", s.deleteConnection)
 	mux.HandleFunc("POST /api/connections/{name}/test", s.testConnection)
 
 	// Event triggers (M7): CRUD + synchronous "run now".
 	mux.HandleFunc("GET /api/triggers", s.listTriggers)
 	mux.HandleFunc("POST /api/triggers", s.createTrigger)
+	mux.HandleFunc("PUT /api/triggers/{name}", s.updateTrigger)
 	mux.HandleFunc("DELETE /api/triggers/{name}", s.deleteTrigger)
 	mux.HandleFunc("POST /api/triggers/{name}/run", s.runTriggerNow)
 
@@ -163,6 +178,7 @@ func (s *Server) Routes() http.Handler {
 
 	// OAuth connections (M7): authorize (per-request) + public callback
 	// (anonymous — the signed state is the auth).
+	mux.HandleFunc("GET /api/oauth/providers", s.listOAuthProviders)
 	mux.HandleFunc("POST /api/connections/{name}/oauth/authorize", s.oauthAuthorize)
 	mux.HandleFunc("GET /oauth/callback", s.oauthCallback)
 

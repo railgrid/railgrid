@@ -27,7 +27,7 @@ import (
 
 // Message is one outbound notification.
 type Message struct {
-	// Type is the channel type: "telegram", "slack", or "smtp".
+	// Type is the channel type: "telegram", "slack", "smtp", or "discord".
 	Type string
 	// Token is the channel credential (bot token, OAuth token, or SMTP
 	// password). Read from the connection Secret by the caller.
@@ -53,9 +53,58 @@ func Send(ctx context.Context, m Message) error {
 		return sendSlack(ctx, m)
 	case "smtp":
 		return sendSMTP(m)
+	case "discord":
+		return sendDiscord(ctx, m)
 	default:
 		return fmt.Errorf("channel type %q is not a messaging type", m.Type)
 	}
+}
+
+// sendDiscord delivers to Discord in one of two modes:
+//   - Bot: Token is a bot token and Target is a channel id → REST message on
+//     that channel (the mode gateway-bot chat replies use).
+//   - Webhook: Target is an incoming-webhook URL → post directly (outbound
+//     notify only, no token).
+//
+// Discord caps message content at 2000 chars.
+func sendDiscord(ctx context.Context, m Message) error {
+	if m.Target == "" {
+		return fmt.Errorf("discord needs a bot token + channel id, or an incoming-webhook URL")
+	}
+	text := m.Text
+	if len(text) > 2000 {
+		text = text[:2000]
+	}
+	body, _ := json.Marshal(map[string]string{"content": text})
+
+	var req *http.Request
+	var err error
+	if strings.HasPrefix(m.Target, "https://") {
+		// Webhook URL mode.
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, m.Target, bytes.NewReader(body))
+	} else {
+		// Bot mode: POST a message to the channel id as the bot.
+		if m.Token == "" {
+			return fmt.Errorf("discord channel id needs a bot token")
+		}
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, "https://discord.com/api/v10/channels/"+m.Target+"/messages", bytes.NewReader(body))
+		if req != nil {
+			req.Header.Set("Authorization", "Bot "+m.Token)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("discord send: HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func sendTelegram(ctx context.Context, m Message) error {

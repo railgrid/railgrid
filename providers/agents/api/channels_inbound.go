@@ -18,6 +18,7 @@ package api
 // only messages from the connection's configured chat/channel are accepted.
 
 import (
+	"context"
 	"crypto/hmac"
 	"encoding/json"
 	"fmt"
@@ -106,7 +107,7 @@ func (s *Server) webhookChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agent, err := s.routeChannelAgent(r, dyn, conn)
+	agent, err := s.routeChannelAgent(r.Context(), dyn, conn)
 	if err != nil {
 		s.bg.replyToChannel(r.Context(), dyn, name, "No agent is bound to this channel yet — open the agents portal and set this connection as an agent's notify channel.")
 		w.WriteHeader(http.StatusOK)
@@ -236,15 +237,15 @@ func (s *Server) channelCommand(r *http.Request, scope store.Scope, dyn dynamic.
 // routeChannelAgent picks the agent for a channel message: explicit
 // config["agent"] override first, else the agent whose defaultNotifyConnection
 // is this connection.
-func (s *Server) routeChannelAgent(r *http.Request, dyn dynamic.Interface, conn *agentsv1alpha1.Connection) (*agentsv1alpha1.Agent, error) {
+func (s *Server) routeChannelAgent(ctx context.Context, dyn dynamic.Interface, conn *agentsv1alpha1.Connection) (*agentsv1alpha1.Agent, error) {
 	if override := strings.TrimSpace(conn.Spec.Config["agent"]); override != "" {
-		au, err := dyn.Resource(agentsclient.AgentGVR).Get(r.Context(), override, metav1.GetOptions{})
+		au, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, override, metav1.GetOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("configured agent %q: %w", override, err)
 		}
 		return fromU[agentsv1alpha1.Agent](au)
 	}
-	list, err := dyn.Resource(agentsclient.AgentGVR).List(r.Context(), metav1.ListOptions{})
+	list, err := dyn.Resource(agentsclient.AgentGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}

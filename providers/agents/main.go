@@ -80,6 +80,7 @@ func runServe() {
 		ProviderKubeconfig: os.Getenv("KEDGE_PROVIDER_KUBECONFIG"),
 		WebhookKey:         os.Getenv("AGENTS_WEBHOOK_KEY"),
 		SchedulerInterval:  parseDuration(os.Getenv("AGENTS_SCHEDULER_INTERVAL")),
+		OAuthApps:          oauthAppsFromEnv(),
 	})
 	if err != nil {
 		log.Fatalf("build server: %v", err)
@@ -118,6 +119,29 @@ func runServe() {
 		log.Printf("shutdown error: %v", err)
 	}
 	srv.Close()
+}
+
+// oauthAppsFromEnv reads platform-wide OAuth app credentials, mirroring the
+// code provider's env convention. Set both id and secret for a provider to
+// enable one-click Connect (no per-connection client id/secret):
+//
+//	AGENTS_GITHUB_OAUTH_CLIENT_ID / AGENTS_GITHUB_OAUTH_CLIENT_SECRET
+//	AGENTS_GOOGLE_OAUTH_CLIENT_ID / AGENTS_GOOGLE_OAUTH_CLIENT_SECRET
+//	AGENTS_SLACK_OAUTH_CLIENT_ID  / AGENTS_SLACK_OAUTH_CLIENT_SECRET
+func oauthAppsFromEnv() map[string]api.OAuthApp {
+	out := map[string]api.OAuthApp{}
+	for _, p := range []struct{ provider, prefix string }{
+		{"github", "AGENTS_GITHUB_OAUTH"},
+		{"google", "AGENTS_GOOGLE_OAUTH"},
+		{"slack", "AGENTS_SLACK_OAUTH"},
+	} {
+		id := os.Getenv(p.prefix + "_CLIENT_ID")
+		secret := os.Getenv(p.prefix + "_CLIENT_SECRET")
+		if id != "" && secret != "" {
+			out[p.provider] = api.OAuthApp{ClientID: id, ClientSecret: secret}
+		}
+	}
+	return out
 }
 
 // parseDuration parses a Go duration ("45s", "2m"); empty or invalid → 0

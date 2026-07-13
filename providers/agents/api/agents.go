@@ -125,13 +125,37 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, out)
 }
 
+// knownToolFamilies are the grantable built-in families (core is always on).
+var knownToolFamilies = map[string]bool{"core": true, "web": true, "github": true, "mcp": true, "edges": true, "files": true}
+
+// normalizeFamilies keeps only recognized families, always includes core, and
+// de-duplicates — so the stored grant is clean regardless of UI input.
+func normalizeFamilies(in []string) []string {
+	seen := map[string]bool{"core": true}
+	out := []string{"core"}
+	for _, f := range in {
+		f = strings.TrimSpace(f)
+		if knownToolFamilies[f] && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 type updateAgentRequest struct {
-	ModelCredential  *string `json:"modelCredential,omitempty"`
-	SystemPrompt     *string `json:"systemPrompt,omitempty"`
-	Autonomy         *string `json:"autonomy,omitempty"`
-	BudgetTokens     *int64  `json:"budgetTokens,omitempty"`
-	BudgetUSD        *string `json:"budgetUSD,omitempty"`
-	NotifyConnection *string `json:"notifyConnection,omitempty"`
+	ModelCredential  *string   `json:"modelCredential,omitempty"`
+	SystemPrompt     *string   `json:"systemPrompt,omitempty"`
+	Autonomy         *string   `json:"autonomy,omitempty"`
+	BudgetTokens     *int64    `json:"budgetTokens,omitempty"`
+	BudgetUSD        *string   `json:"budgetUSD,omitempty"`
+	NotifyConnection *string   `json:"notifyConnection,omitempty"`
+	Delegates        *[]string `json:"delegates,omitempty"`
+	DisplayName      *string   `json:"displayName,omitempty"`
+	// Tool grants per run class. When present, they replace the agent's current
+	// families for that class (core is always implied server-side).
+	InteractiveFamilies *[]string `json:"interactiveFamilies,omitempty"`
+	BackgroundFamilies  *[]string `json:"backgroundFamilies,omitempty"`
 }
 
 // updateAgent patches mutable agent fields — notably the assigned model
@@ -171,6 +195,24 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.NotifyConnection != nil {
 		agent.Spec.DefaultNotifyConnection = strings.TrimSpace(*req.NotifyConnection)
+	}
+	if req.Delegates != nil {
+		out := make([]string, 0, len(*req.Delegates))
+		for _, d := range *req.Delegates {
+			if d = strings.TrimSpace(d); d != "" && d != name {
+				out = append(out, d)
+			}
+		}
+		agent.Spec.Delegates = out
+	}
+	if req.DisplayName != nil {
+		agent.Spec.DisplayName = strings.TrimSpace(*req.DisplayName)
+	}
+	if req.InteractiveFamilies != nil {
+		agent.Spec.Tools.Interactive.Families = normalizeFamilies(*req.InteractiveFamilies)
+	}
+	if req.BackgroundFamilies != nil {
+		agent.Spec.Tools.Background.Families = normalizeFamilies(*req.BackgroundFamilies)
 	}
 	if req.BudgetTokens != nil || req.BudgetUSD != nil {
 		if agent.Spec.Budget == nil {

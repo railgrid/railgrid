@@ -43,6 +43,11 @@ type Job struct {
 	ClusterID string `json:"clusterID"`
 	// SourceName is the AgentSchedule / AgentTrigger / Connection name that fired.
 	SourceName string `json:"sourceName"`
+	// ReplyTarget optionally overrides where a channel reply is delivered — used
+	// by the Discord gateway bot, where the reply channel is the one the user
+	// typed in (not the connection's configured channel). Empty → the
+	// connection's default channel/target.
+	ReplyTarget string `json:"replyTarget,omitempty"`
 	// AgentRef is the Agent to run.
 	AgentRef string `json:"agentRef"`
 	// Task is the prompt to execute.

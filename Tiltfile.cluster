@@ -637,6 +637,7 @@ local_resource(
         'providers/agents/portal/src',
         'providers/agents/portal/package.json',
         'providers/agents/portal/vite.config.ts',
+        'providers/agents/.env',
     ],
     resource_deps=['kedge-hub', 'agents-db'],
     readiness_probe=probe(

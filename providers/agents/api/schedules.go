@@ -106,6 +106,69 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, out)
 }
 
+// updateScheduleRequest patches an existing schedule. Pointer fields let the
+// caller change only what they send (retime the cron, edit the task, pause).
+type updateScheduleRequest struct {
+	Schedule  *string `json:"schedule,omitempty"`
+	TimeZone  *string `json:"timeZone,omitempty"`
+	RunAt     *string `json:"runAt,omitempty"`
+	Task      *string `json:"task,omitempty"`
+	Checklist *string `json:"checklist,omitempty"`
+	Suspend   *bool   `json:"suspend,omitempty"`
+}
+
+func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireClient(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	sched, err := c.Schedules().Get(r.Context(), name, metav1.GetOptions{})
+	if err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	var req updateScheduleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
+		return
+	}
+	if req.Schedule != nil {
+		sched.Spec.Schedule = strings.TrimSpace(*req.Schedule)
+	}
+	if req.TimeZone != nil {
+		sched.Spec.TimeZone = strings.TrimSpace(*req.TimeZone)
+	}
+	if req.Task != nil {
+		sched.Spec.Task = *req.Task
+	}
+	if req.Checklist != nil {
+		sched.Spec.Checklist = *req.Checklist
+	}
+	if req.Suspend != nil {
+		sched.Spec.Suspend = *req.Suspend
+	}
+	if req.RunAt != nil {
+		if v := strings.TrimSpace(*req.RunAt); v != "" {
+			t, perr := time.Parse(time.RFC3339, v)
+			if perr != nil {
+				writeStatus(w, http.StatusBadRequest, "BadRequest", "runAt must be RFC3339: "+perr.Error())
+				return
+			}
+			mt := metav1.NewTime(t)
+			sched.Spec.RunAt = &mt
+		} else {
+			sched.Spec.RunAt = nil
+		}
+	}
+	out, err := c.Schedules().Update(r.Context(), sched, metav1.UpdateOptions{})
+	if err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *Server) deleteSchedule(w http.ResponseWriter, r *http.Request) {
 	c, _, ok := s.requireClient(w, r)
 	if !ok {
@@ -161,5 +224,7 @@ func (s *Server) runScheduleNow(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadGateway, "RunFailed", err.Error())
 		return
 	}
+	// Deliver to the agent's notify channel so "Run now" fires like a real run.
+	s.deliverToNotifyChannel(r, c, agent, name, res.Content)
 	writeJSON(w, http.StatusOK, res)
 }

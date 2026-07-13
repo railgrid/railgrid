@@ -130,7 +130,7 @@ spec:
               type:
                 description: |-
                   Type selects the integration: github, mcp, websearch, http, telegram,
-                  slack, or smtp.
+                  slack, smtp, or discord.
                 enum:
                 - github
                 - mcp
@@ -139,6 +139,7 @@ spec:
                 - telegram
                 - slack
                 - smtp
+                - discord
                 type: string
             required:
             - type

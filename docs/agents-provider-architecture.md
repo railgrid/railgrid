@@ -1,10 +1,15 @@
 # Agents provider — standalone skeleton design
 
-Status: **Partially implemented (2026-07-12). Chat, named model credentials,
-schedules/triggers/connections CRUD, budgets, and channel notify are built; the
-background executor, tool loop, OAuth, and file workspace are not. See
-[Implementation status](#implementation-status).**
-Author: 2026-07-12
+Status: **Substantially implemented (2026-07-13). Chat with a tool loop
+(core/web/github/mcp/edges), named model credentials, autonomous cron/heartbeat
+firing, event-trigger webhooks, sub-agent delegation, an approvals inbox
+(portal + channel), channels in/out (Telegram/Slack), OAuth connections, token
+budgets, and a durable Postgres store are built. Not built: the file workspace
+(needs the infrastructure provider), the claude-code runner, resumable
+approval-paused runs, and the hardening items in
+[Implementation status](#implementation-status). Not yet driven end-to-end
+against a running hub — integration bugs expected.**
+Author: 2026-07-12 (status updated 2026-07-13)
 Related: [`agents-provider-research.md`](./agents-provider-research.md) (the
 research this design follows from), [`providers.md`](./providers.md),
 [`mcp-architecture.md`](./mcp-architecture.md),
@@ -122,47 +127,69 @@ Inbox, Models.
   servers, MCPServer "default") exposed as `edges__*` tools, dialed as the
   calling user. Interactive runs only (background runs have no user token).
 
-### Not yet implemented
+### Priority 0 — validate before building more
 
-These are designed below but not built:
+The whole stack builds, unit-tests pass, the Postgres backend is verified
+against a live database, and every route boot-smokes. But the paths that
+matter most have **never been driven against a running hub**: chat against a
+real LLM, cron firing through the APIExport virtual workspace, the Telegram
+round-trip (chat → tool → approval → `/approve` → retry), GitHub-MCP tools,
+and the OAuth callback. Several depend on RBAC/VW behavior not verifiable in
+isolation — does the provider SA read its own `APIExportEndpointSlice`, do the
+`secrets` permission claims flow through the wildcard VW, does the hub forward
+anonymous `/webhooks/*` and `/oauth/callback` with headers stripped. **An
+end-to-end test session is expected to surface integration bugs, and fixing
+those outranks new features.**
 
-1. **Files family (M9).** Blocked on the `agent-workspace` Template landing in
-   the **infrastructure provider** (PVC + file-access pod + dataplane
-   subresources — the sandbox-runner successor). The agents-side tool family
-   is straightforward once that exists.
-2. **Channel niceties.** `/compact`, inbound email, Slack signing-secret
-   verification (URL token is the auth today), multi-chat routing.
-3. **Tool-loop leftovers.** Resumable approval-interrupted runs (an
-   approval-gated call still returns "approve and retry" instead of
-   pausing/resuming) and auto-injected memories (recalled via `memory_list`
-   today). Trigger filters/idempotency remain minimal.
-4. ~~Postgres store backend~~ — **built.** `store/postgres.go` implements the
-   full Store (transcripts, runs, memories, inbox, audit, usage, tenant refs)
-   with idempotent schema creation; selected automatically when
-   `AGENTS_DATABASE_URL` is set. Dev runs get a local container via
-   `make agents-db-up` (port 55434 — 55432/55433 are app-studio/kuery), wired
-   as the `agents-db` Tilt resource. Verified against a live database
-   (integration tests gated on `AGENTS_TEST_POSTGRES_DSN`). Still missing
-   here: at-rest encryption of message/memory content.
-5. **Model providers beyond OpenAI-compatible.** `llm.BuildModel` implements
-   only the OpenAI-compatible path (covers OpenAI, Anthropic via its compat
-   endpoint, OpenRouter, …). Native Gemini/Vertex is unbuilt.
-6. **File workspace (M9).** The `agent-workspace` infrastructure Template and the
-   `files` tool family are unbuilt (need the infrastructure provider).
-7. **claude-code runner.** Only the in-process `eino` runner exists; the
-   pod-backed `claude-code` runner and the `Runner` interface abstraction are
-   unbuilt.
-8. **Context compaction, at-rest encryption, quiet hours, RAG/knowledge, run
-   tracing UI, agent presets, team/shared agents** — all still design-only.
+### Not yet implemented — functional (designed, no code)
+
+1. **Files family + agent workspace (M9).** Blocked *outside this provider*:
+   needs the `agent-workspace` Template in the **infrastructure provider** (PVC
+   + file-access pod + Template-declared dataplane subresources — the
+   sandbox-runner successor). The agents-side `files` tool family is small once
+   that exists. Also blocks item 3.
+2. **Resumable approval-paused runs.** An approval-gated tool call ends its
+   attempt with "approve and retry"; the design wants the run *paused* at an
+   Eino checkpoint and *resumed* on `/approve`. The store's `checkpoint` column
+   exists but is unused — this is the wiring to close that gap.
+3. **claude-code runner.** Only the in-process `eino` runner exists; the
+   pod-backed `claude-code` runner needs the workspace PVC (item 1) plus a
+   `Runner` interface extraction.
+4. **Context compaction.** No `/compact` and no automatic summarize-and-truncate
+   — long-lived channel sessions will overflow the model window; `/new` is the
+   only relief today.
+5. **AgentSkill.** In the schema, no behavior; the cross-tenant skill catalog
+   (the ClawHub analog) lands after the resource does.
+6. **Native Gemini/Vertex.** `llm.BuildModel` implements only the
+   OpenAI-compatible path (covers OpenAI, Anthropic-compat, OpenRouter).
+
+### Not yet implemented — hardening (works, rough edges)
+
+7. **USD budgets don't self-trip.** Runs don't compute dollar cost (no pricing
+   table), so only *token* caps enforce; a `usdLimit` never fires from real
+   usage.
+8. **At-rest encryption.** Message/memory content is plaintext in Postgres (the
+   columns exist; the app-studio-style key wiring isn't ported).
+9. **Autonomy + policy have no UI editor.** `suggest/ask/auto`, per-trigger
+   `requireApproval` lists, and `delegates` are API-only; only the
+   interactive/background split is enforced from `autonomy`.
+10. **Runs & audit have no UI.** The store records every run and tool call, but
+    there is no runs-history / audit tab to inspect background activity.
+11. **Retry backoff.** Failed schedules count failures and disable at 5; the
+    designed 30s/60s/5m escalating retry isn't implemented.
+12. **Slack signing-secret verification** (URL token is the only webhook auth
+    today), **trigger filters/idempotency** (payloads pass verbatim, duplicate
+    deliveries double-fire), **inbound email**, and **multi-chat routing** (one
+    connection = one configured chat).
 
 ### Milestone mapping
 
-Built: M1 (skeleton), M2 (chat + store, minus Postgres), plus the CRUD/UI and
-per-request execution slices of M3 (schedules), M4 (connections), M5 (inbox
-surface), M6 (channel notify), M7 (trigger CRUD), M8 (budgets). Not built: the
-autonomous/background halves of M3/M6/M7, the M4 tool loop, M5 delegation, M7
-OAuth, and M9 workspace. The [Milestones](#milestones) section lists the full
-plan.
+Built: M1 (skeleton), M2 (chat + store + **Postgres**), M3 (schedules + **cron
+firing**), M4 (connections + **tool loop**: core/web/github/mcp/edges), M5
+(inbox + **delegation** + channel approvals), M6 (channels + **inbound chat**),
+M7 (triggers + **webhooks** + **OAuth**), M8 (**token budgets**). Not built:
+M9 (workspace/files), the claude-code runner, and the hardening items above.
+The [Milestones](#milestones) section lists the full plan.
 
 ## Design rules
 
@@ -379,14 +406,17 @@ schedule in). Every call lands in `agents_tool_calls`.
 
 ## Surfaces: portal, channels, notifications
 
-**Portal** (copy quickstart's Vite + `kedge.ready`/`kedge.context`
-handshake): agent list/create, chat with streaming + tool-call rendering +
-approval prompts, schedules tab (type, next/last run, failures, suspend,
-heartbeat checklist editor), **triggers tab** (event automations), **inbox**
-(cross-agent pending approvals + questions), runs history with transcripts and
-cost, budget view, connections management (create Connection + paste secret or
-run the OAuth flow → provider writes the workspace Secret), workspace file
-browser.
+**Portal — agent-first** (like app-studio's project model): the left sidebar
+lists agents (the starting point) plus a footer of workspace-shared resources.
+Selecting an agent opens *its* Chat / Schedules / Triggers / Channels /
+Settings — schedules and triggers are filtered and created for that agent (no
+agent picker), Channels sets the agent's notify/inbound connection, and
+Settings edits display name, model credential, system prompt, autonomy, monthly
+budget, and delegates. The shared footer holds **Models** (credentials),
+**Connections** (secrets — created once, referenced by agents), and the
+cross-agent **Inbox**. This keeps per-agent config inside the agent and shared
+secrets outside it, mirroring app-studio. (Vite + `kedge.ready`/`kedge.context`
+handshake; streaming chat with tool-call rows + approval prompts.)
 
 **OAuth connections.** For `auth: oauth` Connections the portal starts the flow
 at `/api/connections/{name}/oauth/authorize` (redirect to the provider, e.g.
