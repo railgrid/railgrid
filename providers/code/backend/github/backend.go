@@ -597,6 +597,13 @@ func (b *Backend) ListPackages(ctx context.Context, conn *codev1alpha1.Connectio
 				info.ImageRepository = "ghcr.io/" + strings.ToLower(org) + "/" + strings.ToLower(p.GetName())
 				if versions, err := listPackageVersions(ctx, c, org, pt, p.GetName()); err == nil {
 					info.Versions = versions
+					// GHCR's list-packages version_count is unreliable (often 0),
+					// so never report fewer versions than we actually resolved.
+					// Keep the host's total when it exceeds our paged view (we cap
+					// at packageVersionsMax).
+					if n := int64(len(versions)); n > info.VersionCount {
+						info.VersionCount = n
+					}
 				}
 			}
 			out = append(out, info)
