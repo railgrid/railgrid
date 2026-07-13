@@ -65,8 +65,9 @@ spec:
           frontend that calls it; the only platform constraint is the `/api` prefix.
 
       FRONTEND (frontendImage) — the platform routes `/` to it:
-        • No env is injected. Listen on frontendPort (input, default 8080); serve
-          the UI on `/`.
+        • Listen on frontendPort (input, default 8080); serve the UI on `/`.
+          $PORT (= frontendPort) is injected, so an app that honors $PORT binds
+          the right port automatically.
         • Call the backend from the BROWSER at `/api/*` on the SAME origin (e.g.
           `fetch("/api/items")`). There is NO separate backend host/URL — do not
           hardcode one or expect a backend env var. No database access.
@@ -554,6 +555,12 @@ spec:
                   - name: backend
                     image: ${schema.spec.backendImage}
                     env:
+                      # Bind the exposed port. Railpack/12-factor images read
+                      # $PORT; without it they fall back to a framework default
+                      # (e.g. Node 3000) and nothing listens on backendPort, so
+                      # the Service/route get no backend and the edge 502s.
+                      - name: PORT
+                        value: ${string(schema.spec.backendPort)}
                       # Full connection string incl. password — sourced from
                       # the Secret, never templated in clear.
                       - name: DATABASE_URL
@@ -602,6 +609,12 @@ spec:
                     # UI only — it calls the backend from the browser at
                     # /api/* on the same origin (the exposure layer routes /api
                     # to the backend), so no BACKEND_URL / server-side proxy.
+                    # $PORT (= frontendPort) is injected so Railpack/12-factor
+                    # images bind the exposed port instead of a framework
+                    # default (e.g. Node 3000) — otherwise the edge 502s.
+                    env:
+                      - name: PORT
+                        value: ${string(schema.spec.frontendPort)}
                     ports:
                       - containerPort: ${schema.spec.frontendPort}
       - id: frontendService

@@ -17,7 +17,9 @@ package connection
 import (
 	"context"
 	"fmt"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
@@ -45,6 +47,12 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("code-connection").
 		For(&codev1alpha1.Connection{}).
+		// The credential Secret is created by the portal right after the
+		// Connection (and carries an ownerReference back to it), so the first
+		// reconcile usually races ahead of the Secret becoming claim-visible.
+		// Owning the Secret re-enqueues the Connection once it lands, so the
+		// initial CredentialUnavailable failure self-heals instead of sticking.
+		Owns(&corev1.Secret{}).
 		Complete(r)
 }
 
@@ -85,17 +93,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	b, ok := r.Backends.Get(string(conn.Spec.Provider))
 	if !ok {
-		return r.fail(ctx, c, &conn, "ProviderNotFound", fmt.Sprintf("no backend registered for provider %q", conn.Spec.Provider))
+		return r.fail(ctx, c, &conn, "ProviderNotFound", fmt.Sprintf("no backend registered for provider %q", conn.Spec.Provider), 0)
 	}
 
 	cred, err := shared.ResolveCredential(ctx, c, &conn)
 	if err != nil {
-		return r.fail(ctx, c, &conn, "CredentialUnavailable", err.Error())
+		// A just-created Secret may not be claim-visible on this VW yet; the
+		// Owns(Secret) watch normally catches its arrival, but requeue too so a
+		// missed event still recovers rather than sticking on "not found".
+		return r.fail(ctx, c, &conn, "CredentialUnavailable", err.Error(), 30*time.Second)
 	}
 
 	login, scopes, err := b.ValidateConnection(ctx, &conn, cred)
 	if err != nil {
-		return r.fail(ctx, c, &conn, "ValidationFailed", err.Error())
+		return r.fail(ctx, c, &conn, "ValidationFailed", err.Error(), 0)
 	}
 
 	conn.Status.ObservedGeneration = conn.Generation
@@ -111,13 +122,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 }
 
 // fail records a not-ready status and swallows the error (the bad state is on
-// the CR; requeue happens on the next change or resync rather than hot-looping).
-func (r *Reconciler) fail(ctx context.Context, c client.Client, conn *codev1alpha1.Connection, reason, msg string) (ctrl.Result, error) {
+// the CR). A non-zero requeueAfter re-polls a recoverable cause (a not-yet-
+// visible credential Secret); zero leaves recovery to the next spec change or a
+// watched-object event, since re-writing an unchanged status won't re-enqueue.
+func (r *Reconciler) fail(ctx context.Context, c client.Client, conn *codev1alpha1.Connection, reason, msg string, requeueAfter time.Duration) (ctrl.Result, error) {
 	conn.Status.ObservedGeneration = conn.Generation
 	shared.SetCondition(&conn.Status.Conditions, codev1alpha1.ConditionValidated, metav1.ConditionFalse, reason, msg, conn.Generation)
 	shared.SetCondition(&conn.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg, conn.Generation)
 	if err := c.Status().Update(ctx, conn); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }

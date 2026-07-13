@@ -73,10 +73,25 @@ func tenantHash(tenantPath string) string {
 func LabelTenantValue(tenantPath string) string { return tenantHash(tenantPath) }
 
 // TenantNamespace is the public form of tenantNamespaceName: the
-// per-tenant namespace on the runtime cluster a tenant's workloads land
-// in. The Application instance controller writes the bridged OIDC Secret
-// here so it sits beside the oauth2-proxy pod the kro fork materializes.
+// per-tenant namespace in the central kro cluster where the RGD instance
+// CR is created (the old central-kro model — see CreateInstance). It is
+// NOT where the kro fork materializes an instance's workloads under the
+// control-plane/data-plane split; for that, use RuntimeNamespace.
 func TenantNamespace(tenantPath string) string { return tenantNamespaceName(tenantPath) }
+
+// RuntimeNamespace returns the namespace on the runtime cluster where the
+// kro fork materializes an instance's namespaced children. Under the
+// control-plane/data-plane split (DeployToLocalRuntime) the fork isolates
+// each tenant's workloads per source (kcp logical) cluster as
+// "<sourceCluster>-<sourceNamespace>" — mirroring kro-run/kro's instance
+// controller tenantNamespace helper. Cross-cluster resources the infra
+// provider writes to sit BESIDE those workloads — bridged OIDC/registry
+// Secrets and the default-SA imagePullSecrets — must target this namespace,
+// not the kedge-tenants-<hash> control-plane namespace (TenantNamespace),
+// or they land in an empty namespace no pod can see.
+func RuntimeNamespace(sourceCluster, sourceNamespace string) string {
+	return sourceCluster + "-" + sourceNamespace
+}
 
 // EnsureTenantNamespace creates the per-tenant namespace in the central
 // kro cluster if absent. Idempotent. Returns the namespace name. Caches

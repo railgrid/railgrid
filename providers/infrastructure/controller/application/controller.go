@@ -247,11 +247,11 @@ func (r *instanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	if !app.GetDeletionTimestamp().IsZero() {
 		if controllerutil.ContainsFinalizer(app, finalizer) {
 			if r.kind.oidc {
-				if err := c.deleteBridgedSecret(ctx, tenant, app.GetName()); err != nil {
+				if err := c.deleteBridgedSecret(ctx, tenant, app.GetNamespace(), app.GetName()); err != nil {
 					return ctrl.Result{}, fmt.Errorf("cleanup bridged secret: %w", err)
 				}
 			}
-			if err := c.cleanupRegistryPullSecret(ctx, tenant, app.GetName()); err != nil {
+			if err := c.cleanupRegistryPullSecret(ctx, tenant, app.GetNamespace(), app.GetName()); err != nil {
 				return ctrl.Result{}, fmt.Errorf("cleanup registry pull secret: %w", err)
 			}
 			controllerutil.RemoveFinalizer(app, finalizer)
@@ -282,7 +282,7 @@ func (r *instanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	// the default ServiceAccount, so production pods pull the private image —
 	// wired once, covering all components of every template kind.
 	if hasPull {
-		if err := c.bridgeRegistryPullSecret(ctx, tenantClient, tenant, app.GetName()); err != nil {
+		if err := c.bridgeRegistryPullSecret(ctx, tenantClient, tenant, app.GetNamespace(), app.GetName()); err != nil {
 			return ctrl.Result{}, fmt.Errorf("bridging registry pull secret: %w", err)
 		}
 	}
@@ -315,7 +315,7 @@ func (r *instanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 			return ctrl.Result{}, err
 		}
 	case modeBYO:
-		if err := c.bridgeBYOSecret(ctx, tenantClient, tenant, app.GetName()); err != nil {
+		if err := c.bridgeBYOSecret(ctx, tenantClient, tenant, app.GetNamespace(), app.GetName()); err != nil {
 			log.Error(err, "bridging BYO OIDC client secret")
 			return ctrl.Result{}, err
 		}
@@ -375,7 +375,7 @@ func (c *Controller) stampSpec(ctx context.Context, tenantClient client.Client, 
 // bridgeBYOSecret reads oidc_client_secret out of the tenant's
 // cloud-credentials Secret and writes it into the runtime per-tenant namespace
 // as cloud-credentials-<name>, the name the RGD references.
-func (c *Controller) bridgeBYOSecret(ctx context.Context, tenantClient client.Client, tenant, name string) error {
+func (c *Controller) bridgeBYOSecret(ctx context.Context, tenantClient client.Client, tenant, srcNamespace, name string) error {
 	src := &unstructured.Unstructured{}
 	src.SetGroupVersionKind(secretGVK)
 	key := types.NamespacedName{Namespace: c.cfg.CredentialsNamespace, Name: cloudCredentialsSecret}
@@ -395,15 +395,15 @@ func (c *Controller) bridgeBYOSecret(ctx context.Context, tenantClient client.Cl
 	if !ok || encoded == "" {
 		return fmt.Errorf("tenant Secret %s/%s has no key %q", c.cfg.CredentialsNamespace, cloudCredentialsSecret, oidcClientSecretKey)
 	}
-	return c.writeBridgedSecret(ctx, tenant, name, map[string]string{oidcClientSecretKey: encoded})
+	return c.writeBridgedSecret(ctx, tenant, srcNamespace, name, map[string]string{oidcClientSecretKey: encoded})
 }
 
 // writeBridgedSecret upserts the per-instance Secret in the runtime per-tenant
 // namespace. data values are base64-encoded strings (Secret .data wire form).
 // Ensures the namespace exists first (the kro fork also creates it, but the
 // Secret may race ahead of the first workload reconcile).
-func (c *Controller) writeBridgedSecret(ctx context.Context, tenant, name string, data map[string]string) error {
-	ns := kro.TenantNamespace(tenant)
+func (c *Controller) writeBridgedSecret(ctx context.Context, tenant, srcNamespace, name string, data map[string]string) error {
+	ns := kro.RuntimeNamespace(tenant, srcNamespace)
 	if err := c.ensureNamespace(ctx, ns); err != nil {
 		return err
 	}
@@ -471,8 +471,8 @@ func (c *Controller) ensureNamespace(ctx context.Context, ns string) error {
 
 // deleteBridgedSecret removes the per-instance bridged Secret from the runtime
 // per-tenant namespace. NotFound is success.
-func (c *Controller) deleteBridgedSecret(ctx context.Context, tenant, name string) error {
-	ns := kro.TenantNamespace(tenant)
+func (c *Controller) deleteBridgedSecret(ctx context.Context, tenant, srcNamespace, name string) error {
+	ns := kro.RuntimeNamespace(tenant, srcNamespace)
 	err := c.cfg.Runtime.Resource(secretGVR).Namespace(ns).
 		Delete(ctx, kro.CredentialsSecretName(name), metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
@@ -488,7 +488,7 @@ func (c *Controller) deleteBridgedSecret(ctx context.Context, tenant, name strin
 // ServiceAccount — so every pod there can pull the private image, across all
 // components and template kinds. A no-op when the tenant minted no such Secret
 // (public image / non-production instance).
-func (c *Controller) bridgeRegistryPullSecret(ctx context.Context, tenantClient client.Client, tenant, name string) error {
+func (c *Controller) bridgeRegistryPullSecret(ctx context.Context, tenantClient client.Client, tenant, srcNamespace, name string) error {
 	src := &unstructured.Unstructured{}
 	src.SetGroupVersionKind(secretGVK)
 	key := types.NamespacedName{Namespace: c.cfg.CredentialsNamespace, Name: registryPullSecretName(name)}
@@ -506,7 +506,7 @@ func (c *Controller) bridgeRegistryPullSecret(ctx context.Context, tenantClient 
 		return fmt.Errorf("tenant Secret %s/%s has no .dockerconfigjson", c.cfg.CredentialsNamespace, registryPullSecretName(name))
 	}
 
-	ns := kro.TenantNamespace(tenant)
+	ns := kro.RuntimeNamespace(tenant, srcNamespace)
 	secretName := registryPullSecretName(name)
 	if err := c.writeRuntimePullSecret(ctx, ns, secretName, encoded); err != nil {
 		return err
@@ -532,8 +532,8 @@ func (c *Controller) tenantHasPullSecret(ctx context.Context, tenantClient clien
 // cleanupRegistryPullSecret removes the bridged pull Secret and detaches it from
 // the default ServiceAccount when the instance is deleted. NotFound is success
 // (the namespace may already be gone).
-func (c *Controller) cleanupRegistryPullSecret(ctx context.Context, tenant, name string) error {
-	ns := kro.TenantNamespace(tenant)
+func (c *Controller) cleanupRegistryPullSecret(ctx context.Context, tenant, srcNamespace, name string) error {
+	ns := kro.RuntimeNamespace(tenant, srcNamespace)
 	secretName := registryPullSecretName(name)
 	if err := c.cfg.Runtime.Resource(secretGVR).Namespace(ns).Delete(ctx, secretName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete runtime pull secret: %w", err)

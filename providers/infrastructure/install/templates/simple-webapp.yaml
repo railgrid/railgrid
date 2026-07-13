@@ -30,7 +30,8 @@ spec:
       input) and nothing else:
         • Plain HTTP server, any language/base image. Bind to 0.0.0.0 on the
           port input (default 8080), NOT 127.0.0.1, or the platform cannot
-          route to it.
+          route to it. The platform injects $PORT (= the port input), so an
+          app that honors $PORT binds the right port automatically.
         • Stateless — no persistent disk. Pods may be restarted or scaled
           (the replicas input).
         • The platform provisions the Service, the public route, and the URL;
@@ -206,6 +207,15 @@ spec:
                 containers:
                   - name: app
                     image: ${schema.spec.image}
+                    # Bind the exposed port. Railpack/buildpack and 12-factor
+                    # images read $PORT; without it they fall back to their
+                    # framework default (e.g. Node 3000), so nothing listens on
+                    # spec.port — the Service and tunnel origin then get no
+                    # backend and the edge returns 502. Mirrors dev mode, where
+                    # the dev-agent binds the app to the same port.
+                    env:
+                      - name: PORT
+                        value: ${string(schema.spec.port)}
                     ports:
                       - containerPort: ${schema.spec.port}
       - id: appService
