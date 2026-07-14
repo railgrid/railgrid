@@ -74,6 +74,9 @@ type createAgentRequest struct {
 	SystemPrompt    string `json:"systemPrompt,omitempty"`
 	Autonomy        string `json:"autonomy,omitempty"`
 	ModelCredential string `json:"modelCredential,omitempty"`
+	// ModelFallbacks are additional credential names tried, in order, when the
+	// primary model fails.
+	ModelFallbacks []string `json:"modelFallbacks,omitempty"`
 	// BudgetTokens caps tokens per month (0 = unlimited).
 	BudgetTokens int64 `json:"budgetTokens,omitempty"`
 	// BudgetUSD caps spend per month as a decimal string (empty = unlimited).
@@ -113,6 +116,9 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	if cred := strings.TrimSpace(req.ModelCredential); cred != "" {
 		a.Spec.Models = map[string]string{"chat": cred}
 	}
+	if fb := trimmedList(req.ModelFallbacks); len(fb) > 0 {
+		a.Spec.ModelFallbacks = fb
+	}
 	if req.BudgetTokens > 0 || strings.TrimSpace(req.BudgetUSD) != "" {
 		a.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "month", TokenLimit: req.BudgetTokens, USDLimit: strings.TrimSpace(req.BudgetUSD)}
 	}
@@ -130,6 +136,22 @@ var knownToolFamilies = map[string]bool{"core": true, "web": true, "github": tru
 
 // normalizeFamilies keeps only recognized families, always includes core, and
 // de-duplicates â€” so the stored grant is clean regardless of UI input.
+// trimmedList trims each entry and drops blanks and duplicates, preserving
+// order. Used for ordered name lists like model fallbacks.
+func trimmedList(in []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
 func normalizeFamilies(in []string) []string {
 	seen := map[string]bool{"core": true}
 	out := []string{"core"}
@@ -145,6 +167,7 @@ func normalizeFamilies(in []string) []string {
 
 type updateAgentRequest struct {
 	ModelCredential  *string   `json:"modelCredential,omitempty"`
+	ModelFallbacks   *[]string `json:"modelFallbacks,omitempty"`
 	SystemPrompt     *string   `json:"systemPrompt,omitempty"`
 	Autonomy         *string   `json:"autonomy,omitempty"`
 	BudgetTokens     *int64    `json:"budgetTokens,omitempty"`
@@ -193,6 +216,9 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		} else {
 			agent.Spec.Models["chat"] = cred
 		}
+	}
+	if req.ModelFallbacks != nil {
+		agent.Spec.ModelFallbacks = trimmedList(*req.ModelFallbacks)
 	}
 	if req.SystemPrompt != nil {
 		agent.Spec.SystemPrompt = *req.SystemPrompt
@@ -383,15 +409,46 @@ var errNoCredential = errors.New("this agent has no model credential assigned â€
 // builds the Eino model from it. Agents reference a credential by name in
 // spec.models["chat"]; the credential is its own Secret (kedge-agents-model-<name>).
 func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent) (einomodel.BaseChatModel, error) {
-	cred := strings.TrimSpace(agent.Spec.Models["chat"])
-	if cred == "" {
+	primary := strings.TrimSpace(agent.Spec.Models["chat"])
+	if primary == "" {
 		return nil, errNoCredential
 	}
-	profile, err := llm.LoadCredential(ctx, creds, cred)
-	if err != nil {
-		return nil, err
+	// Primary first, then the ordered fallbacks. Skip blanks and duplicates.
+	names := []string{primary}
+	seen := map[string]bool{primary: true}
+	for _, f := range agent.Spec.ModelFallbacks {
+		f = strings.TrimSpace(f)
+		if f == "" || seen[f] {
+			continue
+		}
+		seen[f] = true
+		names = append(names, f)
 	}
-	return llm.BuildModel(ctx, profile)
+
+	var members []einomodel.BaseChatModel
+	var built []string
+	var lastErr error
+	for _, name := range names {
+		profile, err := llm.LoadCredential(ctx, creds, name)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		m, err := llm.BuildModel(ctx, profile)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		members = append(members, m)
+		built = append(built, name)
+	}
+	if len(members) == 0 {
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, errNoCredential
+	}
+	return llm.NewFallbackModel(members, built), nil
 }
 
 // credentialsError reports whether err is a missing/invalid model-credentials

@@ -77,6 +77,14 @@ type AgentSpec struct {
 	// +optional
 	Models map[string]string `json:"models,omitempty"`
 
+	// ModelFallbacks is an ordered list of additional model-credential names
+	// tried, in order, when the primary chat model (models["chat"]) fails to
+	// respond — a provider outage, rate limit, timeout, or connection error.
+	// The first credential that responds is used. Streaming only falls back
+	// before the first token is emitted. Empty means no fallback.
+	// +optional
+	ModelFallbacks []string `json:"modelFallbacks,omitempty"`
+
 	// Runner selects the execution backend: "auto" (default) runs in-process
 	// on Eino unless the task is long-running and the claude-code runner is
 	// available; "eino" pins the in-process loop; "claude-code" pins the

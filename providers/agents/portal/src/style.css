@@ -472,6 +472,7 @@ kedge-provider-agents .agents-ov-k { font-size: 11px; letter-spacing: .06em; tex
 kedge-provider-agents .agents-ov-v { font-size: 14px; font-weight: 600; color: var(--color-text-primary, #123); display: flex; flex-wrap: wrap; gap: 4px; }
 kedge-provider-agents .agents-ov-v.warn { color: var(--color-warning, #d97706); }
 kedge-provider-agents .agents-ov-v.muted { color: var(--color-text-muted, #889); font-weight: 400; }
+kedge-provider-agents .agents-ov-sub { margin-top: 5px; font-size: 12px; font-weight: 400; color: var(--color-text-muted, #889); }
 kedge-provider-agents .agents-checkrow { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 kedge-provider-agents .agents-toolset-form { display: flex; flex-direction: column; gap: 12px; }
 kedge-provider-agents .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }

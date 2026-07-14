@@ -28,6 +28,7 @@ interface Agent {
     systemPrompt?: string
     autonomy?: string
     models?: Record<string, string>
+    modelFallbacks?: string[]
     defaultNotifyConnection?: string
     delegates?: string[]
     budget?: { window?: string; usdLimit?: string; tokenLimit?: number }
@@ -1032,6 +1033,7 @@ export class AgentsElement extends HTMLElement {
     const scheds = this._schedules.filter((s) => s.spec.agentRef === name)
     const trigs = this._triggers.filter((t) => t.spec.agentRef === name)
     const model = a.spec?.models?.chat
+    const fallbacks = a.spec?.modelFallbacks || []
     const notify = a.spec?.defaultNotifyConnection
     const directTools = Array.from(new Set([...(a.spec?.tools?.interactive?.connections || []), ...(a.spec?.tools?.background?.connections || [])]))
     const toolsets = Array.from(new Set([...(a.spec?.tools?.interactive?.toolsets || []), ...(a.spec?.tools?.background?.toolsets || [])]))
@@ -1062,6 +1064,7 @@ export class AgentsElement extends HTMLElement {
           <div class="agents-ov-card">
             <div class="agents-ov-k">Model</div>
             <div class="agents-ov-v ${model ? '' : 'warn'}">${model ? escapeHTML(model) : 'none set'}</div>
+            ${fallbacks.length ? `<div class="agents-ov-sub">↳ fallback: ${fallbacks.map((f) => escapeHTML(f)).join(' → ')}</div>` : ''}
           </div>
           <div class="agents-ov-card">
             <div class="agents-ov-k">Notify channel</div>
@@ -1383,6 +1386,7 @@ export class AgentsElement extends HTMLElement {
     const scheds = this._schedules.filter((s) => s.spec.agentRef === name)
     const trigs = this._triggers.filter((t) => t.spec.agentRef === name)
     const model = a.spec?.models?.chat
+    const fallbacks = a.spec?.modelFallbacks || []
     const notify = a.spec?.defaultNotifyConnection
     const agentTools = new Set([...(a.spec?.tools?.interactive?.connections || []), ...(a.spec?.tools?.background?.connections || [])])
     const usedConns = new Set<string>()
@@ -1482,6 +1486,18 @@ export class AgentsElement extends HTMLElement {
             value: model,
             options: [{ value: '', label: '— no model —' }, ...this._credentials.map((x) => ({ value: x.name, label: x.name + (x.model ? ` (${x.model})` : '') }))],
             hint: 'Switch which credential this agent reasons with.',
+          },
+          {
+            key: 'modelFallbacks',
+            label: 'Fallbacks',
+            kind: 'chips',
+            // Saved fallbacks first (preserves their order), then the rest.
+            chips: [...fallbacks.filter((n2) => n2 !== model), ...this._credentials.map((x) => x.name).filter((n2) => n2 !== model && !fallbacks.includes(n2))].map((n2) => ({
+              value: n2,
+              label: n2,
+              on: fallbacks.includes(n2),
+            })),
+            hint: 'If this model fails (outage, rate limit, timeout), try these in order.',
           },
         ],
       })
@@ -1610,7 +1626,10 @@ export class AgentsElement extends HTMLElement {
       take('task')
       if (Object.keys(patch).length) await this._updateTrigger(id.slice(5), patch)
     } else if (id.startsWith('model:')) {
-      if ('modelCredential' in values) await this._updateAgent({ modelCredential: str(values.modelCredential) }, 'Model reassigned.')
+      const p: Record<string, unknown> = {}
+      if ('modelCredential' in values) p.modelCredential = str(values.modelCredential)
+      if ('modelFallbacks' in values) p.modelFallbacks = Array.isArray(values.modelFallbacks) ? values.modelFallbacks : []
+      if (Object.keys(p).length) await this._updateAgent(p, 'Model updated.')
     } else if (id.startsWith('conn:')) {
       take('displayName')
       take('baseURL')

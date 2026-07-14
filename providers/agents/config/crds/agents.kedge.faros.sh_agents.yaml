@@ -150,6 +150,16 @@ spec:
                     minimum: 0
                     type: integer
                 type: object
+              modelFallbacks:
+                description: |-
+                  ModelFallbacks is an ordered list of additional model-credential names
+                  tried, in order, when the primary chat model (models["chat"]) fails to
+                  respond — a provider outage, rate limit, timeout, or connection error.
+                  The first credential that responds is used. Streaming only falls back
+                  before the first token is emitted. Empty means no fallback.
+                items:
+                  type: string
+                type: array
               models:
                 additionalProperties:
                   type: string

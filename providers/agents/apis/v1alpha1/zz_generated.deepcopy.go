@@ -127,6 +127,11 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 			(*out)[key] = val
 		}
 	}
+	if in.ModelFallbacks != nil {
+		in, out := &in.ModelFallbacks, &out.ModelFallbacks
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Delegates != nil {
 		in, out := &in.Delegates, &out.Delegates
 		*out = make([]string, len(*in))

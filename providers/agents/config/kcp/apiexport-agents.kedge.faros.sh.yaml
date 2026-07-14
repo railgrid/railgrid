@@ -6,7 +6,7 @@ spec:
   resources:
   - group: agents.kedge.faros.sh
     name: agents
-    schema: v260714-8e565fc.agents.agents.kedge.faros.sh
+    schema: v260714-c1f41b8.agents.agents.kedge.faros.sh
     storage:
       crd: {}
   - group: agents.kedge.faros.sh
