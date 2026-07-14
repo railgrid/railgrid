@@ -20,7 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// AgentTrigger source types.
+// Trigger source types.
 const (
 	// TriggerSourceWebhook fires on an inbound HTTP call to the trigger's
 	// hub-routed endpoint.
@@ -42,27 +42,27 @@ const (
 // +genclient:nonNamespaced
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=agenttriggers,singular=agenttrigger,scope=Cluster,shortName=agttrig
+// +kubebuilder:resource:path=triggers,singular=trigger,scope=Cluster,shortName=trig
 // +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=".spec.agentRef"
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=".spec.source"
 // +kubebuilder:printcolumn:name="LastFired",type=date,JSONPath=".status.lastFired"
 // +kubebuilder:printcolumn:name="Suspended",type=boolean,JSONPath=".spec.suspend"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// AgentTrigger fires an agent run on an external event — the event-based half
-// of automation, complementing the time-based AgentSchedule. Webhook sources
+// Trigger fires an agent run on an external event — the event-based half
+// of automation, complementing the time-based Schedule. Webhook sources
 // get a hub-routed inbound endpoint; other sources subscribe through a
 // Connection.
-type AgentTrigger struct {
+type Trigger struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   AgentTriggerSpec   `json:"spec,omitempty"`
-	Status AgentTriggerStatus `json:"status,omitempty"`
+	Spec   TriggerSpec   `json:"spec,omitempty"`
+	Status TriggerStatus `json:"status,omitempty"`
 }
 
-// AgentTriggerSpec is the user-authored trigger configuration.
-type AgentTriggerSpec struct {
+// TriggerSpec is the user-authored trigger configuration.
+type TriggerSpec struct {
 	// AgentRef names the Agent this trigger drives.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
@@ -98,8 +98,8 @@ type AgentTriggerSpec struct {
 	Suspend bool `json:"suspend,omitempty"`
 }
 
-// AgentTriggerStatus is the observed trigger state.
-type AgentTriggerStatus struct {
+// TriggerStatus is the observed trigger state.
+type TriggerStatus struct {
 	// WebhookPath is the hub-relative inbound endpoint for webhook sources.
 	// +optional
 	WebhookPath string `json:"webhookPath,omitempty"`
@@ -108,7 +108,7 @@ type AgentTriggerStatus struct {
 	// +optional
 	LastFired *metav1.Time `json:"lastFired,omitempty"`
 
-	// LastRunID references the AgentRun produced by the most recent event.
+	// LastRunID references the Run produced by the most recent event.
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
 	LastRunID string `json:"lastRunID,omitempty"`
@@ -126,9 +126,9 @@ type AgentTriggerStatus struct {
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// AgentTriggerList contains a list of AgentTriggers.
-type AgentTriggerList struct {
+// TriggerList contains a list of Triggers.
+type TriggerList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []AgentTrigger `json:"items"`
+	Items           []Trigger `json:"items"`
 }

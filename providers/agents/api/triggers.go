@@ -96,9 +96,9 @@ func (s *Server) createTrigger(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "unsupported source "+req.Source)
 		return
 	}
-	trig := &agentsv1alpha1.AgentTrigger{
+	trig := &agentsv1alpha1.Trigger{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
-		Spec: agentsv1alpha1.AgentTriggerSpec{
+		Spec: agentsv1alpha1.TriggerSpec{
 			AgentRef:      req.AgentRef,
 			Source:        req.Source,
 			ConnectionRef: req.ConnectionRef,

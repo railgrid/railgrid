@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260712-dabfd8e.agents.agents.kedge.faros.sh
+  name: v260714-8e565fc.agents.agents.kedge.faros.sh
 spec:
   group: agents.kedge.faros.sh
   names:
@@ -203,6 +203,14 @@ spec:
                       items:
                         type: string
                       type: array
+                    toolsets:
+                      description: |-
+                        Toolsets names shared Toolset resources whose families, connections, and
+                        approval rules are merged into this grant. Lets many agents link one
+                        reusable bundle.
+                      items:
+                        type: string
+                      type: array
                   type: object
                 interactive:
                   description: |-
@@ -226,6 +234,14 @@ spec:
                       description: |-
                         RequireApproval lists tool names (or "*" family wildcards like "github:*")
                         that must be approved by the user before they run.
+                      items:
+                        type: string
+                      type: array
+                    toolsets:
+                      description: |-
+                        Toolsets names shared Toolset resources whose families, connections, and
+                        approval rules are merged into this grant. Lets many agents link one
+                        reusable bundle.
                       items:
                         type: string
                       type: array

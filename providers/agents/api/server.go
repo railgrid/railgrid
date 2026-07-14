@@ -157,6 +157,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/connections/{name}", s.deleteConnection)
 	mux.HandleFunc("POST /api/connections/{name}/test", s.testConnection)
 
+	// Toolsets: workspace-shared bundles of tool grants that agents link.
+	mux.HandleFunc("GET /api/toolsets", s.listToolsets)
+	mux.HandleFunc("POST /api/toolsets", s.createToolset)
+	mux.HandleFunc("PUT /api/toolsets/{name}", s.updateToolset)
+	mux.HandleFunc("DELETE /api/toolsets/{name}", s.deleteToolset)
+
 	// Event triggers (M7): CRUD + synchronous "run now".
 	mux.HandleFunc("GET /api/triggers", s.listTriggers)
 	mux.HandleFunc("POST /api/triggers", s.createTrigger)

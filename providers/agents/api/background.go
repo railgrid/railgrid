@@ -229,7 +229,7 @@ func (b *background) loop(ctx context.Context) {
 }
 
 func (b *background) tick(ctx context.Context) {
-	list, err := b.wildcard.Resource(agentsclient.AgentScheduleGVR).List(ctx, metav1.ListOptions{})
+	list, err := b.wildcard.Resource(agentsclient.ScheduleGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		log.Printf("background: listing schedules: %v", err)
 		return
@@ -248,7 +248,7 @@ func (b *background) process(ctx context.Context, u *unstructured.Unstructured, 
 	if clusterID == "" {
 		return fmt.Errorf("no kcp.io/cluster annotation")
 	}
-	sched, err := fromU[agentsv1alpha1.AgentSchedule](u)
+	sched, err := fromU[agentsv1alpha1.Schedule](u)
 	if err != nil {
 		return err
 	}
@@ -338,7 +338,7 @@ func heartbeatPrompt(checklist string) string {
 
 // scheduleDue decides whether a schedule fires now and what its next fire time
 // is. permErr marks unrecoverable spec problems (bad cron, wakeup w/o runAt).
-func scheduleDue(sched *agentsv1alpha1.AgentSchedule, now time.Time) (fire bool, next time.Time, permErr error) {
+func scheduleDue(sched *agentsv1alpha1.Schedule, now time.Time) (fire bool, next time.Time, permErr error) {
 	switch sched.Spec.Type {
 	case agentsv1alpha1.ScheduleTypeCron, agentsv1alpha1.ScheduleTypeHeartbeat:
 		loc := time.UTC
@@ -395,7 +395,7 @@ func (b *background) updateStatus(ctx context.Context, clusterID string, u *unst
 	if err := unstructured.SetNestedMap(obj.Object, status, "status"); err != nil {
 		return err
 	}
-	_, err = dyn.Resource(agentsclient.AgentScheduleGVR).UpdateStatus(ctx, obj, metav1.UpdateOptions{})
+	_, err = dyn.Resource(agentsclient.ScheduleGVR).UpdateStatus(ctx, obj, metav1.UpdateOptions{})
 	return err
 }
 
@@ -471,9 +471,9 @@ func (b *background) recordOutcome(ctx context.Context, job executor.Job, runID 
 	if err != nil {
 		return
 	}
-	gvr := agentsclient.AgentScheduleGVR
+	gvr := agentsclient.ScheduleGVR
 	if job.Kind == executor.KindTrigger {
-		gvr = agentsclient.AgentTriggerGVR
+		gvr = agentsclient.TriggerGVR
 	}
 	u, err := dyn.Resource(gvr).Get(ctx, job.SourceName, metav1.GetOptions{})
 	if err != nil {
@@ -580,12 +580,12 @@ func (s *Server) webhookTrigger(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	tu, err := dyn.Resource(agentsclient.AgentTriggerGVR).Get(r.Context(), name, metav1.GetOptions{})
+	tu, err := dyn.Resource(agentsclient.TriggerGVR).Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
 		writeStatus(w, http.StatusNotFound, "NotFound", "trigger not found")
 		return
 	}
-	trig, err := fromU[agentsv1alpha1.AgentTrigger](tu)
+	trig, err := fromU[agentsv1alpha1.Trigger](tu)
 	if err != nil || trig.Spec.Suspend || trig.Status.DisabledReason != "" {
 		writeStatus(w, http.StatusConflict, "Suspended", "trigger is suspended or disabled")
 		return

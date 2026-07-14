@@ -119,9 +119,9 @@ func coreTools(d Deps) []engine.Tool {
 				if name == "" || task == "" {
 					return "", fmt.Errorf("name and task are required")
 				}
-				sched := &agentsv1alpha1.AgentSchedule{
+				sched := &agentsv1alpha1.Schedule{
 					ObjectMeta: metav1.ObjectMeta{Name: name},
-					Spec: agentsv1alpha1.AgentScheduleSpec{
+					Spec: agentsv1alpha1.ScheduleSpec{
 						AgentRef: d.Agent.Name, Type: typ, Task: task,
 						Schedule: argString(args, "schedule"), TimeZone: argString(args, "timeZone"),
 					},

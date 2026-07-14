@@ -18,7 +18,7 @@ limitations under the License.
 // +groupName=agents.kedge.faros.sh
 
 // Package v1alpha1 defines the agents provider's tenant-facing API: Agent,
-// Connection, AgentSchedule, and AgentRun. These are the source of truth for
+// Connection, Schedule, and Run. These are the source of truth for
 // spec; runtime state (transcripts, checkpoints, fire times, usage) lives in
 // the provider's own Postgres store. See docs/agents-provider-architecture.md.
 package v1alpha1

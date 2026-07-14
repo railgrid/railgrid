@@ -4,16 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: agentruns.agents.kedge.faros.sh
+  name: runs.agents.kedge.faros.sh
 spec:
   group: agents.kedge.faros.sh
   names:
-    kind: AgentRun
-    listKind: AgentRunList
-    plural: agentruns
+    kind: Run
+    listKind: RunList
+    plural: runs
     shortNames:
-    - agtrun
-    singular: agentrun
+    - run
+    singular: run
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -33,7 +33,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          AgentRun records one execution of an agent. The transcript and resumable
+          Run records one execution of an agent. The transcript and resumable
           checkpoint live in the provider store; this resource is the durable index
           entry with status and usage for API and portal consumption.
         properties:
@@ -55,7 +55,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: AgentRunSpec is the run request.
+            description: RunSpec is the run request.
             properties:
               agentRef:
                 description: AgentRef names the Agent that executed.
@@ -68,13 +68,13 @@ spec:
                 type: string
               parentRunID:
                 description: |-
-                  ParentRunID references the AgentRun that spawned this one via delegation.
+                  ParentRunID references the Run that spawned this one via delegation.
                   Empty for top-level runs.
                 maxLength: 128
                 type: string
               scheduleRef:
-                description: ScheduleRef names the AgentSchedule that fired this run,
-                  when applicable.
+                description: ScheduleRef names the Schedule that fired this run, when
+                  applicable.
                 maxLength: 253
                 type: string
               sessionID:
@@ -97,8 +97,8 @@ spec:
                 - delegation
                 type: string
               triggerRef:
-                description: TriggerRef names the AgentTrigger that fired this run,
-                  for event runs.
+                description: TriggerRef names the Trigger that fired this run, for
+                  event runs.
                 maxLength: 253
                 type: string
             required:
@@ -106,7 +106,7 @@ spec:
             - trigger
             type: object
           status:
-            description: AgentRunStatus is the observed run state.
+            description: RunStatus is the observed run state.
             properties:
               attempt:
                 description: Attempt is the 1-based retry attempt number.

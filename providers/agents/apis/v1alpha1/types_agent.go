@@ -152,6 +152,12 @@ type ToolGrant struct {
 	// +optional
 	Connections []string `json:"connections,omitempty"`
 
+	// Toolsets names shared Toolset resources whose families, connections, and
+	// approval rules are merged into this grant. Lets many agents link one
+	// reusable bundle.
+	// +optional
+	Toolsets []string `json:"toolsets,omitempty"`
+
 	// RequireApproval lists tool names (or "*" family wildcards like "github:*")
 	// that must be approved by the user before they run.
 	// +optional

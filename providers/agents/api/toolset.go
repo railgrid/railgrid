@@ -98,6 +98,9 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	if interactive {
 		grant = deps.Agent.Spec.Tools.Interactive
 	}
+	// Merge any linked Toolsets (shared bundles) into this grant so their
+	// families/connections/approval apply as if written inline.
+	grant = s.expandToolsets(ctx, deps, grant)
 	families := grant.Families
 	if len(families) == 0 {
 		families = defaultFamilies(interactive)
@@ -164,6 +167,40 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 		}
 	}
 	return out, closer
+}
+
+// expandToolsets merges every Toolset referenced by a grant into a copy of that
+// grant, unioning families, connections, and approval rules. Missing/unreadable
+// toolsets are logged and skipped so a bad reference degrades rather than fails.
+func (s *Server) expandToolsets(ctx context.Context, deps tools.Deps, grant agentsv1alpha1.ToolGrant) agentsv1alpha1.ToolGrant {
+	if len(grant.Toolsets) == 0 {
+		return grant
+	}
+	fam := slices.Clone(grant.Families)
+	conns := slices.Clone(grant.Connections)
+	appr := slices.Clone(grant.RequireApproval)
+	union := func(dst, add []string) []string {
+		for _, v := range add {
+			if !slices.Contains(dst, v) {
+				dst = append(dst, v)
+			}
+		}
+		return dst
+	}
+	for _, name := range grant.Toolsets {
+		ts, err := deps.CR.GetToolset(ctx, name)
+		if err != nil {
+			log.Printf("toolset: linked toolset %q unavailable: %v", name, err)
+			continue
+		}
+		fam = union(fam, ts.Spec.Families)
+		conns = union(conns, ts.Spec.Connections)
+		appr = union(appr, ts.Spec.RequireApproval)
+	}
+	grant.Families = fam
+	grant.Connections = conns
+	grant.RequireApproval = appr
+	return grant
 }
 
 // wrapTool layers approval gating (when the tool matches the grant's

@@ -20,7 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// AgentSchedule types.
+// Schedule types.
 const (
 	// ScheduleTypeCron runs a task prompt on a recurring cron expression.
 	ScheduleTypeCron = "cron"
@@ -36,7 +36,7 @@ const (
 // +genclient:nonNamespaced
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=agentschedules,singular=agentschedule,scope=Cluster,shortName=agtsched
+// +kubebuilder:resource:path=schedules,singular=schedule,scope=Cluster,shortName=sched
 // +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=".spec.agentRef"
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=".spec.type"
 // +kubebuilder:printcolumn:name="Schedule",type=string,JSONPath=".spec.schedule"
@@ -44,19 +44,19 @@ const (
 // +kubebuilder:printcolumn:name="Suspended",type=boolean,JSONPath=".spec.suspend"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// AgentSchedule triggers an agent to run on its own clock: a recurring cron
+// Schedule triggers an agent to run on its own clock: a recurring cron
 // task, a one-shot wakeup, or a periodic heartbeat. The provider's in-process
 // scheduler owns fire times and reliability; this resource is the spec.
-type AgentSchedule struct {
+type Schedule struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   AgentScheduleSpec   `json:"spec,omitempty"`
-	Status AgentScheduleStatus `json:"status,omitempty"`
+	Spec   ScheduleSpec   `json:"spec,omitempty"`
+	Status ScheduleStatus `json:"status,omitempty"`
 }
 
-// AgentScheduleSpec is the user-authored schedule configuration.
-type AgentScheduleSpec struct {
+// ScheduleSpec is the user-authored schedule configuration.
+type ScheduleSpec struct {
 	// AgentRef names the Agent this schedule drives.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
@@ -113,8 +113,8 @@ type ScheduleRetryPolicy struct {
 	MaxAttempts int32 `json:"maxAttempts,omitempty"`
 }
 
-// AgentScheduleStatus is the observed schedule state.
-type AgentScheduleStatus struct {
+// ScheduleStatus is the observed schedule state.
+type ScheduleStatus struct {
 	// ObservedGeneration is the spec generation the scheduler last reconciled.
 	// When it lags metadata.generation the schedule was edited, and the
 	// scheduler re-derives NextRun from the new spec instead of honoring the
@@ -130,7 +130,7 @@ type AgentScheduleStatus struct {
 	// +optional
 	LastRun *metav1.Time `json:"lastRun,omitempty"`
 
-	// LastRunID references the AgentRun produced by the most recent fire.
+	// LastRunID references the Run produced by the most recent fire.
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
 	LastRunID string `json:"lastRunID,omitempty"`
@@ -149,9 +149,9 @@ type AgentScheduleStatus struct {
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// AgentScheduleList contains a list of AgentSchedules.
-type AgentScheduleList struct {
+// ScheduleList contains a list of Schedules.
+type ScheduleList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []AgentSchedule `json:"items"`
+	Items           []Schedule `json:"items"`
 }

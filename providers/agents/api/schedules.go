@@ -77,9 +77,9 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sched := &agentsv1alpha1.AgentSchedule{
+	sched := &agentsv1alpha1.Schedule{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
-		Spec: agentsv1alpha1.AgentScheduleSpec{
+		Spec: agentsv1alpha1.ScheduleSpec{
 			AgentRef:  req.AgentRef,
 			Type:      req.Type,
 			Schedule:  req.Schedule,

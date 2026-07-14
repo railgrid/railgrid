@@ -41,7 +41,7 @@ type Job struct {
 	Kind JobKind `json:"kind"`
 	// ClusterID is the tenant workspace's logical-cluster ID the job acts in.
 	ClusterID string `json:"clusterID"`
-	// SourceName is the AgentSchedule / AgentTrigger / Connection name that fired.
+	// SourceName is the Schedule / Trigger / Connection name that fired.
 	SourceName string `json:"sourceName"`
 	// ReplyTarget optionally overrides where a channel reply is delivered — used
 	// by the Discord gateway bot, where the reply channel is the one the user
@@ -52,7 +52,7 @@ type Job struct {
 	AgentRef string `json:"agentRef"`
 	// Task is the prompt to execute.
 	Task string `json:"task"`
-	// Trigger is the AgentRun trigger value (schedule|heartbeat|wakeup|event|channel).
+	// Trigger is the Run trigger value (schedule|heartbeat|wakeup|event|channel).
 	Trigger string `json:"trigger"`
 	// SessionID groups the run's transcript.
 	SessionID string `json:"sessionID"`

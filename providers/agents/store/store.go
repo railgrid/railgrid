@@ -63,7 +63,7 @@ type Message struct {
 	CreatedAt        time.Time      `json:"createdAt"`
 }
 
-// RunPhase mirrors the AgentRun status phases the store tracks for resume.
+// RunPhase mirrors the Run status phases the store tracks for resume.
 type RunPhase string
 
 const (

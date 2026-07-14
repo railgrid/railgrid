@@ -17,8 +17,8 @@ import (
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
 )
 
-func mkSched(typ, cronExpr, tz string) *agentsv1alpha1.AgentSchedule {
-	s := &agentsv1alpha1.AgentSchedule{}
+func mkSched(typ, cronExpr, tz string) *agentsv1alpha1.Schedule {
+	s := &agentsv1alpha1.Schedule{}
 	s.Spec.Type = typ
 	s.Spec.Schedule = cronExpr
 	s.Spec.TimeZone = tz

@@ -5,28 +5,33 @@ metadata:
 spec:
   resources:
   - group: agents.kedge.faros.sh
-    name: agentruns
-    schema: v260712-dabfd8e.agentruns.agents.kedge.faros.sh
-    storage:
-      crd: {}
-  - group: agents.kedge.faros.sh
     name: agents
-    schema: v260712-dabfd8e.agents.agents.kedge.faros.sh
-    storage:
-      crd: {}
-  - group: agents.kedge.faros.sh
-    name: agentschedules
-    schema: v260714-2b7a0f5.agentschedules.agents.kedge.faros.sh
-    storage:
-      crd: {}
-  - group: agents.kedge.faros.sh
-    name: agenttriggers
-    schema: v260712-dabfd8e.agenttriggers.agents.kedge.faros.sh
+    schema: v260714-8e565fc.agents.agents.kedge.faros.sh
     storage:
       crd: {}
   - group: agents.kedge.faros.sh
     name: connections
     schema: v260713-2fcd637.connections.agents.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: agents.kedge.faros.sh
+    name: runs
+    schema: v260714-9965166.runs.agents.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: agents.kedge.faros.sh
+    name: schedules
+    schema: v260714-9965166.schedules.agents.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: agents.kedge.faros.sh
+    name: toolsets
+    schema: v260714-8e565fc.toolsets.agents.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: agents.kedge.faros.sh
+    name: triggers
+    schema: v260714-9965166.triggers.agents.kedge.faros.sh
     storage:
       crd: {}
 status: {}

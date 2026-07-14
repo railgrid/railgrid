@@ -37,12 +37,13 @@ import (
 
 // GVRs for the agents provider resources.
 var (
-	AgentGVR         = agentsGVR("agents")
-	ConnectionGVR    = agentsGVR("connections")
-	AgentScheduleGVR = agentsGVR("agentschedules")
-	AgentTriggerGVR  = agentsGVR("agenttriggers")
-	AgentRunGVR      = agentsGVR("agentruns")
-	SecretGVR        = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
+	AgentGVR      = agentsGVR("agents")
+	ConnectionGVR = agentsGVR("connections")
+	ScheduleGVR   = agentsGVR("schedules")
+	TriggerGVR    = agentsGVR("triggers")
+	RunGVR        = agentsGVR("runs")
+	ToolsetGVR    = agentsGVR("toolsets")
+	SecretGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 )
 
 func agentsGVR(resource string) schema.GroupVersionResource {
@@ -52,9 +53,10 @@ func agentsGVR(resource string) schema.GroupVersionResource {
 var (
 	agentResource    = tenant.Resource{GVR: AgentGVR, Kind: "Agent", Plural: "Agents", Namespaced: false}
 	connectionRes    = tenant.Resource{GVR: ConnectionGVR, Kind: "Connection", Plural: "Connections", Namespaced: false}
-	scheduleResource = tenant.Resource{GVR: AgentScheduleGVR, Kind: "AgentSchedule", Plural: "AgentSchedules", Namespaced: false}
-	triggerResource  = tenant.Resource{GVR: AgentTriggerGVR, Kind: "AgentTrigger", Plural: "AgentTriggers", Namespaced: false}
-	runResource      = tenant.Resource{GVR: AgentRunGVR, Kind: "AgentRun", Plural: "AgentRuns", Namespaced: false}
+	scheduleResource = tenant.Resource{GVR: ScheduleGVR, Kind: "Schedule", Plural: "Schedules", Namespaced: false}
+	triggerResource  = tenant.Resource{GVR: TriggerGVR, Kind: "Trigger", Plural: "Triggers", Namespaced: false}
+	runResource      = tenant.Resource{GVR: RunGVR, Kind: "Run", Plural: "Runs", Namespaced: false}
+	toolsetResource  = tenant.Resource{GVR: ToolsetGVR, Kind: "Toolset", Plural: "Toolsets", Namespaced: false}
 	secretResource   = tenant.Resource{GVR: SecretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
 )
 
@@ -85,27 +87,35 @@ func (c *Client) Connections() *TypedResource[agentsv1alpha1.Connection, agentsv
 	}
 }
 
-// Schedules returns a typed interface for AgentSchedule resources.
-func (c *Client) Schedules() *TypedResource[agentsv1alpha1.AgentSchedule, agentsv1alpha1.AgentScheduleList] {
-	return &TypedResource[agentsv1alpha1.AgentSchedule, agentsv1alpha1.AgentScheduleList]{
+// Schedules returns a typed interface for Schedule resources.
+func (c *Client) Schedules() *TypedResource[agentsv1alpha1.Schedule, agentsv1alpha1.ScheduleList] {
+	return &TypedResource[agentsv1alpha1.Schedule, agentsv1alpha1.ScheduleList]{
 		scope: c.scope, res: scheduleResource,
-		gvk: AgentScheduleGVR.GroupVersion().WithKind("AgentSchedule"),
+		gvk: ScheduleGVR.GroupVersion().WithKind("Schedule"),
 	}
 }
 
-// Triggers returns a typed interface for AgentTrigger resources.
-func (c *Client) Triggers() *TypedResource[agentsv1alpha1.AgentTrigger, agentsv1alpha1.AgentTriggerList] {
-	return &TypedResource[agentsv1alpha1.AgentTrigger, agentsv1alpha1.AgentTriggerList]{
+// Triggers returns a typed interface for Trigger resources.
+func (c *Client) Triggers() *TypedResource[agentsv1alpha1.Trigger, agentsv1alpha1.TriggerList] {
+	return &TypedResource[agentsv1alpha1.Trigger, agentsv1alpha1.TriggerList]{
 		scope: c.scope, res: triggerResource,
-		gvk: AgentTriggerGVR.GroupVersion().WithKind("AgentTrigger"),
+		gvk: TriggerGVR.GroupVersion().WithKind("Trigger"),
 	}
 }
 
-// Runs returns a typed interface for AgentRun resources.
-func (c *Client) Runs() *TypedResource[agentsv1alpha1.AgentRun, agentsv1alpha1.AgentRunList] {
-	return &TypedResource[agentsv1alpha1.AgentRun, agentsv1alpha1.AgentRunList]{
+// Runs returns a typed interface for Run resources.
+func (c *Client) Runs() *TypedResource[agentsv1alpha1.Run, agentsv1alpha1.RunList] {
+	return &TypedResource[agentsv1alpha1.Run, agentsv1alpha1.RunList]{
 		scope: c.scope, res: runResource,
-		gvk: AgentRunGVR.GroupVersion().WithKind("AgentRun"),
+		gvk: RunGVR.GroupVersion().WithKind("Run"),
+	}
+}
+
+// Toolsets returns a typed interface for Toolset resources.
+func (c *Client) Toolsets() *TypedResource[agentsv1alpha1.Toolset, agentsv1alpha1.ToolsetList] {
+	return &TypedResource[agentsv1alpha1.Toolset, agentsv1alpha1.ToolsetList]{
+		scope: c.scope, res: toolsetResource,
+		gvk: ToolsetGVR.GroupVersion().WithKind("Toolset"),
 	}
 }
 

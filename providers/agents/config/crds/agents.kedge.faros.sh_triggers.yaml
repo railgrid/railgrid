@@ -4,16 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: agenttriggers.agents.kedge.faros.sh
+  name: triggers.agents.kedge.faros.sh
 spec:
   group: agents.kedge.faros.sh
   names:
-    kind: AgentTrigger
-    listKind: AgentTriggerList
-    plural: agenttriggers
+    kind: Trigger
+    listKind: TriggerList
+    plural: triggers
     shortNames:
-    - agttrig
-    singular: agenttrigger
+    - trig
+    singular: trigger
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -33,8 +33,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          AgentTrigger fires an agent run on an external event — the event-based half
-          of automation, complementing the time-based AgentSchedule. Webhook sources
+          Trigger fires an agent run on an external event — the event-based half
+          of automation, complementing the time-based Schedule. Webhook sources
           get a hub-routed inbound endpoint; other sources subscribe through a
           Connection.
         properties:
@@ -56,7 +56,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: AgentTriggerSpec is the user-authored trigger configuration.
+            description: TriggerSpec is the user-authored trigger configuration.
             properties:
               agentRef:
                 description: AgentRef names the Agent this trigger drives.
@@ -102,7 +102,7 @@ spec:
             - source
             type: object
           status:
-            description: AgentTriggerStatus is the observed trigger state.
+            description: TriggerStatus is the observed trigger state.
             properties:
               consecutiveFailures:
                 description: ConsecutiveFailures counts back-to-back failed runs from
@@ -119,8 +119,8 @@ spec:
                 format: date-time
                 type: string
               lastRunID:
-                description: LastRunID references the AgentRun produced by the most
-                  recent event.
+                description: LastRunID references the Run produced by the most recent
+                  event.
                 maxLength: 128
                 type: string
               webhookPath:

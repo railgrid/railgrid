@@ -156,6 +156,9 @@ type updateAgentRequest struct {
 	// families for that class (core is always implied server-side).
 	InteractiveFamilies *[]string `json:"interactiveFamilies,omitempty"`
 	BackgroundFamilies  *[]string `json:"backgroundFamilies,omitempty"`
+	// Linked shared Toolsets per run class.
+	InteractiveToolsets *[]string `json:"interactiveToolsets,omitempty"`
+	BackgroundToolsets  *[]string `json:"backgroundToolsets,omitempty"`
 }
 
 // updateAgent patches mutable agent fields — notably the assigned model
@@ -213,6 +216,12 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.BackgroundFamilies != nil {
 		agent.Spec.Tools.Background.Families = normalizeFamilies(*req.BackgroundFamilies)
+	}
+	if req.InteractiveToolsets != nil {
+		agent.Spec.Tools.Interactive.Toolsets = *req.InteractiveToolsets
+	}
+	if req.BackgroundToolsets != nil {
+		agent.Spec.Tools.Background.Toolsets = *req.BackgroundToolsets
 	}
 	if req.BudgetTokens != nil || req.BudgetUSD != nil {
 		if agent.Spec.Budget == nil {

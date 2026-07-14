@@ -1,16 +1,16 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260714-2b7a0f5.agentschedules.agents.kedge.faros.sh
+  name: v260714-9965166.schedules.agents.kedge.faros.sh
 spec:
   group: agents.kedge.faros.sh
   names:
-    kind: AgentSchedule
-    listKind: AgentScheduleList
-    plural: agentschedules
+    kind: Schedule
+    listKind: ScheduleList
+    plural: schedules
     shortNames:
-    - agtsched
-    singular: agentschedule
+    - sched
+    singular: schedule
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -32,7 +32,7 @@ spec:
     name: v1alpha1
     schema:
       description: |-
-        AgentSchedule triggers an agent to run on its own clock: a recurring cron
+        Schedule triggers an agent to run on its own clock: a recurring cron
         task, a one-shot wakeup, or a periodic heartbeat. The provider's in-process
         scheduler owns fire times and reliability; this resource is the spec.
       properties:
@@ -54,7 +54,7 @@ spec:
         metadata:
           type: object
         spec:
-          description: AgentScheduleSpec is the user-authored schedule configuration.
+          description: ScheduleSpec is the user-authored schedule configuration.
           properties:
             agentRef:
               description: AgentRef names the Agent this schedule drives.
@@ -115,7 +115,7 @@ spec:
           - type
           type: object
         status:
-          description: AgentScheduleStatus is the observed schedule state.
+          description: ScheduleStatus is the observed schedule state.
           properties:
             consecutiveFailures:
               description: |-
@@ -133,8 +133,8 @@ spec:
               format: date-time
               type: string
             lastRunID:
-              description: LastRunID references the AgentRun produced by the most
-                recent fire.
+              description: LastRunID references the Run produced by the most recent
+                fire.
               maxLength: 128
               type: string
             nextRun:
