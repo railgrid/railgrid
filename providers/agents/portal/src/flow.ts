@@ -14,6 +14,7 @@ export type FNodeType =
   | 'connection'
   | 'model'
   | 'tools'
+  | 'tool'
   | 'toolset'
   | 'output'
   | 'delegate'
@@ -46,12 +47,14 @@ export interface FNode {
   canRun?: boolean
   canDelete?: boolean
   draft?: boolean // unsaved: shows a Create button instead of auto-save
+  createKey?: string // palette key used to create this draft
 }
 
 // DraftSpec describes a new, unsaved node dropped from the palette: the fields
 // to collect before it can be written, and how it wires to the agent.
 export interface DraftSpec {
   title: string
+  nodeType: FNodeType // how the draft node renders (icon/color)
   ins: string[]
   outs: string[]
   fields: FieldSpec[]
@@ -73,17 +76,25 @@ export interface FlowModel {
 export interface FlowCallbacks {
   onEdit(nodeId: string, values: Record<string, string | string[]>): void
   onLink(from: [string, string], to: [string, string]): void
-  onAdd(type: FNodeType): void
+  onAdd(key: string): void
   onRun(nodeId: string): void
   onDelete(nodeId: string): void
   onOpenChat(): void
   onToast(msg: string): void
-  // draftFor returns the create-form spec for a draggable/creatable type, or
-  // null for types that aren't standalone objects (chat/tools/notify/delegate).
-  draftFor(type: FNodeType): DraftSpec | null
+  // draftFor returns the create-form spec for a draggable/creatable palette key,
+  // or null for keys that aren't standalone objects (chat/tools/notify/delegate).
+  draftFor(key: string): DraftSpec | null
   // create writes the object from the draft's values; returns the real node id
   // (e.g. "sched:daily") on success so the canvas can place it, or null on fail.
-  create(type: FNodeType, values: Record<string, string | string[]>): Promise<string | null>
+  create(key: string, values: Record<string, string | string[]>): Promise<string | null>
+}
+
+// PaletteItem is one entry in the left rail: a create-key, its label, and the
+// node type used for its icon/color.
+interface PaletteItem {
+  key: string
+  label: string
+  icon: FNodeType
 }
 
 interface TypeDef {
@@ -100,16 +111,30 @@ const TYPES: Record<FNodeType, TypeDef> = {
   agent: { label: 'Agent', color: '--flow-agent', icon: '<path d="M12 2.5 3.5 7v10L12 21.5 20.5 17V7z"/><circle cx="12" cy="12" r="3.2"/>' },
   model: { label: 'Model', color: '--flow-model', icon: '<rect x="5.5" y="5.5" width="13" height="13" rx="2.5"/><path d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3"/>' },
   tools: { label: 'Tools', color: '--flow-tools', icon: '<path d="M14.5 6.5a3.8 3.8 0 0 1-5 5l-5.5 5.5 2.5 2.5 5.5-5.5a3.8 3.8 0 0 0 5-5l-2.3 2.3-2.2-.5-.5-2.2z"/>' },
+  tool: { label: 'Tool', color: '--flow-tool', icon: '<path d="M14.5 6.5a3.8 3.8 0 0 1-5 5l-5.5 5.5 2.5 2.5 5.5-5.5a3.8 3.8 0 0 0 5-5l-2.3 2.3-2.2-.5-.5-2.2z"/>' },
   toolset: { label: 'Toolset', color: '--flow-toolset', icon: '<path d="M12 2.5 3 7l9 4.5L21 7z"/><path d="M3 12l9 4.5L21 12M3 16.5 12 21l9-4.5"/>' },
   output: { label: 'Notify', color: '--flow-output', icon: '<path d="M6 16.5V11a6 6 0 1 1 12 0v5.5l1.8 1.8H4.2z"/><path d="M10 20.3a2 2 0 0 0 4 0"/>' },
   delegate: { label: 'Delegate', color: '--flow-delegate', icon: '<circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="17.5" cy="9" r="2.2"/><path d="M6 8.2v7.6M6 12h5.5a4 4 0 0 0 4-4"/>' },
 }
 
-const RAIL: [string, FNodeType[]][] = [
-  ['In', ['schedule', 'trigger', 'chat']],
-  ['Brain', ['model', 'tools', 'toolset']],
-  ['Out', ['output', 'delegate']],
-  ['IO', ['connection']],
+const RAIL: [string, PaletteItem[]][] = [
+  ['In', [
+    { key: 'schedule', label: 'Schedule', icon: 'schedule' },
+    { key: 'trigger', label: 'Trigger', icon: 'trigger' },
+    { key: 'chat', label: 'Chat', icon: 'chat' },
+  ]],
+  ['Tools', [
+    { key: 'tool-mcp', label: 'MCP', icon: 'tool' },
+    { key: 'tool-github', label: 'GitHub', icon: 'tool' },
+    { key: 'tool-web', label: 'Web search', icon: 'tool' },
+    { key: 'toolset', label: 'Toolset', icon: 'toolset' },
+  ]],
+  ['Brain', [{ key: 'model', label: 'Model', icon: 'model' }]],
+  ['Out', [
+    { key: 'output', label: 'Notify', icon: 'output' },
+    { key: 'delegate', label: 'Delegate', icon: 'delegate' },
+  ]],
+  ['IO', [{ key: 'connection', label: 'Connection', icon: 'connection' }]],
 ]
 
 const NS = 'http://www.w3.org/2000/svg'
@@ -232,7 +257,7 @@ export class FlowCanvas {
     const colOf = (t: FNodeType): keyof typeof colX =>
       t === 'agent'
         ? 'agent'
-        : t === 'connection'
+        : t === 'connection' || t === 'tool'
           ? 'connection'
           : t === 'output' || t === 'delegate'
             ? 'out'
@@ -524,7 +549,7 @@ export class FlowCanvas {
     }
     const draftId = n.id
     const p = this.pos.get(draftId)
-    const realId = await this.cb.create(n.type, values)
+    const realId = await this.cb.create(n.createKey || n.type, values)
     if (!realId) {
       if (btn) {
         btn.disabled = false
@@ -773,25 +798,25 @@ export class FlowCanvas {
       l.className = 'flow-rlab'
       l.textContent = label
       rail.appendChild(l)
-      for (const type of list) {
+      for (const item of list) {
         const b = document.createElement('button')
         b.className = 'flow-palnode'
-        b.style.setProperty('--nc', cvar(type))
-        b.style.setProperty('--nc-soft', `color-mix(in srgb, ${cvar(type)} 15%, var(--color-surface-raised, #fff))`)
-        b.style.setProperty('--nc-line', `color-mix(in srgb, ${cvar(type)} 40%, var(--color-border-default, #ccc))`)
-        const creatable = !!this.cb.draftFor(type)
+        b.style.setProperty('--nc', cvar(item.icon))
+        b.style.setProperty('--nc-soft', `color-mix(in srgb, ${cvar(item.icon)} 15%, var(--color-surface-raised, #fff))`)
+        b.style.setProperty('--nc-line', `color-mix(in srgb, ${cvar(item.icon)} 40%, var(--color-border-default, #ccc))`)
+        const creatable = !!this.cb.draftFor(item.key)
         b.classList.toggle('draggable', creatable)
-        b.innerHTML = `<span class="chip">${svgIcon(type)}</span><span>${TYPES[type].label}</span>`
-        if (creatable) this.wirePaletteDrag(b, type)
-        else b.onclick = () => this.cb.onAdd(type)
+        b.innerHTML = `<span class="chip">${svgIcon(item.icon)}</span><span>${item.label}</span>`
+        if (creatable) this.wirePaletteDrag(b, item.key, item.icon)
+        else b.onclick = () => this.cb.onAdd(item.key)
         rail.appendChild(b)
       }
     }
   }
 
-  // A palette item for a creatable type: click drops a draft at canvas centre;
+  // A palette item for a creatable key: click drops a draft at canvas centre;
   // drag drops it where released. Either way the draft opens for editing.
-  private wirePaletteDrag(b: HTMLElement, type: FNodeType): void {
+  private wirePaletteDrag(b: HTMLElement, key: string, icon: FNodeType): void {
     b.onpointerdown = (e) => {
       e.preventDefault()
       const sx = e.clientX
@@ -801,8 +826,8 @@ export class FlowCanvas {
         if (!ghost && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 6) {
           ghost = document.createElement('div')
           ghost.className = 'flow-ghost'
-          ghost.style.setProperty('--nc', cvar(type))
-          ghost.innerHTML = `<span class="flow-nic">${svgIcon(type)}</span>${TYPES[type].label}`
+          ghost.style.setProperty('--nc', cvar(icon))
+          ghost.innerHTML = `<span class="flow-nic">${svgIcon(icon)}</span>${TYPES[icon].label}`
           document.body.appendChild(ghost)
         }
         if (ghost) {
@@ -822,7 +847,7 @@ export class FlowCanvas {
           dropped && over
             ? { x: (ev.clientX - r.left - this.view.x) / this.view.k - NW / 2, y: (ev.clientY - r.top - this.view.y) / this.view.k - 40 }
             : { x: (r.width / 2 - this.view.x) / this.view.k - NW / 2, y: (r.height / 2 - this.view.y) / this.view.k - 40 }
-        if (!dropped || over) this.createDraft(type, world)
+        if (!dropped || over) this.createDraft(key, world)
       }
       window.addEventListener('pointermove', move)
       window.addEventListener('pointerup', up)
@@ -831,11 +856,11 @@ export class FlowCanvas {
 
   // Drop an unsaved draft node, wire it to the agent where applicable, and open
   // its create dialog.
-  private createDraft(type: FNodeType, pos: Pos): void {
-    const spec = this.cb.draftFor(type)
+  private createDraft(key: string, pos: Pos): void {
+    const spec = this.cb.draftFor(key)
     if (!spec) return
-    const id = 'draft:' + type + ':' + ++this.draftSeq
-    const n: FNode = { id, type, title: spec.title, ins: spec.ins, outs: spec.outs, fields: spec.fields, draft: true, canDelete: true }
+    const id = 'draft:' + key + ':' + ++this.draftSeq
+    const n: FNode = { id, type: spec.nodeType, title: spec.title, ins: spec.ins, outs: spec.outs, fields: spec.fields, draft: true, canDelete: true, createKey: key }
     this.pos.set(id, pos)
     this.drafts.push(n)
     if (spec.outPort && spec.agentPort && this.node('agent')) this.draftWires.push({ from: [id, spec.outPort], to: ['agent', spec.agentPort] })

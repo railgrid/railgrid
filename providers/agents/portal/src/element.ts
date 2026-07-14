@@ -10,7 +10,7 @@
 // sidebar footer — they live outside any single agent.
 
 import { FlowCanvas } from './flow'
-import type { FlowModel, FNode, FNodeType, FWire, FlowCallbacks, DraftSpec } from './flow'
+import type { FlowModel, FNode, FWire, FlowCallbacks, DraftSpec } from './flow'
 
 export interface KedgeContext {
   token?: string | null
@@ -1096,11 +1096,12 @@ export class AgentsElement extends HTMLElement {
   // The create-form spec for a draggable node type (null = not a standalone
   // object). Schedule/trigger/model wire straight into the agent; a connection
   // stands alone until you wire it.
-  private _flowDraftFor(t: FNodeType): DraftSpec | null {
+  private _flowDraftFor(key: string): DraftSpec | null {
     const nameField = { key: 'name', label: 'Name', kind: 'text' as const, placeholder: 'lowercase-with-dashes', hint: 'a-z, 0-9 and dashes' }
-    if (t === 'schedule')
+    if (key === 'schedule')
       return {
         title: 'new schedule',
+        nodeType: 'schedule',
         ins: [],
         outs: ['fire'],
         outPort: 'fire',
@@ -1112,9 +1113,10 @@ export class AgentsElement extends HTMLElement {
           { key: 'task', label: 'Task', kind: 'textarea', placeholder: 'Summarise today’s open PRs and post to my channel.' },
         ],
       }
-    if (t === 'trigger')
+    if (key === 'trigger')
       return {
         title: 'new trigger',
+        nodeType: 'trigger',
         ins: ['src'],
         outs: ['fire'],
         outPort: 'fire',
@@ -1126,9 +1128,10 @@ export class AgentsElement extends HTMLElement {
           { key: 'task', label: 'Task on fire', kind: 'textarea', placeholder: 'Triage the incoming event.' },
         ],
       }
-    if (t === 'model')
+    if (key === 'model')
       return {
         title: 'new model',
+        nodeType: 'model',
         ins: [],
         outs: ['infer'],
         outPort: 'infer',
@@ -1141,21 +1144,52 @@ export class AgentsElement extends HTMLElement {
           { key: 'apiKey', label: 'API key', kind: 'text', mono: true, placeholder: 'sk-…', hint: 'stored as a Secret' },
         ],
       }
-    if (t === 'connection')
+    if (key === 'connection')
       return {
         title: 'new connection',
+        nodeType: 'connection',
         ins: ['notify'],
         outs: ['events'],
         fields: [
           nameField,
-          { key: 'type', label: 'Type', kind: 'select', value: 'github', options: Object.keys(CONN_CATEGORY).map((v) => ({ value: v, label: v })) },
+          { key: 'type', label: 'Type', kind: 'select', value: 'discord', options: Object.keys(CONN_CATEGORY).map((v) => ({ value: v, label: v })) },
           { key: 'displayName', label: 'Display name', kind: 'text', placeholder: 'optional' },
         ],
       }
-    if (t === 'toolset')
+    // Tool nodes: tool-type Connections. Wire one into a Toolset to enable it.
+    if (key === 'tool-mcp')
+      return {
+        title: 'new mcp tool',
+        nodeType: 'tool',
+        ins: [],
+        outs: ['events'],
+        fields: [
+          nameField,
+          { key: 'baseURL', label: 'MCP server URL', kind: 'text', mono: true, placeholder: 'https://host/mcp', hint: 'the remote MCP endpoint' },
+          { key: 'displayName', label: 'Display name', kind: 'text', placeholder: 'optional' },
+        ],
+      }
+    if (key === 'tool-github')
+      return {
+        title: 'new github tool',
+        nodeType: 'tool',
+        ins: [],
+        outs: ['events'],
+        fields: [nameField, { key: 'displayName', label: 'Display name', kind: 'text', placeholder: 'optional' }],
+      }
+    if (key === 'tool-web')
+      return {
+        title: 'web search',
+        nodeType: 'tool',
+        ins: [],
+        outs: ['events'],
+        fields: [nameField, { key: 'displayName', label: 'Display name', kind: 'text', placeholder: 'optional' }],
+      }
+    if (key === 'toolset')
       return {
         title: 'new toolset',
-        ins: ['conn'],
+        nodeType: 'toolset',
+        ins: ['tool'],
         outs: ['use'],
         outPort: 'use',
         agentPort: 'tools',
@@ -1164,10 +1198,10 @@ export class AgentsElement extends HTMLElement {
           { key: 'displayName', label: 'Display name', kind: 'text', placeholder: 'e.g. dev-tools' },
           {
             key: 'families',
-            label: 'Families',
+            label: 'Built-in families',
             kind: 'chips',
             chips: ['web', 'github', 'mcp', 'edges'].map((f) => ({ value: f, label: f, on: false })),
-            hint: 'A shared bundle. Wire connections into it after creating.',
+            hint: 'A shared bundle. Wire tools into it after creating.',
           },
         ],
       }
@@ -1175,7 +1209,7 @@ export class AgentsElement extends HTMLElement {
   }
 
   // Write the object a draft describes; return its real flow-node id on success.
-  private async _flowCreate(t: FNodeType, values: Record<string, string | string[]>): Promise<string | null> {
+  private async _flowCreate(key: string, values: Record<string, string | string[]>): Promise<string | null> {
     const s = (k: string): string => String(values[k] ?? '').trim()
     const name = s('name')
     if (!/^[a-z0-9-]+$/.test(name)) {
@@ -1184,29 +1218,36 @@ export class AgentsElement extends HTMLElement {
     }
     const agent = this._selected as string
     try {
-      if (t === 'schedule') {
+      if (key === 'schedule') {
         await this._send('POST', '/api/schedules', { name, agentRef: agent, type: 'cron', schedule: s('schedule'), timeZone: s('timeZone'), task: s('task') })
         await this._loadSchedules()
         return 'sched:' + name
       }
-      if (t === 'trigger') {
+      if (key === 'trigger') {
         await this._send('POST', '/api/triggers', { name, agentRef: agent, source: s('source') || 'webhook', connectionRef: s('connectionRef'), task: s('task') })
         await this._loadTriggers()
         return 'trig:' + name
       }
-      if (t === 'model') {
+      if (key === 'model') {
         await this._send('POST', '/api/credentials', { name, provider: s('provider'), baseURL: s('baseURL'), model: s('model'), apiKey: s('apiKey') })
         await this._send('PUT', `/api/agents/${encodeURIComponent(agent)}`, { modelCredential: name })
         await this._loadCredentials()
         await this._loadAgents()
         return 'model:' + name
       }
-      if (t === 'connection') {
+      if (key === 'connection') {
         await this._send('POST', '/api/connections', { name, type: s('type'), displayName: s('displayName') })
         await this._loadConnections()
         return 'conn:' + name
       }
-      if (t === 'toolset') {
+      // Tools are tool-type Connections.
+      const toolType: Record<string, string> = { 'tool-mcp': 'mcp', 'tool-github': 'github', 'tool-web': 'websearch' }
+      if (key in toolType) {
+        await this._send('POST', '/api/connections', { name, type: toolType[key], baseURL: s('baseURL'), displayName: s('displayName') })
+        await this._loadConnections()
+        return 'conn:' + name
+      }
+      if (key === 'toolset') {
         const families = ['core', ...((values.families as string[]) || [])]
         await this._send('POST', '/api/toolsets', { name, displayName: s('displayName'), families })
         // link the new toolset to this agent's interactive tools
@@ -1258,6 +1299,13 @@ export class AgentsElement extends HTMLElement {
         { key: 'displayName', label: 'Display name', kind: 'text', value: a.spec?.displayName || name },
         { key: 'systemPrompt', label: 'System prompt', kind: 'textarea', value: a.spec?.systemPrompt || '', placeholder: 'You are a concise assistant that…' },
         { key: 'autonomy', label: 'Autonomy', kind: 'select', value: a.spec?.autonomy || 'ask', options: ['suggest', 'ask', 'auto'].map((v) => ({ value: v, label: v })) },
+        {
+          key: 'families',
+          label: 'Built-in tools',
+          kind: 'chips',
+          chips: ['web', 'github', 'mcp', 'edges'].map((f) => ({ value: f, label: f, on: new Set(a.spec?.tools?.interactive?.families || ['core', 'web', 'github', 'mcp', 'edges']).has(f) })),
+          hint: 'Capabilities this agent has directly. Link a Toolset for shared bundles.',
+        },
       ],
     })
 
@@ -1343,30 +1391,10 @@ export class AgentsElement extends HTMLElement {
       wires.push({ from: [id, 'infer'], to: ['agent', 'model'] })
     }
 
-    // built-in tools (the agent's own inline families — always present)
+    // The agent's own built-in families live on the Agent node's settings
+    // (see fields above) — not a separate bundle node — so "Tool" and "Toolset"
+    // stay the only two tool concepts on the canvas.
     const known = ['core', 'web', 'github', 'mcp', 'edges']
-    const inter = new Set(a.spec?.tools?.interactive?.families || ['core', 'web', 'github', 'mcp', 'edges'])
-    const fams = known.filter((f) => f !== 'core' && inter.has(f))
-    nodes.push({
-      id: 'tools',
-      type: 'tools',
-      title: 'built-in tools',
-      ins: [],
-      outs: ['use'],
-      tags: fams.length ? fams : undefined,
-      sub: fams.length ? undefined : 'no extra tools granted',
-      status: fams.length ? ['ok', fams.length + ' families'] : ['off', 'core only'],
-      fields: [
-        {
-          key: 'families',
-          label: 'Capability families',
-          kind: 'chips',
-          chips: known.filter((f) => f !== 'core').map((f) => ({ value: f, label: f, on: inter.has(f) })),
-          hint: 'This agent’s own families. Core memory/notify is always on.',
-        },
-      ],
-    })
-    wires.push({ from: ['tools', 'use'], to: ['agent', 'tools'] })
 
     // toolsets (shared bundles; all render, linked ones wire into agent.tools)
     const linked = new Set([...(a.spec?.tools?.interactive?.toolsets || []), ...(a.spec?.tools?.background?.toolsets || [])])
@@ -1379,39 +1407,45 @@ export class AgentsElement extends HTMLElement {
         id,
         type: 'toolset',
         title: ts.spec.displayName || tn,
-        ins: ['conn'],
+        ins: ['tool'],
         outs: ['use'],
         tags: tfams.length ? tfams.filter((f) => f !== 'core') : undefined,
-        sub: ts.spec.description ? escapeHTML(ts.spec.description) : `<span class="mono">shared</span>${tconns.length ? ` · ${tconns.length} connection${tconns.length === 1 ? '' : 's'}` : ''}`,
+        sub: ts.spec.description ? escapeHTML(ts.spec.description) : `<span class="mono">shared</span>${tconns.length ? ` · ${tconns.length} tool${tconns.length === 1 ? '' : 's'}` : ''}`,
         status: linked.has(tn) ? ['ok', 'linked'] : ['off', 'available'],
         canDelete: true,
         fields: [
           { key: 'displayName', label: 'Display name', kind: 'text', value: ts.spec.displayName || tn },
-          { key: 'families', label: 'Families', kind: 'chips', chips: known.filter((f) => f !== 'core').map((f) => ({ value: f, label: f, on: tfams.includes(f) })) },
-          { key: 'connections', label: 'Connections', kind: 'static', value: tconns.join(', ') || '— drag a connection’s events port here —' },
+          { key: 'families', label: 'Built-in families', kind: 'chips', chips: known.filter((f) => f !== 'core').map((f) => ({ value: f, label: f, on: tfams.includes(f) })) },
+          { key: 'connections', label: 'Tools', kind: 'static', value: tconns.join(', ') || '— drag a tool here —' },
         ],
       })
       if (linked.has(tn)) wires.push({ from: [id, 'use'], to: ['agent', 'tools'] })
-      for (const cn of tconns) if (this._connections.some((c) => c.metadata.name === cn)) wires.push({ from: ['conn:' + cn, 'events'], to: [id, 'conn'] })
+      for (const cn of tconns) if (this._connections.some((c) => c.metadata.name === cn)) wires.push({ from: ['conn:' + cn, 'events'], to: [id, 'tool'] })
     }
 
-    // connections (real wiring hubs: events → triggers, notify ← agent)
+    // connections: tool-category ones (mcp/github/websearch) render as Tool
+    // nodes; channel ones as Connection nodes (notify sink + event source).
     for (const c of this._connections) {
       const cn = c.metadata.name
-      const isChannel = CONN_CATEGORY[c.spec.type] === 'channel'
+      const cat = CONN_CATEGORY[c.spec.type]
+      const isChannel = cat === 'channel'
+      const isTool = cat === 'tool'
       const id = 'conn:' + cn
       const used = usedConns.has(cn)
+      const webish = c.spec.type === 'websearch'
       nodes.push({
         id,
-        type: 'connection',
-        title: cn,
+        type: isTool ? 'tool' : 'connection',
+        title: c.spec.displayName || cn,
         ins: isChannel ? ['notify'] : [],
         outs: ['events'],
-        sub: `<span class="mono">${escapeHTML(c.spec.type)}</span>${c.status?.oauthConnected ? ' · connected' : used ? '' : ' · unwired'}`,
-        status: c.status?.oauthConnected || c.status?.phase === 'Ready' ? ['ok', 'connected'] : ['warn', c.status?.phase || 'setup'],
+        sub: `<span class="mono">${escapeHTML(c.spec.type)}</span>${c.status?.oauthConnected ? ' · connected' : webish ? '' : used ? '' : ' · unwired'}`,
+        status: c.status?.oauthConnected || c.status?.phase === 'Ready' || webish ? ['ok', webish ? 'ready' : 'connected'] : ['warn', c.status?.phase || 'setup'],
+        canDelete: isTool,
         fields: [
           { key: 'type', label: 'Type', kind: 'static', value: c.spec.type },
-          { key: 'phase', label: 'Status', kind: 'static', value: c.status?.phase || (c.status?.oauthConnected ? 'connected' : 'setup') },
+          ...(c.spec.baseURL ? [{ key: 'baseURL', label: 'Endpoint', kind: 'static' as const, mono: true, value: c.spec.baseURL }] : []),
+          { key: 'phase', label: 'Status', kind: 'static', value: c.status?.phase || (webish ? 'ready' : c.status?.oauthConnected ? 'connected' : 'setup') },
         ],
       })
       trigs.forEach((t) => {
@@ -1454,6 +1488,11 @@ export class AgentsElement extends HTMLElement {
       take('displayName')
       take('systemPrompt')
       take('autonomy')
+      if ('families' in values) {
+        const fams = ['core', ...((values.families as string[]) || [])]
+        patch.interactiveFamilies = fams
+        patch.backgroundFamilies = fams.filter((f) => f === 'core' || f === 'web')
+      }
       if (Object.keys(patch).length) await this._updateAgent(patch)
     } else if (id.startsWith('sched:')) {
       take('schedule')
@@ -1467,11 +1506,6 @@ export class AgentsElement extends HTMLElement {
       if (Object.keys(patch).length) await this._updateTrigger(id.slice(5), patch)
     } else if (id.startsWith('model:')) {
       if ('modelCredential' in values) await this._updateAgent({ modelCredential: str(values.modelCredential) }, 'Model reassigned.')
-    } else if (id === 'tools') {
-      if ('families' in values) {
-        const fams = ['core', ...((values.families as string[]) || [])]
-        await this._updateAgent({ interactiveFamilies: fams, backgroundFamilies: fams.filter((f) => f === 'core' || f === 'web') })
-      }
     } else if (id.startsWith('toolset:')) {
       const tp: Record<string, unknown> = {}
       if ('displayName' in values) tp.displayName = str(values.displayName)
@@ -1514,29 +1548,36 @@ export class AgentsElement extends HTMLElement {
       await this._loadAgents()
       return
     }
-    // connection.events → toolset.conn : add this connection to the toolset
-    if (fromNode.startsWith('conn:') && toNode.startsWith('toolset:') && toPort === 'conn') {
-      const ts = this._toolsets.find((x) => x.metadata.name === toNode.slice(8))
-      const cur = ts?.spec.connections || []
+    // tool.provide → toolset.tool : add the tool (a tool-type connection) to the
+    // bundle, and enable the matching built-in family so it actually resolves.
+    if (fromNode.startsWith('conn:') && toNode.startsWith('toolset:') && toPort === 'tool') {
+      const tsName = toNode.slice(8)
       const cn = fromNode.slice(5)
-      if (!cur.includes(cn)) return void this._updateToolset(toNode.slice(8), { connections: [...cur, cn] })
+      const conn = this._connections.find((c) => c.metadata.name === cn)
+      const ts = this._toolsets.find((x) => x.metadata.name === tsName)
+      const famFor: Record<string, string> = { mcp: 'mcp', github: 'github', websearch: 'web' }
+      const fam = conn ? famFor[conn.spec.type] : undefined
+      const conns = ts?.spec.connections || []
+      const fams = ts?.spec.families || []
+      const patch: Record<string, unknown> = {}
+      // websearch has no server to dial → enable the 'web' family only.
+      if (conn?.spec.type !== 'websearch' && !conns.includes(cn)) patch.connections = [...conns, cn]
+      if (fam && !fams.includes(fam)) patch.families = [...fams, fam]
+      if (Object.keys(patch).length) return void this._updateToolset(tsName, patch)
       return
     }
-    this._flow?.toast('These ports don’t connect — try schedule/trigger → agent, model → agent, or toolset → agent.')
+    this._flow?.toast('These ports don’t connect — try tool → toolset, toolset → agent, or schedule/trigger → agent.')
   }
 
-  private _flowAdd(type: FNodeType): void {
-    // Creating a resource needs details (name, cron, credentials) — route to the
-    // matching form rather than dropping an incomplete node on the canvas.
-    if (type === 'schedule' || type === 'trigger' || type === 'chat') {
+  private _flowAdd(key: string): void {
+    // Non-creatable palette items route to the matching form.
+    if (key === 'chat') {
       this._agentView = 'list'
-      this._agentTab = type === 'chat' ? 'chat' : (type as AgentTab)
+      this._agentTab = 'chat'
       this._render()
-    } else if (type === 'model') {
-      this._openShared('models')
-    } else if (type === 'connection' || type === 'output') {
+    } else if (key === 'output') {
       this._openShared('connections')
-    } else if (type === 'tools' || type === 'delegate') {
+    } else if (key === 'delegate') {
       this._agentView = 'list'
       this._agentTab = 'settings'
       this._render()
