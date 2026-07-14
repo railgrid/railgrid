@@ -1544,11 +1544,17 @@ export class AgentsElement extends HTMLElement {
         sub: `<span class="mono">${escapeHTML(c.spec.type)}</span>${c.status?.oauthConnected ? ' · connected' : webish ? '' : used ? '' : ' · unwired'}`,
         status: c.status?.oauthConnected || c.status?.phase === 'Ready' || webish ? ['ok', webish ? 'ready' : 'connected'] : ['warn', c.status?.phase || 'setup'],
         canDelete: isTool,
-        fields: [
-          { key: 'type', label: 'Type', kind: 'static', value: c.spec.type },
-          ...(c.spec.baseURL ? [{ key: 'baseURL', label: 'Endpoint', kind: 'static' as const, mono: true, value: c.spec.baseURL }] : []),
-          { key: 'phase', label: 'Status', kind: 'static', value: c.status?.phase || (webish ? 'ready' : c.status?.oauthConnected ? 'connected' : 'setup') },
-        ],
+        fields: isTool
+          ? [
+              { key: 'displayName', label: 'Display name', kind: 'text', value: c.spec.displayName || cn },
+              ...(c.spec.type === 'mcp' ? [{ key: 'baseURL', label: 'MCP server URL', kind: 'text' as const, mono: true, value: c.spec.baseURL || '', placeholder: 'https://host/mcp' }] : []),
+              { key: 'type', label: 'Type', kind: 'static', value: c.spec.type },
+            ]
+          : [
+              { key: 'type', label: 'Type', kind: 'static', value: c.spec.type },
+              ...(c.spec.baseURL ? [{ key: 'baseURL', label: 'Endpoint', kind: 'static' as const, mono: true, value: c.spec.baseURL }] : []),
+              { key: 'phase', label: 'Status', kind: 'static', value: c.status?.phase || (webish ? 'ready' : c.status?.oauthConnected ? 'connected' : 'setup') },
+            ],
       })
       trigs.forEach((t) => {
         if (t.spec.connectionRef === cn) wires.push({ from: [id, 'events'], to: ['trig:' + t.metadata.name, 'src'] })
@@ -1605,6 +1611,10 @@ export class AgentsElement extends HTMLElement {
       if (Object.keys(patch).length) await this._updateTrigger(id.slice(5), patch)
     } else if (id.startsWith('model:')) {
       if ('modelCredential' in values) await this._updateAgent({ modelCredential: str(values.modelCredential) }, 'Model reassigned.')
+    } else if (id.startsWith('conn:')) {
+      take('displayName')
+      take('baseURL')
+      if (Object.keys(patch).length) await this._updateConnection(id.slice(5), patch)
     } else if (id.startsWith('toolset:')) {
       if ('displayName' in values) await this._updateToolset(id.slice(8), { displayName: str(values.displayName) })
     }
@@ -1719,6 +1729,23 @@ export class AgentsElement extends HTMLElement {
       const inter = (a?.spec?.tools?.interactive?.toolsets || []).filter((t) => t !== ts)
       const bg = (a?.spec?.tools?.background?.toolsets || []).filter((t) => t !== ts)
       await this._updateAgent({ interactiveToolsets: inter, backgroundToolsets: bg }, 'Toolset unlinked.')
+    } else if (id.startsWith('conn:')) {
+      // Remove a Tool from the agent's own grant. The tool object stays for
+      // other agents; if it's only here via a toolset/trigger, say so.
+      const cn = id.slice(5)
+      const a = this._agent()
+      const inter = a?.spec?.tools?.interactive?.connections || []
+      const bg = a?.spec?.tools?.background?.connections || []
+      if (inter.includes(cn) || bg.includes(cn)) {
+        const ni = inter.filter((x) => x !== cn)
+        const nb = bg.filter((x) => x !== cn)
+        await this._updateAgent(
+          { interactiveConnections: ni, backgroundConnections: nb, interactiveFamilies: this._familiesForConns(ni), backgroundFamilies: this._familiesForConns(nb) },
+          'Tool removed.',
+        )
+      } else {
+        this._flow?.toast('This tool comes from a linked toolset or a trigger — remove it there.')
+      }
     }
   }
 
