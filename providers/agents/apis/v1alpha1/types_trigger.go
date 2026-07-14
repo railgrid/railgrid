@@ -25,17 +25,9 @@ const (
 	// TriggerSourceWebhook fires on an inbound HTTP call to the trigger's
 	// hub-routed endpoint.
 	TriggerSourceWebhook = "webhook"
-	// TriggerSourceChannel fires on a message from a messaging Connection that
-	// matches the filter.
-	TriggerSourceChannel = "channel"
-	// TriggerSourceEmail fires on an inbound email (post-v1 delivery).
-	TriggerSourceEmail = "email"
 	// TriggerSourceGitHub fires on a GitHub event delivered through a github
 	// Connection.
 	TriggerSourceGitHub = "github"
-	// TriggerSourceConnection fires on an event emitted by an arbitrary
-	// Connection's event stream.
-	TriggerSourceConnection = "connection"
 )
 
 // +genclient
@@ -69,10 +61,10 @@ type TriggerSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	AgentRef string `json:"agentRef"`
 
-	// Source is where events come from: webhook, channel, email, github, or
-	// connection.
+	// Source is where events come from: webhook or github. Both provision a
+	// hub-routed webhook endpoint and fire on inbound delivery.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=webhook;channel;email;github;connection
+	// +kubebuilder:validation:Enum=webhook;github
 	Source string `json:"source"`
 
 	// ConnectionRef names the Connection backing non-webhook sources (channel,

@@ -31,7 +31,7 @@ spec:
       crd: {}
   - group: agents.kedge.faros.sh
     name: triggers
-    schema: v260714-9965166.triggers.agents.kedge.faros.sh
+    schema: v260714-d427180.triggers.agents.kedge.faros.sh
     storage:
       crd: {}
 status: {}

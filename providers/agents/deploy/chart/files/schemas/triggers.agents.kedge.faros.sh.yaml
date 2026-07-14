@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260714-9965166.triggers.agents.kedge.faros.sh
+  name: v260714-d427180.triggers.agents.kedge.faros.sh
 spec:
   group: agents.kedge.faros.sh
   names:
@@ -75,14 +75,11 @@ spec:
               type: object
             source:
               description: |-
-                Source is where events come from: webhook, channel, email, github, or
-                connection.
+                Source is where events come from: webhook or github. Both provision a
+                hub-routed webhook endpoint and fire on inbound delivery.
               enum:
               - webhook
-              - channel
-              - email
               - github
-              - connection
               type: string
             suspend:
               description: Suspend halts firing without deleting the trigger.

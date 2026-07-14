@@ -89,9 +89,7 @@ func (s *Server) createTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch req.Source {
-	case agentsv1alpha1.TriggerSourceWebhook, agentsv1alpha1.TriggerSourceChannel,
-		agentsv1alpha1.TriggerSourceGitHub, agentsv1alpha1.TriggerSourceConnection,
-		agentsv1alpha1.TriggerSourceEmail:
+	case agentsv1alpha1.TriggerSourceWebhook, agentsv1alpha1.TriggerSourceGitHub:
 	default:
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "unsupported source "+req.Source)
 		return
@@ -179,9 +177,7 @@ func (s *Server) updateTrigger(w http.ResponseWriter, r *http.Request) {
 	if req.Source != nil {
 		src := strings.TrimSpace(*req.Source)
 		switch src {
-		case agentsv1alpha1.TriggerSourceWebhook, agentsv1alpha1.TriggerSourceChannel,
-			agentsv1alpha1.TriggerSourceGitHub, agentsv1alpha1.TriggerSourceConnection,
-			agentsv1alpha1.TriggerSourceEmail:
+		case agentsv1alpha1.TriggerSourceWebhook, agentsv1alpha1.TriggerSourceGitHub:
 			trig.Spec.Source = src
 		default:
 			writeStatus(w, http.StatusBadRequest, "BadRequest", "unsupported source "+src)
