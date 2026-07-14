@@ -11,7 +11,7 @@ spec:
       crd: {}
   - group: agents.kedge.faros.sh
     name: connections
-    schema: v260713-2fcd637.connections.agents.kedge.faros.sh
+    schema: v260714-56b44bb.connections.agents.kedge.faros.sh
     storage:
       crd: {}
   - group: agents.kedge.faros.sh

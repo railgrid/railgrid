@@ -461,3 +461,17 @@ kedge-provider-agents .flow-ghost .flow-nic svg { width: 13px; height: 13px; }
 kedge-provider-agents .flow-node.draft { border-style: dashed; border-color: color-mix(in srgb, var(--nc) 55%, var(--color-border-default)); box-shadow: 0 6px 22px color-mix(in srgb, var(--nc) 20%, transparent); }
 kedge-provider-agents .flow-node.draft .flow-ntitle { color: var(--color-text-muted, #889); font-style: italic; }
 kedge-provider-agents .flow-wire.draft, kedge-provider-agents .flow-node.draft .flow-port { opacity: .7; }
+
+/* --- reframed List: overview + toolsets --- */
+kedge-provider-agents .agents-info { padding: 9px 12px; border-radius: 10px; font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: var(--color-accent-subtle, rgba(109,79,224,.08)); border: 1px solid var(--color-accent, #6d4fe0); color: var(--color-text-primary, inherit); }
+kedge-provider-agents .agents-linkbtn { background: transparent; border: 0; color: var(--color-accent, #6d4fe0); font: inherit; font-weight: 600; cursor: pointer; padding: 2px 4px; text-decoration: underline; }
+kedge-provider-agents .agents-overview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+kedge-provider-agents .agents-ov-card { padding: 12px 14px; border-radius: 12px; background: var(--color-surface-raised, #fff); border: 1px solid var(--color-border-subtle, rgba(0,0,0,.06)); }
+kedge-provider-agents .agents-ov-k { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--color-text-muted, #889); margin-bottom: 6px; }
+kedge-provider-agents .agents-ov-v { font-size: 14px; font-weight: 600; color: var(--color-text-primary, #123); display: flex; flex-wrap: wrap; gap: 4px; }
+kedge-provider-agents .agents-ov-v.warn { color: var(--color-warning, #d97706); }
+kedge-provider-agents .agents-ov-v.muted { color: var(--color-text-muted, #889); font-weight: 400; }
+kedge-provider-agents .agents-checkrow { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+kedge-provider-agents .agents-toolset-form { display: flex; flex-direction: column; gap: 12px; }
+kedge-provider-agents .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }

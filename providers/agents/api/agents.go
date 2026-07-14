@@ -159,6 +159,10 @@ type updateAgentRequest struct {
 	// Linked shared Toolsets per run class.
 	InteractiveToolsets *[]string `json:"interactiveToolsets,omitempty"`
 	BackgroundToolsets  *[]string `json:"backgroundToolsets,omitempty"`
+	// Directly-granted tool Connections per run class (tools wired straight to
+	// the agent, not via a Toolset).
+	InteractiveConnections *[]string `json:"interactiveConnections,omitempty"`
+	BackgroundConnections  *[]string `json:"backgroundConnections,omitempty"`
 }
 
 // updateAgent patches mutable agent fields — notably the assigned model
@@ -222,6 +226,12 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.BackgroundToolsets != nil {
 		agent.Spec.Tools.Background.Toolsets = *req.BackgroundToolsets
+	}
+	if req.InteractiveConnections != nil {
+		agent.Spec.Tools.Interactive.Connections = *req.InteractiveConnections
+	}
+	if req.BackgroundConnections != nil {
+		agent.Spec.Tools.Background.Connections = *req.BackgroundConnections
 	}
 	if req.BudgetTokens != nil || req.BudgetUSD != nil {
 		if agent.Spec.Budget == nil {

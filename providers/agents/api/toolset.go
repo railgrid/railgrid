@@ -41,11 +41,10 @@ func isInteractive(trigger string) bool {
 // web reading); connection-backed families (github/mcp — potentially
 // write-capable) and edges (acts as the calling user) must be granted
 // explicitly for background runs.
-func defaultFamilies(interactive bool) []string {
-	if interactive {
-		return []string{"core", "web", "github", "mcp", "edges"}
-	}
-	return []string{"core", "web"}
+func defaultFamilies(_ bool) []string {
+	// Tools are wired in explicitly (as Tool objects / Toolsets), so an agent
+	// with nothing wired gets only core (memory/notify) — never a broad default.
+	return []string{"core"}
 }
 
 // buildToolset assembles the agent's tools for one run: family policy per

@@ -127,6 +127,7 @@ const RAIL: [string, PaletteItem[]][] = [
     { key: 'tool-mcp', label: 'MCP', icon: 'tool' },
     { key: 'tool-github', label: 'GitHub', icon: 'tool' },
     { key: 'tool-web', label: 'Web search', icon: 'tool' },
+    { key: 'tool-edges', label: 'Edges', icon: 'tool' },
     { key: 'toolset', label: 'Toolset', icon: 'toolset' },
   ]],
   ['Brain', [{ key: 'model', label: 'Model', icon: 'model' }]],
@@ -536,12 +537,9 @@ export class FlowCanvas {
       if (el.classList.contains('flow-chiprow')) values[k] = Array.from(el.querySelectorAll<HTMLElement>('.flow-chip.on')).map((c) => c.dataset.v as string)
       else values[k] = (el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value
     })
-    if (!String(values.name || '').trim()) {
-      this.toast('Give it a name first')
-      const nameEl = this.dialog.querySelector<HTMLInputElement>('[data-k="name"]')
-      if (nameEl) nameEl.focus()
-      return
-    }
+    // No universal name check here — some create forms (tools) may reuse an
+    // existing object instead of naming a new one. cb.create() validates and
+    // returns null (keeping the dialog open) when input is insufficient.
     const btn = this.dialog.querySelector<HTMLButtonElement>('[data-create]')
     if (btn) {
       btn.disabled = true

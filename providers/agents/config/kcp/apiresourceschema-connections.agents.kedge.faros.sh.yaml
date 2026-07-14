@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260713-2fcd637.connections.agents.kedge.faros.sh
+  name: v260714-56b44bb.connections.agents.kedge.faros.sh
 spec:
   group: agents.kedge.faros.sh
   names:
@@ -131,6 +131,7 @@ spec:
               - github
               - mcp
               - websearch
+              - edges
               - http
               - telegram
               - slack

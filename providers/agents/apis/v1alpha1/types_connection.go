@@ -26,11 +26,15 @@ const (
 	ConnectionTypeGitHub    = "github"
 	ConnectionTypeMCP       = "mcp"
 	ConnectionTypeWebSearch = "websearch"
-	ConnectionTypeHTTP      = "http"
-	ConnectionTypeTelegram  = "telegram"
-	ConnectionTypeSlack     = "slack"
-	ConnectionTypeSMTP      = "smtp"
-	ConnectionTypeDiscord   = "discord"
+	// ConnectionTypeEdges is a marker "tool" connection for the hub's aggregate
+	// cluster-edges MCP endpoint. It carries no credentials — wiring it into a
+	// toolset/agent enables the built-in edges family.
+	ConnectionTypeEdges    = "edges"
+	ConnectionTypeHTTP     = "http"
+	ConnectionTypeTelegram = "telegram"
+	ConnectionTypeSlack    = "slack"
+	ConnectionTypeSMTP     = "smtp"
+	ConnectionTypeDiscord  = "discord"
 )
 
 // +genclient
@@ -59,7 +63,7 @@ type ConnectionSpec struct {
 	// Type selects the integration: github, mcp, websearch, http, telegram,
 	// slack, smtp, or discord.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=github;mcp;websearch;http;telegram;slack;smtp;discord
+	// +kubebuilder:validation:Enum=github;mcp;websearch;edges;http;telegram;slack;smtp;discord
 	Type string `json:"type"`
 
 	// DisplayName is a human-readable label for the connection.

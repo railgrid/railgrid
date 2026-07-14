@@ -74,7 +74,8 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	switch req.Type {
 	case agentsv1alpha1.ConnectionTypeGitHub, agentsv1alpha1.ConnectionTypeMCP,
-		agentsv1alpha1.ConnectionTypeWebSearch, agentsv1alpha1.ConnectionTypeHTTP,
+		agentsv1alpha1.ConnectionTypeWebSearch, agentsv1alpha1.ConnectionTypeEdges,
+		agentsv1alpha1.ConnectionTypeHTTP,
 		agentsv1alpha1.ConnectionTypeTelegram, agentsv1alpha1.ConnectionTypeSlack,
 		agentsv1alpha1.ConnectionTypeSMTP, agentsv1alpha1.ConnectionTypeDiscord:
 	default:

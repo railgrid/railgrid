@@ -22,7 +22,9 @@ import (
 
 // fakeCR implements tools.CRAccess for the toolset-expansion test; only
 // GetToolset is exercised.
-type fakeCR struct{ toolsets map[string]*agentsv1alpha1.Toolset }
+type fakeCR struct {
+	toolsets map[string]*agentsv1alpha1.Toolset
+}
 
 func (f fakeCR) GetAgent(context.Context, string) (*agentsv1alpha1.Agent, error) { return nil, nil }
 func (f fakeCR) CreateSchedule(context.Context, *agentsv1alpha1.Schedule) error  { return nil }
