@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260712-dabfd8e.agentschedules.agents.kedge.faros.sh
+  name: v260714-2b7a0f5.agentschedules.agents.kedge.faros.sh
 spec:
   group: agents.kedge.faros.sh
   names:
@@ -141,6 +141,14 @@ spec:
               description: NextRun is the next planned fire time.
               format: date-time
               type: string
+            observedGeneration:
+              description: |-
+                ObservedGeneration is the spec generation the scheduler last reconciled.
+                When it lags metadata.generation the schedule was edited, and the
+                scheduler re-derives NextRun from the new spec instead of honoring the
+                stale value computed from the previous cron/timezone/runAt.
+              format: int64
+              type: integer
           type: object
       type: object
     served: true

@@ -75,6 +75,31 @@ func TestScheduleDue(t *testing.T) {
 		}
 	})
 
+	t.Run("edited cron re-arms from new spec once stale nextRun is dropped", func(t *testing.T) {
+		// Regression: a schedule first created with a "soon" test cron fires and
+		// stores nextRun at that old cadence. The user then retimes it to
+		// "0 9 * * *" Europe/Vilnius. process() detects the generation bump and
+		// drops the stale nextRun; scheduleDue must then re-derive the next fire
+		// from the NEW spec (09:00 Vilnius = 06:00 UTC) rather than honoring the
+		// old value or firing immediately.
+		s := mkSched("cron", "0 9 * * *", "Europe/Vilnius")
+		stale := metav1.NewTime(now.Add(-2 * time.Hour)) // old cadence, in the past
+		s.Status.NextRun = &stale
+
+		// process() nils NextRun when generation != observedGeneration.
+		s.Status.NextRun = nil
+
+		fire, next, err := scheduleDue(s, now)
+		if err != nil || fire {
+			t.Fatalf("fire=%v err=%v, want re-arm without firing", fire, err)
+		}
+		// now is 09:00 UTC = 12:00 Vilnius, so 09:00 Vilnius already passed today;
+		// the next fire is tomorrow 09:00 Vilnius = 06:00 UTC on the 14th.
+		if !next.Equal(time.Date(2026, 7, 14, 6, 0, 0, 0, time.UTC)) {
+			t.Fatalf("next=%v, want 06:00 UTC on the 14th (09:00 Vilnius)", next)
+		}
+	})
+
 	t.Run("bad cron is a permanent error", func(t *testing.T) {
 		s := mkSched("cron", "not-a-cron", "")
 		if _, _, err := scheduleDue(s, now); err == nil {

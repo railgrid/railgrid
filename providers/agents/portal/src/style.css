@@ -179,6 +179,10 @@ kedge-provider-agents .agents-badge:first-child { margin-left: 0; }
 kedge-provider-agents .agents-badge-muted { opacity: 0.75; font-style: italic; }
 kedge-provider-agents .agents-empty-row td { text-align: center; padding: 22px 10px; }
 kedge-provider-agents .agents-empty { color: var(--color-text-muted, inherit); font-size: 13px; }
+/* The inline empty-row span reuses .agents-empty for muted text but must not
+   pick up the full-panel empty-state layout (flex + min-height:340px), which
+   would blow the empty table up to ~half the screen. */
+kedge-provider-agents .agents-empty-row .agents-empty { display: inline; flex: none; min-height: 0; }
 kedge-provider-agents .agents-check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 kedge-provider-agents .agents-check input { width: auto; }
 kedge-provider-agents .agents-form-actions { display: flex; gap: 8px; }

@@ -115,6 +115,13 @@ type ScheduleRetryPolicy struct {
 
 // AgentScheduleStatus is the observed schedule state.
 type AgentScheduleStatus struct {
+	// ObservedGeneration is the spec generation the scheduler last reconciled.
+	// When it lags metadata.generation the schedule was edited, and the
+	// scheduler re-derives NextRun from the new spec instead of honoring the
+	// stale value computed from the previous cron/timezone/runAt.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// NextRun is the next planned fire time.
 	// +optional
 	NextRun *metav1.Time `json:"nextRun,omitempty"`

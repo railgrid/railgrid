@@ -256,14 +256,35 @@ func (b *background) process(ctx context.Context, u *unstructured.Unstructured, 
 		return nil
 	}
 
+	// A spec edit bumps metadata.generation. The stored nextRun was computed
+	// from the previous cron/timezone/runAt, so it is stale — drop it and let
+	// scheduleDue re-derive the next fire time from the new spec. Without this
+	// an edited schedule keeps firing (or waiting) on its old clock until it
+	// happens to fire once and recomputes.
+	genChanged := u.GetGeneration() != sched.Status.ObservedGeneration
+	if genChanged {
+		sched.Status.NextRun = nil
+	}
+
 	fire, next, permErr := scheduleDue(sched, now)
 	if permErr != nil {
-		return b.updateStatus(ctx, clusterID, u, map[string]any{"disabledReason": permErr.Error()})
+		return b.updateStatus(ctx, clusterID, u, map[string]any{
+			"disabledReason":     permErr.Error(),
+			"observedGeneration": u.GetGeneration(),
+		})
 	}
 	if !fire {
-		// Initialize nextRun on first sight so the UI shows it.
+		// Persist a freshly-armed nextRun on first sight or after a spec edit,
+		// and record the observed generation so the re-arm happens exactly once.
+		fields := map[string]any{}
+		if genChanged {
+			fields["observedGeneration"] = u.GetGeneration()
+		}
 		if sched.Status.NextRun == nil && !next.IsZero() {
-			return b.updateStatus(ctx, clusterID, u, map[string]any{"nextRun": next.Format(time.RFC3339)})
+			fields["nextRun"] = next.Format(time.RFC3339)
+		}
+		if len(fields) > 0 {
+			return b.updateStatus(ctx, clusterID, u, fields)
 		}
 		return nil
 	}
@@ -271,6 +292,9 @@ func (b *background) process(ctx context.Context, u *unstructured.Unstructured, 
 	// Claim: advance lastRun/nextRun with the listed resourceVersion. A
 	// conflict means another replica claimed this fire — skip silently.
 	claim := map[string]any{"lastRun": now.Format(time.RFC3339)}
+	if genChanged {
+		claim["observedGeneration"] = u.GetGeneration()
+	}
 	if !next.IsZero() {
 		claim["nextRun"] = next.Format(time.RFC3339)
 	}
