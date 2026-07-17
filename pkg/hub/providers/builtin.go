@@ -19,11 +19,8 @@ package providers
 import (
 	"fmt"
 	"io/fs"
-	"net/http"
 	"sort"
 	"sync"
-
-	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
 )
 
 // BuiltinSpec describes a first-party provider the hub bootstraps into
@@ -67,16 +64,11 @@ type BuiltinSpec struct {
 	// server-edges].
 	Requires []string
 
-	// VirtualWorkspaceMount is the URL prefix the hub mounts this
-	// provider's virtual-workspace handler under (e.g. /services/mcpserver).
-	// Empty means the provider has no virtual-workspace HTTP surface.
-	VirtualWorkspaceMount string
-
-	// VirtualWorkspaceHandler builds the http.Handler given the framework's
-	// shared dependency bundle. The hub calls this once at startup after
-	// the virtual-workspace framework is initialized. The returned handler
-	// is mounted with http.StripPrefix(VirtualWorkspaceMount, ...).
-	VirtualWorkspaceHandler func(*builder.Deps) http.Handler
+	// NOTE: BuiltinSpec previously carried VirtualWorkspaceMount +
+	// VirtualWorkspaceHandler (func(*builder.Deps) http.Handler) so a built-in
+	// provider could register an in-process virtual workspace. That mechanism
+	// was removed when edge connectivity + MCP were extracted into standalone
+	// out-of-process providers; no built-in provider mounts a VW anymore.
 
 	// LocalUIAssets, when non-nil, is the pre-built micro-frontend bundle
 	// (Vite dist/) the hub serves under /ui/providers/{Name}/* instead of

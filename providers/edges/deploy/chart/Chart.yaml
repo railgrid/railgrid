@@ -1,0 +1,24 @@
+apiVersion: v2
+name: kedge-edges-provider
+description: |
+  Standalone kedge provider for edges — both Kubernetes clusters and Linux/SSH
+  servers, under one group edges.kedge.faros.sh. Terminates the agent reverse
+  tunnel (revdial) in-process, owns the KubernetesCluster + LinuxServer API + its
+  APIExport, and exposes kubectl/SSH/MCP through the hub backend proxy. Ships the
+  provider Deployment (SINGLE-REPLICA — the revdial dialer map is process-global,
+  strategy Recreate), a ClusterIP Service, and the CatalogEntry that registers
+  the provider with the kedge hub.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kedge
+  - provider
+  - edges
+  - kubernetes
+  - servers
+home: https://github.com/faroshq/kedge
+sources:
+  - https://github.com/faroshq/kedge/tree/main/providers/edges
+maintainers:
+  - name: kedge maintainers

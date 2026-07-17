@@ -71,38 +71,76 @@ var insecureHTTPClient = &http.Client{
 	},
 }
 
-// WaitForEdgeAPI polls `kedge edge list` (after a one-time login) until the
-// edge API is available (i.e. KCP APIBindings have finished bootstrapping).
-// Without this wait, tests that create edges right after hub setup can get
-// "server could not find the requested resource".
-func WaitForEdgeAPI(ctx context.Context, client *KedgeClient, token string) error {
-	// Login once so the kedge context is written to the default kubeconfig.
-	if err := client.Login(ctx, token); err != nil {
-		return fmt.Errorf("login before edge API wait: %w", err)
-	}
+// WaitForTenantAPI logs in with a static token and polls the hub's
+// token-login endpoint until the tenant/users APIBinding has finished
+// bootstrapping. Until then the hub can 500 ("failed to create user") on the
+// first tenant operations, so suites gate startup on this.
+//
+// This replaces the pre-decouple WaitForEdgeAPI gate: edges are now an
+// optional out-of-process provider (group edges.kedge.faros.sh) that these
+// suites do not bootstrap, so "edge list works" is no longer a valid
+// readiness signal. Edge connectivity has its own dedicated suite.
+func WaitForTenantAPI(ctx context.Context, client *KedgeClient, hubURL, token string) error {
+	// Login (retryable) so the kedge context is written to the default
+	// kubeconfig — some non-edge tests drive kubectl via that context.
+	loginCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	_ = Poll(loginCtx, 3*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+		return client.Login(ctx, token) == nil, nil
+	})
+
 	attempt := 0
 	return Poll(ctx, 5*time.Second, 5*time.Minute, func(ctx context.Context) (bool, error) {
 		attempt++
-		_, err := client.EdgeList(ctx)
-		if err == nil {
+		code, body := postTokenLogin(ctx, hubURL, token)
+		if code == http.StatusOK {
 			return true, nil
 		}
-		// Log diagnostic details so CI failures are easier to debug.
-		logEdgeAPIDiagnostics(ctx, client, attempt, err)
-		// "server could not find" = APIBinding not ready yet — keep polling.
-		// Any other error also warrants a retry (hub may be mid-restart).
+		fmt.Printf("[WaitForTenantAPI] attempt %d: token-login status %d body=%s\n", attempt, code, body)
 		return false, nil
 	})
 }
 
-// WaitForEdgeAPIWithOIDC is like WaitForEdgeAPI but authenticates via headless
-// OIDC login instead of a static token. Used when the hub runs in OIDC-only
-// mode (no staticAuthTokens configured), e.g. when --with-dex is active.
-func WaitForEdgeAPIWithOIDC(ctx context.Context, workDir, hubURL string) error {
-	result, err := HeadlessOIDCLogin(ctx, hubURL, DexTestUserEmail, DexTestUserPassword)
+// postTokenLogin POSTs the hub's static-token login endpoint with the given
+// bearer token and returns the status code and (truncated) body.
+func postTokenLogin(ctx context.Context, hubURL, token string) (int, string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hubURL+"/auth/token-login", nil)
 	if err != nil {
-		return fmt.Errorf("OIDC headless login for edge API wait: %w", err)
+		return 0, err.Error()
 	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := insecureHTTPClient.Do(req)
+	if err != nil {
+		return 0, err.Error()
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return resp.StatusCode, string(b)
+}
+
+// WaitForTenantAPIWithOIDC is like WaitForTenantAPI but proves readiness via a
+// headless OIDC login (users APIBinding must be bound for the login handler to
+// mint a user). Used when the hub runs in OIDC-only mode (--with-dex).
+func WaitForTenantAPIWithOIDC(ctx context.Context, workDir, hubURL string) error {
+	var (
+		result *OIDCLoginResult
+		err    error
+	)
+	if pollErr := Poll(ctx, 5*time.Second, 5*time.Minute, func(ctx context.Context) (bool, error) {
+		loginCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+		result, err = HeadlessOIDCLogin(loginCtx, hubURL, DexTestUserEmail, DexTestUserPassword)
+		if err != nil {
+			fmt.Printf("[WaitForTenantAPIWithOIDC] OIDC login not ready: %v\n", err)
+			return false, nil
+		}
+		return true, nil
+	}); pollErr != nil {
+		return fmt.Errorf("OIDC tenant API never became ready: %w (last err: %v)", pollErr, err)
+	}
+
+	// Persist the credential + kubeconfig from the successful login so tests
+	// that reuse the cached OIDC session pick it up.
 	if result.IDToken != "" {
 		tokenCache := &cliauth.TokenCache{
 			IDToken:      result.IDToken,
@@ -112,63 +150,14 @@ func WaitForEdgeAPIWithOIDC(ctx context.Context, workDir, hubURL string) error {
 			ClientID:     result.ClientID,
 		}
 		if err := cliauth.SaveTokenCache(tokenCache); err != nil {
-			return fmt.Errorf("caching OIDC token for edge API wait: %w", err)
+			return fmt.Errorf("caching OIDC token for tenant API wait: %w", err)
 		}
 	}
 	oidcKubeconfig := filepath.Join(workDir, "oidc-wait.kubeconfig")
 	if err := os.WriteFile(oidcKubeconfig, result.Kubeconfig, 0o600); err != nil {
-		return fmt.Errorf("writing OIDC kubeconfig for edge API wait: %w", err)
+		return fmt.Errorf("writing OIDC kubeconfig for tenant API wait: %w", err)
 	}
-	client := NewKedgeClient(workDir, oidcKubeconfig, hubURL)
-	attempt := 0
-	return Poll(ctx, 5*time.Second, 5*time.Minute, func(ctx context.Context) (bool, error) {
-		attempt++
-		_, err := client.EdgeList(ctx)
-		if err == nil {
-			return true, nil
-		}
-		logEdgeAPIDiagnostics(ctx, client, attempt, err)
-		return false, nil
-	})
-}
-
-// logEdgeAPIDiagnostics queries workspace status, APIBindings, and CRDs via
-// kubectl and logs the results so CI failures are easier to debug.
-func logEdgeAPIDiagnostics(ctx context.Context, client *KedgeClient, attempt int, edgeListErr error) {
-	fmt.Printf("[WaitForEdgeAPI] attempt %d: edge list failed: %v\n", attempt, edgeListErr)
-
-	// Workspace status — shows phase (Initializing, Ready, etc.).
-	if out, err := client.Kubectl(ctx,
-		"get", "workspaces.tenancy.kcp.io",
-		"-o", "custom-columns=NAME:.metadata.name,PHASE:.status.phase,CLUSTER:.spec.cluster,URL:.status.URL",
-		"--insecure-skip-tls-verify",
-	); err == nil {
-		fmt.Printf("[WaitForEdgeAPI] workspaces:\n%s\n", out)
-	} else {
-		fmt.Printf("[WaitForEdgeAPI] workspaces query failed: %v\n", err)
-	}
-
-	// APIBinding status — shows whether bindings are Bound or still pending.
-	if out, err := client.Kubectl(ctx,
-		"get", "apibindings.apis.kcp.io",
-		"-o", "custom-columns=NAME:.metadata.name,PHASE:.status.phase",
-		"--insecure-skip-tls-verify",
-	); err == nil {
-		fmt.Printf("[WaitForEdgeAPI] apibindings:\n%s\n", out)
-	} else {
-		fmt.Printf("[WaitForEdgeAPI] apibindings query failed: %v\n", err)
-	}
-
-	// CRDs — check if kedge CRDs exist at all.
-	if out, err := client.Kubectl(ctx,
-		"get", "crd",
-		"-o", "custom-columns=NAME:.metadata.name,ESTABLISHED:.status.conditions[?(@.type==\"Established\")].status",
-		"--insecure-skip-tls-verify",
-	); err == nil {
-		fmt.Printf("[WaitForEdgeAPI] crds:\n%s\n", out)
-	} else {
-		fmt.Printf("[WaitForEdgeAPI] crds query failed: %v\n", err)
-	}
+	return nil
 }
 
 // HTTPGet performs a GET to url using an insecure client (self-signed certs in

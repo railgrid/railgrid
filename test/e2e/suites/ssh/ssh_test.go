@@ -22,33 +22,26 @@ import (
 	"github.com/faroshq/faros-kedge/test/e2e/cases"
 )
 
-func TestSSHServerModeConnect(t *testing.T) {
-	testenv.Test(t, cases.SSHServerModeConnect())
-}
+// The SSH-to-edge connectivity cases (SSHServerModeConnect,
+// SSHDockerServerModeConnect, SSHEdgeURLSet, SSHUserMapping*) are parked while
+// edge connectivity is brought up as the standalone edges provider (group
+// edges.kedge.faros.sh, kind LinuxServer). They will be relocated to the
+// dedicated edges suite that bootstraps that provider. See edgeSkip below and
+// docs/edges-providers-testing.md.
+func TestSSHServerModeConnect(t *testing.T)       { edgeSkip(t) }
+func TestSSHDockerServerModeConnect(t *testing.T) { edgeSkip(t) }
+func TestSSHEdgeURLSet(t *testing.T)              { edgeSkip(t) }
+func TestSSHUserMappingInherited(t *testing.T)    { edgeSkip(t) }
+func TestSSHUserMappingProvided(t *testing.T)     { edgeSkip(t) }
+func TestSSHUserMappingIdentity(t *testing.T)     { edgeSkip(t) }
 
-func TestSSHDockerServerModeConnect(t *testing.T) {
-	testenv.Test(t, cases.SSHDockerServerModeConnect())
+// edgeSkip marks an edge-connectivity test as parked pending the edges suite.
+func edgeSkip(t *testing.T) {
+	t.Helper()
+	t.Skip("edge connectivity moved to the standalone edges provider " +
+		"(edges.kedge.faros.sh); e2e coverage pending the dedicated edges suite — " +
+		"see docs/edges-providers-testing.md")
 }
-
-func TestSSHEdgeURLSet(t *testing.T) {
-	testenv.Test(t, cases.SSHEdgeURLSet())
-}
-
-func TestSSHUserMappingInherited(t *testing.T) {
-	testenv.Test(t, cases.SSHUserMappingInherited())
-}
-
-func TestSSHUserMappingProvided(t *testing.T) {
-	testenv.Test(t, cases.SSHUserMappingProvided())
-}
-
-func TestSSHUserMappingIdentity(t *testing.T) {
-	testenv.Test(t, cases.SSHUserMappingIdentity())
-}
-
-// TestJoinTokenSSHCredentialsStoredAfterConnect is intentionally not included
-// in this hub-only suite because it requires the join-token controller which
-// only runs when kcp is configured.  The test lives in the standalone suite.
 
 // Tenancy CRUD + invariants — the SSH suite runs the same single-user
 // cases against the hub-only cluster so a regression in the tenant

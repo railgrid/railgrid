@@ -37,9 +37,9 @@ import (
 func NewScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
-	utilruntime.Must(kedgev1alpha1.AddToScheme(s))
 	utilruntime.Must(providersv1alpha1.AddToScheme(s))
 	utilruntime.Must(adminv1alpha1.AddToScheme(s))
+	utilruntime.Must(kedgev1alpha1.AddToScheme(s))
 	utilruntime.Must(tenancyv1alpha1.AddToScheme(s))
 	utilruntime.Must(corev1alpha1.AddToScheme(s))
 	utilruntime.Must(kcptenancyv1alpha1.AddToScheme(s))

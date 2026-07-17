@@ -42,11 +42,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
@@ -294,6 +296,16 @@ func ApplyAPIExport(ctx context.Context, cl dynamic.Interface, exportName string
 		if _, err = cl.Resource(apiExportGVR).Create(ctx, desired, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("creating APIExport %s: %w", exportName, err)
 		}
+		// Read-after-write: when the provider workspace is still being
+		// (re)provisioned, the Create can report success without the object
+		// durably landing (the write races the workspace bootstrap). Poll until
+		// the export is observable so a lost write fails LOUDLY here — where the
+		// init retries — instead of surfacing later as the misleading
+		// "no permission to bind to export" from APIExportEndpointSlice admission,
+		// which reports a *missing* export as a bind-permission error.
+		if err := waitForResourceExists(ctx, cl, apiExportGVR, exportName); err != nil {
+			return fmt.Errorf("APIExport %s not observable after create (workspace may still be provisioning): %w", exportName, err)
+		}
 		return nil
 	}
 	if err != nil {
@@ -312,6 +324,23 @@ func ApplyAPIExport(ctx context.Context, cl dynamic.Interface, exportName string
 		return fmt.Errorf("updating APIExport %s: %w", exportName, err)
 	}
 	return nil
+}
+
+// waitForResourceExists polls until a cluster-scoped resource is observable via
+// Get, or the deadline passes. It guards create-then-vanish races: when a
+// provider workspace is being (re)provisioned concurrently, a Create can return
+// success without the object durably landing. Returns nil once the object is
+// readable, or the last error / a timeout otherwise.
+func waitForResourceExists(ctx context.Context, cl dynamic.Interface, gvr schema.GroupVersionResource, name string) error {
+	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 15*time.Second, true, func(ctx context.Context) (bool, error) {
+		if _, err := cl.Resource(gvr).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
+	})
 }
 
 // EnsureAPIExportEndpointSlice ensures an APIExportEndpointSlice referencing the

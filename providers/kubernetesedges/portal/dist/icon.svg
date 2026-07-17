@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-  stroke="#326CE5" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Hexagonal frame evokes the Kubernetes logo without copying it. -->
-  <path d="M12 2.5l8.5 4.75v9.5L12 21.5l-8.5-4.75v-9.5z"/>
-  <!-- Inner control-plane node with four worker pods radiating off it. -->
-  <circle cx="12" cy="12" r="2.25"/>
-  <path d="M12 6.5v3.25M12 14.25v3.25M5.75 9.25l2.75 1.5M18.25 9.25l-2.75 1.5M5.75 14.75l2.75-1.5M18.25 14.75l-2.75-1.5"/>
-</svg>

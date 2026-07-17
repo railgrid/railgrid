@@ -64,23 +64,8 @@ spec:
     - delete
   resources:
   - group: kedge.faros.sh
-    name: edges
-    schema: v260615-5246b68.edges.kedge.faros.sh
-    storage:
-      crd: {}
-  - group: kedge.faros.sh
     name: mcpservers
-    schema: v260608-d570146.mcpservers.kedge.faros.sh
-    storage:
-      crd: {}
-  - group: kedge.faros.sh
-    name: placements
-    schema: v260301-c08d8fa.placements.kedge.faros.sh
-    storage:
-      crd: {}
-  - group: kedge.faros.sh
-    name: virtualworkloads
-    schema: v260515-2974e60.virtualworkloads.kedge.faros.sh
+    schema: v260716-d4e8aa2.mcpservers.kedge.faros.sh
     storage:
       crd: {}
 status: {}

@@ -1,32 +1,18 @@
 FROM --platform=$BUILDPLATFORM node:22-alpine AS portal
 WORKDIR /src
 
-# Install the shared portal/node_modules once. Provider portals (mcp,
-# kubernetesedges, serveredges) resolve their deps by symlinking into
-# this tree, matching the local Makefile's portal-provider-symlinks.
+# Install the shared portal/node_modules once. Provider micro-frontends
+# now live in their own out-of-process provider images, so the hub image
+# only builds the main SPA.
 COPY portal/package.json portal/package-lock.json portal/
 RUN cd portal && npm ci
 
-# Sources for the main SPA and each provider micro-frontend. Done after
-# `npm ci` so the install layer caches across source-only edits.
+# Sources for the main SPA. Done after `npm ci` so the install layer
+# caches across source-only edits.
 COPY portal/ portal/
-COPY providers/mcp/portal/ providers/mcp/portal/
-COPY providers/kubernetesedges/portal/ providers/kubernetesedges/portal/
-COPY providers/serveredges/portal/ providers/serveredges/portal/
 
-# Per-provider node_modules symlinks (.dockerignore strips the originals
-# from the build context because they dangle outside the workspace).
-RUN for d in providers/mcp/portal providers/kubernetesedges/portal providers/serveredges/portal; do \
-      ln -sfn ../../../portal/node_modules "$d/node_modules"; \
-    done
-
-# Build the main SPA + each provider bundle. server-edges' Vite config
-# pulls shared components from kubernetes-edges via alias, so the kube
-# bundle must exist when serveredges builds.
-RUN cd portal && npm run build && \
-    cd ../providers/mcp/portal && npx vite build && \
-    cd ../../kubernetesedges/portal && npx vite build && \
-    cd ../../serveredges/portal && npx vite build
+# Build the main SPA.
+RUN cd portal && npm run build
 
 FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 
@@ -35,13 +21,14 @@ ARG TARGETOS=linux
 
 WORKDIR /workspace
 COPY go.mod go.sum ./
+# The provider-sdk is a monorepo submodule pulled in via a local
+# `replace => ./provider-sdk`; go mod download reads its go.mod to resolve
+# the replacement, so it must be present before the download step.
+COPY provider-sdk/go.mod provider-sdk/go.sum provider-sdk/
 RUN go mod download
 
 COPY . .
 COPY --from=portal /src/portal/dist pkg/hub/portal/dist/
-COPY --from=portal /src/providers/mcp/portal/dist providers/mcp/portal/dist/
-COPY --from=portal /src/providers/kubernetesedges/portal/dist providers/kubernetesedges/portal/dist/
-COPY --from=portal /src/providers/serveredges/portal/dist providers/serveredges/portal/dist/
 
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown

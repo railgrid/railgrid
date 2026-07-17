@@ -25,81 +25,52 @@ import (
 // The tests below delegate to shared case builders so the same logic runs
 // in every suite that imports cases/. Suite-specific setup lives in main_test.go.
 
-func TestHubHealth(t *testing.T)            { testenv.Test(t, cases.HubHealth()) }
-func TestStaticTokenLogin(t *testing.T)     { testenv.Test(t, cases.StaticTokenLogin()) }
-func TestEdgeLifecycle(t *testing.T)        { testenv.Test(t, cases.EdgeLifecycle()) }
-func TestAgentEdgeJoin(t *testing.T)        { testenv.Test(t, cases.AgentEdgeJoin()) }
-func TestEdgeTunnelResilience(t *testing.T) { testenv.Test(t, cases.EdgeTunnelResilience()) }
-func TestEdgeURLSet(t *testing.T)           { testenv.Test(t, cases.EdgeURLSet()) }
-func TestK8sProxyAccess(t *testing.T)       { testenv.Test(t, cases.K8sProxyAccess()) }
-func TestK8sProxyWrite(t *testing.T)        { testenv.Test(t, cases.K8sProxyWrite()) }
-func TestK8sProxyExec(t *testing.T)         { testenv.Test(t, cases.K8sProxyExec()) }
-func TestWorkloadDeployment(t *testing.T)   { testenv.Test(t, cases.WorkloadDeployment()) }
-func TestProxyUnauthenticated(t *testing.T) { testenv.Test(t, cases.ProxyUnauthenticated()) }
+func TestHubHealth(t *testing.T)        { testenv.Test(t, cases.HubHealth()) }
+func TestStaticTokenLogin(t *testing.T) { testenv.Test(t, cases.StaticTokenLogin()) }
 
-// Multi-edge tests — require 2 agent clusters (DefaultAgentCount=2).
-func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }
-func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedScheduling()) }
-func TestWorkloadIsolation(t *testing.T)     { testenv.Test(t, cases.WorkloadIsolation()) }
-func TestEdgeFailoverIsolation(t *testing.T) { testenv.Test(t, cases.EdgeFailoverIsolation()) }
-func TestEdgeReconnect(t *testing.T)         { testenv.Test(t, cases.EdgeReconnect()) }
-func TestEdgeListAccuracyUnderChurn(t *testing.T) {
-	testenv.Test(t, cases.EdgeListAccuracyUnderChurn())
+// edgeSkip marks an edge-connectivity test as parked while edge connectivity is
+// brought up as the standalone edges provider (group edges.kedge.faros.sh,
+// kinds KubernetesCluster/LinuxServer). These agent/join-token/proxy/workload/
+// MCP/SSH cases will be relocated to the dedicated edges suite that bootstraps
+// that provider. See docs/edges-providers-testing.md.
+func edgeSkip(t *testing.T) {
+	t.Helper()
+	t.Skip("edge connectivity moved to the standalone edges provider " +
+		"(edges.kedge.faros.sh); e2e coverage pending the dedicated edges suite — " +
+		"see docs/edges-providers-testing.md")
 }
 
-func TestProxyInvalidToken(t *testing.T) { testenv.Test(t, cases.ProxyInvalidToken()) }
+func TestEdgeLifecycle(t *testing.T)              { edgeSkip(t) }
+func TestAgentEdgeJoin(t *testing.T)              { edgeSkip(t) }
+func TestEdgeTunnelResilience(t *testing.T)       { edgeSkip(t) }
+func TestEdgeURLSet(t *testing.T)                 { edgeSkip(t) }
+func TestK8sProxyAccess(t *testing.T)             { edgeSkip(t) }
+func TestK8sProxyWrite(t *testing.T)              { edgeSkip(t) }
+func TestK8sProxyExec(t *testing.T)               { edgeSkip(t) }
+func TestWorkloadDeployment(t *testing.T)         { edgeSkip(t) }
+func TestProxyUnauthenticated(t *testing.T)       { edgeSkip(t) }
+func TestTwoAgentsJoin(t *testing.T)              { edgeSkip(t) }
+func TestLabelBasedScheduling(t *testing.T)       { edgeSkip(t) }
+func TestWorkloadIsolation(t *testing.T)          { edgeSkip(t) }
+func TestEdgeFailoverIsolation(t *testing.T)      { edgeSkip(t) }
+func TestEdgeReconnect(t *testing.T)              { edgeSkip(t) }
+func TestEdgeListAccuracyUnderChurn(t *testing.T) { edgeSkip(t) }
+func TestProxyInvalidToken(t *testing.T)          { edgeSkip(t) }
+func TestK8sProxyWriteIsolation(t *testing.T)     { edgeSkip(t) }
 
-// TestK8sProxyWriteIsolation verifies that ConfigMaps written via the k8s proxy
-// land on the edge cluster and NOT on the hub cluster (regression for issue #80).
-func TestK8sProxyWriteIsolation(t *testing.T) {
-	testenv.Test(t, cases.K8sProxyWriteIsolation())
-}
-
-// Join-token tests (issue #105): verify the hub controller generates a bootstrap
-// token and that agents can authenticate exclusively with that token.
-func TestJoinTokenIsSetAfterEdgeCreation(t *testing.T) {
-	testenv.Test(t, cases.JoinTokenIsSetAfterEdgeCreation())
-}
-func TestAgentConnectsWithJoinToken(t *testing.T) {
-	testenv.Test(t, cases.AgentConnectsWithJoinToken())
-}
-func TestInvalidJoinTokenReturns401(t *testing.T) {
-	testenv.Test(t, cases.InvalidJoinTokenReturns401())
-}
-func TestJoinTokenClearedAfterRegistration(t *testing.T) {
-	testenv.Test(t, cases.JoinTokenClearedAfterRegistration())
-}
-func TestJoinTokenReconnectWithSavedKubeconfig(t *testing.T) {
-	testenv.Test(t, cases.JoinTokenReconnectWithSavedKubeconfig())
-}
-func TestTokenReconcilerNoReissueAfterRegistration(t *testing.T) {
-	testenv.Test(t, cases.TokenReconcilerNoReissueAfterRegistration())
-}
-func TestJoinTokenKubernetesMode(t *testing.T) {
-	testenv.Test(t, cases.JoinTokenKubernetesMode())
-}
-func TestAgentJoinKubernetes(t *testing.T) {
-	testenv.Test(t, cases.AgentJoinKubernetes())
-}
-func TestAgentHelmInstall(t *testing.T) {
-	testenv.Test(t, cases.AgentHelmInstall())
-}
-
-// MCP tests (issue #124 / #125).
-func TestMCPEndpoint(t *testing.T) { testenv.Test(t, cases.MCPEndpoint()) }
-func TestMCPURL(t *testing.T)      { testenv.Test(t, cases.MCPURL()) }
-
-// TestMCPKubernetes / TestMCPLinux / TestMCPLinuxURL removed when both
-// per-kind MCP endpoints collapsed into the MCPServer aggregate.
-
-// Join-token + SSH credentials test requires the token reconciler (needs kcp).
-func TestJoinTokenSSHCredentialsStoredAfterConnect(t *testing.T) {
-	testenv.Test(t, cases.JoinTokenSSHCredentialsStoredAfterConnect())
-}
-
-// TestAgentCLIFlow exercises the full user-facing CLI journey:
-// login → edge create → join-command → agent run → edge Ready → kubeconfig → kubectl.
-func TestAgentCLIFlow(t *testing.T) { testenv.Test(t, cases.AgentCLIFlow()) }
+func TestJoinTokenIsSetAfterEdgeCreation(t *testing.T)           { edgeSkip(t) }
+func TestAgentConnectsWithJoinToken(t *testing.T)                { edgeSkip(t) }
+func TestInvalidJoinTokenReturns401(t *testing.T)                { edgeSkip(t) }
+func TestJoinTokenClearedAfterRegistration(t *testing.T)         { edgeSkip(t) }
+func TestJoinTokenReconnectWithSavedKubeconfig(t *testing.T)     { edgeSkip(t) }
+func TestTokenReconcilerNoReissueAfterRegistration(t *testing.T) { edgeSkip(t) }
+func TestJoinTokenKubernetesMode(t *testing.T)                   { edgeSkip(t) }
+func TestAgentJoinKubernetes(t *testing.T)                       { edgeSkip(t) }
+func TestAgentHelmInstall(t *testing.T)                          { edgeSkip(t) }
+func TestMCPEndpoint(t *testing.T)                               { edgeSkip(t) }
+func TestMCPURL(t *testing.T)                                    { edgeSkip(t) }
+func TestJoinTokenSSHCredentialsStoredAfterConnect(t *testing.T) { edgeSkip(t) }
+func TestAgentCLIFlow(t *testing.T)                              { edgeSkip(t) }
 
 // Tenancy CRUD + invariants — single-user lifecycles that don't need a
 // second identity. The TenancySATokenCrossWorkspace case is OIDC-only

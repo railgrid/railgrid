@@ -5,6 +5,10 @@ ARG TARGETOS=linux
 
 WORKDIR /workspace
 COPY go.mod go.sum ./
+# The provider-sdk is a monorepo submodule pulled in via a local
+# `replace => ./provider-sdk`; go mod download reads its go.mod to resolve
+# the replacement, so it must be present before the download step.
+COPY provider-sdk/go.mod provider-sdk/go.sum provider-sdk/
 RUN go mod download
 
 COPY . .

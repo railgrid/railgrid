@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useTerminalSessionsStore, type TerminalSession } from '@/stores/terminalSessions'
+import { useLayoutInsets } from '@/composables/useLayoutInsets'
 import TerminalInstance from './TerminalInstance.vue'
 import {
   Pin,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-vue-next'
 
 const store = useTerminalSessionsStore()
+const insets = useLayoutInsets()
 
 // Bridge: provider micro-frontends can't reach this Pinia store from
 // inside their isolated Vue apps, so they dispatch a
@@ -81,15 +83,12 @@ const splitTitle = computed(() => {
 })
 
 const panelStyle = computed<Record<string, string>>(() => {
-  // Honor AppLayout's CSS variables so the dock never slides under the side/bottom nav.
-  const insets = {
-    left: 'var(--app-inset-left, 0px)',
-    right: 'var(--app-inset-right, 0px)',
-    bottom: 'var(--app-inset-bottom, 0px)',
-  }
-  if (store.panelState.isMinimized) return { ...insets, height: '36px' }
-  if (store.panelState.isFullscreen) return { ...insets, height: 'calc(100vh - 16px - var(--app-inset-bottom, 0px))', top: '16px' }
-  return { ...insets, height: `${store.panelState.height}px` }
+  // Honor AppLayout's published insets so the dock never slides under the side/bottom nav.
+  const base = { left: insets.left, right: insets.right, bottom: insets.bottom }
+  if (store.panelState.isMinimized) return { ...base, height: '36px' }
+  if (store.panelState.isFullscreen)
+    return { ...base, height: `calc(100vh - 16px - ${insets.bottom})`, top: '16px' }
+  return { ...base, height: `${store.panelState.height}px` }
 })
 
 function isSessionVisible(session: TerminalSession): boolean {

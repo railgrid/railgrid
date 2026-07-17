@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -38,7 +38,10 @@ ifeq ($(ARCH),aarch64)
 endif
 
 # --- Version info ---
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# --match 'v*' excludes the provider-sdk/* submodule tags (e.g.
+# provider-sdk/v0.0.12) that git describe would otherwise latch onto, keeping the
+# version a real kedge release tag (or a bare SHA when none is reachable).
+VERSION ?= $(shell git describe --tags --always --dirty --match 'v*' 2>/dev/null || echo dev)
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS_PKG := github.com/faroshq/faros-kedge/pkg/version
@@ -57,7 +60,7 @@ build-kedge:
 build-kedge-release: ## Build the release-tagging helper (kedge-release <component|all>)
 	go build $(GOFLAGS) -o $(BINDIR)/kedge-release ./cmd/kedge-release/
 
-build-hub: build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal
+build-hub:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
 build-hub-portal: build-portal ## Build hub with embedded portal
@@ -66,47 +69,11 @@ build-hub-portal: build-portal ## Build hub with embedded portal
 	cp -r portal/dist pkg/hub/portal/dist
 	go build $(GOFLAGS) -tags portal_embed -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
-build-portal: portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal ## Build the portal Vue.js SPA (and built-in provider micro-frontends it depends on)
+build-portal: ## Build the portal Vue.js SPA
 	cd portal && npm ci && npm run build
 
-dev-portal: portal-provider-symlinks ## Run the portal dev server
+dev-portal: ## Run the portal dev server
 	cd portal && npm run dev
-
-# Built-in providers ship their UI as separate Vite bundles under
-# providers/{name}/portal/. The hub binary embeds those dist/ outputs via
-# //go:embed and serves them under /ui/providers/{name}/* from memory
-# (see pkg/hub/providers/proxy.go LocalUIAssets branch). The build chain
-# below is per-provider so a portal-only rebuild doesn't trigger every
-# provider's bundle, but build-hub depends on each one to keep the
-# embedded FS in sync with the binary.
-build-mcp-provider-portal: portal-provider-symlinks ## Build the mcp provider's micro-frontend (Vite → providers/mcp/portal/dist)
-	cd providers/mcp/portal && npx vite build
-
-build-kubernetes-edges-provider-portal: portal-provider-symlinks ## Build the kubernetes-edges provider's micro-frontend
-	cd providers/kubernetesedges/portal && npx vite build
-
-build-server-edges-provider-portal: portal-provider-symlinks build-kubernetes-edges-provider-portal ## Build the server-edges provider's micro-frontend (depends on kubernetes-edges sources via Vite alias)
-	cd providers/serveredges/portal && npx vite build
-
-# portal-provider-symlinks creates the local node_modules symlink each
-# provider portal needs to resolve shared deps (vue, vue-router, pinia,
-# urql, tailwind, …) from the main portal's installation. The .vue
-# files in providers/{name}/portal/src/ live outside portal/node_modules'
-# default Node lookup path, so without the symlink Vite/Rollup fail to
-# resolve `vue-router` etc. Symlinks are gitignored and idempotent.
-# Installs portal/node_modules first if missing — fresh CI checkouts
-# otherwise symlink into a nonexistent dir and `npx vite build` fails.
-portal-provider-symlinks:
-	@if [ ! -d portal/node_modules ]; then \
-		echo "  → installing portal dependencies"; \
-		(cd portal && npm ci); \
-	fi
-	@for d in providers/mcp/portal providers/kubernetesedges/portal providers/serveredges/portal; do \
-		if [ ! -L "$$d/node_modules" ]; then \
-			ln -sfn ../../../portal/node_modules "$$d/node_modules" && \
-			echo "  → symlinked $$d/node_modules"; \
-		fi; \
-	done
 
 build-graphql: ## Build the GraphQL gateway binary (listener + gateway subcommands)
 	go build $(GOFLAGS) -o $(BINDIR)/kedge-graphql ./cmd/graphql/
@@ -132,6 +99,80 @@ build-infrastructure-provider-portal: ## Build the infrastructure provider's mic
 
 build-infrastructure-provider: build-infrastructure-provider-portal ## Build the infrastructure provider binary (portal embedded)
 	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/infrastructure-provider .
+
+build-edges-provider-portal: ## Build the edges provider's micro-frontend (Vite → portal/dist)
+	cd providers/edges/portal && npm install --no-audit --no-fund && npm run build
+
+build-edges-provider: build-edges-provider-portal ## Build the edges provider binary (portal embedded)
+	cd providers/edges && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/edges-provider .
+
+## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the edges provider's
+## API (KubernetesCluster + LinuxServer, both in edges.kedge.faros.sh), then sync
+## the schema bodies into the Helm chart's files/schemas/ directory. Provider
+## init applies them at runtime so tenants that bind the APIExport get both kinds.
+codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the edges provider's local API (+ chart schemas)
+	@mkdir -p providers/edges/config/crds providers/edges/config/kcp providers/edges/deploy/chart/files/schemas
+	cd providers/edges && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/edges/config/crds
+	./$(KCP_APIGEN_GEN) --input-dir providers/edges/config/crds --output-dir providers/edges/config/kcp
+	@for r in kubernetesclusters linuxservers workloads placements; do \
+		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.kedge.faros.sh.yaml \
+		   providers/edges/deploy/chart/files/schemas/$$r.edges.kedge.faros.sh.yaml; \
+	done
+	./hack/ensure-boilerplate.sh
+
+.PHONY: codegen-edges-provider build-edges-provider build-edges-provider-portal \
+	install-provider-edges init-provider-edges run-provider-edges uninstall-provider-edges docker-build-edges-provider
+
+## --- edges provider dev lifecycle (install → init → run) --------------------
+install-provider-edges: ## Apply edges Provider + CatalogEntry into root:kedge:providers
+	@test -f $(EDGES_KCP_KUBECONFIG) || { echo "kubeconfig not found at $(EDGES_KCP_KUBECONFIG); start the hub first (make run-hub-embedded-static)"; exit 1; }
+	kubectl --kubeconfig=$(EDGES_KCP_KUBECONFIG) \
+		--server=$(EDGES_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--insecure-skip-tls-verify \
+		apply -f $(EDGES_PROVIDER_MANIFEST) -f $(EDGES_MANIFEST)
+
+init-provider-edges: build-edges-provider ## Bootstrap edges APIExport + write dev runtime kubeconfig
+	@test -f $(EDGES_KCP_KUBECONFIG) || { echo "kubeconfig not found at $(EDGES_KCP_KUBECONFIG); start the hub first"; exit 1; }
+	@TOKEN=$$(kubectl --kubeconfig=$(EDGES_KCP_KUBECONFIG) \
+		--server=$(EDGES_KCP_SERVER)/clusters/$(EDGES_WORKSPACE_PATH) \
+		--insecure-skip-tls-verify \
+		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
+	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
+	mkdir -p $(KCP_DATA_DIR); \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+		"$(EDGES_KCP_SERVER)/clusters/$(EDGES_WORKSPACE_PATH)" "$$TOKEN" \
+		> $(EDGES_RUNTIME_KUBECONFIG)
+	KEDGE_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
+	KEDGE_SCHEMAS_DIR=$(EDGES_SCHEMAS_DIR) \
+	EDGES_WORKSPACE_PATH=$(EDGES_WORKSPACE_PATH) \
+		$(BINDIR)/edges-provider init
+
+run-provider-edges: build-edges-provider ## Run the edges provider (needs: hub + install + init)
+	@echo "Starting edges provider on :$(EDGES_PORT) (SINGLE-REPLICA)"
+	PORT=$(EDGES_PORT) \
+	KEDGE_HUB_URL=$(EDGES_HUB_URL) \
+	KEDGE_HUB_EXTERNAL_URL=$(EDGES_HUB_EXTERNAL_URL) \
+	KEDGE_HUB_TOKEN=$(EDGES_TOKEN) \
+	KEDGE_HUB_INSECURE=true \
+	KEDGE_PROVIDER_NAME=edges \
+	KEDGE_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
+	KEDGE_STATIC_TOKENS=$(EDGES_TOKEN) \
+	KEDGE_DEV_MODE=true \
+		$(BINDIR)/edges-provider serve
+
+uninstall-provider-edges: ## Delete edges CatalogEntry + Provider
+	-kubectl --kubeconfig=$(EDGES_KCP_KUBECONFIG) \
+		--server=$(EDGES_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--insecure-skip-tls-verify \
+		delete -f $(EDGES_MANIFEST) -f $(EDGES_PROVIDER_MANIFEST)
+
+docker-build-edges-provider: ## Build the edges provider image (context = repo root)
+	docker build -f providers/edges/Dockerfile \
+		--platform $(DOCKER_PLATFORM) \
+		-t ghcr.io/faroshq/kedge-edges-provider:$(VERSION) .
 
 build-app-studio-provider-portal: ## Build the App Studio provider's micro-frontend (Vite + TS → portal/dist)
 	cd providers/app-studio/portal && npm install --no-audit --no-fund && npm run build
@@ -355,8 +396,8 @@ else
 		--type=kubernetes
 endif
 
-dev-create-workload: ## Create a demo VirtualWorkload targeting dev sites
-	kubectl apply -f hack/dev/examples/virtualworkload-nginx.yaml
+dev-create-workload: ## Create a demo Workload targeting dev edges
+	kubectl apply -f hack/dev/examples/workload-nginx.yaml
 
 -include .env
 -include .env.edge.$(TYPE)
@@ -578,6 +619,22 @@ QUICKSTART_PROVIDER_MANIFEST ?= providers/quickstart/provider.yaml
 QUICKSTART_WORKSPACE_PATH ?= root:kedge:providers:quickstart
 QUICKSTART_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/quickstart-runtime.kubeconfig
 
+# --- edges provider (single provider, both kinds) --------------------------
+# Runs SINGLE-REPLICA (revdial global dialer map). Reads a provider kubeconfig at
+# runtime (token validation + cross-tenant controllers), so the run target passes
+# KEDGE_PROVIDER_KUBECONFIG unlike the broker providers.
+EDGES_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
+EDGES_KCP_SERVER ?= https://localhost:6443
+EDGES_HUB_URL ?= https://localhost:9443
+EDGES_HUB_EXTERNAL_URL ?= $(EDGES_HUB_URL)
+EDGES_TOKEN ?= $(STATIC_AUTH_TOKEN)
+EDGES_PORT ?= 8084
+EDGES_MANIFEST ?= providers/edges/manifest.yaml
+EDGES_PROVIDER_MANIFEST ?= providers/edges/provider.yaml
+EDGES_WORKSPACE_PATH ?= root:kedge:providers:edges
+EDGES_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/edges-runtime.kubeconfig
+EDGES_SCHEMAS_DIR ?= $(CURDIR)/providers/edges/deploy/chart/files/schemas
+
 ## Run the quickstart provider binary locally. Heartbeats to the hub on
 ## $(QUICKSTART_HUB_URL); TLS verification skipped (dev cert is self-signed).
 run-provider-quickstart: build-quickstart-provider ## Run the quickstart provider (requires: make run-hub-embedded-static + make install-provider-quickstart)
@@ -644,6 +701,37 @@ e2e-infra-provider: build-hub build-infrastructure-provider ## Run infrastructur
 		exit 1; \
 	}
 	go test ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Edges provider e2e (embedded kcp + edges-provider init/serve subprocesses).
+## Covers the control-plane + auth surface of the decoupled edges provider:
+## provisioning + CatalogEntry Ready, the /api/providers DTO, tenant Enable via
+## APIBinding + KubernetesCluster/LinuxServer CR CRUD, and the edge-proxy
+## authorization boundary (403 without grant -> 502 with grant, through the hub
+## backend proxy). The data-plane tunnel (kubectl/ssh streaming) needs a live
+## agent + edge target and is out of scope here. Shares the embedded-kcp etcd
+## port 2380 with the other subprocess suites — do not run them concurrently.
+E2E_EDGES_TIMEOUT ?= 15m
+e2e-edges: build-hub build-edges-provider ## Run edges provider e2e suite
+	@test -z "$$(lsof -ti :19463 :16463 :18088 :2380 2>/dev/null)" || { \
+		echo "ports 19463/16463/18088/2380 are in use; stop any running kedge-hub/edges-provider first"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/edges/... -v -timeout $(E2E_EDGES_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Edges DATA-PLANE connectivity e2e (embedded kcp over HTTPS + edges-provider
+## + a real kedge agent against a kind cluster). Proves the reverse tunnel:
+## registers a KubernetesCluster, enables edges + the edge-proxy grant, runs the
+## agent, and streams `kubectl get nodes` down the tunnel (agent -> hub backend
+## proxy -> out-of-process edges provider -> agent -> kind API server). Needs
+## kind + docker + kubectl on PATH. Shares embedded-kcp etcd port 2380 — do not
+## run concurrently with the other subprocess suites.
+E2E_EDGES_CONN_TIMEOUT ?= 15m
+e2e-edges-connectivity: build-hub build-edges-provider build-kedge certs ## Run edges data-plane connectivity e2e (needs kind)
+	@test -z "$$(lsof -ti :19473 :16473 :18098 :2380 2>/dev/null)" || { \
+		echo "ports 19473/16473/18098/2380 are in use; stop any running kedge-hub/edges-provider first"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/edgesconn/... -v -timeout $(E2E_EDGES_CONN_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Tilt-cluster suite: runs against an ALREADY-RUNNING operator-deployed,
 ## multi-shard Tilt stack (start it in another terminal with `make tilt-cluster`).

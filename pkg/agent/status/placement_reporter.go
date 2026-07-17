@@ -24,46 +24,51 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
-
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
 const (
 	placementReporterName = "placement-status-reporter"
-	// PlacementLabel is the label used to identify deployments managed by kedge.
-	PlacementLabel = "kedge.faros.sh/placement"
+
+	edgesGroup = "edges.kedge.faros.sh"
+	// PlacementLabel identifies local Deployments managed by a kedge Placement.
+	PlacementLabel               = edgesGroup + "/placement"
+	placementNamespaceAnnotation = edgesGroup + "/placement-namespace"
 )
 
-// PlacementReporter watches local Deployments and reports their status back
-// to the corresponding Placement resources on the hub.
+// placementGVR is the edges provider's Placement resource; the reporter patches
+// its status subresource. Addressed dynamically so the agent needs no import of
+// the provider module.
+var placementGVR = schema.GroupVersionResource{Group: edgesGroup, Version: "v1alpha1", Resource: "placements"}
+
+// PlacementReporter watches local Deployments and reports their status back to
+// the corresponding Placement resources in the tenant workspace.
 type PlacementReporter struct {
-	hubClient        *kedgeclient.Client
-	downstreamClient kubernetes.Interface
+	hubDynamic       dynamic.Interface
 	deploymentLister appslisters.DeploymentLister
 	deploymentSynced cache.InformerSynced
 	queue            workqueue.TypedRateLimitingInterface[string]
 }
 
-// NewPlacementReporter creates a new PlacementReporter.
+// NewPlacementReporter creates a PlacementReporter. hubDynamic is scoped to the
+// edge's tenant workspace; informerFactory watches the local cluster.
 func NewPlacementReporter(
-	hubClient *kedgeclient.Client,
-	downstreamClient kubernetes.Interface,
+	hubDynamic dynamic.Interface,
 	informerFactory informers.SharedInformerFactory,
 ) *PlacementReporter {
 	deploymentInformer := informerFactory.Apps().V1().Deployments()
 
 	r := &PlacementReporter{
-		hubClient:        hubClient,
-		downstreamClient: downstreamClient,
+		hubDynamic:       hubDynamic,
 		deploymentLister: deploymentInformer.Lister(),
 		deploymentSynced: deploymentInformer.Informer().HasSynced,
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
@@ -98,7 +103,7 @@ func (r *PlacementReporter) enqueueDeployment(obj interface{}) {
 		}
 	}
 
-	// Only process deployments managed by kedge
+	// Only process Deployments managed by kedge.
 	if _, ok := deployment.Labels[PlacementLabel]; !ok {
 		return
 	}
@@ -119,12 +124,10 @@ func (r *PlacementReporter) Run(ctx context.Context, workers int) error {
 	logger := klog.FromContext(ctx).WithName(placementReporterName)
 	logger.Info("Starting placement status reporter")
 
-	logger.Info("Waiting for caches to sync")
 	if !cache.WaitForCacheSync(ctx.Done(), r.deploymentSynced) {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
-	logger.Info("Starting workers", "count", workers)
 	for i := 0; i < workers; i++ {
 		go wait.UntilWithContext(ctx, r.worker, time.Second)
 	}
@@ -164,25 +167,19 @@ func (r *PlacementReporter) reconcile(ctx context.Context, key string) error {
 
 	deployment, err := r.deploymentLister.Deployments(namespace).Get(name)
 	if err != nil {
-		// Deployment was deleted - we could mark placement as failed/pending,
-		// but for now we'll let the hub-side controller handle cleanup
 		logger.V(4).Info("Deployment not found, skipping status update")
 		return nil
 	}
 
-	// Get the placement name from the label
 	placementName, ok := deployment.Labels[PlacementLabel]
 	if !ok {
 		return nil
 	}
-
-	// Get the placement namespace from the annotation
-	placementNamespace := deployment.Annotations["kedge.faros.sh/placement-namespace"]
+	placementNamespace := deployment.Annotations[placementNamespaceAnnotation]
 	if placementNamespace == "" {
 		placementNamespace = "default"
 	}
 
-	// Determine the phase based on deployment status
 	phase := "Pending"
 	if deployment.Status.AvailableReplicas > 0 {
 		phase = "Running"
@@ -190,36 +187,25 @@ func (r *PlacementReporter) reconcile(ctx context.Context, key string) error {
 		phase = "Synced"
 	}
 
-	// Build the status patch
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
 			"phase":         phase,
 			"readyReplicas": deployment.Status.ReadyReplicas,
 		},
 	}
-
 	patchBytes, err := json.Marshal(patch)
 	if err != nil {
 		return fmt.Errorf("marshaling placement status patch: %w", err)
 	}
 
-	_, err = r.hubClient.Placements(placementNamespace).Patch(
-		ctx,
-		placementName,
-		types.MergePatchType,
-		patchBytes,
-		metav1.PatchOptions{},
-		"status",
-	)
-	if err != nil {
+	if _, err := r.hubDynamic.Resource(placementGVR).Namespace(placementNamespace).Patch(
+		ctx, placementName, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status",
+	); err != nil {
 		return fmt.Errorf("updating placement status: %w", err)
 	}
 
 	logger.V(4).Info("Updated placement status",
-		"placement", placementNamespace+"/"+placementName,
-		"phase", phase,
-		"readyReplicas", deployment.Status.ReadyReplicas,
-	)
-
+		"placement", placementNamespace+"/"+placementName, "phase", phase,
+		"readyReplicas", deployment.Status.ReadyReplicas)
 	return nil
 }

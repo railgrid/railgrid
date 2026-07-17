@@ -36,8 +36,9 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	"github.com/faroshq/provider-sdk/revdial"
+
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
-	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
 
 // StartProxyTunnel establishes a reverse tunnel to the hub server.
@@ -46,10 +47,10 @@ import (
 // Pass nil to use a default (secure) TLS config; use InsecureSkipVerify only
 // in development environments.
 //
-// resourceType must be either "edges" (Kubernetes cluster agent) or "servers"
-// (bare-metal / systemd host agent). It controls the query parameter sent to
-// the hub's tunnel endpoint so that Edges and Servers are stored under
-// distinct connection-manager keys and never alias each other.
+// resourceType must be either "kubernetes" (Kubernetes cluster agent) or
+// "server" (bare-metal / systemd host agent). It selects which resource the
+// agent dials on the single `edges` provider (kubernetesclusters vs
+// linuxservers) via apiurl.ProviderAgentProxyURL.
 //
 // cluster is the kcp logical cluster path (e.g., "root:kedge:user-default").
 // If empty, it's extracted from the token (for SA tokens) or defaults to "default".
@@ -149,11 +150,10 @@ func startTunneler(ctx context.Context, hubURL string, getToken func() string, e
 		}
 	}
 
-	// All edge types (kubernetes and server) use the unified agent-proxy virtual
-	// workspace path introduced in Phase 3.
-	// resourceType is retained for legacy callers but no longer affects the URL.
-	_ = resourceType
-	edgeProxyURL := apiurl.EdgeAgentProxyURL(baseHubURL, clusterName, edgeName, "proxy")
+	// The agent dials the single `edges` provider's agent-ingress path, choosing
+	// the resource (kubernetesclusters vs linuxservers) by type, routed through
+	// the hub backend proxy. resourceType is the agent type ("kubernetes" | "server").
+	edgeProxyURL := apiurl.ProviderAgentProxyURL(baseHubURL, resourceType, clusterName, edgeName, "proxy")
 
 	conn, resp, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig, extraHeaders)
 	if err != nil {

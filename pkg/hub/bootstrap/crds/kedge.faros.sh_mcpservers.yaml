@@ -17,15 +17,15 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.displayName
+      name: Display
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
     - jsonPath: .status.URL
       name: URL
       type: string
-    - jsonPath: .status.kubernetesEdges
-      name: K8sEdges
-      type: integer
-    - jsonPath: .status.linuxEdges
-      name: LinuxEdges
-      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -33,15 +33,11 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          MCPServer is the unified multi-edge MCP (Model Context Protocol) server.
-          It aggregates BOTH Kubernetes-type and server-type edges behind a single
-          endpoint so an MCP-compatible AI client can drive every reachable edge from
-          one connection (one Claude config entry, one set of tools/list).
-
-          Internally it mounts the upstream kubernetes-mcp-server toolsets for the
-          kube-type edges and the in-tree linuxmcp toolsets for the server-type
-          edges, plus a `list_targets` tool that returns the full per-tenant edge
-          inventory so the AI can self-discover what's available.
+          MCPServer is a named aggregate MCP endpoint in a tenant workspace. Each one
+          federates the tenant's enabled providers behind a single streamable-HTTP URL
+          and is backed by its own long-lived identity (ServiceAccount + token Secret),
+          provisioned by the hub's reconciler. A tenant may have many — e.g. a
+          read-only "audit" endpoint and a full-access "ops" endpoint.
         properties:
           apiVersion:
             description: |-
@@ -61,125 +57,34 @@ spec:
           metadata:
             type: object
           spec:
-            description: MCPServerSpec defines the desired state of MCPServer.
+            description: MCPServerSpec is the user-authored MCPServer configuration.
             properties:
-              commandTimeoutSeconds:
-                description: |-
-                  CommandTimeoutSeconds bounds the wall-clock time any single linux
-                  command may run on a target edge.  Defaults to 30s.  Hard maximum
-                  is 600s.  Has no effect on kube tools.
-                format: int32
-                maximum: 600
-                minimum: 1
-                type: integer
               displayName:
                 description: |-
-                  DisplayName overrides the human-readable title MCP clients show in
-                  their server picker (Claude Desktop, Cursor, etc.).  When empty, the
-                  hub generates a default of "Kedge — <name> (tenant <cluster>)".  Use
-                  this to tag environments — e.g. "Production cluster, ASK FIRST".
+                  DisplayName is the human-readable title MCP clients show for this
+                  endpoint. Defaults to the object name when empty.
                 maxLength: 128
                 type: string
-              edgeSelector:
-                description: |-
-                  EdgeSelector selects which edges to include — kubernetes AND server
-                  types both pass through; their tools are namespaced internally so the
-                  AI can tell which type a tool expects.
-                  An empty selector matches all connected edges of either type.
-                properties:
-                  matchExpressions:
-                    description: matchExpressions is a list of label selector requirements.
-                      The requirements are ANDed.
-                    items:
-                      description: |-
-                        A label selector requirement is a selector that contains values, a key, and an operator that
-                        relates the key and values.
-                      properties:
-                        key:
-                          description: key is the label key that the selector applies
-                            to.
-                          type: string
-                        operator:
-                          description: |-
-                            operator represents a key's relationship to a set of values.
-                            Valid operators are In, NotIn, Exists and DoesNotExist.
-                          type: string
-                        values:
-                          description: |-
-                            values is an array of string values. If the operator is In or NotIn,
-                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                            the values array must be empty. This array is replaced during a strategic
-                            merge patch.
-                          items:
-                            type: string
-                          type: array
-                          x-kubernetes-list-type: atomic
-                      required:
-                      - key
-                      - operator
-                      type: object
-                    type: array
-                    x-kubernetes-list-type: atomic
-                  matchLabels:
-                    additionalProperties:
-                      type: string
-                    description: |-
-                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                      map is equivalent to an element of matchExpressions, whose key field is "key", the
-                      operator is "In", and the values array contains only "value". The requirements are ANDed.
-                    type: object
-                type: object
-                x-kubernetes-map-type: atomic
               instructions:
                 description: |-
-                  Instructions overrides the ambient context blurb the MCP "initialize"
-                  response returns.  Hosts forward this to the LLM as system-prompt
-                  context for this endpoint, so it's the right place to write
-                  per-environment guidance ("do not delete anything in prod", "this
-                  tenant only hosts staging clusters", etc.).  When empty, the hub
-                  generates a generic explanation of the aggregate endpoint.
-                maxLength: 4096
+                  Instructions overrides the ambient guidance sent to MCP clients on
+                  "initialize" (e.g. "this is production, ask before destructive ops").
+                maxLength: 8192
                 type: string
-              kubernetesToolsets:
-                description: |-
-                  KubernetesToolsets restricts which kubernetes-mcp-server toolsets are
-                  enabled (e.g. "core", "config", "helm", "kcp", "kiali", "kubevirt").
-                  Empty means the upstream default set.
-                items:
-                  type: string
-                type: array
-              linuxToolsets:
-                description: |-
-                  LinuxToolsets restricts which linuxmcp toolsets are enabled (e.g.
-                  "core", "systemd", "diag", "net", "pkg").  Empty means ["core"].
-                items:
-                  type: string
-                type: array
-              maxOutputBytes:
-                description: |-
-                  MaxOutputBytes caps stdout+stderr returned per linux tool call.
-                  Defaults to 1 MiB.  Hard maximum is 16 MiB.  Has no effect on kube
-                  tools.
-                format: int32
-                maximum: 16777216
-                minimum: 1024
-                type: integer
               readOnly:
                 description: |-
-                  ReadOnly disables every mutating tool across both kube and linux when
-                  true.  Read-only inspection tools remain available.
+                  ReadOnly, when true, advertises this endpoint as read-only so clients
+                  (and provider tools that honor the hint) avoid mutating operations.
                 type: boolean
             type: object
           status:
-            description: MCPServerStatus defines the observed state of MCPServer.
+            description: MCPServerStatus is the observed MCPServer state.
             properties:
               URL:
-                description: URL is the MCP endpoint URL at which this aggregate server
-                  is reachable.
+                description: URL is the streamable-HTTP endpoint clients connect to.
                 type: string
               conditions:
-                description: Conditions describe the current state of the MCPServer
-                  resource.
+                description: Conditions describe the current reconcile state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -235,30 +140,78 @@ spec:
                   - type
                   type: object
                 type: array
-              kubernetesEdges:
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              federatedProviders:
                 description: |-
-                  KubernetesEdges is the number of connected kubernetes-type edges
-                  matched by the selector.
-                type: integer
-              linuxEdges:
-                description: |-
-                  LinuxEdges is the number of connected server-type edges matched by
-                  the selector.
-                type: integer
+                  FederatedProviders is the set of providers this endpoint federates and the
+                  tools each currently advertises. The reconciler refreshes it periodically
+                  using THIS server's own identity, so it reflects exactly what this endpoint
+                  can reach — the basis for per-server targeted tooling.
+                items:
+                  description: |-
+                    FederatedMCPProvider is one provider this MCPServer federates, plus whether its
+                    MCP endpoint answered discovery and the tools it advertised to this endpoint.
+                  properties:
+                    displayName:
+                      description: DisplayName is the provider's human-readable title.
+                      type: string
+                    message:
+                      description: Message carries the discovery error when Reachable
+                        is false.
+                      type: string
+                    name:
+                      description: Name is the provider's catalog name (e.g. "infrastructure",
+                        "edges").
+                      type: string
+                    reachable:
+                      description: Reachable is true when the provider's MCP endpoint
+                        answered tools/list.
+                      type: boolean
+                    tools:
+                      description: Tools are the tools this provider advertised to
+                        this endpoint.
+                      items:
+                        description: FederatedMCPTool is one tool advertised by a
+                          federated provider.
+                        properties:
+                          description:
+                            description: Description is the tool's description.
+                            type: string
+                          name:
+                            description: |-
+                              Name is the provider-local tool name. The aggregate exposes it to clients
+                              prefixed as "<provider>__<name>".
+                            type: string
+                          title:
+                            description: Title is the tool's human-readable title,
+                              when it differs from Name.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
+                  required:
+                  - name
+                  - reachable
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              phase:
+                description: 'Phase is a coarse lifecycle summary: Provisioning, Ready,
+                  or Error.'
+                type: string
               tokenSecretRef:
                 description: |-
-                  TokenSecretRef references the Secret that holds the long-lived
-                  (legacy) ServiceAccount token clients use as the bearer credential
-                  for this MCP endpoint. The MCPServer controller provisions a
-                  per-server ServiceAccount and a kubernetes.io/service-account-token
-                  Secret; kcp's token controller populates it.
-
-                  The token value is intentionally NOT surfaced in status — only the
-                  reference is. The portal backend (which can read Secrets in this
-                  workspace) dereferences it to render the setup/copy command, so the
-                  credential never lands in the CR, watch streams, logs, or audit. The
-                  token is stored under the Secret's "token" data key
-                  (corev1.ServiceAccountTokenKey).
+                  TokenSecretRef references the Secret holding this server's long-lived
+                  token. The token value never appears on the CR — only the portal backend
+                  dereferences the Secret.
                 properties:
                   name:
                     description: name is unique within a namespace to reference a
@@ -270,6 +223,11 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              toolsRefreshedTime:
+                description: ToolsRefreshedTime is when FederatedProviders was last
+                  recomputed.
+                format: date-time
+                type: string
             type: object
         type: object
     served: true

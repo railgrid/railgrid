@@ -283,6 +283,14 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	basePath := p.pathPrefix + "/" + name
 
 	rp := &httputil.ReverseProxy{
+		// Flush every write immediately (no response buffering). Required for
+		// provider responses that stream: log-follow, and — once edge
+		// connectivity moves out-of-process behind this proxy — the reverse
+		// tunnel's chunked pickup streams. Harmless for plain JSON/asset
+		// responses. WebSocket/SPDY 101 upgrades are handled separately by
+		// ReverseProxy and don't depend on this. Edge-agnostic: the proxy
+		// stays a generic forwarder.
+		FlushInterval: -1,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host

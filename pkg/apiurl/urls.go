@@ -112,6 +112,37 @@ func EdgeAgentProxyURL(hubBase, cluster, edgeName, subresource string) string {
 	return strings.TrimRight(hubBase, "/") + EdgeAgentProxyPath(cluster, edgeName, subresource)
 }
 
+// EdgeProviderCoordinates resolves an edge type ("kubernetes" | "server") to the
+// owning provider's backend-proxy name, API group and resource. The edge plane
+// is one provider `edges` holding both kinds under group edges.kedge.faros.sh;
+// only the resource differs by type. Any value other than "server" defaults to
+// kubernetes.
+func EdgeProviderCoordinates(edgeType string) (provider, group, resource string) {
+	if edgeType == "server" {
+		return "edges", "edges.kedge.faros.sh", "linuxservers"
+	}
+	return "edges", "edges.kedge.faros.sh", "kubernetesclusters"
+}
+
+// ProviderAgentProxyPath returns the agent-ingress path for an edge provider's
+// reverse-tunnel control connection, routed through the hub backend proxy to the
+// provider Service. The provider StripPrefixes /services/providers/{provider}/agent
+// so its tunnel handler sees /{cluster}/apis/{group}/v1alpha1/{resource}/{name}/{subresource}.
+//
+// Pattern: /services/providers/{provider}/agent/{cluster}/apis/{group}/v1alpha1/{resource}/{name}/{subresource}
+func ProviderAgentProxyPath(provider, group, resource, cluster, edgeName, subresource string) string {
+	return fmt.Sprintf("%s/%s/agent/%s/apis/%s/v1alpha1/%s/%s/%s",
+		PathPrefixProvidersProxy, provider, cluster, group, resource, edgeName, subresource)
+}
+
+// ProviderAgentProxyURL returns the full agent-ingress URL for use when dialling
+// the hub from the agent, resolving the provider coordinates from the edge type.
+func ProviderAgentProxyURL(hubBase, edgeType, cluster, edgeName, subresource string) string {
+	provider, group, resource := EdgeProviderCoordinates(edgeType)
+	return strings.TrimRight(hubBase, "/") +
+		ProviderAgentProxyPath(provider, group, resource, cluster, edgeName, subresource)
+}
+
 // EdgeProxyPath returns the URL path (relative to the hub base) for the
 // edges-proxy virtual workspace endpoint.
 //

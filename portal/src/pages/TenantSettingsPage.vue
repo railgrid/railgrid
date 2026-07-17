@@ -598,7 +598,7 @@ function fmtDate(s?: string | null): string {
 
 <template>
   <AppLayout>
-    <div class="mx-auto max-w-6xl">
+    <div>
       <header class="mb-5 flex items-start justify-between gap-4">
         <div>
           <h1 class="flex items-center gap-2 text-xl font-semibold text-text-primary">

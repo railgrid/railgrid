@@ -1,0 +1,153 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "edges.fullname" . }}
+  labels:
+    {{- include "edges.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # revdial's dialer map is process-global: Recreate guarantees the old pod is
+  # gone before the new one starts, so a rollout never briefly runs two replicas
+  # (which would split agent control/pickup connections across processes).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "edges.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "edges.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "edges.serviceAccountName" . }}
+      initContainers:
+        # Bootstrap the provider workspace (KubernetesCluster + LinuxServer
+        # APIResourceSchemas, APIExport, endpoint slice, bind grant) with the
+        # onboarded workspace-admin kubeconfig. Schemas baked at
+        # /etc/kedge/schemas. Idempotent.
+        - name: init
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["init"]
+          env:
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kubeconfig
+            - name: KEDGE_SCHEMAS_DIR
+              value: /etc/kedge/schemas
+            {{- if .Values.catalogEntry.enabled }}
+            - name: KEDGE_CATALOGENTRY_FILE
+              value: /etc/kedge/catalogentry/catalogentry.yaml
+            {{- end }}
+          volumeMounts:
+            - name: provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
+            {{- if .Values.catalogEntry.enabled }}
+            - name: catalogentry
+              mountPath: /etc/kedge/catalogentry
+              readOnly: true
+            {{- end }}
+      containers:
+        - name: provider
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          env:
+            - name: PORT
+              value: {{ .Values.service.port | quote }}
+            - name: KEDGE_PROVIDER_NAME
+              value: "edges"
+            - name: KEDGE_HUB_URL
+              value: {{ .Values.hub.url | quote }}
+            - name: KEDGE_HUB_EXTERNAL_URL
+              value: {{ .Values.hub.externalURL | default .Values.hub.url | quote }}
+            {{- if .Values.hub.internalURL }}
+            - name: KEDGE_HUB_INTERNAL_URL
+              value: {{ .Values.hub.internalURL | quote }}
+            {{- end }}
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kubeconfig
+            {{- if .Values.staticTokens }}
+            - name: KEDGE_STATIC_TOKENS
+              value: {{ .Values.staticTokens | quote }}
+            {{- end }}
+            {{- if .Values.devMode }}
+            - name: KEDGE_DEV_MODE
+              value: "true"
+            {{- end }}
+            {{- if .Values.hub.insecure }}
+            - name: KEDGE_HUB_INSECURE
+              value: "true"
+            {{- end }}
+            {{- if .Values.hub.caData }}
+            - name: KEDGE_HUB_CA_DATA
+              value: {{ .Values.hub.caData | quote }}
+            {{- else if .Values.hub.caSecretRef.name }}
+            - name: KEDGE_HUB_CA_FILE
+              value: /var/run/secrets/kedge-hub-ca/{{ .Values.hub.caSecretRef.key }}
+            {{- end }}
+            {{- if .Values.hub.tokenSecretRef.name }}
+            - name: KEDGE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.tokenSecretRef.name }}
+                  key: {{ .Values.hub.tokenSecretRef.key }}
+            {{- end }}
+          volumeMounts:
+            - name: provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
+            {{- if and (not .Values.hub.caData) .Values.hub.caSecretRef.name }}
+            - name: hub-ca
+              mountPath: /var/run/secrets/kedge-hub-ca
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: provider-kubeconfig
+          secret:
+            secretName: {{ .Values.providerKubeconfig.secretName }}
+            items:
+              - key: kubeconfig
+                path: kubeconfig
+        {{- if and (not .Values.hub.caData) .Values.hub.caSecretRef.name }}
+        - name: hub-ca
+          secret:
+            secretName: {{ .Values.hub.caSecretRef.name }}
+        {{- end }}
+        {{- if .Values.catalogEntry.enabled }}
+        - name: catalogentry
+          configMap:
+            name: {{ include "edges.fullname" . }}-catalogentry
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

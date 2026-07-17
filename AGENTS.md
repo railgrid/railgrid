@@ -370,6 +370,56 @@ there (or matching its token/scale conventions exactly) over inventing a
 provider-local variant — consistency across the embedded micro-frontends is the
 whole point.
 
+### Page content width — one column, set centrally
+
+Page content width is owned by **`AppLayout`**, not by pages. The layout slot
+renders every non-full-bleed page in one centered `mx-auto w-full max-w-5xl`
+column, so the content doesn't resize or shift when navigating between pages.
+
+- **Do NOT add your own `mx-auto` / `max-w-*` wrapper** to a page or provider
+  micro-frontend — that reintroduces per-page width drift (the bug that made the
+  MCP and edges tables different widths). Just render your content; it inherits
+  the shared column.
+- A page that genuinely needs full width passes `<AppLayout full-bleed>` and
+  manages its own width/scroll (e.g. `app-studio`). Use this sparingly.
+- Horizontal/vertical page padding also comes from `AppLayout` (`px-8 py-5`) —
+  don't re-pad the top-level page wrapper.
+
+### Provider portals that ship their own stylesheet
+
+Some built-in provider portals (e.g. `providers/edges`, `providers/infrastructure`)
+are standalone IIFE bundles that render in **light DOM** and inject one namespaced
+`style.css` (imported `?raw` in `main.ts`) instead of compiling Tailwind utilities
+through the host. That is allowed — but the stylesheet is **not** a license to
+invent a look. It is bound by the same design system, enforced by these rules:
+
+- **Colour ONLY through the portal's `--color-*` custom properties.** They
+  cascade in from the host `:root` and are the *same* tokens the Tailwind classes
+  compile to (`--color-surface-raised`, `--color-border-subtle`, `--color-accent`,
+  `--color-text-secondary`, `--color-success|warning|danger`, …). **Never write a
+  raw hex/rgb colour** (the terminal canvas `#0a0a0f` is the one deliberate
+  exception). Raw colours don't flip with `html.light`/`html.dark` and immediately
+  drift from the portal — this is exactly the "random styles" failure mode.
+- **Do not add stale fallbacks** like `var(--color-accent, #5b6cff)` — the host
+  always defines the token, and a wrong fallback silently diverges. Reference the
+  bare `var(--color-*)`.
+- **State/accent tints** (the equivalent of Tailwind's `bg-accent/[0.03]` or
+  `border-accent/30`) use `color-mix(in srgb, var(--color-accent) 30%, transparent)`,
+  not a baked-in translucent hex.
+- **Namespace every selector** under the element tag (e.g.
+  `kedge-provider-edges .btn { … }`) so the styles cannot leak into the host.
+- **Match the same recipes** as the shared components, not approximations:
+  buttons/inputs `rounded-lg` (8px); cards/tables the `rounded-2xl` (16px)
+  `surface-raised` card with a `border-subtle` hairline; table headers
+  `10px`/`600` uppercase `letter-spacing:.15em` `text-muted`; rows `13px`
+  `text-secondary` with an accent-tinted hover; status pills mirror
+  `StatusBadge` tones (`*-subtle` bg + solid token text).
+
+**Canonical reference:** [`providers/edges/portal/src/style.css`](providers/edges/portal/src/style.css)
+carries the full contract in its header comment — copy that file's approach for any
+new hand-rolled provider stylesheet. When in doubt, open the matching component in
+`portal/src/components/` and reproduce its token/radius/type values exactly.
+
 ---
 
 ## 9. Conventions & guardrails

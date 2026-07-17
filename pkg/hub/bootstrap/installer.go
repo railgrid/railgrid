@@ -85,10 +85,9 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 	// under tenants.kedge.faros.sh alongside Organization, Membership,
 	// and UserMembershipIndex.
 	crdNames := []string{
-		"edges.kedge.faros.sh",
-		"virtualworkloads.kedge.faros.sh",
-		"placements.kedge.faros.sh",
-		"mcpservers.kedge.faros.sh",
+		// Edge / VirtualWorkload / Placement / MCPServer CRDs moved out of the
+		// hub core into the edges-connectivity + edges-* providers, which install
+		// their own schemas at provider init. The hub no longer bootstraps them.
 		"users.tenants.kedge.faros.sh",
 		"organizations.tenants.kedge.faros.sh",
 		"memberships.tenants.kedge.faros.sh",

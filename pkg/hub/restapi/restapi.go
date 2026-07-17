@@ -96,6 +96,15 @@ type WorkspaceOps interface {
 	// per-workspace kubeconfigs for the download endpoint.
 	GetChildWorkspaceClusterName(ctx context.Context, orgUUID, wsUUID string) (string, error)
 
+	// MCPServer CRUD in the tenant workspace. The in-core reconciler provisions
+	// each server's identity; GetMCPServerToken follows status.tokenSecretRef
+	// (empty string = not provisioned yet).
+	ListMCPServers(ctx context.Context, clusterName string) ([]kcp.MCPServerInfo, error)
+	CreateMCPServer(ctx context.Context, clusterName, name, displayName, instructions string, readOnly bool) error
+	UpdateMCPServer(ctx context.Context, clusterName, name, displayName, instructions string, readOnly bool) error
+	DeleteMCPServer(ctx context.Context, clusterName, name string) error
+	GetMCPServerToken(ctx context.Context, clusterName, name string) (string, error)
+
 	// EnsureProviderAPIBinding creates an APIBinding in the target
 	// child workspace, owned by the hub's kcp-admin identity. Used by
 	// the POST .../providers/{name}/enable handler — see
@@ -271,6 +280,14 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	r.HandleFunc("/{org}/workspaces/{ws}/memberships/{user}", h.deleteWorkspaceMembership).Methods(http.MethodDelete)
 
 	r.HandleFunc("/{org}/workspaces/{ws}/kubeconfig", h.downloadKubeconfig).Methods(http.MethodGet)
+
+	// MCPServer CRUD + per-server connect info for the portal's MCP page.
+	// See mcp.go.
+	r.HandleFunc("/{org}/workspaces/{ws}/mcpservers", h.listMCPServers).Methods(http.MethodGet)
+	r.HandleFunc("/{org}/workspaces/{ws}/mcpservers", h.createMCPServer).Methods(http.MethodPost)
+	r.HandleFunc("/{org}/workspaces/{ws}/mcpservers/{name}", h.updateMCPServer).Methods(http.MethodPatch)
+	r.HandleFunc("/{org}/workspaces/{ws}/mcpservers/{name}", h.deleteMCPServer).Methods(http.MethodDelete)
+	r.HandleFunc("/{org}/workspaces/{ws}/mcpservers/{name}/connect", h.connectMCPServer).Methods(http.MethodGet)
 
 	// Server-side provider enable (creates APIBinding in target ws
 	// via kcp-admin so the kcp user-proxy's defaultCluster pre-check

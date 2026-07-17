@@ -1,0 +1,191 @@
+<script setup lang="ts">
+import { ref, watch, onUnmounted } from 'vue'
+import { ArrowLeft, RefreshCw, Trash2, CircleDot, Server, Boxes, Copy, Check, TerminalSquare } from 'lucide-vue-next'
+import { getEdge, deleteEdge } from './api'
+import type { EdgeDetail, EdgeType, ErrorResponse } from './types'
+
+const props = defineProps<{ name: string; type: EdgeType; cluster: string | null; token: string | null }>()
+const emit = defineEmits<{ back: []; deleted: [] }>()
+
+// SSH terminals dock at the bottom of the host portal (survives page
+// navigation) rather than rendering inline here. The provider is an isolated
+// micro-frontend and can't reach the host's Pinia terminal store directly, so
+// it dispatches a window-scoped "kedge-terminal-open" CustomEvent that the
+// host TerminalDock listens for (see portal/src/components/TerminalDock.vue).
+function openTerminal() {
+  if (!props.cluster) return
+  window.dispatchEvent(
+    new CustomEvent('kedge-terminal-open', {
+      detail: { edgeName: props.name, cluster: props.cluster, displayName: props.name },
+    }),
+  )
+}
+
+const edge = ref<EdgeDetail | null>(null)
+const loading = ref(true)
+const error = ref<string | null>(null)
+const copied = ref<string | null>(null)
+
+async function load() {
+  loading.value = true
+  error.value = null
+  try {
+    edge.value = await getEdge(props.name, props.type)
+  } catch (e) {
+    error.value = (e as ErrorResponse)?.message ?? 'Failed to load edge'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function onDelete() {
+  if (!edge.value) return
+  if (!confirm(`Delete ${props.type === 'server' ? 'server' : 'cluster'} "${props.name}"?`)) return
+  try {
+    await deleteEdge(edge.value)
+    emit('deleted')
+  } catch (e) {
+    error.value = (e as ErrorResponse)?.message ?? 'Delete failed'
+  }
+}
+
+async function copy(text: string, field: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    copied.value = field
+    setTimeout(() => (copied.value = null), 2000)
+  } catch { /* clipboard denied */ }
+}
+
+watch(() => [props.name, props.type], load, { immediate: true })
+const timer = setInterval(load, 10000)
+onUnmounted(() => clearInterval(timer))
+
+function rel(ts?: string): string {
+  if (!ts) return '—'
+  const d = new Date(ts).getTime()
+  if (Number.isNaN(d)) return '—'
+  const secs = Math.max(0, Math.floor((Date.now() - d) / 1000))
+  if (secs < 60) return `${secs}s ago`
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`
+  return `${Math.floor(secs / 86400)}d ago`
+}
+</script>
+
+<template>
+  <div class="edges-app">
+    <header class="edges-header">
+      <div class="row">
+        <button class="icon" title="Back" @click="emit('back')"><ArrowLeft :size="16" /></button>
+        <div>
+          <h1 class="row">
+            <component :is="type === 'server' ? Server : Boxes" :size="16" />
+            {{ name }}
+          </h1>
+          <p>{{ type === 'server' ? 'Linux/SSH server' : 'Kubernetes cluster' }} edge</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="btn" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" /> Refresh</button>
+        <button class="btn danger" @click="onDelete"><Trash2 :size="14" /> Delete</button>
+      </div>
+    </header>
+
+    <div v-if="error" class="banner error">{{ error }}</div>
+    <div v-else-if="loading && !edge" class="muted pad">Loading…</div>
+
+    <template v-else-if="edge">
+      <!-- Overview -->
+      <div class="detail-grid">
+        <div class="field">
+          <span class="lbl">Status</span>
+          <span class="status" :class="edge.connected ? 'ok' : 'down'">
+            <CircleDot :size="12" /> {{ edge.connected ? 'Connected' : (edge.phase || 'Disconnected') }}
+          </span>
+        </div>
+        <div class="field"><span class="lbl">Agent version</span><span class="mono">{{ edge.agentVersion || '—' }}</span></div>
+        <div class="field"><span class="lbl">Hostname</span><span class="mono">{{ edge.hostname || '—' }}</span></div>
+        <div class="field"><span class="lbl">Last heartbeat</span><span>{{ rel(edge.lastHeartbeatTime) }}</span></div>
+        <div class="field"><span class="lbl">Created</span><span>{{ rel(edge.creationTimestamp) }}</span></div>
+        <div class="field"><span class="lbl">Workspace</span><span class="mono">{{ edge.workspacePath || '—' }}</span></div>
+      </div>
+
+      <!-- Labels -->
+      <div v-if="edge.labels && Object.keys(edge.labels).length" class="section">
+        <h3>Labels</h3>
+        <div class="chips">
+          <span v-for="(v, k) in edge.labels" :key="k" class="pill">{{ k }}={{ v }}</span>
+        </div>
+      </div>
+
+      <!-- Join instructions (only while not yet connected + a token is present) -->
+      <div v-if="!edge.connected && edge.joinToken" class="section">
+        <h3>Connect the agent</h3>
+        <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'server' ? 'server' : 'cluster' }}:</p>
+        <div class="snippet">
+          <div class="snippet-head"><span>kedge agent join</span>
+            <button class="copy" @click="copy(`kedge agent join --edge-name ${name} --type ${type} --token ${edge.joinToken}`, 'join')">
+              <component :is="copied === 'join' ? Check : Copy" :size="12" /> {{ copied === 'join' ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+          <pre>kedge agent join --edge-name {{ name }} --type {{ type }} --token {{ edge.joinToken }}</pre>
+        </div>
+      </div>
+
+      <!-- Kubernetes: how to connect to the cluster. -->
+      <div v-if="type === 'kubernetes' && edge.connected" class="section">
+        <h3>Connect to this cluster</h3>
+        <p class="muted">Download a kubeconfig scoped to this edge and use kubectl through the hub tunnel:</p>
+        <div class="snippet">
+          <div class="snippet-head"><span>kubectl</span>
+            <button class="copy" @click="copy(`kedge kubeconfig edge ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube')">
+              <component :is="copied === 'kube' ? Check : Copy" :size="12" /> {{ copied === 'kube' ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+          <pre>kedge kubeconfig edge {{ name }} &gt; {{ name }}.kubeconfig
+kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
+        </div>
+      </div>
+
+      <!-- Server: SSH command + interactive terminal. -->
+      <div v-if="type === 'server' && edge.connected" class="section">
+        <h3>SSH access</h3>
+        <p class="muted">Open an interactive shell in the browser, or SSH from your own terminal:</p>
+        <div class="snippet">
+          <div class="snippet-head"><span>kedge ssh</span>
+            <button class="copy" @click="copy(`kedge ssh ${name}`, 'ssh')">
+              <component :is="copied === 'ssh' ? Check : Copy" :size="12" /> {{ copied === 'ssh' ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+          <pre>kedge ssh {{ name }}</pre>
+        </div>
+        <div class="wiz-actions" style="justify-content: flex-start;">
+          <button class="btn primary" @click="openTerminal">
+            <TerminalSquare :size="14" /> Open terminal
+          </button>
+        </div>
+      </div>
+
+      <!-- Conditions -->
+      <div class="section">
+        <h3>Conditions</h3>
+        <div v-if="edge.conditions.length === 0" class="muted">No conditions reported yet.</div>
+        <div v-else class="edges-table-wrap">
+          <table class="edges-table">
+            <thead><tr><th>Type</th><th>Status</th><th>Reason</th><th>Message</th><th>Updated</th></tr></thead>
+            <tbody>
+              <tr v-for="c in edge.conditions" :key="c.type">
+                <td class="name">{{ c.type }}</td>
+                <td><span class="status" :class="c.status === 'True' ? 'ok' : 'down'">{{ c.status }}</span></td>
+                <td class="muted">{{ c.reason || '—' }}</td>
+                <td class="muted">{{ c.message || '—' }}</td>
+                <td class="muted">{{ rel(c.lastTransitionTime) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+  </div>
+</template>

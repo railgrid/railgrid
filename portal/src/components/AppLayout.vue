@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import { useTenantStore } from '@/stores/tenant'
-import TerminalDock from '@/components/TerminalDock.vue'
+import { setLayoutInsets } from '@/composables/useLayoutInsets'
 import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
 import UserProfileModal from '@/components/UserProfileModal.vue'
 import TenantContextChip from '@/components/TenantContextChip.vue'
 import ThemeSwitch from '@/components/ThemeSwitch.vue'
 import FirstWorkspaceWizard from '@/components/FirstWorkspaceWizard.vue'
-import { Hexagon, LayoutDashboard, LogOut, Zap, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot, Settings, ShieldAlert } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, LogOut, Zap, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot, Settings, ShieldAlert, Plug } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
 import { useAdminStore } from '@/stores/admin'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -72,7 +72,12 @@ const mainStyle = computed(() => {
 
 const slotClass = computed(() => [
   'relative z-10',
-  layoutProps.fullBleed ? 'h-full min-h-0' : '',
+  // Single source of truth for page content width: every non-full-bleed page
+  // renders in the SAME centered max-w-5xl column so the layout doesn't shift
+  // when navigating. Pages must NOT add their own mx-auto/max-w-* wrapper —
+  // that reintroduces per-page width drift. Full-bleed pages (app-studio) opt
+  // out and manage their own width.
+  layoutProps.fullBleed ? 'h-full min-h-0' : 'mx-auto w-full max-w-5xl',
 ])
 
 const now = ref(new Date())
@@ -328,6 +333,18 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
     '--app-inset-bottom': bottom,
   }
 })
+
+// The terminal dock is a persistent singleton mounted at the app root (App.vue),
+// *outside* this component's DOM subtree — so it can't inherit the inset vars from
+// the inline style below. Publish them to a shared reactive singleton the dock
+// reads directly, keeping it clear of the side/bottom nav docks.
+watchEffect(() => {
+  setLayoutInsets({
+    left: layoutInsetsStyle.value['--app-inset-left'],
+    right: layoutInsetsStyle.value['--app-inset-right'],
+    bottom: layoutInsetsStyle.value['--app-inset-bottom'],
+  })
+})
 </script>
 
 <template>
@@ -502,6 +519,17 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         <span>CLI</span>
       </button>
 
+      <!-- MCP Access: a workspace-level preference (connect an AI client to
+           this workspace's tools), so it sits with Settings at the bottom. -->
+      <router-link
+        to="/mcp"
+        class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
+        :class="isActive('/mcp') ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+      >
+        <Plug class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
+        <span>MCP Access</span>
+      </router-link>
+
       <!-- Settings (formerly at the top of the nav). Sits alongside the
            other workspace-level preferences here. -->
       <router-link
@@ -659,6 +687,14 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         <span class="text-[8px] font-semibold uppercase tracking-wider">CLI</span>
       </button>
       <router-link
+        to="/mcp"
+        class="flex h-7 w-7 items-center justify-center rounded-lg transition-all"
+        :class="isActive('/mcp') ? 'text-accent' : 'text-text-muted hover:text-text-secondary'"
+        title="MCP Access"
+      >
+        <Plug class="h-3.5 w-3.5" :stroke-width="2" />
+      </router-link>
+      <router-link
         to="/tenant"
         class="flex h-7 w-7 items-center justify-center rounded-lg transition-all"
         :class="isActive('/tenant') ? 'text-accent' : 'text-text-muted hover:text-text-secondary'"
@@ -812,6 +848,14 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
           {{ auth.clusterName }}
         </span>
         <router-link
+          to="/mcp"
+          class="island-nav flex h-7 w-7 items-center justify-center rounded-lg transition-all duration-200"
+          :class="isActive('/mcp') ? 'text-accent' : 'text-text-muted hover:text-text-secondary'"
+          title="MCP Access"
+        >
+          <Plug class="h-3.5 w-3.5" :stroke-width="2" />
+        </router-link>
+        <router-link
           to="/tenant"
           class="island-nav flex h-7 w-7 items-center justify-center rounded-lg transition-all duration-200"
           :class="isActive('/tenant') ? 'text-accent' : 'text-text-muted hover:text-text-secondary'"
@@ -853,9 +897,6 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
         </button>
       </div>
     </div>
-
-    <!-- Global SSH terminal dock (persists across route changes) -->
-    <TerminalDock />
 
     <!-- CLI quickstart modal -->
     <CliQuickstartModal v-if="showCliModal" @close="showCliModal = false" />

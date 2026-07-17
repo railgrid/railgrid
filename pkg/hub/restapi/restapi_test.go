@@ -264,6 +264,23 @@ func (f *fakeOps) GetChildWorkspaceClusterName(_ context.Context, orgUUID, wsUUI
 	return "fake-" + wsUUID, nil
 }
 
+func (f *fakeOps) ListMCPServers(_ context.Context, _ string) ([]kcp.MCPServerInfo, error) {
+	return []kcp.MCPServerInfo{{Name: "default", Phase: "Ready"}}, nil
+}
+
+func (f *fakeOps) CreateMCPServer(_ context.Context, _, _, _, _ string, _ bool) error { return nil }
+
+func (f *fakeOps) UpdateMCPServer(_ context.Context, _, _, _, _ string, _ bool) error { return nil }
+
+func (f *fakeOps) DeleteMCPServer(_ context.Context, _, _ string) error { return nil }
+
+func (f *fakeOps) GetMCPServerToken(_ context.Context, clusterName, name string) (string, error) {
+	if clusterName == "" || name == "" {
+		return "", nil
+	}
+	return "fake-mcp-token", nil
+}
+
 func (f *fakeOps) EnsureChildWorkspaceAdmin(_ context.Context, orgUUID, wsUUID, rbacIdentity string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

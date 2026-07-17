@@ -1,0 +1,9 @@
+# Provider — declarative provisioning record (admin.kedge.faros.sh, admin-only).
+# The hub's Provider controller creates root:kedge:providers:edges, a "provider"
+# ServiceAccount, and its kubeconfig Secret.
+apiVersion: admin.kedge.faros.sh/v1alpha1
+kind: Provider
+metadata:
+  name: edges
+spec:
+  displayName: "Edges"

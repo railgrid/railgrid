@@ -270,14 +270,14 @@ func SetupClusters(workDir string) env.Func {
 			return ctx, fmt.Errorf("hub did not become healthy after setup: %w", err)
 		}
 
-		// Wait for KCP APIBindings to finish bootstrapping so the edge API is
-		// available. Without this, tests that create resources immediately after
-		// setup can get "server could not find the requested resource".
+		// Wait for KCP APIBindings (tenant/users) to finish bootstrapping.
+		// Without this, tests that hit the tenant REST surface immediately
+		// after setup can get a 500 ("failed to create user").
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
-		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
-			return ctx, fmt.Errorf("edge API did not become available after setup: %w", err)
+		if err := WaitForTenantAPI(apiCtx, client, DefaultHubURL, clusterEnv.Token); err != nil {
+			return ctx, fmt.Errorf("tenant API did not become available after setup: %w", err)
 		}
 
 		return WithClusterEnv(ctx, clusterEnv), nil
@@ -357,12 +357,12 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 			return ctx, fmt.Errorf("dex did not become ready: %w", err)
 		}
 
-		// Wait for edge API via OIDC login — static tokens are not configured
+		// Wait for tenant API via OIDC login — static tokens are not configured
 		// in Dex mode, so we authenticate with the test Dex user instead.
 		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
-		if err := WaitForEdgeAPIWithOIDC(apiCtx, workDir, DefaultHubURL); err != nil {
-			return ctx, fmt.Errorf("edge API did not become available after OIDC setup: %w", err)
+		if err := WaitForTenantAPIWithOIDC(apiCtx, workDir, DefaultHubURL); err != nil {
+			return ctx, fmt.Errorf("tenant API did not become available after OIDC setup: %w", err)
 		}
 
 		ctx = WithClusterEnv(ctx, clusterEnv)
@@ -422,8 +422,8 @@ func UseExistingClusters(workDir string) env.Func {
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer apiCancel()
-		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
-			return ctx, fmt.Errorf("edge API not ready for existing clusters: %w", err)
+		if err := WaitForTenantAPI(apiCtx, client, DefaultHubURL, clusterEnv.Token); err != nil {
+			return ctx, fmt.Errorf("tenant API not ready for existing clusters: %w", err)
 		}
 
 		return WithClusterEnv(ctx, clusterEnv), nil
@@ -612,12 +612,12 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 			return ctx, fmt.Errorf("hub did not become healthy after external kcp setup: %w", err)
 		}
 
-		// Wait for edge API.
+		// Wait for tenant API.
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
-		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
-			return ctx, fmt.Errorf("edge API did not become available after external kcp setup: %w", err)
+		if err := WaitForTenantAPI(apiCtx, client, DefaultHubURL, clusterEnv.Token); err != nil {
+			return ctx, fmt.Errorf("tenant API did not become available after external kcp setup: %w", err)
 		}
 
 		return WithClusterEnv(ctx, clusterEnv), nil
@@ -791,8 +791,8 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
-		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
-			return ctx, fmt.Errorf("edge API did not become available after setup: %w", err)
+		if err := WaitForTenantAPI(apiCtx, client, DefaultHubURL, clusterEnv.Token); err != nil {
+			return ctx, fmt.Errorf("tenant API did not become available after setup: %w", err)
 		}
 
 		return WithClusterEnv(ctx, clusterEnv), nil

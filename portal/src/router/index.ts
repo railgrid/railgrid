@@ -41,6 +41,11 @@ const routes = [
     component: () => import('@/pages/TenantSettingsPage.vue'),
   },
   {
+    path: '/mcp',
+    name: 'mcp',
+    component: () => import('@/pages/MCPPage.vue'),
+  },
+  {
     // Platform-admin area. Gated by an admin-only meta flag: the guard below
     // probes /api/admin/access and redirects non-admins to the dashboard, so
     // the shell (and its admin data fetches) never loads for them. The shell

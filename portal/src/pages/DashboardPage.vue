@@ -4,12 +4,9 @@ import { storeToRefs } from 'pinia'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import DashboardTile from '@/components/DashboardTile.vue'
-import FirstEdgeWizard from '@/components/FirstEdgeWizard.vue'
 import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useDashboardLayoutStore, GRID_COLS } from '@/stores/dashboardLayout'
-import { useGraphQLQuery } from '@/composables/useGraphQL'
-import { LIST_EDGES, type ListEdgesResult } from '@/graphql/queries/edges'
 import { Puzzle, Plus, RotateCcw, Check, LayoutGrid } from 'lucide-vue-next'
 
 // The dashboard iterates the catalog and mounts one <DashboardTile> per
@@ -25,18 +22,13 @@ import { Puzzle, Plus, RotateCcw, Check, LayoutGrid } from 'lucide-vue-next'
 // remembered layout against the live provider set on every change, so
 // the per-workspace enablement gate below stays authoritative.
 //
-// LIST_EDGES is still kept here for one job: deciding whether to show
-// FirstEdgeWizard on initial load. That's tenant-level onboarding (no
-// edges of any kind connected yet) and lives at the dashboard level
-// rather than inside any one provider's tile.
+// The dashboard is edge-agnostic: edge onboarding (the wizard) now lives in the
+// edges provider's own portal, shown there when the workspace has no edges yet.
 
 const providers = useProvidersStore()
 const tenant = useTenantStore()
 const dash = useDashboardLayoutStore()
 const { layout, addable } = storeToRefs(dash)
-
-const { data: edgesData, loading: edgesLoading, error: edgesError, refetch: refetchEdges } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
-const edges = computed(() => edgesData.value?.kedge_faros_sh?.v1alpha1?.Edges?.items ?? [])
 
 onMounted(() => {
   if (!providers.loaded) providers.load()
@@ -97,41 +89,13 @@ function onLayoutUpdated() {
   if (persistTimer) clearTimeout(persistTimer)
   persistTimer = setTimeout(() => dash.persist(), 300)
 }
-
-// Latch the wizard on first load. Once open it stays open until the
-// wizard itself completes, even if LIST_EDGES updates underneath.
-const wizardOpen = ref<boolean | null>(null)
-watch(
-  [edgesLoading, edgesError, edges],
-  () => {
-    if (wizardOpen.value !== null) return
-    if (edgesLoading.value) return
-    if (edgesError.value) return
-    wizardOpen.value = edges.value.length === 0
-  },
-  { immediate: true },
-)
-const showWizard = computed(() => wizardOpen.value === true)
-
-function onWizardConnected() {
-  wizardOpen.value = false
-  refetchEdges()
-}
 </script>
 
 <template>
   <AppLayout>
-    <div v-if="edgesError" class="flex items-center gap-2 rounded-xl border border-danger/20 bg-danger-subtle p-4 text-[13px] text-danger">
-      {{ edgesError }}
-    </div>
-
-    <div v-else-if="(edgesLoading && !edgesData) || providers.loading" class="mt-20 flex flex-col items-center justify-center">
+    <div v-if="providers.loading" class="mt-20 flex flex-col items-center justify-center">
       <div class="shimmer h-8 w-8 rounded-xl" />
       <div class="shimmer mt-4 h-3 w-40 rounded" />
-    </div>
-
-    <div v-else-if="showWizard" class="py-8">
-      <FirstEdgeWizard @connected="onWizardConnected" />
     </div>
 
     <template v-else>
@@ -141,7 +105,7 @@ function onWizardConnected() {
           <div class="font-medium text-text-secondary">No providers enabled in this workspace</div>
           <div class="mt-1 text-xs">
             Enable a provider from the <router-link to="/providers" class="text-accent hover:text-accent-hover">catalog</router-link> to see a dashboard summary.
-            Built-in providers (Kubernetes, Linux, MCP) appear here automatically; third-party providers need a per-workspace Enable.
+            Each provider is enabled per workspace.
           </div>
         </div>
       </div>

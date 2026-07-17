@@ -51,6 +51,13 @@ providers/app-studio/portal/dist/*
 !providers/app-studio/portal/dist/.gitkeep
 providers/quickstart/portal/dist/
 providers/infrastructure/portal/dist/
+# Compiled provider binary (go build . into the provider dir); build via
+# `make build-edges-provider` writes to bin/ instead.
+providers/edges/edges-provider
+providers/edges/provider-edges
+# Provider portal build artifacts (Docker/CI rebuild them).
+providers/edges/portal/dist/
+providers/edges/portal/node_modules/
 providers/code/portal/dist/
 providers/kuery/portal/dist/
 providers/sandbox/portal/dist/*

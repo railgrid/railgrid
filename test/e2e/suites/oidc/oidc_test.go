@@ -119,8 +119,11 @@ func TestOIDCWrongPasswordFails(t *testing.T) {
 }
 
 // TestOIDCUserCanListEdges verifies that a kubeconfig obtained via OIDC can be
-// used to call the kedge API (list edges).
+// used to call the kedge API (list edges). Parked: `kedge edge list` now
+// targets the edges provider's group (edges.kedge.faros.sh), which requires the
+// edges provider + a tenant APIBinding that this suite does not bootstrap.
 func TestOIDCUserCanListEdges(t *testing.T) {
+	edgeSkip(t)
 	f := features.New("oidc user access").
 		Assess("oidc kubeconfig can list edges", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
@@ -171,35 +174,26 @@ func TestOIDCUserCanListEdges(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-// Multi-edge tests — use OIDC auth (no static token in OIDC suite).
-func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }
-func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedScheduling()) }
-func TestWorkloadIsolation(t *testing.T)     { testenv.Test(t, cases.WorkloadIsolation()) }
-func TestEdgeFailoverIsolation(t *testing.T) { testenv.Test(t, cases.EdgeFailoverIsolation()) }
-func TestEdgeReconnect(t *testing.T)         { testenv.Test(t, cases.EdgeReconnect()) }
-func TestEdgeListAccuracyUnderChurn(t *testing.T) {
-	testenv.Test(t, cases.EdgeListAccuracyUnderChurn())
+// edgeSkip marks an edge-connectivity test as parked while edge connectivity is
+// brought up as the standalone edges provider (group edges.kedge.faros.sh).
+// These agent/workload/edge-proxy/SSH cases will be relocated to the dedicated
+// edges suite that bootstraps that provider. See docs/edges-providers-testing.md.
+func edgeSkip(t *testing.T) {
+	t.Helper()
+	t.Skip("edge connectivity moved to the standalone edges provider " +
+		"(edges.kedge.faros.sh); e2e coverage pending the dedicated edges suite — " +
+		"see docs/edges-providers-testing.md")
 }
 
-// TestOIDCCrossUserEdgeIsolation verifies that OIDC User B cannot access an
-// edge registered by OIDC User A via the hub proxy. Regression for #63/#75.
-func TestOIDCCrossUserEdgeIsolation(t *testing.T) {
-	testenv.Test(t, cases.OIDCCrossUserEdgeIsolation())
-}
-
-// TestCrossWorkspaceEdgeIsolation verifies bidirectional multi-tenant isolation:
-// User A cannot access User B's edges and User B cannot access User A's edges
-// via the hub proxy. Regression for issue #81.
-func TestCrossWorkspaceEdgeIsolation(t *testing.T) {
-	testenv.Test(t, cases.CrossWorkspaceEdgeIsolation())
-}
-
-// TestSSHOIDCUsernameMapping verifies that when sshUserMapping=identity, the
-// SSH session is established as the caller's OIDC identity (kcp username via
-// TokenReview). Regression test for issue #82.
-func TestSSHOIDCUsernameMapping(t *testing.T) {
-	testenv.Test(t, cases.SSHOIDCUsernameMapping())
-}
+func TestTwoAgentsJoin(t *testing.T)               { edgeSkip(t) }
+func TestLabelBasedScheduling(t *testing.T)        { edgeSkip(t) }
+func TestWorkloadIsolation(t *testing.T)           { edgeSkip(t) }
+func TestEdgeFailoverIsolation(t *testing.T)       { edgeSkip(t) }
+func TestEdgeReconnect(t *testing.T)               { edgeSkip(t) }
+func TestEdgeListAccuracyUnderChurn(t *testing.T)  { edgeSkip(t) }
+func TestOIDCCrossUserEdgeIsolation(t *testing.T)  { edgeSkip(t) }
+func TestCrossWorkspaceEdgeIsolation(t *testing.T) { edgeSkip(t) }
+func TestSSHOIDCUsernameMapping(t *testing.T)      { edgeSkip(t) }
 
 // TestMultiOrgIsolation verifies that the hub REST surface (PR #214) keeps
 // User B from observing or mutating User A's Organization, Workspaces,

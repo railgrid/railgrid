@@ -23,7 +23,6 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/informers"
-	"k8s.io/client-go/tools/cache"
 )
 
 const (
@@ -56,15 +55,9 @@ func (f *InformerFactory) ForResource(gvr schema.GroupVersionResource) informers
 	return f.factory.ForResource(gvr)
 }
 
-// VirtualWorkloads returns the informer for VirtualWorkload resources.
-func (f *InformerFactory) VirtualWorkloads() cache.SharedIndexInformer {
-	return f.factory.ForResource(VirtualWorkloadGVR).Informer()
-}
-
-// Placements returns the informer for Placement resources.
-func (f *InformerFactory) Placements() cache.SharedIndexInformer {
-	return f.factory.ForResource(PlacementGVR).Informer()
-}
+// NOTE: the Workloads / Placements informers were removed with the edge
+// API extraction (their only consumers were the deleted scheduler/status
+// controllers). Use ForResource with the provider's GVR if needed.
 
 // Start starts all informers.
 func (f *InformerFactory) Start(stopCh <-chan struct{}) {

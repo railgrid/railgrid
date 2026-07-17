@@ -248,20 +248,34 @@ func (h *Handler) undeleteOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orgUUID := mux.Vars(r)["org"]
-	org, err := h.mgr.client.Organizations().Get(r.Context(), orgUUID, metav1.GetOptions{})
-	if err != nil {
-		writeError(w, err)
-		return
+
+	// The softdelete controller reconciles the org's status concurrently, so a
+	// naive get-then-update races it. Re-read and retry on conflict (same
+	// bounded-loop convention as the UMI updater in restapi.go).
+	const maxAttempts = 5
+	var updated *tenancyv1alpha1.Organization
+	var err error
+	for range maxAttempts {
+		var org *tenancyv1alpha1.Organization
+		org, err = h.mgr.client.Organizations().Get(r.Context(), orgUUID, metav1.GetOptions{})
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if org.Status.DeletionRequestedAt == nil {
+			writeJSON(w, http.StatusOK, projectOrg(org))
+			return
+		}
+		org.Status.DeletionRequestedAt = nil
+		updated, err = h.mgr.client.Organizations().UpdateStatus(r.Context(), org, metav1.UpdateOptions{})
+		if err == nil {
+			writeJSON(w, http.StatusOK, projectOrg(updated))
+			return
+		}
+		if !apierrors.IsConflict(err) {
+			writeError(w, err)
+			return
+		}
 	}
-	if org.Status.DeletionRequestedAt == nil {
-		writeJSON(w, http.StatusOK, projectOrg(org))
-		return
-	}
-	org.Status.DeletionRequestedAt = nil
-	updated, err := h.mgr.client.Organizations().UpdateStatus(r.Context(), org, metav1.UpdateOptions{})
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, projectOrg(updated))
+	writeError(w, err)
 }

@@ -1,0 +1,154 @@
+/*
+ * edges provider element styles. Imported as a string by main.ts and injected
+ * as one <style> tag in the host document. The element renders in LIGHT DOM so
+ * the portal's CSS custom properties cascade in; every selector is namespaced
+ * under kedge-provider-edges so these styles cannot leak into the portal.
+ *
+ * STYLING CONTRACT — keep this in lock-step with the host portal:
+ *   - Colour ONLY through the portal's semantic tokens: var(--color-surface*),
+ *     var(--color-border-*), var(--color-accent*), var(--color-text-*),
+ *     var(--color-success|warning|danger*). NEVER hardcode hex values — raw
+ *     colours don't adapt to the light/dark theme and drift from the portal.
+ *   - For an accent/state-tinted border or fill, mix a token with transparent
+ *     via color-mix() (mirrors the portal's `border-accent/30` utilities).
+ *   - Match the portal component recipes below: buttons = rounded-lg (8px),
+ *     cards/tables = rounded-2xl (16px) surface-raised card, table headers =
+ *     10px/600 uppercase tracking-wide text-muted, rows = 13px text-secondary
+ *     with an accent-tinted hover. See portal/src/components/ResourceTable.vue,
+ *     StatusBadge.vue and portal/src/assets/main.css for the source of truth.
+ */
+
+kedge-provider-edges {
+  display: block;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: var(--color-text-primary);
+}
+
+kedge-provider-edges .edges-app { padding: 8px 0; font-size: 13px; }
+
+/* ── Header ── */
+kedge-provider-edges .edges-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+kedge-provider-edges .edges-header h1 { font-size: 18px; font-weight: 600; margin: 0; color: var(--color-text-primary); }
+kedge-provider-edges .edges-header p { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 12px; }
+kedge-provider-edges .header-actions { display: flex; gap: 8px; }
+
+/* ── Buttons ── */
+kedge-provider-edges .btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border: 1px solid var(--color-border-default); border-radius: 8px;
+  background: var(--color-surface-overlay); color: var(--color-text-primary);
+  font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: border-color .15s, background .15s, opacity .15s;
+}
+kedge-provider-edges .btn:hover { border-color: color-mix(in srgb, var(--color-accent) 30%, transparent); background: var(--color-surface-hover); }
+kedge-provider-edges .btn:disabled { opacity: .4; cursor: default; }
+kedge-provider-edges .btn:disabled:hover { border-color: var(--color-border-default); background: var(--color-surface-overlay); }
+kedge-provider-edges .btn.primary { background: var(--color-accent); border-color: transparent; color: #fff; }
+kedge-provider-edges .btn.primary:hover { background: var(--color-accent); opacity: .9; }
+kedge-provider-edges .btn.danger:hover { border-color: color-mix(in srgb, var(--color-danger) 30%, transparent); background: var(--color-danger-subtle); color: var(--color-danger); }
+
+/* ── Icon buttons ── */
+kedge-provider-edges .icon { display: inline-flex; align-items: center; justify-content: center; background: none; border: none; color: var(--color-text-muted); cursor: pointer; padding: 5px; border-radius: 8px; transition: color .15s, background .15s; }
+kedge-provider-edges .icon:hover { color: var(--color-text-primary); background: var(--color-surface-hover); }
+kedge-provider-edges .icon.danger:hover { color: var(--color-danger); background: var(--color-danger-subtle); }
+
+/* ── Inputs & labels ── */
+kedge-provider-edges .input {
+  width: 100%; box-sizing: border-box; padding: 8px 12px;
+  border: 1px solid var(--color-border-default); border-radius: 8px;
+  background: var(--color-surface-overlay); color: var(--color-text-primary);
+  font-family: ui-monospace, monospace; font-size: 12px; transition: border-color .15s;
+}
+kedge-provider-edges .input:focus { outline: none; border-color: var(--color-accent); }
+kedge-provider-edges .input::placeholder { color: var(--color-text-muted); }
+kedge-provider-edges .lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .15em; color: var(--color-text-muted); }
+/* Labelled form field: label stacked above its control with a small gap. */
+kedge-provider-edges .fld { display: flex; flex-direction: column; gap: 5px; }
+kedge-provider-edges select.input { appearance: none; -webkit-appearance: none; cursor: pointer; }
+
+/* ── Cards ── */
+kedge-provider-edges .wiz-card { border: 1px solid var(--color-border-subtle); background: var(--color-surface-raised); border-radius: 16px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+kedge-provider-edges .wiz-card.center { align-items: center; text-align: center; }
+kedge-provider-edges .wiz-card h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
+
+/* ── Wizard ── */
+kedge-provider-edges .wiz { max-width: 720px; margin: 0 auto; }
+kedge-provider-edges .wiz-hero h1 { font-size: 18px; font-weight: 600; margin: 0; color: var(--color-text-primary); }
+kedge-provider-edges .wiz-hero p { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 12px; }
+kedge-provider-edges .wiz-steps { display: flex; gap: 14px; margin: 16px 0; }
+kedge-provider-edges .wiz-step { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--color-text-muted); }
+kedge-provider-edges .wiz-step.active { color: var(--color-text-primary); }
+kedge-provider-edges .wiz-step.done { color: var(--color-success); }
+kedge-provider-edges .wiz-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+/* ── Type picker (radio cards) ── */
+kedge-provider-edges .types { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+kedge-provider-edges .type { display: flex; align-items: center; gap: 8px; padding: 12px; border: 1px solid var(--color-border-subtle); border-radius: 10px; background: var(--color-surface-overlay); color: var(--color-text-primary); cursor: pointer; text-align: left; transition: border-color .15s, background .15s; }
+kedge-provider-edges .type:hover { border-color: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+kedge-provider-edges .type.sel { border-color: var(--color-accent); background: var(--color-accent-subtle); }
+kedge-provider-edges .type b { display: block; font-size: 12px; font-weight: 600; }
+kedge-provider-edges .type small { color: var(--color-text-secondary); font-size: 10px; }
+
+/* ── Code snippets ── */
+kedge-provider-edges .snippet { border: 1px solid var(--color-border-subtle); border-radius: 12px; padding: 12px; background: var(--color-surface-raised); }
+kedge-provider-edges .snippet-head { display: flex; justify-content: space-between; align-items: center; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--color-text-muted); margin-bottom: 8px; }
+kedge-provider-edges .snippet pre { margin: 0; overflow-x: auto; background: var(--color-surface-overlay); border-radius: 8px; padding: 12px; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.6; color: var(--color-text-secondary); }
+kedge-provider-edges .copy { display: inline-flex; align-items: center; gap: 4px; background: none; border: none; color: var(--color-text-muted); cursor: pointer; font-size: 10px; font-weight: 500; }
+kedge-provider-edges .copy:hover { color: var(--color-accent); }
+kedge-provider-edges .copy:disabled { opacity: .4; cursor: default; }
+
+/* ── Banners / callouts ── */
+kedge-provider-edges .waiting { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent); background: var(--color-accent-subtle); border-radius: 10px; color: var(--color-text-secondary); }
+kedge-provider-edges .banner.warn { border: 1px solid color-mix(in srgb, var(--color-warning) 30%, transparent); background: var(--color-warning-subtle); color: var(--color-warning); padding: 10px 12px; border-radius: 10px; font-size: 12px; }
+kedge-provider-edges .banner.error { border: 1px solid color-mix(in srgb, var(--color-danger) 30%, transparent); background: var(--color-danger-subtle); color: var(--color-danger); padding: 10px 12px; border-radius: 10px; margin-bottom: 14px; font-size: 12px; }
+
+/* ── Misc text ── */
+kedge-provider-edges .row { display: flex; align-items: center; gap: 8px; }
+kedge-provider-edges .mono { font-family: ui-monospace, monospace; }
+kedge-provider-edges .muted { color: var(--color-text-secondary); }
+kedge-provider-edges .spin { animation: kedge-edges-spin 1s linear infinite; }
+@keyframes kedge-edges-spin { to { transform: rotate(360deg); } }
+
+/* ── Empty / loading states ── */
+kedge-provider-edges .pad { padding: 20px 0; }
+kedge-provider-edges .empty { text-align: center; padding: 56px 0; color: var(--color-text-secondary); }
+kedge-provider-edges .empty svg { color: var(--color-text-muted); opacity: .5; }
+kedge-provider-edges .empty-title { margin-top: 12px; font-weight: 600; color: var(--color-text-primary); }
+kedge-provider-edges .empty code { font-family: ui-monospace, monospace; font-size: 12px; color: var(--color-text-primary); background: var(--color-surface-overlay); padding: 1px 5px; border-radius: 4px; }
+
+/* ── Table (mirrors portal ResourceTable card) ── */
+kedge-provider-edges .edges-table-wrap { overflow: hidden; border: 1px solid var(--color-border-subtle); border-radius: 16px; background: var(--color-surface-raised); }
+kedge-provider-edges .edges-table { width: 100%; border-collapse: collapse; }
+kedge-provider-edges .edges-table th { text-align: left; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .15em; color: var(--color-text-muted); padding: 12px 20px; border-bottom: 1px solid var(--color-border-subtle); }
+kedge-provider-edges .edges-table td { padding: 12px 20px; border-bottom: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); font-size: 13px; }
+kedge-provider-edges .edges-table tbody tr:last-child td { border-bottom: none; }
+kedge-provider-edges .edges-table tr.clickable { cursor: pointer; transition: background .12s; }
+kedge-provider-edges .edges-table tr.clickable:hover td { background: color-mix(in srgb, var(--color-accent) 4%, transparent); color: var(--color-text-primary); }
+kedge-provider-edges .name { font-weight: 500; color: var(--color-text-primary); }
+kedge-provider-edges .actions { text-align: right; }
+
+/* ── Pills & status badges (mirror portal StatusBadge tones) ── */
+kedge-provider-edges .pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; background: var(--color-surface-overlay); border: 1px solid var(--color-border-default); color: var(--color-text-secondary); font-size: 11px; font-weight: 500; }
+kedge-provider-edges .status { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+kedge-provider-edges .status.ok { background: var(--color-success-subtle); color: var(--color-success); }
+kedge-provider-edges .status.down { background: var(--color-warning-subtle); color: var(--color-warning); }
+
+/* ── Detail view ── */
+kedge-provider-edges .detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 8px; }
+kedge-provider-edges .field { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--color-border-subtle); border-radius: 12px; background: var(--color-surface-raised); }
+kedge-provider-edges .field .lbl { margin-bottom: 2px; }
+kedge-provider-edges .field > span:not(.lbl):not(.status) { font-size: 13px; color: var(--color-text-primary); }
+kedge-provider-edges .section { margin-top: 24px; }
+kedge-provider-edges .section h3 { margin: 0 0 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--color-text-muted); }
+kedge-provider-edges .section > p.muted { margin: 0 0 10px; font-size: 12px; }
+kedge-provider-edges .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+
+/* Expanded Workloads row: per-edge status as a flat list (no table-in-table). */
+kedge-provider-edges tr.detail-row td { background: var(--color-surface-overlay); padding: 12px 20px; }
+kedge-provider-edges .es-head { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--color-text-muted); margin-bottom: 8px; }
+kedge-provider-edges .es-list { display: flex; flex-direction: column; gap: 6px; }
+kedge-provider-edges .es-item { display: flex; align-items: center; gap: 12px; font-size: 12px; }
+kedge-provider-edges .es-name { font-weight: 500; color: var(--color-text-primary); min-width: 160px; }
+kedge-provider-edges .es-ready { color: var(--color-text-secondary); }
+kedge-provider-edges .es-msg { flex: 1; }

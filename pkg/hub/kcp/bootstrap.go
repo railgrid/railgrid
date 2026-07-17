@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
@@ -41,6 +42,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
 	"github.com/faroshq/faros-kedge/pkg/kcppaths"
 	"github.com/faroshq/faros-kedge/pkg/util/confighelpers"
+	"github.com/faroshq/faros-kedge/pkg/util/identity"
 )
 
 // kcp resource GVRs.
@@ -53,12 +55,6 @@ var (
 	}
 	apiBindingGVR = schema.GroupVersionResource{
 		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings",
-	}
-	// KubernetesMCP + LinuxMCP per-kind CRDs were removed in favor of
-	// the MCPServer aggregate. Their GVRs and per-tenant default-
-	// creation helpers used to live here.
-	mcpServerGVR = schema.GroupVersionResource{
-		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "mcpservers",
 	}
 	membershipGVR = schema.GroupVersionResource{
 		Group: "tenants.kedge.faros.sh", Version: "v1alpha1", Resource: "memberships",
@@ -990,49 +986,220 @@ func (b *Bootstrapper) ListOrgMemberships(ctx context.Context, orgUUID string) (
 	return names, nil
 }
 
-// EnsureDefaultMCPServer creates the "default" MCPServer (the aggregate
-// kube + linux endpoint) in the tenant workspace identified by
-// clusterName if it doesn't already exist. Idempotent — safe to call
-// on every login. Sister per-kind ensures (KubernetesMCP, LinuxMCP)
-// were removed in the MCP collapse refactor; this is now the only
-// per-tenant MCP CR.
-func (b *Bootstrapper) EnsureDefaultMCPServer(ctx context.Context, clusterName string) error {
-	return b.ensureDefaultMCP(ctx, clusterName, mcpServerGVR, "MCPServer")
+// mcpServerGVR is the tenant-workspace MCPServer resource (distributed via the
+// core.faros.sh APIExport). The in-core reconciler
+// (pkg/hub/controllers/mcpserver) provisions each server's identity.
+var mcpServerGVR = schema.GroupVersionResource{Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "mcpservers"}
+
+// MCPServerInfo is a portal-facing view of an MCPServer CR.
+type MCPServerInfo struct {
+	Name         string `json:"name"`
+	DisplayName  string `json:"displayName,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
+	ReadOnly     bool   `json:"readOnly,omitempty"`
+	Phase        string `json:"phase,omitempty"`
+	URL          string `json:"url,omitempty"`
+	// FederatedProviders is the live tool inventory the reconciler stamped on
+	// status.federatedProviders — which providers this server federates and the
+	// tools each advertises to it.
+	FederatedProviders []MCPFederatedProviderInfo `json:"federatedProviders,omitempty"`
+	// ToolsRefreshedTime is when the inventory above was last recomputed (RFC3339).
+	ToolsRefreshedTime string `json:"toolsRefreshedTime,omitempty"`
 }
 
-// ensureDefaultMCP is the shared get-or-create helper. An empty spec
-// means an empty edgeSelector, which matches all connected edges.
-func (b *Bootstrapper) ensureDefaultMCP(ctx context.Context, clusterName string, gvr schema.GroupVersionResource, kind string) error {
+// MCPFederatedProviderInfo mirrors kedgev1alpha1.FederatedMCPProvider for the portal.
+type MCPFederatedProviderInfo struct {
+	Name        string                 `json:"name"`
+	DisplayName string                 `json:"displayName,omitempty"`
+	Reachable   bool                   `json:"reachable"`
+	Message     string                 `json:"message,omitempty"`
+	Tools       []MCPFederatedToolInfo `json:"tools,omitempty"`
+}
+
+// MCPFederatedToolInfo mirrors kedgev1alpha1.FederatedMCPTool for the portal.
+type MCPFederatedToolInfo struct {
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// EnsureDefaultMCPServer creates a "default" MCPServer CR in the tenant
+// workspace if absent, so every tenant has one ready-to-use endpoint. The
+// in-core reconciler provisions its identity. Idempotent.
+func (b *Bootstrapper) EnsureDefaultMCPServer(ctx context.Context, clusterName string) error {
 	if clusterName == "" {
 		return nil
 	}
-	tenantConfig := configForPath(b.config, clusterName)
-	tenantClient, err := dynamic.NewForConfig(tenantConfig)
-	if err != nil {
-		return fmt.Errorf("creating tenant client for %s: %w", clusterName, err)
-	}
-	return createDefaultMCPObject(ctx, tenantClient, gvr, kind)
-}
-
-// createDefaultMCPObject creates a "default" object of the given MCP kind in
-// the given tenant workspace.  Empty spec = empty edgeSelector = match all
-// connected edges of that kind's edge type.  Returns nil on AlreadyExists.
-func createDefaultMCPObject(ctx context.Context, tenantClient dynamic.Interface, gvr schema.GroupVersionResource, kind string) error {
-	obj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "kedge.faros.sh/v1alpha1",
-			"kind":       kind,
-			"metadata": map[string]interface{}{
-				"name": "default",
-			},
-			"spec": map[string]interface{}{},
-		},
-	}
-	_, err := tenantClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
+	if err := b.CreateMCPServer(ctx, clusterName, "default", "Default", "", false); err != nil && !errors.IsAlreadyExists(err) {
 		return err
 	}
 	return nil
+}
+
+func (b *Bootstrapper) mcpClient(clusterName string) (dynamic.ResourceInterface, error) {
+	dc, err := dynamic.NewForConfig(configForPath(b.config, clusterName))
+	if err != nil {
+		return nil, fmt.Errorf("creating tenant client for %s: %w", clusterName, err)
+	}
+	return dc.Resource(mcpServerGVR), nil
+}
+
+func mcpInfoFrom(obj *unstructured.Unstructured) MCPServerInfo {
+	displayName, _, _ := unstructured.NestedString(obj.Object, "spec", "displayName")
+	instructions, _, _ := unstructured.NestedString(obj.Object, "spec", "instructions")
+	readOnly, _, _ := unstructured.NestedBool(obj.Object, "spec", "readOnly")
+	phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
+	url, _, _ := unstructured.NestedString(obj.Object, "status", "URL")
+	refreshed, _, _ := unstructured.NestedString(obj.Object, "status", "toolsRefreshedTime")
+	return MCPServerInfo{
+		Name:               obj.GetName(),
+		DisplayName:        displayName,
+		Instructions:       instructions,
+		ReadOnly:           readOnly,
+		Phase:              phase,
+		URL:                url,
+		FederatedProviders: mcpFederatedProvidersFrom(obj.Object),
+		ToolsRefreshedTime: refreshed,
+	}
+}
+
+// mcpFederatedProvidersFrom projects status.federatedProviders (an unstructured
+// slice stamped by the reconciler) into the portal view type.
+func mcpFederatedProvidersFrom(obj map[string]interface{}) []MCPFederatedProviderInfo {
+	raw, found, err := unstructured.NestedSlice(obj, "status", "federatedProviders")
+	if !found || err != nil {
+		return nil
+	}
+	out := make([]MCPFederatedProviderInfo, 0, len(raw))
+	for _, item := range raw {
+		p, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _, _ := unstructured.NestedString(p, "name")
+		display, _, _ := unstructured.NestedString(p, "displayName")
+		reachable, _, _ := unstructured.NestedBool(p, "reachable")
+		message, _, _ := unstructured.NestedString(p, "message")
+		info := MCPFederatedProviderInfo{Name: name, DisplayName: display, Reachable: reachable, Message: message}
+		if toolsRaw, found, _ := unstructured.NestedSlice(p, "tools"); found {
+			for _, t := range toolsRaw {
+				tm, ok := t.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				tn, _, _ := unstructured.NestedString(tm, "name")
+				tt, _, _ := unstructured.NestedString(tm, "title")
+				td, _, _ := unstructured.NestedString(tm, "description")
+				info.Tools = append(info.Tools, MCPFederatedToolInfo{Name: tn, Title: tt, Description: td})
+			}
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
+// ListMCPServers returns every MCPServer in the tenant workspace.
+func (b *Bootstrapper) ListMCPServers(ctx context.Context, clusterName string) ([]MCPServerInfo, error) {
+	res, err := b.mcpClient(clusterName)
+	if err != nil {
+		return nil, err
+	}
+	list, err := res.List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MCPServerInfo, 0, len(list.Items))
+	for i := range list.Items {
+		out = append(out, mcpInfoFrom(&list.Items[i]))
+	}
+	return out, nil
+}
+
+// CreateMCPServer creates an MCPServer CR. The reconciler provisions identity.
+func (b *Bootstrapper) CreateMCPServer(ctx context.Context, clusterName, name, displayName, instructions string, readOnly bool) error {
+	res, err := b.mcpClient(clusterName)
+	if err != nil {
+		return err
+	}
+	obj := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "kedge.faros.sh/v1alpha1",
+		"kind":       "MCPServer",
+		"metadata":   map[string]interface{}{"name": name},
+		"spec": map[string]interface{}{
+			"displayName":  displayName,
+			"instructions": instructions,
+			"readOnly":     readOnly,
+		},
+	}}
+	_, err = res.Create(ctx, obj, metav1.CreateOptions{})
+	return err
+}
+
+// UpdateMCPServer patches an MCPServer's spec fields.
+func (b *Bootstrapper) UpdateMCPServer(ctx context.Context, clusterName, name, displayName, instructions string, readOnly bool) error {
+	res, err := b.mcpClient(clusterName)
+	if err != nil {
+		return err
+	}
+	obj, err := res.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	_ = unstructured.SetNestedField(obj.Object, displayName, "spec", "displayName")
+	_ = unstructured.SetNestedField(obj.Object, instructions, "spec", "instructions")
+	_ = unstructured.SetNestedField(obj.Object, readOnly, "spec", "readOnly")
+	_, err = res.Update(ctx, obj, metav1.UpdateOptions{})
+	return err
+}
+
+// DeleteMCPServer removes an MCPServer; its identity objects GC via owner refs.
+func (b *Bootstrapper) DeleteMCPServer(ctx context.Context, clusterName, name string) error {
+	res, err := b.mcpClient(clusterName)
+	if err != nil {
+		return err
+	}
+	return res.Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+// GetMCPServerToken reads the long-lived token for a named MCPServer by
+// following status.tokenSecretRef. Returns "" (not an error) when the server or
+// token is not provisioned yet, so the UI can show a "provisioning" state.
+func (b *Bootstrapper) GetMCPServerToken(ctx context.Context, clusterName, name string) (string, error) {
+	if clusterName == "" || name == "" {
+		return "", nil
+	}
+	res, err := b.mcpClient(clusterName)
+	if err != nil {
+		return "", err
+	}
+	obj, err := res.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	ref, found, _ := unstructured.NestedMap(obj.Object, "status", "tokenSecretRef")
+	if !found {
+		return "", nil
+	}
+	secretName, _ := ref["name"].(string)
+	secretNS, _ := ref["namespace"].(string)
+	if secretName == "" || secretNS == "" {
+		return "", nil
+	}
+	kube, err := kubernetes.NewForConfig(configForPath(b.config, clusterName))
+	if err != nil {
+		return "", fmt.Errorf("creating tenant kube client for %s: %w", clusterName, err)
+	}
+	secret, err := kube.CoreV1().Secrets(secretNS).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("reading MCP token Secret %s/%s: %w", secretNS, secretName, err)
+	}
+	return string(secret.Data["token"]), nil
 }
 
 // catalogEntryGVR is the resource the bootstrap writes when materializing
@@ -1565,12 +1732,13 @@ func edgeProxyGrantName(providerName string) string {
 }
 
 // EnsureProviderEdgeProxyGrant grants `subject` (the provider SA's
-// cluster-qualified identity — see pkg/util/identity) the "proxy" verb on
-// edges.kedge.faros.sh in the child workspace root:kedge:tenants:{orgUUID}:
-// {wsUUID}. The edges-proxy virtual workspace SAR-checks exactly this tuple
-// (pkg/virtual/builder/edges_proxy_builder.go), so the grant is what lets a
-// provider with CatalogEntry spec.edgeProxyAccess open background
-// connections to the tenant's edges. Idempotent; subjects are reconciled on
+// cluster-qualified identity — see pkg/util/identity) the "proxy" verb on the
+// edges provider's group (edges.kedge.faros.sh, resources kubernetesclusters +
+// linuxservers) in the child workspace root:kedge:tenants:{orgUUID}:{wsUUID}.
+// The edges provider's tunnel edgeproxy handler SAR-checks exactly this tuple
+// (provider-sdk/tunnel/auth.go), so the grant is what lets a provider with
+// CatalogEntry spec.edgeProxyAccess open background connections to the tenant's
+// edges. Idempotent; subjects are reconciled on
 // re-Enable so a provider workspace re-provision (new cluster ID → new
 // qualified subject) heals on the next Enable.
 func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) error {
@@ -1599,23 +1767,115 @@ func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID
 				"nonResourceURLs": []any{"/"},
 				"verbs":           []any{"access"},
 			},
+			// The edge plane is the single `edges` provider owning both kinds
+			// under one group edges.kedge.faros.sh. Using its OWN SA it reads +
+			// writes the edge CR DIRECTLY in the tenant workspace
+			// (kcpurl.ClusterURL, not the APIExport VW):
+			//   - get/list/watch on the kinds: validate the agent's bootstrap
+			//     join token against status.joinToken (else the tunnel is
+			//     rejected "invalid join token") + read SSH creds for edgeproxy.
+			//   - update/patch on the /status subresource: markEdgeConnected
+			//     flips status.connected/phase and clears status.joinToken when
+			//     the agent tunnel comes up (else the edge stays AwaitingAgent /
+			//     connected=false forever).
+			//   - proxy on the kinds: the SDK tunnel's edgeproxy consumer SAR.
+			// Bound to the provider SA's cluster-qualified identity (see
+			// pkg/util/identity).
 			map[string]any{
-				"apiGroups": []any{"kedge.faros.sh"},
-				"resources": []any{"edges"},
-				"verbs":     []any{"proxy"},
+				"apiGroups": []any{"edges.kedge.faros.sh"},
+				"resources": []any{"kubernetesclusters", "linuxservers"},
+				"verbs":     []any{"get", "list", "watch", "proxy"},
+			},
+			map[string]any{
+				"apiGroups": []any{"edges.kedge.faros.sh"},
+				"resources": []any{"kubernetesclusters/status", "linuxservers/status"},
+				"verbs":     []any{"get", "update", "patch"},
+			},
+			// The tunnel reads AND writes Secrets + Namespaces DIRECTLY with the
+			// provider SA (not the VW):
+			//   - read: token-exchange reads the agent's SA kubeconfig Secret
+			//     (edge-<name>-kubeconfig) + SSH-cred lookups read
+			//     spec.sshCredentialsRef Secrets.
+			//   - create/update: on a SERVER edge's connect, markEdgeConnected →
+			//     storeSSHCredentials creates a namespace + a
+			//     <edge>-ssh-credentials Secret and records it in
+			//     status.sshCredentials. Without create access the Secret write
+			//     403s, status.sshCredentials stays null, and the SSH handler has
+			//     no creds → openAgentSSHTunnel fails → the browser terminal shows
+			//     "session ended".
+			map[string]any{
+				"apiGroups": []any{""},
+				"resources": []any{"secrets"},
+				"verbs":     []any{"get", "list", "watch", "create", "update"},
+			},
+			map[string]any{
+				"apiGroups": []any{""},
+				"resources": []any{"namespaces"},
+				"verbs":     []any{"get", "create"},
+			},
+			// When an agent RECONNECTS with its SA token (after token-exchange),
+			// the tunnel authenticates it via delegated authn/authz: a TokenReview
+			// + SubjectAccessReview run with the provider SA in the tenant
+			// workspace. The provider SA must be able to CREATE those review
+			// objects — otherwise authorizeFn errors and the reconnect is rejected
+			// (bad handshake), even though the JOIN-token first connect (which
+			// only reads the CR) succeeds. This is the "initial join works,
+			// follow-up SA-token connect fails" case.
+			map[string]any{
+				"apiGroups": []any{"authentication.k8s.io"},
+				"resources": []any{"tokenreviews"},
+				"verbs":     []any{"create"},
+			},
+			map[string]any{
+				"apiGroups": []any{"authorization.k8s.io"},
+				"resources": []any{"subjectaccessreviews"},
+				"verbs":     []any{"create"},
 			},
 		},
 	}}
-	if _, err := wsClient.Resource(clusterRoleGVR).Create(ctx, role, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating ClusterRole %q: %w", name, err)
+	if _, err := wsClient.Resource(clusterRoleGVR).Create(ctx, role, metav1.CreateOptions{}); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating ClusterRole %q: %w", name, err)
+		}
+		// Reconcile the rules on an existing ClusterRole so verb/resource changes
+		// (e.g. adding /status writes + secrets reads) take effect on re-Enable
+		// rather than being silently skipped by the create.
+		existingRole, getErr := wsClient.Resource(clusterRoleGVR).Get(ctx, name, metav1.GetOptions{})
+		if getErr != nil {
+			return fmt.Errorf("getting ClusterRole %q: %w", name, getErr)
+		}
+		wantRules, _, _ := unstructured.NestedSlice(role.Object, "rules")
+		gotRules, _, _ := unstructured.NestedSlice(existingRole.Object, "rules")
+		if !reflect.DeepEqual(gotRules, wantRules) {
+			if err := unstructured.SetNestedSlice(existingRole.Object, wantRules, "rules"); err != nil {
+				return fmt.Errorf("rewriting ClusterRole rules: %w", err)
+			}
+			if _, err := wsClient.Resource(clusterRoleGVR).Update(ctx, existingRole, metav1.UpdateOptions{}); err != nil {
+				return fmt.Errorf("updating ClusterRole %q: %w", name, err)
+			}
+		}
 	}
 
+	// Bind the qualified identity (the correct cross-workspace form) AND its
+	// un-qualified local fallback. On the tunnel's direct CR-read path kcp only
+	// qualifies the provider SA when its token carries a verified home-cluster
+	// claim; when it doesn't (e.g. a legacy token not yet stamped by the token
+	// controller), the request authorizes as the plain
+	// system:serviceaccount:{ns}:{name}. Binding both makes the grant match
+	// either way, so the join-token validation isn't rejected as "invalid".
 	wantSubjects := []any{
 		map[string]any{
 			"apiGroup": "rbac.authorization.k8s.io",
 			"kind":     "User",
 			"name":     subject,
 		},
+	}
+	if local, ok := identity.LocalFromQualified(subject); ok {
+		wantSubjects = append(wantSubjects, map[string]any{
+			"apiGroup": "rbac.authorization.k8s.io",
+			"kind":     "User",
+			"name":     local,
+		})
 	}
 	crb := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1",

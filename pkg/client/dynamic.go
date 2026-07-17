@@ -30,27 +30,51 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 
-	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 )
 
-var (
-	VirtualWorkloadGVR = schema.GroupVersionResource{
-		Group:    kedgev1alpha1.GroupName,
-		Version:  kedgev1alpha1.Version,
-		Resource: "virtualworkloads",
-	}
-	EdgeGVR = schema.GroupVersionResource{
-		Group:    kedgev1alpha1.GroupName,
-		Version:  kedgev1alpha1.Version,
-		Resource: "edges",
-	}
+// NOTE: the typed Edge / Workload / Placement accessors were removed when
+// the Edge API moved out of the hub core group (kedge.faros.sh) into the single
+// standalone `edges` provider. Both connectable kinds live in ONE group
+// edges.kedge.faros.sh:
+//
+//	KubernetesCluster → edges.kedge.faros.sh/kubernetesclusters
+//	LinuxServer       → edges.kedge.faros.sh/linuxservers
+//
+// The core module cannot import the provider module (it would cycle — the
+// provider imports core primitives), so the agent + CLI address these
+// dynamically via their GVR + unstructured.
 
+var (
+	// KubernetesClusterGVR addresses the edges provider's KubernetesCluster kind
+	// (cluster-scoped).
+	KubernetesClusterGVR = schema.GroupVersionResource{
+		Group:    "edges.kedge.faros.sh",
+		Version:  "v1alpha1",
+		Resource: "kubernetesclusters",
+	}
+	// LinuxServerGVR addresses the edges provider's LinuxServer kind
+	// (cluster-scoped).
+	LinuxServerGVR = schema.GroupVersionResource{
+		Group:    "edges.kedge.faros.sh",
+		Version:  "v1alpha1",
+		Resource: "linuxservers",
+	}
+	// WorkloadGVR addresses the edges provider's Workload kind
+	// (namespaced): a workload scheduled across matching KubernetesCluster edges.
+	WorkloadGVR = schema.GroupVersionResource{
+		Group:    "edges.kedge.faros.sh",
+		Version:  "v1alpha1",
+		Resource: "workloads",
+	}
+	// PlacementGVR addresses the edges provider's Placement kind (namespaced):
+	// one Workload placed on one edge.
 	PlacementGVR = schema.GroupVersionResource{
-		Group:    kedgev1alpha1.GroupName,
-		Version:  kedgev1alpha1.Version,
+		Group:    "edges.kedge.faros.sh",
+		Version:  "v1alpha1",
 		Resource: "placements",
 	}
+
 	// UserGVR points at the new tenants.kedge.faros.sh User CRD. PRs
 	// #204-#207 introduced the tenants.kedge.faros.sh group; this GVR
 	// previously pointed at the legacy kedge.faros.sh group, which left
@@ -83,6 +107,16 @@ var (
 	}
 )
 
+// EdgeGVRForType maps an edge type ("kubernetes" | "server") to the connectable
+// resource's GVR. Server edges map to LinuxServer; everything else (default)
+// maps to KubernetesCluster.
+func EdgeGVRForType(edgeType string) schema.GroupVersionResource {
+	if edgeType == "server" {
+		return LinuxServerGVR
+	}
+	return KubernetesClusterGVR
+}
+
 // Client provides typed access to kedge custom resources via the dynamic client.
 type Client struct {
 	dynamic dynamic.Interface
@@ -105,30 +139,6 @@ func NewFromDynamic(d dynamic.Interface) *Client {
 // Dynamic returns the underlying dynamic client.
 func (c *Client) Dynamic() dynamic.Interface {
 	return c.dynamic
-}
-
-// VirtualWorkloads returns a typed interface for VirtualWorkload resources in a namespace.
-func (c *Client) VirtualWorkloads(namespace string) *TypedResource[kedgev1alpha1.VirtualWorkload, kedgev1alpha1.VirtualWorkloadList] {
-	return &TypedResource[kedgev1alpha1.VirtualWorkload, kedgev1alpha1.VirtualWorkloadList]{
-		client: c.dynamic.Resource(VirtualWorkloadGVR).Namespace(namespace),
-		gvk:    VirtualWorkloadGVR.GroupVersion().WithKind("VirtualWorkload"),
-	}
-}
-
-// Edges returns a typed interface for Edge resources (cluster-scoped).
-func (c *Client) Edges() *TypedResource[kedgev1alpha1.Edge, kedgev1alpha1.EdgeList] {
-	return &TypedResource[kedgev1alpha1.Edge, kedgev1alpha1.EdgeList]{
-		client: c.dynamic.Resource(EdgeGVR),
-		gvk:    EdgeGVR.GroupVersion().WithKind("Edge"),
-	}
-}
-
-// Placements returns a typed interface for Placement resources in a namespace.
-func (c *Client) Placements(namespace string) *TypedResource[kedgev1alpha1.Placement, kedgev1alpha1.PlacementList] {
-	return &TypedResource[kedgev1alpha1.Placement, kedgev1alpha1.PlacementList]{
-		client: c.dynamic.Resource(PlacementGVR).Namespace(namespace),
-		gvk:    PlacementGVR.GroupVersion().WithKind("Placement"),
-	}
 }
 
 // Users returns a typed interface for User resources (cluster-scoped).

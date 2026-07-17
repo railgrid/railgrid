@@ -1,0 +1,29 @@
+name: Free disk space
+description: >
+  Reclaim disk on GitHub-hosted ubuntu runners (they ship ~14 GB free on /),
+  which the Go toolchain + module cache + provider builds + Docker/kind images
+  can exhaust, surfacing as "no space left on device" during compile. Removes
+  large preinstalled toolchains we never use and prunes the Docker cache.
+
+runs:
+  using: composite
+  steps:
+    - name: Free disk space
+      shell: bash
+      run: |
+        echo "Disk before cleanup:"
+        df -h /
+        # Preinstalled SDKs/toolchains this repo does not use (~20-30 GB).
+        # NOTE: do NOT remove /usr/local/lib/node_modules — global npm lives
+        # there, and the provider portal builds (npm install/run build) need it.
+        sudo rm -rf \
+          /usr/share/dotnet \
+          /usr/local/lib/android \
+          /opt/ghc \
+          /usr/local/.ghcup \
+          /opt/hostedtoolcache/CodeQL \
+          /usr/local/share/powershell \
+          /usr/local/share/chromium 2>/dev/null || true
+        sudo docker image prune --all --force 2>/dev/null || true
+        echo "Disk after cleanup:"
+        df -h /

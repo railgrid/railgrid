@@ -1,0 +1,65 @@
+{{- if .Values.catalogEntry.enabled -}}
+# CatalogEntry registers this provider with the kedge hub (routing + portal
+# Enable flow). It is a kcp resource (providers.kedge.faros.sh/v1alpha1), so it
+# MUST NOT be applied to the hosting cluster. The chart renders it into a
+# ConfigMap that the init container mounts and applies into the provider
+# workspace via the provider kubeconfig (KEDGE_CATALOGENTRY_FILE ->
+# sdkinstall.Bootstrap). backend.url points at the in-cluster Service so the hub
+# backend proxy forwards /services/providers/edges/* (agent ingress + edgeproxy)
+# here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "edges.fullname" . }}-catalogentry
+  labels:
+    {{- include "edges.labels" . | nindent 4 }}
+data:
+  catalogentry.yaml: |
+    apiVersion: providers.kedge.faros.sh/v1alpha1
+    kind: CatalogEntry
+    metadata:
+      name: edges
+    spec:
+      displayName: "Edges"
+      description: "Connect and manage Kubernetes clusters and Linux/SSH servers as edges: kubectl and SSH through the hub reverse tunnel, plus the edge MCP endpoint."
+      vendor: "kedge"
+      version: {{ .Chart.AppVersion | quote }}
+      category: "Edges"
+      # Grants the provider SA get/list/watch/proxy on the edge kinds in the
+      # tenant workspace on Enable (join-token validation + SSH creds reads).
+      edgeProxyAccess: true
+      ui:
+        url: "http://{{ include "edges.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        indexPath: "/"
+        # "Workloads" sub-nav item, rendered just below the Edges parent in the
+        # sidebar; routes to /providers/edges/workloads.
+        children:
+          - displayName: Workloads
+            builtinRoute: workloads
+      backend:
+        url: "http://{{ include "edges.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        healthPath: "/healthz"
+      apiExport:
+        name: "edges.providers.kedge.faros.sh"
+        permissionClaims:
+          - group: ""
+            resource: namespaces
+            verbs: [get, list, watch, create, update, patch, delete]
+            tenantScoped: true
+          - group: ""
+            resource: serviceaccounts
+            verbs: [get, list, watch, create, update, patch, delete]
+            tenantScoped: true
+          - group: ""
+            resource: secrets
+            verbs: [get, list, watch, create, update, patch, delete]
+            tenantScoped: true
+          - group: rbac.authorization.k8s.io
+            resource: clusterroles
+            verbs: [get, list, watch, create, update, patch, delete]
+            tenantScoped: true
+          - group: rbac.authorization.k8s.io
+            resource: clusterrolebindings
+            verbs: [get, list, watch, create, update, patch, delete]
+            tenantScoped: true
+{{- end }}

@@ -25,9 +25,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
 )
 
@@ -64,7 +62,7 @@ the binary.`,
 				return fmt.Errorf("not logged in — run: kedge login --hub-url <hub-url>\n(original error: %w)", err)
 			}
 
-			edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(ctx, edgeName, metav1.GetOptions{})
+			edge, _, err := getEdgeByName(ctx, dynClient, edgeName)
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", edgeName, err)
 			}
@@ -179,7 +177,7 @@ func waitForAgentVersion(ctx context.Context, edgeName, expectedVersion string, 
 
 	deadline := time.Now().Add(timeout)
 	for {
-		edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(ctx, edgeName, metav1.GetOptions{})
+		edge, _, err := getEdgeByName(ctx, dynClient, edgeName)
 		if err != nil {
 			return fmt.Errorf("getting edge: %w", err)
 		}

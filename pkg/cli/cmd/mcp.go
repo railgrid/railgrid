@@ -56,7 +56,7 @@ Claude / Cursor / similar MCP clients:
   https://kedge.example.com/services/mcpserver/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/mcpservers/default/mcp
 
 Use --edge to print the per-edge MCP endpoint URL (single Kubernetes edge):
-  https://kedge.example.com/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp
+  https://kedge.example.com/services/providers/edges/agent/root:kedge:user-default/apis/edges.kedge.faros.sh/v1alpha1/kubernetesclusters/my-edge/mcp
 
 The previous per-kind MCP endpoints (--name for KubernetesMCP,
 --linux-name for LinuxMCP) were removed; their tools now appear on the
@@ -225,7 +225,7 @@ func edgeTypeKind(edgeName string) string {
 	if err != nil {
 		return "kubernetes-cluster"
 	}
-	edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(context.Background(), edgeName, metav1.GetOptions{})
+	edge, err := dynClient.Resource(kedgeclient.KubernetesClusterGVR).Get(context.Background(), edgeName, metav1.GetOptions{})
 	if err != nil {
 		return "kubernetes-cluster"
 	}
@@ -239,8 +239,12 @@ func edgeTypeKind(edgeName string) string {
 
 // mcpURLFromServerURL derives the per-edge MCP endpoint URL from a kcp server URL and edge name.
 //
-// Input:  https://kedge.example.com/clusters/root:kedge:user-default, "my-edge"
-// Output: https://kedge.example.com/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp
+// Input:  https://kedge.example.com/clusters/11tcw27t4rdtnacy, "my-edge"
+// Output: https://kedge.example.com/services/providers/edges/agent/11tcw27t4rdtnacy/apis/edges.kedge.faros.sh/v1alpha1/kubernetesclusters/my-edge/mcp
+//
+// Per-edge MCP exposes the kube toolset against a single KubernetesCluster edge,
+// so the URL targets the `kubernetesclusters` resource on the decoupled edges
+// provider (server edges have no Kubernetes API and are rejected by the handler).
 //
 // Returns an error if the server URL does not contain a /clusters/ path segment.
 func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
@@ -248,7 +252,7 @@ func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
 	if cluster == "default" {
 		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
 	}
-	return apiurl.EdgeAgentProxyURL(base, cluster, edgeName, "mcp"), nil
+	return apiurl.ProviderAgentProxyURL(base, "kubernetes", cluster, edgeName, "mcp"), nil
 }
 
 // mcpKubernetesURLFromServerURL / mcpLinuxURLFromServerURL were

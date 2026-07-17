@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Creates an Edge resource (idempotent) and writes .env.edge.<type> so that
+# Creates an edge resource (idempotent) and writes .env.edge.<type> so that
 # `make dev-run-edge TYPE=<type>` can pick it up. Per-type files mean a
 # kubernetes edge and a server edge can coexist without overwriting each other.
+#
+# Edges are the standalone `edges` provider now: two kinds under one group
+# edges.kedge.faros.sh — KubernetesCluster (type=kubernetes) and LinuxServer
+# (type=server) — instead of the old single Edge with spec.type. The workspace
+# must have the edges provider ENABLED (APIBinding to edges.providers.kedge.faros.sh)
+# for these kinds to exist.
 #
 # Usage:
 #   hack/scripts/dev-edge-setup.sh <edge-name> <type> [labels]
@@ -24,15 +30,36 @@ if [[ "${EDGE_TYPE}" != "kubernetes" && "${EDGE_TYPE}" != "server" ]]; then
   exit 1
 fi
 
-# 1. Create Edge resource (idempotent via apply).
-echo "Registering Edge '${EDGE_NAME}' (type=${EDGE_TYPE})..."
+# Map the type to its kind + resource in group edges.kedge.faros.sh.
+if [[ "${EDGE_TYPE}" == "server" ]]; then
+  EDGE_KIND="LinuxServer"
+  EDGE_RESOURCE="linuxservers"
+else
+  EDGE_KIND="KubernetesCluster"
+  EDGE_RESOURCE="kubernetesclusters"
+fi
+
+# Build a metadata.labels block from the comma-separated key=value LABELS.
+LABELS_YAML=""
+if [[ -n "${LABELS}" ]]; then
+  LABELS_YAML=$'\n  labels:'
+  IFS=',' read -ra _pairs <<< "${LABELS}"
+  for _p in "${_pairs[@]}"; do
+    _k="${_p%%=*}"; _v="${_p#*=}"
+    _k="$(echo -n "${_k}" | tr -d '[:space:]')"
+    [[ -z "${_k}" ]] && continue
+    LABELS_YAML+=$'\n    '"${_k}: \"${_v}\""
+  done
+fi
+
+# 1. Create the edge resource (idempotent via apply).
+echo "Registering ${EDGE_KIND} '${EDGE_NAME}' (type=${EDGE_TYPE})..."
 kubectl apply -f - <<EOF
-apiVersion: kedge.faros.sh/v1alpha1
-kind: Edge
+apiVersion: edges.kedge.faros.sh/v1alpha1
+kind: ${EDGE_KIND}
 metadata:
-  name: ${EDGE_NAME}
-spec:
-  type: ${EDGE_TYPE}
+  name: ${EDGE_NAME}${LABELS_YAML}
+spec: {}
 EOF
 
 # 2. Extract kcp cluster path from current kubectl config.
@@ -44,13 +71,13 @@ if [[ "${CLUSTER_URL}" =~ /clusters/([^/]+) ]]; then
 fi
 echo "Detected kcp cluster path: ${CLUSTER_PATH:-<none>}"
 
-# 3. Wait for join token (set by the hub token controller on Edge creation).
+# 3. Wait for join token (set by the edges provider's token reconciler on create).
 TIMEOUT=60
-echo "Waiting for join token on Edge '${EDGE_NAME}'..."
+echo "Waiting for join token on ${EDGE_KIND} '${EDGE_NAME}'..."
 JOIN_TOKEN=""
 elapsed=0
 while true; do
-  JOIN_TOKEN=$(kubectl get edge "${EDGE_NAME}" -o jsonpath='{.status.joinToken}' 2>/dev/null || echo "")
+  JOIN_TOKEN=$(kubectl get "${EDGE_RESOURCE}.edges.kedge.faros.sh" "${EDGE_NAME}" -o jsonpath='{.status.joinToken}' 2>/dev/null || echo "")
   if [[ -n "${JOIN_TOKEN}" ]]; then
     break
   fi

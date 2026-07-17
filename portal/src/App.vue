@@ -7,6 +7,7 @@ import { useRouter } from 'vue-router'
 import { registerProviderRoutes } from '@/router/providers'
 import { SESSION_EXPIRED_EVENT } from '@/composables/useGraphQL'
 import ControlPlaneProvisioning from '@/components/ControlPlaneProvisioning.vue'
+import TerminalDock from '@/components/TerminalDock.vue'
 
 const auth = useAuthStore()
 const providers = useProvidersStore()
@@ -102,4 +103,9 @@ watch(
 <template>
   <router-view />
   <ControlPlaneProvisioning v-if="showProvisioning" :attempts="tenant.bootstrapAttempts" />
+  <!-- Persistent singleton: mounted above the router-view boundary so navigating
+       between pages never unmounts the dock. AppLayout (which every page renders)
+       lives *inside* router-view, so keeping the dock here is what preserves the
+       live xterm buffer + SSH WebSocket across route changes. -->
+  <TerminalDock />
 </template>

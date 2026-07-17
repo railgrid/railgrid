@@ -34,6 +34,7 @@ import (
 	"golang.org/x/term"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
 
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
@@ -88,25 +89,28 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading kubeconfig: %w", err)
 	}
 
-	// Fetch the Edge resource to get the proxy URL from status.
+	// Fetch the Edge resource to get the proxy URL from status. The Edge type
+	// now lives in the edges-connectivity provider (edges.kedge.faros.sh), so we
+	// read it via the dynamic client and pull status.URL out of the unstructured.
 	client, err := kedgeclient.NewForConfig(config)
 	if err != nil {
 		return fmt.Errorf("creating kedge client: %w", err)
 	}
 
-	edge, err := client.Edges().Get(ctx, name, metav1.GetOptions{})
+	edge, err := client.Dynamic().Resource(kedgeclient.LinuxServerGVR).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("fetching edge %q: %w", name, err)
 	}
 
-	if edge.Status.URL == "" {
+	edgeURL, _, _ := unstructured.NestedString(edge.Object, "status", "URL")
+	if edgeURL == "" {
 		return fmt.Errorf("edge %q has no proxy URL in status; is the agent running?", name)
 	}
 
-	// Externalize the edge URL: edge.Status.URL may use an internal host
-	// (for kcp mount resolution). Replace the host with the hub's external
-	// address from the kubeconfig.
-	externalURL, err := externalizeEdgeURLFromConfig(edge.Status.URL, config)
+	// Externalize the edge URL: status.URL may use an internal host (for kcp
+	// mount resolution). Replace the host with the hub's external address from
+	// the kubeconfig.
+	externalURL, err := externalizeEdgeURLFromConfig(edgeURL, config)
 	if err != nil {
 		return fmt.Errorf("constructing external edge URL: %w", err)
 	}
@@ -140,9 +144,10 @@ func runSSH(cmd *cobra.Command, args []string) error {
 // buildSSHWebSocketURL constructs the WebSocket URL for the hub SSH subresource
 // using the edge's full proxy URL from status.URL.
 //
-// Edge.Status.URL for server-type edges is already the complete HTTPS URL:
+// Edge.Status.URL for server-type edges is the edges-provider proxy path
+// (externalized against the current kubeconfig host by the caller):
 //
-//	https://<hub>/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/ssh
+//	https://<hub>/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/linuxservers/{name}/ssh
 //
 // This function simply converts the scheme to WebSocket (https→wss, http→ws)
 // and optionally appends the "cmd" query parameter for non-interactive SSH exec.

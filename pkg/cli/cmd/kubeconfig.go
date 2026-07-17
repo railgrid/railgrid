@@ -75,7 +75,7 @@ Examples:
 				return err
 			}
 
-			edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(ctx, name, metav1.GetOptions{})
+			edge, err := dynClient.Resource(kedgeclient.KubernetesClusterGVR).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", name, err)
 			}

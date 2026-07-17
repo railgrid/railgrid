@@ -34,19 +34,19 @@ func TestMCPURLFromServerURL(t *testing.T) {
 			name:      "standard kcp URL",
 			serverURL: "https://kedge.localhost:9443/clusters/root:kedge:user-default",
 			edgeName:  edgeName,
-			wantURL:   "https://kedge.localhost:9443/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp",
+			wantURL:   "https://kedge.localhost:9443/services/providers/edges/agent/root:kedge:user-default/apis/edges.kedge.faros.sh/v1alpha1/kubernetesclusters/my-edge/mcp",
 		},
 		{
 			name:      "trailing slash is stripped",
 			serverURL: "https://kedge.localhost:9443/clusters/root:kedge:user-default/",
 			edgeName:  edgeName,
-			wantURL:   "https://kedge.localhost:9443/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp",
+			wantURL:   "https://kedge.localhost:9443/services/providers/edges/agent/root:kedge:user-default/apis/edges.kedge.faros.sh/v1alpha1/kubernetesclusters/my-edge/mcp",
 		},
 		{
 			name:      "root cluster",
 			serverURL: "https://hub.example.com/clusters/root",
 			edgeName:  "edge-a",
-			wantURL:   "https://hub.example.com/services/agent-proxy/root/apis/kedge.faros.sh/v1alpha1/edges/edge-a/mcp",
+			wantURL:   "https://hub.example.com/services/providers/edges/agent/root/apis/edges.kedge.faros.sh/v1alpha1/kubernetesclusters/edge-a/mcp",
 		},
 		{
 			name:       "no /clusters/ path returns error",

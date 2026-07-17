@@ -1,0 +1,84 @@
+## kedge-edges-provider values
+## Single self-contained edge provider: terminates agent reverse tunnels
+## (revdial) for both KubernetesCluster + LinuxServer kinds, owns the API, runs
+## the token/RBAC/lifecycle controllers, and proxies kubectl/SSH/MCP down the
+## tunnel. It reads a kcp provider kubeconfig at runtime (token validation +
+## cross-tenant controllers).
+
+# Container image. Build (context = REPO ROOT) with:
+#   docker build -f providers/edges/Dockerfile -t IMAGE .
+image:
+  repository: ghcr.io/faroshq/kedge-edges-provider
+  tag: ""  # empty → defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# HARD CONSTRAINT: revdial registers tunnel dialers in a process-global map, so
+# an agent's control connection and every later pickup connection MUST reach the
+# same process. Run exactly one replica; the Deployment uses strategy Recreate so
+# a rollout never briefly runs two. Provider HA is a v1 non-goal.
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 8084
+
+# Hub wiring.
+hub:
+  # Heartbeat + agent-kubeconfig externalization base. In-cluster Service DNS.
+  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  # External URL agents dial (baked into the agent kubeconfig the RBAC
+  # reconciler mints). Defaults to hub.url when empty.
+  externalURL: ""
+  # Internal URL the provider uses for hub-side calls when it differs from the
+  # external one (split-horizon deployments). Optional.
+  internalURL: ""
+  # Bearer token for the heartbeat POST. Secret-backed; empty → unauthenticated
+  # heartbeat (dev only).
+  tokenSecretRef:
+    name: ""
+    key: token
+  # Skip TLS verify on heartbeat — dev only.
+  insecure: false
+  # Hub CA bundle (PEM) embedded into per-agent kubeconfigs so agents trust the
+  # hub serving cert. Provide EITHER caData (inline PEM) or caSecretRef.
+  caData: ""
+  caSecretRef:
+    name: ""
+    key: ca.crt
+
+# Comma-separated static bearer tokens accepted by the tunnel token validator
+# (dev/testing only — real agents authenticate via join token + kcp SAR).
+staticTokens: ""
+
+# Enables dev-mode shortcuts in the controllers (e.g. relaxed kubeconfig CA).
+devMode: false
+
+# Secret holding the workspace-admin kubeconfig minted via /bonkers (admin
+# onboarding). Used by BOTH the init container (bootstrap APIExport/schemas) and
+# the serve container (token validation + cross-tenant controllers). Key must be
+# "kubeconfig".
+providerKubeconfig:
+  secretName: kedge-provider-kubeconfig
+
+# Render the CatalogEntry into a ConfigMap the init container applies into the
+# provider workspace (it is a kcp resource, not a host-cluster one).
+catalogEntry:
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: ""   # empty → release-name
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 64Mi
+
+podLabels: {}
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

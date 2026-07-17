@@ -20,7 +20,10 @@ import (
 	"net/http"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 )
 
 // deleteSelfUser soft-deletes the caller's User CR by stamping
@@ -55,19 +58,30 @@ func (h *Handler) undeleteSelfUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	u, err := h.mgr.client.Users().Get(r.Context(), user, metav1.GetOptions{})
-	if err != nil {
-		writeError(w, err)
-		return
+	// The softdelete controller reconciles the user's status concurrently, so
+	// re-read and retry on conflict rather than racing it (matches undeleteOrg).
+	const maxAttempts = 5
+	var err error
+	for range maxAttempts {
+		var u *tenancyv1alpha1.User
+		u, err = h.mgr.client.Users().Get(r.Context(), user, metav1.GetOptions{})
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if u.Status.DeletionRequestedAt == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		u.Status.DeletionRequestedAt = nil
+		if _, err = h.mgr.client.Users().UpdateStatus(r.Context(), u, metav1.UpdateOptions{}); err == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if !apierrors.IsConflict(err) {
+			writeError(w, err)
+			return
+		}
 	}
-	if u.Status.DeletionRequestedAt == nil {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	u.Status.DeletionRequestedAt = nil
-	if _, err := h.mgr.client.Users().UpdateStatus(r.Context(), u, metav1.UpdateOptions{}); err != nil {
-		writeError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	writeError(w, err)
 }

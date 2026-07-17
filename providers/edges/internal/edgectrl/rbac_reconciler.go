@@ -1,0 +1,434 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package edgectrl
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
+
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
+)
+
+// RBACReconciler provisions per-edge credentials via native ServiceAccount tokens.
+type RBACReconciler struct {
+	mgr            mcmanager.Manager
+	hubExternalURL string
+	hubCAData      []byte
+	devMode        bool
+	newObj         func() edgeapi.Connectable
+	kind           string
+	gvr            schema.GroupVersionResource
+}
+
+// SetupRBACWithManager registers the RBAC controller for every connectable kind
+// on the multicluster manager.
+func SetupRBACWithManager(mgr mcmanager.Manager, gvr schema.GroupVersionResource, kind string, newObj func() edgeapi.Connectable, hubExternalURL string, hubCAData []byte, devMode bool) error {
+	r := &RBACReconciler{
+		mgr:            mgr,
+		hubExternalURL: hubExternalURL,
+		hubCAData:      hubCAData,
+		devMode:        devMode,
+		newObj:         newObj,
+		kind:           kind,
+		gvr:            gvr,
+	}
+	return mcbuilder.ControllerManagedBy(mgr).
+		Named(rbacControllerName + "-" + gvr.Resource).
+		For(newObj()).
+		Owns(&corev1.Secret{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&rbacv1.ClusterRoleBinding{}).
+		Complete(r)
+}
+
+// Reconcile provisions a ServiceAccount, RBAC, and token Secret for an Edge.
+func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+	logger := klog.FromContext(ctx).WithValues("edge", req.Name, "cluster", req.ClusterName)
+
+	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("getting cluster %s: %w", req.ClusterName, err)
+	}
+	c := cl.GetClient()
+
+	edge := r.newObj()
+	if err := c.Get(ctx, req.NamespacedName, edge); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	saName := "edge-" + edge.GetName()
+	tokenSecretName := saName + "-token"
+	kubeconfigSecretName := saName + "-kubeconfig"
+
+	// Always run through ensure* steps (idempotent). Owns() watches trigger
+	// re-reconciliation when child objects are deleted.
+
+	logger.Info("Provisioning credentials for edge")
+
+	ownerRef := r.edgeOwnerRef(edge)
+
+	// 1. Ensure namespace.
+	if err := ensureNamespace(ctx, c); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring namespace %s: %w", edgeNamespace, err)
+	}
+
+	// 2. Ensure ServiceAccount.
+	if err := ensureServiceAccount(ctx, c, saName, ownerRef); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring service account: %w", err)
+	}
+
+	// 3. Ensure ClusterRole for edge agents.
+	// NOTE: the ClusterRole is a shared cluster-wide resource, not owned by
+	// individual edges.  Attaching per-edge ownerRefs would cause GC races.
+	if err := ensureClusterRole(ctx, c); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring cluster role: %w", err)
+	}
+
+	// 4. Ensure ClusterRoleBinding for this edge's SA.
+	if err := ensureClusterRoleBinding(ctx, c, saName, ownerRef); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring cluster role binding: %w", err)
+	}
+
+	// 5. Ensure token Secret (type kubernetes.io/service-account-token).
+	if err := ensureTokenSecret(ctx, c, tokenSecretName, saName, ownerRef); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring token secret: %w", err)
+	}
+
+	// 6. Read the SA token. If not yet populated by kcp, requeue.
+	tokenSecret := &corev1.Secret{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: tokenSecretName}, tokenSecret); err != nil {
+		return ctrl.Result{}, fmt.Errorf("getting token secret: %w", err)
+	}
+	token := string(tokenSecret.Data["token"])
+	if token == "" {
+		logger.Info("Token not yet populated, requeuing")
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+
+	// 7. Create kubeconfig Secret with the SA token for the agent.
+	if err := r.ensureKubeconfigSecret(ctx, c, kubeconfigSecretName, edge.GetName(), token, ownerRef); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring kubeconfig secret: %w", err)
+	}
+
+	logger.Info("Edge credentials provisioned", "secret", edgeNamespace+"/"+kubeconfigSecretName)
+	return ctrl.Result{}, nil
+}
+
+// edgeOwnerRef returns an OwnerReference for the given connectable object,
+// using the reconciler's kind (KubernetesCluster | LinuxServer). Controller is
+// set to true so that Owns() watches (which default to OnlyControllerOwner) can
+// map child object changes back to the parent.
+func (r *RBACReconciler) edgeOwnerRef(edge edgeapi.Connectable) metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion:         r.gvr.GroupVersion().String(),
+		Kind:               r.kind,
+		Name:               edge.GetName(),
+		UID:                edge.GetUID(),
+		Controller:         ptr.To(true),
+		BlockOwnerDeletion: ptr.To(true),
+	}
+}
+
+// ensureOwnerRef checks if the object already has the expected OwnerReference
+// and patches it in if missing. This adopts pre-existing objects so that Owns()
+// watches can map child deletions back to the parent Edge.
+func ensureOwnerRef(ctx context.Context, c client.Client, obj client.Object, ownerRef metav1.OwnerReference) error {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.UID == ownerRef.UID {
+			return nil
+		}
+	}
+	obj.SetOwnerReferences(append(obj.GetOwnerReferences(), ownerRef))
+	return c.Update(ctx, obj)
+}
+
+func ensureNamespace(ctx context.Context, c client.Client) error {
+	ns := &corev1.Namespace{}
+	if err := c.Get(ctx, client.ObjectKey{Name: edgeNamespace}, ns); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := c.Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: edgeNamespace},
+	}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+func ensureServiceAccount(ctx context.Context, c client.Client, name string, ownerRef metav1.OwnerReference) error {
+	sa := &corev1.ServiceAccount{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: name}, sa); err == nil {
+		return ensureOwnerRef(ctx, c, sa, ownerRef)
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := c.Create(ctx, &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       edgeNamespace,
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+	}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+// desiredAgentRules returns the PolicyRules that the edge agent ClusterRole
+// should have. This ClusterRole is shared by every agent SA (one per edge), so
+// it covers BOTH kinds in the edges provider's group edges.kedge.faros.sh:
+// KubernetesCluster and LinuxServer. The agent reads its own edge and patches
+// its status (edge_reporter heartbeats status.connected/agentVersion/…), so it
+// needs get/list/watch + update/patch on the kinds AND their /status
+// subresource — otherwise the agent's status reporter is "forbidden ... cannot
+// patch resource kubernetesclusters/status".
+func desiredAgentRules() []rbacv1.PolicyRule {
+	return []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{"edges.kedge.faros.sh"},
+			Resources: []string{
+				"kubernetesclusters", "kubernetesclusters/status",
+				"linuxservers", "linuxservers/status",
+			},
+			Verbs: []string{"get", "list", "watch", "update", "patch"},
+		},
+		// Workload plane (kubernetes edges): the agent's workload reconciler
+		// watches its Placements and reads the referenced Workload; the placement
+		// reporter patches Placement status from the local Deployment. So it needs
+		// list/watch/get on placements + read on workloads, and update/patch on
+		// placements/status — otherwise the reporter is "forbidden ... cannot list
+		// resource placements".
+		{
+			APIGroups: []string{"edges.kedge.faros.sh"},
+			Resources: []string{"placements", "placements/status"},
+			Verbs:     []string{"get", "list", "watch", "update", "patch"},
+		},
+		{
+			APIGroups: []string{"edges.kedge.faros.sh"},
+			Resources: []string{"workloads", "workloads/status"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		// Namespaces and secrets are needed for SSH credential setup (server-type edges).
+		{
+			APIGroups: []string{""},
+			Resources: []string{"namespaces"},
+			Verbs:     []string{"get", "create"},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"secrets"},
+			Verbs:     []string{"get", "create", "update"},
+		},
+	}
+}
+
+// ensureClusterRole creates or updates the shared kedge-edge-agent ClusterRole.
+// It intentionally carries no owner reference so that it is never garbage-collected
+// when an individual edge is deleted; the role is a cluster-wide shared resource.
+func ensureClusterRole(ctx context.Context, c client.Client) error {
+	desired := desiredAgentRules()
+	cr := &rbacv1.ClusterRole{}
+	if err := c.Get(ctx, client.ObjectKey{Name: edgeAgentClusterRole}, cr); err == nil {
+		if !rulesEqual(cr.Rules, desired) {
+			cr.Rules = desired
+			return c.Update(ctx, cr)
+		}
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := c.Create(ctx, &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: edgeAgentClusterRole,
+		},
+		Rules: desired,
+	}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+// rulesEqual compares two PolicyRule slices for equality.
+func rulesEqual(a, b []rbacv1.PolicyRule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !ruleEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func ruleEqual(a, b rbacv1.PolicyRule) bool {
+	return slicesEqual(a.APIGroups, b.APIGroups) &&
+		slicesEqual(a.Resources, b.Resources) &&
+		slicesEqual(a.Verbs, b.Verbs) &&
+		slicesEqual(a.ResourceNames, b.ResourceNames) &&
+		slicesEqual(a.NonResourceURLs, b.NonResourceURLs)
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName string, ownerRef metav1.OwnerReference) error {
+	crbName := "kedge-edge-" + saName
+	crb := &rbacv1.ClusterRoleBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: crbName}, crb); err == nil {
+		return ensureOwnerRef(ctx, c, crb, ownerRef)
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := c.Create(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            crbName,
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     edgeAgentClusterRole,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      saName,
+				Namespace: edgeNamespace,
+			},
+		},
+	}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+func ensureTokenSecret(ctx context.Context, c client.Client, secretName, saName string, ownerRef metav1.OwnerReference) error {
+	existing := &corev1.Secret{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: secretName}, existing); err == nil {
+		return ensureOwnerRef(ctx, c, existing, ownerRef)
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: edgeNamespace,
+			Annotations: map[string]string{
+				"kubernetes.io/service-account.name": saName,
+			},
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+		Type: corev1.SecretTypeServiceAccountToken,
+	}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Client, name, edgeName, token string, ownerRef metav1.OwnerReference) error {
+	existing := &corev1.Secret{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: edgeNamespace, Name: name}, existing); err == nil {
+		return ensureOwnerRef(ctx, c, existing, ownerRef)
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+
+	clusterDef := &clientcmdapi.Cluster{
+		Server: r.hubExternalURL,
+	}
+	if len(r.hubCAData) > 0 {
+		clusterDef.CertificateAuthorityData = r.hubCAData
+	} else if r.devMode {
+		clusterDef.InsecureSkipTLSVerify = true
+	}
+
+	kubeconfig := clientcmdapi.Config{
+		Clusters: map[string]*clientcmdapi.Cluster{
+			"kedge": clusterDef,
+		},
+		AuthInfos: map[string]*clientcmdapi.AuthInfo{
+			"edge-agent": {
+				Token: token,
+			},
+		},
+		Contexts: map[string]*clientcmdapi.Context{
+			"kedge": {
+				Cluster:  "kedge",
+				AuthInfo: "edge-agent",
+			},
+		},
+		CurrentContext: "kedge",
+	}
+
+	kubeconfigBytes, err := clientcmd.Write(kubeconfig)
+	if err != nil {
+		return fmt.Errorf("marshaling kubeconfig: %w", err)
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: edgeNamespace,
+			Labels: map[string]string{
+				"kedge.faros.sh/edge": edgeName,
+			},
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+		Data: map[string][]byte{
+			"kubeconfig": kubeconfigBytes,
+			"token":      []byte(token),
+			"server":     []byte(r.hubExternalURL),
+		},
+	}
+
+	if err := c.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}

@@ -30,7 +30,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
-	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
 )
@@ -85,6 +86,7 @@ const (
 // It works for both EdgeTypeKubernetes and EdgeTypeServer.
 type EdgeReporter struct {
 	edgeName        string
+	gvr             schema.GroupVersionResource
 	hubClient       *kedgeclient.Client
 	tunnelState     <-chan bool // receives true on connect, false on disconnect; may be nil
 	tunnelConnected bool
@@ -98,9 +100,10 @@ type EdgeReporter struct {
 // skip tunnel-state tracking (tunnelConnected will always report false).
 // sshProxyPort is the local SSH daemon port to probe for its host key (server
 // mode only); pass 0 to skip SSH host key reporting.
-func NewEdgeReporter(edgeName string, hubClient *kedgeclient.Client, tunnelState <-chan bool, sshProxyPort int) *EdgeReporter {
+func NewEdgeReporter(edgeName string, gvr schema.GroupVersionResource, hubClient *kedgeclient.Client, tunnelState <-chan bool, sshProxyPort int) *EdgeReporter {
 	return &EdgeReporter{
 		edgeName:     edgeName,
+		gvr:          gvr,
 		hubClient:    hubClient,
 		tunnelState:  tunnelState,
 		sshProxyPort: sshProxyPort,
@@ -134,14 +137,13 @@ func (r *EdgeReporter) Run(ctx context.Context) error {
 }
 
 func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
-	status := kedgev1alpha1.EdgeStatus{
-		Phase:     kedgev1alpha1.EdgePhaseReady,
-		Connected: r.tunnelConnected,
-	}
 	// The hub may set Hostname/WorkspaceURL; we only patch the fields we own.
+	// "Ready" mirrors the provider's EdgePhaseReady; the Edge type now lives in
+	// the edges-connectivity provider so we build the patch as a plain map and
+	// apply it via the dynamic client (edges.kedge.faros.sh).
 	statusPatch := map[string]interface{}{
-		"phase":             string(status.Phase),
-		"connected":         status.Connected,
+		"phase":             "Ready",
+		"connected":         r.tunnelConnected,
 		"agentVersion":      pkgversion.Get(),
 		"lastHeartbeatTime": metav1.Now(),
 	}
@@ -165,7 +167,7 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 		return
 	}
 
-	_, err = r.hubClient.Edges().Patch(ctx, r.edgeName,
+	_, err = r.hubClient.Dynamic().Resource(r.gvr).Patch(ctx, r.edgeName,
 		types.MergePatchType, patchBytes,
 		metav1.PatchOptions{}, "status")
 	if err != nil {
@@ -174,5 +176,5 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 	}
 
 	logger.V(4).Info("Edge heartbeat sent", "edge", r.edgeName,
-		"phase", string(status.Phase), "connected", status.Connected)
+		"phase", "Ready", "connected", r.tunnelConnected)
 }

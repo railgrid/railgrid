@@ -142,10 +142,13 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 		}
 	}
 
-	// Edges family: the hub's aggregate MCP endpoint (kube clusters + SSH
-	// servers) dialed as the calling user. Interactive runs only — background
-	// runs have no user token.
-	if slices.Contains(families, "edges") && run.EdgesEndpoint != "" && run.EdgesToken != "" {
+	// Edges: the hub's aggregate MCP endpoint (kube clusters + SSH servers)
+	// dialed as the calling user. This is a base-layer capability provided by
+	// the hub, not a wired-in provider tool — it is always enabled, never opt-in.
+	// It is naturally interactive-only: it acts as the calling user, and only
+	// interactive runs carry a user token (background runs leave EdgesToken
+	// empty), so the token check scopes it without a family gate.
+	if run.EdgesEndpoint != "" && run.EdgesToken != "" {
 		sess, err := tools.ConnectMCPEndpoint(ctx, run.EdgesEndpoint, run.EdgesToken, "edges", run.EdgesInsecure)
 		if err != nil {
 			log.Printf("toolset: edges MCP unavailable: %v", err)

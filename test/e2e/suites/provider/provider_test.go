@@ -38,8 +38,6 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
-
-	"github.com/faroshq/faros-kedge/pkg/util/identity"
 )
 
 // workspacePath is the provider sub-workspace the hub's Provider controller
@@ -49,12 +47,6 @@ const workspacePath = "root:kedge:providers:quickstart"
 var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 
 // providersWorkspaceClient returns a dynamic client targeting
-// root:kedge:providers (the parent workspace holding the provider
-// sub-workspace objects).
-func providersWorkspaceClient(t *testing.T) dynamic.Interface {
-	return kcpDynamic(t, "root:kedge:providers", adminToken)
-}
-
 // systemProvidersClient returns a dynamic client targeting
 // root:kedge:system:providers — where Provider + CatalogEntry live since the
 // provider bootstrap refactor.
@@ -318,105 +310,12 @@ func TestBAPIProvidersDTO(t *testing.T) {
 		}
 	})
 
-	t.Run("all 3 first-party builtins bootstrapped by default with categories", func(t *testing.T) {
-		// All three first-party providers have migrated to custom-element
-		// micro-frontends loaded via ProviderFrame, so their DTOs have
-		// empty builtinRoute but builtin=true.
-		for _, want := range []struct {
-			name, route, displayName, category string
-		}{
-			{"mcp", "", "MCP", "AI"},
-			{"kubernetes-edges", "", "Kubernetes", "Edges"},
-			{"server-edges", "", "Servers", "Edges"},
-		} {
-			b := byName[want.name]
-			if b == nil {
-				t.Errorf("missing builtin %s; saw %v", want.name, keysOf(byName))
-				continue
-			}
-			if b["ready"] != true {
-				t.Errorf("%s: expected ready=true, got %v", want.name, b["ready"])
-			}
-			gotRoute, _ := b["builtinRoute"].(string)
-			if gotRoute != want.route {
-				t.Errorf("%s: builtinRoute = %q, want %q", want.name, gotRoute, want.route)
-			}
-			if b["displayName"] != want.displayName {
-				t.Errorf("%s: displayName = %v, want %s", want.name, b["displayName"], want.displayName)
-			}
-			if b["category"] != want.category {
-				t.Errorf("%s: category = %v, want %s", want.name, b["category"], want.category)
-			}
-			if path, _ := b["apiExportPath"].(string); path != "" {
-				t.Errorf("%s: builtin should not have apiExportPath, got %s", want.name, path)
-			}
-			// All three flip the new builtin=true flag so the portal's
-			// side-nav skips the APIBinding-required gate.
-			if b["builtin"] != true {
-				t.Errorf("%s: expected builtin=true in DTO, got %v", want.name, b["builtin"])
-			}
-		}
-	})
-
-	t.Run("mcp surfaces hasUI=true via embedded LocalUIAssets", func(t *testing.T) {
-		m := byName["mcp"]
-		if m == nil {
-			t.Fatalf("mcp missing from DTO; saw %v", keysOf(byName))
-		}
-		if m["hasUI"] != true {
-			t.Errorf("mcp hasUI = %v, want true (provider embeds its UI in the hub binary)", m["hasUI"])
-		}
-	})
-
-	t.Run("mcp UI proxy serves embedded main.js", func(t *testing.T) {
-		// Direct hit on the hub's /ui/providers/mcp/main.js — should be
-		// the embedded IIFE bundle, not a redirect or proxy to anywhere.
-		resp, err := http.Get(hubURL + "/ui/providers/mcp/main.js")
-		if err != nil {
-			t.Fatalf("GET main.js: %v", err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != 200 {
-			t.Fatalf("status %d", resp.StatusCode)
-		}
-		b, _ := io.ReadAll(resp.Body)
-		if !bytes.Contains(b, []byte("kedge-provider-mcp")) {
-			t.Error("mcp main.js does not contain the custom-element tag name")
-		}
-	})
-
-	t.Run("kubernetes-edges declares Workloads child", func(t *testing.T) {
-		ke := byName["kubernetes-edges"]
-		if ke == nil {
-			t.Fatalf("kubernetes-edges not in DTO; saw %v", keysOf(byName))
-		}
-		children, _ := ke["children"].([]any)
-		if len(children) == 0 {
-			t.Fatalf("expected at least one child on kubernetes-edges, got %v", ke["children"])
-		}
-		var sawWorkloads bool
-		for _, c := range children {
-			m, _ := c.(map[string]any)
-			if m["displayName"] == "Workloads" && m["builtinRoute"] == "workloads" {
-				sawWorkloads = true
-			}
-		}
-		if !sawWorkloads {
-			t.Fatalf("expected Workloads child {builtinRoute: workloads}, got %v", children)
-		}
-	})
-
-	t.Run("server-edges has no children", func(t *testing.T) {
-		se := byName["server-edges"]
-		if se == nil {
-			t.Fatalf("server-edges not in DTO; saw %v", keysOf(byName))
-		}
-		if children, ok := se["children"]; ok && children != nil {
-			if list, _ := children.([]any); len(list) != 0 {
-				t.Errorf("server-edges should have no children, got %v", list)
-			}
-		}
-	})
+	// NOTE: the mcp / kubernetes-edges / server-edges first-party builtins
+	// (and their embedded LocalUIAssets + /ui/providers/mcp micro-frontend)
+	// were extracted into standalone out-of-process providers, so they no
+	// longer appear as hub builtins in /api/providers. Their DTO + UI
+	// behavior is covered by the edges provider's own suite; this suite now
+	// exercises only the generic third-party (quickstart) provider path.
 
 	t.Run("categories registry surfaced in response", func(t *testing.T) {
 		cats, _ := body["categories"].([]any)
@@ -742,156 +641,4 @@ func waitForCondition(t *testing.T, timeout time.Duration, cond func() (bool, st
 	}
 	t.Logf("wait timeout after %s; last status: %s", timeout, lastMsg)
 	return false
-}
-
-// TestIEdgeProxyGrantAuthorizesProviderSA proves the Enable-time edges-proxy
-// grant end-to-end against REAL kcp — the parts the auth.go unit tests can
-// only mock:
-//
-//  1. The provider's minted SA token (root:kedge:providers:quickstart,
-//     default/provider) authenticates via TokenReview even though the
-//     edges-proxy request targets the TENANT workspace (kcp SA authn
-//     resolves the token in its home cluster).
-//  2. kcp RBAC in the tenant workspace matches the cross-workspace subject
-//     system:kcp:serviceaccount:{providerCluster}:default:provider that
-//     pkg/util/identity emits and the Enable grant binds.
-//  3. Removing the grant revokes access again.
-//
-// The test never needs a connected edge: a 403 means authorization failed,
-// while a 502 ("upstream unavailable") means authorization PASSED and only
-// the tunnel lookup failed — exactly the boundary under test.
-func TestIEdgeProxyGrantAuthorizesProviderSA(t *testing.T) {
-	tenantWS := loginStaticTokenAndGetCluster(t)
-
-	// Resolve the provider workspace's logical cluster ID — the value kcp
-	// embeds in the SA token claims and the grant subject must carry.
-	providersWS := providersWorkspaceClient(t)
-	workspaceGVR := schema.GroupVersionResource{Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces"}
-	ws, err := providersWS.Resource(workspaceGVR).Get(ctxWithTimeout(t, 10*time.Second), "quickstart", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get provider workspace: %v", err)
-	}
-	providerCluster, _, _ := unstructured.NestedString(ws.Object, "spec", "cluster")
-	if providerCluster == "" {
-		t.Fatal("provider workspace has no spec.cluster")
-	}
-
-	// Fetch the provider SA's minted long-lived token (the same credential
-	// the provider pod mounts via kedge-provider-kubeconfig).
-	sub := providerSubClient(t, "quickstart")
-	secretGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
-	var saToken string
-	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
-		sec, err := sub.Resource(secretGVR).Namespace("default").Get(ctxWithTimeout(t, 5*time.Second), "provider-token", metav1.GetOptions{})
-		if err != nil {
-			return false, "get provider-token Secret: " + err.Error()
-		}
-		tok, _, _ := unstructured.NestedString(sec.Object, "data", "token")
-		if tok == "" {
-			return false, "token not yet populated"
-		}
-		raw, err := base64.StdEncoding.DecodeString(tok)
-		if err != nil {
-			return false, "decode token: " + err.Error()
-		}
-		saToken = string(raw)
-		return true, ""
-	}) {
-		t.Fatal("provider SA token never appeared")
-	}
-
-	// The edge name is irrelevant: authorization runs BEFORE the tunnel
-	// lookup, and the grant has no resourceNames restriction.
-	proxyURL := hubURL + "/services/edges-proxy/clusters/" + tenantWS +
-		"/apis/kedge.faros.sh/v1alpha1/edges/e2e-no-such-edge/k8s/api"
-	probe := func() int {
-		req, _ := http.NewRequest(http.MethodGet, proxyURL, nil)
-		req.Header.Set("Authorization", "Bearer "+saToken)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("edges-proxy probe: %v", err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return resp.StatusCode
-	}
-
-	// 1. No grant → authorization must fail.
-	if code := probe(); code != http.StatusForbidden {
-		t.Fatalf("expected 403 before grant, got %d", code)
-	}
-
-	// 2. Materialize the grant in the tenant workspace exactly as the
-	// Enable endpoint does (same names, same qualified subject).
-	tenantAdmin := kcpDynamic(t, tenantWS, adminToken)
-	subject := identity.QualifiedServiceAccount(providerCluster, "default", "provider")
-	t.Logf("grant subject = %s", subject)
-
-	grantName := "kedge:provider:quickstart:edges-proxy"
-	clusterRoleGVR := schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
-	clusterRoleBindingGVR := schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
-
-	role := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "rbac.authorization.k8s.io/v1",
-		"kind":       "ClusterRole",
-		"metadata":   map[string]any{"name": grantName},
-		"rules": []any{
-			// "access" on "/" satisfies kcp's workspaceContentAuthorizer for
-			// the foreign SA — same pairing as the Enable-endpoint grant and
-			// kcp's own cross-workspace SA e2e.
-			map[string]any{
-				"nonResourceURLs": []any{"/"},
-				"verbs":           []any{"access"},
-			},
-			map[string]any{
-				"apiGroups": []any{"kedge.faros.sh"},
-				"resources": []any{"edges"},
-				"verbs":     []any{"proxy"},
-			},
-		},
-	}}
-	if _, err := tenantAdmin.Resource(clusterRoleGVR).Create(ctxWithTimeout(t, 10*time.Second), role, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create ClusterRole: %v", err)
-	}
-	crb := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "rbac.authorization.k8s.io/v1",
-		"kind":       "ClusterRoleBinding",
-		"metadata":   map[string]any{"name": grantName},
-		"roleRef": map[string]any{
-			"apiGroup": "rbac.authorization.k8s.io",
-			"kind":     "ClusterRole",
-			"name":     grantName,
-		},
-		"subjects": []any{map[string]any{
-			"apiGroup": "rbac.authorization.k8s.io",
-			"kind":     "User",
-			"name":     subject,
-		}},
-	}}
-	if _, err := tenantAdmin.Resource(clusterRoleBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), crb, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create ClusterRoleBinding: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = tenantAdmin.Resource(clusterRoleBindingGVR).Delete(context.Background(), grantName, metav1.DeleteOptions{})
-		_ = tenantAdmin.Resource(clusterRoleGVR).Delete(context.Background(), grantName, metav1.DeleteOptions{})
-	})
-
-	// 3. With the grant: authorization passes, tunnel lookup fails → 502.
-	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
-		code := probe()
-		return code == http.StatusBadGateway, fmt.Sprintf("status=%d (want 502)", code)
-	}) {
-		t.Fatal("edges-proxy never authorized the provider SA after grant")
-	}
-
-	// 4. Revoke → 403 again.
-	if err := tenantAdmin.Resource(clusterRoleBindingGVR).Delete(ctxWithTimeout(t, 5*time.Second), grantName, metav1.DeleteOptions{}); err != nil {
-		t.Fatalf("delete ClusterRoleBinding: %v", err)
-	}
-	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
-		code := probe()
-		return code == http.StatusForbidden, fmt.Sprintf("status=%d (want 403)", code)
-	}) {
-		t.Fatal("edges-proxy still authorizes the provider SA after revocation")
-	}
 }

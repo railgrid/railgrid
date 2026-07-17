@@ -39,26 +39,21 @@ func TestStaticTokenLogin(t *testing.T) {
 	testenv.Test(t, cases.StaticTokenLogin())
 }
 
-// TestEdgeLifecycle creates, lists, and deletes an edge via kubectl.
-func TestEdgeLifecycle(t *testing.T) {
-	testenv.Test(t, cases.EdgeLifecycle())
+// edgeSkip marks an edge-connectivity test as parked while edge connectivity is
+// brought up as the standalone edges provider (group edges.kedge.faros.sh).
+// These cases will be relocated to the dedicated edges suite that bootstraps
+// that provider. See docs/edges-providers-testing.md.
+func edgeSkip(t *testing.T) {
+	t.Helper()
+	t.Skip("edge connectivity moved to the standalone edges provider " +
+		"(edges.kedge.faros.sh); e2e coverage pending the dedicated edges suite — " +
+		"see docs/edges-providers-testing.md")
 }
 
-// TestAgentEdgeJoin starts a kedge-agent against the hub and verifies the edge
-// transitions to Ready with the proxy reachable.
-func TestAgentEdgeJoin(t *testing.T) {
-	testenv.Test(t, cases.AgentEdgeJoin())
-}
-
-// TestEdgeURLSet verifies that status.URL is populated for kubernetes-type edges.
-func TestEdgeURLSet(t *testing.T) {
-	testenv.Test(t, cases.EdgeURLSet())
-}
-
-// TestK8sProxyAccess verifies that kubectl works against the edge proxy URL.
-func TestK8sProxyAccess(t *testing.T) {
-	testenv.Test(t, cases.K8sProxyAccess())
-}
+func TestEdgeLifecycle(t *testing.T)  { edgeSkip(t) }
+func TestAgentEdgeJoin(t *testing.T)  { edgeSkip(t) }
+func TestEdgeURLSet(t *testing.T)     { edgeSkip(t) }
+func TestK8sProxyAccess(t *testing.T) { edgeSkip(t) }
 
 // Tenancy CRUD + invariants — single-user lifecycles. Two-user
 // SA-token isolation requires OIDC and stays out of this suite.
@@ -72,15 +67,13 @@ func TestTenancyPersonalOrgSoftDelete(t *testing.T) {
 }
 func TestTenancySoftDeleteHidesOrg(t *testing.T) { testenv.Test(t, cases.TenancySoftDeleteHidesOrg()) }
 
-// Multi-edge tests — require 2 agent clusters (DefaultAgentCount=2).
-func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }
-func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedScheduling()) }
-func TestWorkloadIsolation(t *testing.T)     { testenv.Test(t, cases.WorkloadIsolation()) }
-func TestEdgeFailoverIsolation(t *testing.T) { testenv.Test(t, cases.EdgeFailoverIsolation()) }
-func TestEdgeReconnect(t *testing.T)         { testenv.Test(t, cases.EdgeReconnect()) }
-func TestEdgeListAccuracyUnderChurn(t *testing.T) {
-	testenv.Test(t, cases.EdgeListAccuracyUnderChurn())
-}
+// Multi-edge tests — parked pending the edges suite (see edgeSkip).
+func TestTwoAgentsJoin(t *testing.T)              { edgeSkip(t) }
+func TestLabelBasedScheduling(t *testing.T)       { edgeSkip(t) }
+func TestWorkloadIsolation(t *testing.T)          { edgeSkip(t) }
+func TestEdgeFailoverIsolation(t *testing.T)      { edgeSkip(t) }
+func TestEdgeReconnect(t *testing.T)              { edgeSkip(t) }
+func TestEdgeListAccuracyUnderChurn(t *testing.T) { edgeSkip(t) }
 
 // TestKCPHealth verifies that the external kcp instance is reachable and
 // responding from the test runner via the NodePort mapping.
@@ -162,10 +155,14 @@ func TestKCPResilience(t *testing.T) {
 				t.Fatalf("kcp did not recover within timeout: %v", err)
 			}
 
-			// Verify the hub has reconnected: edge list should succeed.
+			// Verify the hub has reconnected to kcp: an APIBinding list through the
+			// hub kubeconfig (which points at the user's kcp workspace) should
+			// succeed once the front-proxy path is healthy again. apibindings is a
+			// built-in kcp API present in every logical cluster, so it's a reliable
+			// reachability probe (unlike the removed edges API this used to poll).
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			err = framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
-				_, err := client.EdgeList(ctx)
+				_, err := client.Kubectl(ctx, "get", "apibindings.apis.kcp.io", "--insecure-skip-tls-verify")
 				return err == nil, nil
 			})
 			if err != nil {

@@ -9,19 +9,13 @@ trigger_mode(TRIGGER_MODE_AUTO)
 # ---------------------------------------------------------------------------
 local_resource(
     'portal',
-    cmd='make portal-provider-symlinks',
+    cmd='cd portal && [ -d node_modules ] || npm ci',
     serve_cmd='cd portal && npx vite --strictPort',
     deps=[
         'portal/src',
         'portal/package.json',
         'portal/index.html',
         'portal/vite.config.ts',
-        'providers/mcp/portal/src',
-        'providers/kubernetesedges/portal/src',
-        'providers/serveredges/portal/src',
-        'providers/app-studio/portal/src',
-        'providers/app-studio/portal/package.json',
-        'providers/code/portal/src',
     ],
     labels=['hub'],
 )
@@ -33,7 +27,6 @@ local_resource(
     'hub',
     cmd='''
 make certs && \
-mkdir -p providers/mcp/portal/dist providers/kubernetesedges/portal/dist providers/serveredges/portal/dist providers/code/portal/dist portal/dist && \
 go build -o bin/kedge-hub ./cmd/kedge-hub
 ''',
     serve_cmd='''./bin/kedge-hub \
@@ -63,9 +56,6 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
         'apis',
         'go.mod',
         'go.sum',
-        'providers/mcp',
-        'providers/kubernetesedges',
-        'providers/serveredges',
         # Restart the hub once the kedge-kro kubeconfig appears so the
         # HostSecretWriter (which delivers kedge-provider-kubeconfig into
         # that cluster) activates. The wiring is tolerant of the file being
@@ -691,15 +681,77 @@ local_resource(
 )
 
 # ---------------------------------------------------------------------------
-# edges — kubernetes & server agents. All manual triggers (click ▶ in Tilt UI).
+# edges — the standalone edges provider (KubernetesCluster + LinuxServer under
+# one group edges.kedge.faros.sh) PLUS the dev agents that connect to it.
+#
+# The provider is SINGLE-REPLICA (revdial dialer map is process-global). It
+# terminates the agent reverse tunnels and serves kubectl/ssh/mcp; the agents
+# below dial it through the hub backend proxy at /services/providers/edges/*.
 #
 # Workflow:
-#   1. Click ▶ on `edge-{kube,server}-create` to log in via static token,
-#      register the Edge with the hub, and write .env.edge.<type>.
-#   2. Click ▶ on `edge-{kube,server}-agent` to run the agent.
+#   1. `edges` serves automatically; click ▶ on `edges-register` then
+#      `edges-init` to create its APIExport so tenants can Enable it.
+#   2. Click ▶ on `edge-{kube,server}-create` to log in via static token,
+#      register the edge with the hub, and write .env.edge.<type>.
+#   3. Click ▶ on `edge-{kube,server}-agent` to run the agent.
 #        - kubernetes: also spins up a `kedge-agent` kind cluster on first run.
 #        - server: also click ▶ on `ssh-server` so the agent has an SSH target.
 # ---------------------------------------------------------------------------
+
+# --- edges provider ---
+local_resource(
+    'edges',
+    cmd='make build-edges-provider',
+    serve_cmd='make run-provider-edges',
+    deps=[
+        'providers/edges/main.go',
+        'providers/edges/controller_manager.go',
+        'providers/edges/init_cmd.go',
+        'providers/edges/heartbeat.go',
+        'providers/edges/apis',
+        'providers/edges/internal',
+        'providers/edges/scheme',
+        'providers/edges/portal/src',
+        'providers/edges/portal/package.json',
+        'providers/edges/go.mod',
+    ],
+    resource_deps=['hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8084, path='/healthz'),
+    ),
+    labels=['edges'],
+)
+
+local_resource(
+    'edges-register',
+    cmd='make install-provider-edges',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['edges'],
+)
+
+# Creates the edges APIExport (+ endpoint slice + bind grant) so tenants can
+# Enable it. Run AFTER edges-register (which applies the Provider CR → the
+# controller provisions the workspace + provider-token Secret this reads).
+local_resource(
+    'edges-init',
+    cmd='make init-provider-edges',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub', 'edges-register'],
+    labels=['edges'],
+)
+
+local_resource(
+    'edges-unregister',
+    cmd='make uninstall-provider-edges',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['hub'],
+    labels=['edges'],
+)
 local_resource(
     'edge-kube-create',
     # Drop any saved agent kubeconfig from a previous hub/kcp incarnation
@@ -719,7 +771,9 @@ local_resource(
     serve_cmd='make dev-run-edge TYPE=kubernetes',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['hub'],
+    # The agent dials the edges provider (through the hub backend proxy), so it
+    # must be serving.
+    resource_deps=['hub', 'edges'],
     labels=['edges'],
 )
 
@@ -738,7 +792,9 @@ local_resource(
     serve_cmd='make dev-run-edge TYPE=server',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['hub'],
+    # The agent dials the edges provider (through the hub backend proxy), so it
+    # must be serving.
+    resource_deps=['hub', 'edges'],
     labels=['edges'],
 )
 

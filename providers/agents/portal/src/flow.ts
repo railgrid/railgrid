@@ -127,7 +127,6 @@ const RAIL: [string, PaletteItem[]][] = [
     { key: 'tool-mcp', label: 'MCP', icon: 'tool' },
     { key: 'tool-github', label: 'GitHub', icon: 'tool' },
     { key: 'tool-web', label: 'Web search', icon: 'tool' },
-    { key: 'tool-edges', label: 'Edges', icon: 'tool' },
     { key: 'toolset', label: 'Toolset', icon: 'toolset' },
   ]],
   ['Brain', [{ key: 'model', label: 'Model', icon: 'model' }]],

@@ -189,12 +189,6 @@ local_resource(
         'portal/package.json',
         'portal/index.html',
         'portal/vite.config.ts',
-        'providers/mcp/portal/src',
-        'providers/kubernetesedges/portal/src',
-        'providers/app-studio/portal/src',
-        'providers/app-studio/portal/package.json',
-        'providers/serveredges/portal/src',
-        'providers/code/portal/src',
     ],
     labels=['hub'],
 )
@@ -210,16 +204,14 @@ local_resource(
         'cmd/kedge-hub',
         'pkg',
         'apis',
+        # config/kcp is go:embed'd into the hub binary (kcp.ProvidersFS — the
+        # platform APIResourceSchemas + APIExports applied at bootstrap). Without
+        # it here, regenerated schemas don't trigger a rebuild and the running
+        # hub bootstraps against stale/mismatched embedded manifests.
+        'config/kcp',
         'go.mod',
         'go.sum',
-        'providers/mcp',
-        'providers/kubernetesedges',
-        'providers/serveredges',
         'pkg/hub/portal/dist',
-        'providers/mcp/portal/dist',
-        'providers/kubernetesedges/portal/dist',
-        'providers/app-studio/portal/dist',
-        'providers/serveredges/portal/dist',
     ],
     ignore=[
         'portal',
@@ -551,6 +543,7 @@ CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code
 KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/kuery/manifest.yaml')
 DATABRICKS_REWRITE_CMD, DATABRICKS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/databricks/manifest.yaml')
 AGENTS_REWRITE_CMD, AGENTS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/agents/manifest.yaml')
+EDGES_REWRITE_CMD, EDGES_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/edges/manifest.yaml')
 
 # --- providers-quickstart ---
 local_resource(
@@ -607,6 +600,71 @@ local_resource(
     auto_init=False,
     resource_deps=['kedge-hub'],
     labels=['providers-quickstart'],
+)
+
+# --- edges (KubernetesCluster + LinuxServer, one group edges.kedge.faros.sh) ---
+# Single, self-contained, SINGLE-REPLICA provider: terminates agent reverse
+# tunnels (revdial) and serves kubectl/ssh/mcp. Runs on the host like the other
+# providers here; agents dial it through the hub backend proxy.
+local_resource(
+    'edges',
+    cmd='make build-edges-provider',
+    serve_cmd='make run-provider-edges',
+    deps=[
+        'providers/edges/main.go',
+        'providers/edges/controller_manager.go',
+        'providers/edges/init_cmd.go',
+        'providers/edges/heartbeat.go',
+        'providers/edges/apis',
+        'providers/edges/internal',
+        'providers/edges/scheme',
+        'providers/edges/portal/src',
+        'providers/edges/portal/package.json',
+        'providers/edges/go.mod',
+    ],
+    resource_deps=['kedge-hub'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8084, path='/healthz'),
+    ),
+    labels=['edges'],
+)
+
+local_resource(
+    'edges-register',
+    cmd=('{rewrite} && EDGES_KCP_KUBECONFIG={kc} ' +
+         'EDGES_KCP_SERVER={sv} EDGES_MANIFEST={mf} ' +
+         'make install-provider-edges').format(
+             rewrite=EDGES_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=EDGES_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['edges'],
+)
+
+local_resource(
+    'edges-init',
+    cmd=('EDGES_KCP_KUBECONFIG={kc} EDGES_KCP_SERVER={sv} ' +
+         'make init-provider-edges').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub', 'edges-register'],
+    labels=['edges'],
+)
+
+local_resource(
+    'edges-unregister',
+    cmd=('{rewrite} && EDGES_KCP_KUBECONFIG={kc} ' +
+         'EDGES_KCP_SERVER={sv} EDGES_MANIFEST={mf} ' +
+         'make uninstall-provider-edges').format(
+             rewrite=EDGES_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=EDGES_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['edges'],
 )
 
 # --- providers-agents ---

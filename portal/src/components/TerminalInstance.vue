@@ -40,7 +40,7 @@ const statusLabel = computed(() => {
 
 function buildWsUrl(token: string): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const path = `/services/edges-proxy/clusters/${props.cluster}/apis/kedge.faros.sh/v1alpha1/edges/${props.edgeName}/ssh`
+  const path = `/services/providers/edges/edgeproxy/clusters/${props.cluster}/apis/edges.kedge.faros.sh/v1alpha1/linuxservers/${props.edgeName}/ssh`
   return `${proto}//${location.host}${path}?token=${encodeURIComponent(token)}`
 }
 

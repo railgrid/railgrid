@@ -45,14 +45,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 
-	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
-	"github.com/faroshq/faros-kedge/pkg/agent/reconciler"
+	"k8s.io/client-go/informers"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	agentReconciler "github.com/faroshq/faros-kedge/pkg/agent/reconciler"
 	agentStatus "github.com/faroshq/faros-kedge/pkg/agent/status"
 	"github.com/faroshq/faros-kedge/pkg/agent/tunnel"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
@@ -144,8 +146,9 @@ func ValidateAgentKubeconfig(kubeconfigPath string, insecureSkipTLS bool) error 
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
-	// A lightweight discovery-style call: list edges with limit=1.
-	gvr := schema.GroupVersionResource{Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "edges"}
+	// A lightweight discovery-style call: list edges with limit=1. Edge moved to
+	// the edges-connectivity provider group.
+	gvr := schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
 	_, err = dynClient.Resource(gvr).List(context.Background(), metav1.ListOptions{Limit: 1})
 	if err == nil {
 		return nil
@@ -548,8 +551,10 @@ func runDebugServer(ctx context.Context, logger klog.Logger, addr string) {
 
 // runKubernetesMode is the Kubernetes-cluster edge mode.
 func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
-	downstreamClient, err := kubernetes.NewForConfig(a.downstreamConfig)
-	if err != nil {
+	// Validate the downstream (target-cluster) config is usable. The client
+	// itself was only consumed by the removed workload reconciler; the tunnel
+	// serves the downstream API over the raw connection, not via this client.
+	if _, err := kubernetes.NewForConfig(a.downstreamConfig); err != nil {
 		return fmt.Errorf("creating downstream client: %w", err)
 	}
 
@@ -566,7 +571,7 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		if err := a.registerEdge(ctx, hubClient); err != nil {
 			return fmt.Errorf("registering edge: %w", err)
 		}
-		logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeKubernetes))
+		logger.Info("Edge registered", "type", "kubernetes")
 	}
 
 	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.
@@ -622,7 +627,7 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		deliverOnce.Do(func() { close(agentKubeconfigDelivered) })
 	}
 	a.setTunnelToken(a.hubConfig.BearerToken)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken, nil)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, string(a.agentType), a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken, nil)
 
 	// Out-of-cluster join-token mode: the in-memory hubClient was built from
 	// the bootstrap join token, which is not a valid kcp credential. Wait for
@@ -645,22 +650,35 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		logger.Info("Refreshed hub client from saved SA kubeconfig")
 	}
 
-	wkr := reconciler.NewWorkloadReconciler(a.opts.EdgeName, hubClient, hubClient.Dynamic(), downstreamClient)
-	go func() {
-		if err := wkr.Run(ctx); err != nil {
-			logger.Error(err, "Workload reconciler failed")
-		}
-	}()
+	// Workload plane: Workload/Placement scheduling onto this kubernetes
+	// edge. The edges provider's scheduler creates Placements for this edge in
+	// the tenant workspace; the reconciler below materializes each as a local
+	// Deployment and the reporter pushes Deployment status back onto its
+	// Placement. Best-effort: a build failure disables the plane but leaves the
+	// tunnel + edge_reporter running. hubDynamic is (re)built from the possibly
+	// token-exchange-refreshed hubConfig.
+	if downstream, derr := kubernetes.NewForConfig(a.downstreamConfig); derr != nil {
+		logger.Error(derr, "workload plane disabled: cannot build downstream client")
+	} else if hubDyn, herr := dynamic.NewForConfig(a.hubConfig); herr != nil {
+		logger.Error(herr, "workload plane disabled: cannot build hub dynamic client")
+	} else {
+		wr := agentReconciler.NewWorkloadReconciler(a.opts.EdgeName, hubDyn, downstream)
+		go func() {
+			if err := wr.Run(ctx); err != nil {
+				logger.Error(err, "workload reconciler failed")
+			}
+		}()
 
-	// Start informer factory for watching local deployments
-	informerFactory := informers.NewSharedInformerFactory(downstreamClient, kedgeclient.DefaultResyncPeriod)
-	placementReporter := agentStatus.NewPlacementReporter(hubClient, downstreamClient, informerFactory)
-	informerFactory.Start(ctx.Done())
-	go func() {
-		if err := placementReporter.Run(ctx, 2); err != nil {
-			logger.Error(err, "Placement status reporter failed")
-		}
-	}()
+		factory := informers.NewSharedInformerFactory(downstream, 10*time.Minute)
+		pr := agentStatus.NewPlacementReporter(hubDyn, factory)
+		factory.Start(ctx.Done())
+		go func() {
+			if err := pr.Run(ctx, 2); err != nil {
+				logger.Error(err, "placement status reporter failed")
+			}
+		}()
+		logger.Info("Workload plane started (Workload/Placement)")
+	}
 
 	// In-cluster join-token mode is the only path where the agent does not yet
 	// hold a valid kcp credential when reaching this point (it will os.Exit on
@@ -675,7 +693,7 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 			}
 		}()
 	} else {
-		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
+		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, kedgeclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
 		go func() {
 			if err := reporter.Run(ctx); err != nil {
 				logger.Error(err, "Edge status reporter failed")
@@ -734,7 +752,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		if err := a.registerEdge(ctx, hubClient); err != nil {
 			return fmt.Errorf("registering edge: %w", err)
 		}
-		logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeServer))
+		logger.Info("Edge registered", "type", "server")
 	}
 
 	// Set up SSH credentials if provided.
@@ -808,7 +826,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
 	a.setTunnelToken(a.hubConfig.BearerToken)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName, serverOnAgentToken, sshHeaders)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.currentTunnelToken, a.opts.EdgeName, string(a.agentType), nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName, serverOnAgentToken, sshHeaders)
 
 	// Out-of-cluster join-token mode: wait for the SA kubeconfig before
 	// starting the edge_reporter, otherwise its patch calls would all return
@@ -840,7 +858,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 			}
 		}()
 	} else {
-		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
+		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, kedgeclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
 		go func() {
 			if err := reporter.Run(ctx); err != nil {
 				logger.Error(err, "Edge status reporter failed")
@@ -1120,25 +1138,26 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 		logger.Info("Updated SSH credentials secret", "secret", sshCredentialsNamespace+"/"+secretName)
 	}
 
-	// Update Edge status with SSH credentials reference.
-	sshCreds := kedgev1alpha1.SSHCredentials{
-		Username: sshUser,
+	// Update Edge status with SSH credentials reference. The Edge type now lives
+	// in the edges-connectivity provider, so we build the credentials as a plain
+	// map (marshaled into the merge patch below) rather than a typed struct.
+	sshCreds := map[string]interface{}{
+		"username": sshUser,
 	}
 	if hasPassword {
-		sshCreds.PasswordSecretRef = &corev1.SecretReference{
-			Name:      secretName,
-			Namespace: sshCredentialsNamespace,
+		sshCreds["passwordSecretRef"] = map[string]interface{}{
+			"name":      secretName,
+			"namespace": sshCredentialsNamespace,
 		}
 	}
 	if hasPrivateKey {
-		sshCreds.PrivateKeySecretRef = &corev1.SecretReference{
-			Name:      secretName,
-			Namespace: sshCredentialsNamespace,
+		sshCreds["privateKeySecretRef"] = map[string]interface{}{
+			"name":      secretName,
+			"namespace": sshCredentialsNamespace,
 		}
 	}
 
 	// Build the proxy URL path for this edge.
-	// Format: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
 	edgeURL := apiurl.EdgeAPIPath(a.opts.Cluster, a.opts.EdgeName)
 
 	// The Edge CRD marks status.connected as required (no `omitempty` on the
@@ -1158,7 +1177,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 		return fmt.Errorf("marshaling edge status patch: %w", err)
 	}
 
-	_, err = hubClient.Edges().Patch(ctx, a.opts.EdgeName,
+	_, err = hubClient.Dynamic().Resource(kedgeclient.LinuxServerGVR).Patch(ctx, a.opts.EdgeName,
 		types.MergePatchType, patchBytes,
 		metav1.PatchOptions{}, "status")
 	if err != nil {
@@ -1170,50 +1189,59 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 }
 
 // registerEdge ensures an Edge resource exists on the hub with the correct type.
+// The Edge type lives in the edges-connectivity provider (group
+// edges.kedge.faros.sh); the agent addresses it dynamically (unstructured).
 func (a *Agent) registerEdge(ctx context.Context, client *kedgeclient.Client) error {
 	logger := klog.FromContext(ctx)
 
-	edgeType := kedgev1alpha1.EdgeTypeKubernetes
+	edgeType := "kubernetes"
 	if a.agentType == AgentTypeServer {
-		edgeType = kedgev1alpha1.EdgeTypeServer
+		edgeType = "server"
 	}
 
-	edge := &kedgev1alpha1.Edge{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
-			Kind:       "Edge",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   a.opts.EdgeName,
-			Labels: a.opts.Labels,
-		},
-		Spec: kedgev1alpha1.EdgeSpec{
-			Type: edgeType,
-		},
-	}
+	res := client.Dynamic().Resource(kedgeclient.EdgeGVRForType(edgeType))
 
-	existing, err := client.Edges().Get(ctx, a.opts.EdgeName, metav1.GetOptions{})
+	existing, err := res.Get(ctx, a.opts.EdgeName, metav1.GetOptions{})
 	if err != nil {
 		logger.Info("Creating Edge", "name", a.opts.EdgeName, "type", edgeType)
-		_, err := client.Edges().Create(ctx, edge, metav1.CreateOptions{})
-		if err != nil {
+		labels := map[string]interface{}{}
+		for k, v := range a.opts.Labels {
+			labels[k] = v
+		}
+		edge := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": kedgeclient.KubernetesClusterGVR.GroupVersion().String(),
+			"kind":       "Edge",
+			"metadata": map[string]interface{}{
+				"name":   a.opts.EdgeName,
+				"labels": labels,
+			},
+			"spec": map[string]interface{}{
+				"type": edgeType,
+			},
+		}}
+		if _, err := res.Create(ctx, edge, metav1.CreateOptions{}); err != nil {
 			return fmt.Errorf("creating edge: %w", err)
 		}
-	} else {
-		logger.Info("Updating Edge", "name", a.opts.EdgeName, "type", edgeType)
-		if existing.Labels == nil {
-			existing.Labels = make(map[string]string)
-		}
-		for k, v := range a.opts.Labels {
-			existing.Labels[k] = v
-		}
-		// Ensure spec.type is kept in sync.
-		existing.Spec.Type = edgeType
-		_, err := client.Edges().Update(ctx, existing, metav1.UpdateOptions{})
-		if err != nil {
-			return fmt.Errorf("updating edge: %w", err)
-		}
+		return nil
 	}
 
+	logger.Info("Updating Edge", "name", a.opts.EdgeName, "type", edgeType)
+	labels, _, _ := unstructured.NestedStringMap(existing.Object, "metadata", "labels")
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	for k, v := range a.opts.Labels {
+		labels[k] = v
+	}
+	if err := unstructured.SetNestedStringMap(existing.Object, labels, "metadata", "labels"); err != nil {
+		return fmt.Errorf("setting edge labels: %w", err)
+	}
+	// Keep spec.type in sync.
+	if err := unstructured.SetNestedField(existing.Object, edgeType, "spec", "type"); err != nil {
+		return fmt.Errorf("setting edge spec.type: %w", err)
+	}
+	if _, err := res.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating edge: %w", err)
+	}
 	return nil
 }

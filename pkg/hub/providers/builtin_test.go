@@ -16,25 +16,54 @@ limitations under the License.
 
 package providers_test
 
-// The blank imports pull in the first-party provider packages, whose
-// init() calls populate the registry. The test exercises the public
-// resolver against that real canonical set rather than a fixture, since
-// the dep relationships each manifest declares (or doesn't — mcp is a
-// pure aggregator with no Requires) are part of the contract.
+// Since the mcp + edge providers were extracted into standalone
+// out-of-process packages, no first-party package registers a builtin
+// via init() anymore. These tests therefore register their own fixture
+// specs (guarded against duplicate registration since the registry is a
+// process-global shared with the rest of the package's tests) and
+// exercise the public resolver contract — empty-selects-all, explicit
+// sets, unknown-name rejection, dedup, and Requires validation —
+// against that fixture set rather than any real provider.
 
 import (
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
-
-	_ "github.com/faroshq/faros-kedge/providers/kubernetesedges"
-	_ "github.com/faroshq/faros-kedge/providers/mcp"
-	_ "github.com/faroshq/faros-kedge/providers/serveredges"
 )
 
+// Fixture builtin names, prefixed to avoid colliding with any real
+// provider (or the app-studio fixture in controller_test.go).
+const (
+	fixtureAggregator = "test-aggregator" // pure aggregator, no Requires
+	fixtureEdgeA      = "test-edge-a"     // standalone, no deps
+	fixtureEdgeB      = "test-edge-b"     // standalone, declares a child
+	fixtureNeedsA     = "test-needs-a"    // Requires fixtureEdgeA
+)
+
+var registerFixturesOnce sync.Once
+
+func registerFixtures(t *testing.T) {
+	t.Helper()
+	registerFixturesOnce.Do(func() {
+		providers.RegisterBuiltin(providers.BuiltinSpec{Name: fixtureAggregator})
+		providers.RegisterBuiltin(providers.BuiltinSpec{Name: fixtureEdgeA})
+		providers.RegisterBuiltin(providers.BuiltinSpec{
+			Name:     fixtureEdgeB,
+			Children: []providers.BuiltinChild{{DisplayName: "Workloads"}},
+		})
+		providers.RegisterBuiltin(providers.BuiltinSpec{
+			Name:     fixtureNeedsA,
+			Requires: []string{fixtureEdgeA},
+		})
+	})
+}
+
 func TestResolveEnabledBuiltins(t *testing.T) {
+	registerFixtures(t)
+
 	t.Run("empty selects everything", func(t *testing.T) {
 		got, err := providers.ResolveEnabledBuiltins(nil)
 		if err != nil {
@@ -56,32 +85,24 @@ func TestResolveEnabledBuiltins(t *testing.T) {
 		}
 	})
 
-	t.Run("mcp alone is allowed (pure aggregator, BYO families)", func(t *testing.T) {
-		// mcp no longer hard-requires the edges providers. With zero
-		// registered ToolFamilies the endpoint serves an empty aggregate
-		// and Build logs a warning — exposed as a config option so users
-		// can plug their own provider into the aggregator.
-		got, err := providers.ResolveEnabledBuiltins([]string{"mcp"})
+	t.Run("pure aggregator alone is allowed (no Requires)", func(t *testing.T) {
+		got, err := providers.ResolveEnabledBuiltins([]string{fixtureAggregator})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(got) != 1 || got[0].Name != "mcp" {
-			t.Fatalf("expected just mcp, got %+v", got)
+		if len(got) != 1 || got[0].Name != fixtureAggregator {
+			t.Fatalf("expected just %s, got %+v", fixtureAggregator, got)
 		}
 	})
 
-	t.Run("mcp + one edge type is allowed", func(t *testing.T) {
-		got, err := providers.ResolveEnabledBuiltins([]string{"mcp", "server-edges"})
-		if err != nil {
+	t.Run("standalone entry alone is fine (no deps of its own)", func(t *testing.T) {
+		if _, err := providers.ResolveEnabledBuiltins([]string{fixtureEdgeA}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(got) != 2 {
-			t.Fatalf("expected 2 entries, got %d", len(got))
-		}
 	})
 
-	t.Run("mcp + both edge types is also allowed", func(t *testing.T) {
-		got, err := providers.ResolveEnabledBuiltins([]string{"mcp", "kubernetes-edges", "server-edges"})
+	t.Run("multiple independent entries resolve", func(t *testing.T) {
+		got, err := providers.ResolveEnabledBuiltins([]string{fixtureAggregator, fixtureEdgeA, fixtureEdgeB})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -89,21 +110,31 @@ func TestResolveEnabledBuiltins(t *testing.T) {
 		for _, e := range got {
 			names = append(names, e.Name)
 		}
-		for _, want := range []string{"mcp", "kubernetes-edges", "server-edges"} {
+		for _, want := range []string{fixtureAggregator, fixtureEdgeA, fixtureEdgeB} {
 			if !slices.Contains(names, want) {
 				t.Errorf("missing %s in resolved set: %v", want, names)
 			}
 		}
 	})
 
-	t.Run("server-edges alone is fine (no deps of its own)", func(t *testing.T) {
-		if _, err := providers.ResolveEnabledBuiltins([]string{"server-edges"}); err != nil {
+	t.Run("satisfied Requires resolves", func(t *testing.T) {
+		if _, err := providers.ResolveEnabledBuiltins([]string{fixtureNeedsA, fixtureEdgeA}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
+	t.Run("missing Requires is rejected", func(t *testing.T) {
+		_, err := providers.ResolveEnabledBuiltins([]string{fixtureNeedsA})
+		if err == nil {
+			t.Fatal("expected dependency-violation error, got nil")
+		}
+		if !strings.Contains(err.Error(), fixtureNeedsA) || !strings.Contains(err.Error(), fixtureEdgeA) {
+			t.Errorf("error should name the dependent and its missing dep, got: %v", err)
+		}
+	})
+
 	t.Run("unknown name rejected with a hint", func(t *testing.T) {
-		_, err := providers.ResolveEnabledBuiltins([]string{"server-edges", "typo-here"})
+		_, err := providers.ResolveEnabledBuiltins([]string{fixtureEdgeA, "typo-here"})
 		if err == nil {
 			t.Fatal("expected unknown-name error, got nil")
 		}
@@ -113,7 +144,7 @@ func TestResolveEnabledBuiltins(t *testing.T) {
 	})
 
 	t.Run("duplicates are deduped", func(t *testing.T) {
-		got, err := providers.ResolveEnabledBuiltins([]string{"server-edges", "server-edges"})
+		got, err := providers.ResolveEnabledBuiltins([]string{fixtureEdgeA, fixtureEdgeA})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -122,10 +153,10 @@ func TestResolveEnabledBuiltins(t *testing.T) {
 		}
 	})
 
-	t.Run("kubernetes-edges declares Workloads as a child", func(t *testing.T) {
-		spec, ok := providers.BuiltinByName("kubernetes-edges")
+	t.Run("builtin declares a child", func(t *testing.T) {
+		spec, ok := providers.BuiltinByName(fixtureEdgeB)
 		if !ok {
-			t.Fatal("kubernetes-edges not registered")
+			t.Fatalf("%s not registered", fixtureEdgeB)
 		}
 		var labels []string
 		for _, c := range spec.Children {

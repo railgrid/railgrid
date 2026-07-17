@@ -69,16 +69,21 @@ func newEdgeCreateCommand() *cobra.Command {
 				edgeType = "kubernetes"
 			}
 
+			// The connectable kind IS the type: KubernetesCluster or LinuxServer
+			// (no spec.type discriminator anymore).
+			kind, gvr := "KubernetesCluster", kedgeclient.KubernetesClusterGVR
+			if edgeType == "server" {
+				kind, gvr = "LinuxServer", kedgeclient.LinuxServerGVR
+			}
+
 			edge := &unstructured.Unstructured{
 				Object: map[string]interface{}{
-					"apiVersion": kedgeclient.EdgeGVR.Group + "/" + kedgeclient.EdgeGVR.Version,
-					"kind":       "Edge",
+					"apiVersion": gvr.Group + "/" + gvr.Version,
+					"kind":       kind,
 					"metadata": map[string]interface{}{
 						"name": name,
 					},
-					"spec": map[string]interface{}{
-						"type": edgeType,
-					},
+					"spec": map[string]interface{}{},
 				},
 			}
 
@@ -90,7 +95,7 @@ func newEdgeCreateCommand() *cobra.Command {
 				edge.Object["metadata"].(map[string]interface{})["labels"] = lbls
 			}
 
-			_, err = dynClient.Resource(kedgeclient.EdgeGVR).Create(ctx, edge, metav1.CreateOptions{})
+			_, err = dynClient.Resource(gvr).Create(ctx, edge, metav1.CreateOptions{})
 			if err != nil {
 				return fmt.Errorf("creating edge %q: %w", name, err)
 			}
@@ -128,7 +133,7 @@ func pollJoinTokenDynamic(ctx context.Context, name string, timeout time.Duratio
 
 	deadline := time.Now().Add(timeout)
 	for {
-		edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(ctx, name, metav1.GetOptions{})
+		edge, _, err := getEdgeByName(ctx, dynClient, name)
 		if err != nil {
 			return "", fmt.Errorf("getting edge: %w", err)
 		}
@@ -226,7 +231,7 @@ func newEdgeJoinCommandCommand() *cobra.Command {
 				return err
 			}
 
-			edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(ctx, name, metav1.GetOptions{})
+			edge, _, err := getEdgeByName(ctx, dynClient, name)
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", name, err)
 			}
@@ -266,12 +271,12 @@ func newEdgeListCommand() *cobra.Command {
 				return fmt.Errorf("not logged in — run: kedge login --hub-url <hub-url>\n(original error: %w)", err)
 			}
 
-			list, err := dynClient.Resource(kedgeclient.EdgeGVR).List(ctx, metav1.ListOptions{})
+			items, err := listAllEdges(ctx, dynClient)
 			if err != nil {
 				return fmt.Errorf("listing edges: %w", err)
 			}
 
-			if len(list.Items) == 0 {
+			if len(items) == 0 {
 				fmt.Println("No edges found.")
 				return nil
 			}
@@ -279,8 +284,12 @@ func newEdgeListCommand() *cobra.Command {
 			tw := newTabWriter(os.Stdout)
 			printRow(tw, "NAME", "TYPE", "PHASE", "CONNECTED", "AGENT VERSION", "AGE")
 
-			for _, item := range list.Items {
-				edgeType := getNestedString(item, "spec", "type")
+			for _, item := range items {
+				// The kind is the type: KubernetesCluster → kubernetes, LinuxServer → server.
+				edgeType := "kubernetes"
+				if item.GetKind() == "LinuxServer" {
+					edgeType = "server"
+				}
 				phase := getNestedString(item, "status", "phase")
 				connected, _, _ := unstructuredNestedBool(item.Object, "status", "connected")
 				agentVersion := getNestedString(item, "status", "agentVersion")
@@ -309,7 +318,7 @@ func newEdgeGetCommand() *cobra.Command {
 				return err
 			}
 
-			edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(ctx, name, metav1.GetOptions{})
+			edge, _, err := getEdgeByName(ctx, dynClient, name)
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", name, err)
 			}
@@ -355,7 +364,11 @@ func newEdgeDeleteCommand() *cobra.Command {
 				return err
 			}
 
-			if err := dynClient.Resource(kedgeclient.EdgeGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			_, gvr, err := getEdgeByName(ctx, dynClient, name)
+			if err != nil {
+				return err
+			}
+			if err := dynClient.Resource(gvr).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 				return fmt.Errorf("deleting edge %q: %w", name, err)
 			}
 

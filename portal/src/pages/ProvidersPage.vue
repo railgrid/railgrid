@@ -161,7 +161,7 @@ function dependencyNotice(p: ProviderDTO): string {
 
 <template>
   <AppLayout>
-    <div class="mx-auto max-w-5xl">
+    <div>
       <header class="mb-6">
         <h1 class="text-xl font-semibold text-text-primary flex items-center gap-2">
           <Puzzle class="h-5 w-5 text-accent" :stroke-width="2" />

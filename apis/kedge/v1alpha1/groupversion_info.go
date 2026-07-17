@@ -39,14 +39,6 @@ func Resource(resource string) schema.GroupResource {
 
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
-		&VirtualWorkload{},
-		&VirtualWorkloadList{},
-		&Placement{},
-		&PlacementList{},
-		&Edge{},
-		&EdgeList{},
-		// KubernetesMCP + LinuxMCP CRDs removed in the MCP collapse
-		// refactor — both surfaces live behind MCPServer now.
 		&MCPServer{},
 		&MCPServerList{},
 	)

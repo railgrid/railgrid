@@ -32,7 +32,10 @@ import (
 )
 
 // TestUnknownProviderRejected verifies a typo in --providers is rejected
-// up-front with a helpful "known: [...]" hint, not silently ignored.
+// up-front with a helpful "known: [...]" hint, not silently ignored. (Since
+// the mcp/edges providers were decoupled out of the hub core, there are no
+// first-party builtins left, so the "known:" list is empty — but the
+// unknown-name validation still fires.)
 func TestUnknownProviderRejected(t *testing.T) {
 	dataDir := tempDir(t, "kedge-e2e-flags-unknown-")
 
@@ -42,7 +45,7 @@ func TestUnknownProviderRejected(t *testing.T) {
 		"--embedded-kcp",
 		"--listen-addr", ":19443",
 		"--data-dir", dataDir,
-		"--providers", "mpc-typo,server-edges",
+		"--providers", "mpc-typo,not-a-real-provider",
 	)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -66,6 +69,15 @@ func TestUnknownProviderRejected(t *testing.T) {
 // no orphans to remove, but the create-or-update path is the same code
 // the orphan cleanup uses, so a regression would surface here.
 func TestFilteredEnableReflectedInAPI(t *testing.T) {
+	// Parked: this asserted the hub bootstraps the mcp/kubernetes-edges/
+	// server-edges first-party builtins and reflects the --providers filter in
+	// /api/providers. Those providers were decoupled into standalone
+	// out-of-process providers, so the hub registers no builtins and there is
+	// nothing to positively filter — `--providers kubernetes-edges,...` is now
+	// rejected as unknown (covered by TestUnknownProviderRejected). Re-enable
+	// with fixture builtins if the hub ever ships first-party builtins again.
+	t.Skip("no first-party hub builtins after the edges/mcp decouple; nothing to positively filter")
+
 	dataDir := tempDir(t, "kedge-e2e-flags-filtered-")
 	logf, _ := os.Create(filepath.Join(dataDir, "hub.log"))
 

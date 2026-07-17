@@ -29,6 +29,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/tools/clientcmd"
 
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
@@ -75,18 +76,19 @@ func DialSSH(ctx context.Context, kubeconfig, name string) (*SSHWebSocketClient,
 	if err != nil {
 		return nil, fmt.Errorf("creating kedge client: %w", err)
 	}
-	edge, err := kedgeClient.Edges().Get(ctx, name, metav1.GetOptions{})
+	edge, err := kedgeClient.Dynamic().Resource(kedgeclient.LinuxServerGVR).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("fetching edge %q: %w", name, err)
 	}
-	if edge.Status.URL == "" {
+	statusURL, _, _ := unstructured.NestedString(edge.Object, "status", "URL")
+	if statusURL == "" {
 		return nil, fmt.Errorf("edge %q has no status.URL; is the agent running and the hub reconciler active?", name)
 	}
 
 	// Convert the HTTPS URL from status.URL to a WebSocket URL.
-	u, err := url.Parse(edge.Status.URL)
+	u, err := url.Parse(statusURL)
 	if err != nil {
-		return nil, fmt.Errorf("parsing edge status URL %q: %w", edge.Status.URL, err)
+		return nil, fmt.Errorf("parsing edge status URL %q: %w", statusURL, err)
 	}
 	switch u.Scheme {
 	case "https":

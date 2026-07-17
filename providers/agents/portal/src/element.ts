@@ -1216,7 +1216,6 @@ export class AgentsElement extends HTMLElement {
       'tool-mcp': { type: 'mcp', label: 'MCP', mcp: true },
       'tool-github': { type: 'github', label: 'GitHub' },
       'tool-web': { type: 'websearch', label: 'Web search' },
-      'tool-edges': { type: 'edges', label: 'Cluster edges' },
     }
     if (key in toolKinds) {
       const t = toolKinds[key]
@@ -1315,7 +1314,7 @@ export class AgentsElement extends HTMLElement {
       }
       // Tools are tool-type Connections. Pick an existing one or create a new
       // one, then wire it to the chosen target (agent or a toolset).
-      const toolType: Record<string, string> = { 'tool-mcp': 'mcp', 'tool-github': 'github', 'tool-web': 'websearch', 'tool-edges': 'edges' }
+      const toolType: Record<string, string> = { 'tool-mcp': 'mcp', 'tool-github': 'github', 'tool-web': 'websearch' }
       if (key in toolType) {
         let cn = s('existing')
         if (!cn) {
@@ -1969,7 +1968,7 @@ export class AgentsElement extends HTMLElement {
               (c) => `<label class="agents-check"><input type="checkbox" name="connection" value="${escapeHTML(c.metadata.name)}" ${on.has(c.metadata.name) ? 'checked' : ''} /> ${escapeHTML(c.metadata.name)} <span class="agents-hint">${escapeHTML(c.spec.type)}</span></label>`,
             )
             .join('')
-        : `<span class="muted">No tools yet — create MCP/GitHub/web/edges tools in the Flow view.</span>`
+        : `<span class="muted">No tools yet — create MCP/GitHub/web tools in the Flow view. Cluster edges are always on.</span>`
     const form = editing
       ? `<form class="agents-toolset-form" data-edit="${escapeHTML(editing.metadata.name)}">
           <h4>Edit toolset <code>${escapeHTML(editing.metadata.name)}</code></h4>

@@ -3,6 +3,8 @@ module github.com/faroshq/provider-sdk
 go 1.26.3
 
 require (
+	github.com/function61/holepunch-server v0.0.0-20210312073819-8f5e8775e813
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	k8s.io/apimachinery v0.36.1
 	k8s.io/client-go v0.36.1
 	sigs.k8s.io/yaml v1.6.0

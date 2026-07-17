@@ -122,8 +122,8 @@ func gvkToGVR(gvk schema.GroupVersionKind) schema.GroupVersionResource {
 	// Map kind to resource (lowercase plural)
 	resource := ""
 	switch gvk.Kind {
-	case "VirtualWorkload":
-		resource = "virtualworkloads"
+	case "Workload":
+		resource = "workloads"
 	case "Edge":
 		resource = "edges"
 	case "Placement":

@@ -68,3 +68,24 @@ func QualifyServiceAccount(homeCluster, saUsername string) (string, bool) {
 func QualifiedServiceAccount(homeCluster, namespace, name string) string {
 	return globalSAPrefix + homeCluster + ":" + namespace + ":" + name
 }
+
+// LocalFromQualified strips the home-cluster segment from a global SA username
+// ("system:kcp:serviceaccount:{cluster}:{ns}:{name}") to produce the plain
+// local form ("system:serviceaccount:{ns}:{name}") — the form kcp uses when it
+// does NOT qualify a ServiceAccount to a home cluster (e.g. the token carries
+// no verified cluster claim). Grant writers bind this ALONGSIDE the qualified
+// form so a cross-workspace provider SA is authorized whether or not kcp
+// qualified it on the request path. Returns false if s is not a global SA
+// username.
+func LocalFromQualified(s string) (string, bool) {
+	rest, ok := strings.CutPrefix(s, globalSAPrefix)
+	if !ok {
+		return "", false
+	}
+	// rest = {cluster}:{ns}:{name}; drop the first (cluster) segment.
+	parts := strings.SplitN(rest, ":", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return "", false
+	}
+	return "system:serviceaccount:" + parts[1], true
+}

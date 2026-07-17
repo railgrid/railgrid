@@ -44,14 +44,14 @@ func newGetCommand() *cobra.Command {
 			}
 
 			switch resource {
-			case "virtualworkloads", "vw":
-				return listVirtualWorkloads(ctx, dynClient)
-			case "placements":
-				return listPlacements(ctx, dynClient)
 			case "edges":
 				return listEdges(ctx, dynClient)
+			case "workloads", "vw":
+				return listWorkloads(ctx, dynClient)
+			case "placements":
+				return listPlacements(ctx, dynClient)
 			default:
-				return fmt.Errorf("unknown resource type: %s", resource)
+				return fmt.Errorf("unknown resource type: %s (try: edges, workloads, placements)", resource)
 			}
 		},
 	}
@@ -59,62 +59,20 @@ func newGetCommand() *cobra.Command {
 	return cmd
 }
 
-func listVirtualWorkloads(ctx context.Context, dynClient dynamic.Interface) error {
-	list, err := dynClient.Resource(kedgeclient.VirtualWorkloadGVR).Namespace("default").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("listing virtualworkloads: %w", err)
-	}
-
-	tw := newTabWriter(os.Stdout)
-	printRow(tw, "NAME", "PHASE", "READY", "AVAILABLE", "AGE")
-
-	for _, item := range list.Items {
-		phase := getNestedString(item, "status", "phase")
-		readyReplicas := getNestedInt(item, "status", "readyReplicas")
-		availableReplicas := getNestedInt(item, "status", "availableReplicas")
-		age := formatAge(item.GetCreationTimestamp().Time)
-		printRow(tw, item.GetName(), formatStringOrDash(phase),
-			fmt.Sprintf("%d", readyReplicas),
-			fmt.Sprintf("%d", availableReplicas),
-			age)
-	}
-
-	_ = tw.Flush()
-	return nil
-}
-
-func listPlacements(ctx context.Context, dynClient dynamic.Interface) error {
-	list, err := dynClient.Resource(kedgeclient.PlacementGVR).Namespace("default").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("listing placements: %w", err)
-	}
-
-	tw := newTabWriter(os.Stdout)
-	printRow(tw, "NAME", "EDGE", "PHASE", "READY", "AGE")
-
-	for _, item := range list.Items {
-		edgeName := getNestedString(item, "spec", "edgeName")
-		phase := getNestedString(item, "status", "phase")
-		readyReplicas := getNestedInt(item, "status", "readyReplicas")
-		age := formatAge(item.GetCreationTimestamp().Time)
-		printRow(tw, item.GetName(), edgeName, phase, fmt.Sprintf("%d", readyReplicas), age)
-	}
-
-	_ = tw.Flush()
-	return nil
-}
-
 func listEdges(ctx context.Context, dynClient dynamic.Interface) error {
-	list, err := dynClient.Resource(kedgeclient.EdgeGVR).List(ctx, metav1.ListOptions{})
+	items, err := listAllEdges(ctx, dynClient)
 	if err != nil {
-		return fmt.Errorf("listing edges: %w", err)
+		return err
 	}
 
 	tw := newTabWriter(os.Stdout)
 	printRow(tw, "NAME", "TYPE", "PHASE", "CONNECTED", "AGE")
 
-	for _, item := range list.Items {
-		edgeType := getNestedString(item, "spec", "type")
+	for _, item := range items {
+		edgeType := "kubernetes"
+		if item.GetKind() == "LinuxServer" {
+			edgeType = "server"
+		}
 		phase := getNestedString(item, "status", "phase")
 		connected, _, _ := unstructuredNestedBool(item.Object, "status", "connected")
 		age := formatAge(item.GetCreationTimestamp().Time)
@@ -122,6 +80,45 @@ func listEdges(ctx context.Context, dynClient dynamic.Interface) error {
 			fmt.Sprintf("%v", connected), age)
 	}
 
+	_ = tw.Flush()
+	return nil
+}
+
+func listWorkloads(ctx context.Context, dyn dynamic.Interface) error {
+	list, err := dyn.Resource(kedgeclient.WorkloadGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("listing workloads: %w", err)
+	}
+	tw := newTabWriter(os.Stdout)
+	printRow(tw, "NAME", "IMAGE", "PHASE", "READY", "AGE")
+	for _, item := range list.Items {
+		image := getNestedString(item, "spec", "simple", "image")
+		phase := getNestedString(item, "status", "phase")
+		ready := getNestedInt(item, "status", "readyReplicas")
+		replicas := getNestedInt(item, "spec", "replicas")
+		age := formatAge(item.GetCreationTimestamp().Time)
+		printRow(tw, item.GetName(), formatStringOrDash(image), formatStringOrDash(phase),
+			fmt.Sprintf("%d/%d", ready, replicas), age)
+	}
+	_ = tw.Flush()
+	return nil
+}
+
+func listPlacements(ctx context.Context, dyn dynamic.Interface) error {
+	list, err := dyn.Resource(kedgeclient.PlacementGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("listing placements: %w", err)
+	}
+	tw := newTabWriter(os.Stdout)
+	printRow(tw, "NAME", "EDGE", "PHASE", "READY", "AGE")
+	for _, item := range list.Items {
+		edge := getNestedString(item, "spec", "edgeName")
+		phase := getNestedString(item, "status", "phase")
+		ready := getNestedInt(item, "status", "readyReplicas")
+		age := formatAge(item.GetCreationTimestamp().Time)
+		printRow(tw, item.GetName(), formatStringOrDash(edge), formatStringOrDash(phase),
+			fmt.Sprintf("%d", ready), age)
+	}
 	_ = tw.Flush()
 	return nil
 }

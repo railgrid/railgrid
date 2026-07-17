@@ -67,7 +67,7 @@ type component struct {
 // provider-sdk is first: the providers depend on it, so when releasing `all`
 // the SDK tag is cut (and published to the mirror) before the providers that
 // will eventually `require` that published version.
-var componentOrder = []string{"provider-sdk", "hub", "quickstart", "kuery", "app-studio", "infrastructure", "code", "agents"}
+var componentOrder = []string{"provider-sdk", "hub", "quickstart", "kuery", "app-studio", "infrastructure", "code", "edges", "databricks", "agents"}
 
 var components = map[string]component{
 	"provider-sdk":   {"provider-sdk/v", "split → faroshq/provider-sdk; publishes the go-gettable SDK module (providers require this version once the replace is dropped)"},
@@ -77,6 +77,8 @@ var components = map[string]component{
 	"app-studio":     {"providers/app-studio/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-app-studio"},
 	"infrastructure": {"providers/infrastructure/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-infrastructure"},
 	"code":           {"providers/code/v", "provider-release.yaml builds the image + chart at this version; source mirror → faroshq/provider-code"},
+	"edges":          {"providers/edges/v", "provider-release.yaml builds the image (ghcr.io/faroshq/kedge-edges-provider) + chart at this version; source mirror → faroshq/provider-edges"},
+	"databricks":     {"providers/databricks/v", "provider-release.yaml builds the image (ghcr.io/faroshq/kedge-databricks-provider) + chart at this version; source mirror → faroshq/provider-databricks"},
 	"agents":         {"providers/agents/v", "provider-release.yaml builds the image (ghcr.io/faroshq/kedge-agents-provider) + chart at this version; no source mirror"},
 }
 
@@ -375,8 +377,13 @@ Components:
   provider-sdk    provider-sdk/v<X.Y.Z>             (split → faroshq/provider-sdk)
   hub             v<X.Y.Z>                          (repo-wide release)
   quickstart      providers/quickstart/v<X.Y.Z>
+  kuery           providers/kuery/v<X.Y.Z>
+  app-studio      providers/app-studio/v<X.Y.Z>
   infrastructure  providers/infrastructure/v<X.Y.Z>
   code            providers/code/v<X.Y.Z>
+  edges           providers/edges/v<X.Y.Z>
+  databricks      providers/databricks/v<X.Y.Z>
+  agents          providers/agents/v<X.Y.Z>
   all             every component (independent versions)
   current         print every component's latest existing tag (no changes)
 

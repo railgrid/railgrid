@@ -1,0 +1,70 @@
+# edges provider — CatalogEntry (providers.kedge.faros.sh).
+#
+# Single, optional, self-contained provider for BOTH edge kinds (KubernetesCluster
+# + LinuxServer) under one group edges.kedge.faros.sh. It terminates the agent
+# reverse tunnel (revdial) in-process, owns the API + its APIExport, runs the
+# token/RBAC/lifecycle controllers, and proxies kubectl/SSH/MCP through the hub
+# backend proxy. Runs SINGLE-REPLICA (revdial dialer map is process-global).
+---
+apiVersion: providers.kedge.faros.sh/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: edges
+spec:
+  displayName: "Edges"
+  description: "Connect and manage Kubernetes clusters and Linux/SSH servers as edges: kubectl and SSH through the hub reverse tunnel, plus the edge MCP endpoint."
+  vendor: "kedge"
+  version: "0.1.0"
+  category: "Edges"
+  # On Enable, grant the provider SA get/list/watch/proxy on the edge kinds in
+  # the tenant workspace. The tunnel needs it to read the edge CR directly (join-
+  # token validation + SSH creds) — without it the agent tunnel is rejected.
+  edgeProxyAccess: true
+  ui:
+    # The provider serves its portal micro-frontend (main.js custom element) from
+    # the embedded Vite bundle; the hub proxies /ui/providers/edges/* here and
+    # ProviderFrame mounts <kedge-provider-edges>. Overridden by the chart to the
+    # in-cluster Service DNS name.
+    url: "http://localhost:8084"
+    indexPath: "/"
+    # Sidebar sub-nav under the edges provider. The parent item routes to the
+    # edges fleet (/providers/edges); "Workloads" routes to /providers/edges/
+    # workloads, which the micro-frontend reads off subPath to render its
+    # Workloads view (VirtualWorkload → Placement scheduling across edges).
+    children:
+      - displayName: Workloads
+        builtinRoute: workloads
+  backend:
+    # Agent ingress (/agent/*) and consumer egress (/edgeproxy/*) route through
+    # the hub backend proxy at /services/providers/edges/* to this Service.
+    # Overridden by the chart to the in-cluster Service DNS name.
+    url: "http://localhost:8084"
+    healthPath: "/healthz"
+  apiExport:
+    name: "edges.providers.kedge.faros.sh"
+    # Both KubernetesCluster + LinuxServer come with this export (the provider
+    # owns them). These claims are the additional tenant-workspace resources the
+    # token/RBAC/lifecycle reconcilers create per registered edge: a namespace +
+    # ServiceAccount + token/kubeconfig Secrets + ClusterRole/Binding for the
+    # agent. Bound as the caller (contract 2: privileged, cross-tenant).
+    permissionClaims:
+      - group: ""
+        resource: namespaces
+        verbs: [get, list, watch, create, update, patch, delete]
+        tenantScoped: true
+      - group: ""
+        resource: serviceaccounts
+        verbs: [get, list, watch, create, update, patch, delete]
+        tenantScoped: true
+      - group: ""
+        resource: secrets
+        verbs: [get, list, watch, create, update, patch, delete]
+        tenantScoped: true
+      - group: rbac.authorization.k8s.io
+        resource: clusterroles
+        verbs: [get, list, watch, create, update, patch, delete]
+        tenantScoped: true
+      - group: rbac.authorization.k8s.io
+        resource: clusterrolebindings
+        verbs: [get, list, watch, create, update, patch, delete]
+        tenantScoped: true

@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -49,12 +48,11 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/admin"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
-	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
+	"github.com/faroshq/faros-kedge/pkg/hub/controllers/mcpserver"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/organization"
-	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/softdelete"
-	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	"github.com/faroshq/faros-kedge/pkg/hub/mcpaggregate"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
 	"github.com/faroshq/faros-kedge/pkg/hub/restapi"
 	"github.com/faroshq/faros-kedge/pkg/hub/serviceaccounts"
@@ -62,10 +60,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/kcppaths"
 	"github.com/faroshq/faros-kedge/pkg/server/auth"
 	"github.com/faroshq/faros-kedge/pkg/server/proxy"
-	"github.com/faroshq/faros-kedge/pkg/util/connman"
 	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
-	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
-	mcpservercontroller "github.com/faroshq/faros-kedge/providers/mcp/controllers"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
@@ -302,10 +297,7 @@ func (s *Server) Run(ctx context.Context) error {
 		userClient = kedgeclient.NewFromDynamic(userDynamic)
 	}
 
-	// 5. Create connection manager for tunnels
-	connManager := connman.New()
-
-	// 6. Create HTTP mux
+	// Create HTTP mux
 	router := mux.NewRouter()
 
 	// Auth routes (OIDC)
@@ -327,46 +319,12 @@ func (s *Server) Run(ctx context.Context) error {
 		logger.Info("OIDC auth routes registered", "issuer", s.opts.IDPIssuerURL)
 	}
 
-	// Compute internal URL for local loopback calls (MCP→edges-proxy, kcp mount resolution).
-	// This avoids CDN/proxy loops (e.g. Cloudflare loop detection).
-	hubInternalURL := s.opts.HubInternalURL
-	if hubInternalURL == "" {
-		scheme := "https"
-		if s.opts.ServingCertFile == "" {
-			scheme = "http"
-		}
-		addr := s.opts.ListenAddr
-		if strings.HasPrefix(addr, ":") {
-			addr = "localhost" + addr
-		}
-		hubInternalURL = scheme + "://" + addr
-	}
-
-	// Tunnel handlers (kcpConfig is used for SA token verification; nil if kcp not configured)
-	vws, err := builder.NewVirtualWorkspaces(connManager, kcpConfig, s.opts.StaticAuthTokens, s.opts.HubExternalURL, hubInternalURL, logger)
-	if err != nil {
-		return fmt.Errorf("creating virtual workspaces handlers: %w", err)
-	}
-	vws.Start(ctx.Done()) // start background stale-tunnel sweeper
-	router.PathPrefix(apiurl.PathPrefixAgentProxy + "/").Handler(http.StripPrefix(apiurl.PathPrefixAgentProxy, vws.EdgeAgentProxyHandler()))
-	router.PathPrefix(apiurl.PathPrefixEdgesProxy + "/").Handler(http.StripPrefix(apiurl.PathPrefixEdgesProxy, vws.EdgesProxyHandler()))
-	// Per-edge MCP is served under the agent-proxy route:
-	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
-
-	// Provider-owned virtual-workspace handlers: each first-party provider
-	// registers a mount path + factory in its manifest.go (BuiltinSpec.
-	// VirtualWorkspaceHandler). We iterate that registry here so the hub
-	// stays decoupled from any one provider's URL or implementation. The
-	// remaining direct vws.*Handler() calls above are pending extraction
-	// into their respective provider packages.
-	for _, b := range providers.AllBuiltins() {
-		if b.VirtualWorkspaceHandler == nil || b.VirtualWorkspaceMount == "" {
-			continue
-		}
-		mount := b.VirtualWorkspaceMount
-		router.PathPrefix(mount + "/").Handler(http.StripPrefix(mount, b.VirtualWorkspaceHandler(vws.Deps())))
-		logger.Info("Mounted provider virtual workspace", "provider", b.Name, "mount", mount)
-	}
+	// NOTE: edge connectivity (agent-proxy / edges-proxy tunnel termination, the
+	// per-edge/aggregate MCP, and the Edge API) has been extracted out of the hub
+	// core into the standalone edges-connectivity provider (and the edges-*
+	// thin providers). The hub no longer terminates tunnels or mounts any
+	// edge-specific virtual workspace; edge traffic now flows through the generic
+	// provider backend proxy below (/services/providers/edges-connectivity/*).
 
 	// Provider extension proxies (Phase 1A — see docs/providers.md).
 	// The proxies key off an in-memory registry that the catalog controller
@@ -393,36 +351,39 @@ func (s *Server) Run(ctx context.Context) error {
 	// Background sweeper marks providers stale when heartbeats stop.
 	go providers.RunSweeper(ctx, providerRegistry, logger)
 
-	// Federate Ready providers' MCP endpoints into the aggregate
-	// MCPServer handler. Each provider that exposes
-	// /services/providers/{name}/mcp shows up in the aggregate
-	// tools/list as `<name>__<tool>`. The vws was built earlier (line
-	// ~347) before providerRegistry existed, so we install the
-	// enumerator via the setter — Deps() reads it lazily on each
-	// per-request handler build.
-	vws.SetProviderEnumerator(func(ctx context.Context) []builder.ProviderTarget {
+	// Aggregate MCP endpoint — a base-layer hub capability, always on. It
+	// federates every Ready provider's own /mcp endpoint into one per-tenant
+	// aggregate MCP server. Mounted unconditionally: an empty (but valid) MCP
+	// server when nothing is registered, never edge-dependent. Providers —
+	// including the edges provider — federate in the same way. See
+	// pkg/hub/mcpaggregate.
+	// mcpProviderEnumerator returns the tenant's Ready, MCP-exposing providers.
+	// Shared by the aggregate endpoint (federates their tools per request) and
+	// the REST introspection endpoint (surfaces the same set to the portal).
+	mcpProviderEnumerator := func(ctx context.Context) []mcpaggregate.ProviderTarget {
 		all := providerRegistry.List()
-		out := make([]builder.ProviderTarget, 0, len(all))
+		out := make([]mcpaggregate.ProviderTarget, 0, len(all))
 		for _, p := range all {
 			if !p.Ready() || p.BackendURL == nil {
 				continue
 			}
-			// The provider's MCP transport is mounted at /mcp under
-			// its backend URL — see e.g. providers/infrastructure/
-			// server/server.go. We compose the absolute URL here once
-			// per List() pass; per-request the aggregator just POSTs
-			// to it.
-			mcpURL := strings.TrimRight(p.BackendURL.String(), "/") + "/mcp"
-			out = append(out, builder.ProviderTarget{
+			// A provider's MCP transport is mounted at /mcp under its
+			// backend URL (see providers/*/mcpserver).
+			out = append(out, mcpaggregate.ProviderTarget{
 				Name:        p.Name,
 				DisplayName: p.DisplayName,
-				Version:     p.Version,
-				MCPURL:      mcpURL,
-				Ready:       true,
+				MCPURL:      strings.TrimRight(p.BackendURL.String(), "/") + "/mcp",
 			})
 		}
 		return out
+	}
+	mcpAggregate := mcpaggregate.New(mcpaggregate.Options{
+		ExternalURL: s.opts.HubExternalURL,
+		Logger:      logger,
+		Providers:   mcpProviderEnumerator,
 	})
+	router.PathPrefix(apiurl.PathPrefixMCPServer + "/").Handler(
+		http.StripPrefix(apiurl.PathPrefixMCPServer, mcpAggregate))
 
 	// GraphQL: either embedded (in-process) or external reverse proxy.
 	// graphqlGroup is non-nil when embedded mode is active; we wait on it after
@@ -629,52 +590,12 @@ func (s *Server) Run(ctx context.Context) error {
 		providersConfig := rest.CopyConfig(kcpConfig)
 		providersConfig.Host = apiurl.KCPClusterURL(providersConfig.Host, kcppaths.SystemControllers)
 
-		// core.faros.sh is the merged APIExport that covers all kedge API groups
-		// (kedge.faros.sh, tenants.kedge.faros.sh, etc.). Generated by hack/gen-core-apiexport.
-		provider, err := apiexport.New(providersConfig, "core.faros.sh", apiexport.Options{Scheme: scheme})
-		if err != nil {
-			return fmt.Errorf("creating multicluster provider: %w", err)
-		}
+		// NOTE: the core.faros.sh merged-APIExport multicluster manager hosted
+		// only edge reconcilers (scheduler / status / edge lifecycle-RBAC-mount-
+		// token / mcpserver). All of those moved into the edges-connectivity and
+		// edges-* providers, so the hub no longer runs a core.faros.sh manager.
+		// Only the provider-catalog manager (below) remains.
 
-		mgr, err := mcmanager.New(providersConfig, provider, manager.Options{
-			Scheme:  scheme,
-			Metrics: metricsserver.Options{BindAddress: "0"}, // hub serves its own metrics; disable controller-runtime's
-		})
-		if err != nil {
-			return fmt.Errorf("creating multicluster manager: %w", err)
-		}
-
-		if err := scheduler.SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("setting up scheduler controller: %w", err)
-		}
-		if err := status.SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("setting up status aggregator: %w", err)
-		}
-		// Edge controllers.
-		if err := edge.SetupLifecycleWithManager(mgr, vws.EdgeConnManager()); err != nil {
-			return fmt.Errorf("setting up edge lifecycle controller: %w", err)
-		}
-		var hubCAData []byte
-		if s.opts.ServingCertFile != "" {
-			hubCAData, _ = os.ReadFile(s.opts.ServingCertFile)
-		}
-		if err := edge.SetupRBACWithManager(mgr, s.opts.HubExternalURL, hubCAData, s.opts.DevMode); err != nil {
-			return fmt.Errorf("setting up edge RBAC controller: %w", err)
-		}
-		// Use internal URL for mount resolution to avoid CDN/proxy loops.
-		if err := edge.SetupMountWithManager(mgr, kcpConfig, hubInternalURL); err != nil {
-			return fmt.Errorf("setting up edge mount controller: %w", err)
-		}
-		if err := edge.SetupTokenWithManager(mgr); err != nil {
-			return fmt.Errorf("setting up edge token controller: %w", err)
-		}
-		// KubernetesMCP + LinuxMCP per-kind controllers were removed in
-		// the MCP collapse refactor — both surfaces now live behind the
-		// single MCPServer aggregate via the ToolFamily registry in
-		// providers/mcp/aggregate.
-		if err := mcpservercontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
-			return fmt.Errorf("setting up mcpserver controller: %w", err)
-		}
 		// Provider-catalog reconciler runs against a SECOND multicluster
 		// manager bound to the providers.kedge.faros.sh APIExport. That
 		// APIExport is intentionally absent from core.faros.sh (see
@@ -707,6 +628,32 @@ func (s *Server) Run(ctx context.Context) error {
 			logger.Info("Starting providers multicluster manager")
 			if err := providersMgr.Start(ctx); err != nil {
 				logger.Error(err, "Providers multicluster manager failed")
+			}
+		}()
+
+		// MCPServer reconciler: MCPServer is a built-in, core-hosted provider —
+		// its CRD is distributed to tenants via core.faros.sh, so we re-introduce
+		// a core.faros.sh multicluster manager (removed in the edge extraction)
+		// to run it. It provisions each server's identity across all tenant
+		// workspaces. The aggregate serving lives in pkg/hub/mcpaggregate.
+		coreExportProvider, err := apiexport.New(providersConfig, "core.faros.sh", apiexport.Options{Scheme: scheme})
+		if err != nil {
+			return fmt.Errorf("creating core.faros.sh multicluster provider: %w", err)
+		}
+		coreMgr, err := mcmanager.New(providersConfig, coreExportProvider, manager.Options{
+			Scheme:  scheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
+		})
+		if err != nil {
+			return fmt.Errorf("creating core multicluster manager: %w", err)
+		}
+		if err := mcpserver.SetupWithManager(coreMgr, kcpConfig, s.opts.HubExternalURL, mcpProviderEnumerator); err != nil {
+			return fmt.Errorf("setting up mcpserver controller: %w", err)
+		}
+		go func() {
+			logger.Info("Starting core multicluster manager (mcpserver)")
+			if err := coreMgr.Start(ctx); err != nil {
+				logger.Error(err, "Core multicluster manager failed")
 			}
 		}()
 
@@ -774,13 +721,6 @@ func (s *Server) Run(ctx context.Context) error {
 			logger.Info("Starting soft-delete manager")
 			if err := softdeleteMgr.Start(ctx); err != nil {
 				logger.Error(err, "Soft-delete manager failed")
-			}
-		}()
-
-		go func() {
-			logger.Info("Starting multicluster manager")
-			if err := mgr.Start(ctx); err != nil {
-				logger.Error(err, "Multicluster manager failed")
 			}
 		}()
 	}

@@ -21,9 +21,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
 )
 
@@ -47,7 +45,7 @@ up to date.`,
 				return fmt.Errorf("not logged in — run: kedge login --hub-url <hub-url>\n(original error: %w)", err)
 			}
 
-			edge, err := dynClient.Resource(kedgeclient.EdgeGVR).Get(ctx, name, metav1.GetOptions{})
+			edge, _, err := getEdgeByName(ctx, dynClient, name)
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", name, err)
 			}

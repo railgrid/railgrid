@@ -17,5 +17,8 @@ limitations under the License.
 // +k8s:deepcopy-gen=package,register
 // +groupName=kedge.faros.sh
 
-// Package v1alpha1 contains API types for the kedge API group.
+// Package v1alpha1 contains API types for the kedge API group. After the
+// edge/MCP extraction, the only type the hub core still owns here is
+// MCPServer — a named, per-tenant aggregate MCP endpoint whose identity the
+// hub provisions via a reconciler.
 package v1alpha1
