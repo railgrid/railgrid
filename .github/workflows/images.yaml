@@ -93,6 +93,8 @@ jobs:
             image: ${{ github.repository_owner }}/kedge-databricks-provider
           - name: agents
             image: ${{ github.repository_owner }}/kedge-agents-provider
+          - name: edges
+            image: ${{ github.repository_owner }}/kedge-edges-provider
           # Companion image of the infrastructure provider (the dev-agent its
           # kro backend injects into development-mode pods); published by
           # provider-release.yaml on the infrastructure provider's tag.

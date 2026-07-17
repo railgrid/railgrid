@@ -169,10 +169,11 @@ uninstall-provider-edges: ## Delete edges CatalogEntry + Provider
 		--insecure-skip-tls-verify \
 		delete -f $(EDGES_MANIFEST) -f $(EDGES_PROVIDER_MANIFEST)
 
-docker-build-edges-provider: ## Build the edges provider image (context = repo root)
-	docker build -f providers/edges/Dockerfile \
+docker-build-edges-provider: ## Build the edges provider image (context = providers/edges)
+	docker build \
 		--platform $(DOCKER_PLATFORM) \
-		-t ghcr.io/faroshq/kedge-edges-provider:$(VERSION) .
+		-t ghcr.io/faroshq/kedge-edges-provider:$(VERSION) \
+		providers/edges
 
 build-app-studio-provider-portal: ## Build the App Studio provider's micro-frontend (Vite + TS → portal/dist)
 	cd providers/app-studio/portal && npm install --no-audit --no-fund && npm run build
