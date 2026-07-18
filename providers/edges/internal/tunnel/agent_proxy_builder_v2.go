@@ -131,15 +131,20 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 					return
 				}
 				authenticatedByJoinToken = true
-			} else if p.kcpConfig != nil {
-				// Always use cluster from URL path — do NOT use JWT's clusterName claim
-				// (it's unverified and not yet validated by kcp). The TokenReview performed
-				// inside authorizeFn will reject tokens not issued for this cluster.
-				// Fixes https://github.com/faroshq/kedge/issues/68
-				if err := p.authorizeFn(r.Context(), p.kcpConfig, token, cluster, "get", p.group, resource, name); err != nil {
-					p.logger.Error(err, "edge agent proxy authorization failed",
-						"cluster", cluster, "name", name)
-					http.Error(w, "Forbidden", http.StatusForbidden)
+			} else {
+				// SA token: this is a post-exchange reconnect. Validate it against
+				// the credential the provider itself issued for this edge (the
+				// edge-<name>-kubeconfig Secret it minted during token-exchange),
+				// read through the provider's own APIExport. We deliberately do NOT
+				// run a delegated TokenReview/SubjectAccessReview here: that would
+				// require reaching into the tenant workspace's auth APIs, which the
+				// workspace-scoped provider credential cannot do (and the APIExport
+				// virtual workspace does not serve). Holding the exact issued token
+				// proves both authenticity and that this is the right edge.
+				if err := p.authorizeByIssuedToken(r.Context(), cluster, name, token); err != nil {
+					p.logger.Info("Rejected edge agent tunnel: SA token does not match issued credential",
+						"cluster", cluster, "name", name, "err", err)
+					http.Error(w, "Unauthorized", http.StatusUnauthorized)
 					return
 				}
 			}
@@ -392,6 +397,56 @@ func (p *Server) authorizeByJoinToken(ctx context.Context, gvr schema.GroupVersi
 	// Constant-time comparison to prevent timing attacks.
 	if subtle.ConstantTimeCompare([]byte(token), []byte(joinToken)) != 1 {
 		return fmt.Errorf("join token mismatch for %s %s/%s", gvr.Resource, cluster, name)
+	}
+
+	return nil
+}
+
+// authorizeByIssuedToken validates a reconnecting agent's ServiceAccount token
+// against the credential the provider itself issued for this edge: the
+// edge-<name>-kubeconfig Secret it minted during token-exchange (the same
+// Secret buildAgentKubeconfigHeader reads), fetched through the provider's own
+// APIExport virtual workspace.
+//
+// This deliberately replaces a delegated TokenReview/SubjectAccessReview. Those
+// would require the provider to reach into the tenant workspace's auth APIs —
+// traffic the workspace-scoped provider credential cannot perform and the
+// APIExport virtual workspace does not serve. Because the provider is the
+// issuer of this exact token, a constant-time match proves both that the caller
+// is authentic (holds the issued credential) and that it is the right edge
+// (the token was minted for this edge alone). Revocation is by edge deletion,
+// which removes the SA/Secret and makes the match fail — mirroring join-token.
+func (p *Server) authorizeByIssuedToken(ctx context.Context, cluster, name, token string) error {
+	if token == "" {
+		return fmt.Errorf("empty token")
+	}
+
+	cfg, err := p.tenantConfigFor(ctx, cluster)
+	if err != nil {
+		return fmt.Errorf("resolving tenant config: %w", err)
+	}
+	dynClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("creating dynamic client: %w", err)
+	}
+
+	secretName := "edge-" + name + "-kubeconfig"
+	secret, err := dynClient.Resource(secretGVR).Namespace("kedge-system").Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting issued credential secret kedge-system/%s: %w", secretName, err)
+	}
+	tokenB64, found, _ := unstructured.NestedString(secret.Object, "data", "token")
+	if !found || tokenB64 == "" {
+		return fmt.Errorf("issued credential secret %s has no token", secretName)
+	}
+	issued, err := base64.StdEncoding.DecodeString(tokenB64)
+	if err != nil {
+		return fmt.Errorf("decoding issued token from secret %s: %w", secretName, err)
+	}
+
+	// Constant-time comparison to prevent timing attacks.
+	if subtle.ConstantTimeCompare([]byte(token), issued) != 1 {
+		return fmt.Errorf("SA token does not match issued credential for %s/%s", cluster, name)
 	}
 
 	return nil
