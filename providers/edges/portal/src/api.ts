@@ -490,3 +490,52 @@ export async function deleteWorkload(name: string): Promise<void> {
     { namespace: WORKLOAD_NS, name },
   )
 }
+
+// deployMarketplaceApp does the two-step marketplace deploy: (1) create a Helm
+// Workload pinned to one edge (the provider renders the chart hub-side, the
+// agent applies it), and (2) declare an edges Service targeting the rendered
+// k8s Service so the app's MCP tools appear once a token is set. The Service
+// name equals the workload name because the provider forces fullnameOverride.
+export async function deployMarketplaceApp(opts: {
+  name: string
+  edgeName: string
+  chart: { repoURL: string; chart: string; version: string }
+  values?: Record<string, unknown>
+  serviceType: string
+  port: number
+  instructions?: string
+}): Promise<void> {
+  const workload: Record<string, unknown> = {
+    metadata: { name: opts.name, namespace: WORKLOAD_NS },
+    spec: {
+      helm: {
+        repoURL: opts.chart.repoURL,
+        chart: opts.chart.chart,
+        version: opts.chart.version,
+        ...(opts.values ? { values: opts.values } : {}),
+      },
+      placement: {
+        strategy: 'Singleton',
+        // Target this one edge by its self-name label (stamped by the edge
+        // lifecycle reconciler).
+        edgeSelector: { matchLabels: { 'edges.kedge.faros.sh/name': opts.edgeName } },
+      },
+    },
+  }
+  await graphql(
+    `mutation CreateHelmWorkload($namespace: String!, $object: EdgesKedgeFarosShV1alpha1Workload_Input!) {
+       edges_kedge_faros_sh { v1alpha1 { createWorkload(namespace: $namespace, object: $object) { metadata { name } } } }
+     }`,
+    { namespace: WORKLOAD_NS, object: workload },
+  )
+
+  await createKubeEdgeService({
+    name: opts.name,
+    edgeName: opts.edgeName,
+    serviceType: opts.serviceType,
+    targetNamespace: WORKLOAD_NS,
+    targetName: opts.name,
+    port: opts.port,
+    instructions: opts.instructions,
+  })
+}

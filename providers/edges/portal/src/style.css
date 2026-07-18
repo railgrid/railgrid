@@ -168,3 +168,19 @@ kedge-provider-edges .svc-form { display: grid; grid-template-columns: repeat(au
 kedge-provider-edges .svc-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--color-text-secondary); }
 kedge-provider-edges .svc-form .svc-input { margin-bottom: 0; }
 kedge-provider-edges .svc-form select.svc-input { appearance: auto; }
+
+/* --- Marketplace (Workloads page) --------------------------------------- */
+kedge-provider-edges .market { border: 1px solid var(--color-border-subtle); border-radius: 16px; margin-bottom: 16px; overflow: hidden; background: var(--color-surface-raised); }
+kedge-provider-edges .market-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; cursor: pointer; }
+kedge-provider-edges .market-head h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
+kedge-provider-edges .market-body { padding: 4px 16px 16px; border-top: 1px solid var(--color-border-subtle); }
+kedge-provider-edges .market-cat { margin-top: 14px; }
+kedge-provider-edges .market-cat-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--color-text-muted); margin-bottom: 8px; }
+kedge-provider-edges .market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+kedge-provider-edges .market-card { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--color-border-subtle); border-radius: 10px; padding: 12px; background: var(--color-surface-overlay); }
+kedge-provider-edges .market-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+kedge-provider-edges .market-name { font-weight: 600; font-size: 13px; color: var(--color-text-primary); }
+kedge-provider-edges .market-desc { margin: 0; font-size: 12px; color: var(--color-text-secondary); min-height: 32px; }
+kedge-provider-edges .market-meta { font-size: 11px; }
+kedge-provider-edges .chip { font-size: 10px; padding: 1px 8px; border-radius: 999px; background: var(--color-surface-hover); color: var(--color-text-muted); white-space: nowrap; }
+kedge-provider-edges .btn.sm { padding: 4px 10px; font-size: 12px; align-self: flex-start; }

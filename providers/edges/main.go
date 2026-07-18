@@ -133,7 +133,7 @@ func runServe() error {
 	// Edge controllers (token / RBAC / lifecycle) on the provider's own
 	// APIExportEndpointSlice multicluster manager. Best-effort: a missing
 	// kubeconfig just disables the manager (healthz + tunnel still serve).
-	if cerr := startEdgeControllerManager(ctx, kcpConfig, tsrv.ConnManager(),
+	if cerr := startEdgeControllerManager(ctx, kcpConfig, tsrv,
 		hubExternalURL, hubCAData(log), os.Getenv("KEDGE_DEV_MODE") == "true"); cerr != nil {
 		if errors.Is(cerr, errControllerDisabled) {
 			log.Info("edge controller manager disabled (no kcp kubeconfig)")

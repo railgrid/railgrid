@@ -40,7 +40,6 @@ import (
 	"k8s.io/klog/v2"
 
 	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
-	"github.com/faroshq/provider-edges/internal/kcpurl"
 	utilssh "github.com/faroshq/provider-edges/internal/ssh"
 	utilhttp "github.com/faroshq/provider-edges/internal/wsutil"
 )
@@ -261,9 +260,13 @@ func (p *Server) fetchSSHCredentials(ctx context.Context, cluster, edgeName, cal
 		return nil, nil
 	}
 
-	// Create cluster-scoped clients by modifying the host URL to include the cluster path.
-	clusterConfig := rest.CopyConfig(p.kcpConfig)
-	clusterConfig.Host = kcpurl.ClusterURL(clusterConfig.Host, cluster)
+	// Create cluster-scoped clients via the APIExport virtual workspace (the
+	// provider SA cannot read tenant Edge/Secret objects by re-rooting its own
+	// workspace-scoped config).
+	clusterConfig, err := p.tenantConfigFor(ctx, cluster)
+	if err != nil {
+		return nil, fmt.Errorf("resolving tenant config: %w", err)
+	}
 
 	dynClient, err := dynamic.NewForConfig(clusterConfig)
 	if err != nil {

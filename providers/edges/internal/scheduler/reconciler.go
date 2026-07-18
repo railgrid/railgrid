@@ -22,6 +22,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
+	"github.com/faroshq/provider-edges/internal/render"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -93,6 +95,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	selected := SelectEdges(matched, vw.Spec.Placement.Strategy)
 	logger.V(4).Info("Scheduling", "edges", len(edgeList.Items), "matched", len(matched), "selected", len(selected))
 
+	// Render the workload into a manifest bundle once (Helm charts are fetched
+	// + templated here, hub-side). The same bundle is stored on every
+	// Placement; the agent stamps per-placement labels at apply time. A render
+	// failure (e.g. chart fetch) requeues rather than creating empty placements.
+	objs, err := render.Render(ctx, &vw)
+	if err != nil {
+		logger.Error(err, "Failed to render workload")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	manifests, err := render.ToRawExtensions(objs)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("encoding rendered manifests: %w", err)
+	}
+
 	// List existing placements for this VW.
 	var placementList edgesv1alpha1.PlacementList
 	if err := c.List(ctx, &placementList,
@@ -117,14 +133,27 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		}
 	}
 
-	existingEdges := make(map[string]bool)
-	for _, p := range placementList.Items {
-		existingEdges[p.Spec.EdgeName] = true
+	// Index existing placements by edge so we can refresh their manifests when
+	// the workload changes (chart bump, values edit, replica change).
+	existingByEdge := make(map[string]*edgesv1alpha1.Placement, len(placementList.Items))
+	for i := range placementList.Items {
+		p := &placementList.Items[i]
+		existingByEdge[p.Spec.EdgeName] = p
 	}
 
-	// Create placements for newly selected edges.
+	// Create or refresh a placement per selected edge.
 	for _, edge := range selected {
-		if existingEdges[edge.Name] {
+		if existing, ok := existingByEdge[edge.Name]; ok {
+			if equality.Semantic.DeepEqual(existing.Spec.Manifests, manifests) &&
+				equalReplicas(existing.Spec.Replicas, vw.Spec.Replicas) {
+				continue
+			}
+			existing.Spec.Manifests = manifests
+			existing.Spec.Replicas = vw.Spec.Replicas
+			logger.Info("Refreshing placement manifests", "placement", existing.Name, "edge", edge.Name)
+			if err := c.Update(ctx, existing); err != nil && !apierrors.IsConflict(err) {
+				logger.Error(err, "Failed to update placement", "name", existing.Name)
+			}
 			continue
 		}
 
@@ -153,8 +182,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 					Namespace:  vw.Namespace,
 					UID:        vw.UID,
 				},
-				EdgeName: edge.Name,
-				Replicas: vw.Spec.Replicas,
+				EdgeName:  edge.Name,
+				Replicas:  vw.Spec.Replicas,
+				Manifests: manifests,
 			},
 		}
 
@@ -167,6 +197,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// Requeue periodically so edge reconnects are picked up even if a watch
 	// event was missed (status-only changes may not always fire the mapper).
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+func equalReplicas(a, b *int32) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // mapEdgeToWorkloads re-enqueues all Workloads in the same

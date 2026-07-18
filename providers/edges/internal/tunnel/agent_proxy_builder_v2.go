@@ -32,11 +32,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	"github.com/faroshq/provider-edges/internal/kcpurl"
 	utilhttp "github.com/faroshq/provider-edges/internal/wsutil"
 	"github.com/faroshq/provider-sdk/revdial"
 )
@@ -282,8 +280,13 @@ func (p *Server) buildAgentKubeconfigHeader(cluster, edgeName, _ string) string 
 	}
 
 	// Read the SA token from the kubeconfig secret created by the RBAC controller.
-	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = kcpurl.ClusterURL(cfg.Host, cluster)
+	// Route through the tenant workspace via the APIExport virtual workspace (the
+	// provider SA cannot read tenant Secrets by re-rooting its own config).
+	cfg, err := p.tenantConfigFor(context.Background(), cluster)
+	if err != nil {
+		p.logger.Error(err, "failed to resolve tenant config for SA token lookup", "cluster", cluster)
+		return ""
+	}
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		p.logger.Error(err, "failed to create dynamic client for SA token lookup")
@@ -361,8 +364,13 @@ func (p *Server) authorizeByJoinToken(ctx context.Context, gvr schema.GroupVersi
 		return fmt.Errorf("empty token")
 	}
 
-	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = kcpurl.ClusterURL(cfg.Host, cluster)
+	// Resolve the Edge in its tenant workspace via the APIExport virtual
+	// workspace. Re-rooting the provider's own workspace-scoped SA config would
+	// be rejected by kcp, which is what broke join-token registration in prod.
+	cfg, err := p.tenantConfigFor(ctx, cluster)
+	if err != nil {
+		return fmt.Errorf("resolving tenant config: %w", err)
+	}
 
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {

@@ -34,7 +34,6 @@ import (
 	"k8s.io/client-go/util/retry"
 
 	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
-	"github.com/faroshq/provider-edges/internal/kcpurl"
 	"github.com/faroshq/provider-sdk/revdial"
 )
 
@@ -46,8 +45,12 @@ import (
 // It is called by the agent-proxy handler when a tunnel is established.
 // Best-effort: errors are logged but not propagated.
 func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionResource, cluster, name string, sshCreds *sshCredsFromAgent, clearJoinToken bool) {
-	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = kcpurl.ClusterURL(cfg.Host, cluster)
+	cfg, err := p.tenantConfigFor(ctx, cluster)
+	if err != nil {
+		p.logger.Error(err, "markEdgeConnected: failed to resolve tenant config",
+			"cluster", cluster, "edge", name)
+		return
+	}
 
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
@@ -275,8 +278,12 @@ func (p *Server) runEdgeHeartbeatLoop(ctx context.Context, gvr schema.GroupVersi
 // Best-effort: errors are logged at V(4) only — heartbeat staleness is a soft
 // signal, and the LifecycleReconciler will eventually reconcile state.
 func (p *Server) stampEdgeHeartbeat(ctx context.Context, gvr schema.GroupVersionResource, cluster, name string, t time.Time) {
-	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = kcpurl.ClusterURL(cfg.Host, cluster)
+	cfg, err := p.tenantConfigFor(ctx, cluster)
+	if err != nil {
+		p.logger.V(4).Info("stampEdgeHeartbeat: failed to resolve tenant config",
+			"cluster", cluster, "edge", name, "err", err)
+		return
+	}
 
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
@@ -304,8 +311,12 @@ func (p *Server) stampEdgeHeartbeat(ctx context.Context, gvr schema.GroupVersion
 //
 // It is best-effort: errors are logged but not propagated.
 func (p *Server) markEdgeDisconnected(ctx context.Context, gvr schema.GroupVersionResource, cluster, name string) {
-	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = kcpurl.ClusterURL(cfg.Host, cluster)
+	cfg, err := p.tenantConfigFor(ctx, cluster)
+	if err != nil {
+		p.logger.Error(err, "markEdgeDisconnected: failed to resolve tenant config",
+			"cluster", cluster, "edge", name)
+		return
+	}
 
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {

@@ -58,6 +58,17 @@ spec:
               edgeName:
                 description: EdgeName is the target KubernetesCluster edge's name.
                 type: string
+              manifests:
+                description: |-
+                  Manifests is the provider-rendered set of Kubernetes objects the edge
+                  agent applies with server-side apply. Each entry is one object as raw
+                  JSON. When set, the agent applies these (and prunes ones that disappear)
+                  instead of synthesizing a Deployment from the referenced Workload.
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                type: array
+                x-kubernetes-preserve-unknown-fields: true
               replicas:
                 format: int32
                 type: integer

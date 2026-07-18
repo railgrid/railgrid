@@ -90,7 +90,7 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 	}
 	var toRegister []svcReg
 	svcs := p.listReadyServices(ctx, cluster, token)
-	logger.Info("service tool discovery", "cluster", cluster, "readyServices", len(svcs))
+	logger.V(2).Info("service tool discovery", "cluster", cluster, "readyServices", len(svcs))
 	for _, es := range svcs {
 		key := edgeConnKey(es.view.connResource(), cluster, es.view.Spec.EdgeRef.Name)
 		dialer, ok := p.edgeConnManager.Load(key)
@@ -170,8 +170,10 @@ func (p *Server) listReadyServices(ctx context.Context, cluster, token string) [
 	list, err := dynClient.Resource(gvr).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		// As-caller list failed (RBAC or transient) — the token can't see
-		// Service objects, so no tools. Logged so it's diagnosable.
-		logger.Info("service discovery: listing Services failed", "err", err.Error())
+		// Service objects, so no tools. Commonly a NotFound (the Services API
+		// isn't bound in this workspace), which is expected steady state, so
+		// keep it at V(2) to match the success path and avoid log spam.
+		logger.V(2).Info("service discovery: listing Services failed", "err", err.Error())
 		return nil
 	}
 	logger.V(2).Info("service discovery: listed Services", "count", len(list.Items))

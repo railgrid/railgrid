@@ -16,7 +16,7 @@ spec:
       crd: {}
   - group: edges.kedge.faros.sh
     name: placements
-    schema: v260716-d4e8aa2.placements.edges.kedge.faros.sh
+    schema: v260718-e83a64f.placements.edges.kedge.faros.sh
     storage:
       crd: {}
   - group: edges.kedge.faros.sh
@@ -26,7 +26,7 @@ spec:
       crd: {}
   - group: edges.kedge.faros.sh
     name: workloads
-    schema: v260716-d4e8aa2.workloads.edges.kedge.faros.sh
+    schema: v260718-e83a64f.workloads.edges.kedge.faros.sh
     storage:
       crd: {}
 status: {}

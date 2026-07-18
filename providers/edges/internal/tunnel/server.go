@@ -24,6 +24,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	"github.com/faroshq/provider-edges/internal/kcpurl"
 )
 
 // KindConfig declares one connectable kind the tunnel serves. All kinds a
@@ -41,6 +43,22 @@ type KindConfig struct {
 // Factored out as a type to allow injection in tests. The default is the
 // package-level authorize (auth.go).
 type authorizeFnType func(ctx context.Context, kcpConfig *rest.Config, token, clusterName, verb, group, resource, name string) error
+
+// TenantConfigGetter returns a *rest.Config scoped to the given kcp tenant
+// logical cluster, able to read/write the Edge resources (and their
+// kedge-system Secrets) the provider owns in that workspace.
+//
+// It exists because the provider's own SA credential (p.kcpConfig) is
+// workspace-scoped: re-rooting it to /clusters/<tenant> is rejected by kcp
+// ("the server could not find the requested resource"), which broke agent
+// join-token registration in production. The provider's ONLY cross-workspace
+// credential is its APIExport virtual workspace — the same one the edge
+// controller manager engages each tenant cluster through. This getter is wired
+// from that manager (mcmanager.GetCluster(...).GetConfig()); when unset
+// (dev/tests with an admin/front-proxy kcpConfig) callers fall back to
+// re-rooting kcpConfig directly, which works only because that credential is
+// not workspace-scoped.
+type TenantConfigGetter func(ctx context.Context, cluster string) (*rest.Config, error)
 
 // Server is the SDK's generic tunnel plane. The single `edges` provider
 // constructs one serving BOTH connectable kinds (KubernetesCluster + LinuxServer
@@ -62,9 +80,17 @@ type Server struct {
 	// reads. Single-replica invariant applies (see connman.go).
 	edgeConnManager *ConnManager
 
-	// kcpConfig is the provider's kcp credential. Used to validate agent tokens
-	// across tenant workspaces and to read/write the kind's CR status.
+	// kcpConfig is the provider's kcp credential. Used for delegated agent-token
+	// authorization (TokenReview/SAR via a tenant-workspace RBAC grant) and, as a
+	// fallback when tenantConfig is unset, for direct tenant reads/writes.
 	kcpConfig *rest.Config
+
+	// tenantConfig, when set, yields a cross-workspace-capable *rest.Config for a
+	// tenant logical cluster (the provider's APIExport virtual workspace). Wired
+	// from the edge controller manager. When nil, tenantConfigFor falls back to
+	// re-rooting kcpConfig (dev/tests with an admin credential). See
+	// TenantConfigGetter.
+	tenantConfig TenantConfigGetter
 
 	// staticTokens bypass the SA/join-token requirement (dev / static-auth hubs).
 	staticTokens map[string]struct{}
@@ -149,6 +175,29 @@ func New(cfg Config) (*Server, error) {
 		authorizeFn:         authorize,
 		logger:              cfg.Logger.WithName("edge-tunnel"),
 	}, nil
+}
+
+// SetTenantConfigGetter wires the cross-workspace tenant config source (the
+// provider's APIExport virtual workspace, owned by the edge controller
+// manager). Call once during startup, before the tunnel handlers begin serving
+// agent requests. When never set, tenant reads/writes fall back to re-rooting
+// kcpConfig (see TenantConfigGetter).
+func (p *Server) SetTenantConfigGetter(fn TenantConfigGetter) { p.tenantConfig = fn }
+
+// tenantConfigFor returns a *rest.Config able to read/write the given tenant
+// logical cluster. It prefers the APIExport virtual-workspace getter and falls
+// back to re-rooting the provider's kcpConfig at /clusters/<cluster> (which
+// only works when kcpConfig is a non-workspace-scoped admin credential).
+func (p *Server) tenantConfigFor(ctx context.Context, cluster string) (*rest.Config, error) {
+	if p.tenantConfig != nil {
+		return p.tenantConfig(ctx, cluster)
+	}
+	if p.kcpConfig == nil {
+		return nil, fmt.Errorf("no kcp config available")
+	}
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = kcpurl.ClusterURL(cfg.Host, cluster)
+	return cfg, nil
 }
 
 // gvrForResource resolves a URL resource segment to its GVR + Kind. ok is false

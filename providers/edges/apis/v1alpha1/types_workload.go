@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // WorkloadPhase describes the phase of a Workload.
@@ -68,7 +69,8 @@ type WorkloadList struct {
 	Items           []Workload `json:"items"`
 }
 
-// WorkloadSpec defines the desired state of Workload.
+// WorkloadSpec defines the desired state of Workload. Exactly one of simple,
+// template or helm selects how the workload is rendered.
 type WorkloadSpec struct {
 	// Simple mode: just image + ports + env.
 	// +optional
@@ -76,11 +78,39 @@ type WorkloadSpec struct {
 	// Advanced mode: full PodTemplateSpec.
 	// +optional
 	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
+	// Helm mode: render an upstream chart. The provider fetches + templates the
+	// chart hub-side and ships the rendered manifests to the edge; the edge
+	// needs no chart-registry egress.
+	// +optional
+	Helm *HelmWorkloadSpec `json:"helm,omitempty"`
 	// +optional
 	Replicas  *int32        `json:"replicas,omitempty"`
 	Placement PlacementSpec `json:"placement"`
 	// +optional
 	Access *AccessSpec `json:"access,omitempty"`
+}
+
+// HelmWorkloadSpec deploys a workload from a Helm chart, rendered by the
+// provider at scheduling time (helm template). The edge agent only applies the
+// resulting manifests, so chart fetching stays hub-side.
+type HelmWorkloadSpec struct {
+	// RepoURL is the chart repository base URL, e.g.
+	// "https://grafana.github.io/helm-charts". The provider fetches the chart
+	// archive as "<repoURL>/<chart>-<version>.tgz".
+	// +kubebuilder:validation:MinLength=1
+	RepoURL string `json:"repoURL"`
+	// Chart is the chart name within the repository.
+	// +kubebuilder:validation:MinLength=1
+	Chart string `json:"chart"`
+	// Version pins the chart version (required for reproducible renders).
+	// +kubebuilder:validation:MinLength=1
+	Version string `json:"version"`
+	// Values overrides chart values, as an embedded object (merged over the
+	// chart defaults). The provider forces fullnameOverride to the Workload
+	// name so the chart's Service name is deterministic.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Values *runtime.RawExtension `json:"values,omitempty"`
 }
 
 // SimpleWorkloadSpec is a simplified workload definition.

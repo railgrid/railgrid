@@ -28,6 +28,7 @@ import (
 
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcmulticluster "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	edgectrl "github.com/faroshq/provider-edges/internal/edgectrl"
 	"github.com/faroshq/provider-edges/internal/scheduler"
@@ -53,10 +54,11 @@ const endpointSliceName = apiExportName
 // edge token / RBAC / lifecycle reconcilers. connManager wires the lifecycle
 // reconciler's tunnel-liveness cross-check to the provider's live ConnManager.
 // A nil config means "skip the manager" (healthz-only / dev).
-func startEdgeControllerManager(ctx context.Context, config *rest.Config, connManager *sdktunnel.ConnManager, hubExternalURL string, hubCAData []byte, devMode bool) error {
+func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *sdktunnel.Server, hubExternalURL string, hubCAData []byte, devMode bool) error {
 	if config == nil {
 		return errControllerDisabled
 	}
+	connManager := tsrv.ConnManager()
 
 	ctrl.SetLogger(klog.NewKlogr())
 	s := edgescheme.NewScheme()
@@ -85,6 +87,20 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, connMa
 	if err != nil {
 		return fmt.Errorf("creating multicluster manager: %w", err)
 	}
+
+	// Wire the tunnel plane's cross-workspace tenant reads/writes to this
+	// manager's APIExport virtual workspace. The provider's own SA credential is
+	// workspace-scoped, so re-rooting it to /clusters/<tenant> is rejected by kcp
+	// — which broke agent join-token registration in production. mgr.GetCluster
+	// engages each tenant logical cluster through the VW, the provider's only
+	// credential with cross-workspace access to the bound Edge resources.
+	tsrv.SetTenantConfigGetter(func(ctx context.Context, clusterName string) (*rest.Config, error) {
+		cl, err := mgr.GetCluster(ctx, mcmulticluster.ClusterName(clusterName))
+		if err != nil {
+			return nil, fmt.Errorf("engaging tenant cluster %q: %w", clusterName, err)
+		}
+		return cl.GetConfig(), nil
+	})
 
 	opts := edgectrl.Options{HubExternalURL: hubExternalURL, HubCAData: hubCAData, DevMode: devMode}
 	// One set of token/RBAC/lifecycle controllers per kind, on the shared

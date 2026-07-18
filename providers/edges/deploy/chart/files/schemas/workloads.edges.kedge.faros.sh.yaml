@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260716-d4e8aa2.workloads.edges.kedge.faros.sh
+  name: v260718-e83a64f.workloads.edges.kedge.faros.sh
 spec:
   group: edges.kedge.faros.sh
   names:
@@ -52,7 +52,9 @@ spec:
         metadata:
           type: object
         spec:
-          description: WorkloadSpec defines the desired state of Workload.
+          description: |-
+            WorkloadSpec defines the desired state of Workload. Exactly one of simple,
+            template or helm selects how the workload is rendered.
           properties:
             access:
               description: AccessSpec defines how the workload is exposed.
@@ -64,6 +66,40 @@ spec:
                 port:
                   format: int32
                   type: integer
+              type: object
+            helm:
+              description: |-
+                Helm mode: render an upstream chart. The provider fetches + templates the
+                chart hub-side and ships the rendered manifests to the edge; the edge
+                needs no chart-registry egress.
+              properties:
+                chart:
+                  description: Chart is the chart name within the repository.
+                  minLength: 1
+                  type: string
+                repoURL:
+                  description: |-
+                    RepoURL is the chart repository base URL, e.g.
+                    "https://grafana.github.io/helm-charts". The provider fetches the chart
+                    archive as "<repoURL>/<chart>-<version>.tgz".
+                  minLength: 1
+                  type: string
+                values:
+                  description: |-
+                    Values overrides chart values, as an embedded object (merged over the
+                    chart defaults). The provider forces fullnameOverride to the Workload
+                    name so the chart's Service name is deterministic.
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                version:
+                  description: Version pins the chart version (required for reproducible
+                    renders).
+                  minLength: 1
+                  type: string
+              required:
+              - chart
+              - repoURL
+              - version
               type: object
             placement:
               description: PlacementSpec defines how to place the workload on KubernetesCluster

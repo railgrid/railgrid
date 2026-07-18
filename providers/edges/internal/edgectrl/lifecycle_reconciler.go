@@ -26,6 +26,7 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
 	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
@@ -94,6 +95,22 @@ func (r *LifecycleReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 		return ctrl.Result{}, err
 	}
+
+	// Ensure the self-name label so a Workload placement can select this one
+	// edge deterministically (the marketplace deploys to a chosen edge).
+	if edge.GetLabels()[edgesv1alpha1.LabelName] != req.Name {
+		labels := edge.GetLabels()
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[edgesv1alpha1.LabelName] = req.Name
+		edge.SetLabels(labels)
+		if err := c.Update(ctx, edge); err != nil {
+			return ctrl.Result{}, fmt.Errorf("stamping name label: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	cs := edge.GetConnectionStatus()
 
 	hasTunnel := r.connManager.HasConnection(connKey(r.resource, string(req.ClusterName), req.Name))

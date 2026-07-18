@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // +genclient
@@ -56,6 +57,13 @@ type PlacementObjSpec struct {
 	EdgeName string `json:"edgeName"`
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
+	// Manifests is the provider-rendered set of Kubernetes objects the edge
+	// agent applies with server-side apply. Each entry is one object as raw
+	// JSON. When set, the agent applies these (and prunes ones that disappear)
+	// instead of synthesizing a Deployment from the referenced Workload.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Manifests []runtime.RawExtension `json:"manifests,omitempty"`
 }
 
 // PlacementObjStatus defines the observed state of a Placement.

@@ -26,7 +26,7 @@ const (
 	LinuxServerResource       = "linuxservers"
 	WorkloadResource          = "workloads"
 	PlacementResource         = "placements"
-	ServiceResource       = "services"
+	ServiceResource           = "services"
 )
 
 // GVRs of the group's kinds (all in edges.kedge.faros.sh). The two connectable
@@ -37,7 +37,7 @@ var (
 	LinuxServerGVR       = SchemeGroupVersion.WithResource(LinuxServerResource)
 	WorkloadGVR          = SchemeGroupVersion.WithResource(WorkloadResource)
 	PlacementGVR         = SchemeGroupVersion.WithResource(PlacementResource)
-	ServiceGVR       = SchemeGroupVersion.WithResource(ServiceResource)
+	ServiceGVR           = SchemeGroupVersion.WithResource(ServiceResource)
 )
 
 // Correlation labels the scheduler stamps on Placements; the status aggregator
@@ -46,6 +46,10 @@ var (
 const (
 	LabelWorkload = "edges.kedge.faros.sh/workload"
 	LabelEdge     = "edges.kedge.faros.sh/edge"
+	// LabelName is stamped on each connectable with its own metadata.name so a
+	// Workload's placement can target a single specific edge by label selector
+	// (the marketplace deploys to one chosen edge).
+	LabelName = "edges.kedge.faros.sh/name"
 	// LabelDiscovered marks a Service created/confirmed by the discovery
 	// reconciler (value "true"), distinguishing it from user-declared objects.
 	LabelDiscovered = "edges.kedge.faros.sh/discovered"

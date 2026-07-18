@@ -1,12 +1,57 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { RefreshCw, Trash2, Plus, Boxes, ChevronRight, ChevronDown } from 'lucide-vue-next'
-import { listWorkloads, createWorkload, deleteWorkload, type WorkloadDraft } from './api'
-import type { Workload, ErrorResponse } from './types'
+import { RefreshCw, Trash2, Plus, Boxes, ChevronRight, ChevronDown, Store, Rocket } from 'lucide-vue-next'
+import { listWorkloads, createWorkload, deleteWorkload, deployMarketplaceApp, listEdges, type WorkloadDraft } from './api'
+import type { Workload, Edge, ErrorResponse } from './types'
+import { MARKETPLACE_CATEGORIES, type MarketplaceApp } from './marketplace'
 
 const workloads = ref<Workload[]>([])
+const edges = ref<Edge[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
+
+// Marketplace deploy state.
+const showMarket = ref(true)
+const deployApp = ref<MarketplaceApp | null>(null)
+const deployName = ref('')
+const deployEdge = ref('')
+function openDeploy(app: MarketplaceApp) {
+  deployApp.value = app
+  deployName.value = app.type
+  deployEdge.value = edges.value[0]?.name ?? ''
+  error.value = null
+}
+function closeDeploy() {
+  deployApp.value = null
+}
+async function onDeploy() {
+  const app = deployApp.value
+  if (!app || !deployName.value.trim() || !deployEdge.value) return
+  busy.value = true
+  error.value = null
+  try {
+    await deployMarketplaceApp({
+      name: deployName.value.trim(),
+      edgeName: deployEdge.value,
+      chart: app.chart,
+      values: app.values,
+      serviceType: app.type,
+      port: app.port,
+    })
+    closeDeploy()
+    await refresh()
+  } catch (e) {
+    error.value = (e as ErrorResponse)?.message ?? 'Deploy failed'
+  } finally {
+    busy.value = false
+  }
+}
+const credentialHint: Record<string, string> = {
+  'api-key': 'API key (mint it in the app, paste on the Services tab)',
+  'user-pass': '"username:password" (paste on the Services tab)',
+  password: 'web password (paste on the Services tab)',
+  optional: 'no token needed',
+}
 
 const showCreate = ref(false)
 const busy = ref(false)
@@ -27,7 +72,8 @@ async function refresh() {
   loading.value = true
   error.value = null
   try {
-    workloads.value = await listWorkloads()
+    ;[workloads.value, edges.value] = await Promise.all([listWorkloads(), listEdges()])
+    if (!deployEdge.value && edges.value.length) deployEdge.value = edges.value[0].name
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Failed to load workloads'
   } finally {
@@ -108,6 +154,64 @@ function selectorText(s?: Record<string, string>): string {
     </header>
 
     <div v-if="error" class="banner error">{{ error }}</div>
+
+    <!-- Marketplace -->
+    <div class="market">
+      <div class="market-head clickable" @click="showMarket = !showMarket">
+        <component :is="showMarket ? ChevronDown : ChevronRight" :size="16" />
+        <Store :size="16" />
+        <h3>Marketplace</h3>
+        <span class="muted">one-click self-hosted apps, deployed as Helm workloads onto an edge</span>
+      </div>
+      <div v-if="showMarket" class="market-body">
+        <div v-if="edges.length === 0" class="muted pad">
+          Connect a KubernetesCluster edge first — marketplace apps deploy onto one.
+        </div>
+        <div v-for="grp in MARKETPLACE_CATEGORIES" :key="grp.category" class="market-cat">
+          <div class="market-cat-label">{{ grp.category }}</div>
+          <div class="market-grid">
+            <div v-for="app in grp.apps" :key="app.type" class="market-card">
+              <div class="market-card-top">
+                <span class="market-name">{{ app.label }}</span>
+                <span class="chip">{{ app.category }}</span>
+              </div>
+              <p class="market-desc">{{ app.description }}</p>
+              <div class="market-meta muted mono">{{ app.chart.chart }}@{{ app.chart.version }} · :{{ app.port }}</div>
+              <button class="btn primary sm" :disabled="edges.length === 0" @click="openDeploy(app)">
+                <Rocket :size="13" /> Deploy
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Deploy dialog -->
+    <div v-if="deployApp" class="wiz-card" style="margin-bottom: 16px;">
+      <h3>Deploy {{ deployApp.label }}</h3>
+      <div class="row" style="gap: 12px; align-items: flex-start;">
+        <label class="fld" style="flex: 1;">
+          <span class="lbl">Name</span>
+          <input v-model="deployName" class="input" :placeholder="deployApp.type" />
+        </label>
+        <label class="fld" style="flex: 1;">
+          <span class="lbl">Edge</span>
+          <select v-model="deployEdge" class="input">
+            <option v-for="e in edges" :key="e.name" :value="e.name">{{ e.name }}</option>
+          </select>
+        </label>
+      </div>
+      <div class="muted" style="margin: 4px 0 12px;">
+        Deploys the chart onto <b>{{ deployEdge || '—' }}</b> and wires an edges Service.
+        Auth: {{ credentialHint[deployApp.credential] }}.
+      </div>
+      <div class="wiz-actions">
+        <button class="btn" @click="closeDeploy">Cancel</button>
+        <button class="btn primary" :disabled="busy || !deployName.trim() || !deployEdge" @click="onDeploy">
+          <Rocket :size="14" /> Deploy
+        </button>
+      </div>
+    </div>
 
     <!-- Create form -->
     <div v-if="showCreate" class="wiz-card" style="margin-bottom: 16px;">

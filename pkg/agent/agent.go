@@ -661,8 +661,9 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		logger.Error(derr, "workload plane disabled: cannot build downstream client")
 	} else if hubDyn, herr := dynamic.NewForConfig(a.hubConfig); herr != nil {
 		logger.Error(herr, "workload plane disabled: cannot build hub dynamic client")
+	} else if wr, werr := agentReconciler.NewWorkloadReconciler(a.opts.EdgeName, hubDyn, a.downstreamConfig); werr != nil {
+		logger.Error(werr, "workload plane disabled: cannot build workload reconciler")
 	} else {
-		wr := agentReconciler.NewWorkloadReconciler(a.opts.EdgeName, hubDyn, downstream)
 		go func() {
 			if err := wr.Run(ctx); err != nil {
 				logger.Error(err, "workload reconciler failed")
