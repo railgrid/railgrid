@@ -1,0 +1,36 @@
+# DEV ONLY — exposes the hub to *other kind clusters*.
+#
+# In Tiltfile.cluster the hub runs inside the `kcp-tilt` kind cluster as a
+# ClusterIP Service, reachable from the host only through Tilt's port-forward on
+# 127.0.0.1:9443. An edge agent running inside a *different* kind cluster
+# (`kedge-agent`) can reach neither: not the ClusterIP (wrong cluster) and not
+# the host's loopback.
+#
+# Both clusters' nodes do sit on the same `kind` docker network, so a NodePort
+# on the kcp-tilt node is reachable from the edge cluster as
+# https://<kcp-tilt-node-ip>:30443.
+#
+# This is additive: it selects the same pods as the kedge-hub Service without
+# touching it, so `make dev-edge-agent-incluster` can apply it idempotently and
+# nothing else changes.
+#
+# Not for production — a NodePort would publish the hub on every node.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kedge-hub-nodeport
+  namespace: kedge-system
+  labels:
+    app.kubernetes.io/name: kedge-hub
+    app.kubernetes.io/part-of: kedge-dev
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/instance: kedge-hub
+    app.kubernetes.io/name: kedge-hub
+  ports:
+    - name: https
+      port: 9443
+      targetPort: https
+      nodePort: 30443
+      protocol: TCP

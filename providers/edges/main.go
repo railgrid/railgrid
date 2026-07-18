@@ -149,8 +149,9 @@ func runServe() error {
 	mux.Handle("/edgeproxy/", http.StripPrefix("/edgeproxy", tsrv.EdgeProxyHandler()))
 	// Provider aggregate MCP: the hub's MCP aggregate federates this endpoint
 	// (POST tools/list with the caller's token + X-Kedge-Cluster). Exposes kube
-	// tools across the tenant's connected KubernetesCluster edges.
-	mux.Handle("/mcp", tsrv.ProviderMCPHandler())
+	// tools across the tenant's connected KubernetesCluster edges AND the Home
+	// Assistant tools of every Ready home-assistant EdgeService.
+	mux.Handle("/mcp", tsrv.RootMCPHandler())
 
 	// Provider portal micro-frontend (embedded Vite bundle). The hub proxies
 	// /ui/providers/edges/* here; ProviderFrame injects <script src=".../main.js">

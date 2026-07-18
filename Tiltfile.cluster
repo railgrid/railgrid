@@ -1273,6 +1273,16 @@ local_resource(
 #   2. Click ▶ on `edge-{kube,server}-agent` to run the agent.
 #        - kubernetes: also spins up a `kedge-agent` kind cluster on first run.
 #        - server: also click ▶ on `ssh-server` so the agent has an SSH target.
+#   3. Home Assistant (to exercise the Service kind + its MCP tools):
+#        - kube edge:   ▶ `ha-kube-deploy`, then ▶ `ha-kube-forward` to onboard
+#          and mint a long-lived token, then declare a Service against it
+#          (portal → Services → Add service, or the example manifest in
+#          providers/edges/contrib/manifests/homeassistant/).
+#          NOTE: the Service (svc) path dials cluster DNS, so it needs the agent
+#          INSIDE the cluster — stop `edge-kube-agent` and use
+#          `edge-kube-agent-incluster` instead, or the probe 502s.
+#        - server edge: install HA on the host; the agent discovers it and the
+#          Service appears on its own — only the token needs attaching.
 #
 # `resource_deps=['kedge-hub']` because the hub workload here is named
 # kedge-hub (it's `hub` in the embedded-kcp Tiltfile).
@@ -1297,6 +1307,32 @@ local_resource(
 local_resource(
     'edge-kube-agent',
     serve_cmd='make dev-run-edge TYPE=kubernetes',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['edges'],
+)
+
+# Same agent, but as a Deployment INSIDE the edge cluster — the way the
+# kedge-agent chart runs it in production.
+#
+# Use this instead of `edge-kube-agent` when you need the Service (svc) path:
+# a Service on a kube edge is dialled over cluster DNS
+# (home-assistant.home.svc), which only resolves from inside the cluster. The
+# host-run agent serves the k8s subresource fine but 502s on svc.
+#
+# Before clicking:
+#   - stop `edge-kube-agent` — two agents for one edge fight over the tunnel;
+#   - re-run `edge-kube-create` if a join token was already redeemed (the hub
+#     clears it on first use, and this needs a fresh one).
+#
+# Networking: the hub is a ClusterIP in the kcp-tilt cluster, so the make target
+# exposes it via a NodePort and points the agent at the kcp-tilt node IP — both
+# clusters' nodes share the `kind` docker network. Only works in this Tiltfile;
+# the embedded-kcp ./Tiltfile has no kcp-tilt cluster to reach.
+local_resource(
+    'edge-kube-agent-incluster',
+    cmd='make dev-edge-agent-incluster',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['kedge-hub'],
@@ -1332,6 +1368,32 @@ local_resource(
     serve_cmd='docker rm -f openssh-server >/dev/null 2>&1; make dev-run-ssh-server',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
+    labels=['edges'],
+)
+
+# Home Assistant inside the `kedge-agent` kind cluster — a real target for the
+# kube-edge Service path (spec.targetRef → home-assistant.home.svc:8123). Note
+# this is the *agent's* kind cluster, not the one hosting kcp + the hub here.
+# Creates it if edge-kube-agent hasn't yet, so no resource_deps; first run pulls
+# a ~1.5GB image. See providers/edges/contrib/manifests/homeassistant/README.md.
+local_resource(
+    'ha-kube-deploy',
+    cmd='make dev-deploy-homeassistant',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['edges'],
+)
+
+# Home Assistant ships with no users, and a long-lived access token can only be
+# minted from the UI — so onboarding needs a browser. Port-forward, open
+# http://localhost:8123, then profile → Security → Long-lived access tokens.
+local_resource(
+    'ha-kube-forward',
+    serve_cmd='make dev-homeassistant-forward',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['ha-kube-deploy'],
+    links=[link('http://localhost:8123', 'Home Assistant')],
     labels=['edges'],
 )
 

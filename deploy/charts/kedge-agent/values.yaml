@@ -13,6 +13,12 @@ agent:
   # -- Edge name (required)
   edgeName: ""
 
+  # -- kcp logical cluster the edge lives in (e.g. "1tww43gelbj45g0k").
+  # Required with token bootstrap (hub.token), where there is no cluster-scoped
+  # kubeconfig to infer it from. Ignored once the agent has exchanged the token
+  # for its own kubeconfig.
+  cluster: ""
+
   # -- Labels for this site (key=value pairs)
   labels: {}
 

@@ -50,6 +50,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&WorkloadList{},
 		&Placement{},
 		&PlacementList{},
+		&Service{},
+		&ServiceList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

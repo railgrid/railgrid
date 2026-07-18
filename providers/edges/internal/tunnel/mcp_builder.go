@@ -109,8 +109,25 @@ func (p *Server) buildProviderMCPHandler() http.Handler {
 		// Normalize Host to loopback to satisfy the MCP SDK's DNS-rebinding guard
 		// (see buildMCPHandler for the rationale).
 		r.Host = "localhost"
+		ensureUserAgent(r)
 		srv.ServeHTTP().ServeHTTP(w, r)
 	})
+}
+
+// ensureUserAgent guarantees a non-empty User-Agent header on an MCP request.
+//
+// kubernetes-mcp-server's userAgentPropagationMiddleware falls back to the MCP
+// session's clientInfo when the header is absent, and dereferences it without a
+// nil check. In stateless mode the go-sdk synthesizes InitializeParams with a
+// nil ClientInfo (there is no initialize handshake to fill it), so that fallback
+// panics on every request. Our handlers are always stateless, and the hub's
+// reverse proxy blanks User-Agent when the original request carries none, so the
+// panic path is reachable in normal traffic. Keeping the header populated means
+// the middleware returns before it can dereference clientInfo.
+func ensureUserAgent(r *http.Request) {
+	if r.Header.Get("User-Agent") == "" {
+		r.Header.Set("User-Agent", "kedge-edges-provider")
+	}
 }
 
 // buildMCPHandler creates the HTTP handler for the per-edge MCP endpoint.
@@ -199,6 +216,7 @@ func (p *Server) buildMCPHandler(cluster, resource, edgeName string) http.Handle
 		// localhost servers; this endpoint is reached only through the hub's
 		// authenticated proxy, so normalize Host to loopback to satisfy the check.
 		r.Host = "localhost"
+		ensureUserAgent(r)
 		srv.ServeHTTP().ServeHTTP(w, r)
 	})
 }

@@ -34,6 +34,8 @@ spec:
     children:
       - displayName: Workloads
         builtinRoute: workloads
+      - displayName: Services
+        builtinRoute: services
   backend:
     # Agent ingress (/agent/*) and consumer egress (/edgeproxy/*) route through
     # the hub backend proxy at /services/providers/edges/* to this Service.

@@ -64,6 +64,14 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 			return
 		}
 
+		// 1b. Service subresources (proxy/mcp) are branched here BEFORE
+		// parseEdgesProxyPath: "services" is not a tunnel Kind, so that
+		// parser (which validates against gvrForResource) would reject it.
+		if esCluster, esName, esSub, esRest, ok := p.parseServicePath(r.URL.Path); ok {
+			p.serveService(w, r, token, esCluster, esName, esSub, esRest)
+			return
+		}
+
 		// 2. Parse cluster, resource (kind), name, and subresource from the URL path.
 		cluster, resource, name, subresource, ok := p.parseEdgesProxyPath(r.URL.Path)
 		if !ok {

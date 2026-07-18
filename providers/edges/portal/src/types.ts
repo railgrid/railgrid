@@ -67,3 +67,39 @@ export interface WorkloadEdgeStatus {
   readyReplicas?: number
   message?: string
 }
+
+// EdgeService is a service discovered (or declared) on an edge, e.g. Home
+// Assistant on a LinuxServer host or behind a Kubernetes Service on a
+// KubernetesCluster edge. On server edges the discovery reconciler materializes
+// these; on kube edges they are declared. The user attaches a credential
+// (authSecretRef) to make one Ready.
+export interface EdgeService {
+  name: string
+  edgeName: string
+  edgeKind?: string // LinuxServer | KubernetesCluster
+  targetNamespace?: string // kube edges only
+  targetName?: string // kube edges only
+  serviceType?: string
+  scheme?: string
+  port?: number
+  hasCredentials: boolean
+  instructions?: string
+  phase?: string
+  version?: string
+  installType?: string
+  url?: string
+  conditions: Condition[]
+  creationTimestamp?: string
+}
+
+// EdgeServiceDraft is the form payload for declaring a service on a
+// KubernetesCluster edge (kube services are not auto-discovered).
+export interface EdgeServiceDraft {
+  name: string
+  edgeName: string
+  serviceType: string
+  targetNamespace: string
+  targetName: string
+  port: number
+  instructions?: string
+}

@@ -43,6 +43,9 @@ spec:
           args:
             - --edge-name={{ required "agent.edgeName is required" .Values.agent.edgeName }}
             - --type=kubernetes
+            {{- if .Values.agent.cluster }}
+            - --cluster={{ .Values.agent.cluster }}
+            {{- end }}
             {{- if .Values.agent.hub.token }}
             - --hub-url={{ required "agent.hub.url is required when using token auth" .Values.agent.hub.url }}
             - --token={{ .Values.agent.hub.token }}

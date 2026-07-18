@@ -46,6 +46,16 @@ func setupRouter(downstream *rest.Config, sshPort int) *mux.Router {
 	// SSH handler — proxies the revdial connection to the host sshd on sshPort.
 	router.HandleFunc("/ssh", newSSHHandler(sshPort)).Methods("GET")
 
+	// Agent management API — provider-pulled service discovery (and future host
+	// facts). Available in both server and kubernetes modes.
+	router.HandleFunc("/api/v1/services", newServicesHandler()).Methods("GET")
+
+	// Generic HTTP service proxy. The provider computes the target (from a
+	// Service CR) and sets X-Kedge-Svc-Target per request. Server mode allows
+	// loopback only; kubernetes mode (downstream != nil) also allows cluster-DNS
+	// names, since Services on a KubernetesCluster edge live behind cluster DNS.
+	router.PathPrefix("/svc/").HandlerFunc(newSvcProxyHandler(downstream != nil))
+
 	// K8s proxy handler — only registered when a downstream k8s config is present.
 	// In server mode (downstream == nil) k8s proxying is not available.
 	if downstream != nil {

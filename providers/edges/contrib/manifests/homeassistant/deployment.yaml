@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: home-assistant
+  namespace: home
+  labels:
+    app.kubernetes.io/name: home-assistant
+spec:
+  replicas: 1
+  # /config is a ReadWriteOnce PVC and Home Assistant is not built to share it.
+  # Recreate stops a rolling update from starting a second pod that contends for
+  # the volume (and the SQLite DB inside it).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: home-assistant
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: home-assistant
+    spec:
+      containers:
+        - name: home-assistant
+          image: ghcr.io/home-assistant/home-assistant:stable
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8123
+          env:
+            - name: TZ
+              value: Europe/Vilnius
+          volumeMounts:
+            - name: config
+              mountPath: /config
+          # First boot pulls a ~1.5GB image and then initialises /config, which
+          # is slow. A generous startupProbe keeps the liveness probe from
+          # killing the pod mid-bootstrap; readiness/liveness stay tight once up.
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            failureThreshold: 90 # ~7.5 min
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: home-assistant-config

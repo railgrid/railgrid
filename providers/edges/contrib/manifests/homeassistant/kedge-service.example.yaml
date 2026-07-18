@@ -1,0 +1,45 @@
+# NOT part of kustomization.yaml — this object goes to your kedge TENANT
+# WORKSPACE (kcp), not to the edge's Kubernetes cluster. Applying it to the kind
+# cluster would silently do nothing useful.
+#
+#   kubectl --kubeconfig <your kedge kubeconfig> apply -f kedge-service.example.yaml
+#
+# Adjust edgeRef.name to your KubernetesCluster edge (the Tilt dev edge is
+# dev-edge-kube-1). targetRef points at the Kubernetes Service created by the
+# manifests in this directory; the agent dials it as home-assistant.home.svc:8123.
+#
+# The Secret holds a Home Assistant long-lived access token under the key
+# "token" — see README.md for how to mint one. The edges provider injects it as
+# `Authorization: Bearer ...` when proxying, so the token never reaches the edge.
+apiVersion: edges.kedge.faros.sh/v1alpha1
+kind: Service
+metadata:
+  name: ha-kube
+  labels:
+    # Makes it list under the edge in the portal. Do NOT set
+    # edges.kedge.faros.sh/discovered=true — that label is owned by the
+    # discovery reconciler, which prunes what it owns.
+    edges.kedge.faros.sh/edge: dev-edge-kube-1
+spec:
+  edgeRef:
+    kind: KubernetesCluster
+    name: dev-edge-kube-1
+  targetRef:
+    namespace: home
+    name: home-assistant
+  type: home-assistant
+  scheme: http
+  port: 8123
+  authSecretRef:
+    namespace: kedge-system
+    name: kedge-edges-svc-ha-kube
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kedge-edges-svc-ha-kube
+  namespace: kedge-system
+type: Opaque
+stringData:
+  # Home Assistant → your profile → Security → Long-lived access tokens.
+  token: REPLACE_ME

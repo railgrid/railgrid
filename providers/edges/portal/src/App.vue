@@ -5,6 +5,7 @@ import { setToken, setTenant, listEdges, deleteEdge } from './api'
 import Wizard from './Wizard.vue'
 import Detail from './Detail.vue'
 import Workloads from './Workloads.vue'
+import Services from './Services.vue'
 import type { Edge, EdgeType, KedgeContext, ErrorResponse } from './types'
 
 const props = defineProps<{ ctx: KedgeContext | null }>()
@@ -13,9 +14,12 @@ const props = defineProps<{ ctx: KedgeContext | null }>()
 // fleet; /providers/edges/workloads → the workloads scheduled across them. The
 // sidebar renders both as nav items (CatalogEntry ui.children), so switching
 // happens via the menu; the in-page toggle mirrors it through navigate().
-const view = computed<'edges' | 'workloads'>(() =>
-  (props.ctx?.subPath ?? '').startsWith('workloads') ? 'workloads' : 'edges',
-)
+const view = computed<'edges' | 'workloads' | 'services'>(() => {
+  const sub = props.ctx?.subPath ?? ''
+  if (sub.startsWith('workloads')) return 'workloads'
+  if (sub.startsWith('services')) return 'services'
+  return 'edges'
+})
 
 // navigate pushes the shell's router via a bubbling CustomEvent the element's
 // ProviderFrame host listens for. path is the trailing segment appended to
@@ -108,16 +112,20 @@ function rel(ts?: string): string {
 
 <template>
   <div ref="rootRef" class="edges-app">
-    <!-- Section nav: Edges | Workloads. Mirrors the sidebar's sub-nav items and
-         pushes the shell route via navigate(). Hidden while the wizard or a
-         detail view is open so those flows stay focused. -->
+    <!-- Section nav: Edges | Workloads | Services. Mirrors the sidebar's sub-nav
+         items and pushes the shell route via navigate(). Hidden while the wizard
+         or a detail view is open so those flows stay focused. -->
     <nav v-if="!wizardOpen && !selected" class="wiz-steps" style="margin-bottom: 4px;">
       <button class="wiz-step" :class="{ active: view === 'edges' }" @click="navigate('')">Edges</button>
       <button class="wiz-step" :class="{ active: view === 'workloads' }" @click="navigate('workloads')">Workloads</button>
+      <button class="wiz-step" :class="{ active: view === 'services' }" @click="navigate('services')">Services</button>
     </nav>
 
     <!-- Workloads view. -->
     <Workloads v-if="view === 'workloads' && !wizardOpen && !selected" />
+
+    <!-- Services view. -->
+    <Services v-else-if="view === 'services' && !wizardOpen && !selected" />
 
     <!-- Onboarding / add-edge wizard (shown on first load when empty, or on demand). -->
     <Wizard v-else-if="wizardOpen" :cluster="props.ctx?.tenant ?? null" @connected="onWizardDone" />

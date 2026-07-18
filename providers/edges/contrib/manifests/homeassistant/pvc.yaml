@@ -1,0 +1,21 @@
+# Home Assistant keeps its whole state under /config — configuration.yaml, the
+# auth store (users + long-lived access tokens), and the SQLite recorder DB. It
+# must survive pod restarts, or you re-do onboarding and your kedge token dies
+# with the pod.
+#
+# No storageClassName: use the cluster default. On kind that is the built-in
+# local-path provisioner ("standard"), which is RWO — hence the Recreate
+# strategy on the Deployment.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: home-assistant-config
+  namespace: home
+  labels:
+    app.kubernetes.io/name: home-assistant
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

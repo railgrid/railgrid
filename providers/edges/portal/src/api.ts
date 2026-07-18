@@ -205,6 +205,180 @@ export async function probeEdge(name: string, type: EdgeType): Promise<EdgeProbe
   }
 }
 
+// ─── Services (EdgeService) ───────────────────────────────────────
+// Cluster-scoped services on an edge host (e.g. Home Assistant on a
+// LinuxServer). Discovery materializes them; the user attaches a token to make
+// them Ready.
+
+import type { EdgeService, EdgeServiceDraft } from './types'
+
+// Secrets holding EdgeService credentials live in this namespace (where the
+// edge SA secrets already live).
+const EDGE_SVC_SECRET_NS = 'kedge-system'
+
+interface RawEdgeService {
+  metadata: { name: string; creationTimestamp?: string; labels?: Record<string, string> }
+  spec?: {
+    edgeRef?: { kind?: string; name?: string }
+    targetRef?: { namespace?: string; name?: string } | null
+    type?: string
+    scheme?: string
+    port?: number
+    instructions?: string
+    authSecretRef?: { name?: string; namespace?: string } | null
+  }
+  status?: {
+    phase?: string
+    version?: string
+    installType?: string
+    url?: string
+    conditions?: Array<{ type: string; status: string; reason?: string; message?: string; lastTransitionTime?: string }>
+  }
+}
+
+const EDGE_SVC_SEL = `
+  metadata { name creationTimestamp labels }
+  spec {
+    edgeRef { kind name }
+    targetRef { namespace name }
+    type scheme port instructions authSecretRef { name namespace }
+  }
+  status { phase version installType url conditions { type status reason message lastTransitionTime } }
+`
+
+function toEdgeService(it: RawEdgeService): EdgeService {
+  const s = it.status ?? {}
+  return {
+    name: it.metadata.name,
+    edgeName: it.spec?.edgeRef?.name ?? '',
+    edgeKind: it.spec?.edgeRef?.kind,
+    targetNamespace: it.spec?.targetRef?.namespace,
+    targetName: it.spec?.targetRef?.name,
+    serviceType: it.spec?.type,
+    scheme: it.spec?.scheme,
+    port: it.spec?.port,
+    instructions: it.spec?.instructions,
+    hasCredentials: !!it.spec?.authSecretRef?.name,
+    phase: s.phase,
+    version: s.version,
+    installType: s.installType,
+    url: s.url,
+    conditions: s.conditions ?? [],
+    creationTimestamp: it.metadata.creationTimestamp,
+  }
+}
+
+// listServices returns every Service across all edges (for the top-level
+// Services view).
+export async function listServices(): Promise<EdgeService[]> {
+  const data = await graphql<{
+    edges_kedge_faros_sh?: { v1alpha1?: { Services?: { items?: RawEdgeService[] } } }
+  }>(`query ListServices { edges_kedge_faros_sh { v1alpha1 { Services { items { ${EDGE_SVC_SEL} } } } } }`)
+  const items = data.edges_kedge_faros_sh?.v1alpha1?.Services?.items ?? []
+  return items.map(toEdgeService).sort((a, b) => a.name.localeCompare(b.name))
+}
+
+// listEdgeServices returns the Services for one edge (by spec.edgeRef.name).
+export async function listEdgeServices(edgeName: string): Promise<EdgeService[]> {
+  return (await listServices()).filter((es) => es.edgeName === edgeName)
+}
+
+// updateEdgeServiceInstructions merge-patches spec.instructions — the free-form
+// guidance surfaced to AI clients on the service's MCP endpoint. Leaves the rest
+// of the spec untouched.
+export async function updateEdgeServiceInstructions(name: string, instructions: string): Promise<void> {
+  await graphql(
+    `mutation SetInstructions($name: String!, $object: EdgesKedgeFarosShV1alpha1Service_Input!) {
+       edges_kedge_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
+     }`,
+    { name, object: { metadata: { name }, spec: { instructions } } },
+  )
+}
+
+// createKubeEdgeService declares a service behind a Kubernetes Service on a
+// KubernetesCluster edge. Kube services are not auto-discovered (a cluster has
+// far more services than a host), so the user names the target explicitly. The
+// object carries the edge label so it lists alongside discovered ones, but NOT
+// the discovered label — the discovery reconciler must never prune it.
+export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> {
+  const object: Record<string, unknown> = {
+    metadata: {
+      name: d.name,
+      labels: { 'edges.kedge.faros.sh/edge': d.edgeName },
+    },
+    spec: {
+      edgeRef: { kind: 'KubernetesCluster', name: d.edgeName },
+      targetRef: { namespace: d.targetNamespace, name: d.targetName },
+      type: d.serviceType,
+      port: d.port,
+      ...(d.instructions ? { instructions: d.instructions } : {}),
+    },
+  }
+  await graphql(
+    `mutation CreateService($object: EdgesKedgeFarosShV1alpha1Service_Input!) {
+       edges_kedge_faros_sh { v1alpha1 { createService(object: $object) { metadata { name } } } }
+     }`,
+    { object },
+  )
+}
+
+// deleteEdgeService removes a Service (used for declared kube services).
+export async function deleteEdgeService(name: string): Promise<void> {
+  await graphql(
+    `mutation DelService($name: String!) {
+       edges_kedge_faros_sh { v1alpha1 { deleteService(name: $name) } }
+     }`,
+    { name },
+  )
+}
+
+// connectEdgeService writes the credential Secret and patches the EdgeService's
+// spec.authSecretRef so the validation reconciler can authenticate the service.
+// The secret key is "token" (e.g. a Home Assistant long-lived access token).
+export async function connectEdgeService(name: string, token: string): Promise<void> {
+  const secretName = `kedge-edges-svc-${name}`
+
+  // 1. Upsert the Secret holding the token.
+  //
+  // applyYaml is a server-side apply on the gateway's ROOT mutation, so it is
+  // idempotent — re-pasting a token just overwrites the old one, no
+  // create-then-update-on-error dance.
+  //
+  // The manifest is emitted as JSON rather than YAML on purpose: YAML is a
+  // superset of JSON, so the gateway parses it either way, and JSON.stringify
+  // settles every quoting question about whatever characters the token holds.
+  // Hand-built YAML would need escaping rules we'd get wrong eventually.
+  //
+  // The kedge-system namespace already exists in the tenant workspace — the
+  // edges RBAC reconciler creates it when an edge registers, which always
+  // precedes a Service.
+  await graphql(`mutation ApplySecret($yaml: String!) { applyYaml(yaml: $yaml) }`, {
+    yaml: JSON.stringify({
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: { name: secretName, namespace: EDGE_SVC_SECRET_NS },
+      type: 'Opaque',
+      stringData: { token },
+    }),
+  })
+
+  // 2. Point the Service at the Secret. updateService issues a JSON merge
+  //    patch, so spec.authSecretRef is added without disturbing the rest of the
+  //    spec (edgeRef/type/port).
+  await graphql(
+    `mutation SetAuth($name: String!, $object: EdgesKedgeFarosShV1alpha1Service_Input!) {
+       edges_kedge_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
+     }`,
+    {
+      name,
+      object: {
+        metadata: { name },
+        spec: { authSecretRef: { name: secretName, namespace: EDGE_SVC_SECRET_NS } },
+      },
+    },
+  )
+}
+
 // ─── Workloads (Workload) ─────────────────────────────────────────────
 // The GraphQL gateway exposes the edges group's Workload kind alongside
 // the two connectable kinds. The scheduler fans each Workload out into

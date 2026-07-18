@@ -158,6 +158,24 @@ func EdgeProxyURL(hubBase, cluster, edgeName, subresource string) string {
 	return strings.TrimRight(hubBase, "/") + EdgeProxyPath(cluster, edgeName, subresource)
 }
 
+// EdgeServiceProxyPath returns the consumer-egress path for a subresource on an
+// EdgeService, routed through the hub backend proxy to the edges provider. The
+// provider StripPrefixes /services/providers/edges/edgeproxy so its handler sees
+// /clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/services/{name}/{subresource}.
+//
+// subresource is "proxy" (HTTP data plane) or "mcp".
+//
+// Pattern: /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/services/{name}/{subresource}
+func EdgeServiceProxyPath(cluster, name, subresource string) string {
+	return fmt.Sprintf("%s/edges/edgeproxy/clusters/%s/apis/edges.kedge.faros.sh/v1alpha1/services/%s/%s",
+		PathPrefixProvidersProxy, cluster, name, subresource)
+}
+
+// EdgeServiceProxyURL returns the full EdgeService subresource URL.
+func EdgeServiceProxyURL(hubBase, cluster, name, subresource string) string {
+	return strings.TrimRight(hubBase, "/") + EdgeServiceProxyPath(cluster, name, subresource)
+}
+
 // KubernetesMCPPath / KubernetesMCPURL / LinuxMCPPath / LinuxMCPURL
 // were removed when the dedicated per-kind MCP endpoints collapsed
 // into the MCPServer aggregate. Use MCPServerURL below for the single

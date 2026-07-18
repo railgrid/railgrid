@@ -161,6 +161,66 @@ func DiscoverFederation(ctx context.Context, targets []ProviderTarget, bearerTok
 	return filtered
 }
 
+// FederatedInstructions fetches each provider's server-level MCP instructions
+// (from `initialize`) in parallel and returns a merged block to append to the
+// aggregate's own instructions — so operator-authored provider guidance (e.g. a
+// Home Assistant Service's spec.instructions describing its entity layout)
+// reaches the model connecting to the aggregate, not just the provider's direct
+// endpoint. Providers with no instructions or an error contribute nothing.
+// Enumeration order is preserved for deterministic output.
+func FederatedInstructions(ctx context.Context, targets []ProviderTarget, bearerToken, cluster string) string {
+	cli := newProviderMCPClient(bearerToken, cluster, cluster)
+	parts := make([]string, len(targets))
+	var wg sync.WaitGroup
+	for i := range targets {
+		p := targets[i]
+		if p.MCPURL == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, p ProviderTarget) {
+			defer wg.Done()
+			defer func() { _ = recover() }()
+			dctx, cancel := context.WithTimeout(ctx, providerDiscoveryTimeout)
+			defer cancel()
+			instr := strings.TrimSpace(cli.fetchInstructions(dctx, p.MCPURL))
+			if instr == "" {
+				return
+			}
+			label := p.DisplayName
+			if label == "" {
+				label = p.Name
+			}
+			parts[i] = fmt.Sprintf("## %s\n%s", label, instr)
+		}(i, p)
+	}
+	wg.Wait()
+	out := make([]string, 0, len(parts))
+	for _, s := range parts {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, "\n\n")
+}
+
+// fetchInstructions returns a provider's server-level MCP instructions from its
+// `initialize` response, or "" if it has none or the call fails.
+func (c *providerMCPClient) fetchInstructions(ctx context.Context, mcpURL string) string {
+	params := json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"kedge-aggregate","version":"v1"}}`)
+	body, err := c.rpc(ctx, mcpURL, "initialize", params)
+	if err != nil {
+		return ""
+	}
+	var out struct {
+		Instructions string `json:"instructions"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return ""
+	}
+	return out.Instructions
+}
+
 // registerProviderTools fetches each Ready provider's tools/list and registers
 // them on srv as proxies. Errors against any one provider are logged + skipped
 // — one broken provider must not poison the whole aggregate. Discovery is

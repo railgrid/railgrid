@@ -152,3 +152,19 @@ kedge-provider-edges .es-item { display: flex; align-items: center; gap: 12px; f
 kedge-provider-edges .es-name { font-weight: 500; color: var(--color-text-primary); min-width: 160px; }
 kedge-provider-edges .es-ready { color: var(--color-text-secondary); }
 kedge-provider-edges .es-msg { flex: 1; }
+
+/* EdgeService cards (server edge detail: discovered host services). */
+kedge-provider-edges .svc-cards { display: flex; flex-direction: column; gap: 10px; }
+kedge-provider-edges .svc-card { border: 1px solid var(--color-border-default); border-radius: 10px; padding: 12px 14px; background: var(--color-surface-overlay); }
+kedge-provider-edges .svc-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+kedge-provider-edges .svc-title { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; color: var(--color-text-primary); }
+kedge-provider-edges .svc-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--color-text-secondary); }
+kedge-provider-edges .svc-meta .pill.ok-pill { background: var(--color-success-subtle); border-color: transparent; color: var(--color-success); }
+kedge-provider-edges .svc-connect { margin-top: 10px; }
+kedge-provider-edges .svc-input { width: 100%; padding: 7px 10px; border: 1px solid var(--color-border-default); border-radius: 8px; background: var(--color-surface-base); color: var(--color-text-primary); font-size: 12px; box-sizing: border-box; margin-bottom: 8px; }
+kedge-provider-edges .svc-input:focus { outline: none; border-color: var(--color-accent); }
+kedge-provider-edges .muted.small { font-size: 11px; margin-top: 6px; }
+kedge-provider-edges .svc-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 10px 0; }
+kedge-provider-edges .svc-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--color-text-secondary); }
+kedge-provider-edges .svc-form .svc-input { margin-bottom: 0; }
+kedge-provider-edges .svc-form select.svc-input { appearance: auto; }

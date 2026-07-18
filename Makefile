@@ -117,7 +117,7 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/edges/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/edges/config/crds --output-dir providers/edges/config/kcp
-	@for r in kubernetesclusters linuxservers workloads placements; do \
+	@for r in kubernetesclusters linuxservers workloads placements services; do \
 		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.kedge.faros.sh.yaml \
 		   providers/edges/deploy/chart/files/schemas/$$r.edges.kedge.faros.sh.yaml; \
 	done
@@ -451,6 +451,98 @@ dev-run-ssh-server:
   -p 2222:2222 \
   --restart unless-stopped \
   lscr.io/linuxserver/openssh-server:latest
+
+## --- kube edge agent, in-cluster (dev) --------------------------------------
+# Runs the agent as a Deployment INSIDE the edge's kind cluster, the way the
+# kedge-agent chart does in production — instead of `dev-run-edge`, which runs it
+# on the host against the cluster's kubeconfig.
+#
+# This matters for the Service kind: a host-run agent can serve the k8s
+# subresource (the apiserver is reachable from the host) but NOT svc, which dials
+# cluster DNS (home-assistant.home.svc). Only an in-cluster agent can resolve it.
+#
+# Networking: in Tiltfile.cluster the hub is a ClusterIP in the `kcp-tilt`
+# cluster, reachable from the host only via Tilt's 127.0.0.1 port-forward — no
+# use to a pod in the `kedge-agent` cluster. Both clusters' nodes share the
+# `kind` docker network, so we expose the hub via a NodePort and dial the
+# kcp-tilt node IP directly.
+DEV_AGENT_IMAGE_REPO ?= ghcr.io/faroshq/kedge-agent
+DEV_AGENT_NS         ?= kedge-agent
+DEV_AGENT_KIND       ?= kedge-agent
+DEV_HUB_KIND         ?= kcp-tilt
+DEV_HUB_NODEPORT     ?= 30443
+# Resolved at recipe time: docker assigns the node IP when the cluster is created.
+DEV_HUB_NODE_IP       = $(shell docker inspect $(DEV_HUB_KIND)-control-plane \
+                          -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null)
+
+dev-edge-agent-incluster: docker-build-agent ## Run the kube edge agent IN the edge cluster (needed for the Service/svc path)
+	@test -f .env.edge.kubernetes || { echo "Run 'make dev-edge-create TYPE=kubernetes' first (expected .env.edge.kubernetes)"; exit 1; }
+	@test -n "$(DEV_HUB_NODE_IP)" || { echo "Cannot resolve the $(DEV_HUB_KIND) node IP — is the hub cluster running?"; exit 1; }
+	@echo "==> Prereqs, in order:"
+	@echo "      1. Stop the host agent (Tilt: edge-kube-agent) — two agents for one edge fight over the tunnel."
+	@echo "      2. Re-run 'make dev-edge-create TYPE=kubernetes' (Tilt: edge-kube-create)."
+	@echo "         The hub CLEARS status.joinToken once an agent redeems it, so the token still"
+	@echo "         sitting in .env.edge.kubernetes from a previous run will fail auth. It cannot be"
+	@echo "         checked from here — if the agent logs 'workspace access not permitted', this is why."
+	hack/scripts/ensure-kind-cluster.sh $(DEV_AGENT_KIND)
+	@echo "==> Exposing the hub to the $(DEV_AGENT_KIND) cluster (NodePort $(DEV_HUB_NODEPORT) on $(DEV_HUB_NODE_IP))"
+	kubectl --context kind-$(DEV_HUB_KIND) apply -f hack/dev/kedge-hub-nodeport.yaml
+	@echo "==> Loading $(DEV_AGENT_IMAGE_REPO):$(VERSION) into kind/$(DEV_AGENT_KIND)"
+	kind load docker-image $(DEV_AGENT_IMAGE_REPO):$(VERSION) --name $(DEV_AGENT_KIND)
+	@# Source the edge env in-recipe rather than trusting the global
+	@# `-include .env.edge.$$(TYPE)`: an exported TYPE=server would otherwise
+	@# feed the server edge's name/cluster/token to the kubernetes agent.
+	set -a; . ./.env.edge.kubernetes; set +a; \
+	test -n "$$KEDGE_EDGE_JOIN_TOKEN" || { echo "No KEDGE_EDGE_JOIN_TOKEN in .env.edge.kubernetes — the token is cleared once an agent redeems it; re-run 'make dev-edge-create TYPE=kubernetes'"; exit 1; }; \
+	helm --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) upgrade --install kedge-agent deploy/charts/kedge-agent \
+		--namespace $(DEV_AGENT_NS) --create-namespace \
+		--set image.repository=$(DEV_AGENT_IMAGE_REPO) \
+		--set image.tag=$(VERSION) \
+		--set image.pullPolicy=IfNotPresent \
+		--set agent.edgeName=$$KEDGE_EDGE_NAME \
+		--set agent.cluster=$$KEDGE_EDGE_CLUSTER \
+		--set agent.hub.url=https://$(DEV_HUB_NODE_IP):$(DEV_HUB_NODEPORT) \
+		--set agent.hub.token=$$KEDGE_EDGE_JOIN_TOKEN \
+		--set agent.hub.insecureSkipTLSVerify=true \
+		--wait --timeout=120s
+	@echo "==> Agent deployed. Logs: kubectl --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) -n $(DEV_AGENT_NS) logs -l app.kubernetes.io/name=kedge-agent -f"
+
+dev-edge-agent-incluster-logs: ## Tail the in-cluster edge agent
+	kubectl --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) -n $(DEV_AGENT_NS) \
+		logs -l app.kubernetes.io/name=kedge-agent --tail=100 -f
+
+dev-edge-agent-incluster-down: ## Remove the in-cluster edge agent
+	helm --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) uninstall kedge-agent -n $(DEV_AGENT_NS) --ignore-not-found
+
+.PHONY: dev-edge-agent-incluster dev-edge-agent-incluster-logs dev-edge-agent-incluster-down
+
+## --- Home Assistant on the kube edge (dev) ----------------------------------
+# Deploys HA into the same kind cluster the kubernetes edge agent serves, so the
+# edges provider's Service kind (spec.targetRef → home-assistant.home.svc:8123)
+# has something real to proxy to. See
+# providers/edges/contrib/manifests/homeassistant/README.md.
+HA_MANIFESTS  ?= providers/edges/contrib/manifests/homeassistant
+HA_NAMESPACE  ?= home
+HA_KUBECONFIG ?= .kubeconfig-kedge-agent
+
+dev-deploy-homeassistant: ## Deploy Home Assistant into the kedge-agent kind cluster
+	hack/scripts/ensure-kind-cluster.sh
+	kubectl --kubeconfig=$(HA_KUBECONFIG) apply -k $(HA_MANIFESTS)
+	@echo "Waiting for Home Assistant (first boot pulls a ~1.5GB image)..."
+	kubectl --kubeconfig=$(HA_KUBECONFIG) -n $(HA_NAMESPACE) \
+		rollout status deploy/home-assistant --timeout=600s
+	@echo "Home Assistant is up at home-assistant.$(HA_NAMESPACE).svc:8123 (in-cluster)."
+	@echo "Onboard it: make dev-homeassistant-forward → http://localhost:8123"
+
+dev-homeassistant-forward: ## Port-forward Home Assistant to localhost:8123 (onboarding + token)
+	@echo "Home Assistant → http://localhost:8123 (profile → Security → Long-lived access tokens)"
+	kubectl --kubeconfig=$(HA_KUBECONFIG) -n $(HA_NAMESPACE) \
+		port-forward svc/home-assistant 8123:8123
+
+dev-undeploy-homeassistant: ## Remove Home Assistant (keeps the PVC's data unless you delete the ns)
+	kubectl --kubeconfig=$(HA_KUBECONFIG) delete -k $(HA_MANIFESTS) --ignore-not-found
+
+.PHONY: dev-deploy-homeassistant dev-homeassistant-forward dev-undeploy-homeassistant
 
 GRAPHQL_GRPC_ADDR ?= localhost:50051
 GRAPHQL_APIEXPORT_SLICE ?= core.faros.sh

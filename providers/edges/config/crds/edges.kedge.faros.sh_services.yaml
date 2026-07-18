@@ -1,0 +1,267 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: services.edges.kedge.faros.sh
+spec:
+  group: edges.kedge.faros.sh
+  names:
+    kind: Service
+    listKind: ServiceList
+    plural: services
+    shortNames:
+    - edgesvc
+    singular: service
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.edgeRef.name
+      name: Edge
+      type: string
+    - jsonPath: .spec.port
+      name: Port
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.version
+      name: Version
+      priority: 1
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Service is an HTTP service running on the host next to an edge agent
+          (e.g. Home Assistant on a LinuxServer). The edges provider proxies to it
+          through the reverse tunnel and, for known types, exposes MCP tools so AI
+          agents can drive it.
+
+          Discovery-created objects are named "<edge>-<type>" and carry the labels
+          edges.kedge.faros.sh/edge=<edge> and edges.kedge.faros.sh/discovered=true.
+          Users may also create Services manually.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ServiceSpec defines the desired state of a Service.
+            properties:
+              authSecretRef:
+                description: |-
+                  AuthSecretRef names a Secret whose "token" key the provider injects as
+                  "Authorization: Bearer ..." when proxying. The token never reaches the
+                  agent host. Follows the spec.sshCredentialsRef convention (namespaced).
+                properties:
+                  name:
+                    description: name is unique within a namespace to reference a
+                      secret resource.
+                    type: string
+                  namespace:
+                    description: namespace defines the space within which the secret
+                      name must be unique.
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              edgeRef:
+                description: EdgeRef points at the connectable this service runs on.
+                properties:
+                  kind:
+                    default: LinuxServer
+                    description: |-
+                      Kind is the connectable kind this service runs on. LinuxServer services
+                      are reached on the host loopback; KubernetesCluster services are reached
+                      through the cluster's DNS and require spec.targetRef.
+                    enum:
+                    - LinuxServer
+                    - KubernetesCluster
+                    type: string
+                  name:
+                    description: Name is the connectable's metadata.name.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              instructions:
+                description: |-
+                  Instructions is free-form guidance surfaced to AI clients on the MCP
+                  endpoint's "initialize" for this service — a place to teach the model
+                  about this specific deployment (e.g. "gates are under cover.gate_main;
+                  the living room light is light.living_room"). Appended to the generated
+                  per-service and aggregate MCP instructions.
+                maxLength: 8192
+                type: string
+              port:
+                description: |-
+                  Port the service listens on: the host loopback port for LinuxServer
+                  edges, the Kubernetes Service port for KubernetesCluster edges.
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              scheme:
+                default: http
+                description: Scheme is the URL scheme used to reach the service.
+                enum:
+                - http
+                - https
+                type: string
+              targetRef:
+                description: |-
+                  TargetRef names the Kubernetes Service to proxy to. Required when
+                  edgeRef.kind is KubernetesCluster; ignored for LinuxServer, which proxies
+                  to the host loopback on spec.port.
+                properties:
+                  name:
+                    description: Name of the Kubernetes Service.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the Kubernetes Service.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              type:
+                default: generic
+                description: Type selects the detector and the MCP tool bundle. "generic"
+                  = proxy-only.
+                enum:
+                - home-assistant
+                - qbittorrent
+                - prowlarr
+                - sonarr
+                - radarr
+                - grafana
+                - grafana-loki
+                - prometheus
+                - jellyfin
+                - plex
+                - portainer
+                - adguard
+                - proxmox
+                - pihole
+                - generic
+                type: string
+            required:
+            - edgeRef
+            - port
+            type: object
+            x-kubernetes-validations:
+            - message: spec.targetRef is required when spec.edgeRef.kind is KubernetesCluster
+              rule: self.edgeRef.kind != 'KubernetesCluster' || has(self.targetRef)
+          status:
+            description: ServiceStatus defines the observed state of a Service.
+            properties:
+              conditions:
+                description: 'Conditions: Detected, CredentialsValid, Ready.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              discovered:
+                description: |-
+                  Discovered is true when this object was created or confirmed by the
+                  discovery reconciler (as opposed to being purely user-declared).
+                type: boolean
+              installType:
+                description: 'InstallType is how the service is installed: container|core|haos|supervised.'
+                type: string
+              lastSeen:
+                description: LastSeen is when discovery last confirmed the service.
+                format: date-time
+                type: string
+              phase:
+                description: Phase is one of "" | Detected | Ready | Unreachable.
+                type: string
+              url:
+                description: URL is the externalized svc-proxy base for this service
+                  (proxy subresource).
+                type: string
+              version:
+                description: |-
+                  Version is the service version: the container image tag before token
+                  validation, the exact reported version afterwards. Best-effort.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

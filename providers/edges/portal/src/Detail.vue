@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, watch, onUnmounted } from 'vue'
-import { ArrowLeft, RefreshCw, Trash2, CircleDot, Server, Boxes, Copy, Check, TerminalSquare } from 'lucide-vue-next'
-import { getEdge, deleteEdge } from './api'
-import type { EdgeDetail, EdgeType, ErrorResponse } from './types'
+import { ref, computed, watch, onUnmounted } from 'vue'
+import { ArrowLeft, RefreshCw, Trash2, CircleDot, Server, Boxes, Copy, Check, TerminalSquare, Home, Plug, Plus } from 'lucide-vue-next'
+import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, createKubeEdgeService, deleteEdgeService } from './api'
+import type { EdgeDetail, EdgeService, EdgeType, ErrorResponse } from './types'
 
 const props = defineProps<{ name: string; type: EdgeType; cluster: string | null; token: string | null }>()
 const emit = defineEmits<{ back: []; deleted: [] }>()
@@ -57,8 +57,101 @@ async function copy(text: string, field: string) {
   } catch { /* clipboard denied */ }
 }
 
-watch(() => [props.name, props.type], load, { immediate: true })
-const timer = setInterval(load, 10000)
+// ─── Services ────────────────────────────────────────────────────────
+// Server edges: discovered by the agent. Kube edges: declared here (a cluster
+// has far more services than a host, so we don't auto-scan).
+const services = ref<EdgeService[]>([])
+const svcError = ref<string | null>(null)
+const connectFor = ref<string | null>(null) // Service name being connected
+const tokenInput = ref('')
+const connecting = ref(false)
+
+async function loadServices() {
+  try {
+    services.value = await listEdgeServices(props.name)
+    svcError.value = null
+  } catch (e) {
+    svcError.value = (e as ErrorResponse)?.message ?? 'Failed to load services'
+  }
+}
+
+// Declare-service form (kube edges only).
+const adding = ref(false)
+const saving = ref(false)
+const draft = ref({ name: '', serviceType: 'home-assistant', targetNamespace: '', targetName: '', port: 8123 })
+
+function startAdd() {
+  adding.value = true
+  draft.value = { name: '', serviceType: 'home-assistant', targetNamespace: '', targetName: '', port: 8123 }
+}
+
+const draftValid = computed(
+  () =>
+    !!draft.value.name.trim() &&
+    !!draft.value.targetNamespace.trim() &&
+    !!draft.value.targetName.trim() &&
+    draft.value.port > 0,
+)
+
+async function submitAdd() {
+  if (!draftValid.value) return
+  saving.value = true
+  svcError.value = null
+  try {
+    await createKubeEdgeService({
+      name: draft.value.name.trim(),
+      edgeName: props.name,
+      serviceType: draft.value.serviceType,
+      targetNamespace: draft.value.targetNamespace.trim(),
+      targetName: draft.value.targetName.trim(),
+      port: Number(draft.value.port),
+    })
+    adding.value = false
+    await loadServices()
+  } catch (e) {
+    svcError.value = (e as ErrorResponse)?.message ?? 'Failed to add service'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function removeService(name: string) {
+  if (!confirm(`Delete service "${name}"?`)) return
+  try {
+    await deleteEdgeService(name)
+    await loadServices()
+  } catch (e) {
+    svcError.value = (e as ErrorResponse)?.message ?? 'Delete failed'
+  }
+}
+
+function startConnect(name: string) {
+  connectFor.value = name
+  tokenInput.value = ''
+}
+
+async function submitConnect() {
+  if (!connectFor.value || !tokenInput.value.trim()) return
+  connecting.value = true
+  svcError.value = null
+  try {
+    await connectEdgeService(connectFor.value, tokenInput.value.trim())
+    connectFor.value = null
+    tokenInput.value = ''
+    await loadServices()
+  } catch (e) {
+    svcError.value = (e as ErrorResponse)?.message ?? 'Connect failed'
+  } finally {
+    connecting.value = false
+  }
+}
+
+function svcOk(es: EdgeService): boolean {
+  return es.phase === 'Ready'
+}
+
+watch(() => [props.name, props.type], () => { load(); loadServices() }, { immediate: true })
+const timer = setInterval(() => { load(); loadServices() }, 10000)
 onUnmounted(() => clearInterval(timer))
 
 function rel(ts?: string): string {
@@ -164,6 +257,98 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
           <button class="btn primary" @click="openTerminal">
             <TerminalSquare :size="14" /> Open terminal
           </button>
+        </div>
+      </div>
+
+      <!-- Services: discovered on server edges, declared on kube edges. -->
+      <div class="section">
+        <div class="row" style="justify-content: space-between; align-items: baseline;">
+          <h3>Services</h3>
+          <button v-if="type === 'kubernetes'" class="btn" @click="startAdd"><Plus :size="14" /> Add service</button>
+        </div>
+        <p class="muted">
+          {{ type === 'server'
+            ? 'Services discovered running on this host. Attach a token to let AI agents control them.'
+            : 'Kubernetes Services on this cluster, reached over cluster DNS. Attach a token to let AI agents control them.' }}
+        </p>
+        <div v-if="svcError" class="banner error">{{ svcError }}</div>
+
+        <!-- Declare form (kube edges) -->
+        <div v-if="adding" class="svc-card">
+          <div class="svc-head"><span class="svc-title"><Plus :size="15" /> New service</span></div>
+          <div class="svc-form">
+            <label>Name<input v-model="draft.name" class="svc-input" placeholder="home-assistant" /></label>
+            <label>Type
+              <select v-model="draft.serviceType" class="svc-input">
+                <option value="home-assistant">Home Assistant</option>
+                <option value="generic">Generic (proxy only)</option>
+              </select>
+            </label>
+            <label>Target namespace<input v-model="draft.targetNamespace" class="svc-input" placeholder="home" /></label>
+            <label>Target service<input v-model="draft.targetName" class="svc-input" placeholder="home-assistant" /></label>
+            <label>Port<input v-model.number="draft.port" type="number" class="svc-input" placeholder="8123" /></label>
+          </div>
+          <div class="wiz-actions" style="justify-content: flex-start;">
+            <button class="btn primary" :disabled="saving || !draftValid" @click="submitAdd">
+              {{ saving ? 'Adding…' : 'Add service' }}
+            </button>
+            <button class="btn" :disabled="saving" @click="adding = false">Cancel</button>
+          </div>
+        </div>
+
+        <div v-if="services.length === 0 && !adding" class="muted">
+          {{ type === 'server'
+            ? 'No services discovered yet. Discovery runs when the agent is connected.'
+            : 'No services declared yet. Add one to point at a Kubernetes Service in this cluster.' }}
+        </div>
+        <div v-else-if="services.length" class="svc-cards">
+          <div v-for="es in services" :key="es.name" class="svc-card">
+            <div class="svc-head">
+              <span class="svc-title">
+                <Home v-if="es.serviceType === 'home-assistant'" :size="15" />
+                <Plug v-else :size="15" />
+                {{ es.serviceType === 'home-assistant' ? 'Home Assistant' : (es.serviceType || es.name) }}
+              </span>
+              <div class="row">
+                <span class="status" :class="svcOk(es) ? 'ok' : 'down'">
+                  <CircleDot :size="12" /> {{ es.phase || 'Detected' }}
+                </span>
+                <button v-if="type === 'kubernetes'" class="icon danger" title="Delete service" @click="removeService(es.name)">
+                  <Trash2 :size="14" />
+                </button>
+              </div>
+            </div>
+            <div class="svc-meta">
+              <span v-if="es.version" class="mono">v{{ es.version }}</span>
+              <span v-if="es.targetNamespace" class="mono">{{ es.targetName }}.{{ es.targetNamespace }}.svc:{{ es.port }}</span>
+              <span v-else class="mono">:{{ es.port }}</span>
+              <span v-if="es.installType" class="pill">{{ es.installType }}</span>
+              <span v-if="es.hasCredentials" class="pill ok-pill">token set</span>
+            </div>
+
+            <!-- Connect form -->
+            <div v-if="connectFor === es.name" class="svc-connect">
+              <input
+                v-model="tokenInput" type="password" class="svc-input"
+                placeholder="Paste a long-lived access token" autocomplete="off"
+                @keyup.enter="submitConnect"
+              />
+              <div class="wiz-actions" style="justify-content: flex-start;">
+                <button class="btn primary" :disabled="connecting || !tokenInput.trim()" @click="submitConnect">
+                  <Plug :size="14" /> {{ connecting ? 'Connecting…' : 'Save token' }}
+                </button>
+                <button class="btn" :disabled="connecting" @click="connectFor = null">Cancel</button>
+              </div>
+              <p v-if="es.serviceType === 'home-assistant'" class="muted small">
+                Create one in Home Assistant → your profile → Security → Long-lived access tokens.
+              </p>
+            </div>
+            <div v-else class="wiz-actions" style="justify-content: flex-start;">
+              <button class="btn" @click="startConnect(es.name)">
+                <Plug :size="14" /> {{ es.hasCredentials ? 'Update token' : 'Connect' }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 

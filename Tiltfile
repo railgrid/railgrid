@@ -696,6 +696,13 @@ local_resource(
 #   3. Click ▶ on `edge-{kube,server}-agent` to run the agent.
 #        - kubernetes: also spins up a `kedge-agent` kind cluster on first run.
 #        - server: also click ▶ on `ssh-server` so the agent has an SSH target.
+#   4. Home Assistant (to exercise the Service kind + its MCP tools):
+#        - kube edge:   ▶ `ha-kube-deploy`, then ▶ `ha-kube-forward` to onboard
+#          and mint a long-lived token, then declare a Service against it
+#          (portal → Services → Add service, or the example manifest in
+#          providers/edges/contrib/manifests/homeassistant/).
+#        - server edge: install HA on the host; the agent discovers it and the
+#          Service appears on its own — only the token needs attaching.
 # ---------------------------------------------------------------------------
 
 # --- edges provider ---
@@ -806,5 +813,30 @@ local_resource(
     serve_cmd='docker rm -f openssh-server >/dev/null 2>&1; make dev-run-ssh-server',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
+    labels=['edges'],
+)
+
+# Home Assistant inside the `kedge-agent` kind cluster — a real target for the
+# kube-edge Service path (spec.targetRef → home-assistant.home.svc:8123).
+# Creates the kind cluster itself if edge-kube-agent hasn't yet, so it has no
+# resource_deps on it; first run pulls a ~1.5GB image.
+local_resource(
+    'ha-kube-deploy',
+    cmd='make dev-deploy-homeassistant',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['edges'],
+)
+
+# Home Assistant ships with no users, and a long-lived access token can only be
+# minted from the UI — so onboarding needs a browser. Port-forward, open
+# http://localhost:8123, then profile → Security → Long-lived access tokens.
+local_resource(
+    'ha-kube-forward',
+    serve_cmd='make dev-homeassistant-forward',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['ha-kube-deploy'],
+    links=[link('http://localhost:8123', 'Home Assistant')],
     labels=['edges'],
 )

@@ -1,0 +1,11 @@
+# Applied with `kubectl apply -k` so resources land in dependency order
+# (namespace before the objects inside it) — a plain `-f <dir>` applies in
+# filename order and would try to create the Deployment before the Namespace.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml

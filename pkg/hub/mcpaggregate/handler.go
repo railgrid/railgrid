@@ -119,6 +119,20 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 		p.name, p.cluster,
 	)
 
+	var targets []ProviderTarget
+	if p.enumerate != nil {
+		targets = p.enumerate(ctx)
+	}
+
+	// Merge each provider's own instructions (e.g. a Home Assistant Service's
+	// operator-authored entity/room guidance) into the aggregate's instructions,
+	// so that context reaches the model here — not only on the provider's direct
+	// endpoint. Fetched before the server is built (instructions are fixed at
+	// construction).
+	if extra := FederatedInstructions(ctx, targets, p.token, p.cluster); extra != "" {
+		instructions += "\n\n--- Provider guidance ---\n\n" + extra
+	}
+
 	srv := mcp.NewServer(impl, &mcp.ServerOptions{Instructions: instructions})
 
 	registerAboutResource(srv, aboutDoc{
@@ -129,10 +143,6 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 		EndpointURL: p.externalURL + apiurl.MCPServerPath(p.cluster, p.name),
 	})
 
-	var targets []ProviderTarget
-	if p.enumerate != nil {
-		targets = p.enumerate(ctx)
-	}
 	registerProviderTools(ctx, srv, p.log, targets, p.token, p.cluster)
 	return srv
 }

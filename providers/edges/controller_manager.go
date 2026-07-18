@@ -31,7 +31,9 @@ import (
 
 	edgectrl "github.com/faroshq/provider-edges/internal/edgectrl"
 	"github.com/faroshq/provider-edges/internal/scheduler"
+	"github.com/faroshq/provider-edges/internal/servicectrl"
 	"github.com/faroshq/provider-edges/internal/status"
+	sdktunnel "github.com/faroshq/provider-edges/internal/tunnel"
 	sdkinstall "github.com/faroshq/provider-sdk/install"
 
 	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
@@ -51,7 +53,7 @@ const endpointSliceName = apiExportName
 // edge token / RBAC / lifecycle reconcilers. connManager wires the lifecycle
 // reconciler's tunnel-liveness cross-check to the provider's live ConnManager.
 // A nil config means "skip the manager" (healthz-only / dev).
-func startEdgeControllerManager(ctx context.Context, config *rest.Config, connManager edgectrl.ConnManager, hubExternalURL string, hubCAData []byte, devMode bool) error {
+func startEdgeControllerManager(ctx context.Context, config *rest.Config, connManager *sdktunnel.ConnManager, hubExternalURL string, hubCAData []byte, devMode bool) error {
 	if config == nil {
 		return errControllerDisabled
 	}
@@ -111,6 +113,17 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, connMa
 	}
 	if err := status.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("Workload status aggregator: %w", err)
+	}
+
+	// EdgeService controllers (LinuxServer edges): the discovery reconciler
+	// pulls host services from each connected agent and materializes an
+	// EdgeService per service; the validation reconciler checks configured
+	// credentials against the service and stamps status. Both share the tunnel
+	// ConnManager for agent dials.
+	if err := servicectrl.SetupWithManager(mgr, connManager, servicectrl.Options{
+		EdgeProxyPublicPath: edgeProxyPublicPath,
+	}); err != nil {
+		return fmt.Errorf("EdgeService controllers: %w", err)
 	}
 
 	go func() {

@@ -1,0 +1,20 @@
+# ClusterIP, not LoadBalancer: kedge reaches this Service from inside the
+# cluster (the edge agent dials it over cluster DNS), so there is nothing to
+# expose. The name/namespace here are what the kedge Service CR's spec.targetRef
+# points at, resolving to home-assistant.home.svc:8123.
+apiVersion: v1
+kind: Service
+metadata:
+  name: home-assistant
+  namespace: home
+  labels:
+    app.kubernetes.io/name: home-assistant
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: home-assistant
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+      protocol: TCP
