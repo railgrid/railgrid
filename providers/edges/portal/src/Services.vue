@@ -46,6 +46,7 @@ function onTypeChange() {
   if (p) draft.value.port = p.port
   // UniFi OS speaks https (self-signed); default the scheme so it just works.
   if (draft.value.serviceType.startsWith('unifi-')) draft.value.scheme = 'https'
+  resetTargetMode()
 }
 
 const services = ref<EdgeService[]>([])
@@ -67,12 +68,44 @@ const draft = ref<EdgeServiceDraft>({
   instructions: '',
 })
 
-// The selected edge's kind decides the form shape: LinuxServer services target
-// the host (loopback, or spec.host for a LAN device like a UniFi console);
-// KubernetesCluster services target a named Kubernetes Service (targetRef).
+// How the service is reached is an explicit choice, independent of the edge kind:
+//   host — dial an address directly (agent loopback, or a LAN device like a UniFi
+//          console). Works on either edge kind.
+//   kube — reach a named Kubernetes Service by cluster DNS (KubernetesCluster only).
+const targetMode = ref<'host' | 'kube'>('host')
+
 const selectedEdgeIsServer = computed(
   () => edges.value.find((e) => e.name === draft.value.edgeName)?.type === 'server',
 )
+
+// Sensible default target mode when the edge or type changes: LAN-style services
+// (UniFi) and LinuxServer edges default to host; KubernetesCluster edges default
+// to a cluster Service. The user can override with the toggle.
+function resetTargetMode() {
+  const isLAN = draft.value.serviceType.startsWith('unifi-')
+  targetMode.value = selectedEdgeIsServer.value || isLAN ? 'host' : 'kube'
+}
+
+function toggleCreate() {
+  showCreate.value = !showCreate.value
+  if (showCreate.value) resetTargetMode()
+}
+
+// spec.host is a bare hostname/IP (scheme + port are separate fields). If the
+// user pastes a full URL, split it into host + scheme + port for convenience.
+// Any path is dropped — services proxy at the root.
+function applyHostUrl() {
+  const raw = draft.value.host?.trim()
+  if (!raw || !/^https?:\/\//i.test(raw)) return
+  try {
+    const u = new URL(raw)
+    draft.value.scheme = u.protocol.replace(':', '')
+    draft.value.host = u.hostname
+    draft.value.port = Number(u.port) || (u.protocol === 'https:' ? 443 : 80)
+  } catch {
+    /* not a valid URL — leave the field as typed */
+  }
+}
 
 // Per-row expand for edit (instructions) + connect (token).
 const expanded = ref<string | null>(null)
@@ -105,24 +138,26 @@ const canCreate = computed(
   () =>
     !!draft.value.name.trim() &&
     !!draft.value.edgeName &&
-    (selectedEdgeIsServer.value || !!draft.value.targetName.trim()),
+    // host mode: host optional (empty = agent loopback). kube mode: need a target.
+    (targetMode.value === 'host' || !!draft.value.targetName.trim()),
 )
 
 async function onCreate() {
   if (!canCreate.value) return
+  if (targetMode.value === 'host') applyHostUrl() // normalize a pasted URL
   busy.value = true
   error.value = null
   try {
-    const isServer = selectedEdgeIsServer.value
+    const byHost = targetMode.value === 'host'
     await createKubeEdgeService({
       name: draft.value.name.trim(),
       edgeName: draft.value.edgeName,
-      edgeKind: isServer ? 'LinuxServer' : 'KubernetesCluster',
+      edgeKind: selectedEdgeIsServer.value ? 'LinuxServer' : 'KubernetesCluster',
       serviceType: draft.value.serviceType,
       targetNamespace: draft.value.targetNamespace.trim() || 'default',
-      targetName: draft.value.targetName.trim(),
+      targetName: byHost ? '' : draft.value.targetName.trim(),
       scheme: draft.value.scheme || 'http',
-      host: isServer ? draft.value.host?.trim() || undefined : undefined,
+      host: byHost ? draft.value.host?.trim() || undefined : undefined,
       port: Number(draft.value.port) || 8123,
       instructions: draft.value.instructions?.trim() || undefined,
     })
@@ -194,7 +229,7 @@ function phaseClass(p?: string): string {
         <button class="btn" :disabled="loading" @click="refresh">
           <RefreshCw :size="14" :class="{ spin: loading }" /> Refresh
         </button>
-        <button class="btn primary" @click="showCreate = !showCreate">
+        <button class="btn primary" @click="toggleCreate">
           <Plus :size="14" /> New service
         </button>
       </div>
@@ -212,7 +247,7 @@ function phaseClass(p?: string): string {
         </label>
         <label class="fld" style="flex: 1;">
           <span class="lbl">Edge</span>
-          <select v-model="draft.edgeName" class="input">
+          <select v-model="draft.edgeName" class="input" @change="resetTargetMode">
             <option v-for="e in edges" :key="e.name" :value="e.name">{{ e.name }} ({{ e.type === 'server' ? 'LinuxServer' : 'KubernetesCluster' }})</option>
           </select>
         </label>
@@ -238,14 +273,26 @@ function phaseClass(p?: string): string {
           <input v-model="draft.port" type="number" min="1" max="65535" class="input" />
         </label>
       </div>
-      <!-- LinuxServer: reach the host loopback, or a device on the edge's LAN. -->
-      <div v-if="selectedEdgeIsServer" class="row" style="gap: 12px; align-items: flex-start;">
+      <!-- Target: an explicit choice, independent of the edge kind. -->
+      <label class="fld">
+        <span class="lbl">Target</span>
+        <div class="row" style="gap: 16px;">
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="radio" value="host" v-model="targetMode" /> Host / IP
+          </label>
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;" :style="{ opacity: selectedEdgeIsServer ? 0.5 : 1 }">
+            <input type="radio" value="kube" v-model="targetMode" :disabled="selectedEdgeIsServer" /> Kubernetes Service
+          </label>
+        </div>
+      </label>
+      <!-- Host: dial an address directly (loopback, or a LAN device like UniFi). -->
+      <div v-if="targetMode === 'host'" class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
-          <span class="lbl">Host (optional — device on the edge's LAN)</span>
-          <input v-model="draft.host" class="input" placeholder="127.0.0.1 (loopback) or e.g. 192.168.1.1 for a UniFi console" />
+          <span class="lbl">Host (blank = agent loopback)</span>
+          <input v-model="draft.host" class="input" @blur="applyHostUrl" placeholder="192.168.1.1, myui.example.com, or paste https://myui.example.com — blank = 127.0.0.1" />
         </label>
       </div>
-      <!-- KubernetesCluster: reach a named Kubernetes Service. -->
+      <!-- Kubernetes Service: reach it by cluster DNS. -->
       <div v-else class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Target namespace</span>

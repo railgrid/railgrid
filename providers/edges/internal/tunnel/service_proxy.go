@@ -95,14 +95,13 @@ func (v *serviceView) connResource() string {
 // targetHost is the agent-side address of the service: cluster DNS for a
 // KubernetesCluster edge, the host loopback for a LinuxServer edge.
 func (v *serviceView) targetHost() string {
-	if v.isKube() && v.Spec.TargetRef != nil {
-		return v.Spec.TargetRef.Name + "." + v.Spec.TargetRef.Namespace + ".svc"
-	}
-	// LinuxServer edges default to loopback, but spec.host may point the service
-	// at another device on the edge's LAN (gated agent-side by
-	// KEDGE_AGENT_ALLOW_LAN_SVC_TARGETS).
+	// spec.host wins on either edge kind: dial the address directly (loopback, or
+	// a device on the edge's LAN like a UniFi console).
 	if v.Spec.Host != "" {
 		return v.Spec.Host
+	}
+	if v.isKube() && v.Spec.TargetRef != nil {
+		return v.Spec.TargetRef.Name + "." + v.Spec.TargetRef.Namespace + ".svc"
 	}
 	return "127.0.0.1"
 }
