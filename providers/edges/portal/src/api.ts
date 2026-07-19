@@ -301,18 +301,28 @@ export async function updateEdgeServiceInstructions(name: string, instructions: 
 // object carries the edge label so it lists alongside discovered ones, but NOT
 // the discovered label — the discovery reconciler must never prune it.
 export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> {
+  // LinuxServer edges reach the service on the host loopback, or — via spec.host —
+  // another device on the edge's LAN (e.g. a UniFi console). KubernetesCluster
+  // edges reach it behind a named Kubernetes Service (targetRef).
+  const isServer = d.edgeKind === 'LinuxServer'
+  const spec: Record<string, unknown> = {
+    edgeRef: { kind: isServer ? 'LinuxServer' : 'KubernetesCluster', name: d.edgeName },
+    type: d.serviceType,
+    port: d.port,
+    ...(d.scheme ? { scheme: d.scheme } : {}),
+    ...(d.instructions ? { instructions: d.instructions } : {}),
+  }
+  if (isServer) {
+    if (d.host?.trim()) spec.host = d.host.trim()
+  } else {
+    spec.targetRef = { namespace: d.targetNamespace, name: d.targetName }
+  }
   const object: Record<string, unknown> = {
     metadata: {
       name: d.name,
       labels: { 'edges.kedge.faros.sh/edge': d.edgeName },
     },
-    spec: {
-      edgeRef: { kind: 'KubernetesCluster', name: d.edgeName },
-      targetRef: { namespace: d.targetNamespace, name: d.targetName },
-      type: d.serviceType,
-      port: d.port,
-      ...(d.instructions ? { instructions: d.instructions } : {}),
-    },
+    spec,
   }
   await graphql(
     `mutation CreateService($object: EdgesKedgeFarosShV1alpha1Service_Input!) {

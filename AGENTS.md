@@ -184,6 +184,27 @@ APIExport, schemas) and registers routing/heartbeat state.
 > the binding's `status.exportPermissionClaims` lists the claim but `spec` /
 > `status.appliedPermissionClaims` do not.
 
+> **⚠️ Adding an edges "service" type touches FOUR places (edges provider).**
+> The edges provider turns host/LAN apps (Home Assistant, the *arr apps, UniFi, …)
+> into MCP tools via a `Service` CR with a `spec.type`. To add a type:
+> 1. `providers/edges/apis/v1alpha1/types_service.go` — the `ServiceType`
+>    kubebuilder enum + constant, then **`make codegen-edges-provider`** (regenerates
+>    the Service CRD/APIResourceSchema/chart schema; only the services schema bumps).
+> 2. `providers/edges/internal/tunnel/svc_catalog.go` — the `svcCatalog` entry
+>    (default port, auth scheme, the HTTP operations exposed as MCP tools). Home
+>    Assistant is the exception (hand-coded in `mcp_service.go`).
+> 3. `providers/edges/portal/src/Services.vue` — the `PRESETS` array that drives the
+>    **UI type dropdown**. Miss this and the type builds/works but never appears in
+>    the portal (the enum/schema does NOT drive the `<select>`).
+> 4. `providers/edges/contrib/manifests/<type>/` — an example `Service` manifest.
+>
+> Reachability: a `Service` on a `LinuxServer` edge hits the agent host loopback by
+> default; `spec.host` points it at another device on the edge's LAN (e.g. a UniFi
+> console) — the agent's svc proxy (`pkg/agent/tunnel/svc.go`) currently allows any
+> host (see `isAllowedSvcHost`, `TODO(security)`). A `Service` on a
+> `KubernetesCluster` edge uses `spec.targetRef` (a cluster-DNS Service) instead.
+> The portal create form (`Services.vue`) branches on the selected edge's kind.
+
 ### 5.2 Hub-side provider integration (`pkg/hub/providers/`)
 
 | File | Role |

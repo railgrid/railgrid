@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { RefreshCw, Trash2, Plus, Boxes, ChevronRight, ChevronDown, Save, KeyRound } from 'lucide-vue-next'
 import {
   listServices, createKubeEdgeService, deleteEdgeService,
@@ -15,6 +15,8 @@ const PRESETS: ServicePreset[] = [
   { type: 'home-assistant', label: 'Home Assistant', category: 'Home & IoT', port: 8123, tokenHint: 'Long-lived access token' },
   { type: 'adguard', label: 'AdGuard Home', category: 'Network', port: 80, tokenHint: 'Web credentials as "username:password"' },
   { type: 'pihole', label: 'Pi-hole', category: 'Network', port: 80, tokenHint: 'Web-interface password (Pi-hole v6)' },
+  { type: 'unifi-network', label: 'UniFi Network', category: 'Network', port: 443, tokenHint: 'UniFi OS local API key (X-API-KEY) — set scheme https, host = console IP' },
+  { type: 'unifi-protect', label: 'UniFi Protect', category: 'Network', port: 443, tokenHint: 'UniFi OS local API key (X-API-KEY) — set scheme https, host = console IP' },
   { type: 'grafana', label: 'Grafana', category: 'Observability', port: 3000, tokenHint: 'Service-account / API token' },
   { type: 'grafana-loki', label: 'Grafana Loki', category: 'Observability', port: 3100, tokenHint: 'Bearer token (optional)' },
   { type: 'prometheus', label: 'Prometheus', category: 'Observability', port: 9090, tokenHint: 'Bearer token (optional — often none)' },
@@ -42,6 +44,8 @@ const PRESET_GROUPS = PRESETS.reduce<{ category: string; items: ServicePreset[] 
 function onTypeChange() {
   const p = presetFor(draft.value.serviceType)
   if (p) draft.value.port = p.port
+  // UniFi OS speaks https (self-signed); default the scheme so it just works.
+  if (draft.value.serviceType.startsWith('unifi-')) draft.value.scheme = 'https'
 }
 
 const services = ref<EdgeService[]>([])
@@ -57,9 +61,18 @@ const draft = ref<EdgeServiceDraft>({
   serviceType: 'home-assistant',
   targetNamespace: '',
   targetName: '',
+  scheme: 'http',
+  host: '',
   port: 8123,
   instructions: '',
 })
+
+// The selected edge's kind decides the form shape: LinuxServer services target
+// the host (loopback, or spec.host for a LAN device like a UniFi console);
+// KubernetesCluster services target a named Kubernetes Service (targetRef).
+const selectedEdgeIsServer = computed(
+  () => edges.value.find((e) => e.name === draft.value.edgeName)?.type === 'server',
+)
 
 // Per-row expand for edit (instructions) + connect (token).
 const expanded = ref<string | null>(null)
@@ -88,22 +101,33 @@ async function refresh() {
   }
 }
 
+const canCreate = computed(
+  () =>
+    !!draft.value.name.trim() &&
+    !!draft.value.edgeName &&
+    (selectedEdgeIsServer.value || !!draft.value.targetName.trim()),
+)
+
 async function onCreate() {
-  if (!draft.value.name.trim() || !draft.value.edgeName || !draft.value.targetName.trim()) return
+  if (!canCreate.value) return
   busy.value = true
   error.value = null
   try {
+    const isServer = selectedEdgeIsServer.value
     await createKubeEdgeService({
       name: draft.value.name.trim(),
       edgeName: draft.value.edgeName,
+      edgeKind: isServer ? 'LinuxServer' : 'KubernetesCluster',
       serviceType: draft.value.serviceType,
       targetNamespace: draft.value.targetNamespace.trim() || 'default',
       targetName: draft.value.targetName.trim(),
+      scheme: draft.value.scheme || 'http',
+      host: isServer ? draft.value.host?.trim() || undefined : undefined,
       port: Number(draft.value.port) || 8123,
       instructions: draft.value.instructions?.trim() || undefined,
     })
     showCreate.value = false
-    draft.value = { name: '', edgeName: edges.value[0]?.name ?? '', serviceType: 'home-assistant', targetNamespace: '', targetName: '', port: 8123, instructions: '' }
+    draft.value = { name: '', edgeName: edges.value[0]?.name ?? '', serviceType: 'home-assistant', targetNamespace: '', targetName: '', scheme: 'http', host: '', port: 8123, instructions: '' }
     await refresh()
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Create failed'
@@ -187,9 +211,9 @@ function phaseClass(p?: string): string {
           <input v-model="draft.name" class="input" placeholder="ha" />
         </label>
         <label class="fld" style="flex: 1;">
-          <span class="lbl">Edge (KubernetesCluster)</span>
+          <span class="lbl">Edge</span>
           <select v-model="draft.edgeName" class="input">
-            <option v-for="e in edges" :key="e.name" :value="e.name">{{ e.name }}</option>
+            <option v-for="e in edges" :key="e.name" :value="e.name">{{ e.name }} ({{ e.type === 'server' ? 'LinuxServer' : 'KubernetesCluster' }})</option>
           </select>
         </label>
       </div>
@@ -202,12 +226,27 @@ function phaseClass(p?: string): string {
             </optgroup>
           </select>
         </label>
-        <label class="fld" style="flex: 1;">
+        <label class="fld" style="flex: 0 0 120px;">
+          <span class="lbl">Scheme</span>
+          <select v-model="draft.scheme" class="input">
+            <option value="http">http</option>
+            <option value="https">https</option>
+          </select>
+        </label>
+        <label class="fld" style="flex: 0 0 120px;">
           <span class="lbl">Port</span>
           <input v-model="draft.port" type="number" min="1" max="65535" class="input" />
         </label>
       </div>
-      <div class="row" style="gap: 12px; align-items: flex-start;">
+      <!-- LinuxServer: reach the host loopback, or a device on the edge's LAN. -->
+      <div v-if="selectedEdgeIsServer" class="row" style="gap: 12px; align-items: flex-start;">
+        <label class="fld" style="flex: 1;">
+          <span class="lbl">Host (optional — device on the edge's LAN)</span>
+          <input v-model="draft.host" class="input" placeholder="127.0.0.1 (loopback) or e.g. 192.168.1.1 for a UniFi console" />
+        </label>
+      </div>
+      <!-- KubernetesCluster: reach a named Kubernetes Service. -->
+      <div v-else class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Target namespace</span>
           <input v-model="draft.targetNamespace" class="input" placeholder="home" />
@@ -223,7 +262,7 @@ function phaseClass(p?: string): string {
       </label>
       <div class="wiz-actions">
         <button class="btn" @click="showCreate = false">Cancel</button>
-        <button class="btn primary" :disabled="busy || !draft.name.trim() || !draft.edgeName || !draft.targetName.trim()" @click="onCreate">Create</button>
+        <button class="btn primary" :disabled="busy || !canCreate" @click="onCreate">Create</button>
       </div>
     </div>
 

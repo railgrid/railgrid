@@ -97,9 +97,12 @@ export interface EdgeService {
 export interface EdgeServiceDraft {
   name: string
   edgeName: string
+  edgeKind?: string // LinuxServer | KubernetesCluster (derived from the selected edge)
   serviceType: string
   targetNamespace: string
   targetName: string
+  scheme?: string // http | https (https for e.g. UniFi)
+  host?: string // LinuxServer only: target a device on the edge's LAN (e.g. a UniFi console)
   port: number
   instructions?: string
 }
