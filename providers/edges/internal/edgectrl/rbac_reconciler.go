@@ -118,9 +118,21 @@ func (r *RBACReconciler) Reconcile(ctx context.Context, req mcreconcile.Request)
 		return ctrl.Result{}, fmt.Errorf("ensuring cluster role: %w", err)
 	}
 
-	// 4. Ensure ClusterRoleBinding for this edge's SA.
+	// 4. Ensure ClusterRoleBinding for this edge's SA (shared operational role:
+	// get/list/watch/update on edges, placements, workloads).
 	if err := ensureClusterRoleBinding(ctx, c, saName, ownerRef); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring cluster role binding: %w", err)
+	}
+
+	// 4b. Ensure the per-edge "proxy" grant: a ClusterRole + Binding scoped to
+	// THIS edge via resourceNames, authorizing the agent SA for verb "proxy" on
+	// its own edge object. The agent-ingress handler gates SA-token reconnects on
+	// a delegated SubjectAccessReview for that verb (authorizeByIssuedToken), so
+	// only the SA bound here — this exact edge's agent — passes; a different
+	// edge's SA in the same workspace does not. Owned by the edge, so deleting the
+	// edge revokes it (the revocation model the issued-token byte-compare had).
+	if err := r.ensureEdgeProxyGrant(ctx, c, saName, edge.GetName(), ownerRef); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring edge proxy grant: %w", err)
 	}
 
 	// 5. Ensure token Secret (type kubernetes.io/service-account-token).
@@ -334,6 +346,73 @@ func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName strin
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
 			Name:     edgeAgentClusterRole,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      saName,
+				Namespace: edgeNamespace,
+			},
+		},
+	}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+// ensureEdgeProxyGrant creates a per-edge ClusterRole + ClusterRoleBinding that
+// authorizes this edge's agent ServiceAccount for the "proxy" verb on its OWN
+// edge object (resourceNames-scoped). This is the RBAC the agent-ingress
+// handler's delegated SubjectAccessReview checks on SA-token reconnect, so the
+// gate is per-edge: a same-workspace SA for a different edge is not granted
+// "proxy" on this name and fails the review. Both objects are owned by the edge
+// so deletion revokes the grant.
+func (r *RBACReconciler) ensureEdgeProxyGrant(ctx context.Context, c client.Client, saName, edgeName string, ownerRef metav1.OwnerReference) error {
+	name := "kedge-edge-proxy-" + saName
+	desiredRules := []rbacv1.PolicyRule{{
+		APIGroups:     []string{r.gvr.Group},
+		Resources:     []string{r.gvr.Resource},
+		ResourceNames: []string{edgeName},
+		Verbs:         []string{"proxy"},
+	}}
+
+	cr := &rbacv1.ClusterRole{}
+	if err := c.Get(ctx, client.ObjectKey{Name: name}, cr); err == nil {
+		if !rulesEqual(cr.Rules, desiredRules) {
+			cr.Rules = desiredRules
+			if err := c.Update(ctx, cr); err != nil {
+				return err
+			}
+		}
+		if err := ensureOwnerRef(ctx, c, cr, ownerRef); err != nil {
+			return err
+		}
+	} else if apierrors.IsNotFound(err) {
+		if err := c.Create(ctx, &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{Name: name, OwnerReferences: []metav1.OwnerReference{ownerRef}},
+			Rules:      desiredRules,
+		}); err != nil && !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+	} else {
+		return err
+	}
+
+	crb := &rbacv1.ClusterRoleBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: name}, crb); err == nil {
+		return ensureOwnerRef(ctx, c, crb, ownerRef)
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := c.Create(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     name,
 		},
 		Subjects: []rbacv1.Subject{
 			{

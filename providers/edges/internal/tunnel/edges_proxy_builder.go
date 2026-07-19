@@ -83,7 +83,14 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 		// server-side credentials that do not go through kcp SubjectAccessReview.
 		_, isStaticToken := p.staticTokens[token]
 		if !isStaticToken && p.kcpConfig != nil {
-			if err := p.authorizeFn(r.Context(), p.kcpConfig, token, cluster, "proxy", p.group, resource, name); err != nil {
+			tenantCfg, err := p.tenantConfigFor(r.Context(), cluster)
+			if err != nil {
+				p.logger.Error(err, "edges proxy authorization: resolving tenant config failed",
+					"cluster", cluster, "name", name, "subresource", subresource)
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+			if err := p.authorizeFn(r.Context(), tenantCfg, p.kcpConfig, token, cluster, "proxy", p.group, resource, name); err != nil {
 				p.logger.Error(err, "edges proxy authorization failed",
 					"cluster", cluster, "name", name, "subresource", subresource)
 				http.Error(w, "Forbidden", http.StatusForbidden)

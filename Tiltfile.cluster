@@ -40,11 +40,13 @@ cluster_name = 'kcp-tilt'
 # specific image tag, keeping the kcp-operator's default repositories. The
 # included Tiltfile.static reads KCP_IMAGE_TAG and injects spec.image.tag into
 # the operator CRs. Unset → operator's version-matched defaults.
-# Defaults to upstream ghcr.io/kcp-dev/kcp:main — empty repo lets the operator
-# fill its default repository (ghcr.io/kcp-dev/kcp). The PR #4190 CachedResource
-# virtual-storage discovery fix is now merged to main. To pin a PR build from
-# the kcp-prs repo again:
+# Defaults to the kcp-prs build of PR #4280 (delegated authn/authz for APIExport
+# providers — TokenReview/SubjectAccessReview on the APIExport VW; kcp#4279).
+# This is what lets the edges provider's authorize() validate consumer tokens
+# against the consumer workspace instead of 404ing. To fall back to an operator
+# default (ghcr.io/kcp-dev/kcp) or another PR build, override on the CLI:
 #   tilt up -f Tiltfile.cluster -- --kcp-image-repo=ghcr.io/kcp-dev/kcp-prs --kcp-image-tag=pr-XXXX-<sha>
+#   tilt up -f Tiltfile.cluster -- --kcp-image-repo= --kcp-image-tag=          # operator defaults
 #
 # NOTE: the override comes ONLY from the --kcp-image-* flags (or the literal
 # defaults below) — deliberately NOT os.getenv(). Tilt re-executes this file in
@@ -52,8 +54,8 @@ cluster_name = 'kcp-tilt'
 # reading the same var back via os.getenv() would make the FIRST tag sticky and
 # silently shadow any later edit to the default here. The putenv is one-way:
 # parent (this file) → child (the included Tiltfile.static, which reads the env).
-kcp_image_repo = cfg.get('kcp-image-repo', '')
-kcp_image_tag = cfg.get('kcp-image-tag', 'v0.32.0')
+kcp_image_repo = cfg.get('kcp-image-repo', 'ghcr.io/kcp-dev/kcp-prs')
+kcp_image_tag = cfg.get('kcp-image-tag', 'pr-4280-f20adfe2d')
 # Always export (even empty) so an explicit '' override clears any inherited env.
 os.putenv('KCP_IMAGE_REPO', kcp_image_repo)
 os.putenv('KCP_IMAGE_TAG', kcp_image_tag)

@@ -70,3 +70,16 @@ spec:
         resource: clusterrolebindings
         verbs: [get, list, watch, create, update, patch, delete]
         tenantScoped: true
+      # Delegated authn/authz for the data plane. The provider terminates the
+      # agent tunnels and consumer egress OUTSIDE kcp's request path, so it must
+      # validate presented tokens (TokenReview) and authorize the resolved
+      # identity (SubjectAccessReview) against THIS consumer workspace. kcp serves
+      # both on the APIExport virtual workspace scoped to the engaged cluster
+      # (kcp#4279 / kcp#4280). Non-persisted built-in review APIs: no
+      # identityHash, not tenantScoped (nothing to list/watch), verb create only.
+      - group: authentication.k8s.io
+        resource: tokenreviews
+        verbs: [create]
+      - group: authorization.k8s.io
+        resource: subjectaccessreviews
+        verbs: [create]

@@ -42,7 +42,7 @@ type KindConfig struct {
 // authorizeFnType is the signature for the delegated authorization function.
 // Factored out as a type to allow injection in tests. The default is the
 // package-level authorize (auth.go).
-type authorizeFnType func(ctx context.Context, kcpConfig *rest.Config, token, clusterName, verb, group, resource, name string) error
+type authorizeFnType func(ctx context.Context, tenantCfg, kcpConfig *rest.Config, token, clusterName, verb, group, resource, name string) error
 
 // TenantConfigGetter returns a *rest.Config scoped to the given kcp tenant
 // logical cluster, able to read/write the Edge resources (and their

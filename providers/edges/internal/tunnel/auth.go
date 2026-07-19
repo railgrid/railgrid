@@ -85,42 +85,54 @@ func extractBearerToken(r *http.Request) string {
 	return ""
 }
 
-// authorize performs delegated authentication and authorization against kcp.
-// It follows the same pattern as kcp-dev/kcp's delegated.NewDelegatedAuthorizer:
-//  1. TokenReview — authenticates the bearer token and extracts user identity.
-//  2. SubjectAccessReview — checks if the authenticated user is allowed to
-//     perform the given verb on the resource in the target workspace.
+// authorize performs delegated authentication and authorization for a caller of
+// the provider's own endpoints (consumer egress + agent ingress), following
+// kcp's standard auth-delegator pattern:
+//  1. TokenReview — authenticate the bearer token in the workspace that issued
+//     it, and resolve the caller identity.
+//  2. SubjectAccessReview — authorize that identity for verb on the resource,
+//     ALWAYS in the consumer workspace (clusterName), served on the provider's
+//     APIExport virtual workspace scoped to the engaged cluster (kcp#4279 /
+//     kcp#4280 — this is what the edges APIExport claims tokenreviews +
+//     subjectaccessreviews for).
 //
-// Both calls use admin credentials scoped to the target workspace, with one
-// exception: kcp ServiceAccount tokens only authenticate in their home
-// logical cluster, so for SA tokens the TokenReview runs against the token's
-// clusterName claim. The home cluster is still VERIFIED — kcp checks the
-// token signature there, and a forged claim just fails the review. The
-// SubjectAccessReview always runs in the target workspace (clusterName from
-// the request URL — the #68 invariant), under a cluster-qualified synthetic
-// identity (see pkg/util/identity) with the SA's groups dropped, so a
-// foreign SA passes only when the target workspace explicitly bound that
-// exact qualified identity (e.g. the provider edges-proxy grant created on
-// tenant Enable).
-func authorize(ctx context.Context, kcpConfig *rest.Config, token, clusterName, verb, group, resource, name string) error {
-	reviewCluster := clusterName
+// tenantCfg targets the consumer workspace through the APIExport VW; it is the
+// SAR channel and also the TokenReview channel for tokens issued in the
+// consumer workspace (end-user OIDC tokens — shard-wide authenticator — and the
+// SA credentials the provider minted there for agents).
+//
+// kcp ServiceAccount tokens only authenticate in their home logical cluster, so
+// a foreign SA (e.g. the provider's own SA, whose home is the provider
+// workspace) is TokenReview'd there instead — reached by re-rooting the
+// provider's own credential (kcpConfig) at the SA's home cluster, which works
+// because a provider can always address its own home workspace. The home
+// cluster is VERIFIED (kcp checks the signature there); the resolved identity
+// is then re-encoded as the cluster-qualified SA name and authorized against
+// the consumer workspace's RBAC via the VW.
+//
+// The SAR deliberately does NOT re-root kcpConfig at /clusters/<consumer> (the
+// old approach), which the production hub proxy rejects with an opaque 404 —
+// the failure kcp#4279 documents. It goes through the VW instead.
+func authorize(ctx context.Context, tenantCfg, kcpConfig *rest.Config, token, clusterName, verb, group, resource, name string) error {
 	saClaims, isForeignSA := parseServiceAccountToken(token)
 	if isForeignSA && saClaims.ClusterName == clusterName {
-		// Same-cluster SA: the plain path below already handles it.
+		// SA minted in the consumer workspace (agent credentials): it
+		// authenticates natively there via the VW, like a user token.
 		isForeignSA = false
 	}
-	if isForeignSA {
-		reviewCluster = saClaims.ClusterName
-	}
 
-	trCfg := rest.CopyConfig(kcpConfig)
-	trCfg.Host = kcpurl.ClusterURL(trCfg.Host, reviewCluster)
+	// 1. Authenticate the token in its issuing workspace.
+	var trCfg *rest.Config
+	if isForeignSA {
+		trCfg = rest.CopyConfig(kcpConfig)
+		trCfg.Host = kcpurl.ClusterURL(trCfg.Host, saClaims.ClusterName)
+	} else {
+		trCfg = tenantCfg
+	}
 	trClient, err := kubernetes.NewForConfig(trCfg)
 	if err != nil {
-		return fmt.Errorf("creating kubernetes client: %w", err)
+		return fmt.Errorf("creating token-review client: %w", err)
 	}
-
-	// 1. Authenticate: TokenReview with admin creds.
 	tr, err := trClient.AuthenticationV1().TokenReviews().Create(ctx, &authenticationv1.TokenReview{
 		Spec: authenticationv1.TokenReviewSpec{Token: token},
 	}, metav1.CreateOptions{})
@@ -134,32 +146,26 @@ func authorize(ctx context.Context, kcpConfig *rest.Config, token, clusterName, 
 	sarUser := tr.Status.User.Username
 	sarGroups := tr.Status.User.Groups
 	if isForeignSA {
-		qualified, ok := identity.QualifyServiceAccount(reviewCluster, tr.Status.User.Username)
+		qualified, ok := identity.QualifyServiceAccount(saClaims.ClusterName, tr.Status.User.Username)
 		if !ok {
-			// Token claimed to be an SA token but the home cluster resolved
-			// it to a non-SA identity — refuse rather than authorize an
-			// identity we can't encode unambiguously.
+			// Claimed to be an SA token but the home cluster resolved it to a
+			// non-SA identity — refuse rather than authorize an identity we
+			// can't encode unambiguously.
 			return fmt.Errorf("token review: expected ServiceAccount identity, got %q", tr.Status.User.Username)
 		}
 		sarUser = qualified
-		// Drop groups: system:serviceaccounts et al. would match
-		// group-targeted bindings the tenant wrote for their OWN SAs.
+		// Drop groups: system:serviceaccounts et al. would match group-targeted
+		// bindings the tenant wrote for their OWN SAs.
 		sarGroups = nil
 	}
 
-	client := trClient
-	if reviewCluster != clusterName {
-		sarCfg := rest.CopyConfig(kcpConfig)
-		sarCfg.Host = kcpurl.ClusterURL(sarCfg.Host, clusterName)
-		client, err = kubernetes.NewForConfig(sarCfg)
-		if err != nil {
-			return fmt.Errorf("creating kubernetes client: %w", err)
-		}
+	// 2. Authorize the resolved identity against the consumer workspace's RBAC,
+	// via the APIExport virtual workspace.
+	sarClient, err := kubernetes.NewForConfig(tenantCfg)
+	if err != nil {
+		return fmt.Errorf("creating subject-access-review client: %w", err)
 	}
-
-	// 2. Authorize: SubjectAccessReview with the resolved identity, always
-	// in the target workspace.
-	sar, err := client.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
+	sar, err := sarClient.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
 		Spec: authorizationv1.SubjectAccessReviewSpec{
 			User:   sarUser,
 			Groups: sarGroups,

@@ -139,7 +139,13 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, clu
 	// Delegated authorization (static tokens bypass, as in buildEdgesProxyHandler).
 	_, isStaticToken := p.staticTokens[token]
 	if !isStaticToken && p.kcpConfig != nil {
-		if err := p.authorizeFn(ctx, p.kcpConfig, token, cluster, "proxy", p.group, serviceResource, name); err != nil {
+		tenantCfg, err := p.tenantConfigFor(ctx, cluster)
+		if err != nil {
+			logger.Error(err, "edgeservice authorization: resolving tenant config failed", "cluster", cluster, "name", name)
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		if err := p.authorizeFn(ctx, tenantCfg, p.kcpConfig, token, cluster, "proxy", p.group, serviceResource, name); err != nil {
 			logger.Error(err, "edgeservice authorization failed", "cluster", cluster, "name", name)
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return

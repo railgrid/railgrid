@@ -90,15 +90,36 @@ func TestACatalogProvisioning(t *testing.T) {
 		}
 	})
 
-	t.Run("APIExport present with the 5 permissionClaims", func(t *testing.T) {
+	t.Run("APIExport present with the 7 permissionClaims", func(t *testing.T) {
 		gvr := schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports"}
 		got, err := sub.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), edgesAPIExportName, metav1.GetOptions{})
 		if err != nil {
 			t.Fatalf("get APIExport %s: %v", edgesAPIExportName, err)
 		}
 		claims, _, _ := unstructured.NestedSlice(got.Object, "spec", "permissionClaims")
-		if len(claims) != 5 {
-			t.Fatalf("expected 5 permissionClaims, got %d", len(claims))
+		// 5 tenant-resource claims (namespaces, serviceaccounts, secrets,
+		// clusterroles, clusterrolebindings) + 2 delegated-auth review APIs
+		// (tokenreviews, subjectaccessreviews) the provider uses to authorize
+		// data-plane callers against the consumer workspace (kcp#4279/#4280).
+		if len(claims) != 7 {
+			t.Fatalf("expected 7 permissionClaims, got %d", len(claims))
+		}
+		wantReviewClaims := map[string]bool{
+			"authentication.k8s.io/tokenreviews":        false,
+			"authorization.k8s.io/subjectaccessreviews": false,
+		}
+		for _, c := range claims {
+			m, _ := c.(map[string]any)
+			g, _ := m["group"].(string)
+			res, _ := m["resource"].(string)
+			if _, ok := wantReviewClaims[g+"/"+res]; ok {
+				wantReviewClaims[g+"/"+res] = true
+			}
+		}
+		for key, found := range wantReviewClaims {
+			if !found {
+				t.Errorf("APIExport missing delegated-auth permissionClaim %q", key)
+			}
 		}
 		resources, _, _ := unstructured.NestedSlice(got.Object, "spec", "resources")
 		if len(resources) < 2 {
@@ -224,12 +245,96 @@ func TestCTenantEnableAndCRsUsable(t *testing.T) {
 // the pre-decouple hub-served test, now against
 // /services/providers/edges/edgeproxy/... with group edges.kedge.faros.sh.
 func TestDEdgeProxyAuthBoundary(t *testing.T) {
-	tenantWS := loginStaticTokenAndGetCluster(t)
+	workspaceGVR := schema.GroupVersionResource{Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces"}
+
+	// Create a DEDICATED child workspace for this test and enable edges in it.
+	// Delegated auth resolves the tenant through the provider's APIExport virtual
+	// workspace, which only engages consumer clusters that have bound edges — so
+	// the test tenant must be a real, engaged consumer. A fresh child (never
+	// bound before) also avoids the CRD bind/unbind/rebind churn that a shared
+	// static-token workspace would suffer across subtests.
+	// Parent must serve the tenancy API (i.e. allow child workspaces); a
+	// token-login tenant is a leaf `workspace` type that does not. root:kedge
+	// already parents the provider/org workspaces, so create the test consumer
+	// there with admin.
+	parentAdmin := kcpDynamic(t, "root:kedge", adminToken)
+	const childName = "edges-authboundary"
+	_ = parentAdmin.Resource(workspaceGVR).Delete(ctxWithTimeout(t, 5*time.Second), childName, metav1.DeleteOptions{})
+	if _, err := parentAdmin.Resource(workspaceGVR).Create(ctxWithTimeout(t, 10*time.Second), &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "tenancy.kcp.io/v1alpha1",
+		"kind":       "Workspace",
+		"metadata":   map[string]any{"name": childName},
+	}}, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create child workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentAdmin.Resource(workspaceGVR).Delete(context.Background(), childName, metav1.DeleteOptions{})
+	})
+	var tenantWS string
+	if !waitForCondition(t, 60*time.Second, func() (bool, string) {
+		got, err := parentAdmin.Resource(workspaceGVR).Get(ctxWithTimeout(t, 2*time.Second), childName, metav1.GetOptions{})
+		if err != nil {
+			return false, err.Error()
+		}
+		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+		tenantWS, _, _ = unstructured.NestedString(got.Object, "spec", "cluster")
+		return phase == "Ready" && tenantWS != "", "phase=" + phase
+	}) {
+		t.Fatal("child workspace never became Ready")
+	}
+	tenant := kcpDynamic(t, tenantWS, adminToken)
+
+	// Enable edges: bind the APIExport accepting every claim (including the
+	// tokenreviews + subjectaccessreviews review APIs the provider needs to run
+	// delegated auth against this workspace through the VW).
+	acceptClaim := func(group, resource string) map[string]any {
+		return map[string]any{
+			"group": group, "resource": resource,
+			"verbs":    []any{"get", "list", "watch", "create", "update", "patch", "delete"},
+			"selector": map[string]any{"matchAll": true},
+			"state":    "Accepted",
+		}
+	}
+	if _, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apis.kcp.io/v1alpha2",
+		"kind":       "APIBinding",
+		"metadata":   map[string]any{"name": "edges"},
+		"spec": map[string]any{
+			"reference": map[string]any{"export": map[string]any{"path": edgesWorkspacePath, "name": edgesAPIExportName}},
+			"permissionClaims": []any{
+				acceptClaim("", "namespaces"), acceptClaim("", "serviceaccounts"), acceptClaim("", "secrets"),
+				acceptClaim("rbac.authorization.k8s.io", "clusterroles"), acceptClaim("rbac.authorization.k8s.io", "clusterrolebindings"),
+				acceptClaim("authentication.k8s.io", "tokenreviews"), acceptClaim("authorization.k8s.io", "subjectaccessreviews"),
+			},
+		},
+	}}, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create APIBinding: %v", err)
+	}
+	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
+		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 2*time.Second), "edges", metav1.GetOptions{})
+		if err != nil {
+			return false, err.Error()
+		}
+		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+		return phase == "Bound", "phase=" + phase
+	}) {
+		t.Fatal("edges APIBinding never reached Bound")
+	}
+	// A real edge makes the provider's multicluster manager engage this cluster
+	// (so tenantConfigFor can resolve it). The probe below targets a different,
+	// non-existent edge — authorization still runs before the tunnel lookup.
+	if _, err := tenant.Resource(kubernetesClusterGVR).Create(ctxWithTimeout(t, 10*time.Second), &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "edges.kedge.faros.sh/v1alpha1",
+		"kind":       "KubernetesCluster",
+		"metadata":   map[string]any{"name": "e2e-engage"},
+		"spec":       map[string]any{},
+	}}, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create edge to engage tenant: %v", err)
+	}
 
 	// Provider workspace cluster ID — the value kcp embeds in the SA token
 	// claims and the grant subject must carry.
 	providersWS := kcpDynamic(t, "root:kedge:providers", adminToken)
-	workspaceGVR := schema.GroupVersionResource{Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces"}
 	ws, err := providersWS.Resource(workspaceGVR).Get(ctxWithTimeout(t, 10*time.Second), "edges", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get provider workspace: %v", err)

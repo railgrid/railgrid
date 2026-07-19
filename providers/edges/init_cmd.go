@@ -66,6 +66,13 @@ func runInitCmd(ctx context.Context) error {
 			{Resource: "secrets", Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
 			{Group: "rbac.authorization.k8s.io", Resource: "clusterroles", Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
 			{Group: "rbac.authorization.k8s.io", Resource: "clusterrolebindings", Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
+			// Delegated authn/authz for the data plane (kcp#4279 / kcp#4280): the
+			// provider validates presented tokens and authorizes the resolved
+			// identity against the consumer workspace via the APIExport virtual
+			// workspace. Non-persisted built-in review APIs — no identityHash.
+			// MUST match the CatalogEntry claims (manifest.yaml).
+			{Group: "authentication.k8s.io", Resource: "tokenreviews", Verbs: []string{"create"}},
+			{Group: "authorization.k8s.io", Resource: "subjectaccessreviews", Verbs: []string{"create"}},
 		},
 		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {
