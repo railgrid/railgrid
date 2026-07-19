@@ -6,7 +6,7 @@
 FROM node:22-alpine AS portal
 WORKDIR /portal
 COPY portal/package.json portal/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 COPY portal/ ./
 RUN npm run build
 
@@ -23,14 +23,14 @@ WORKDIR /src
 # `replace => ../../provider-sdk` that only resolves in the monorepo (go.work).
 # Standalone image builds need the SDK published (drop the replace) or vendored.
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY main.go assets.go init_cmd.go ./
 COPY core/ ./core/
 COPY engagement/ ./engagement/
 COPY mcpserver/ ./mcpserver/
 COPY queryapi/ ./queryapi/
 COPY --from=portal /portal/dist ./portal/dist
-RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/kuery-provider .
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/kuery-provider .
 
 # 3. Runtime image: distroless/base (NOT static) for the glibc the CGO
 #    sqlite driver links against. /data is the conventional store mount. The

@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM --platform=$BUILDPLATFORM node:22-alpine AS portal
 WORKDIR /src
 
@@ -5,7 +6,7 @@ WORKDIR /src
 # now live in their own out-of-process provider images, so the hub image
 # only builds the main SPA.
 COPY portal/package.json portal/package-lock.json portal/
-RUN cd portal && npm ci
+RUN --mount=type=cache,target=/root/.npm cd portal && npm ci
 
 # Sources for the main SPA. Done after `npm ci` so the install layer
 # caches across source-only edits.
@@ -25,7 +26,7 @@ COPY go.mod go.sum ./
 # `replace => ./provider-sdk`; go mod download reads its go.mod to resolve
 # the replacement, so it must be present before the download step.
 COPY provider-sdk/go.mod provider-sdk/go.sum provider-sdk/
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY . .
 COPY --from=portal /src/portal/dist pkg/hub/portal/dist/
@@ -34,7 +35,8 @@ ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -tags portal_embed \
     -ldflags="-s -w \
       -X github.com/faroshq/faros-kedge/pkg/version.Version=${VERSION} \

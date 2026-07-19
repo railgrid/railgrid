@@ -14,6 +14,12 @@ name: Provider release (image + chart)
 # (images.yaml / helm-images.yaml) builds providers in build-only PR validation
 # mode and no longer publishes them, and the split-*.yaml mirrors publish source
 # only (no version tag → no mirror image build), so there is no double-build.
+#
+# Multi-arch strategy: each arch is built on its OWN native runner (amd64 on
+# ubuntu-latest, arm64 on ubuntu-24.04-arm) and pushed by digest, then the
+# `merge` job assembles the multi-arch manifest. This avoids QEMU emulation of
+# the arm64 build (the portal `npm ci` + `go build`), which is 5-10x slower than
+# native. A per-arch GHA layer cache skips unchanged steps across runs.
 
 on:
   push:
@@ -29,8 +35,16 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  release:
+  # Parse the provider + version out of the tag once, and expose them as job
+  # outputs the build/merge jobs consume. Kept separate so the matrix build
+  # doesn't re-parse per arch.
+  meta:
     runs-on: ubuntu-latest
+    outputs:
+      provider: ${{ steps.tag.outputs.provider }}
+      version: ${{ steps.tag.outputs.version }}
+      semver: ${{ steps.tag.outputs.semver }}
+      image: ${{ steps.tag.outputs.image }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -57,6 +71,30 @@ jobs:
           echo "semver=${VERSION#v}"    >> "$GITHUB_OUTPUT"   # 0.0.9  (chart version, OCI convention)
           echo "image=${IMAGE}"         >> "$GITHUB_OUTPUT"
 
+  # One job per architecture, each on its native runner (no QEMU). Builds and
+  # pushes the image BY DIGEST only (no tag yet) and uploads the digest so the
+  # merge job can stitch the manifest list.
+  build:
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Arch label (for artifact/cache names)
+        id: prep
+        run: echo "arch=${PLATFORM##*/}" >> "$GITHUB_OUTPUT"
+        env:
+          PLATFORM: ${{ matrix.platform }}
+
       - name: Log in to the Container registry
         uses: docker/login-action@v3
         with:
@@ -67,16 +105,71 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push image
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
-          context: ./providers/${{ steps.tag.outputs.provider }}
-          file: ./providers/${{ steps.tag.outputs.provider }}/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.version }}
-            ${{ env.REGISTRY }}/${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.semver }}
+          context: ./providers/${{ needs.meta.outputs.provider }}
+          file: ./providers/${{ needs.meta.outputs.provider }}/Dockerfile
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ needs.meta.outputs.provider }}-${{ steps.prep.outputs.arch }}
+          cache-to: type=gha,mode=max,scope=${{ needs.meta.outputs.provider }}-${{ steps.prep.outputs.arch }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ needs.meta.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ needs.meta.outputs.provider }}-${{ steps.prep.outputs.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Assemble the multi-arch manifest from the per-arch digests, tag it, and
+  # publish the companion dev-agent image + Helm chart.
+  merge:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ needs.meta.outputs.provider }}-*
+          merge-multiple: true
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ needs.meta.outputs.image }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          SEMVER: ${{ needs.meta.outputs.semver }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            -t "${IMAGE}:${VERSION}" \
+            -t "${IMAGE}:${SEMVER}" \
+            $(printf "${IMAGE}@sha256:%s " *)
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
 
       # The infrastructure provider ships a companion image: the dev-agent its
       # kro backend injects into development-mode pods (providers/infrastructure/
@@ -84,17 +177,26 @@ jobs:
       # the provider — publish it on the same tag so deployments can pin
       # KEDGE_DEV_AGENT_IMAGE / development.agentImage to vX.Y.Z, and refresh
       # :latest, which backs the in-binary default for stock deployments.
+      #
+      # It's a tiny stdlib-only Go binary, so multi-arch via QEMU here is cheap
+      # (no npm, no dependency graph) — not worth a second native-split matrix.
+      - name: Set up QEMU
+        if: needs.meta.outputs.provider == 'infrastructure'
+        uses: docker/setup-qemu-action@v3
+
       - name: Build and push dev-agent image
-        if: steps.tag.outputs.provider == 'infrastructure'
+        if: needs.meta.outputs.provider == 'infrastructure'
         uses: docker/build-push-action@v6
         with:
           context: ./providers/infrastructure/dev-agent
           file: ./providers/infrastructure/dev-agent/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          cache-from: type=gha,scope=dev-agent
+          cache-to: type=gha,mode=max,scope=dev-agent
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:${{ steps.tag.outputs.version }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:${{ steps.tag.outputs.semver }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:${{ needs.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:${{ needs.meta.outputs.semver }}
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:latest
 
       - name: Install Helm
@@ -105,18 +207,21 @@ jobs:
       - name: Package and push chart
         env:
           HELM_EXPERIMENTAL_OCI: 1
+          PROVIDER: ${{ needs.meta.outputs.provider }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          SEMVER: ${{ needs.meta.outputs.semver }}
         run: |
           set -euo pipefail
           echo "${{ github.token }}" | helm registry login "${REGISTRY}" --username ${{ github.actor }} --password-stdin
 
-          chart_dir="providers/${{ steps.tag.outputs.provider }}/deploy/chart/"
+          chart_dir="providers/${PROVIDER}/deploy/chart/"
           chart_name=$(grep -E '^name:' "${chart_dir}Chart.yaml" | head -1 | awk '{print $2}')
 
           # Chart version follows OCI/semver convention (no 'v'); appVersion keeps
           # the 'v' so the chart's image.tag default (.Chart.AppVersion) matches
           # the 'vX.Y.Z' image tag pushed above.
-          CHART_VERSION="${{ steps.tag.outputs.semver }}"
-          APP_VERSION="${{ steps.tag.outputs.version }}"
+          CHART_VERSION="${SEMVER}"
+          APP_VERSION="${VERSION}"
 
           # lint renders templates against default values (package only tars), so
           # a broken template fails here rather than shipping.

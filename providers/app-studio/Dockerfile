@@ -11,7 +11,7 @@
 FROM node:22-alpine AS portal
 WORKDIR /portal
 COPY portal/package.json portal/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 COPY portal/ ./
 RUN npm run build
 
@@ -22,10 +22,10 @@ RUN npm run build
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . ./
 COPY --from=portal /portal/dist ./portal/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app-studio-provider .
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app-studio-provider .
 
 # 3. Minimal runtime image. The portal bundle is baked into the binary; the
 #    APIResourceSchemas the `init` subcommand applies are baked at
