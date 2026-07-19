@@ -21,7 +21,7 @@ spec:
       crd: {}
   - group: edges.kedge.faros.sh
     name: services
-    schema: v260719-be6103f.services.edges.kedge.faros.sh
+    schema: v260719-c339afb.services.edges.kedge.faros.sh
     storage:
       crd: {}
   - group: edges.kedge.faros.sh

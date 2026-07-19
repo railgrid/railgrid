@@ -124,21 +124,27 @@ type ServiceList struct {
 }
 
 // ServiceSpec defines the desired state of a Service.
-// +kubebuilder:validation:XValidation:rule="self.edgeRef.kind != 'KubernetesCluster' || has(self.targetRef)",message="spec.targetRef is required when spec.edgeRef.kind is KubernetesCluster"
+// +kubebuilder:validation:XValidation:rule="self.edgeRef.kind != 'KubernetesCluster' || has(self.targetRef) || has(self.host)",message="a KubernetesCluster service needs spec.targetRef (a cluster Service) or spec.host (a reachable address)"
 type ServiceSpec struct {
 	// EdgeRef points at the connectable this service runs on.
 	EdgeRef ServiceEdgeRef `json:"edgeRef"`
 
-	// TargetRef names the Kubernetes Service to proxy to. Required when
-	// edgeRef.kind is KubernetesCluster; ignored for LinuxServer, which proxies
-	// to the host loopback on spec.port.
+	// How the service is reached is chosen by spec.host / spec.targetRef, NOT by
+	// the edge kind: set spec.host to dial an address directly (loopback on the
+	// agent, or a device on the edge's LAN like a UniFi console), or spec.targetRef
+	// to reach a Kubernetes Service by cluster DNS. host takes precedence.
+	// A KubernetesCluster edge needs one of the two; a LinuxServer edge defaults
+	// to host loopback when neither is set.
+
+	// TargetRef names a Kubernetes Service (cluster DNS) to proxy to. Mutually
+	// exclusive with spec.host (host wins). Only meaningful on a KubernetesCluster
+	// edge.
 	// +optional
 	TargetRef *KubeServiceRef `json:"targetRef,omitempty"`
 
-	// Host overrides the target address for a LinuxServer edge, letting the
-	// service live on another device on the edge's LAN (e.g. a UniFi console at
-	// 192.168.1.1) instead of the agent host's loopback. Ignored for
-	// KubernetesCluster edges (use targetRef).
+	// Host is the address the agent dials directly: the agent-host loopback, or
+	// another device on the edge's LAN (e.g. a UniFi console at 192.168.1.1).
+	// Takes precedence over targetRef and works on either edge kind.
 	// +optional
 	Host string `json:"host,omitempty"`
 

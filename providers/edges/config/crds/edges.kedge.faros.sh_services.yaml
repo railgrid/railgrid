@@ -107,10 +107,9 @@ spec:
                 type: object
               host:
                 description: |-
-                  Host overrides the target address for a LinuxServer edge, letting the
-                  service live on another device on the edge's LAN (e.g. a UniFi console at
-                  192.168.1.1) instead of the agent host's loopback. Ignored for
-                  KubernetesCluster edges (use targetRef).
+                  Host is the address the agent dials directly: the agent-host loopback, or
+                  another device on the edge's LAN (e.g. a UniFi console at 192.168.1.1).
+                  Takes precedence over targetRef and works on either edge kind.
                 type: string
               instructions:
                 description: |-
@@ -138,9 +137,9 @@ spec:
                 type: string
               targetRef:
                 description: |-
-                  TargetRef names the Kubernetes Service to proxy to. Required when
-                  edgeRef.kind is KubernetesCluster; ignored for LinuxServer, which proxies
-                  to the host loopback on spec.port.
+                  TargetRef names a Kubernetes Service (cluster DNS) to proxy to. Mutually
+                  exclusive with spec.host (host wins). Only meaningful on a KubernetesCluster
+                  edge.
                 properties:
                   name:
                     description: Name of the Kubernetes Service.
@@ -182,8 +181,10 @@ spec:
             - port
             type: object
             x-kubernetes-validations:
-            - message: spec.targetRef is required when spec.edgeRef.kind is KubernetesCluster
+            - message: a KubernetesCluster service needs spec.targetRef (a cluster
+                Service) or spec.host (a reachable address)
               rule: self.edgeRef.kind != 'KubernetesCluster' || has(self.targetRef)
+                || has(self.host)
           status:
             description: ServiceStatus defines the observed state of a Service.
             properties:

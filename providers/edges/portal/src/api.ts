@@ -301,21 +301,20 @@ export async function updateEdgeServiceInstructions(name: string, instructions: 
 // object carries the edge label so it lists alongside discovered ones, but NOT
 // the discovered label — the discovery reconciler must never prune it.
 export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> {
-  // LinuxServer edges reach the service on the host loopback, or — via spec.host —
-  // another device on the edge's LAN (e.g. a UniFi console). KubernetesCluster
-  // edges reach it behind a named Kubernetes Service (targetRef).
-  const isServer = d.edgeKind === 'LinuxServer'
+  // Targeting is independent of edge kind: spec.host dials an address directly
+  // (agent loopback, or a LAN device like a UniFi console); spec.targetRef reaches
+  // a named Kubernetes Service by cluster DNS. host wins if both are set.
   const spec: Record<string, unknown> = {
-    edgeRef: { kind: isServer ? 'LinuxServer' : 'KubernetesCluster', name: d.edgeName },
+    edgeRef: { kind: d.edgeKind || 'KubernetesCluster', name: d.edgeName },
     type: d.serviceType,
     port: d.port,
     ...(d.scheme ? { scheme: d.scheme } : {}),
     ...(d.instructions ? { instructions: d.instructions } : {}),
   }
-  if (isServer) {
-    if (d.host?.trim()) spec.host = d.host.trim()
-  } else {
-    spec.targetRef = { namespace: d.targetNamespace, name: d.targetName }
+  if (d.host?.trim()) {
+    spec.host = d.host.trim()
+  } else if (d.targetName?.trim()) {
+    spec.targetRef = { namespace: d.targetNamespace?.trim() || 'default', name: d.targetName.trim() }
   }
   const object: Record<string, unknown> = {
     metadata: {
