@@ -75,11 +75,15 @@ spec:
       # validate presented tokens (TokenReview) and authorize the resolved
       # identity (SubjectAccessReview) against THIS consumer workspace. kcp serves
       # both on the APIExport virtual workspace scoped to the engaged cluster
-      # (kcp#4279 / kcp#4280). Non-persisted built-in review APIs: no
-      # identityHash, not tenantScoped (nothing to list/watch), verb create only.
+      # (kcp#4279 / kcp#4280). tenantScoped: the VW confines each review to the
+      # tenant's OWN workspace — it cannot reach beyond it — so this is bounded
+      # (auto-acceptable, no accept-untrusted-claims). Built-in review APIs: no
+      # identityHash, verb create only.
       - group: authentication.k8s.io
         resource: tokenreviews
         verbs: [create]
+        tenantScoped: true
       - group: authorization.k8s.io
         resource: subjectaccessreviews
         verbs: [create]
+        tenantScoped: true
