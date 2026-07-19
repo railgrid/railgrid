@@ -30,8 +30,12 @@ const githubMCPEndpoint = "https://api.githubcopilot.com/mcp"
 // MCPSession wraps one live MCP connection's discovered tools. Close after
 // the run completes.
 type MCPSession struct {
-	Tools   []engine.Tool
-	session *mcp.ClientSession
+	Tools []engine.Tool
+	// Instructions is the server's ambient guidance from the MCP `initialize`
+	// response (e.g. an edges Service's spec.instructions describing its entity
+	// layout). The caller folds it into the agent's system context.
+	Instructions string
+	session      *mcp.ClientSession
 }
 
 func (s *MCPSession) Close() {
@@ -88,6 +92,9 @@ func ConnectMCPEndpoint(ctx context.Context, endpoint, bearer, prefix string, in
 	}
 
 	out := &MCPSession{session: session}
+	if ir := session.InitializeResult(); ir != nil {
+		out.Instructions = strings.TrimSpace(ir.Instructions)
+	}
 	conn := struct{ Name string }{Name: prefix}
 	for _, t := range listed.Tools {
 		toolName := t.Name

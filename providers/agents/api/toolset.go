@@ -51,7 +51,10 @@ func defaultFamilies(_ bool) []string {
 // trigger class, MCP/GitHub connection sessions, the edges family, sub-agent
 // delegation, approval gating, and audit logging. The returned closer
 // releases MCP sessions after the run.
-func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun) ([]engine.Tool, func()) {
+// buildToolset returns the granted tools, the aggregated MCP server instructions
+// (each connected server's `initialize` guidance, e.g. an edges Service's
+// spec.instructions) for folding into the system context, and a closer.
+func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun) ([]engine.Tool, string, func()) {
 	trigger := run.Trigger
 	interactive := isInteractive(trigger)
 
@@ -163,12 +166,19 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 		out[i] = s.wrapTool(out[i], deps, trigger, grant.RequireApproval)
 	}
 
+	var mcpInstr []string
+	for _, sess := range sessions {
+		if instr := strings.TrimSpace(sess.Instructions); instr != "" {
+			mcpInstr = append(mcpInstr, instr)
+		}
+	}
+
 	closer := func() {
 		for _, sess := range sessions {
 			sess.Close()
 		}
 	}
-	return out, closer
+	return out, strings.Join(mcpInstr, "\n\n"), closer
 }
 
 // expandToolsets merges every Toolset referenced by a grant into a copy of that
