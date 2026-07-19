@@ -157,6 +157,29 @@ permission claims, and inline `APIResourceSchema` bodies. The hub's catalog
 controller reads it and provisions the kcp side (sub-workspace, ServiceAccount,
 APIExport, schemas) and registers routing/heartbeat state.
 
+> **⚠️ Permission claims live in THREE places that MUST stay in sync.** Changing
+> a provider's claim contract (adding/removing a `permissionClaim`) means editing
+> all of:
+> 1. `providers/<name>/manifest.yaml` — the CatalogEntry source of truth.
+> 2. `providers/<name>/init_cmd.go` — the `sdkinstall.PermissionClaim` list that
+>    `init` stamps onto the **APIExport** (`spec.permissionClaims`).
+> 3. `providers/<name>/deploy/chart/templates/catalogentry.yaml` — the CatalogEntry
+>    the Helm chart actually applies in prod. **This is the easy one to forget**;
+>    if it drifts, `init` updates the APIExport but the deployed CatalogEntry (and
+>    thus what the hub Enable flow offers tenants) still advertises the old set.
+>
+> **Existing tenants do NOT auto-migrate.** `init` only touches the provider-side
+> APIExport, never per-tenant `APIBinding`s (they live in tenant workspaces, written
+> by the hub Enable flow). A tenant's binding keeps its old accepted claims until it
+> re-Enables or a migration re-accepts them — and a provider that starts *requiring*
+> a newly-added claim (e.g. delegated `tokenreviews`/`subjectaccessreviews` for
+> data-plane auth) will break every already-enabled tenant on rollout. Ship a
+> migration (re-accept claims on all existing bindings) or a compatibility fallback
+> BEFORE deploying code that depends on the new claim. Symptom of the gap: provider
+> logs `User "system:serviceaccount:default:provider" cannot create <resource>` and
+> the binding's `status.exportPermissionClaims` lists the claim but `spec` /
+> `status.appliedPermissionClaims` do not.
+
 ### 5.2 Hub-side provider integration (`pkg/hub/providers/`)
 
 | File | Role |
