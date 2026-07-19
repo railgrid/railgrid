@@ -135,6 +135,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/agents/{name}", s.getAgent)
 	mux.HandleFunc("PUT /api/agents/{name}", s.updateAgent)
 	mux.HandleFunc("DELETE /api/agents/{name}", s.deleteAgent)
+	mux.HandleFunc("GET /api/agents/{name}/sessions", s.listSessions)
 	mux.HandleFunc("GET /api/agents/{name}/messages", s.listMessages)
 	mux.HandleFunc("POST /api/agents/{name}/chat", s.chat)
 

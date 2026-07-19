@@ -312,6 +312,22 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, page)
 }
 
+// listSessions returns the agent's chat threads (most-recently-active first)
+// so the portal can list them and let the user resume one after a refresh.
+func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
+	_, id, ok := s.requireClient(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	sessions, err := s.store.ListSessions(r.Context(), id.scope(name), 100)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": sessions})
+}
+
 type chatRequest struct {
 	Message   string `json:"message"`
 	SessionID string `json:"sessionID,omitempty"`

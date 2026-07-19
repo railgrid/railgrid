@@ -200,8 +200,15 @@ kedge-provider-agents .agents-linkbtn:hover { border-style: solid; background: v
 kedge-provider-agents .agents-inbound-on { color: var(--color-success, #10b981); font-weight: 700; }
 
 /* --- chat --- */
-kedge-provider-agents .agents-chat { display: flex; flex-direction: column; min-height: 340px; }
-kedge-provider-agents .agents-log { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 4px 0; min-height: 260px; }
+/* Bound the chat to the viewport so the log scrolls internally instead of the
+ * page growing without limit. The offset clears the portal header + agent
+ * sub-nav above; min-height keeps it usable on very short screens (the outer
+ * page scrolls only then). .agents-log is the single scroll region. */
+kedge-provider-agents .agents-chat { display: flex; flex-direction: column; height: calc(100vh - 230px); min-height: 360px; overflow: hidden; }
+kedge-provider-agents .agents-chat-head { flex: none; display: flex; gap: 8px; align-items: center; padding-bottom: 10px; margin-bottom: 6px; border-bottom: 1px solid var(--color-border-default, #e3e8f0); }
+kedge-provider-agents .agents-session-picker { flex: 1; min-width: 0; max-width: 320px; font-size: 12.5px; }
+kedge-provider-agents .agents-newchat { white-space: nowrap; font-size: 12.5px; }
+kedge-provider-agents .agents-log { flex: 1; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 12px; padding: 4px 0; min-height: 0; }
 kedge-provider-agents .agents-msg { display: flex; flex-direction: column; gap: 4px; }
 kedge-provider-agents .agents-role { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted, inherit); }
 kedge-provider-agents .agents-body { padding: 9px 12px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; max-width: 80%; background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04)); }
@@ -214,7 +221,7 @@ kedge-provider-agents .agents-toolrow {
   border-left: 2px solid var(--color-accent, #6d4fe0); color: var(--color-text-secondary, inherit);
 }
 kedge-provider-agents .agents-msg.tool.err .agents-toolrow { border-left-color: var(--color-danger, #ef4444); }
-kedge-provider-agents .agents-chat-form { display: flex; gap: 8px; padding-top: 10px; }
+kedge-provider-agents .agents-chat-form { flex: none; display: flex; gap: 8px; padding-top: 10px; }
 kedge-provider-agents .agents-chat-form input { flex: 1; }
 
 /* --- misc --- */

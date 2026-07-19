@@ -174,14 +174,21 @@ func hostWithPort(u *url.URL) string {
 	return net.JoinHostPort(u.Hostname(), "80")
 }
 
-// isAllowedSvcHost reports whether the agent may dial host. Loopback is always
-// allowed (LinuxServer edges). When allowCluster is set (kubernetes mode),
-// cluster-DNS names are allowed too, for Services on KubernetesCluster edges.
+// isAllowedSvcHost reports whether the agent may dial host. Loopback (LinuxServer
+// edges) and cluster-DNS names (kubernetes mode) are always allowed.
+//
+// A Service's spec.host may also point at another device on the edge's LAN (e.g.
+// a UniFi console), so for now any host is permitted — this intentionally trades
+// away the anti-SSRF boundary to make LAN services work. TODO(security): tighten
+// with a per-agent allowlist / opt-in before this is a general default.
 func isAllowedSvcHost(host string, allowCluster bool) bool {
 	if isLoopbackHost(host) {
 		return true
 	}
-	return allowCluster && isClusterDNSHost(host)
+	if allowCluster && isClusterDNSHost(host) {
+		return true
+	}
+	return true
 }
 
 // isLoopbackHost reports whether host is a loopback address or "localhost".

@@ -31,9 +31,13 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
@@ -52,12 +56,46 @@ type ValidationReconciler struct {
 }
 
 // SetupValidationWithManager registers the validation reconciler (For Service).
+// It also watches Secrets so an edited auth token is re-validated immediately,
+// rather than waiting up to validationResyncInterval for the next resync.
 func SetupValidationWithManager(mgr mcmanager.Manager, connManager ConnManager, edgeProxyPublicPath string) error {
 	r := &ValidationReconciler{mgr: mgr, connManager: connManager, edgeProxyPublicPath: edgeProxyPublicPath}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("service-validation").
 		For(&edgesv1alpha1.Service{}).
+		Watches(&corev1.Secret{}, mchandler.EnqueueRequestsFromMapFunc(r.mapSecretToServices)).
 		Complete(r)
+}
+
+// mapSecretToServices re-enqueues every Service in the same workspace whose
+// authSecretRef points at the changed Secret.
+func (r *ValidationReconciler) mapSecretToServices(ctx context.Context, obj client.Object) []reconcile.Request {
+	clusterKey, ok := mccontext.ClusterFrom(ctx)
+	if !ok {
+		clusterKey = multicluster.ClusterName(obj.GetAnnotations()["kcp.io/cluster"])
+	}
+	cl, err := r.mgr.GetCluster(ctx, clusterKey)
+	if err != nil {
+		klog.V(2).InfoS("mapSecretToServices: GetCluster failed", "cluster", clusterKey, "err", err)
+		return nil
+	}
+
+	var svcList edgesv1alpha1.ServiceList
+	if err := cl.GetClient().List(ctx, &svcList); err != nil {
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for i := range svcList.Items {
+		ref := svcList.Items[i].Spec.AuthSecretRef
+		if ref == nil || ref.Name != obj.GetName() || ref.Namespace != obj.GetNamespace() {
+			continue
+		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: svcList.Items[i].Namespace, Name: svcList.Items[i].Name},
+		})
+	}
+	return requests
 }
 
 func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {

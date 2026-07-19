@@ -210,6 +210,32 @@ var svcCatalog = map[string]svcDef{
 			{"top_domains", "Top permitted/blocked domains.", http.MethodGet, "/api/stats/top_domains"},
 		},
 	},
+	"unifi-network": {
+		// UniFi OS console (UDM/UDR/Cloud Key). Always https + self-signed → set
+		// the Service spec.scheme=https, spec.port=443. Auth is a UniFi OS local
+		// API key (X-API-KEY) against the official Network integration API. Most
+		// home setups have a single site — call "sites" first to get its id, then
+		// pass it: {"siteId":"<id>"}. Paths of the form {siteId} are filled from
+		// the tool's query map.
+		displayName: "UniFi Network", defaultPort: 443, auth: authAPIKeyHeader, authParam: "X-API-KEY",
+		tools: []catTool{
+			{"sites", "List UniFi Network sites (each site's id + name).", http.MethodGet, "/proxy/network/integration/v1/sites"},
+			{"clients", "List connected clients for a site. Query {\"siteId\":\"<id>\"}.", http.MethodGet, "/proxy/network/integration/v1/sites/{siteId}/clients"},
+			{"devices", "List UniFi devices (APs/switches/gateways) for a site. Query {\"siteId\":\"<id>\"}.", http.MethodGet, "/proxy/network/integration/v1/sites/{siteId}/devices"},
+		},
+	},
+	"unifi-protect": {
+		// UniFi Protect on the same UniFi OS console (host:443, https). Auth is a
+		// UniFi OS local API key (X-API-KEY) against the official Protect
+		// integration API. "snapshot" returns a JPEG the agent can see — call
+		// "cameras" first to get camera ids.
+		displayName: "UniFi Protect", defaultPort: 443, auth: authAPIKeyHeader, authParam: "X-API-KEY",
+		tools: []catTool{
+			{"cameras", "List Protect cameras (each camera's id, name, state).", http.MethodGet, "/proxy/protect/integration/v1/cameras"},
+			{"snapshot", "Current snapshot (JPEG) from a camera. Query {\"cameraId\":\"<id>\"} (optional {\"highQuality\":\"true\"}).", http.MethodGet, "/proxy/protect/integration/v1/cameras/{cameraId}/snapshot"},
+			{"events", "Recent Protect events (motion/person/vehicle). Query: start,end (ms epoch), types.", http.MethodGet, "/proxy/protect/integration/v1/events"},
+		},
+	},
 }
 
 // catalogServiceType reports whether a Service type is served by the catalog.
@@ -251,9 +277,17 @@ func (p *Server) callCatalogTool(ctx context.Context, cluster, kcpToken string, 
 	for k, v := range def.extraHeaders {
 		header.Set(k, v)
 	}
+	// Path parameters: any {key} in the tool path is filled from the query map
+	// (e.g. {"siteId":"..."} → /sites/{siteId}/clients); everything else becomes
+	// the query string.
+	path := tool.path
 	q := url.Values{}
 	for k, v := range in.Query {
-		q.Set(k, v)
+		if ph := "{" + k + "}"; strings.Contains(path, ph) {
+			path = strings.ReplaceAll(path, ph, url.PathEscape(v))
+		} else {
+			q.Set(k, v)
+		}
 	}
 
 	if token != "" {
@@ -299,7 +333,6 @@ func (p *Server) callCatalogTool(ctx context.Context, cluster, kcpToken string, 
 		header.Set("Content-Type", "application/json")
 	}
 
-	path := tool.path
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
@@ -313,6 +346,11 @@ func (p *Server) callCatalogTool(ctx context.Context, cluster, kcpToken string, 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode >= 400 {
 		return toolErr(fmt.Sprintf("%s returned %d: %s", def.displayName, resp.StatusCode, snippet(respBody))), nil, nil
+	}
+	// Binary image responses (e.g. a UniFi Protect camera snapshot) are returned
+	// as MCP image content so the model can actually see them.
+	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "image/") {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.ImageContent{Data: respBody, MIMEType: ct}}}, nil, nil
 	}
 	text := string(respBody)
 	if strings.TrimSpace(text) == "" {

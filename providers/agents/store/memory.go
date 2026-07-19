@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -142,6 +143,50 @@ func (m *MemoryStore) LoadRecentMessages(_ context.Context, scope Scope, session
 		all = all[len(all)-limit:]
 	}
 	return all, nil
+}
+
+func (m *MemoryStore) ListSessions(_ context.Context, scope Scope, limit int) ([]Session, error) {
+	if err := scope.withAgent(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	prefix := tenantKey(scope) + "|" + scope.AgentName + "|"
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Session
+	for k, msgs := range m.messages {
+		if !strings.HasPrefix(k, prefix) || len(msgs) == 0 {
+			continue
+		}
+		cp := append([]Message(nil), msgs...)
+		sort.Slice(cp, func(i, j int) bool {
+			if cp[i].CreatedAt.Equal(cp[j].CreatedAt) {
+				return cp[i].ID < cp[j].ID
+			}
+			return cp[i].CreatedAt.Before(cp[j].CreatedAt)
+		})
+		s := Session{
+			ID:           strings.TrimPrefix(k, prefix),
+			MessageCount: len(cp),
+			CreatedAt:    cp[0].CreatedAt.UTC(),
+			LastActivity: cp[len(cp)-1].CreatedAt.UTC(),
+		}
+		for _, msg := range cp {
+			if msg.Role == "user" && !msg.ContentEncrypted {
+				s.Preview = previewText(msg.Content)
+				break
+			}
+		}
+		out = append(out, s)
+	}
+	// Most-recently-active first, then apply the limit.
+	sort.Slice(out, func(i, j int) bool { return out[i].LastActivity.After(out[j].LastActivity) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID string) error {

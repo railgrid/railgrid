@@ -105,6 +105,13 @@ spec:
                 required:
                 - name
                 type: object
+              host:
+                description: |-
+                  Host overrides the target address for a LinuxServer edge, letting the
+                  service live on another device on the edge's LAN (e.g. a UniFi console at
+                  192.168.1.1) instead of the agent host's loopback. Ignored for
+                  KubernetesCluster edges (use targetRef).
+                type: string
               instructions:
                 description: |-
                   Instructions is free-form guidance surfaced to AI clients on the MCP
@@ -166,6 +173,8 @@ spec:
                 - adguard
                 - proxmox
                 - pihole
+                - unifi-network
+                - unifi-protect
                 - generic
                 type: string
             required:

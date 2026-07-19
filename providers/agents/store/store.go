@@ -174,6 +174,31 @@ type Page struct {
 	NextCursor string    `json:"nextCursor,omitempty"`
 }
 
+// Session summarizes one chat thread of an agent: its ID, activity bounds,
+// message count, and a short preview taken from the first user message. It
+// backs the portal's session picker.
+type Session struct {
+	ID           string    `json:"id"`
+	Preview      string    `json:"preview,omitempty"`
+	MessageCount int       `json:"messageCount"`
+	CreatedAt    time.Time `json:"createdAt"`
+	LastActivity time.Time `json:"lastActivity"`
+}
+
+// sessionPreviewMax bounds the preview label length (runes).
+const sessionPreviewMax = 80
+
+// previewText normalizes whitespace and rune-truncates a message body into a
+// session label.
+func previewText(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) > sessionPreviewMax {
+		return string(r[:sessionPreviewMax]) + "…"
+	}
+	return s
+}
+
 // TenantRef maps a kcp logical-cluster ID to the org/workspace scope the UI
 // reads with. Recorded on every authenticated request; consumed by background
 // execution (which only knows the cluster ID from the APIExport virtual
@@ -194,6 +219,8 @@ type Store interface {
 	AppendMessage(ctx context.Context, scope Scope, msg Message) error
 	ListMessages(ctx context.Context, scope Scope, sessionID string, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, sessionID string, limit int) ([]Message, error)
+	// ListSessions returns the agent's chat sessions, most-recently-active first.
+	ListSessions(ctx context.Context, scope Scope, limit int) ([]Session, error)
 	// DeleteSession wipes one session's transcript (the "/new" channel command).
 	DeleteSession(ctx context.Context, scope Scope, sessionID string) error
 

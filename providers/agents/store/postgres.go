@@ -272,6 +272,46 @@ func scanMessage(rows *sql.Rows, agentName string) (Message, error) {
 	return m, nil
 }
 
+func (p *PostgresStore) ListSessions(ctx context.Context, scope Scope, limit int) ([]Session, error) {
+	if err := scope.withAgent(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	// One row per session: counts, activity bounds, and the first user message
+	// (via a correlated subquery) as a preview label.
+	rows, err := p.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT m.session_id, COUNT(*), MIN(m.created_at), MAX(m.created_at),
+			(SELECT f.content FROM agents_messages f
+			 WHERE f.org_uuid=m.org_uuid AND f.workspace_uuid=m.workspace_uuid
+				AND f.agent_name=m.agent_name AND f.session_id=m.session_id
+				AND f.role='user' AND f.content_encrypted=FALSE
+			 ORDER BY f.created_at ASC, f.id ASC LIMIT 1)
+		FROM agents_messages m
+		WHERE m.org_uuid=$1 AND m.workspace_uuid=$2 AND m.agent_name=$3
+		GROUP BY m.session_id, m.org_uuid, m.workspace_uuid, m.agent_name
+		ORDER BY MAX(m.created_at) DESC LIMIT %d`, limit),
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		var s Session
+		var preview sql.NullString
+		if err := rows.Scan(&s.ID, &s.MessageCount, &s.CreatedAt, &s.LastActivity, &preview); err != nil {
+			return nil, err
+		}
+		s.CreatedAt = s.CreatedAt.UTC()
+		s.LastActivity = s.LastActivity.UTC()
+		s.Preview = previewText(preview.String)
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 func (p *PostgresStore) DeleteSession(ctx context.Context, scope Scope, sessionID string) error {
 	if err := scope.withAgent(); err != nil {
 		return err

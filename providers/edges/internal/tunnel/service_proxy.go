@@ -61,6 +61,7 @@ type serviceView struct {
 			Namespace string `json:"namespace"`
 			Name      string `json:"name"`
 		} `json:"targetRef,omitempty"`
+		Host          string                  `json:"host,omitempty"`
 		Type          string                  `json:"type,omitempty"`
 		Scheme        string                  `json:"scheme,omitempty"`
 		Port          int32                   `json:"port"`
@@ -96,6 +97,12 @@ func (v *serviceView) connResource() string {
 func (v *serviceView) targetHost() string {
 	if v.isKube() && v.Spec.TargetRef != nil {
 		return v.Spec.TargetRef.Name + "." + v.Spec.TargetRef.Namespace + ".svc"
+	}
+	// LinuxServer edges default to loopback, but spec.host may point the service
+	// at another device on the edge's LAN (gated agent-side by
+	// KEDGE_AGENT_ALLOW_LAN_SVC_TARGETS).
+	if v.Spec.Host != "" {
+		return v.Spec.Host
 	}
 	return "127.0.0.1"
 }

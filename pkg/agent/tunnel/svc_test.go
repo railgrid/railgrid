@@ -44,38 +44,50 @@ func TestIsLoopbackHost(t *testing.T) {
 // the loopback, and kubernetes mode must widen only to cluster-DNS Service
 // names — never to node IPs, the LAN, or the internet.
 func TestIsAllowedSvcHost(t *testing.T) {
+	// isAllowedSvcHost is currently permissive: a Service's spec.host may point at
+	// any device on the edge's LAN (e.g. a UniFi console), so every host is
+	// allowed regardless of mode. Loopback + cluster-DNS remain allowed for their
+	// original reasons. TODO(security): when a per-agent allowlist lands, restore
+	// rejection of arbitrary LAN/metadata/internet hosts (see TestIsClusterDNSHost
+	// for the classification coverage that gating will rely on).
+	hosts := []string{
+		"127.0.0.1", "localhost", "::1", // loopback
+		"home-assistant.home.svc", "ha.default.svc.cluster.local", // cluster DNS
+		"10.0.0.5", "192.168.1.10", "169.254.169.254", "example.com", // LAN / metadata / internet
+		"", // empty
+	}
+	for _, h := range hosts {
+		if got := isAllowedSvcHost(h, false); !got {
+			t.Errorf("isAllowedSvcHost(%q, allowCluster=false) = false, want true (permissive)", h)
+		}
+		if got := isAllowedSvcHost(h, true); !got {
+			t.Errorf("isAllowedSvcHost(%q, allowCluster=true) = false, want true (permissive)", h)
+		}
+	}
+}
+
+func TestIsClusterDNSHost(t *testing.T) {
 	cases := []struct {
-		host       string
-		serverMode bool // expected when allowCluster=false
-		kubeMode   bool // expected when allowCluster=true
+		host string
+		want bool
 	}{
-		// Loopback: always fine.
-		{"127.0.0.1", true, true},
-		{"localhost", true, true},
-		{"::1", true, true},
+		{"home-assistant.home.svc", true},
+		{"ha.default.svc.cluster.local", true},
 
-		// Cluster DNS: kubernetes mode only.
-		{"home-assistant.home.svc", false, true},
-		{"ha.default.svc.cluster.local", false, true},
-
-		// Not reachable in either mode.
-		{"10.0.0.5", false, false},             // pod/node IP
-		{"192.168.1.10", false, false},         // LAN host
-		{"169.254.169.254", false, false},      // cloud metadata
-		{"example.com", false, false},          // internet
-		{"evil.svc.example.com", false, false}, // .svc not a suffix
-		{"svc", false, false},                  // bare
-		{".svc", false, false},                 // no name/namespace
-		{"cluster.local", false, false},
-		{"a.b.c.svc", false, false}, // too many labels before .svc
-		{"", false, false},
+		{"10.0.0.5", false},             // IP literal
+		{"192.168.1.10", false},         // LAN host
+		{"169.254.169.254", false},      // cloud metadata
+		{"example.com", false},          // internet
+		{"evil.svc.example.com", false}, // .svc not a suffix
+		{"svc", false},                  // bare
+		{".svc", false},                 // no name/namespace
+		{"cluster.local", false},
+		{"a.b.c.svc", false}, // too many labels before .svc
+		{"", false},
 	}
 	for _, tc := range cases {
-		if got := isAllowedSvcHost(tc.host, false); got != tc.serverMode {
-			t.Errorf("isAllowedSvcHost(%q, allowCluster=false) = %v, want %v", tc.host, got, tc.serverMode)
-		}
-		if got := isAllowedSvcHost(tc.host, true); got != tc.kubeMode {
-			t.Errorf("isAllowedSvcHost(%q, allowCluster=true) = %v, want %v", tc.host, got, tc.kubeMode)
+		if got := isClusterDNSHost(tc.host); got != tc.want {
+			t.Errorf("isClusterDNSHost(%q) = %v, want %v", tc.host, got, tc.want)
 		}
 	}
 }

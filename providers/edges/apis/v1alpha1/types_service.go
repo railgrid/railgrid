@@ -24,7 +24,7 @@ import (
 // ServiceType selects the detector that discovers a service and the MCP
 // tool bundle exposed for it. "home-assistant" and the catalog apps get
 // bespoke tools; "generic" is proxy-only (no tools).
-// +kubebuilder:validation:Enum=home-assistant;qbittorrent;prowlarr;sonarr;radarr;grafana;grafana-loki;prometheus;jellyfin;plex;portainer;adguard;proxmox;pihole;generic
+// +kubebuilder:validation:Enum=home-assistant;qbittorrent;prowlarr;sonarr;radarr;grafana;grafana-loki;prometheus;jellyfin;plex;portainer;adguard;proxmox;pihole;unifi-network;unifi-protect;generic
 type ServiceType string
 
 const (
@@ -42,7 +42,12 @@ const (
 	ServiceTypeAdGuard       ServiceType = "adguard"
 	ServiceTypeProxmox       ServiceType = "proxmox"
 	ServiceTypePihole        ServiceType = "pihole"
-	ServiceTypeGeneric       ServiceType = "generic"
+	// UniFi OS console (UDM/UDR/Cloud Key). Both live on the same host:443 and
+	// authenticate with a local API key (X-API-KEY); they differ only by URL
+	// prefix — /proxy/network/ vs /proxy/protect/.
+	ServiceTypeUniFiNetwork ServiceType = "unifi-network"
+	ServiceTypeUniFiProtect ServiceType = "unifi-protect"
+	ServiceTypeGeneric      ServiceType = "generic"
 )
 
 // ServiceScheme is the URL scheme the provider uses when proxying to the
@@ -129,6 +134,13 @@ type ServiceSpec struct {
 	// to the host loopback on spec.port.
 	// +optional
 	TargetRef *KubeServiceRef `json:"targetRef,omitempty"`
+
+	// Host overrides the target address for a LinuxServer edge, letting the
+	// service live on another device on the edge's LAN (e.g. a UniFi console at
+	// 192.168.1.1) instead of the agent host's loopback. Ignored for
+	// KubernetesCluster edges (use targetRef).
+	// +optional
+	Host string `json:"host,omitempty"`
 
 	// Type selects the detector and the MCP tool bundle. "generic" = proxy-only.
 	// +kubebuilder:default=generic

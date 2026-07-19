@@ -79,6 +79,17 @@ interface ChatMessage {
   error?: boolean
 }
 
+// SessionMeta mirrors the backend store.Session summary for the session picker.
+interface SessionMeta {
+  id: string
+  preview?: string
+  messageCount: number
+  createdAt: string
+  lastActivity: string
+}
+
+const sessionLabel = (s: SessionMeta): string => (s.preview && s.preview.trim()) || 'New chat'
+
 type AgentTab = 'chat' | 'overview' | 'settings'
 type SharedView = 'models' | 'connections' | 'toolsets' | 'inbox'
 
@@ -337,6 +348,9 @@ export class AgentsElement extends HTMLElement {
   private _connEdit: string | null = null
   private _oauthApps = new Set<string>()
   private _messages: ChatMessage[] = []
+  private _sessions: SessionMeta[] = []
+  private _sessionID = ''
+  private _chatAgent = '' // agent whose session list + messages are currently loaded
   private _streaming = false
   private _error: string | null = null
   private _note: string | null = null
@@ -388,6 +402,7 @@ export class AgentsElement extends HTMLElement {
     }
     this._loadedTenant = key
     this._messages = []
+    this._chatAgent = ''
     void this._loadAgents()
     void this._loadCredentials()
     void this._loadConnections()
@@ -535,6 +550,7 @@ export class AgentsElement extends HTMLElement {
     this._shared = null
     this._agentTab = 'chat'
     this._messages = []
+    this._chatAgent = '' // force the chat tab to (re)load this agent's sessions
     this._error = null
     this._render()
   }
@@ -786,10 +802,112 @@ export class AgentsElement extends HTMLElement {
     }
   }
 
+  // ---- chat sessions (persisted, resumable across refresh) -----------------
+
+  // Per-agent record of the last-open session, so a refresh reopens the same
+  // thread. Scoped by tenant so sessions never leak across workspaces.
+  private _sessKey(agent: string): string {
+    const t = this._tenant()
+    return `kedge:agents:session:${t.orgUUID || ''}:${t.workspaceUUID || ''}:${agent}`
+  }
+  private _lastSession(agent: string): string {
+    try {
+      return localStorage.getItem(this._sessKey(agent)) || ''
+    } catch {
+      return ''
+    }
+  }
+  private _rememberSession(agent: string, id: string): void {
+    try {
+      localStorage.setItem(this._sessKey(agent), id)
+    } catch {
+      /* storage disabled — session just won't survive refresh */
+    }
+  }
+  private _newSessionID(): string {
+    try {
+      return crypto.randomUUID()
+    } catch {
+      return 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
+    }
+  }
+
+  // Load an agent's sessions + the active thread's messages the first time its
+  // chat tab renders (guarded by _chatAgent so repeated renders — e.g. during
+  // streaming — don't refetch or clobber the live transcript).
+  private async _ensureChat(name: string): Promise<void> {
+    if (this._chatAgent === name) return
+    this._chatAgent = name
+    this._sessions = []
+    this._messages = []
+    this._sessionID = this._lastSession(name)
+    await this._loadSessions(name)
+    // Fall back to the most-recent thread, or a fresh id if there are none.
+    if (!this._sessionID || (this._sessions.length && !this._sessions.some((s) => s.id === this._sessionID))) {
+      this._sessionID = this._sessions[0]?.id || this._newSessionID()
+    }
+    if (!this._sessionID) this._sessionID = this._newSessionID()
+    this._rememberSession(name, this._sessionID)
+    await this._loadMessages(name, this._sessionID)
+  }
+
+  private async _loadSessions(name: string): Promise<void> {
+    try {
+      const res = await this._get<{ items?: SessionMeta[] }>(`/api/agents/${encodeURIComponent(name)}/sessions`)
+      this._sessions = res.items || []
+    } catch {
+      this._sessions = []
+    }
+  }
+
+  // Hydrate the visible transcript from the store. The backend returns messages
+  // newest-first; reverse to chronological for display. Skipped mid-stream so a
+  // late fetch can't wipe the reply being typed.
+  private async _loadMessages(name: string, session: string): Promise<void> {
+    if (this._streaming) return
+    try {
+      const res = await this._get<{ items?: { role: string; content: string }[] }>(
+        `/api/agents/${encodeURIComponent(name)}/messages?session=${encodeURIComponent(session)}`,
+      )
+      const items = (res.items || []).slice().reverse()
+      this._messages = items.map((m) => ({
+        role: m.role === 'assistant' ? 'assistant' : m.role === 'tool' ? 'tool' : 'user',
+        content: m.content,
+      }))
+    } catch {
+      /* leave the current transcript in place on error */
+    }
+    this._render()
+  }
+
+  private _switchSession(id: string): void {
+    if (!id || id === this._sessionID || this._streaming) return
+    this._sessionID = id
+    this._rememberSession(this._chatAgent, id)
+    this._messages = []
+    this._error = null
+    this._render()
+    void this._loadMessages(this._chatAgent, id)
+  }
+
+  private _newChat(): void {
+    if (this._streaming) return
+    this._sessionID = this._newSessionID()
+    this._rememberSession(this._chatAgent, this._sessionID)
+    this._messages = []
+    this._error = null
+    this._render()
+    this.querySelector<HTMLInputElement>('.agents-chat-form input')?.focus()
+  }
+
   // ---- chat (agent-scoped, streaming) --------------------------------------
 
   private async _chat(text: string): Promise<void> {
     if (!this._selected || this._streaming) return
+    if (!this._sessionID) {
+      this._sessionID = this._newSessionID()
+      this._rememberSession(this._selected, this._sessionID)
+    }
     this._messages.push({ role: 'user', content: text })
     const assistant: ChatMessage = { role: 'assistant', content: '' }
     this._messages.push(assistant)
@@ -801,7 +919,7 @@ export class AgentsElement extends HTMLElement {
         method: 'POST',
         credentials: 'same-origin',
         headers: this._headers(true),
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, sessionID: this._sessionID || undefined }),
       })
       if (!r.ok || !r.body) throw new Error(`${r.status} ${(await r.json().catch(() => ({})))?.message || r.statusText}`)
       const reader = r.body.getReader()
@@ -836,6 +954,9 @@ export class AgentsElement extends HTMLElement {
     }
     this._streaming = false
     this._render()
+    // A first turn creates the session server-side; refresh the picker so it
+    // shows up (with its preview) without disturbing the live transcript.
+    if (this._chatAgent) void this._loadSessions(this._chatAgent).then(() => this._render())
   }
   private _parseSSE(frame: string): { event: string; data: any } | null {
     let event = 'message'
@@ -981,6 +1102,7 @@ export class AgentsElement extends HTMLElement {
             <h2>${escapeHTML(a.spec?.displayName || a.metadata.name)}</h2>
           </div>
           <div class="agents-detail-actions">
+            ${flow ? `<button class="primary" data-openchat>💬 Open chat</button>` : ''}
             <div class="agents-viewseg">
               <button class="${flow ? 'on' : ''}" data-view="flow">◆ Flow</button>
               <button class="${flow ? '' : 'on'}" data-view="list">☰ List</button>
@@ -1007,6 +1129,11 @@ export class AgentsElement extends HTMLElement {
         this._render()
       }),
     )
+    this.querySelector<HTMLElement>('[data-openchat]')?.addEventListener('click', () => {
+      this._agentView = 'list'
+      this._agentTab = 'chat'
+      this._render()
+    })
     this.querySelector<HTMLElement>('[data-delagent]')?.addEventListener('click', (e) => {
       const name = (e.currentTarget as HTMLElement).dataset.delagent!
       if (confirm(`Delete agent ${name} and its history?`)) void this._deleteAgent(name)
@@ -1773,8 +1900,21 @@ export class AgentsElement extends HTMLElement {
     if (!a.spec?.models?.chat) {
       return `<div class="agents-empty"><p class="muted">No model assigned. Open <strong>Settings</strong> and pick a model credential to start chatting.</p></div>`
     }
+    // Surface the current thread even before it exists server-side (a fresh
+    // "New chat" has no store row yet).
+    const sessions = this._sessions.slice()
+    if (this._sessionID && !sessions.some((s) => s.id === this._sessionID)) {
+      sessions.unshift({ id: this._sessionID, preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' })
+    }
+    const picker = sessions
+      .map((s) => `<option value="${escapeHTML(s.id)}" ${s.id === this._sessionID ? 'selected' : ''}>${escapeHTML(sessionLabel(s))}</option>`)
+      .join('')
     return `
       <div class="agents-chat">
+        <div class="agents-chat-head">
+          <select class="agents-session-picker" ${this._streaming ? 'disabled' : ''} title="Chat sessions">${picker}</select>
+          <button type="button" class="agents-newchat secondary" ${this._streaming ? 'disabled' : ''}>＋ New chat</button>
+        </div>
         <div class="agents-log">
           ${
             this._messages.length
@@ -1792,6 +1932,11 @@ export class AgentsElement extends HTMLElement {
       </div>`
   }
   private _wireChat(): void {
+    const a = this._agent()
+    if (a) void this._ensureChat(a.metadata.name)
+    const picker = this.querySelector<HTMLSelectElement>('.agents-session-picker')
+    picker?.addEventListener('change', () => this._switchSession(picker.value))
+    this.querySelector<HTMLButtonElement>('.agents-newchat')?.addEventListener('click', () => this._newChat())
     const chat = this.querySelector<HTMLFormElement>('.agents-chat-form')
     chat?.addEventListener('submit', (e) => {
       e.preventDefault()
