@@ -205,6 +205,57 @@ export async function probeEdge(name: string, type: EdgeType): Promise<EdgeProbe
   }
 }
 
+// ─── Service catalog ──────────────────────────────────────────────
+// The provider serves the service-type form schema (svccatalog.All()) at
+// /services/providers/edges/catalog so the UI renders the add/configure-service
+// form from data instead of a hand-maintained mirror. Same origin as the portal;
+// the hub backend proxy forwards /services/providers/edges/* to the provider.
+
+// CatalogCredentialField is one input the form collects for a service's
+// credential (mirrors svccatalog.CredentialField).
+export interface CatalogCredentialField {
+  key: string
+  label: string
+  help?: string
+  secret?: boolean
+}
+// CatalogCredential is how the form collects the credential and how the fields
+// pack into the single Secret "token" value (mirrors svccatalog.CredentialModel).
+export interface CatalogCredential {
+  optional?: boolean
+  packing?: 'single' | 'userpass'
+  fields?: CatalogCredentialField[]
+  hint?: string
+}
+// CatalogEntry is the UI-facing subset of svccatalog.Definition.
+export interface CatalogEntry {
+  type: string
+  displayName: string
+  description?: string
+  category?: string
+  defaultPort?: number
+  defaultScheme?: string
+  schemeLocked?: boolean
+  hostRequired?: boolean
+  hostHelp?: string
+  auth: string
+  authParam?: string
+  credential: CatalogCredential
+}
+
+// fetchServiceCatalog returns every service type's form descriptor. It is static
+// provider metadata (not tenant-scoped), so it is fetched directly from the
+// provider backend rather than through the GraphQL gateway.
+export async function fetchServiceCatalog(): Promise<CatalogEntry[]> {
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
+  const res = await fetch('/services/providers/edges/catalog', { credentials: 'same-origin', headers })
+  if (!res.ok) {
+    throw <ErrorResponse>{ reason: 'HTTPError', message: (await res.text()) || res.statusText }
+  }
+  return (await res.json()) as CatalogEntry[]
+}
+
 // ─── Services (EdgeService) ───────────────────────────────────────
 // Cluster-scoped services on an edge host (e.g. Home Assistant on a
 // LinuxServer). Discovery materializes them; the user attaches a token to make

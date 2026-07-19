@@ -128,7 +128,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 
 	// Assemble the agent's tools for this trigger class (policy + approvals +
 	// audit + delegation); MCP sessions are released when the run ends.
-	toolset, closeTools := s.buildToolset(ctx, tools.Deps{
+	toolset, mcpInstructions, closeTools := s.buildToolset(ctx, tools.Deps{
 		Store: s.store, Scope: scope, Agent: agent, CR: run.CR,
 		Secrets: run.Creds, ConnSecretName: connectionSecretName,
 		RunID: runID,
@@ -150,7 +150,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		Phase:       store.RunPhaseRunning, Input: run.Task, CreatedAt: now, UpdatedAt: now, StartedAt: &now,
 	})
 
-	msgs := s.assembleTurnCtx(ctx, scope, agent, sessionID, run.Task)
+	msgs := s.assembleTurnCtx(ctx, scope, agent, sessionID, run.Task, mcpInstructions)
 	res, err := s.engine.StreamTurnWithTools(ctx, model, msgs, toolset, maxIters, run.OnDelta, run.OnTool)
 	end := time.Now().UTC()
 	if err != nil {
@@ -187,10 +187,17 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 // assembleTurnCtx builds the message list (system prompt + recent history +
 // task) using a context rather than an *http.Request, so background callers
 // (scheduler) can reuse it.
-func (s *Server) assembleTurnCtx(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, sessionID, task string) []engine.Message {
+func (s *Server) assembleTurnCtx(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, sessionID, task, mcpInstructions string) []engine.Message {
 	var msgs []engine.Message
 	if sp := agent.Spec.SystemPrompt; sp != "" {
 		msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: sp})
+	}
+	// Ambient guidance from connected MCP servers (e.g. an edges Service's
+	// spec.instructions describing its entity layout / quirks). Injected as a
+	// system message so it reaches the model even though MCP clients don't
+	// surface server `initialize` instructions on their own.
+	if mi := strings.TrimSpace(mcpInstructions); mi != "" {
+		msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: "Guidance from connected tools/services:\n\n" + mi})
 	}
 	history, _ := s.store.LoadRecentMessages(ctx, scope, sessionID, chatHistoryLimit)
 	for _, m := range history {

@@ -28,6 +28,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/faroshq/provider-edges/internal/haclient"
+	"github.com/faroshq/provider-edges/internal/svccatalog"
 )
 
 // serviceMCPImpl is advertised on `initialize` for a per-Service MCP
@@ -79,7 +80,7 @@ func (p *Server) buildServiceMCPServer(cluster, name, kcpToken string, svc *serv
 	switch {
 	case svc.Spec.Type == "home-assistant":
 		p.registerHomeAssistantTools(srv, "", cluster, kcpToken, svc, dialer)
-	case catalogServiceType(svc.Spec.Type):
+	case svccatalog.IsDataDriven(svc.Spec.Type):
 		p.registerCatalogTools(srv, "", cluster, kcpToken, svc, dialer)
 	}
 	return srv
@@ -213,7 +214,7 @@ func (p *Server) haPassthrough(ctx context.Context, cluster, kcpToken string, sv
 	if text == "" {
 		text = fmt.Sprintf("OK (%d)", resp.StatusCode)
 	}
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
+	return &mcp.CallToolResult{Content: withServiceNote(svc, &mcp.TextContent{Text: text})}, nil, nil
 }
 
 // haDo resolves the service token (from the Service's Secret, read as the
@@ -242,6 +243,18 @@ func toolErr(msg string) *mcp.CallToolResult {
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
 	}
+}
+
+// withServiceNote prepends the Service's operator note (spec.instructions) to a
+// tool result's content. Server-level MCP `initialize` instructions are surfaced
+// inconsistently by clients (and only read once at connect); echoing the note in
+// the result delivers it to ANY MCP client — internal or external — at the exact
+// moment the service is used.
+func withServiceNote(svc *serviceView, content ...mcp.Content) []mcp.Content {
+	if note := strings.TrimSpace(svc.Spec.Instructions); note != "" {
+		return append([]mcp.Content{&mcp.TextContent{Text: "Operator note for service " + svc.Name + ":\n" + note + "\n---"}}, content...)
+	}
+	return content
 }
 
 // toolJSON marshals v into a JSON text content result.
