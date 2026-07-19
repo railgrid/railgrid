@@ -91,6 +91,22 @@ function toggleCreate() {
   if (showCreate.value) resetTargetMode()
 }
 
+// spec.host is a bare hostname/IP (scheme + port are separate fields). If the
+// user pastes a full URL, split it into host + scheme + port for convenience.
+// Any path is dropped — services proxy at the root.
+function applyHostUrl() {
+  const raw = draft.value.host?.trim()
+  if (!raw || !/^https?:\/\//i.test(raw)) return
+  try {
+    const u = new URL(raw)
+    draft.value.scheme = u.protocol.replace(':', '')
+    draft.value.host = u.hostname
+    draft.value.port = Number(u.port) || (u.protocol === 'https:' ? 443 : 80)
+  } catch {
+    /* not a valid URL — leave the field as typed */
+  }
+}
+
 // Per-row expand for edit (instructions) + connect (token).
 const expanded = ref<string | null>(null)
 const editInstructions = ref('')
@@ -128,6 +144,7 @@ const canCreate = computed(
 
 async function onCreate() {
   if (!canCreate.value) return
+  if (targetMode.value === 'host') applyHostUrl() // normalize a pasted URL
   busy.value = true
   error.value = null
   try {
@@ -272,7 +289,7 @@ function phaseClass(p?: string): string {
       <div v-if="targetMode === 'host'" class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Host (blank = agent loopback)</span>
-          <input v-model="draft.host" class="input" placeholder="e.g. 192.168.1.1 (UniFi console) — leave blank for 127.0.0.1 on the agent host" />
+          <input v-model="draft.host" class="input" @blur="applyHostUrl" placeholder="192.168.1.1, myui.example.com, or paste https://myui.example.com — blank = 127.0.0.1" />
         </label>
       </div>
       <!-- Kubernetes Service: reach it by cluster DNS. -->
