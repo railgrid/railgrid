@@ -31,11 +31,14 @@ data:
       ui:
         url: "http://{{ include "edges.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
         indexPath: "/"
-        # "Workloads" sub-nav item, rendered just below the Edges parent in the
-        # sidebar; routes to /providers/edges/workloads.
+        # Sub-nav items under the Edges parent in the sidebar. Must match
+        # manifest.yaml. Workloads → /providers/edges/workloads;
+        # Services → /providers/edges/services.
         children:
           - displayName: Workloads
             builtinRoute: workloads
+          - displayName: Services
+            builtinRoute: services
       backend:
         url: "http://{{ include "edges.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
         healthPath: "/healthz"
