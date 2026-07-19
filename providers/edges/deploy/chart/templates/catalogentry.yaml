@@ -31,11 +31,14 @@ data:
       ui:
         url: "http://{{ include "edges.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
         indexPath: "/"
-        # "Workloads" sub-nav item, rendered just below the Edges parent in the
-        # sidebar; routes to /providers/edges/workloads.
+        # Sub-nav items under the Edges parent in the sidebar. Must match
+        # manifest.yaml. Workloads → /providers/edges/workloads;
+        # Services → /providers/edges/services.
         children:
           - displayName: Workloads
             builtinRoute: workloads
+          - displayName: Services
+            builtinRoute: services
       backend:
         url: "http://{{ include "edges.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
         healthPath: "/healthz"
@@ -65,12 +68,15 @@ data:
           # Delegated authn/authz for the data plane (kcp#4279 / kcp#4280): the
           # provider validates presented tokens and authorizes the resolved
           # identity against the consumer workspace via the APIExport VW. Must
-          # match manifest.yaml + init_cmd.go. Built-in review APIs: verb create
-          # only, not tenantScoped (nothing to list/watch).
+          # match manifest.yaml + init_cmd.go. tenantScoped: the VW confines each
+          # review to the tenant's OWN workspace (bounded → auto-acceptable, no
+          # "reach beyond your workspace" warning). Built-in review APIs: create only.
           - group: authentication.k8s.io
             resource: tokenreviews
             verbs: [create]
+            tenantScoped: true
           - group: authorization.k8s.io
             resource: subjectaccessreviews
             verbs: [create]
+            tenantScoped: true
 {{- end }}

@@ -157,16 +157,20 @@ permission claims, and inline `APIResourceSchema` bodies. The hub's catalog
 controller reads it and provisions the kcp side (sub-workspace, ServiceAccount,
 APIExport, schemas) and registers routing/heartbeat state.
 
-> **⚠️ Permission claims live in THREE places that MUST stay in sync.** Changing
-> a provider's claim contract (adding/removing a `permissionClaim`) means editing
-> all of:
-> 1. `providers/<name>/manifest.yaml` — the CatalogEntry source of truth.
-> 2. `providers/<name>/init_cmd.go` — the `sdkinstall.PermissionClaim` list that
->    `init` stamps onto the **APIExport** (`spec.permissionClaims`).
-> 3. `providers/<name>/deploy/chart/templates/catalogentry.yaml` — the CatalogEntry
->    the Helm chart actually applies in prod. **This is the easy one to forget**;
->    if it drifts, `init` updates the APIExport but the deployed CatalogEntry (and
->    thus what the hub Enable flow offers tenants) still advertises the old set.
+> **⚠️ `manifest.yaml` and `deploy/chart/templates/catalogentry.yaml` are TWO
+> copies of the CatalogEntry that MUST stay in sync — for the WHOLE spec, not just
+> claims.** `manifest.yaml` is the source-of-truth/dev copy; the chart template is
+> what actually gets applied in prod. They drift silently: a change to `manifest.yaml`
+> alone (a new `ui.children` sidebar item, a display field, a URL, permission claims,
+> …) never reaches prod. Symptoms seen in the wild: a sidebar sub-nav item present in
+> `manifest.yaml` but missing in prod (e.g. edges "Services"); Enable offering the old
+> claim set. **When you touch either, mirror the change into the other.**
+>
+> Permission-claim changes additionally need a THIRD edit — the **APIExport** side:
+> - `providers/<name>/init_cmd.go` — the `sdkinstall.PermissionClaim` list that
+>   `init` stamps onto the APIExport (`spec.permissionClaims`). If this drifts, `init`
+>   updates the APIExport but the deployed CatalogEntry (what the hub Enable flow
+>   offers tenants) still advertises the old set — so all three must match for claims.
 >
 > **Existing tenants do NOT auto-migrate.** `init` only touches the provider-side
 > APIExport, never per-tenant `APIBinding`s (they live in tenant workspaces, written

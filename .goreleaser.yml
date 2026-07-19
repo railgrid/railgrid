@@ -27,7 +27,17 @@ archives:
   - id: kubectl-kedge-plugin
     ids:
     - kubectl-kedge
-    name_template: "kubectl-kedge_{{ .Os }}_{{ .Arch }}"
+    # uname-compatible names so `curl .../kubectl-kedge_$(uname -s)_$(uname -m).tar.gz`
+    # resolves: title-case OS (Linux/Darwin/Windows) and map Go's arch names to
+    # what `uname -m` reports — amd64→x86_64 everywhere, arm64→aarch64 on Linux
+    # (macOS keeps arm64), 386→i386.
+    name_template: >-
+      kubectl-kedge_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if and (eq .Arch "arm64") (eq .Os "linux") }}aarch64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
 
 release:
   prerelease: auto
