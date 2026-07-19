@@ -28,6 +28,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -44,6 +45,7 @@ import (
 
 	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
 	sdktunnel "github.com/faroshq/provider-edges/internal/tunnel"
+	"github.com/faroshq/provider-edges/internal/svccatalog"
 )
 
 // providerPublicBase is the path prefix (behind the hub backend proxy) this
@@ -152,6 +154,23 @@ func runServe() error {
 	// tools across the tenant's connected KubernetesCluster edges AND the Home
 	// Assistant tools of every Ready home-assistant EdgeService.
 	mux.Handle("/mcp", tsrv.RootMCPHandler())
+
+	// Service catalog: the UI-facing form schema for every service type
+	// (svccatalog.All() — connection defaults, auth model + credential fields,
+	// scheme-lock/host-required hints). The portal fetches this at
+	// /services/providers/edges/catalog to render the add/configure-service form
+	// from data, so it never drifts from the backend's auth/probe knowledge.
+	mux.HandleFunc("/catalog", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-cache")
+		if err := json.NewEncoder(w).Encode(svccatalog.All()); err != nil {
+			log.Error(err, "encoding service catalog")
+		}
+	})
 
 	// Provider portal micro-frontend (embedded Vite bundle). The hub proxies
 	// /ui/providers/edges/* here; ProviderFrame injects <script src=".../main.js">

@@ -4,48 +4,50 @@ import { RefreshCw, Trash2, Plus, Boxes, ChevronRight, ChevronDown, Save, KeyRou
 import {
   listServices, createKubeEdgeService, deleteEdgeService,
   updateEdgeServiceInstructions, connectEdgeService, listEdges,
+  fetchServiceCatalog,
 } from './api'
+import type { CatalogEntry, CatalogCredentialField } from './api'
 import type { EdgeService, EdgeServiceDraft, Edge, ErrorResponse } from './types'
 
-// Service catalog — mirrors the backend svcCatalog (providers/edges/internal/
-// tunnel/svc_catalog.go) + Home Assistant. Each entry seeds the default port and
-// tells the operator what credential the service expects.
-interface ServicePreset { type: string; label: string; category: string; port: number; tokenHint: string }
-const PRESETS: ServicePreset[] = [
-  { type: 'home-assistant', label: 'Home Assistant', category: 'Home & IoT', port: 8123, tokenHint: 'Long-lived access token' },
-  { type: 'adguard', label: 'AdGuard Home', category: 'Network', port: 80, tokenHint: 'Web credentials as "username:password"' },
-  { type: 'pihole', label: 'Pi-hole', category: 'Network', port: 80, tokenHint: 'Web-interface password (Pi-hole v6)' },
-  { type: 'unifi-network', label: 'UniFi Network', category: 'Network', port: 443, tokenHint: 'UniFi OS local API key (X-API-KEY) — set scheme https, host = console IP' },
-  { type: 'unifi-protect', label: 'UniFi Protect', category: 'Network', port: 443, tokenHint: 'UniFi OS local API key (X-API-KEY) — set scheme https, host = console IP' },
-  { type: 'grafana', label: 'Grafana', category: 'Observability', port: 3000, tokenHint: 'Service-account / API token' },
-  { type: 'grafana-loki', label: 'Grafana Loki', category: 'Observability', port: 3100, tokenHint: 'Bearer token (optional)' },
-  { type: 'prometheus', label: 'Prometheus', category: 'Observability', port: 9090, tokenHint: 'Bearer token (optional — often none)' },
-  { type: 'proxmox', label: 'Proxmox VE', category: 'Infra', port: 8006, tokenHint: 'API token "USER@REALM!ID=UUID" — set scheme https' },
-  { type: 'portainer', label: 'Portainer', category: 'Infra', port: 9000, tokenHint: 'Access token (X-API-Key)' },
-  { type: 'qbittorrent', label: 'qBittorrent', category: 'Media', port: 8080, tokenHint: 'WebUI credentials as "username:password"' },
-  { type: 'prowlarr', label: 'Prowlarr', category: 'Media', port: 9696, tokenHint: 'API key (Settings → General)' },
-  { type: 'sonarr', label: 'Sonarr', category: 'Media', port: 8989, tokenHint: 'API key (Settings → General)' },
-  { type: 'radarr', label: 'Radarr', category: 'Media', port: 7878, tokenHint: 'API key (Settings → General)' },
-  { type: 'jellyfin', label: 'Jellyfin', category: 'Media', port: 8096, tokenHint: 'API key (Dashboard → API Keys)' },
-  { type: 'plex', label: 'Plex', category: 'Media', port: 32400, tokenHint: 'X-Plex-Token' },
-  { type: 'generic', label: 'Generic (proxy only)', category: 'Other', port: 80, tokenHint: 'Bearer token (optional)' },
-]
-function presetFor(t?: string): ServicePreset | undefined {
-  return PRESETS.find((p) => p.type === t)
+// Service type catalog — fetched from the backend (svccatalog.All()) so the form
+// never drifts from the provider's auth/probe knowledge. Each entry seeds the
+// port/scheme and describes the credential fields the UI collects.
+const catalog = ref<CatalogEntry[]>([])
+function catalogFor(t?: string): CatalogEntry | undefined {
+  return catalog.value.find((c) => c.type === t)
 }
-// Presets grouped by category, preserving first-seen category order, for
-// <optgroup> rendering in the type dropdown.
-const PRESET_GROUPS = PRESETS.reduce<{ category: string; items: ServicePreset[] }[]>((groups, p) => {
-  let g = groups.find((x) => x.category === p.category)
-  if (!g) { g = { category: p.category, items: [] }; groups.push(g) }
-  g.items.push(p)
-  return groups
-}, [])
+// Types grouped by category (first-seen order) for <optgroup> rendering.
+const CATALOG_GROUPS = computed(() =>
+  catalog.value.reduce<{ category: string; items: CatalogEntry[] }[]>((groups, c) => {
+    const cat = c.category || 'Other'
+    let g = groups.find((x) => x.category === cat)
+    if (!g) { g = { category: cat, items: [] }; groups.push(g) }
+    g.items.push(c)
+    return groups
+  }, []),
+)
+// A one-entry fallback so the form still works if the catalog fetch fails.
+const GENERIC_FALLBACK: CatalogEntry = {
+  type: 'generic', displayName: 'Generic HTTP service', category: 'Other',
+  defaultPort: 80, defaultScheme: 'http', auth: 'bearer',
+  credential: { optional: true, packing: 'single', fields: [{ key: 'token', label: 'Bearer token (optional)', secret: true }] },
+}
+async function loadCatalog() {
+  try {
+    catalog.value = await fetchServiceCatalog()
+  } catch (e) {
+    error.value = (e as ErrorResponse)?.message ?? 'Failed to load service catalog'
+    if (!catalog.value.length) catalog.value = [GENERIC_FALLBACK]
+  }
+}
+// schemeLocked types (e.g. UniFi is always https) pin the scheme select.
+const createSchemeLocked = computed(() => !!catalogFor(draft.value.serviceType)?.schemeLocked)
 function onTypeChange() {
-  const p = presetFor(draft.value.serviceType)
-  if (p) draft.value.port = p.port
-  // UniFi OS speaks https (self-signed); default the scheme so it just works.
-  if (draft.value.serviceType.startsWith('unifi-')) draft.value.scheme = 'https'
+  const c = catalogFor(draft.value.serviceType)
+  if (c) {
+    if (c.defaultPort) draft.value.port = c.defaultPort
+    if (c.defaultScheme) draft.value.scheme = c.defaultScheme
+  }
   resetTargetMode()
 }
 
@@ -82,8 +84,10 @@ const selectedEdgeIsServer = computed(
 // (UniFi) and LinuxServer edges default to host; KubernetesCluster edges default
 // to a cluster Service. The user can override with the toggle.
 function resetTargetMode() {
-  const isLAN = draft.value.serviceType.startsWith('unifi-')
-  targetMode.value = selectedEdgeIsServer.value || isLAN ? 'host' : 'kube'
+  // Types flagged hostRequired live on the edge LAN (e.g. a UniFi console), not
+  // on the agent loopback, so they default to host addressing.
+  const needsHost = !!catalogFor(draft.value.serviceType)?.hostRequired
+  targetMode.value = selectedEdgeIsServer.value || needsHost ? 'host' : 'kube'
 }
 
 function toggleCreate() {
@@ -107,10 +111,12 @@ function applyHostUrl() {
   }
 }
 
-// Per-row expand for edit (instructions) + connect (token).
+// Per-row expand for edit (instructions) + connect (credentials).
 const expanded = ref<string | null>(null)
 const editInstructions = ref('')
-const editToken = ref('')
+// Credential inputs for the expanded row, keyed by field.key (e.g. "token", or
+// "username"/"password"). Packed into the single Secret "token" value on connect.
+const credInputs = ref<Record<string, string>>({})
 function toggle(s: EdgeService) {
   if (expanded.value === s.name) {
     expanded.value = null
@@ -118,7 +124,34 @@ function toggle(s: EdgeService) {
   }
   expanded.value = s.name
   editInstructions.value = s.instructions ?? ''
-  editToken.value = ''
+  credInputs.value = {}
+}
+
+// credFields returns the credential inputs to render for a service's type,
+// falling back to a single opaque token when the type is unknown.
+function credFields(s: EdgeService): CatalogCredentialField[] {
+  return catalogFor(s.serviceType)?.credential.fields ?? [{ key: 'token', label: 'token', secret: true }]
+}
+// packedCredential combines the credential inputs into the single string stored
+// as the Secret "token" (per the type's packing: "username:password" or the
+// single field verbatim).
+function packedCredential(s: EdgeService): string {
+  const cred = catalogFor(s.serviceType)?.credential
+  if (cred?.packing === 'userpass') {
+    const u = (credInputs.value['username'] ?? '').trim()
+    const p = credInputs.value['password'] ?? ''
+    return `${u}:${p}`
+  }
+  const key = credFields(s)[0]?.key ?? 'token'
+  return (credInputs.value[key] ?? '').trim()
+}
+// credFilled reports whether the required credential inputs are present.
+function credFilled(s: EdgeService): boolean {
+  const cred = catalogFor(s.serviceType)?.credential
+  if (cred?.packing === 'userpass') {
+    return !!(credInputs.value['username']?.trim() && credInputs.value['password'])
+  }
+  return !!packedCredential(s)
 }
 
 async function refresh() {
@@ -195,12 +228,13 @@ async function onSaveInstructions(s: EdgeService) {
 }
 
 async function onConnect(s: EdgeService) {
-  if (!editToken.value.trim()) return
+  const token = packedCredential(s)
+  if (!token) return
   busy.value = true
   error.value = null
   try {
-    await connectEdgeService(s.name, editToken.value.trim())
-    editToken.value = ''
+    await connectEdgeService(s.name, token)
+    credInputs.value = {}
     await refresh()
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Connect failed'
@@ -209,7 +243,10 @@ async function onConnect(s: EdgeService) {
   }
 }
 
-onMounted(refresh)
+onMounted(() => {
+  loadCatalog()
+  refresh()
+})
 const timer = setInterval(refresh, 10000)
 onUnmounted(() => clearInterval(timer))
 
@@ -256,14 +293,14 @@ function phaseClass(p?: string): string {
         <label class="fld" style="flex: 1;">
           <span class="lbl">Type</span>
           <select v-model="draft.serviceType" class="input" @change="onTypeChange">
-            <optgroup v-for="g in PRESET_GROUPS" :key="g.category" :label="g.category">
-              <option v-for="p in g.items" :key="p.type" :value="p.type">{{ p.label }}</option>
+            <optgroup v-for="g in CATALOG_GROUPS" :key="g.category" :label="g.category">
+              <option v-for="c in g.items" :key="c.type" :value="c.type">{{ c.displayName }}</option>
             </optgroup>
           </select>
         </label>
         <label class="fld" style="flex: 0 0 120px;">
           <span class="lbl">Scheme</span>
-          <select v-model="draft.scheme" class="input">
+          <select v-model="draft.scheme" class="input" :disabled="createSchemeLocked" :title="createSchemeLocked ? 'Fixed by the service type' : ''">
             <option value="http">http</option>
             <option value="https">https</option>
           </select>
@@ -288,8 +325,9 @@ function phaseClass(p?: string): string {
       <!-- Host: dial an address directly (loopback, or a LAN device like UniFi). -->
       <div v-if="targetMode === 'host'" class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
-          <span class="lbl">Host (blank = agent loopback)</span>
+          <span class="lbl">Host {{ catalogFor(draft.serviceType)?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span>
           <input v-model="draft.host" class="input" @blur="applyHostUrl" placeholder="192.168.1.1, myui.example.com, or paste https://myui.example.com — blank = 127.0.0.1" />
+          <span v-if="catalogFor(draft.serviceType)?.hostHelp" class="muted" style="font-size: 12px; margin-top: 4px;">{{ catalogFor(draft.serviceType)?.hostHelp }}</span>
         </label>
       </div>
       <!-- Kubernetes Service: reach it by cluster DNS. -->
@@ -357,11 +395,15 @@ function phaseClass(p?: string): string {
                   <button class="btn primary" :disabled="busy" @click="onSaveInstructions(s)"><Save :size="14" /> Save instructions</button>
                 </div>
 
-                <div class="es-head">Access token</div>
-                <div class="muted" style="margin-bottom: 6px;">{{ presetFor(s.serviceType)?.tokenHint ?? 'Access token' }} — makes the service Ready. Stored as a Secret, never on the agent host.</div>
-                <div class="row" style="gap: 8px;">
-                  <input v-model="editToken" type="password" class="input" style="flex: 1;" placeholder="token" />
-                  <button class="btn" :disabled="busy || !editToken.trim()" @click="onConnect(s)"><KeyRound :size="14" /> {{ s.hasCredentials ? 'Update token' : 'Set token' }}</button>
+                <div class="es-head">Credentials</div>
+                <div class="muted" style="margin-bottom: 6px;">{{ catalogFor(s.serviceType)?.credential.hint ?? 'Credential' }} — makes the service Ready. Stored as a Secret, never on the agent host.</div>
+                <div class="row" style="gap: 8px; align-items: flex-end;">
+                  <label v-for="f in credFields(s)" :key="f.key" class="fld" style="flex: 1;">
+                    <span class="lbl">{{ f.label }}</span>
+                    <input v-model="credInputs[f.key]" :type="f.secret ? 'password' : 'text'" class="input" :placeholder="f.label" />
+                    <span v-if="f.help" class="muted" style="font-size: 12px; margin-top: 4px;">{{ f.help }}</span>
+                  </label>
+                  <button class="btn" :disabled="busy || !credFilled(s)" @click="onConnect(s)"><KeyRound :size="14" /> {{ s.hasCredentials ? 'Update' : 'Set' }} credentials</button>
                 </div>
               </td>
             </tr>

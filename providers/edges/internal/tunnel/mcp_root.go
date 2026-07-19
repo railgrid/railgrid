@@ -28,6 +28,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/faroshq/provider-edges/internal/haclient"
+	"github.com/faroshq/provider-edges/internal/svccatalog"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -127,7 +128,7 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 		switch {
 		case h.reg.view.Spec.Type == "home-assistant":
 			p.registerHomeAssistantTools(srv, h.prefix, cluster, token, h.reg.view, h.dialer)
-		case catalogServiceType(h.reg.view.Spec.Type):
+		case svccatalog.IsDataDriven(h.reg.view.Spec.Type):
 			p.registerCatalogTools(srv, h.prefix, cluster, token, h.reg.view, h.dialer)
 		}
 		logger.Info("service tools registered", "service", h.reg.name, "type", h.reg.view.Spec.Type, "prefix", h.prefix)
@@ -144,13 +145,6 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 type readyHAService struct {
 	name string
 	view *serviceView
-}
-
-// mcpServiceType reports whether a Service type has an MCP tool bundle (Home
-// Assistant or any catalog app). Types without one are proxy-only and don't
-// contribute tools to the endpoint.
-func mcpServiceType(t string) bool {
-	return t == "home-assistant" || catalogServiceType(t)
 }
 
 // listReadyServices lists Ready Services in the tenant that expose MCP tools
@@ -186,7 +180,7 @@ func (p *Server) listReadyServices(ctx context.Context, cluster, token string) [
 			logger.Info("service discovery: skip (decode failed)", "service", name, "err", err.Error())
 			continue
 		}
-		if !mcpServiceType(view.Spec.Type) {
+		if !svccatalog.HasTools(view.Spec.Type) {
 			continue // proxy-only type — contributes no tools, not noteworthy
 		}
 		if view.Spec.EdgeRef.Name == "" || view.Spec.Port == 0 {

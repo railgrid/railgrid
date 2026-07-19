@@ -37,12 +37,18 @@ func connResource(es *edgesv1alpha1.Service) string {
 	return edgesv1alpha1.LinuxServerResource
 }
 
-// targetHost is the agent-side address of the service: cluster DNS
-// ({name}.{namespace}.svc) for a KubernetesCluster edge, the host loopback for
-// a LinuxServer edge. Callers must have validated that a kube Service has a
-// targetRef; without one this falls back to loopback, which would resolve to
-// the agent pod itself.
+// targetHost is the agent-side address of the service. It must stay in lockstep
+// with the tunnel's serviceView.targetHost (service_proxy.go) so the validation
+// probe reaches the same host the proxy does:
+//   - spec.host wins on either edge kind — dial the address directly (loopback,
+//     or a device on the edge's LAN like a UniFi console at 192.168.1.1);
+//   - otherwise cluster DNS ({name}.{namespace}.svc) for a KubernetesCluster
+//     edge with a targetRef;
+//   - otherwise the host loopback (a LinuxServer edge's own agent host).
 func targetHost(es *edgesv1alpha1.Service) string {
+	if es.Spec.Host != "" {
+		return es.Spec.Host
+	}
 	if isKube(es) && es.Spec.TargetRef != nil {
 		return es.Spec.TargetRef.Name + "." + es.Spec.TargetRef.Namespace + ".svc"
 	}

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -42,6 +43,7 @@ import (
 
 	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
 	"github.com/faroshq/provider-edges/internal/haclient"
+	"github.com/faroshq/provider-edges/internal/svccatalog"
 )
 
 // validationResyncInterval bounds how often a Ready Service is re-validated.
@@ -120,8 +122,16 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	// Always keep status.URL current.
 	es.Status.URL = r.statusURL(string(req.ClusterName), es.Name)
 
-	// No credentials → nothing to validate.
-	if es.Spec.AuthSecretRef == nil {
+	// The catalog tells us how to probe this type: the health path, the auth
+	// style, and whether a 2xx proves the credential (ProbeValidate) or merely
+	// that the service is up (ProbeReachable). An unknown type falls back to a
+	// bare reachability probe on "/".
+	def, _ := svccatalog.Get(string(es.Spec.Type))
+
+	// No credentials → nothing to validate, unless the type is usable
+	// unauthenticated (e.g. Prometheus), in which case we still probe for
+	// reachability below with an empty token.
+	if es.Spec.AuthSecretRef == nil && !def.Credential.Optional {
 		setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionUnknown, "NoCredentials", "no authSecretRef configured")
 		if es.Status.Phase == "" {
 			es.Status.Phase = "Detected"
@@ -149,21 +159,42 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 		return r.commit(ctx, c, orig, es, 30*time.Second)
 	}
 
-	token, err := r.readToken(ctx, c, es)
-	if err != nil {
-		setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionFalse, "SecretError", err.Error())
-		es.Status.Phase = "Unreachable"
-		return r.commit(ctx, c, orig, es, validationResyncInterval)
+	var token string
+	if es.Spec.AuthSecretRef != nil {
+		token, err = r.readToken(ctx, c, es)
+		if err != nil {
+			setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionFalse, "SecretError", err.Error())
+			es.Status.Phase = "Unreachable"
+			return r.commit(ctx, c, orig, es, validationResyncInterval)
+		}
 	}
 
-	// Validate. Home Assistant: GET /api/config returns { version, ... }.
+	// Build the probe request and apply the type's auth. For the session-login
+	// kinds (qBittorrent/Pi-hole) Apply performs the login, so a failure here is
+	// the credential being rejected rather than a transport error.
 	target := haclient.Target{
 		Scheme: schemeString(es.Spec.Scheme),
 		Host:   targetHost(es),
 		Port:   es.Spec.Port,
-		Token:  token,
 	}
-	resp, err := haclient.Do(ctx, dialer, target, http.MethodGet, "/api/config", nil)
+	header := http.Header{}
+	query := url.Values{}
+	if err := svccatalog.Apply(ctx, dialer, target, def, token, header, query); err != nil {
+		es.Status.Phase = "Unreachable"
+		setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionFalse, "Unauthorized", err.Error())
+		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "Unauthorized", err.Error())
+		return r.commit(ctx, c, orig, es, validationResyncInterval)
+	}
+
+	probePath := def.ProbePath
+	if probePath == "" {
+		probePath = "/"
+	}
+	if q := query.Encode(); q != "" {
+		probePath += "?" + q
+	}
+
+	resp, err := haclient.DoWith(ctx, dialer, target, http.MethodGet, probePath, header, nil)
 	if err != nil {
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "ProbeFailed", err.Error())
 		setNotProbed(es, "the service could not be reached, so the token was never checked")
@@ -172,30 +203,65 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	switch {
-	case resp.StatusCode == http.StatusOK:
-		var cfg struct {
-			Version string `json:"version"`
+	mode := def.ProbeMode
+	if mode == "" {
+		if def.ProbePath != "" {
+			mode = svccatalog.ProbeValidate
+		} else {
+			mode = svccatalog.ProbeReachable
 		}
-		_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&cfg)
-		if cfg.Version != "" {
-			es.Status.Version = cfg.Version
-		}
-		es.Status.Phase = "Ready"
-		setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionTrue, "Validated", "credentials accepted by the service")
-		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "service reachable and authenticated")
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		es.Status.Phase = "Unreachable"
-		setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionFalse, "Unauthorized",
-			fmt.Sprintf("service rejected the token (%d)", resp.StatusCode))
-	default:
-		es.Status.Phase = "Unreachable"
-		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "ProbeFailed",
-			fmt.Sprintf("service returned %d", resp.StatusCode))
-		setNotProbed(es, fmt.Sprintf("service returned %d, so the token was never checked", resp.StatusCode))
 	}
 
-	logger.V(4).Info("validated service", "phase", es.Status.Phase)
+	switch mode {
+	case svccatalog.ProbeReachable:
+		// Any answer below 500 means the service is up. We can only claim the
+		// credential is valid if we actually sent one and it wasn't rejected.
+		if resp.StatusCode >= http.StatusInternalServerError {
+			es.Status.Phase = "Unreachable"
+			setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "ProbeFailed",
+				fmt.Sprintf("service returned %d", resp.StatusCode))
+			setNotProbed(es, fmt.Sprintf("service returned %d, so the token was never checked", resp.StatusCode))
+			break
+		}
+		es.Status.Phase = "Ready"
+		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "service reachable")
+		if token != "" && resp.StatusCode < http.StatusMultipleChoices {
+			setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionTrue, "Validated", "credentials accepted by the service")
+		} else {
+			setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionUnknown, "NotVerified",
+				"service reachable; credentials are not verified for this service type")
+		}
+	default: // ProbeValidate — the probe path requires auth, so status is decisive.
+		switch {
+		case resp.StatusCode < http.StatusMultipleChoices:
+			// Home Assistant's /api/config returns { version, ... }.
+			if es.Spec.Type == edgesv1alpha1.ServiceTypeHomeAssistant {
+				var cfg struct {
+					Version string `json:"version"`
+				}
+				_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&cfg)
+				if cfg.Version != "" {
+					es.Status.Version = cfg.Version
+				}
+			}
+			es.Status.Phase = "Ready"
+			setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionTrue, "Validated", "credentials accepted by the service")
+			setCondition(&es.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "service reachable and authenticated")
+		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+			es.Status.Phase = "Unreachable"
+			setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionFalse, "Unauthorized",
+				fmt.Sprintf("service rejected the credentials (%d)", resp.StatusCode))
+			setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "Unauthorized",
+				"service reachable but rejected the credentials")
+		default:
+			es.Status.Phase = "Unreachable"
+			setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "ProbeFailed",
+				fmt.Sprintf("service returned %d", resp.StatusCode))
+			setNotProbed(es, fmt.Sprintf("service returned %d, so the credentials were never checked", resp.StatusCode))
+		}
+	}
+
+	logger.V(4).Info("validated service", "phase", es.Status.Phase, "type", es.Spec.Type)
 	return r.commit(ctx, c, orig, es, validationResyncInterval)
 }
 
