@@ -61,7 +61,7 @@ const overBudget = computed(() => props.attempts >= 15)
 </script>
 
 <template>
-  <div class="cross-grid fixed inset-0 z-[200] flex items-center justify-center bg-surface">
+  <div class="contour-grid fixed inset-0 z-[200] flex items-center justify-center bg-surface">
     <!-- Ambient glow, matching the login / auth-callback takeovers -->
     <div class="pointer-events-none fixed inset-0 overflow-hidden">
       <div class="absolute -top-40 left-1/2 h-96 w-[500px] -translate-x-1/2 rounded-full bg-accent/5 blur-[160px]" />
@@ -71,8 +71,8 @@ const overBudget = computed(() => props.attempts >= 15)
     <div class="relative flex w-full max-w-md flex-col items-center px-6">
       <!-- Pulsing hex mark -->
       <div class="relative flex h-16 w-16 items-center justify-center">
-        <div class="absolute inset-0 animate-pulse rounded-2xl bg-accent/20 blur-lg" />
-        <div class="relative flex h-16 w-16 items-center justify-center rounded-2xl border border-accent/25 bg-surface-overlay">
+        <div class="absolute inset-0 animate-pulse rounded-xl bg-accent/20 blur-lg" />
+        <div class="relative flex h-16 w-16 items-center justify-center rounded-xl border border-accent/25 bg-surface-overlay">
           <Hexagon class="h-8 w-8 animate-spin text-accent" style="animation-duration: 3s" :stroke-width="2" />
         </div>
       </div>
@@ -86,8 +86,8 @@ const overBudget = computed(() => props.attempts >= 15)
       </p>
 
       <!-- Step list -->
-      <div class="border-beam mt-7 w-full rounded-2xl">
-        <ul class="space-y-1 rounded-2xl border border-border-subtle bg-surface-raised/80 p-3 backdrop-blur">
+      <div class="mt-7 w-full rounded-xl border border-border-default shadow-sm">
+        <ul class="space-y-1 rounded-xl border border-border-subtle bg-surface-raised/80 p-3 backdrop-blur">
           <li
             v-for="(step, i) in steps"
             :key="step.label"

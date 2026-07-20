@@ -3,19 +3,19 @@ import { Hexagon, ArrowLeft } from 'lucide-vue-next'
 </script>
 
 <template>
-  <div class="cross-grid relative flex min-h-screen items-center justify-center bg-surface">
+  <div class="contour-grid relative flex min-h-screen items-center justify-center bg-surface">
     <div class="pointer-events-none fixed inset-0 overflow-hidden">
       <div class="absolute top-1/3 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-accent/4 blur-[140px]" />
     </div>
 
     <div class="relative text-center">
       <div class="relative mx-auto flex h-20 w-20 items-center justify-center">
-        <div class="absolute inset-0 rounded-2xl bg-accent/10 blur-lg" />
-        <div class="relative flex h-20 w-20 items-center justify-center rounded-2xl border border-border-subtle bg-surface-raised/80 backdrop-blur">
+        <div class="absolute inset-0 rounded-xl bg-accent/10 blur-lg" />
+        <div class="relative flex h-20 w-20 items-center justify-center rounded-xl border border-border-subtle bg-surface-raised">
           <Hexagon class="h-10 w-10 text-text-muted/15" :stroke-width="1" />
         </div>
       </div>
-      <h1 class="text-gradient mt-6 text-7xl font-bold tracking-tighter">404</h1>
+      <h1 class="type-display mt-6 text-7xl font-bold tracking-tighter text-text-primary">404</h1>
       <p class="mt-2 text-[13px] text-text-muted">This page doesn't exist</p>
       <router-link
         to="/"

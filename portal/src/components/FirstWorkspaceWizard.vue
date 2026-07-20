@@ -64,8 +64,8 @@ async function handleCreate() {
       </div>
     </div>
 
-    <div class="border-beam rounded-2xl">
-      <div class="space-y-5 rounded-2xl border border-border-subtle bg-surface-raised/80 p-6 backdrop-blur">
+    <div class="rounded-xl border border-border-default shadow-sm">
+      <div class="space-y-5 rounded-xl border border-border-subtle bg-surface-raised/80 p-6 backdrop-blur">
         <div
           v-if="error"
           class="flex items-center gap-2 rounded-xl border border-danger/20 bg-danger-subtle p-3 text-[12px] text-danger"

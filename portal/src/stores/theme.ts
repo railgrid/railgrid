@@ -6,7 +6,15 @@ export type ThemeMode = 'light' | 'dark' | 'system'
 const STORAGE_KEY = 'kedge-theme'
 
 function getSystemTheme(): 'light' | 'dark' {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  // Light is the hard fallback (matches the CSS base) when matchMedia is
+  // unavailable or throws.
+  try {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light'
+  } catch {
+    return 'light'
+  }
 }
 
 function applyTheme(resolved: 'light' | 'dark') {
@@ -34,8 +42,8 @@ export const useThemeStore = defineStore('theme', () => {
   }
 
   // Listen for system theme changes
-  const mql = window.matchMedia('(prefers-color-scheme: dark)')
-  mql.addEventListener('change', () => {
+  const mql = window.matchMedia?.('(prefers-color-scheme: dark)')
+  mql?.addEventListener('change', () => {
     if (mode.value === 'system') {
       resolved.value = getSystemTheme()
       applyTheme(resolved.value)

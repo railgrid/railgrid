@@ -49,13 +49,13 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="cross-grid relative flex min-h-screen items-center justify-center bg-surface">
+  <div class="contour-grid relative flex min-h-screen items-center justify-center bg-surface">
     <div class="pointer-events-none fixed inset-0 overflow-hidden">
       <div class="absolute -top-40 left-1/2 h-96 w-[500px] -translate-x-1/2 rounded-full bg-accent/5 blur-[160px]" />
     </div>
 
-    <div v-if="error" class="border-beam relative rounded-2xl">
-      <div class="rounded-2xl border border-border-subtle bg-surface-raised/80 p-8 text-center backdrop-blur">
+    <div v-if="error" class="relative rounded-xl border border-border-default shadow-sm">
+      <div class="rounded-xl border border-border-subtle bg-surface-raised/80 p-8 text-center backdrop-blur">
         <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-full border border-danger/20 bg-danger-subtle">
           <AlertCircle class="h-5 w-5 text-danger" :stroke-width="1.75" />
         </div>
@@ -72,8 +72,8 @@ onMounted(() => {
 
     <div v-else class="relative flex flex-col items-center gap-5">
       <div class="relative flex h-16 w-16 items-center justify-center">
-        <div class="absolute inset-0 animate-pulse rounded-2xl bg-accent/20 blur-lg" />
-        <div class="relative flex h-16 w-16 items-center justify-center rounded-2xl border border-accent/25 bg-surface-overlay">
+        <div class="absolute inset-0 animate-pulse rounded-xl bg-accent/20 blur-lg" />
+        <div class="relative flex h-16 w-16 items-center justify-center rounded-xl border border-accent/25 bg-surface-overlay">
           <Hexagon class="h-8 w-8 animate-spin text-accent" style="animation-duration: 3s" :stroke-width="2" />
         </div>
       </div>

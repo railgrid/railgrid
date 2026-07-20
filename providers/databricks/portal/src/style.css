@@ -297,7 +297,7 @@ kedge-provider-databricks input:disabled {
 }
 
 kedge-provider-databricks .mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 kedge-provider-databricks .strong {
@@ -306,7 +306,7 @@ kedge-provider-databricks .strong {
 }
 
 kedge-provider-databricks code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 kedge-provider-databricks .props {

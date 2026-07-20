@@ -134,7 +134,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Table -->
-    <div class="overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised">
+    <div class="overflow-hidden rounded-xl border border-border-subtle bg-surface-raised">
       <div v-if="loading" class="p-6 text-[12px] text-text-muted">Loading…</div>
       <div v-else-if="error" class="m-4 rounded-lg border border-danger/20 bg-danger-subtle p-3 text-[12px] text-danger">
         {{ error }}
@@ -211,7 +211,7 @@ onUnmounted(() => {
         class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
         @click.self="deleting ? null : (deleteConfirm = null)"
       >
-        <div class="w-full max-w-md rounded-2xl border border-border-subtle bg-surface-raised p-6 shadow-2xl">
+        <div class="w-full max-w-md rounded-xl border border-border-subtle bg-surface-raised p-6 shadow-2xl">
           <h3 class="text-[14px] font-bold text-text-primary">Delete instance?</h3>
           <p class="mt-2 text-[12px] text-text-muted">
             This permanently deletes

@@ -141,7 +141,7 @@ onBeforeUnmount(() => {
        this cell so it leaves no gap in the layout. -->
   <div
     v-if="loadState !== 'no-tile'"
-    class="relative flex h-full flex-col overflow-hidden rounded-2xl border bg-surface-raised/80 p-5 backdrop-blur"
+    class="relative flex h-full flex-col overflow-hidden rounded-xl border bg-surface-raised/80 p-5 backdrop-blur"
     :class="editMode ? 'cursor-move border-accent/40 ring-1 ring-accent/30' : 'border-border-subtle'"
   >
     <!-- Remove affordance — only in edit mode. `tile-no-drag` keeps the

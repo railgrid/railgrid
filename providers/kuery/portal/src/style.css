@@ -86,7 +86,7 @@ kedge-provider-kuery pre {
   border: 1px solid var(--color-border-subtle, transparent);
   border-radius: 8px;
   padding: 10px 12px;
-  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
   font-size: 11px;
   overflow-x: auto;
 }
@@ -96,7 +96,7 @@ kedge-provider-kuery code {
   color: var(--color-text-secondary, currentColor);
   padding: 1px 5px;
   border-radius: 4px;
-  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
   font-size: 11px;
 }
 
@@ -308,7 +308,7 @@ kedge-provider-kuery .pg-editor .CodeMirror {
 kedge-provider-kuery .pg-fallback {
   width: 100%;
   min-height: 360px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   padding: 8px;
   box-sizing: border-box;
@@ -323,7 +323,7 @@ kedge-provider-kuery .pg-result {
   border: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
   border-radius: 8px;
   background: var(--color-surface-base, rgba(0, 0, 0, 0.02));
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;

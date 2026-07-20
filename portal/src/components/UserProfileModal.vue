@@ -30,7 +30,7 @@ async function copy(text: string, field: string) {
       class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm"
       @click.self="$emit('close')"
     >
-      <div class="w-full max-w-md rounded-2xl border border-border-subtle bg-surface-raised shadow-2xl">
+      <div class="w-full max-w-md rounded-xl border border-border-subtle bg-surface-raised shadow-2xl">
         <!-- Header -->
         <div class="flex items-center justify-between border-b border-border-subtle bg-surface-overlay/60 px-4 py-2.5">
           <div class="flex items-center gap-2">

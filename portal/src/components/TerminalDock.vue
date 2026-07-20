@@ -292,8 +292,8 @@ onUnmounted(() => {
 <template>
   <div
     v-if="store.isVisible && store.sessions.length > 0"
-    class="terminal-dock fixed z-40 flex flex-col border-t border-border-subtle bg-surface-raised/95 shadow-[0_-8px_24px_-8px_rgba(0,0,0,0.4)] backdrop-blur"
-    :class="{ 'rounded-t-2xl': !store.panelState.isFullscreen }"
+    class="terminal-dock fixed z-40 flex flex-col border-t border-border-default bg-surface-raised shadow-[0_-8px_24px_-8px_rgba(0,0,0,0.5)]"
+    :class="{ 'rounded-t-xl': !store.panelState.isFullscreen }"
     :style="panelStyle"
   >
     <!-- Resize handle (top edge) -->
@@ -386,7 +386,7 @@ onUnmounted(() => {
     <!-- Content area -->
     <div
       v-if="!store.panelState.isMinimized"
-      class="panel-content relative min-h-0 flex-1 overflow-hidden bg-[#0a0a0f]"
+      class="panel-content relative min-h-0 flex-1 overflow-hidden bg-[#0b0c11]"
       :class="`layout-${store.panelState.splitLayout}`"
     >
       <template v-for="session in store.sessions" :key="session.id">
@@ -414,6 +414,34 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/*
+ * The terminal is always a dark console, even on the light theme. Pin the dark
+ * palette as local CSS variables on the dock root so every token-driven child
+ * utility (bg-surface-*, text-text-*, border-*) inside resolves dark and the
+ * chrome reads as one intentional dark strip. Custom properties inherit, so the
+ * whole subtree picks these up.
+ */
+.terminal-dock {
+  --color-surface: #0b0c11;
+  --color-surface-raised: #12131b;
+  --color-surface-overlay: #181926;
+  --color-surface-hover: #1e1f2e;
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border-default: rgba(255, 255, 255, 0.1);
+  --color-accent: #7c5bf5;
+  --color-accent-hover: #9b85f7;
+  --color-accent-subtle: rgba(124, 91, 245, 0.12);
+  --color-text-primary: #eeeef3;
+  --color-text-secondary: #7e7e96;
+  --color-text-muted: #565870;
+  --color-success: #34d399;
+  --color-success-subtle: rgba(52, 211, 153, 0.12);
+  --color-warning: #fbbf24;
+  --color-warning-subtle: rgba(251, 191, 36, 0.12);
+  --color-danger: #f87171;
+  --color-danger-subtle: rgba(248, 113, 113, 0.12);
+}
+
 .terminal-pane.hidden-pane {
   display: none !important;
 }

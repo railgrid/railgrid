@@ -348,14 +348,7 @@ watchEffect(() => {
 </script>
 
 <template>
-  <div class="cross-grid relative flex h-screen bg-surface" :class="layoutClass" :style="layoutInsetsStyle">
-    <!-- Ambient orbs -->
-    <div class="pointer-events-none fixed inset-0 overflow-hidden">
-      <div class="absolute -top-40 left-1/3 h-80 w-80 rounded-full bg-accent/4 blur-[160px]" />
-      <div class="absolute bottom-1/3 right-1/4 h-64 w-64 rounded-full bg-success/3 blur-[140px]" />
-      <div class="absolute top-1/2 left-3/4 h-48 w-48 rounded-full bg-accent/3 blur-[120px]" />
-    </div>
-
+  <div class="relative flex h-screen bg-surface" :class="layoutClass" :style="layoutInsetsStyle">
     <!-- Edge snap hint overlays -->
     <Transition name="fade">
       <div v-if="nearEdge === 'left'" class="fixed inset-y-0 left-0 z-[60] w-48 rounded-r-xl bg-accent/10 border-r-2 border-accent/40" />
@@ -374,7 +367,7 @@ watchEffect(() => {
     <aside
       v-if="isVerticalDock"
       ref="dockedRef"
-      class="relative z-50 flex h-full w-48 flex-shrink-0 flex-col overflow-hidden border-border-subtle bg-surface-raised/80 py-3 px-2 backdrop-blur-xl"
+      class="relative z-50 flex h-full w-48 flex-shrink-0 flex-col overflow-hidden border-border-default bg-surface-raised py-3 px-2"
       :class="dockState.mode === 'left' ? 'order-first border-r' : 'order-last border-l'"
     >
       <!-- Drag handle + Logo -->
@@ -385,13 +378,10 @@ watchEffect(() => {
         >
           <GripVertical class="h-3 w-3" :stroke-width="2" />
         </div>
-        <div class="relative flex h-7 w-7 items-center justify-center">
-          <div class="absolute inset-0 rounded-lg bg-accent/20 blur-md" />
-          <div class="relative flex h-7 w-7 items-center justify-center rounded-lg border border-accent/25 bg-surface-overlay/80">
-            <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2.5" />
-          </div>
+        <div class="flex h-7 w-7 items-center justify-center rounded-lg border border-border-default bg-surface-overlay">
+          <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2.5" />
         </div>
-        <span class="text-[11px] font-bold tracking-tight text-text-primary">KEDGE</span>
+        <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">KEDGE</span>
         <div class="flex items-center gap-0.5 rounded-full border border-success/20 bg-success-subtle px-1.5 py-px">
           <Zap class="h-2 w-2 text-success" :stroke-width="2.5" fill="currentColor" />
           <span class="text-[7px] font-semibold uppercase tracking-widest text-success">Live</span>
@@ -599,7 +589,7 @@ watchEffect(() => {
     <nav
       v-if="isHorizontalDock"
       ref="dockedRef"
-      class="relative z-50 flex w-full flex-shrink-0 items-center gap-1.5 border-border-subtle bg-surface-raised/80 px-4 py-1.5 backdrop-blur-xl"
+      class="relative z-50 flex w-full flex-shrink-0 items-center gap-1.5 border-border-default bg-surface-raised px-4 py-1.5"
       :class="dockState.mode === 'top' ? 'order-first border-b' : 'order-last border-t'"
     >
       <!-- Drag handle -->
@@ -614,13 +604,10 @@ watchEffect(() => {
 
       <!-- Logo -->
       <div class="flex items-center gap-1.5 px-1">
-        <div class="relative flex h-6 w-6 items-center justify-center">
-          <div class="absolute inset-0 rounded-md bg-accent/20 blur-md" />
-          <div class="relative flex h-6 w-6 items-center justify-center rounded-md border border-accent/25 bg-surface-overlay/80">
-            <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" />
-          </div>
+        <div class="flex h-6 w-6 items-center justify-center rounded-md border border-border-default bg-surface-overlay">
+          <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" />
         </div>
-        <span class="text-[11px] font-bold tracking-tight text-text-primary">KEDGE</span>
+        <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">KEDGE</span>
         <div class="flex items-center gap-0.5 rounded-full border border-success/20 bg-success-subtle px-1.5 py-px">
           <Zap class="h-2 w-2 text-success" :stroke-width="2.5" fill="currentColor" />
           <span class="text-[8px] font-semibold uppercase tracking-widest text-success">Live</span>
@@ -740,7 +727,6 @@ watchEffect(() => {
       :class="mainClass"
       :style="mainStyle"
     >
-      <div class="dot-grid pointer-events-none absolute inset-0 opacity-40" />
       <!--
         Keying the slot on auth.clusterName forces the active page to
         unmount + remount when the user switches workspace or org. The
@@ -779,7 +765,7 @@ watchEffect(() => {
       }"
       :style="floatStyle"
     >
-      <div class="island flex max-w-[calc(100vw-2rem)] items-center gap-1 rounded-2xl px-2 py-1.5">
+      <div class="island flex max-w-[calc(100vw-2rem)] items-center gap-1 rounded-xl px-2 py-1.5">
         <div
           class="island-nav flex h-8 w-5 cursor-grab items-center justify-center rounded-lg text-text-muted/30 transition-colors hover:text-text-muted"
           :class="{ 'cursor-grabbing': isDragging }"
@@ -791,13 +777,10 @@ watchEffect(() => {
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
         <div class="flex items-center gap-1.5 px-1.5">
-          <div class="relative flex h-6 w-6 items-center justify-center">
-            <div class="absolute inset-0 rounded-md bg-accent/20 blur-md" />
-            <div class="relative flex h-6 w-6 items-center justify-center rounded-md border border-accent/25 bg-surface-overlay/80 backdrop-blur">
-              <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" />
-            </div>
+          <div class="flex h-6 w-6 items-center justify-center rounded-md border border-border-default bg-surface-overlay">
+            <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" />
           </div>
-          <span class="text-[11px] font-bold tracking-tight text-text-primary">KEDGE</span>
+          <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">KEDGE</span>
           <div class="flex items-center gap-0.5 rounded-full border border-success/20 bg-success-subtle px-1.5 py-px">
             <Zap class="h-2 w-2 text-success" :stroke-width="2.5" fill="currentColor" />
             <span class="text-[8px] font-semibold uppercase tracking-widest text-success">Live</span>

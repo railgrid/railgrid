@@ -52,13 +52,13 @@ async function initialize() {
   terminal = new Terminal({
     cursorBlink: true,
     fontSize: 13,
-    fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+    fontFamily: "'IBM Plex Mono', ui-monospace, Menlo, monospace",
     theme: {
-      background: '#0a0a0f',
+      background: '#0b0c11',
       foreground: '#c8c8d0',
       cursor: '#a78bfa',
       selectionBackground: '#a78bfa33',
-      black: '#0a0a0f',
+      black: '#0b0c11',
       red: '#f87171',
       green: '#34d399',
       yellow: '#fbbf24',
@@ -193,7 +193,7 @@ defineExpose({ resize, focusTerminal, clearTerminal, reconnect })
 </script>
 
 <template>
-  <div class="terminal-instance flex h-full w-full flex-col bg-[#0a0a0f]">
+  <div class="terminal-instance flex h-full w-full flex-col bg-[#0b0c11]">
     <div class="flex h-7 items-center justify-between gap-2 border-b border-border-subtle bg-surface-overlay/40 px-3 text-[10px] text-text-muted">
       <div class="flex items-center gap-1.5">
         <component

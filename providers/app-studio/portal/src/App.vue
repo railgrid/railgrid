@@ -4417,7 +4417,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
       class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4 py-6 backdrop-blur-sm"
       @click.self="closeSettings"
     >
-      <div class="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised shadow-2xl">
+      <div class="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border-subtle bg-surface-raised shadow-2xl">
         <header class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3">
           <div class="min-w-0">
             <div class="flex items-center gap-2">

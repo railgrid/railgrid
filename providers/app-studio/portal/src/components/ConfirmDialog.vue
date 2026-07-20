@@ -23,7 +23,7 @@ useEscapeKey(() => emit('cancel'))
       class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
       @click.self="emit('cancel')"
     >
-      <div class="w-full max-w-md rounded-2xl border border-border-subtle bg-surface-raised p-6 shadow-2xl">
+      <div class="w-full max-w-md rounded-xl border border-border-subtle bg-surface-raised p-6 shadow-2xl">
         <div class="flex items-start justify-between gap-4">
           <div class="flex items-start gap-3">
             <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-danger/20 bg-danger-subtle">

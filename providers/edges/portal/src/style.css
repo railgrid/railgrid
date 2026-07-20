@@ -11,16 +11,19 @@
  *     colours don't adapt to the light/dark theme and drift from the portal.
  *   - For an accent/state-tinted border or fill, mix a token with transparent
  *     via color-mix() (mirrors the portal's `border-accent/30` utilities).
- *   - Match the portal component recipes below: buttons = rounded-lg (8px),
- *     cards/tables = rounded-2xl (16px) surface-raised card, table headers =
- *     10px/600 uppercase tracking-wide text-muted, rows = 13px text-secondary
- *     with an accent-tinted hover. See portal/src/components/ResourceTable.vue,
- *     StatusBadge.vue and portal/src/assets/main.css for the source of truth.
+ *   - PREFER the shared recipe classes served by the host for cards, tables,
+ *     badges, buttons and inputs: .k-card, .k-table, .k-badge (+ --success/
+ *     --warning/--danger/--muted), .k-btn (+ --primary/--ghost/--danger),
+ *     .k-input, .k-eyebrow, .k-kpi. They live in portal/src/assets/kedge-ui.css
+ *     and reach this element through the light DOM, so use them instead of
+ *     re-deriving the styling here; local rules should cover only
+ *     edges-specific layout. Recipe shapes: cards/tables = 12px radius,
+ *     controls = 8px, table headers = 10px/600 uppercase muted, rows = 13px.
  */
 
 kedge-provider-edges {
   display: block;
-  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-family: inherit;
   color: var(--color-text-primary);
 }
 
@@ -57,7 +60,7 @@ kedge-provider-edges .input {
   width: 100%; box-sizing: border-box; padding: 8px 12px;
   border: 1px solid var(--color-border-default); border-radius: 8px;
   background: var(--color-surface-overlay); color: var(--color-text-primary);
-  font-family: ui-monospace, monospace; font-size: 12px; transition: border-color .15s;
+  font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; transition: border-color .15s;
 }
 kedge-provider-edges .input:focus { outline: none; border-color: var(--color-accent); }
 kedge-provider-edges .input::placeholder { color: var(--color-text-muted); }
@@ -92,7 +95,7 @@ kedge-provider-edges .type small { color: var(--color-text-secondary); font-size
 /* ── Code snippets ── */
 kedge-provider-edges .snippet { border: 1px solid var(--color-border-subtle); border-radius: 12px; padding: 12px; background: var(--color-surface-raised); }
 kedge-provider-edges .snippet-head { display: flex; justify-content: space-between; align-items: center; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--color-text-muted); margin-bottom: 8px; }
-kedge-provider-edges .snippet pre { margin: 0; overflow-x: auto; background: var(--color-surface-overlay); border-radius: 8px; padding: 12px; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.6; color: var(--color-text-secondary); }
+kedge-provider-edges .snippet pre { margin: 0; overflow-x: auto; background: var(--color-surface-overlay); border-radius: 8px; padding: 12px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; line-height: 1.6; color: var(--color-text-secondary); }
 kedge-provider-edges .copy { display: inline-flex; align-items: center; gap: 4px; background: none; border: none; color: var(--color-text-muted); cursor: pointer; font-size: 10px; font-weight: 500; }
 kedge-provider-edges .copy:hover { color: var(--color-accent); }
 kedge-provider-edges .copy:disabled { opacity: .4; cursor: default; }
@@ -104,7 +107,7 @@ kedge-provider-edges .banner.error { border: 1px solid color-mix(in srgb, var(--
 
 /* ── Misc text ── */
 kedge-provider-edges .row { display: flex; align-items: center; gap: 8px; }
-kedge-provider-edges .mono { font-family: ui-monospace, monospace; }
+kedge-provider-edges .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
 kedge-provider-edges .muted { color: var(--color-text-secondary); }
 kedge-provider-edges .spin { animation: kedge-edges-spin 1s linear infinite; }
 @keyframes kedge-edges-spin { to { transform: rotate(360deg); } }
@@ -114,7 +117,7 @@ kedge-provider-edges .pad { padding: 20px 0; }
 kedge-provider-edges .empty { text-align: center; padding: 56px 0; color: var(--color-text-secondary); }
 kedge-provider-edges .empty svg { color: var(--color-text-muted); opacity: .5; }
 kedge-provider-edges .empty-title { margin-top: 12px; font-weight: 600; color: var(--color-text-primary); }
-kedge-provider-edges .empty code { font-family: ui-monospace, monospace; font-size: 12px; color: var(--color-text-primary); background: var(--color-surface-overlay); padding: 1px 5px; border-radius: 4px; }
+kedge-provider-edges .empty code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; color: var(--color-text-primary); background: var(--color-surface-overlay); padding: 1px 5px; border-radius: 4px; }
 
 /* ── Table (mirrors portal ResourceTable card) ── */
 kedge-provider-edges .edges-table-wrap { overflow: hidden; border: 1px solid var(--color-border-subtle); border-radius: 16px; background: var(--color-surface-raised); }

@@ -86,7 +86,7 @@ kedge-provider-quickstart pre {
   border: 1px solid var(--color-border-subtle, transparent);
   border-radius: 8px;
   padding: 10px 12px;
-  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
   font-size: 11px;
   overflow-x: auto;
 }
@@ -96,7 +96,7 @@ kedge-provider-quickstart code {
   color: var(--color-text-secondary, currentColor);
   padding: 1px 5px;
   border-radius: 4px;
-  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
   font-size: 11px;
 }
 

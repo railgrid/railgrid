@@ -23,7 +23,7 @@ function onRowClick(row: Record<string, unknown>) {
 </script>
 
 <template>
-  <div class="overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised/80 backdrop-blur">
+  <div class="k-table">
     <!-- Error -->
     <div v-if="error" class="flex items-center gap-2 p-4 text-[13px] text-danger">
       <AlertCircle class="h-4 w-4 shrink-0" :stroke-width="1.75" />
@@ -43,33 +43,22 @@ function onRowClick(row: Record<string, unknown>) {
     </div>
 
     <!-- Table -->
-    <table v-else class="min-w-full">
+    <table v-else>
       <thead>
-        <tr class="border-b border-border-subtle">
-          <th
-            v-for="col in columns"
-            :key="col.key"
-            class="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted"
-          >
-            {{ col.label }}
-          </th>
+        <tr>
+          <th v-for="col in columns" :key="col.key">{{ col.label }}</th>
         </tr>
       </thead>
       <tbody>
         <tr
           v-for="(row, i) in rows"
           :key="i"
-          class="stagger-item group border-b border-border-subtle transition-all duration-150 last:border-b-0"
-          :class="interactive ? 'cursor-pointer hover:bg-accent/[0.03]' : ''"
+          class="stagger-item"
+          :class="interactive ? 'is-interactive' : ''"
           :style="{ animationDelay: `${i * 35}ms` }"
           @click="onRowClick(row)"
         >
-          <td
-            v-for="col in columns"
-            :key="col.key"
-            class="whitespace-nowrap px-5 py-3 text-[13px] text-text-secondary transition-colors duration-100"
-            :class="interactive ? 'group-hover:text-text-primary' : ''"
-          >
+          <td v-for="col in columns" :key="col.key">
             <slot :name="col.key" :value="row[col.key]" :row="row">
               {{ row[col.key] }}
             </slot>

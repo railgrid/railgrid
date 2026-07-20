@@ -143,7 +143,7 @@ const collapseAll = () => {
         Collapse all
       </button>
     </div>
-    <div class="max-h-[500px] overflow-auto rounded-2xl border border-border-subtle bg-surface-overlay/60 py-3 pl-2 pr-5 font-mono text-[11px] leading-relaxed text-text-secondary backdrop-blur">
+    <div class="max-h-[500px] overflow-auto rounded-xl border border-border-subtle bg-surface-overlay/60 py-3 pl-2 pr-5 font-mono text-[11px] leading-relaxed text-text-secondary backdrop-blur">
       <div
         v-for="item in visible"
         :key="item.idx"

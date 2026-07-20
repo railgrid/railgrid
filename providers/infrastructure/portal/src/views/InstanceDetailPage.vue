@@ -117,7 +117,7 @@ async function executeDelete() {
         <div
           v-for="(group, gi) in view.detail"
           :key="gi"
-          class="mb-5 overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised"
+          class="mb-5 overflow-hidden rounded-xl border border-border-subtle bg-surface-raised"
         >
           <div v-if="group.title" class="border-b border-border-subtle px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">
             {{ group.title }}
@@ -132,13 +132,13 @@ async function executeDelete() {
       </template>
 
       <!-- Values (raw fallback when the template defines no detail view) -->
-      <div v-else class="mb-5 overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised">
+      <div v-else class="mb-5 overflow-hidden rounded-xl border border-border-subtle bg-surface-raised">
         <div class="border-b border-border-subtle px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Values</div>
         <pre class="overflow-auto p-4 font-mono text-[12px] leading-relaxed text-text-secondary">{{ JSON.stringify(inst.values, null, 2) }}</pre>
       </div>
 
       <!-- Conditions -->
-      <div v-if="inst.conditions && inst.conditions.length" class="mb-5 overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised">
+      <div v-if="inst.conditions && inst.conditions.length" class="mb-5 overflow-hidden rounded-xl border border-border-subtle bg-surface-raised">
         <div class="border-b border-border-subtle px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Conditions</div>
         <table class="w-full border-collapse text-left">
           <thead>
@@ -161,7 +161,7 @@ async function executeDelete() {
       </div>
 
       <!-- Child resources -->
-      <div v-if="inst.children && inst.children.length" class="mb-5 overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised">
+      <div v-if="inst.children && inst.children.length" class="mb-5 overflow-hidden rounded-xl border border-border-subtle bg-surface-raised">
         <div class="border-b border-border-subtle px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Child resources</div>
         <table class="w-full border-collapse text-left">
           <thead>

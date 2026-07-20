@@ -9,7 +9,7 @@
 
 kedge-provider-code {
   display: block;
-  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-family: inherit;
   color: var(--color-text-primary, inherit);
 }
 
@@ -432,7 +432,7 @@ kedge-provider-code code {
   color: var(--color-text-secondary, currentColor);
   padding: 1px 5px;
   border-radius: 4px;
-  font-family: ui-monospace, Menlo, monospace;
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
   font-size: 11px;
 }
 

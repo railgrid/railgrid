@@ -1,0 +1,199 @@
+/*
+ * kedge-ui — shared component recipes for the whole portal surface.
+ *
+ * WHY THIS FILE EXISTS
+ * Every provider micro-frontend (including the self-contained code / kuery /
+ * app-studio bundles) renders inside the HOST portal's light DOM, so any class
+ * defined here reaches all of them — the same mechanism that already lets the
+ * global `.live-dot` rule style provider StatusBadge copies. These are the
+ * canonical "Precision Flat" recipes; host components and providers should use
+ * the `k-*` classes instead of re-deriving card / table / badge / button
+ * styling in eight separate stylesheets.
+ *
+ * Colour ONLY through the semantic tokens defined in main.css
+ * (var(--color-*)). Never hardcode hex here — it would not adapt to the
+ * light/dark toggle. Radii: cards 12px, controls 8px, pills full.
+ */
+
+/* ── Eyebrow / KPI ────────────────────────────────────────────────────────
+ * Small uppercase tracked label + big expanded numeral (KPI recipe). */
+.k-eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--color-text-secondary);
+}
+.k-kpi {
+  font-family: var(--font-display);
+  font-stretch: 125%;
+  letter-spacing: -0.01em;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Card ─────────────────────────────────────────────────────────────────*/
+.k-card {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(17, 19, 34, 0.04);
+}
+html.dark .k-card {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.k-card--flat {
+  box-shadow: none;
+}
+
+/* ── Table ────────────────────────────────────────────────────────────────
+ * Rounded surface card wrapper + 10px/600 uppercase headers + 13px rows with
+ * an accent-tinted hover. Wrap a <table> in `.k-table` (or apply to a card). */
+.k-table {
+  overflow: hidden;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  background: var(--color-surface-raised);
+}
+.k-table table {
+  min-width: 100%;
+  border-collapse: collapse;
+}
+.k-table thead tr {
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.k-table th {
+  padding: 12px 20px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--color-text-muted);
+}
+.k-table tbody tr {
+  border-bottom: 1px solid var(--color-border-subtle);
+  transition: background 0.15s ease;
+}
+.k-table tbody tr:last-child {
+  border-bottom: 0;
+}
+.k-table tbody tr.is-interactive {
+  cursor: pointer;
+}
+.k-table tbody tr.is-interactive:hover {
+  background: color-mix(in srgb, var(--color-accent) 4%, transparent);
+}
+.k-table td {
+  padding: 12px 20px;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  transition: color 0.1s ease;
+}
+.k-table tbody tr.is-interactive:hover td {
+  color: var(--color-text-primary);
+}
+/* Data-like cells (names, ids, timestamps, emails). */
+.k-cell-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* ── Badge / status pill ──────────────────────────────────────────────────*/
+.k-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.k-badge--success { background: var(--color-success-subtle); color: var(--color-success); }
+.k-badge--warning { background: var(--color-warning-subtle); color: var(--color-warning); }
+.k-badge--danger  { background: var(--color-danger-subtle);  color: var(--color-danger); }
+.k-badge--muted   { background: var(--color-surface-overlay); color: var(--color-text-muted); }
+.k-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────*/
+.k-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.k-btn:disabled {
+  pointer-events: none;
+  opacity: 0.4;
+}
+.k-btn--primary {
+  background: var(--color-accent);
+  color: #fff;
+}
+.k-btn--primary:hover {
+  background: var(--color-accent-hover);
+}
+.k-btn--ghost {
+  background: var(--color-surface-overlay);
+  border-color: var(--color-border-default);
+  color: var(--color-text-primary);
+}
+.k-btn--ghost:hover {
+  background: var(--color-surface-hover);
+  border-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+.k-btn--danger {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+.k-btn--danger:hover {
+  background: color-mix(in srgb, var(--color-danger) 18%, transparent);
+}
+
+/* ── Input ────────────────────────────────────────────────────────────────*/
+.k-input {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
+  background: var(--color-surface-overlay);
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.k-input::placeholder {
+  color: var(--color-text-muted);
+}
+.k-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-subtle);
+}
+
+/* ── grid-layout-plus drag placeholder (default is a red block) ────────────*/
+.vgl-item--placeholder {
+  background: var(--color-accent-subtle) !important;
+  border: 1px dashed color-mix(in srgb, var(--color-accent) 40%, transparent) !important;
+  border-radius: 12px !important;
+  opacity: 1 !important;
+}

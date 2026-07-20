@@ -10,47 +10,44 @@ const props = withDefaults(
   { connected: null },
 )
 
+// Styling comes from the host-served shared recipe layer (kedge-ui.css:
+// .k-badge / .k-badge--*), so this badge matches the host and every other
+// provider without each build compiling its own utility classes.
 const config = computed(() => {
-  if (props.connected === false)
-    return { bg: 'bg-danger-subtle', text: 'text-danger', icon: XCircle, dot: 'bg-danger', glow: 'text-danger' }
+  if (props.connected === false) return { cls: 'k-badge--danger', icon: XCircle }
 
   switch (props.status?.toLowerCase()) {
     case 'ready':
     case 'succeeded':
     case 'committed':
-      return { bg: 'bg-success-subtle', text: 'text-success', icon: CheckCircle, dot: 'bg-success', glow: 'text-success' }
+    case 'active':
+      return { cls: 'k-badge--success', icon: CheckCircle }
     case 'scheduling':
     case 'pending':
     case 'provisioning':
     case 'running':
     case 'status unavailable':
-      return { bg: 'bg-warning-subtle', text: 'text-warning', icon: Clock, dot: 'bg-warning', glow: 'text-warning' }
-    case 'active':
-      return { bg: 'bg-success-subtle', text: 'text-success', icon: CheckCircle, dot: 'bg-success', glow: 'text-success' }
+      return { cls: 'k-badge--warning', icon: Clock }
     case 'terminating':
     case 'failed':
     case 'error':
     case 'repository missing':
     case 'connection missing':
-      return { bg: 'bg-danger-subtle', text: 'text-danger', icon: AlertTriangle, dot: 'bg-danger', glow: 'text-danger' }
+      return { cls: 'k-badge--danger', icon: AlertTriangle }
     default:
-      return { bg: 'bg-surface-overlay', text: 'text-text-muted', icon: Circle, dot: 'bg-text-muted', glow: 'text-text-muted' }
+      return { cls: 'k-badge--muted', icon: Circle }
   }
 })
 </script>
 
 <template>
-  <span
-    class="inline-flex items-center gap-1.5 rounded-full border border-current/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors duration-150"
-    :class="[config.bg, config.text]"
-  >
+  <span class="k-badge" :class="config.cls">
     <span class="relative flex h-1.5 w-1.5">
       <span
         v-if="status?.toLowerCase() === 'ready' && connected !== false"
-        class="live-dot absolute inline-flex h-full w-full rounded-full"
-        :class="config.glow"
+        class="live-dot k-badge__dot absolute inline-flex h-full w-full"
       />
-      <span class="relative inline-flex h-1.5 w-1.5 rounded-full" :class="config.dot" />
+      <span class="k-badge__dot relative inline-flex" />
     </span>
     {{ status }}
   </span>

@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./kedge-ui.css";
 
 /*
  * Some built-in providers ship their UI as separate Vite bundles under
@@ -14,192 +15,103 @@
  */
 @source "../../../providers/infrastructure/portal/src/**/*.{vue,ts}";
 
+/*
+ * Theme tokens. LIGHT is the base (in @theme) and is what renders in every
+ * degraded path (JS off, matchMedia missing). DARK is an override applied by
+ * theme.ts toggling `html.dark`. Exactly one of `.light`/`.dark` is always set.
+ *
+ * NOTE: no Tailwind `dark:` variant is used anywhere in the portal or the
+ * providers. If one is ever introduced, add:
+ *   @custom-variant dark (&:where(.dark, .dark *));
+ * because Tailwind v4 defaults the `dark:` variant to prefers-color-scheme,
+ * which would ignore the explicit class-based toggle.
+ */
 @theme {
-  --color-surface: #06060b;
-  --color-surface-raised: #0d0d14;
-  --color-surface-overlay: #14141f;
-  --color-surface-hover: #1a1a28;
-  --color-border-subtle: rgba(255, 255, 255, 0.04);
-  --color-border-default: rgba(255, 255, 255, 0.08);
-  --color-accent: #7c5bf5;
-  --color-accent-hover: #9b85f7;
-  --color-accent-subtle: rgba(124, 91, 245, 0.1);
-  --color-accent-glow: rgba(124, 91, 245, 0.25);
-  --color-text-primary: #eeeef3;
-  --color-text-secondary: #7e7e96;
-  --color-text-muted: #44445a;
-  --color-success: #34d399;
-  --color-success-subtle: rgba(52, 211, 153, 0.1);
-  --color-warning: #fbbf24;
-  --color-warning-subtle: rgba(251, 191, 36, 0.1);
-  --color-danger: #f87171;
-  --color-danger-subtle: rgba(248, 113, 113, 0.1);
+  --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Archivo Variable", "Instrument Sans Variable", ui-sans-serif, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* ── Light (base) ── */
+  --color-surface: #f5f6fa;
+  --color-surface-raised: #ffffff;
+  --color-surface-overlay: #eef0f6;
+  --color-surface-hover: #e9e9f2;
+  --color-border-subtle: #ecebf4;
+  --color-border-default: #e5e4f0;
+  --color-accent: #6d4fe0;
+  --color-accent-hover: #5a3fd4;
+  --color-accent-subtle: rgba(109, 79, 224, 0.08);
+  --color-accent-glow: rgba(109, 79, 224, 0.14);
+  --color-text-primary: #111322;
+  --color-text-secondary: #5a5d72;
+  --color-text-muted: #9092a9;
+  --color-success: #0fa36b;
+  --color-success-subtle: #e7f8f0;
+  --color-warning: #c77d0a;
+  --color-warning-subtle: #fdf3e2;
+  --color-danger: #dc3d43;
+  --color-danger-subtle: #fdebec;
 }
 
-/* ── Light mode overrides ── */
-html.light {
-  --color-surface: #f5f7fa;
-  --color-surface-raised: #ffffff;
-  --color-surface-overlay: #eef1f6;
-  --color-surface-hover: #e2e6ed;
-  --color-border-subtle: rgba(0, 0, 0, 0.06);
-  --color-border-default: rgba(0, 0, 0, 0.1);
-  --color-accent: #6d4fe0;
-  --color-accent-hover: #5b3fd0;
-  --color-accent-subtle: rgba(109, 79, 224, 0.08);
-  --color-accent-glow: rgba(109, 79, 224, 0.15);
-  --color-text-primary: #0f172a;
-  --color-text-secondary: #64748b;
-  --color-text-muted: #94a3b8;
-  --color-success: #10b981;
-  --color-success-subtle: rgba(16, 185, 129, 0.1);
-  --color-warning: #d97706;
-  --color-warning-subtle: rgba(217, 119, 6, 0.08);
-  --color-danger: #ef4444;
-  --color-danger-subtle: rgba(239, 68, 68, 0.08);
+/* ── Dark override (flat ink, no glass) ── */
+html.dark {
+  --color-surface: #0b0c11;
+  --color-surface-raised: #12131b;
+  --color-surface-overlay: #181926;
+  --color-surface-hover: #1e1f2e;
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border-default: rgba(255, 255, 255, 0.1);
+  --color-accent: #7c5bf5;
+  --color-accent-hover: #9b85f7;
+  --color-accent-subtle: rgba(124, 91, 245, 0.12);
+  --color-accent-glow: rgba(124, 91, 245, 0.2);
+  --color-text-primary: #eeeef3;
+  --color-text-secondary: #7e7e96;
+  --color-text-muted: #565870;
+  --color-success: #34d399;
+  --color-success-subtle: rgba(52, 211, 153, 0.12);
+  --color-warning: #fbbf24;
+  --color-warning-subtle: rgba(251, 191, 36, 0.12);
+  --color-danger: #f87171;
+  --color-danger-subtle: rgba(248, 113, 113, 0.12);
 }
 
 body {
   background-color: var(--color-surface);
   color: var(--color-text-primary);
+  font-family: var(--font-sans);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
-/* ── Dot grid background ── */
-.dot-grid {
-  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: 24px 24px;
-}
-html.light .dot-grid {
-  background-image: radial-gradient(circle, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
-}
-
-/* ── Cross grid ── */
-.cross-grid {
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
-  background-size: 80px 80px;
-}
-html.light .cross-grid {
-  background-image:
-    linear-gradient(rgba(0, 0, 0, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.025) 1px, transparent 1px);
+/*
+ * Display face (Söhne-Breit role). Archivo's width axis expanded to its max
+ * (125%) — used for page titles, KPI numerals and the KEDGE wordmark.
+ * `font-stretch` drives the wdth axis on the variable font; if a target
+ * browser mishandles it, swap to `font-variation-settings: "wdth" 125`.
+ */
+.type-display {
+  font-family: var(--font-display);
+  font-stretch: 125%;
+  letter-spacing: -0.01em;
 }
 
-/* ── Glass panel ── */
-.glass {
-  background: rgba(13, 13, 20, 0.6);
-  backdrop-filter: blur(24px) saturate(1.5);
-  -webkit-backdrop-filter: blur(24px) saturate(1.5);
-  border: 1px solid rgba(255, 255, 255, 0.04);
+/* ──────────────────────────────────────────────────────────────────────────
+ * Signature background — fine wavy contour lines. Used sparingly: login,
+ * auth callback, empty states, page hero areas. Two data-URIs because a data
+ * URI can't read a CSS var; the tile is seamless on both axes (wave period
+ * 120px over the 240px tile; lines spaced 48px).
+ * ────────────────────────────────────────────────────────────────────────── */
+.contour-grid {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%236d4fe0' stroke-opacity='0.06' stroke-width='1'%3E%3Cpath d='M0 24 Q30 12 60 24 T120 24 T180 24 T240 24'/%3E%3Cpath d='M0 72 Q30 84 60 72 T120 72 T180 72 T240 72'/%3E%3Cpath d='M0 120 Q30 108 60 120 T120 120 T180 120 T240 120'/%3E%3Cpath d='M0 168 Q30 180 60 168 T120 168 T180 168 T240 168'/%3E%3Cpath d='M0 216 Q30 204 60 216 T120 216 T180 216 T240 216'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 240px 240px;
 }
-html.light .glass {
-  background: rgba(255, 255, 255, 0.7);
-  border-color: rgba(0, 0, 0, 0.06);
+html.dark .contour-grid {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%237c5bf5' stroke-opacity='0.05' stroke-width='1'%3E%3Cpath d='M0 24 Q30 12 60 24 T120 24 T180 24 T240 24'/%3E%3Cpath d='M0 72 Q30 84 60 72 T120 72 T180 72 T240 72'/%3E%3Cpath d='M0 120 Q30 108 60 120 T120 120 T180 120 T240 120'/%3E%3Cpath d='M0 168 Q30 180 60 168 T120 168 T180 168 T240 168'/%3E%3Cpath d='M0 216 Q30 204 60 216 T120 216 T180 216 T240 216'/%3E%3C/g%3E%3C/svg%3E");
 }
-
-/* ── Border beam (animated light tracing border) ── */
-@keyframes border-beam {
-  0% { offset-distance: 0%; }
-  100% { offset-distance: 100%; }
-}
-.border-beam {
-  position: relative;
-  overflow: hidden;
-}
-.border-beam::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  border-radius: inherit;
-  padding: 1px;
-  background: conic-gradient(from var(--beam-angle, 0deg), transparent 0%, transparent 75%, rgba(124, 91, 245, 0.5) 85%, rgba(52, 211, 153, 0.4) 92%, transparent 100%);
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  animation: beam-rotate 4s linear infinite;
-  pointer-events: none;
-}
-html.light .border-beam::after {
-  background: conic-gradient(from var(--beam-angle, 0deg), transparent 0%, transparent 75%, rgba(109, 79, 224, 0.35) 85%, rgba(16, 185, 129, 0.3) 92%, transparent 100%);
-}
-@keyframes beam-rotate {
-  0% { --beam-angle: 0deg; }
-  100% { --beam-angle: 360deg; }
-}
-/* Fallback for browsers that don't support @property */
-@property --beam-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
-}
-
-/* ── Card with hover glow ── */
-.card-glow {
-  position: relative;
-  border: 1px solid transparent;
-  background-clip: padding-box;
-}
-.card-glow::before {
-  content: "";
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  background: linear-gradient(135deg, rgba(124, 91, 245, 0.15), transparent 40%, transparent 60%, rgba(52, 211, 153, 0.1));
-  z-index: -1;
-  opacity: 0;
-  transition: opacity 0.3s ease;
-}
-.card-glow:hover::before {
-  opacity: 1;
-}
-html.light .card-glow::before {
-  background: linear-gradient(135deg, rgba(109, 79, 224, 0.1), transparent 40%, transparent 60%, rgba(16, 185, 129, 0.08));
-}
-
-/* ── 3D Tilt card (CSS-only perspective hover) ── */
-.tilt-card {
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease;
-  transform-style: preserve-3d;
-  perspective: 800px;
-}
-.tilt-card:hover {
-  transform: perspective(800px) rotateX(-2deg) rotateY(3deg) scale(1.02);
-  box-shadow: -4px 4px 24px rgba(124, 91, 245, 0.08), 0 0 0 1px rgba(124, 91, 245, 0.1);
-}
-html.light .tilt-card:hover {
-  box-shadow: -4px 4px 24px rgba(109, 79, 224, 0.06), 0 0 0 1px rgba(109, 79, 224, 0.08);
-}
-
-/* ── Glow ring ── */
-.glow-ring {
-  box-shadow: 0 0 0 0 rgba(124, 91, 245, 0);
-  transition: box-shadow 0.3s ease;
-}
-.glow-ring:focus,
-.glow-ring.active {
-  box-shadow: 0 0 0 3px rgba(124, 91, 245, 0.15), 0 0 20px rgba(124, 91, 245, 0.08);
-}
-html.light .glow-ring:focus,
-html.light .glow-ring.active {
-  box-shadow: 0 0 0 3px rgba(109, 79, 224, 0.12), 0 0 16px rgba(109, 79, 224, 0.06);
-}
-
-/* ── Gradient text ── */
-.text-gradient {
-  background: linear-gradient(135deg, #eeeef3 0%, #7c5bf5 50%, #34d399 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-html.light .text-gradient {
-  background: linear-gradient(135deg, #0f172a 0%, #6d4fe0 50%, #10b981 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
+/* Fade the pattern out toward the bottom for hero tops. */
+.contour-grid-fade {
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent 70%);
+  mask-image: linear-gradient(to bottom, black, transparent 70%);
 }
 
 /* ── Stagger animation ── */
@@ -211,16 +123,21 @@ html.light .text-gradient {
   animation: stagger-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
-/* ── Pulse glow ── */
-@keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
-  50% { box-shadow: 0 0 8px 2px currentColor; opacity: 0.6; }
+/* ──────────────────────────────────────────────────────────────────────────
+ * Live status dot. Consumed globally by host StatusBadge AND by the
+ * self-contained providers' own StatusBadge copies (app-studio, code,
+ * databricks) via the light DOM — NEVER delete this selector. Softened from
+ * the old glowing pulse to a quiet opacity pulse.
+ * ────────────────────────────────────────────────────────────────────────── */
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 .live-dot {
-  animation: pulse-glow 2.5s ease-in-out infinite;
+  animation: live-pulse 2.5s ease-in-out infinite;
 }
 
-/* ── Shimmer ── */
+/* ── Shimmer (skeleton loading) ── */
 @keyframes shimmer {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
@@ -231,24 +148,20 @@ html.light .text-gradient {
   animation: shimmer 1.8s ease-in-out infinite;
 }
 
-/* ── Floating island dock ── */
+/* ──────────────────────────────────────────────────────────────────────────
+ * Floating island dock — flat raised card (no glass/backdrop-filter).
+ * ────────────────────────────────────────────────────────────────────────── */
 .island {
-  background: rgba(13, 13, 20, 0.85);
-  backdrop-filter: blur(32px) saturate(1.6);
-  -webkit-backdrop-filter: blur(32px) saturate(1.6);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-default);
   box-shadow:
-    0 8px 32px rgba(0, 0, 0, 0.4),
-    0 0 0 1px rgba(255, 255, 255, 0.02) inset,
-    0 -4px 12px rgba(124, 91, 245, 0.04);
+    0 1px 2px rgba(17, 19, 34, 0.04),
+    0 8px 24px rgba(17, 19, 34, 0.08);
 }
-html.light .island {
-  background: rgba(255, 255, 255, 0.85);
-  border-color: rgba(0, 0, 0, 0.08);
+html.dark .island {
   box-shadow:
-    0 8px 32px rgba(0, 0, 0, 0.08),
-    0 0 0 1px rgba(0, 0, 0, 0.02) inset,
-    0 -4px 12px rgba(109, 79, 224, 0.04);
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
 /* ── Island nav item ── */
@@ -269,22 +182,12 @@ html.light .island {
   height: 4px;
   border-radius: 50%;
   background: var(--color-accent);
-  box-shadow: 0 0 8px var(--color-accent);
 }
 
-/* ── Energy line ── */
-@keyframes energy-flow {
-  0% { background-position: 0% 0%; }
-  100% { background-position: 200% 0%; }
-}
+/* ── Progress / divider line (flat, accent) ── */
 .energy-line {
-  background: linear-gradient(90deg, transparent, rgba(124, 91, 245, 0.3), rgba(52, 211, 153, 0.2), transparent);
-  background-size: 200% 100%;
-  animation: energy-flow 4s linear infinite;
-}
-html.light .energy-line {
-  background: linear-gradient(90deg, transparent, rgba(109, 79, 224, 0.2), rgba(16, 185, 129, 0.15), transparent);
-  background-size: 200% 100%;
+  background: var(--color-accent);
+  border-radius: 9999px;
 }
 
 /* ── Bento grid ── */
@@ -324,36 +227,19 @@ html.light .energy-line {
   }
 }
 
-/* ── Noise ── */
-.noise::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.012;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  z-index: 9999;
-}
-
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(124, 91, 245, 0.12); border-radius: 10px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(124, 91, 245, 0.25); }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
 
 /* ── Selection ── */
 ::selection {
-  background: rgba(124, 91, 245, 0.3);
-  color: #fff;
-}
-html.light ::selection {
-  color: #0f172a;
-}
-
-/* ── Floating label ── */
-.float-label {
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  transform: rotate(180deg);
-  letter-spacing: 0.2em;
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  color: var(--color-text-primary);
 }

@@ -1,22 +1,28 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en" class="light">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Kedge Portal</title>
     <script>
-      // Apply theme before first paint to prevent flash
+      // Apply theme before first paint to prevent flash. Light is the hard
+      // fallback: any failure (no matchMedia, thrown error) renders light,
+      // which matches the CSS base in main.css.
       (function() {
-        var t = localStorage.getItem('kedge-theme') || 'system';
-        var d = t === 'system'
-          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-          : t;
-        document.documentElement.className = d;
+        try {
+          var t = localStorage.getItem('kedge-theme') || 'system';
+          var prefersDark = window.matchMedia
+            && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var d = t === 'system' ? (prefersDark ? 'dark' : 'light') : t;
+          document.documentElement.className = d;
+        } catch (e) {
+          document.documentElement.className = 'light';
+        }
       })();
     </script>
   </head>
-  <body class="bg-surface text-text-primary antialiased noise">
+  <body class="bg-surface text-text-primary antialiased">
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

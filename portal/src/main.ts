@@ -4,6 +4,12 @@ import App from './App.vue'
 import { router } from './router'
 import { registerProviderRoutes } from './router/providers'
 import { initTheme } from './stores/theme'
+// Self-hosted webfonts. Imported before main.css so @font-face rules are
+// registered ahead of the stylesheet that references them.
+import '@fontsource-variable/instrument-sans' // UI / body
+import '@fontsource-variable/archivo/wdth.css' // display / KPI numerals (width axis)
+import '@fontsource/ibm-plex-mono/400.css' // data / mono
+import '@fontsource/ibm-plex-mono/500.css'
 import './assets/main.css'
 
 // Apply theme before mount to prevent flash
