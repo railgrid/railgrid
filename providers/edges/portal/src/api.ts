@@ -227,6 +227,12 @@ export interface CatalogCredential {
   fields?: CatalogCredentialField[]
   hint?: string
 }
+// CatalogTool is one MCP operation the service exposes to AI agents (name +
+// description; mirrors svccatalog.Tool's UI fields).
+export interface CatalogTool {
+  name: string
+  description?: string
+}
 // CatalogEntry is the UI-facing subset of svccatalog.Definition.
 export interface CatalogEntry {
   type: string
@@ -241,6 +247,7 @@ export interface CatalogEntry {
   auth: string
   authParam?: string
   credential: CatalogCredential
+  tools?: CatalogTool[]
 }
 
 // fetchServiceCatalog returns every service type's form descriptor. It is static
@@ -343,6 +350,43 @@ export async function updateEdgeServiceInstructions(name: string, instructions: 
        edges_kedge_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
      }`,
     { name, object: { metadata: { name }, spec: { instructions } } },
+  )
+}
+
+// EdgeServiceEdit is the editable subset of a Service's spec (edgeRef is fixed
+// at creation).
+export interface EdgeServiceEdit {
+  serviceType?: string
+  scheme?: string
+  port?: number
+  host?: string
+  targetNamespace?: string
+  targetName?: string
+  instructions?: string
+}
+
+// updateEdgeService merge-patches the editable spec fields. host and targetRef
+// are mutually exclusive — the unused one is cleared (null/empty) so switching
+// target mode takes effect.
+export async function updateEdgeService(name: string, e: EdgeServiceEdit): Promise<void> {
+  const byHost = !!e.host?.trim()
+  const spec: Record<string, unknown> = {
+    type: e.serviceType,
+    scheme: e.scheme,
+    port: e.port,
+    instructions: e.instructions ?? '',
+    host: byHost ? e.host!.trim() : '',
+    targetRef: byHost
+      ? null
+      : e.targetName?.trim()
+        ? { namespace: e.targetNamespace?.trim() || 'default', name: e.targetName.trim() }
+        : null,
+  }
+  await graphql(
+    `mutation UpdateService($name: String!, $object: EdgesKedgeFarosShV1alpha1Service_Input!) {
+       edges_kedge_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
+     }`,
+    { name, object: { metadata: { name }, spec } },
   )
 }
 

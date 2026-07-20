@@ -90,12 +90,14 @@ type CredentialModel struct {
 	Hint string `json:"hint,omitempty"`
 }
 
-// Tool is one HTTP operation exposed as an MCP tool. Not serialized to the UI.
+// Tool is one HTTP operation exposed as an MCP tool. Name + Desc are serialized
+// to the UI (so the portal can show what an AI agent can do with this service);
+// Method + Path are backend-only.
 type Tool struct {
-	Name   string
-	Desc   string
-	Method string
-	Path   string
+	Name   string `json:"name"`
+	Desc   string `json:"description,omitempty"`
+	Method string `json:"-"`
+	Path   string `json:"-"`
 }
 
 // ProbeMode selects how the validation reconciler interprets the probe result.
@@ -153,11 +155,14 @@ type Definition struct {
 	// ProbeMode selects how the probe status is interpreted (default validate
 	// when a ProbePath is set, reachable otherwise).
 	ProbeMode ProbeMode `json:"-"`
-	// Handcoded marks types whose MCP tools live in Go rather than in Tools
-	// (Home Assistant). Such a type still "has tools" for discovery purposes.
+	// Handcoded marks types whose MCP tools are executed by hand-written Go
+	// (Home Assistant) rather than driven by Tools. A Handcoded type may still
+	// list Tools for display only (the UI shows them; they are not registered by
+	// the data-driven registrar — see IsDataDriven).
 	Handcoded bool `json:"-"`
-	// Tools are the data-driven MCP operations exposed for this type.
-	Tools []Tool `json:"-"`
+	// Tools are the MCP operations exposed for this type. Serialized to the UI
+	// (name + description) so the portal can show what the agent can do.
+	Tools []Tool `json:"tools,omitempty"`
 }
 
 // singleField is a helper for the common "one opaque token" credential.
@@ -189,6 +194,14 @@ var catalog = map[string]Definition{
 		},
 		ProbePath: "/api/config", ProbeMode: ProbeValidate,
 		Handcoded: true,
+		// Display-only: Home Assistant's tools are executed by hand-written Go
+		// (mcp_service.go), not the data-driven registrar (Handcoded excludes it
+		// from IsDataDriven). Listed here so the UI shows what the agent can do.
+		Tools: []Tool{
+			{Name: "states", Desc: "List entity states (lights, sensors, switches…)."},
+			{Name: "get_state", Desc: "Read one entity's state by entity_id."},
+			{Name: "call_service", Desc: "Call a service, e.g. turn a light on/off or open a cover."},
+		},
 	},
 	"qbittorrent": {
 		Type: "qbittorrent", DisplayName: "qBittorrent", Category: "Media",
@@ -429,12 +442,13 @@ func HasTools(t string) bool {
 	return ok && (d.Handcoded || len(d.Tools) > 0)
 }
 
-// IsDataDriven reports whether a type's MCP tools come from Definition.Tools
-// (i.e. driven by the catalog registrar, not hand-coded). Replaces the old
-// catalogServiceType.
+// IsDataDriven reports whether a type's MCP tools are driven by the catalog
+// registrar (Definition.Tools) rather than hand-coded. Handcoded types (Home
+// Assistant) are excluded even when they list Tools for display. Replaces the
+// old catalogServiceType.
 func IsDataDriven(t string) bool {
 	d, ok := catalog[t]
-	return ok && len(d.Tools) > 0
+	return ok && !d.Handcoded && len(d.Tools) > 0
 }
 
 // All returns every definition, sorted by category then display name — the

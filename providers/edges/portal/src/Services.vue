@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { RefreshCw, Trash2, Plus, Boxes, ChevronRight, ChevronDown, Save, KeyRound } from 'lucide-vue-next'
+import { RefreshCw, Trash2, Plus, Boxes, Pencil } from 'lucide-vue-next'
 import {
-  listServices, createKubeEdgeService, deleteEdgeService,
-  updateEdgeServiceInstructions, connectEdgeService, listEdges,
+  listServices, createKubeEdgeService, deleteEdgeService, listEdges,
   fetchServiceCatalog,
 } from './api'
-import type { CatalogEntry, CatalogCredentialField } from './api'
+import type { CatalogEntry } from './api'
 import type { EdgeService, EdgeServiceDraft, Edge, ErrorResponse } from './types'
+import ServiceEdit from './ServiceEdit.vue'
 
 // Service type catalog — fetched from the backend (svccatalog.All()) so the form
 // never drifts from the provider's auth/probe knowledge. Each entry seeds the
@@ -111,47 +111,19 @@ function applyHostUrl() {
   }
 }
 
-// Per-row expand for edit (instructions) + connect (credentials).
-const expanded = ref<string | null>(null)
-const editInstructions = ref('')
-// Credential inputs for the expanded row, keyed by field.key (e.g. "token", or
-// "username"/"password"). Packed into the single Secret "token" value on connect.
-const credInputs = ref<Record<string, string>>({})
-function toggle(s: EdgeService) {
-  if (expanded.value === s.name) {
-    expanded.value = null
-    return
-  }
-  expanded.value = s.name
-  editInstructions.value = s.instructions ?? ''
-  credInputs.value = {}
+// Edit opens a dedicated per-service page (ServiceEdit.vue) that hosts the
+// provider info, config, credentials and status. Held as local state (no shell
+// router), the same way App.vue drives the Edges Detail view.
+const editing = ref<EdgeService | null>(null)
+function openEdit(s: EdgeService) {
+  editing.value = s
 }
-
-// credFields returns the credential inputs to render for a service's type,
-// falling back to a single opaque token when the type is unknown.
-function credFields(s: EdgeService): CatalogCredentialField[] {
-  return catalogFor(s.serviceType)?.credential.fields ?? [{ key: 'token', label: 'token', secret: true }]
-}
-// packedCredential combines the credential inputs into the single string stored
-// as the Secret "token" (per the type's packing: "username:password" or the
-// single field verbatim).
-function packedCredential(s: EdgeService): string {
-  const cred = catalogFor(s.serviceType)?.credential
-  if (cred?.packing === 'userpass') {
-    const u = (credInputs.value['username'] ?? '').trim()
-    const p = credInputs.value['password'] ?? ''
-    return `${u}:${p}`
-  }
-  const key = credFields(s)[0]?.key ?? 'token'
-  return (credInputs.value[key] ?? '').trim()
-}
-// credFilled reports whether the required credential inputs are present.
-function credFilled(s: EdgeService): boolean {
-  const cred = catalogFor(s.serviceType)?.credential
-  if (cred?.packing === 'userpass') {
-    return !!(credInputs.value['username']?.trim() && credInputs.value['password'])
-  }
-  return !!packedCredential(s)
+// After a save in the edit page, refresh the list and re-seed the open page from
+// the fresh object so status/conditions update in place.
+async function onEditSaved() {
+  const name = editing.value?.name
+  await refresh()
+  if (name) editing.value = services.value.find((s) => s.name === name) ?? null
 }
 
 async function refresh() {
@@ -214,35 +186,6 @@ async function onDelete(s: EdgeService) {
   }
 }
 
-async function onSaveInstructions(s: EdgeService) {
-  busy.value = true
-  error.value = null
-  try {
-    await updateEdgeServiceInstructions(s.name, editInstructions.value)
-    await refresh()
-  } catch (e) {
-    error.value = (e as ErrorResponse)?.message ?? 'Save failed'
-  } finally {
-    busy.value = false
-  }
-}
-
-async function onConnect(s: EdgeService) {
-  const token = packedCredential(s)
-  if (!token) return
-  busy.value = true
-  error.value = null
-  try {
-    await connectEdgeService(s.name, token)
-    credInputs.value = {}
-    await refresh()
-  } catch (e) {
-    error.value = (e as ErrorResponse)?.message ?? 'Connect failed'
-  } finally {
-    busy.value = false
-  }
-}
-
 onMounted(() => {
   loadCatalog()
   refresh()
@@ -256,7 +199,15 @@ function phaseClass(p?: string): string {
 </script>
 
 <template>
-  <div class="edges-app">
+  <ServiceEdit
+    v-if="editing"
+    :service="editing"
+    :catalog="catalog"
+    :edges="edges"
+    @back="editing = null"
+    @saved="onEditSaved"
+  />
+  <div v-else class="edges-app">
     <header class="edges-header">
       <div>
         <h1>Services</h1>
@@ -363,51 +314,28 @@ function phaseClass(p?: string): string {
       <table class="edges-table">
         <thead>
           <tr>
-            <th></th>
             <th>Name</th>
             <th>Edge</th>
             <th>Type</th>
             <th>Target</th>
             <th>Status</th>
-            <th>Token</th>
+            <th>Creds</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          <template v-for="s in services" :key="s.name">
-            <tr class="clickable" @click="toggle(s)">
-              <td><component :is="expanded === s.name ? ChevronDown : ChevronRight" :size="14" /></td>
-              <td class="name">{{ s.name }}</td>
-              <td class="muted">{{ s.edgeName || '—' }}</td>
-              <td class="mono muted">{{ s.serviceType || '—' }}</td>
-              <td class="mono muted">{{ s.targetNamespace ? s.targetNamespace + '/' : '' }}{{ s.targetName || '—' }}:{{ s.port || '' }}</td>
-              <td><span class="status" :class="phaseClass(s.phase)">{{ s.phase || 'Pending' }}</span></td>
-              <td>{{ s.hasCredentials ? '✓' : '—' }}</td>
-              <td class="actions">
-                <button class="icon danger" title="Delete" @click.stop="onDelete(s)"><Trash2 :size="14" /></button>
-              </td>
-            </tr>
-            <tr v-if="expanded === s.name" class="detail-row">
-              <td colspan="8">
-                <div class="es-head">AI instructions</div>
-                <textarea v-model="editInstructions" class="input" rows="4" placeholder="Describe this service's entities/rooms so the AI knows your setup."></textarea>
-                <div class="wiz-actions" style="margin: 8px 0 16px;">
-                  <button class="btn primary" :disabled="busy" @click="onSaveInstructions(s)"><Save :size="14" /> Save instructions</button>
-                </div>
-
-                <div class="es-head">Credentials</div>
-                <div class="muted" style="margin-bottom: 6px;">{{ catalogFor(s.serviceType)?.credential.hint ?? 'Credential' }} — makes the service Ready. Stored as a Secret, never on the agent host.</div>
-                <div class="row" style="gap: 8px; align-items: flex-end;">
-                  <label v-for="f in credFields(s)" :key="f.key" class="fld" style="flex: 1;">
-                    <span class="lbl">{{ f.label }}</span>
-                    <input v-model="credInputs[f.key]" :type="f.secret ? 'password' : 'text'" class="input" :placeholder="f.label" />
-                    <span v-if="f.help" class="muted" style="font-size: 12px; margin-top: 4px;">{{ f.help }}</span>
-                  </label>
-                  <button class="btn" :disabled="busy || !credFilled(s)" @click="onConnect(s)"><KeyRound :size="14" /> {{ s.hasCredentials ? 'Update' : 'Set' }} credentials</button>
-                </div>
-              </td>
-            </tr>
-          </template>
+          <tr v-for="s in services" :key="s.name" class="clickable" @click="openEdit(s)">
+            <td class="name">{{ s.name }}</td>
+            <td class="muted">{{ s.edgeName || '—' }}</td>
+            <td class="mono muted">{{ catalogFor(s.serviceType)?.displayName || s.serviceType || '—' }}</td>
+            <td class="mono muted">{{ s.host || (s.targetNamespace ? s.targetNamespace + '/' : '') + (s.targetName || '—') }}:{{ s.port || '' }}</td>
+            <td><span class="status" :class="phaseClass(s.phase)">{{ s.phase || 'Pending' }}</span></td>
+            <td>{{ s.hasCredentials ? '✓' : '—' }}</td>
+            <td class="actions">
+              <button class="icon" title="Edit" @click.stop="openEdit(s)"><Pencil :size="14" /></button>
+              <button class="icon danger" title="Delete" @click.stop="onDelete(s)"><Trash2 :size="14" /></button>
+            </td>
+          </tr>
         </tbody>
       </table>
     </div>
