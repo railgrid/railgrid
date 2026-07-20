@@ -111,11 +111,20 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 			"Service, tools named \"<service>_*\" (e.g. a Home Assistant service \"ha\" gives ha_states/ha_call_service; a qBittorrent service \"qb\" gives qb_torrents/qb_add).",
 		cluster,
 	)
-	// Append each registered service's own instructions so operator-authored
-	// context (entity naming, indexer prefs, safety notes) reaches the model.
+	// Append each registered service's guidance so backend-authored defaults
+	// (type quirks, tool sequences) and operator-authored context (entity naming,
+	// indexer prefs, safety notes) reach the model. The catalog default comes
+	// first; the operator's spec.instructions extends or overrides it.
 	for _, h := range toRegister {
+		var parts []string
+		if def := strings.TrimSpace(svccatalog.DefaultInstructions(h.reg.view.Spec.Type)); def != "" {
+			parts = append(parts, def)
+		}
 		if extra := strings.TrimSpace(h.reg.view.Spec.Instructions); extra != "" {
-			instructions += fmt.Sprintf("\n\nService %q (type %q, tools \"%s*\"):\n%s", h.reg.name, h.reg.view.Spec.Type, h.prefix, extra)
+			parts = append(parts, extra)
+		}
+		if len(parts) > 0 {
+			instructions += fmt.Sprintf("\n\nService %q (type %q, tools \"%s*\"):\n%s", h.reg.name, h.reg.view.Spec.Type, h.prefix, strings.Join(parts, "\n\n"))
 		}
 	}
 

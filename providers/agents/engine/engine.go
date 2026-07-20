@@ -14,6 +14,7 @@ package engine
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,10 +58,34 @@ type Tool struct {
 	Params     map[string]Param
 	JSONSchema map[string]any
 	// Exec runs the tool with the model-provided JSON arguments and returns
-	// the observation fed back to the model. An error is also fed back (as an
-	// error observation) rather than aborting the run.
+	// the text observation fed back to the model. An error is also fed back (as
+	// an error observation) rather than aborting the run. Set this for text-only
+	// tools; tools that can return images set ExecRich instead.
 	Exec func(ctx context.Context, argsJSON string) (string, error)
+	// ExecRich, when non-nil, is used in preference to Exec and may return
+	// images (e.g. a camera snapshot) alongside text. The engine feeds the text
+	// back as the tool observation and the images as a follow-up user message so
+	// vision-capable models can actually see them.
+	ExecRich func(ctx context.Context, argsJSON string) (Observation, error)
 }
+
+// ToolImage is binary image output from a tool (e.g. a UniFi Protect camera
+// snapshot), carried back to the model as vision input. Data is the raw,
+// un-encoded image bytes; the engine base64-encodes them for the model.
+type ToolImage struct {
+	MIMEType string // e.g. "image/jpeg"; defaults to image/jpeg when empty
+	Data     []byte
+}
+
+// Observation is a rich tool result: a text observation plus any images.
+type Observation struct {
+	Text   string
+	Images []ToolImage
+}
+
+// maxTurnImages caps how many tool-returned images are fed back to the model in
+// a single turn, so a fan-out of snapshot calls can't blow the token budget.
+const maxTurnImages = 8
 
 // ToolEvent reports a tool invocation to the caller (for SSE/UI + audit).
 type ToolEvent struct {
@@ -155,8 +180,13 @@ func (e *Engine) StreamTurnWithTools(
 		}
 
 		// Feed the assistant's tool-call message back, then execute each call
-		// and append its observation.
+		// and append its observation. Images returned by tools are collected and
+		// appended once, after all tool messages: the OpenAI wire format requires
+		// each tool_call to be answered by a contiguous tool message, and image
+		// content must ride on a user message (a tool-role message can't carry
+		// it), so the images become a single follow-up user turn.
 		in = append(in, full)
+		var turnImages []ToolImage
 		for _, tc := range full.ToolCalls {
 			name := tc.Function.Name
 			args := tc.Function.Arguments
@@ -164,12 +194,30 @@ func (e *Engine) StreamTurnWithTools(
 			var result string
 			var failed bool
 			if tool, ok := byName[name]; ok {
-				out, execErr := tool.Exec(ctx, args)
-				if execErr != nil {
-					result = "error: " + execErr.Error()
+				switch {
+				case tool.ExecRich != nil:
+					obs, execErr := tool.ExecRich(ctx, args)
+					if execErr != nil {
+						result = "error: " + execErr.Error()
+						failed = true
+					} else {
+						result = obs.Text
+						turnImages = append(turnImages, obs.Images...)
+						if result == "" && len(obs.Images) > 0 {
+							result = fmt.Sprintf("[returned %d image(s); shown below]", len(obs.Images))
+						}
+					}
+				case tool.Exec != nil:
+					out, execErr := tool.Exec(ctx, args)
+					if execErr != nil {
+						result = "error: " + execErr.Error()
+						failed = true
+					} else {
+						result = out
+					}
+				default:
+					result = fmt.Sprintf("error: tool %q has no executor", name)
 					failed = true
-				} else {
-					result = out
 				}
 			} else {
 				result = fmt.Sprintf("error: unknown tool %q", name)
@@ -179,6 +227,9 @@ func (e *Engine) StreamTurnWithTools(
 				onTool(ToolEvent{Name: name, Args: args, Result: result, Err: failed, Duration: time.Since(started)})
 			}
 			in = append(in, schema.ToolMessage(result, tc.ID, schema.WithToolName(name)))
+		}
+		if msg := imageUserMessage(turnImages); msg != nil {
+			in = append(in, msg)
 		}
 	}
 
@@ -284,6 +335,42 @@ func einoDataType(t string) schema.DataType {
 	default:
 		return schema.String
 	}
+}
+
+// imageUserMessage builds a synthetic user turn carrying tool-returned images
+// as vision input, or nil when there are none. Images beyond maxTurnImages are
+// dropped with a note so the truncation is honest rather than silent.
+func imageUserMessage(imgs []ToolImage) *schema.Message {
+	if len(imgs) == 0 {
+		return nil
+	}
+	note := "Images returned by the preceding tool call(s):"
+	if len(imgs) > maxTurnImages {
+		note += fmt.Sprintf(" (showing the first %d of %d)", maxTurnImages, len(imgs))
+		imgs = imgs[:maxTurnImages]
+	}
+	parts := []schema.MessageInputPart{{Type: schema.ChatMessagePartTypeText, Text: note}}
+	for _, img := range imgs {
+		if len(img.Data) == 0 {
+			continue
+		}
+		b64 := base64.StdEncoding.EncodeToString(img.Data)
+		mime := img.MIMEType
+		if mime == "" {
+			mime = "image/jpeg"
+		}
+		parts = append(parts, schema.MessageInputPart{
+			Type: schema.ChatMessagePartTypeImageURL,
+			Image: &schema.MessageInputImage{
+				MessagePartCommon: schema.MessagePartCommon{Base64Data: &b64, MIMEType: mime},
+				Detail:            schema.ImageURLDetailAuto,
+			},
+		})
+	}
+	if len(parts) == 1 { // text note only: every image was empty
+		return nil
+	}
+	return &schema.Message{Role: schema.User, UserInputMultiContent: parts}
 }
 
 func toEino(msgs []Message) []*schema.Message {

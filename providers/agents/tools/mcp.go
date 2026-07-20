@@ -109,37 +109,45 @@ func ConnectMCPEndpoint(ctx context.Context, endpoint, bearer, prefix string, in
 			Name:       full,
 			Desc:       clip(t.Description, 1000),
 			JSONSchema: js,
-			Exec: func(ctx context.Context, argsJSON string) (string, error) {
+			// Rich executor: MCP tools can return images (e.g. a UniFi Protect
+			// snapshot), which the engine feeds to vision-capable models.
+			ExecRich: func(ctx context.Context, argsJSON string) (engine.Observation, error) {
 				var args map[string]any
 				if argsJSON != "" {
 					if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-						return "", fmt.Errorf("invalid arguments: %w", err)
+						return engine.Observation{}, fmt.Errorf("invalid arguments: %w", err)
 					}
 				}
 				res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: toolName, Arguments: args})
 				if err != nil {
-					return "", err
+					return engine.Observation{}, err
 				}
-				text := mcpResultText(res)
+				text, images := mcpResultParts(res)
 				if res.IsError {
-					return "", fmt.Errorf("%s", clip(text, 2000))
+					return engine.Observation{}, fmt.Errorf("%s", clip(text, 2000))
 				}
-				return clip(text, webFetchMaxReturn), nil
+				return engine.Observation{Text: clip(text, webFetchMaxReturn), Images: images}, nil
 			},
 		})
 	}
 	return out, nil
 }
 
-func mcpResultText(res *mcp.CallToolResult) string {
+// mcpResultParts splits an MCP tool result into its concatenated text and any
+// image content (raw bytes + MIME type) for vision-capable models.
+func mcpResultParts(res *mcp.CallToolResult) (string, []engine.ToolImage) {
 	var b strings.Builder
+	var imgs []engine.ToolImage
 	for _, c := range res.Content {
-		if tc, ok := c.(*mcp.TextContent); ok {
+		switch tc := c.(type) {
+		case *mcp.TextContent:
 			b.WriteString(tc.Text)
 			b.WriteString("\n")
+		case *mcp.ImageContent:
+			imgs = append(imgs, engine.ToolImage{MIMEType: tc.MIMEType, Data: tc.Data})
 		}
 	}
-	return strings.TrimSpace(b.String())
+	return strings.TrimSpace(b.String()), imgs
 }
 
 // bearerTransport injects the connection token as a Bearer Authorization

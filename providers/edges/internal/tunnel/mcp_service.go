@@ -72,6 +72,11 @@ func (p *Server) buildServiceMCPServer(cluster, name, kcpToken string, svc *serv
 			"The call_service tool actuates physical devices — treat it with care.",
 		name, svc.Spec.Type, cluster,
 	)
+	// Backend-authored default guidance for the type (quirks, tool sequences),
+	// then the operator's own spec.instructions, which extend or override it.
+	if def := strings.TrimSpace(svccatalog.DefaultInstructions(svc.Spec.Type)); def != "" {
+		instructions += "\n\n" + def
+	}
 	if extra := strings.TrimSpace(svc.Spec.Instructions); extra != "" {
 		instructions += "\n\n" + extra
 	}

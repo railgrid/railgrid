@@ -163,6 +163,15 @@ type Definition struct {
 	// Tools are the MCP operations exposed for this type. Serialized to the UI
 	// (name + description) so the portal can show what the agent can do.
 	Tools []Tool `json:"tools,omitempty"`
+
+	// Instructions is backend-authored default guidance for AI clients about
+	// this service type: quirks, gotchas, and recommended tool sequences (e.g.
+	// "doorbell snapshots can transiently 500 — retry, or fall back to events").
+	// It is composed into the MCP endpoint's "initialize" instructions ahead of
+	// any operator-authored spec.instructions, which extend or override it. Not
+	// user-provided — edit it here in the catalog — but serialized so the portal
+	// can display it as the default context an agent already has.
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // singleField is a helper for the common "one opaque token" credential.
@@ -407,9 +416,13 @@ var catalog = map[string]Definition{
 		Auth: AuthAPIKeyHeader, AuthParam: "X-API-KEY",
 		Credential: CredentialModel{Packing: PackSingle, Fields: singleField("apiKey", "API key", "UniFi OS → Control Plane → Integrations → create a local API key."), Hint: "A UniFi OS local API key (same key works for Network + Protect)."},
 		ProbePath: "/proxy/protect/integration/v1/cameras", ProbeMode: ProbeValidate,
+		Instructions: "The snapshot tool captures a live frame on demand, so it depends on the camera's current state. " +
+			"Battery- or power-managed cameras (notably G4/G5 doorbells) drop to standby and their snapshot may return a 500 \"UNKNOWN_ERROR\" until they wake — this is UniFi Protect's response, not a credential or connectivity fault. " +
+			"On a snapshot 500, retry the same camera a couple of times (waking it usually succeeds), or fall back to the events tool and use the most recent event's camera/thumbnail. " +
+			"Snapshots are returned as images you can view directly. Omit highQuality unless you specifically need full resolution — it makes the doorbell 500 more likely.",
 		Tools: []Tool{
 			{"cameras", "List Protect cameras (each camera's id, name, state).", http.MethodGet, "/proxy/protect/integration/v1/cameras"},
-			{"snapshot", "Current snapshot (JPEG) from a camera. Query {\"cameraId\":\"<id>\"} (optional {\"highQuality\":\"true\"}).", http.MethodGet, "/proxy/protect/integration/v1/cameras/{cameraId}/snapshot"},
+			{"snapshot", "Current snapshot (JPEG) from a camera. Query {\"cameraId\":\"<id>\"} (optional {\"highQuality\":\"true\"}). Live capture: may 500 on a sleeping doorbell — retry or use events.", http.MethodGet, "/proxy/protect/integration/v1/cameras/{cameraId}/snapshot"},
 			{"events", "Recent Protect events (motion/person/vehicle). Query: start,end (ms epoch), types.", http.MethodGet, "/proxy/protect/integration/v1/events"},
 		},
 	},
@@ -433,6 +446,13 @@ func Get(t string) (Definition, bool) {
 func IsKnown(t string) bool {
 	_, ok := catalog[t]
 	return ok
+}
+
+// DefaultInstructions returns the backend-authored default agent guidance for a
+// service type, or "" if the type is unknown or has none. Callers compose it
+// into the MCP instructions ahead of the operator's spec.instructions.
+func DefaultInstructions(t string) string {
+	return catalog[t].Instructions
 }
 
 // HasTools reports whether a type exposes any MCP tools (data-driven or the

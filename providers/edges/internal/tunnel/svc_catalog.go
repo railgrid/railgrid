@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -125,14 +126,42 @@ func (p *Server) callCatalogTool(ctx context.Context, cluster, kcpToken string, 
 		path += "?" + q.Encode()
 	}
 
-	resp, err := haclient.DoWith(ctx, dialer, target, tool.Method, path, header, bodyReader)
-	if err != nil {
-		return toolErr(err.Error()), nil, nil
+	// Idempotent reads (GET with no body) are retried on a 5xx: some upstreams —
+	// notably UniFi Protect doorbell snapshots, which capture a live frame and
+	// 500 while the camera is waking — succeed on a second attempt. Anything with
+	// a body (POST actions) is sent once so we never repeat a side effect.
+	retryable := tool.Method == http.MethodGet && bodyReader == nil
+	var resp *http.Response
+	var respBody []byte
+	const maxAttempts = 3
+	for attempt := 1; ; attempt++ {
+		var err error
+		resp, err = haclient.DoWith(ctx, dialer, target, tool.Method, path, header, bodyReader)
+		if err != nil {
+			return toolErr(err.Error()), nil, nil
+		}
+		respBody, _ = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		resp.Body.Close() //nolint:errcheck
+		if retryable && resp.StatusCode >= 500 && attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return toolErr(ctx.Err().Error()), nil, nil
+			case <-time.After(time.Duration(attempt) * 400 * time.Millisecond):
+			}
+			continue
+		}
+		break
 	}
-	defer resp.Body.Close() //nolint:errcheck
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode >= 400 {
-		return toolErr(fmt.Sprintf("%s returned %d: %s", def.DisplayName, resp.StatusCode, snippet(respBody))), nil, nil
+		msg := fmt.Sprintf("%s returned %d: %s", def.DisplayName, resp.StatusCode, snippet(respBody))
+		// On a persistent upstream error, surface the type's default guidance so
+		// the model knows the sanctioned fallback (e.g. Protect: use events).
+		if resp.StatusCode >= 500 {
+			if hint := strings.TrimSpace(def.Instructions); hint != "" {
+				msg += "\n\nGuidance: " + hint
+			}
+		}
+		return toolErr(msg), nil, nil
 	}
 	// Binary image responses (e.g. a UniFi Protect camera snapshot) are returned
 	// as MCP image content so the model can actually see them.

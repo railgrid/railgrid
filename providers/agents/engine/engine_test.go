@@ -89,6 +89,7 @@ func (m *toolMockModel) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCalli
 
 func (m *toolMockModel) Stream(_ context.Context, in []*schema.Message, _ ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	m.calls++
+	m.gotIn = in
 	for _, msg := range in {
 		if msg.Role == schema.Tool {
 			m.sawToolMsg = true
@@ -151,6 +152,66 @@ func TestStreamTurnWithTools_ExecutesToolAndContinues(t *testing.T) {
 	if res.Usage.OutputTokens != 6 {
 		t.Fatalf("usage %+v", res.Usage)
 	}
+}
+
+func TestStreamTurnWithTools_ExecRichFeedsImageAsUserMessage(t *testing.T) {
+	m := &toolMockModel{}
+	png := []byte{0x89, 0x50, 0x4e, 0x47} // arbitrary bytes; content is opaque here
+
+	_, err := New().StreamTurnWithTools(context.Background(), m,
+		[]Message{{Role: RoleUser, Content: "snapshot please"}},
+		[]Tool{{
+			Name: "get_weather", Desc: "returns a snapshot",
+			Params: map[string]Param{"city": {Type: "string", Desc: "city", Required: true}},
+			ExecRich: func(_ context.Context, _ string) (Observation, error) {
+				return Observation{Images: []ToolImage{{MIMEType: "image/jpeg", Data: png}}}, nil
+			},
+		}},
+		8, nil, nil)
+	if err != nil {
+		t.Fatalf("StreamTurnWithTools: %v", err)
+	}
+	// m.gotIn holds the SECOND model call's input: it must include a synthetic
+	// user message carrying the image as vision input, right after the tool msg.
+	var imgMsg *schema.Message
+	for _, msg := range m.gotIn {
+		if msg.Role == schema.User && len(msg.UserInputMultiContent) > 0 {
+			imgMsg = msg
+		}
+	}
+	if imgMsg == nil {
+		t.Fatalf("no image user message fed back; got roles %v", rolesOf(m.gotIn))
+	}
+	var haveImage bool
+	for _, p := range imgMsg.UserInputMultiContent {
+		if p.Type == schema.ChatMessagePartTypeImageURL && p.Image != nil && p.Image.Base64Data != nil {
+			haveImage = true
+			if p.Image.MIMEType != "image/jpeg" {
+				t.Fatalf("image MIME = %q, want image/jpeg", p.Image.MIMEType)
+			}
+		}
+	}
+	if !haveImage {
+		t.Fatal("image user message had no base64 image part")
+	}
+	// The tool message itself must still carry a non-empty text observation.
+	var toolText string
+	for _, msg := range m.gotIn {
+		if msg.Role == schema.Tool {
+			toolText = msg.Content
+		}
+	}
+	if strings.TrimSpace(toolText) == "" {
+		t.Fatal("tool observation text was empty (should note images shown below)")
+	}
+}
+
+func rolesOf(msgs []*schema.Message) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, string(m.Role))
+	}
+	return out
 }
 
 func TestStreamTurnWithTools_UnknownToolReportsError(t *testing.T) {
