@@ -92,6 +92,7 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 		"organizations.tenants.kedge.faros.sh",
 		"memberships.tenants.kedge.faros.sh",
 		"usermembershipindices.tenants.kedge.faros.sh",
+		"userpreferences.tenants.kedge.faros.sh",
 		"catalogentries.providers.kedge.faros.sh",
 	}
 

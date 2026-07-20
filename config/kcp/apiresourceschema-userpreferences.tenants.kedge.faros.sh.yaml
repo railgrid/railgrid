@@ -1,0 +1,179 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260720-6391e6e.userpreferences.tenants.kedge.faros.sh
+spec:
+  group: tenants.kedge.faros.sh
+  names:
+    kind: UserPreferences
+    listKind: UserPreferencesList
+    plural: userpreferences
+    shortNames:
+    - uprefs
+    singular: userpreferences
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.dashboardCount
+      name: Dashboards
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      description: |-
+        UserPreferences is the per-User bucket of UI state the portal wants to
+        remember across browsers and devices: today the customised dashboard
+        layout (tile geometry, hidden set, chosen column count) for every
+        workspace the user visits. metadata.name matches the User's
+        metadata.name; one UserPreferences exists per User, and it lives in the
+        same hub-mediated workspace (root:kedge:system:tenants) as the User and
+        UserMembershipIndex CRs.
+
+        It is deliberately generic — a single per-user object the portal
+        upserts through the hub REST surface (GET/PUT
+        /api/orgs/{org}/workspaces/{ws}/dashboard/layout) — so other browser-
+        local UI state (theme, dock, tenant selection) can migrate onto it later
+        without a second CRD. The content is advisory: the set of tiles a user
+        may actually see is still gated by the live provider catalog and the
+        workspace's enablement bindings; this object only remembers arrangement.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: UserPreferencesSpec is the user-authored preference state.
+          properties:
+            dashboards:
+              description: |-
+                Dashboards holds the customised dashboard layout per workspace, keyed
+                by the workspace UUID. One entry per workspace the user has arranged;
+                workspaces the user never customised simply have no entry and fall
+                back to the default flow layout in the portal.
+              items:
+                description: DashboardPreference is one workspace's remembered dashboard
+                  arrangement.
+                properties:
+                  gridColumns:
+                    description: |-
+                      GridColumns is the column count the user last laid the grid out at.
+                      Zero means "portal default" (the portal derives a responsive column
+                      count from viewport width when this is unset).
+                    format: int32
+                    maximum: 24
+                    minimum: 0
+                    type: integer
+                  hidden:
+                    description: |-
+                      Hidden is the set of provider names the user explicitly removed from
+                      the dashboard. They stay available to add back from the "Add tile"
+                      menu while they remain live in the catalog.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  noTile:
+                    description: |-
+                      NoTile is the set of provider names that were probed and found to
+                      ship no dashboard-tile element. Persisting it (rather than
+                      re-probing each load) is what stops empty providers from flashing
+                      into the grid and vanishing on every page load. Cleared when a
+                      provider's bundle version changes, since a later version may add a
+                      tile.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  tiles:
+                    description: |-
+                      Tiles is the placed geometry for each visible dashboard tile. The
+                      tile Name is the provider name (the grid item id).
+                    items:
+                      description: |-
+                        DashboardTilePlacement is one tile's placement in the grid. X/Y are
+                        column/row units; W/H are spans in those units — the same coordinate
+                        space the portal's grid uses.
+                      properties:
+                        h:
+                          description: H is the height in row units.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        name:
+                          description: Name is the provider name; it is the grid item
+                            id.
+                          type: string
+                        w:
+                          description: W is the width in column units.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        x:
+                          description: X is the column position (0-based).
+                          format: int32
+                          type: integer
+                        "y":
+                          description: Y is the row position (0-based).
+                          format: int32
+                          type: integer
+                      required:
+                      - h
+                      - name
+                      - w
+                      - x
+                      - "y"
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  updatedAt:
+                    description: |-
+                      UpdatedAt is when this workspace's layout was last written, used for
+                      last-writer diagnostics.
+                    format: date-time
+                    type: string
+                  workspaceUUID:
+                    description: |-
+                      WorkspaceUUID is the child Workspace this layout applies to
+                      (Workspace.metadata.name / the portal's workspace UUID).
+                    type: string
+                required:
+                - workspaceUUID
+                type: object
+              type: array
+              x-kubernetes-list-map-keys:
+              - workspaceUUID
+              x-kubernetes-list-type: map
+          type: object
+        status:
+          description: UserPreferencesStatus is the observed state of a UserPreferences
+            object.
+          properties:
+            dashboardCount:
+              description: |-
+                DashboardCount mirrors len(spec.dashboards) so `kubectl get` can show
+                it as a column without server-side computation.
+              format: int32
+              type: integer
+          type: object
+      type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

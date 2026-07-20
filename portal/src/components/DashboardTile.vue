@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch, nextTick } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
@@ -12,9 +12,14 @@ import { Puzzle, ChevronRight, X } from 'lucide-vue-next'
 // /main.js may register a second custom element
 // <kedge-dashboard-tile-{name}>; if it does we mount that here, push
 // the same kedgeContext shape, and proxy kedge-navigate events to the
-// portal router. If the provider has no tile (the tag never registers
-// within the timeout), it emits `no-tile` so the dashboard can drop it
-// from the grid — exposing a tile is opt-in per provider.
+// portal router.
+//
+// A provider that ships NO tile element is still a first-class tile: the
+// card renders its portal chrome (icon, name, Open link) with a muted
+// "no summary" body, and stays on the grid. Every enabled provider is a
+// persistent, arrangeable card — we no longer drop tileless providers at
+// runtime (which flickered on every load); a user who doesn't want a card
+// hides it via Customize, and that choice persists.
 //
 // In `edit-mode` the tile is a draggable/resizable grid cell: it shows a
 // remove affordance and disables its own interactive surfaces (the Open
@@ -23,7 +28,6 @@ import { Puzzle, ChevronRight, X } from 'lucide-vue-next'
 
 const props = defineProps<{ provider: ProviderDTO; editMode?: boolean }>()
 const emit = defineEmits<{
-  (e: 'no-tile', name: string): void
   (e: 'remove', name: string): void
 }>()
 
@@ -37,6 +41,21 @@ const loadState = ref<'idle' | 'loading' | 'ready' | 'no-tile' | 'error'>('idle'
 const loadError = ref<string | null>(null)
 
 const tagFor = (name: string) => `kedge-dashboard-tile-${name}`
+
+// Route the tile's "Open" link and sub-page shortcuts point at. Mirrors the
+// side nav's rule (providers.ts): built-in providers route to /{builtinRoute},
+// everything else to /providers/{name}, with children hung off that. Used by
+// the fallback body so a provider without its own tile element is still a
+// useful launcher rather than a blank card.
+const parentTo = computed(() =>
+  props.provider.builtinRoute ? `/${props.provider.builtinRoute}` : `/providers/${props.provider.name}`,
+)
+const quickLinks = computed(() =>
+  (props.provider.children ?? []).map((c) => ({
+    label: c.displayName,
+    to: props.provider.builtinRoute ? `/${c.builtinRoute}` : `${parentTo.value}/${c.builtinRoute}`,
+  })),
+)
 
 watch(
   () => props.provider,
@@ -90,8 +109,9 @@ async function loadAndMount(name: string, version: string | undefined) {
   ])
 
   if (!defined) {
+    // No tile element — a normal, opt-in case. Keep the card (chrome +
+    // muted body) rather than dropping it from the grid.
     loadState.value = 'no-tile'
-    emit('no-tile', name)
     return
   }
 
@@ -135,12 +155,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- A provider with no dashboard tile contributes nothing to the grid:
-       skip the whole card (rather than showing an empty "no summary"
-       placeholder). The `no-tile` emit also tells the dashboard to drop
-       this cell so it leaves no gap in the layout. -->
+  <!-- Every enabled provider is a persistent card, whether or not it ships
+       a tile element. A tileless provider shows its chrome (icon, name,
+       Open) with a muted "no summary" body — it is not dropped from the
+       grid, so the layout is stable and never flickers on load. -->
   <div
-    v-if="loadState !== 'no-tile'"
     class="relative flex h-full flex-col overflow-hidden rounded-xl border bg-surface-raised/80 p-5 backdrop-blur"
     :class="editMode ? 'cursor-move border-accent/40 ring-1 ring-accent/30' : 'border-border-subtle'"
   >
@@ -186,6 +205,47 @@ onBeforeUnmount(() => {
     <div v-if="loadState === 'loading'" class="text-[11px] text-text-muted">Loading&hellip;</div>
     <div v-else-if="loadState === 'error'" class="text-[11px] text-danger">
       Failed to load tile: <span class="font-mono">{{ loadError }}</span>
+    </div>
+    <!-- Provider ships no tile element: instead of a blank card, render a
+         generic launcher from catalog metadata — status, category/version,
+         and shortcuts into the provider's sub-pages. Pointer events are
+         disabled in edit mode so the links don't swallow a grid drag. -->
+    <div
+      v-else-if="loadState === 'no-tile'"
+      class="flex min-h-0 flex-1 flex-col gap-3"
+      :class="editMode ? 'pointer-events-none select-none' : ''"
+    >
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-muted">
+        <span class="inline-flex items-center gap-1">
+          <span class="h-1.5 w-1.5 rounded-full" :class="provider.ready ? 'bg-success' : 'bg-warning'" />
+          {{ provider.ready ? 'Ready' : 'Not ready' }}
+        </span>
+        <span
+          v-if="provider.category"
+          class="rounded-full border border-border-subtle px-2 py-0.5 uppercase tracking-wide"
+        >{{ provider.category }}</span>
+        <span v-if="provider.version" class="font-mono">v{{ provider.version }}</span>
+      </div>
+
+      <!-- Sub-page shortcuts when the provider declares nav children. -->
+      <div v-if="quickLinks.length" class="flex flex-wrap gap-1.5">
+        <router-link
+          v-for="l in quickLinks"
+          :key="l.to"
+          :to="l.to"
+          class="tile-no-drag rounded-lg border border-border-subtle bg-surface-overlay px-2 py-1 text-[11px] text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
+        >{{ l.label }}</router-link>
+      </div>
+      <p v-else class="text-[11px] leading-relaxed text-text-muted">
+        No dashboard summary yet — open {{ provider.displayName }} to manage its resources.
+      </p>
+
+      <router-link
+        :to="parentTo"
+        class="tile-no-drag mt-auto inline-flex items-center gap-0.5 text-[11px] font-medium text-accent transition-colors hover:text-accent-hover"
+      >
+        Open {{ provider.displayName }} <ChevronRight class="h-3 w-3" :stroke-width="2" />
+      </router-link>
     </div>
     <!-- The provider's tile element mounts here. Always render the mount
          node so the watch can attach to it before the script finishes

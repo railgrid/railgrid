@@ -105,6 +105,16 @@ var (
 		Version:  "v1alpha1",
 		Resource: "organizations",
 	}
+
+	// UserPreferencesGVR points at the cluster-scoped UserPreferences CRD
+	// (see apis/tenancy/v1alpha1/types_user_preferences.go). One object per
+	// User; the portal's dashboard-layout REST handlers read/write it to
+	// remember each workspace's tile arrangement across browsers.
+	UserPreferencesGVR = schema.GroupVersionResource{
+		Group:    "tenants.kedge.faros.sh",
+		Version:  "v1alpha1",
+		Resource: "userpreferences",
+	}
 )
 
 // EdgeGVRForType maps an edge type ("kubernetes" | "server") to the connectable
@@ -157,6 +167,16 @@ func (c *Client) UserMembershipIndices() *TypedResource[tenancyv1alpha1.UserMemb
 	return &TypedResource[tenancyv1alpha1.UserMembershipIndex, tenancyv1alpha1.UserMembershipIndexList]{
 		client: c.dynamic.Resource(UserMembershipIndexGVR),
 		gvk:    UserMembershipIndexGVR.GroupVersion().WithKind("UserMembershipIndex"),
+	}
+}
+
+// UserPreferences returns a typed interface for the cluster-scoped
+// UserPreferences CRD (one per User). Used by the portal's dashboard
+// layout REST handlers to persist tile arrangement per workspace.
+func (c *Client) UserPreferences() *TypedResource[tenancyv1alpha1.UserPreferences, tenancyv1alpha1.UserPreferencesList] {
+	return &TypedResource[tenancyv1alpha1.UserPreferences, tenancyv1alpha1.UserPreferencesList]{
+		client: c.dynamic.Resource(UserPreferencesGVR),
+		gvk:    UserPreferencesGVR.GroupVersion().WithKind("UserPreferences"),
 	}
 }
 

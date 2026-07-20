@@ -20,6 +20,11 @@ spec:
     storage:
       crd: {}
   - group: tenants.kedge.faros.sh
+    name: userpreferences
+    schema: v260720-6391e6e.userpreferences.tenants.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: tenants.kedge.faros.sh
     name: users
     schema: v260615-5246b68.users.tenants.kedge.faros.sh
     storage:

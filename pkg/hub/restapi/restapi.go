@@ -281,6 +281,11 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 
 	r.HandleFunc("/{org}/workspaces/{ws}/kubeconfig", h.downloadKubeconfig).Methods(http.MethodGet)
 
+	// Dashboard layout persistence for the portal. Stored on the caller's
+	// per-user UserPreferences CR, keyed by workspace. See preferences.go.
+	r.HandleFunc("/{org}/workspaces/{ws}/dashboard/layout", h.getDashboardLayout).Methods(http.MethodGet)
+	r.HandleFunc("/{org}/workspaces/{ws}/dashboard/layout", h.putDashboardLayout).Methods(http.MethodPut)
+
 	// MCPServer CRUD + per-server connect info for the portal's MCP page.
 	// See mcp.go.
 	r.HandleFunc("/{org}/workspaces/{ws}/mcpservers", h.listMCPServers).Methods(http.MethodGet)

@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import DashboardTile from '@/components/DashboardTile.vue'
 import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
-import { useDashboardLayoutStore, GRID_COLS } from '@/stores/dashboardLayout'
+import { useDashboardLayoutStore } from '@/stores/dashboardLayout'
 import { Puzzle, Plus, RotateCcw, Check, LayoutGrid } from 'lucide-vue-next'
 
 // The dashboard iterates the catalog and mounts one <DashboardTile> per
@@ -34,15 +34,15 @@ onMounted(() => {
   if (!providers.loaded) providers.load()
 })
 
-// Tiles must match the side-nav "enabled" predicate exactly: built-in
-// providers (kubernetes-edges, server-edges, mcp, …) always appear
-// because they ship with the hub and need no per-workspace consent,
-// but third-party providers (infrastructure, quickstart, anything
-// custom) only show up when the current workspace has an APIBinding
-// for them. Without this gate the dashboard kept rendering a tile
-// for a disabled third-party provider — clicking it landed on a 403
-// "this provider is not enabled in your workspace" wall.
-const tiles = computed(() =>
+// Gated providers must match the side-nav "enabled" predicate exactly:
+// built-in providers (kubernetes-edges, server-edges, mcp, …) always
+// appear because they ship with the hub and need no per-workspace consent,
+// but third-party providers (infrastructure, quickstart, anything custom)
+// only show up when the current workspace has an APIBinding for them.
+// Without this gate the dashboard kept rendering a tile for a disabled
+// third-party provider — clicking it landed on a 403 "this provider is not
+// enabled in your workspace" wall.
+const gated = computed(() =>
   providers.items
     .filter((p) => {
       if (!p.ready || !p.hasUI) return false
@@ -52,14 +52,47 @@ const tiles = computed(() =>
     .sort((a, b) => a.displayName.localeCompare(b.displayName)),
 )
 
-// Feed the layout store the live provider set + active workspace. It
-// reconciles geometry/hidden against this and updates `layout`/`addable`.
-const candidateNames = computed(() => tiles.value.map((p) => p.name))
+// Candidate tiles are every gated provider. Which ones actually SHOW is
+// decided in the store, which excludes providers already known to ship no
+// dashboard tile (the persisted `noTile` set). A provider seen to be
+// tileless once — DashboardTile emits `no-tile` when its bundle registers
+// no <kedge-dashboard-tile-*> element — is remembered in localStorage and
+// on the hub, so it flashes at most once and never again on reload (this
+// is the flicker fix). Placing optimistically means the grid is never
+// wrongly empty just because a bundle was slow to probe.
+const candidateNames = computed(() => gated.value.map((p) => p.name))
+
+// Responsive column count so the grid fills wide screens instead of
+// leaving big dead margins. The store persists a user override (via
+// resize); this is the default when they have none.
+const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1280)
+function onResize() {
+  viewportWidth.value = window.innerWidth
+}
+onMounted(() => window.addEventListener('resize', onResize))
+onUnmounted(() => window.removeEventListener('resize', onResize))
+const responsiveCols = computed(() => {
+  const w = viewportWidth.value
+  if (w < 768) return 2
+  if (w < 1280) return 3
+  if (w < 1680) return 4
+  if (w < 2200) return 5
+  return 6
+})
+
+// Feed the layout store the live provider set + active tenant + column
+// count. It reconciles geometry/hidden against this and updates
+// `layout`/`addable`, rendering the localStorage cache immediately and
+// then the hub's authoritative copy.
 watch(
-  [() => tenant.workspaceUUID, candidateNames] as const,
-  ([ws, names]) => dash.sync(ws, names),
+  [() => tenant.orgUUID, () => tenant.workspaceUUID, candidateNames, responsiveCols] as const,
+  ([org, ws, names, cols]) => dash.sync(org, ws, names, cols),
   { immediate: true },
 )
+
+// The initial shimmer covers the providers fetch. The cached layout then
+// renders synchronously, so the grid appears already settled.
+const initializing = computed(() => providers.loading)
 
 const providerFor = (name: string) => providers.byName(name)
 
@@ -78,9 +111,6 @@ function onAdd(name: string) {
 function onRemove(name: string) {
   dash.hide(name)
 }
-function onNoTile(name: string) {
-  dash.markNoTile(name)
-}
 
 // Persist geometry after a drag/resize settles. The grid fires
 // layout-updated on every step; debounce so we write once per gesture.
@@ -92,14 +122,17 @@ function onLayoutUpdated() {
 </script>
 
 <template>
-  <AppLayout>
-    <div v-if="providers.loading" class="mt-20 flex flex-col items-center justify-center">
+  <AppLayout full-bleed>
+    <!-- Full-bleed so the dashboard uses the whole width (no max-w-5xl side
+         margins on wide screens); we own padding + scroll here. -->
+    <div class="h-full w-full overflow-y-auto px-6 py-5">
+    <div v-if="initializing" class="mt-20 flex flex-col items-center justify-center">
       <div class="shimmer h-8 w-8 rounded-xl" />
       <div class="shimmer mt-4 h-3 w-40 rounded" />
     </div>
 
     <template v-else>
-      <div v-if="tiles.length === 0" class="flex items-start gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-[13px] text-text-muted">
+      <div v-if="gated.length === 0" class="flex items-start gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-[13px] text-text-muted">
         <Puzzle class="mt-0.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
         <div>
           <div class="font-medium text-text-secondary">No providers enabled in this workspace</div>
@@ -168,17 +201,28 @@ function onLayoutUpdated() {
           </div>
         </div>
 
-        <!-- Every tile removed/hidden: nothing to show, but the catalog
-             still has providers — point the user at the add menu. -->
+        <!-- Nothing on the grid. Two distinct reasons, so the message must
+             match: either the user removed tiles that can be added back
+             (addable > 0), or the enabled providers here simply ship no
+             dashboard tile (addable === 0) — in which case there is nothing
+             to "add", so point at the catalog instead of a dead control. -->
         <div
           v-if="layout.length === 0"
           class="flex items-start gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-[13px] text-text-muted"
         >
           <LayoutGrid class="mt-0.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
-          <div>
+          <div v-if="addable.length > 0">
             <div class="font-medium text-text-secondary">Your dashboard is empty</div>
             <div class="mt-1 text-xs">
               You've removed all tiles. Use <button class="text-accent hover:text-accent-hover" @click="editMode = true; addOpen = true">Customize → Add tile</button> to bring them back.
+            </div>
+          </div>
+          <div v-else>
+            <div class="font-medium text-text-secondary">No dashboard tiles here yet</div>
+            <div class="mt-1 text-xs">
+              The providers enabled in this workspace don't publish a dashboard tile. Enable another from the
+              <router-link to="/providers" class="text-accent hover:text-accent-hover">catalog</router-link>,
+              or open a provider from the side navigation.
             </div>
           </div>
         </div>
@@ -186,7 +230,7 @@ function onLayoutUpdated() {
         <GridLayout
           v-else
           v-model:layout="layout"
-          :col-num="GRID_COLS"
+          :col-num="responsiveCols"
           :row-height="90"
           :margin="[16, 16]"
           :is-draggable="editMode"
@@ -211,12 +255,12 @@ function onLayoutUpdated() {
               v-if="providerFor(item.i)"
               :provider="providerFor(item.i)!"
               :edit-mode="editMode"
-              @no-tile="onNoTile"
               @remove="onRemove"
             />
           </GridItem>
         </GridLayout>
       </template>
     </template>
+    </div>
   </AppLayout>
 </template>
