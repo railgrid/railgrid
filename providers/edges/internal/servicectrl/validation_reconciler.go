@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -249,8 +250,17 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 			setCondition(&es.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "service reachable and authenticated")
 		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 			es.Status.Phase = "Unreachable"
-			setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionFalse, "Unauthorized",
-				fmt.Sprintf("service rejected the credentials (%d)", resp.StatusCode))
+			// Surface the upstream error body — it usually says WHY (e.g. UniFi
+			// "Invalid API Key" vs "API key lacks Protect access"), which is the
+			// difference between a bad key and a wrong endpoint/firmware.
+			detail := bodySnippet(resp.Body, 300)
+			logger.Info("service rejected the credentials", "type", es.Spec.Type,
+				"status", resp.StatusCode, "probePath", probePath, "upstream", detail)
+			msg := fmt.Sprintf("service rejected the credentials (%d)", resp.StatusCode)
+			if detail != "" {
+				msg += ": " + detail
+			}
+			setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionFalse, "Unauthorized", msg)
 			setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "Unauthorized",
 				"service reachable but rejected the credentials")
 		default:
@@ -263,6 +273,18 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 
 	logger.V(4).Info("validated service", "phase", es.Status.Phase, "type", es.Spec.Type)
 	return r.commit(ctx, c, orig, es, validationResyncInterval)
+}
+
+// bodySnippet reads up to a small cap from an upstream response body and trims
+// it to max runes for inclusion in a status condition / log — enough to surface
+// an API's "why" message without dumping a whole page.
+func bodySnippet(body io.Reader, max int) string {
+	b, _ := io.ReadAll(io.LimitReader(body, 4<<10))
+	s := strings.TrimSpace(string(b))
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return s
 }
 
 // commit writes status only when it changed, then requeues.

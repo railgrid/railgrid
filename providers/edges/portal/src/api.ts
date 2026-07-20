@@ -279,6 +279,7 @@ interface RawEdgeService {
   spec?: {
     edgeRef?: { kind?: string; name?: string }
     targetRef?: { namespace?: string; name?: string } | null
+    host?: string
     type?: string
     scheme?: string
     port?: number
@@ -299,7 +300,7 @@ const EDGE_SVC_SEL = `
   spec {
     edgeRef { kind name }
     targetRef { namespace name }
-    type scheme port instructions authSecretRef { name namespace }
+    host type scheme port instructions authSecretRef { name namespace }
   }
   status { phase version installType url conditions { type status reason message lastTransitionTime } }
 `
@@ -312,6 +313,7 @@ function toEdgeService(it: RawEdgeService): EdgeService {
     edgeKind: it.spec?.edgeRef?.kind,
     targetNamespace: it.spec?.targetRef?.namespace,
     targetName: it.spec?.targetRef?.name,
+    host: it.spec?.host,
     serviceType: it.spec?.type,
     scheme: it.spec?.scheme,
     port: it.spec?.port,
