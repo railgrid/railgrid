@@ -1087,7 +1087,10 @@ export class AgentsElement extends HTMLElement {
     this.querySelectorAll<HTMLButtonElement>('.agents-card-chat[data-chat]').forEach((el) =>
       el.addEventListener('click', (e) => {
         e.stopPropagation()
-        this._selectAgent(el.dataset.chat!) // _selectAgent already opens the chat tab
+        // Land on the chat tab, not the flow editor: the detail renders flow
+        // whenever _agentView is 'flow' (its default), regardless of _agentTab.
+        this._agentView = 'list'
+        this._selectAgent(el.dataset.chat!) // sets _agentTab = 'chat' and renders
       }),
     )
     this.querySelectorAll<HTMLElement>('[data-shared]').forEach((el) => el.addEventListener('click', () => this._openShared(el.dataset.shared as SharedView)))
