@@ -29,9 +29,14 @@ import (
 	"net/http"
 )
 
-// svcTargetHeader mirrors the agent-side constant (pkg/agent/tunnel). The agent
-// enforces that the target host is loopback.
-const svcTargetHeader = "X-Kedge-Svc-Target"
+// SvcTargetHeader mirrors the agent-side constant (pkg/agent/tunnel). The agent
+// enforces that the target host is loopback. Exported so out-of-package callers
+// that build their own tunnel requests (e.g. the events WebSocket subscriber)
+// set the same header.
+const SvcTargetHeader = "X-Kedge-Svc-Target"
+
+// svcTargetHeader is the internal spelling used throughout this package.
+const svcTargetHeader = SvcTargetHeader
 
 // Dialer opens a fresh connection to the edge agent over the reverse tunnel.
 // *revdial.Dialer satisfies this.

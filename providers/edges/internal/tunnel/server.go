@@ -25,6 +25,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	"github.com/faroshq/provider-edges/internal/events"
 	"github.com/faroshq/provider-edges/internal/kcpurl"
 )
 
@@ -116,8 +117,18 @@ type Server struct {
 	// authorizeFn performs delegated authn/authz against kcp; injectable for tests.
 	authorizeFn authorizeFnType
 
+	// eventStore, when set, backs the read side of edge event tools (the UniFi
+	// Protect `events` MCP tool). The write side (the WebSocket subscribers) is
+	// driven by the service reconciler through the same store. Nil disables the
+	// events tool. Set via SetEventStore from the controller manager.
+	eventStore events.Store
+
 	logger klog.Logger
 }
+
+// SetEventStore wires the read side of the events tools to the store the event
+// subscribers write to. Called once from the controller manager after New.
+func (s *Server) SetEventStore(store events.Store) { s.eventStore = store }
 
 // Config carries the inputs for New. Kinds is required (>=1, all sharing a
 // group+version); everything else is optional (nil KCPConfig is allowed for

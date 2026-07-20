@@ -32,6 +32,7 @@ import (
 	mcmulticluster "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	edgectrl "github.com/faroshq/provider-edges/internal/edgectrl"
+	"github.com/faroshq/provider-edges/internal/events"
 	"github.com/faroshq/provider-edges/internal/scheduler"
 	"github.com/faroshq/provider-edges/internal/servicectrl"
 	"github.com/faroshq/provider-edges/internal/status"
@@ -50,6 +51,11 @@ var errControllerDisabled = errors.New("no kubeconfig available; edge controller
 // watches. By convention (provider-sdk) the slice name equals the APIExport
 // name — see sdkinstall.Bootstrap / EnsureAPIExportEndpointSlice.
 const endpointSliceName = apiExportName
+
+// eventsMaxAge bounds how long an edge event is retained in the in-memory store
+// (on top of the per-service count cap), so the "recent events" a tool returns
+// stay recent even for a quiet camera.
+const eventsMaxAge = 6 * time.Hour
 
 // startEdgeControllerManager builds the multicluster manager and starts the
 // edge token / RBAC / lifecycle reconcilers. connManager wires the lifecycle
@@ -139,6 +145,17 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 		return fmt.Errorf("Workload status aggregator: %w", err)
 	}
 
+	// Edge event subscribers (currently UniFi Protect): a per-tenant, per-service
+	// event store the validation reconciler feeds via WebSocket subscribers, and
+	// the MCP `events` tool reads. The in-memory store is bounded per service and
+	// sits behind an interface so it can be swapped for Redis once the provider
+	// scales past the revdial single-replica invariant. Both the writer (manager)
+	// and reader (tunnel Server) share the one store; subscriber goroutines live
+	// under ctx, so they stop on shutdown.
+	eventStore := events.NewMemoryStore(events.DefaultPerServiceCap, eventsMaxAge)
+	eventsMgr := events.NewManager(ctx, eventStore, ctrl.Log.WithName("edge-events"))
+	tsrv.SetEventStore(eventStore)
+
 	// EdgeService controllers (LinuxServer edges): the discovery reconciler
 	// pulls host services from each connected agent and materializes an
 	// EdgeService per service; the validation reconciler checks configured
@@ -146,6 +163,7 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 	// ConnManager for agent dials.
 	if err := servicectrl.SetupWithManager(mgr, connManager, servicectrl.Options{
 		EdgeProxyPublicPath: edgeProxyPublicPath,
+		Events:              eventsMgr,
 	}); err != nil {
 		return fmt.Errorf("EdgeService controllers: %w", err)
 	}

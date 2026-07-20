@@ -26,15 +26,18 @@ package tunnel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/faroshq/provider-edges/internal/events"
 	"github.com/faroshq/provider-edges/internal/haclient"
 	"github.com/faroshq/provider-edges/internal/svccatalog"
 )
@@ -72,6 +75,68 @@ func (p *Server) registerCatalogTools(srv *mcp.Server, prefix, cluster, kcpToken
 			return p.callCatalogTool(ctx, cluster, kcpToken, svc, dialer, def, tool, in)
 		})
 	}
+	// UniFi Protect events are not a REST endpoint — the provider subscribes to
+	// Protect's WebSocket feed in the background and buffers them per tenant+
+	// service. Expose that buffer as a tool when a store is wired.
+	if svc.Spec.Type == "unifi-protect" && p.eventStore != nil {
+		p.registerEdgeEventsTool(srv, prefix, cluster, svc)
+	}
+}
+
+// registerEdgeEventsTool exposes the per-tenant, per-service event buffer (fed
+// by the WebSocket subscribers) as a read-only MCP tool. Events are isolated by
+// events.Key{cluster, service}, so a caller only ever sees its own workspace's
+// events.
+func (p *Server) registerEdgeEventsTool(srv *mcp.Server, prefix, cluster string, svc *serviceView) {
+	name := svc.Name
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: prefix + "events",
+		Description: "UniFi Protect — recent camera events (motion/ring/smart-detect) from the live event stream, most recent first. " +
+			"All query params optional: {\"since\":\"30m\"} (a duration back from now), {\"types\":\"motion,ring\"}, {\"cameraId\":\"<id>\"}, {\"limit\":\"20\"}. " +
+			"Rolling recent buffer, not a full archive.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in catToolInput) (*mcp.CallToolResult, any, error) {
+		evs, err := p.eventStore.List(ctx, events.Key{Cluster: cluster, Service: name}, eventsFilterFromQuery(in.Query))
+		if err != nil {
+			return toolErr(err.Error()), nil, nil
+		}
+		if len(evs) == 0 {
+			return &mcp.CallToolResult{Content: withServiceNote(svc, &mcp.TextContent{Text: "no recent events buffered for this service"})}, nil, nil
+		}
+		b, err := json.Marshal(evs)
+		if err != nil {
+			return toolErr("encode events: " + err.Error()), nil, nil
+		}
+		return &mcp.CallToolResult{Content: withServiceNote(svc, &mcp.TextContent{Text: string(b)})}, nil, nil
+	})
+}
+
+// eventsFilterFromQuery maps the generic tool query params to an events.Filter.
+func eventsFilterFromQuery(q map[string]string) events.Filter {
+	var f events.Filter
+	if s := strings.TrimSpace(q["since"]); s != "" {
+		if d, err := time.ParseDuration(s); err == nil {
+			f.Since = time.Now().Add(-d)
+		}
+	}
+	if s := strings.TrimSpace(q["start"]); s != "" { // epoch millis, matches the old REST param
+		if ms, err := strconv.ParseInt(s, 10, 64); err == nil {
+			f.Since = time.UnixMilli(ms)
+		}
+	}
+	if s := strings.TrimSpace(q["types"]); s != "" {
+		for _, t := range strings.Split(s, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				f.Types = append(f.Types, t)
+			}
+		}
+	}
+	f.CameraID = strings.TrimSpace(q["cameraId"])
+	if s := strings.TrimSpace(q["limit"]); s != "" {
+		if n, err := strconv.Atoi(s); err == nil {
+			f.Limit = n
+		}
+	}
+	return f
 }
 
 // callCatalogTool executes one catalog tool: resolve the token, apply the auth
