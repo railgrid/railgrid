@@ -55,6 +55,18 @@ kedge-provider-agents .agents-card-foot {
   display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--color-text-muted, inherit);
   border-top: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06)); padding-top: 10px;
 }
+kedge-provider-agents .agents-card-actions { display: flex; gap: 8px; }
+kedge-provider-agents .agents-card-chat {
+  flex: 1; padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
+  border-radius: 10px; border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
+  background: var(--color-accent-subtle, rgba(109, 79, 224, 0.1));
+  color: var(--color-accent, #6d4fe0);
+  transition: background 0.12s, border-color 0.12s;
+}
+kedge-provider-agents .agents-card-chat:hover {
+  border-color: var(--color-accent, #6d4fe0);
+  background: var(--color-accent, #6d4fe0); color: #fff;
+}
 /* new-agent card: a dashed tile with an inline create form */
 kedge-provider-agents .agents-card-new {
   border-style: dashed; align-items: stretch; justify-content: center; gap: 12px; cursor: default;

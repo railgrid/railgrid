@@ -1050,6 +1050,9 @@ export class AgentsElement extends HTMLElement {
               <span>${ntrig} trigger${ntrig === 1 ? '' : 's'}</span>
               <span>${chan ? '📣 ' + escapeHTML(chan) : 'no channel'}</span>
             </div>
+            <div class="agents-card-actions">
+              <button class="agents-card-chat" data-chat="${escapeHTML(a.metadata.name)}">💬 Chat</button>
+            </div>
           </article>`
       })
       .join('')
@@ -1078,6 +1081,15 @@ export class AgentsElement extends HTMLElement {
   }
   private _wireHome(): void {
     this.querySelectorAll<HTMLElement>('.agents-card[data-agent]').forEach((el) => el.addEventListener('click', () => this._selectAgent(el.dataset.agent!)))
+    // Explicit Chat button on each card: opens the agent straight on its chat
+    // tab. Stops propagation so it reads as its own action (the whole card is
+    // also clickable and lands on the same place).
+    this.querySelectorAll<HTMLButtonElement>('.agents-card-chat[data-chat]').forEach((el) =>
+      el.addEventListener('click', (e) => {
+        e.stopPropagation()
+        this._selectAgent(el.dataset.chat!) // _selectAgent already opens the chat tab
+      }),
+    )
     this.querySelectorAll<HTMLElement>('[data-shared]').forEach((el) => el.addEventListener('click', () => this._openShared(el.dataset.shared as SharedView)))
     const nf = this.querySelector<HTMLFormElement>('.agents-card-new')
     nf?.addEventListener('submit', (e) => {
