@@ -51,9 +51,9 @@ func snippet(b []byte) string {
 // catToolInput is the single, generic tool input. A tool's description tells the
 // model which of these to fill; reads typically need none.
 type catToolInput struct {
-	Query map[string]string `json:"query,omitempty" jsonschema:"description=Optional query-string parameters, e.g. {\"query\":\"ubuntu\"} for a search."`
-	Form  map[string]string `json:"form,omitempty" jsonschema:"description=Optional form fields for form-encoded APIs (qBittorrent actions), e.g. {\"urls\":\"magnet:?...\"}."`
-	Body  string            `json:"body,omitempty" jsonschema:"description=Optional raw JSON request body for JSON POST/PUT actions."`
+	Query map[string]string `json:"query,omitempty" jsonschema:"Optional query-string parameters, e.g. {\"query\":\"ubuntu\"} for a search."`
+	Form  map[string]string `json:"form,omitempty" jsonschema:"Optional form fields for form-encoded APIs (qBittorrent actions), e.g. {\"urls\":\"magnet:?...\"}."`
+	Body  string            `json:"body,omitempty" jsonschema:"Optional raw JSON request body for JSON POST/PUT actions."`
 }
 
 // registerCatalogTools installs the MCP tools for a catalog service type.

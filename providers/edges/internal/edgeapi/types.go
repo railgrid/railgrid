@@ -40,6 +40,13 @@ const (
 // via the bootstrap join token.
 const ConnectionConditionRegistered = "Registered"
 
+// ConnectionConditionUpgradeAvailable is set True by the version reconciler when
+// the agent's reported status.agentVersion is older than the hub's current
+// release. The condition message carries the target version ("upgrade available
+// to <version>.") so the portal can render upgrade instructions without a
+// separate lookup.
+const ConnectionConditionUpgradeAvailable = "UpgradeAvailable"
+
 // AnnotationRegenerateJoinToken, set on a connectable resource, instructs the
 // token reconciler to mint a fresh bootstrap join token.
 const AnnotationRegenerateJoinToken = "edges.kedge.faros.sh/regenerate-join-token"

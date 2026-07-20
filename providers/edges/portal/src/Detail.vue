@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { ArrowLeft, RefreshCw, Trash2, CircleDot, Server, Boxes, Copy, Check, TerminalSquare, Home, Plug, Plus } from 'lucide-vue-next'
+import { ArrowLeft, RefreshCw, Trash2, CircleDot, Server, Boxes, Copy, Check, TerminalSquare, Home, Plug, Plus, ArrowUpCircle, ChevronDown, ChevronUp } from 'lucide-vue-next'
 import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, createKubeEdgeService, deleteEdgeService } from './api'
 import type { EdgeDetail, EdgeService, EdgeType, ErrorResponse } from './types'
 
@@ -56,6 +56,33 @@ async function copy(text: string, field: string) {
     setTimeout(() => (copied.value = null), 2000)
   } catch { /* clipboard denied */ }
 }
+
+// ─── Upgrade ─────────────────────────────────────────────────────────
+// The version reconciler stamps an UpgradeAvailable condition (status True)
+// when the agent is behind the hub release, embedding the target version in the
+// message ("upgrade available to <version>."). We read that condition rather
+// than comparing versions client-side.
+const showUpgrade = ref(false)
+const upgradeCond = computed(() =>
+  edge.value?.conditions.find((c) => c.type === 'UpgradeAvailable' && c.status === 'True'),
+)
+const upgradeAvailable = computed(() => !!upgradeCond.value)
+const targetVersion = computed(() => {
+  const m = upgradeCond.value?.message?.match(/upgrade available to (\S+?)\.?$/)
+  return m?.[1] ?? 'latest'
+})
+const upgradeCliCommand = computed(() => `kedge agent upgrade ${props.name}`)
+const upgradeHelmSnippet = computed(
+  () => `helm upgrade kedge-agent oci://ghcr.io/faroshq/charts/kedge-agent \\
+  --namespace kedge-agent \\
+  --reuse-values \\
+  --set agent.image.tag=${targetVersion.value}`,
+)
+const upgradeServerSnippet = computed(
+  () => `curl -fsSL https://github.com/faroshq/kedge/releases/latest/download/kubectl-kedge_linux_amd64.tar.gz | tar xz
+sudo mv kubectl-kedge /usr/local/bin/kedge
+sudo systemctl restart kedge-agent-${props.name}`,
+)
 
 // ─── Services ────────────────────────────────────────────────────────
 // Server edges: discovered by the agent. Kube edges: declared here (a cluster
@@ -197,7 +224,15 @@ function rel(ts?: string): string {
             <CircleDot :size="12" /> {{ edge.connected ? 'Connected' : (edge.phase || 'Disconnected') }}
           </span>
         </div>
-        <div class="field"><span class="lbl">Agent version</span><span class="mono">{{ edge.agentVersion || '—' }}</span></div>
+        <div class="field">
+          <span class="lbl">Agent version</span>
+          <span class="row" style="gap: 6px;">
+            <span class="mono">{{ edge.agentVersion || '—' }}</span>
+            <span v-if="upgradeAvailable" class="status down" :title="upgradeCond?.message">
+              <ArrowUpCircle :size="11" /> Upgrade
+            </span>
+          </span>
+        </div>
         <div class="field"><span class="lbl">Hostname</span><span class="mono">{{ edge.hostname || '—' }}</span></div>
         <div class="field"><span class="lbl">Last heartbeat</span><span>{{ rel(edge.lastHeartbeatTime) }}</span></div>
         <div class="field"><span class="lbl">Created</span><span>{{ rel(edge.creationTimestamp) }}</span></div>
@@ -209,6 +244,54 @@ function rel(ts?: string): string {
         <h3>Labels</h3>
         <div class="chips">
           <span v-for="(v, k) in edge.labels" :key="k" class="pill">{{ k }}={{ v }}</span>
+        </div>
+      </div>
+
+      <!-- Upgrade available: agent behind the hub release (UpgradeAvailable condition). -->
+      <div v-if="upgradeAvailable" class="section">
+        <div class="banner warn" style="display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+          <span class="row" style="gap: 6px;">
+            <ArrowUpCircle :size="14" />
+            {{ upgradeCond?.message || 'A newer agent version is available.' }}
+          </span>
+          <button class="btn sm" @click="showUpgrade = !showUpgrade">
+            {{ showUpgrade ? 'Hide' : 'Show' }} commands
+            <component :is="showUpgrade ? ChevronUp : ChevronDown" :size="14" />
+          </button>
+        </div>
+
+        <div v-if="showUpgrade" style="margin-top: 12px; display: flex; flex-direction: column; gap: 12px;">
+          <!-- Kubernetes: CLI or Helm. -->
+          <template v-if="type === 'kubernetes'">
+            <div class="snippet">
+              <div class="snippet-head"><span>Option A — CLI</span>
+                <button class="copy" @click="copy(upgradeCliCommand, 'up-cli')">
+                  <component :is="copied === 'up-cli' ? Check : Copy" :size="12" /> {{ copied === 'up-cli' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre>{{ upgradeCliCommand }}</pre>
+            </div>
+            <div class="snippet">
+              <div class="snippet-head"><span>Option B — Helm</span>
+                <button class="copy" @click="copy(upgradeHelmSnippet, 'up-helm')">
+                  <component :is="copied === 'up-helm' ? Check : Copy" :size="12" /> {{ copied === 'up-helm' ? 'Copied' : 'Copy' }}
+                </button>
+              </div>
+              <pre>{{ upgradeHelmSnippet }}</pre>
+            </div>
+          </template>
+
+          <!-- Server: replace the binary and restart the unit. -->
+          <div v-else class="snippet">
+            <div class="snippet-head"><span>Replace binary and restart</span>
+              <button class="copy" @click="copy(upgradeServerSnippet, 'up-srv')">
+                <component :is="copied === 'up-srv' ? Check : Copy" :size="12" /> {{ copied === 'up-srv' ? 'Copied' : 'Copy' }}
+              </button>
+            </div>
+            <pre>{{ upgradeServerSnippet }}</pre>
+          </div>
+
+          <p class="muted" style="font-size: 11px;">After upgrading, the agent reports its new version on the next heartbeat and this notice clears.</p>
         </div>
       </div>
 

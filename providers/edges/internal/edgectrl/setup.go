@@ -17,6 +17,8 @@ limitations under the License.
 package edgectrl
 
 import (
+	"context"
+
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	edgeapi "github.com/faroshq/provider-edges/internal/edgeapi"
@@ -28,6 +30,10 @@ type Options struct {
 	HubExternalURL string
 	HubCAData      []byte
 	DevMode        bool
+	// LatestAgentVersion yields the hub's current release version. When set, the
+	// version reconciler maintains the UpgradeAvailable condition by comparing it
+	// against each edge's reported status.agentVersion. Nil disables the check.
+	LatestAgentVersion func(context.Context) (string, error)
 }
 
 // SetupControllers registers the token, RBAC, and lifecycle reconcilers for one
@@ -48,6 +54,11 @@ func SetupControllers(
 	}
 	if err := SetupRBACWithManager(mgr, gvr, kind, newObj, opts.HubExternalURL, opts.HubCAData, opts.DevMode); err != nil {
 		return err
+	}
+	if opts.LatestAgentVersion != nil {
+		if err := SetupVersionWithManager(mgr, gvr, newObj, opts.LatestAgentVersion); err != nil {
+			return err
+		}
 	}
 	return SetupLifecycleWithManager(mgr, gvr, newObj, connManager)
 }

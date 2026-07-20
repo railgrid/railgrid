@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -103,6 +104,13 @@ func startEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *
 	})
 
 	opts := edgectrl.Options{HubExternalURL: hubExternalURL, HubCAData: hubCAData, DevMode: devMode}
+	// Drive the UpgradeAvailable condition off the hub's /version endpoint. A
+	// single cache is shared across both kinds' version reconcilers so many edges
+	// cost one periodic hub lookup, not one per edge. Skipped without a hub URL
+	// (dev/healthz-only), leaving the condition untouched.
+	if hubExternalURL != "" {
+		opts.LatestAgentVersion = edgectrl.NewHubVersionCache(hubExternalURL, hubCAData, 10*time.Minute).Get
+	}
 	// One set of token/RBAC/lifecycle controllers per kind, on the shared
 	// multicluster manager. Both kinds share the single tunnel ConnManager (keyed
 	// by resource/cluster/name), so the lifecycle reconciler's tunnel-liveness
