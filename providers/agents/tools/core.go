@@ -56,6 +56,32 @@ func Core(d Deps) []engine.Tool {
 func coreTools(d Deps) []engine.Tool {
 	return []engine.Tool{
 		{
+			Name: "wait",
+			Desc: "Pause for a few seconds before your next step, when an action needs time to take effect before you can verify it. Applies to any slow operation — a physical device finishing its motion (a gate, door, or cover), a service or container restarting, a deployment or provisioning settling, a job/build/query making progress, a state change propagating. Prefer a verify loop: act → wait → re-check (read state, poll status, take a snapshot, list results) → if not yet at the target state, act/wait/re-check again, until confirmed. Max 60 seconds per call.",
+			Params: map[string]engine.Param{
+				"seconds": {Type: "integer", Desc: "how long to wait, 1–60 seconds", Required: true},
+			},
+			Exec: func(ctx context.Context, argsJSON string) (string, error) {
+				args, err := parseArgs(argsJSON)
+				if err != nil {
+					return "", err
+				}
+				secs := argInt(args, "seconds")
+				if secs <= 0 {
+					secs = 5
+				}
+				if secs > 60 {
+					secs = 60
+				}
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(time.Duration(secs) * time.Second):
+				}
+				return fmt.Sprintf("waited %d seconds", secs), nil
+			},
+		},
+		{
 			Name: "memory_save",
 			Desc: "Save a durable memory note (title + body) you can recall in future conversations and runs.",
 			Params: map[string]engine.Param{

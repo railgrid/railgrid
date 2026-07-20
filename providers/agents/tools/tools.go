@@ -18,6 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
 	"github.com/faroshq/provider-agents/llm"
@@ -85,6 +87,21 @@ func argString(args map[string]any, key string) string {
 		return v
 	}
 	return ""
+}
+
+// argInt reads an integer argument, tolerating the float64 that JSON numbers
+// decode to and a numeric string. Returns 0 when absent or unparseable.
+func argInt(args map[string]any, key string) int {
+	switch v := args[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case string:
+		n, _ := strconv.Atoi(strings.TrimSpace(v))
+		return n
+	}
+	return 0
 }
 
 func clip(s string, n int) string {
