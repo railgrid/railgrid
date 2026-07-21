@@ -137,6 +137,19 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Precondition (checked BEFORE creating anything): a provider that requests
+	// edge-proxy access needs its WorkspaceCluster, which the catalog controller
+	// stamps only after it finishes provisioning the provider's sub-workspace.
+	// If Enable is clicked during that window the value is still empty. Refuse
+	// up front — before EnsureProviderAPIBinding — so a raced Enable is a clean
+	// no-op the client can retry, instead of leaving the APIBinding created but
+	// the edge-proxy grant missing (a partial enable). The "retry shortly"
+	// message is a retryable signal; the portal backs off and re-tries.
+	if prov.EdgeProxyAccess && prov.WorkspaceCluster == "" {
+		writeStatus(w, http.StatusConflict, "Conflict", "provider "+providerName+" requests edge proxy access but its workspace is not provisioned yet — retry shortly")
+		return
+	}
+
 	if err := h.mgr.bootstrapper.EnsureProviderAPIBinding(
 		r.Context(),
 		tc.OrgUUID,
@@ -153,15 +166,9 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	// Providers that declared spec.edgeProxyAccess additionally get the
 	// "proxy"-on-edges grant in this workspace, bound to the provider SA's
 	// cluster-qualified identity (the Enable dialog surfaced the request —
-	// clicking Enable is the consent). WorkspaceCluster is resolved by the
-	// catalog controller during provisioning; a provider whose CatalogEntry
-	// hasn't finished provisioning can't meaningfully be enabled yet, so an
-	// empty value is an error rather than a silent skip.
+	// clicking Enable is the consent). WorkspaceCluster is guaranteed non-empty
+	// by the precheck above.
 	if prov.EdgeProxyAccess {
-		if prov.WorkspaceCluster == "" {
-			writeStatus(w, http.StatusConflict, "Conflict", "provider "+providerName+" requests edge proxy access but its workspace is not provisioned yet — retry shortly")
-			return
-		}
 		subject := identity.QualifiedServiceAccount(prov.WorkspaceCluster, providers.ProviderSANamespace, providers.ProviderSAName)
 		if err := h.mgr.bootstrapper.EnsureProviderEdgeProxyGrant(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName, subject); err != nil {
 			writeStatus(w, http.StatusInternalServerError, "InternalError", "ensure edge-proxy grant: "+err.Error())

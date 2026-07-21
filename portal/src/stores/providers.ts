@@ -306,14 +306,27 @@ export const useProvidersStore = defineStore('providers', () => {
       acceptedClaims: accept.map((c) => ({ group: c.group ?? '', resource: c.resource })),
     }
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/${encodeURIComponent(p.name)}/enable`
-    const res = await authFetch(url, {
-      method: 'POST',
-      tenant: true,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    if (!res.ok) {
+
+    // A provider that requests edge-proxy access can't be enabled until the
+    // catalog controller has provisioned its workspace, so an Enable clicked
+    // during that window returns 409 "retry shortly". That's a transient,
+    // retryable signal (the enable endpoint is idempotent), so back off and
+    // re-try a few times instead of surfacing an error the user has to clear
+    // with a manual page refresh. Non-409 failures are terminal — throw at once.
+    const backoffMs = [750, 1250, 1750, 2500, 3000] // ~9s total across 6 attempts
+    for (let attempt = 0; ; attempt++) {
+      const res = await authFetch(url, {
+        method: 'POST',
+        tenant: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (res.ok) break
       const detail = await res.text().catch(() => '')
+      if (res.status === 409 && attempt < backoffMs.length) {
+        await new Promise((r) => setTimeout(r, backoffMs[attempt]))
+        continue
+      }
       throw new Error(`enable ${p.name} failed: ${res.status} ${res.statusText} ${detail}`)
     }
     bindingNamesByProvider.value = { ...bindingNamesByProvider.value, [p.name]: p.name }
