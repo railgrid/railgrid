@@ -3,6 +3,7 @@
 // backend rejects an empty agentRef), cron/timezone or one-shot runAt, task,
 // suspend. Run-now, edit, suspend toggle, delete per row.
 
+import { ic } from '../icons'
 import type { ViewCtx } from '../view'
 import type { Schedule } from '../types'
 import { escapeHTML, fmtTime } from '../types'
@@ -38,7 +39,7 @@ export function render(vc: ViewCtx): string {
   const showForm = creating || !!editing
   const rows =
     vc.store.schedules.length === 0
-      ? `<tr class="agents-empty-row"><td colspan="6"><span class="agents-empty">⏰ No schedules yet — add one below.</span></td></tr>`
+      ? `<tr class="agents-empty-row"><td colspan="6"><span class="agents-empty">${ic('clock')} No schedules yet — add one below.</span></td></tr>`
       : vc.store.schedules
           .map((s) => {
             const when = s.spec.type === 'wakeup' ? s.spec.runAt || '' : s.spec.schedule || ''
@@ -50,17 +51,17 @@ export function render(vc: ViewCtx): string {
               <td class="mono">${escapeHTML(when)}${s.spec.timeZone ? ` <span class="muted">${escapeHTML(s.spec.timeZone)}</span>` : ''}</td>
               <td class="muted">${status}</td>
               <td class="agents-row-actions">
-                <button class="agents-iconbtn" data-runsched="${escapeHTML(s.metadata.name)}" title="Run now">▶</button>
-                <button class="agents-iconbtn" data-editsched="${escapeHTML(s.metadata.name)}" title="Edit">✏️</button>
-                <button class="agents-iconbtn" data-suspsched="${escapeHTML(s.metadata.name)}" data-susp="${s.spec.suspend ? '1' : '0'}" title="${s.spec.suspend ? 'Resume' : 'Pause'}">${s.spec.suspend ? '▶️' : '⏸'}</button>
-                <button class="agents-iconbtn agents-iconbtn-danger" data-delsched="${escapeHTML(s.metadata.name)}" title="Delete">🗑</button>
+                <button class="agents-iconbtn" data-runsched="${escapeHTML(s.metadata.name)}" title="Run now">${ic('play')}</button>
+                <button class="agents-iconbtn" data-editsched="${escapeHTML(s.metadata.name)}" title="Edit">${ic('pencil')}</button>
+                <button class="agents-iconbtn" data-suspsched="${escapeHTML(s.metadata.name)}" data-susp="${s.spec.suspend ? '1' : '0'}" title="${s.spec.suspend ? 'Resume' : 'Pause'}">${s.spec.suspend ? ic('play') : ic('pause')}</button>
+                <button class="agents-iconbtn agents-iconbtn-danger" data-delsched="${escapeHTML(s.metadata.name)}" title="Delete">${ic('trash')}</button>
               </td>
             </tr>`
           })
           .join('')
   return `
     <div class="agents-panel">
-      <div class="agents-panel-head"><h3>Schedules</h3>${showForm ? '' : `<button data-newobj ${vc.store.agents.length ? '' : 'disabled title="Create an agent first"'}>＋ New schedule</button>`}</div>
+      <div class="agents-panel-head"><h3>Schedules</h3>${showForm ? '' : `<button data-newobj ${vc.store.agents.length ? '' : 'disabled title="Create an agent first"'}>${ic('plus')} New schedule</button>`}</div>
       <p class="muted">Recurring or one-shot tasks. Each runs as a specific agent. ${vc.store.agents.length ? '' : 'Create an agent first.'}</p>
       <table class="agents-table">
         <thead><tr><th>Name</th><th>Agent</th><th>When</th><th>Status</th><th class="agents-th-actions">Actions</th></tr></thead>

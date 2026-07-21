@@ -2,6 +2,7 @@
 // agent's detail page (Chat first). Each card has quick Chat / Flow actions and
 // a delete. A dashed "new agent" tile creates one and jumps into it.
 
+import { ic } from '../icons'
 import type { ViewCtx } from '../view'
 import { escapeHTML } from '../types'
 import { createAgent, deleteAgent } from '../actions'
@@ -16,7 +17,7 @@ export function render(vc: ViewCtx): string {
       const chan = a.spec?.defaultNotifyConnection
       return `
         <article class="agents-card" data-agent="${escapeHTML(a.metadata.name)}">
-          <div class="agents-card-glyph">🤖</div>
+          <div class="agents-card-glyph">${ic('bot')}</div>
           <div class="agents-card-body">
             <h3>${escapeHTML(a.spec?.displayName || a.metadata.name)}</h3>
             <p class="agents-card-model ${model ? '' : 'warn'}">${model ? escapeHTML(model) : 'no model — set up in Settings'}</p>
@@ -24,12 +25,12 @@ export function render(vc: ViewCtx): string {
           <div class="agents-card-foot">
             <span>${nsched} schedule${nsched === 1 ? '' : 's'}</span>
             <span>${ntrig} trigger${ntrig === 1 ? '' : 's'}</span>
-            <span>${chan ? '📣 ' + escapeHTML(chan) : 'no channel'}</span>
+            <span>${chan ? `${ic('megaphone')} ` + escapeHTML(chan) : 'no channel'}</span>
           </div>
           <div class="agents-card-actions">
-            <button class="agents-card-chat" data-chat="${escapeHTML(a.metadata.name)}">💬 Chat</button>
-            <button class="secondary agents-card-flow" data-flow="${escapeHTML(a.metadata.name)}" title="Open flow">◆ Flow</button>
-            <button class="agents-iconbtn agents-iconbtn-danger" data-delagent="${escapeHTML(a.metadata.name)}" title="Delete agent">🗑</button>
+            <button class="agents-card-chat" data-chat="${escapeHTML(a.metadata.name)}">${ic('message')} Chat</button>
+            <button class="secondary agents-card-flow" data-flow="${escapeHTML(a.metadata.name)}" title="Open flow">${ic('workflow')} Flow</button>
+            <button class="agents-iconbtn agents-iconbtn-danger" data-delagent="${escapeHTML(a.metadata.name)}" title="Delete agent">${ic('trash')}</button>
           </div>
         </article>`
     })
@@ -39,7 +40,7 @@ export function render(vc: ViewCtx): string {
     <div class="agents-menu">
       <div class="agents-grid">
         <form class="agents-card agents-card-new">
-          <div class="agents-card-glyph">＋</div>
+          <div class="agents-card-glyph">${ic('plus')}</div>
           <input name="name" placeholder="new-agent-id" required pattern="[a-z0-9-]+" />
           <button>Create agent</button>
         </form>

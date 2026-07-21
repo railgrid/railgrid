@@ -2,6 +2,8 @@
 // TYPE-DRIVEN: pick what you're connecting, then a form with only that type's
 // fields, each labelled with where to get the value.
 
+import type { IconName } from './icons'
+
 export const PROVIDER_PRESETS: { id: string; label: string; baseURL: string; modelHint: string }[] = [
   { id: 'openai', label: 'OpenAI', baseURL: 'https://api.openai.com/v1', modelHint: 'gpt-4o' },
   { id: 'anthropic', label: 'Anthropic (Claude, OpenAI-compat)', baseURL: 'https://api.anthropic.com/v1', modelHint: 'claude-sonnet-4-20250514' },
@@ -25,7 +27,7 @@ export interface ConnMode {
 export interface ConnTypeDef {
   id: string
   label: string
-  glyph: string
+  glyph: IconName
   desc: string
   // setup is an ordered list of setup steps (HTML allowed), shown as a guide at
   // the top of the create form so users know what to prepare.
@@ -53,10 +55,10 @@ export const CONN_CATEGORY: Record<string, ConnCategory> = {
   smtp: 'channel',
   http: 'connection',
 }
-export const CATEGORY_META: Record<ConnCategory, { icon: string; label: string; blurb: string }> = {
-  tool: { icon: '🔧', label: 'Tool', blurb: 'Capabilities agents call during a run.' },
-  channel: { icon: '📣', label: 'Channel', blurb: 'Where agents message you — notify + inbound chat.' },
-  connection: { icon: '🔌', label: 'Connection', blurb: 'Generic API credentials for custom integrations.' },
+export const CATEGORY_META: Record<ConnCategory, { icon: IconName; label: string; blurb: string }> = {
+  tool: { icon: 'wrench', label: 'Tool', blurb: 'Capabilities agents call during a run.' },
+  channel: { icon: 'megaphone', label: 'Channel', blurb: 'Where agents message you — notify + inbound chat.' },
+  connection: { icon: 'plug', label: 'Connection', blurb: 'Generic API credentials for custom integrations.' },
 }
 export function connCategory(id: string): ConnCategory {
   return CONN_CATEGORY[id] || 'connection'
@@ -80,7 +82,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
   {
     id: 'github',
     label: 'GitHub',
-    glyph: '🐙',
+    glyph: 'github',
     desc: 'Issues, PRs, code search via the GitHub MCP server',
     modes: [
       {
@@ -115,7 +117,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
   {
     id: 'mcp',
     label: 'MCP server',
-    glyph: '🧩',
+    glyph: 'puzzle',
     desc: 'Any Model Context Protocol server',
     fields: [
       { key: 'baseURL', label: 'Server endpoint', required: true, placeholder: 'https://example.com/mcp', hint: 'The server’s streamable-HTTP MCP URL.' },
@@ -126,7 +128,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
   {
     id: 'websearch',
     label: 'Web search',
-    glyph: '🔎',
+    glyph: 'search',
     desc: 'Give agents web_search (Brave-compatible API)',
     fields: [{ key: 'token', label: 'API key', password: true, required: true, hint: 'Brave Search API key — api.search.brave.com/app/keys (free tier available).' }],
     advanced: [{ key: 'baseURL', label: 'Custom endpoint', placeholder: 'https://api.search.brave.com/res/v1/web/search' }],
@@ -135,7 +137,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
   {
     id: 'telegram',
     label: 'Telegram',
-    glyph: '✈️',
+    glyph: 'send',
     desc: 'Notify + chat with your agent on Telegram',
     fields: [
       { key: 'token', label: 'Bot token', password: true, required: true, hint: 'Create a bot with @BotFather — it gives a token like 12345:ABC…' },
@@ -146,7 +148,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
   {
     id: 'slack',
     label: 'Slack',
-    glyph: '💬',
+    glyph: 'message',
     desc: 'Notify + chat in Slack',
     modes: [
       {
@@ -193,7 +195,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
   {
     id: 'discord',
     label: 'Discord chat',
-    glyph: '🎮',
+    glyph: 'discord',
     desc: 'Two-way chat with your agent (bot)',
     setup: [
       'Create the bot: <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">Discord Developer Portal</a> → <strong>New Application</strong> → <strong>Bot</strong> → <strong>Reset Token</strong> → copy it into <strong>Bot token</strong> below.',
@@ -211,7 +213,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
   {
     id: 'discord-webhook',
     label: 'Discord webhook',
-    glyph: '📣',
+    glyph: 'megaphone',
     desc: 'Notify a Discord channel (outbound only)',
     fields: [
       { key: 'channel', label: 'Webhook URL', required: true, hint: 'Channel → Edit Channel → Integrations → Webhooks → New Webhook → Copy URL. Outbound only, no chat.' },
@@ -221,7 +223,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
   {
     id: 'smtp',
     label: 'Email (SMTP)',
-    glyph: '✉️',
+    glyph: 'mail',
     desc: 'Send email notifications',
     fields: [
       { key: 'host', label: 'SMTP host', required: true, placeholder: 'smtp.gmail.com' },
@@ -236,7 +238,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
   {
     id: 'http',
     label: 'HTTP API',
-    glyph: '🌐',
+    glyph: 'globe',
     desc: 'Generic HTTP endpoint',
     fields: [
       { key: 'baseURL', label: 'Base URL', required: true, placeholder: 'https://api.example.com' },

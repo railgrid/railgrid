@@ -1,6 +1,7 @@
 // Inbox menu: approvals and questions agents raise across the workspace.
 // Approve/deny grants one tool call.
 
+import { ic } from '../icons'
 import type { ViewCtx } from '../view'
 import { escapeHTML } from '../types'
 import { resolveInbox } from '../actions'
@@ -27,7 +28,7 @@ export function render(vc: ViewCtx): string {
                     </tr>`,
                   )
                   .join('')
-              : `<tr class="agents-empty-row"><td colspan="5"><span class="agents-empty">📥 Nothing needs your attention.</span></td></tr>`
+              : `<tr class="agents-empty-row"><td colspan="5"><span class="agents-empty">${ic('inbox')} Nothing needs your attention.</span></td></tr>`
           }
         </tbody>
       </table>

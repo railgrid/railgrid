@@ -9,10 +9,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -123,6 +127,107 @@ func (s *Server) createCredential(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, modelCredential{
 		Name: req.Name, Provider: req.Provider, BaseURL: req.BaseURL, Model: req.Model, HasAPIKey: true,
 	})
+}
+
+// credentialTestResult is the outcome of a live credential health probe.
+type credentialTestResult struct {
+	OK        bool     `json:"ok"`
+	LatencyMS int64    `json:"latencyMS"`
+	Error     string   `json:"error,omitempty"`
+	Models    []string `json:"models,omitempty"` // ids the endpoint serves (discovery)
+}
+
+// testCredential health-checks a named credential by calling the provider's
+// GET {baseURL}/models with the stored key. This is a cheap, token-free probe
+// that both verifies the key works and discovers the models the endpoint serves
+// (returned for the "pick a model" UX). Reports latency either way.
+func (s *Server) testCredential(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireClient(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	profile, err := llm.LoadCredential(r.Context(), c, name)
+	if err != nil {
+		writeJSON(w, http.StatusOK, credentialTestResult{OK: false, Error: "credential not configured: " + err.Error()})
+		return
+	}
+	models, latency, perr := probeOpenAIModels(r.Context(), profile.BaseURL, profile.APIKey)
+	if perr != nil {
+		writeJSON(w, http.StatusOK, credentialTestResult{OK: false, LatencyMS: latency.Milliseconds(), Error: perr.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, credentialTestResult{OK: true, LatencyMS: latency.Milliseconds(), Models: models})
+}
+
+// probeOpenAIModels calls GET {baseURL}/models and returns the served model ids
+// plus the round-trip latency. A non-2xx status or transport error is returned
+// as err (with latency still measured for the health badge).
+func probeOpenAIModels(ctx context.Context, baseURL, apiKey string) ([]string, time.Duration, error) {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		base = "https://api.openai.com/v1"
+	}
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	latency := time.Since(start)
+	if err != nil {
+		return nil, latency, err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(body))
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		return nil, latency, &probeError{status: resp.StatusCode, msg: msg}
+	}
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		// 2xx but unexpected body — the endpoint is reachable, just not a
+		// standard /models list. Treat as healthy with no discovered models.
+		return nil, latency, nil
+	}
+	ids := make([]string, 0, len(parsed.Data))
+	for _, m := range parsed.Data {
+		if id := strings.TrimSpace(m.ID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids, latency, nil
+}
+
+type probeError struct {
+	status int
+	msg    string
+}
+
+func (e *probeError) Error() string {
+	if e.msg != "" {
+		return "endpoint returned HTTP " + strconv.Itoa(e.status) + ": " + e.msg
+	}
+	return "endpoint returned HTTP " + strconv.Itoa(e.status)
+}
+
+// modelCatalog returns the curated pricing + capability catalog (public — no
+// tenant data, just reference data for the Models UI).
+func (s *Server) modelCatalog(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"items": llm.Catalog()})
 }
 
 func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request) {

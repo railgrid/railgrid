@@ -467,6 +467,21 @@ func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.SecretGetter, 
 	return llm.NewFallbackModel(members, built), nil
 }
 
+// primaryModelName resolves the model id of the agent's primary chat credential
+// for cost attribution. Best-effort: returns "" when unresolvable (cost then
+// falls back to 0 rather than erroring the run).
+func (s *Server) primaryModelName(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent) string {
+	name := strings.TrimSpace(agent.Spec.Models["chat"])
+	if name == "" {
+		return ""
+	}
+	p, err := llm.LoadCredential(ctx, creds, name)
+	if err != nil {
+		return ""
+	}
+	return p.Model
+}
+
 // credentialsError reports whether err is a missing/invalid model-credentials
 // condition (Secret not found or profile unconfigured), so callers can show a
 // "configure a model" hint instead of a raw error.

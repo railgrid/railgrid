@@ -1,8 +1,9 @@
-// Connections menu: shared credentials for external systems. Each is a 🔧 Tool
-// agents call, a 📣 Channel they message you on, or a 🔌 generic Connection.
+// Connections menu: shared credentials for external systems. Each is a ${ic('wrench')} Tool
+// agents call, a ${ic('megaphone')} Channel they message you on, or a ${ic('plug')} generic Connection.
 // Type-driven create (CONN_DEFS), edit with Discord special-casing, test /
 // enable-inbound / OAuth-connect actions.
 
+import { ic } from '../icons'
 import type { ViewCtx } from '../view'
 import type { Connection } from '../types'
 import { escapeHTML } from '../types'
@@ -51,13 +52,13 @@ function renderConnEditForm(c: Connection): string {
   const secretField = isDiscordWebhook
     ? ''
     : isOAuth
-      ? '<p class="agents-hint">This is an OAuth connection — use the 🔗 button in the table to re-authorize. Client credentials aren’t edited here.</p>'
+      ? `<p class="agents-hint">This is an OAuth connection — use the ${ic('link')} button in the table to re-authorize. Client credentials aren’t edited here.</p>`
       : `<label>New ${isDiscordBot ? 'bot token' : 'secret / token'}<input name="secret" type="password" placeholder="leave blank to keep the current one" /><span class="agents-hint">Only set this to rotate the credential.</span></label>`
   const kindLabel = isDiscordWebhook ? 'Discord webhook' : isDiscordBot ? 'Discord chat' : ''
   return `<form class="agents-conn-form" data-editconn="${escapeHTML(c.metadata.name)}" data-usechannel="${usesChannel ? '1' : '0'}">
       <div class="agents-conn-formhead">
-        <button type="button" class="agents-back" data-conncancel>← connections</button>
-        <h4>Edit ${escapeHTML(CATEGORY_META[cat].icon)} <code>${escapeHTML(c.metadata.name)}</code>${kindLabel ? ` <span class="agents-badge">${escapeHTML(kindLabel)}</span>` : ''}</h4>
+        <button type="button" class="agents-back" data-conncancel>${ic('arrow-left')} connections</button>
+        <h4>Edit ${ic(CATEGORY_META[cat].icon)} <code>${escapeHTML(c.metadata.name)}</code>${kindLabel ? ` <span class="agents-badge">${escapeHTML(kindLabel)}</span>` : ''}</h4>
       </div>
       <label>Display name<input name="displayName" value="${escapeHTML(c.spec.displayName || '')}" placeholder="${escapeHTML(c.metadata.name)}" /></label>
       <label>${endpointLabel}<input name="endpoint" value="${escapeHTML(endpointVal)}" /></label>
@@ -75,13 +76,13 @@ function renderConnForm(def: ConnTypeDef, oauthApps: Set<string>): string {
   let platformNote = ''
   if (isOAuthMode && oauthApps.has(def.id)) {
     fields = fields.filter((f) => f.key !== 'clientID' && f.key !== 'clientSecret')
-    platformNote = `<div class="agents-platform-note">✓ Using the platform's ${escapeHTML(def.label)} OAuth app — no client id/secret needed. Create it, then click <strong>Connect</strong>.</div>`
+    platformNote = `<div class="agents-platform-note">${ic('check')} Using the platform's ${escapeHTML(def.label)} OAuth app — no client id/secret needed. Create it, then click <strong>Connect</strong>.</div>`
   }
   return `
     <form class="agents-conn-form" data-type="${def.id}">
       <div class="agents-conn-formhead">
-        <button type="button" class="agents-back" data-conntypes>← connection types</button>
-        <h4>${def.glyph} ${escapeHTML(def.label)}</h4>
+        <button type="button" class="agents-back" data-conntypes>${ic('arrow-left')} connection types</button>
+        <h4>${ic(def.glyph)} ${escapeHTML(def.label)}</h4>
       </div>
       <p class="muted">${escapeHTML(def.desc)}</p>
       ${
@@ -106,7 +107,7 @@ export function render(vc: ViewCtx): string {
   const conns = vc.store.connections
   const def = connType ? CONN_DEFS.find((d) => d.id === connType) : null
   const tile = (d: ConnTypeDef) => `<button class="agents-conn-tile" data-conntype="${d.id}">
-               <span class="agents-conn-glyph">${d.glyph}</span>
+               <span class="agents-conn-glyph">${ic(d.glyph)}</span>
                <span class="agents-conn-name">${escapeHTML(d.label)}</span>
                <span class="muted">${escapeHTML(d.desc)}</span>
              </button>`
@@ -116,7 +117,7 @@ export function render(vc: ViewCtx): string {
       if (!defs.length) return ''
       const m = CATEGORY_META[cat]
       return `<div class="agents-conn-group">
-          <h5 class="agents-conn-grouphead">${m.icon} ${escapeHTML(m.label)}s <span class="muted">— ${escapeHTML(m.blurb)}</span></h5>
+          <h5 class="agents-conn-grouphead">${ic(m.icon)} ${escapeHTML(m.label)}s <span class="muted">— ${escapeHTML(m.blurb)}</span></h5>
           <div class="agents-conn-types">${defs.map(tile).join('')}</div>
         </div>`
     })
@@ -129,7 +130,7 @@ export function render(vc: ViewCtx): string {
       : `<div class="agents-conn-picker"><h4>Add a connection</h4>${groups}</div>`
   const catBadge = (id: string) => {
     const m = CATEGORY_META[connCategory(id)]
-    return `<span class="agents-badge agents-badge-cat agents-cat-${connCategory(id)}">${m.icon} ${escapeHTML(m.label)}</span>`
+    return `<span class="agents-badge agents-badge-cat agents-cat-${connCategory(id)}">${ic(m.icon)} ${escapeHTML(m.label)}</span>`
   }
   const typeLabel = (c: Connection) => {
     if (c.spec.type !== 'discord') return c.spec.type
@@ -138,7 +139,7 @@ export function render(vc: ViewCtx): string {
   return `
     <div class="agents-panel">
       <h3>Connections</h3>
-      <p class="muted">Shared credentials for external systems. Each is a 🔧 <strong>Tool</strong> agents call, a 📣 <strong>Channel</strong> they message you on, or a 🔌 generic <strong>Connection</strong>. Stored as Secrets in your workspace.</p>
+      <p class="muted">Shared credentials for external systems. Each is a ${ic('wrench')} <strong>Tool</strong> agents call, a ${ic('megaphone')} <strong>Channel</strong> they message you on, or a ${ic('plug')} generic <strong>Connection</strong>. Stored as Secrets in your workspace.</p>
       <table class="agents-table">
         <thead><tr><th>Name</th><th>Kind</th><th>Type</th><th>Endpoint / channel</th><th class="agents-th-actions">Actions</th></tr></thead>
         <tbody>
@@ -147,21 +148,21 @@ export function render(vc: ViewCtx): string {
               ? conns
                   .map(
                     (c) => `<tr>
-                      <td><span class="agents-cell-name">${escapeHTML(c.spec.displayName || c.metadata.name)}</span>${c.status?.webhookPath ? ' <span class="agents-inbound-on" title="Inbound enabled">⇄</span>' : ''}${c.status?.oauthConnected ? ' <span class="agents-inbound-on" title="OAuth connected">🔗</span>' : ''}</td>
+                      <td><span class="agents-cell-name">${escapeHTML(c.spec.displayName || c.metadata.name)}</span>${c.status?.webhookPath ? ` <span class="agents-inbound-on" title="Inbound enabled">${ic('swap')}</span>` : ''}${c.status?.oauthConnected ? ` <span class="agents-inbound-on" title="OAuth connected">${ic('link')}</span>` : ''}</td>
                       <td>${catBadge(c.spec.type)}</td>
                       <td><span class="agents-badge">${escapeHTML(typeLabel(c))}</span></td>
                       <td class="agents-cell-task muted">${escapeHTML(c.spec.baseURL || c.spec.channel || '—')}</td>
                       <td class="agents-row-actions">
-                        <button class="agents-iconbtn" data-editconn="${escapeHTML(c.metadata.name)}" title="Edit">✏️</button>
-                        ${connCategory(c.spec.type) === 'channel' ? `<button class="agents-iconbtn" data-testconn="${escapeHTML(c.metadata.name)}" title="Send a test message">📨</button>` : ''}
-                        ${connCategory(c.spec.type) === 'channel' ? `<button class="agents-iconbtn" data-inbound="${escapeHTML(c.metadata.name)}" title="${c.status?.webhookPath ? 'Inbound enabled' : 'Enable inbound chat'}">⇄</button>` : ''}
-                        ${c.spec.auth === 'oauth' ? `<button class="agents-iconbtn" data-oauth="${escapeHTML(c.metadata.name)}" title="${c.status?.oauthConnected ? 'Reconnect OAuth' : 'Connect OAuth'}">🔗</button>` : ''}
-                        <button class="agents-iconbtn agents-iconbtn-danger" data-delconn="${escapeHTML(c.metadata.name)}" title="Delete">🗑</button>
+                        <button class="agents-iconbtn" data-editconn="${escapeHTML(c.metadata.name)}" title="Edit">${ic('pencil')}</button>
+                        ${connCategory(c.spec.type) === 'channel' ? `<button class="agents-iconbtn" data-testconn="${escapeHTML(c.metadata.name)}" title="Send a test message">${ic('send')}</button>` : ''}
+                        ${connCategory(c.spec.type) === 'channel' ? `<button class="agents-iconbtn" data-inbound="${escapeHTML(c.metadata.name)}" title="${c.status?.webhookPath ? 'Inbound enabled' : 'Enable inbound chat'}">${ic('swap')}</button>` : ''}
+                        ${c.spec.auth === 'oauth' ? `<button class="agents-iconbtn" data-oauth="${escapeHTML(c.metadata.name)}" title="${c.status?.oauthConnected ? 'Reconnect OAuth' : 'Connect OAuth'}">${ic('link')}</button>` : ''}
+                        <button class="agents-iconbtn agents-iconbtn-danger" data-delconn="${escapeHTML(c.metadata.name)}" title="Delete">${ic('trash')}</button>
                       </td>
                     </tr>`,
                   )
                   .join('')
-              : `<tr class="agents-empty-row"><td colspan="5"><span class="agents-empty">🔌 No connections yet — add one below.</span></td></tr>`
+              : `<tr class="agents-empty-row"><td colspan="5"><span class="agents-empty">${ic('plug')} No connections yet — add one below.</span></td></tr>`
           }
         </tbody>
       </table>

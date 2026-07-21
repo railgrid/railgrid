@@ -15,6 +15,7 @@
 import { ApiClient } from './api'
 import { AppStore } from './store'
 import type { KedgeContext } from './types'
+import { ic, type IconName } from './icons'
 import { escapeHTML } from './types'
 import { DEFAULT_ROUTE, MENUS, parseHash, syncHash, type MenuKey, type Route } from './router'
 import type { ViewCtx } from './view'
@@ -28,15 +29,16 @@ import * as triggersView from './views/triggers'
 import * as modelsView from './views/models'
 import * as inboxView from './views/inbox'
 import { resetForTenant as resetChat } from './views/agent-chat'
+import { resetForTenant as resetModels } from './views/models'
 
-const MENU_META: Record<MenuKey, { icon: string; label: string }> = {
-  agents: { icon: '🤖', label: 'Agents' },
-  connections: { icon: '🔌', label: 'Connections' },
-  toolsets: { icon: '🧰', label: 'Toolsets' },
-  schedules: { icon: '⏰', label: 'Schedules' },
-  triggers: { icon: '⚡', label: 'Triggers' },
-  models: { icon: '⚙', label: 'Models' },
-  inbox: { icon: '📥', label: 'Inbox' },
+const MENU_META: Record<MenuKey, { icon: IconName; label: string }> = {
+  agents: { icon: 'bot', label: 'Agents' },
+  connections: { icon: 'plug', label: 'Connections' },
+  toolsets: { icon: 'package', label: 'Toolsets' },
+  schedules: { icon: 'clock', label: 'Schedules' },
+  triggers: { icon: 'zap', label: 'Triggers' },
+  models: { icon: 'cpu', label: 'Models' },
+  inbox: { icon: 'inbox', label: 'Inbox' },
 }
 
 export class AgentsElement extends HTMLElement {
@@ -106,11 +108,13 @@ export class AgentsElement extends HTMLElement {
     // hash-restored route so a refresh stays put.
     if (this._loadedTenant !== null) {
       resetChat()
+      resetModels()
       this._route = DEFAULT_ROUTE
       syncHash(this._route)
     }
     this._loadedTenant = key
     resetChat()
+    resetModels()
     this._store.loadAll()
   }
 
@@ -180,7 +184,7 @@ export class AgentsElement extends HTMLElement {
       const meta = MENU_META[m]
       const n = count(m)
       const badge = n ? ` <span class="agents-navcount">${n}</span>` : ''
-      return `<button class="agents-navtab ${m === activeMenu ? 'sel' : ''}" data-nav="${m}">${meta.icon} ${meta.label}${badge}</button>`
+      return `<button class="agents-navtab ${m === activeMenu ? 'sel' : ''}" data-nav="${m}">${ic(meta.icon)} ${meta.label}${badge}</button>`
     }).join('')
     return `<nav class="agents-nav">${tabs}</nav>`
   }

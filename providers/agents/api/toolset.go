@@ -90,9 +90,10 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 			if err != nil {
 				return "", err
 			}
-			// Budget rollup: the child's spend also counts against the parent.
+			// Budget rollup: the child's spend (tokens + cost) also counts
+			// against the parent.
 			_, _ = s.store.AddUsage(dctx, parentDeps.Scope, parentDeps.Agent.Name,
-				res.Usage.InputTokens, res.Usage.OutputTokens, 0, time.Now().UTC(), 30*24*time.Hour)
+				res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.USDMicros, time.Now().UTC(), 30*24*time.Hour)
 			return res.Content, nil
 		}
 	}

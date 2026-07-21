@@ -124,7 +124,7 @@ export async function enableInbound(vc: ViewCtx, name: string): Promise<void> {
     const res = await vc.api.send<{ webhookURL: string; registered: boolean; note: string }>('POST', `/api/connections/${encodeURIComponent(name)}/enable-inbound`, {
       publicBaseURL: location.origin,
     })
-    vc.notify(`${res.registered ? '✅' : 'ℹ️'} ${res.note} URL: ${res.webhookURL}`)
+    vc.notify(`${res.registered ? 'Enabled —' : 'Note:'} ${res.note} URL: ${res.webhookURL}`)
     await vc.store.loadConnections()
   } catch (e) {
     vc.notify(`Enable inbound failed: ${(e as Error).message}`)

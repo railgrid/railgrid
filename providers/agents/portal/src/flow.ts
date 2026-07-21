@@ -6,6 +6,8 @@
 // callbacks; it never talks to the API itself — the mapping from a dragged cable
 // to a real spec mutation lives with the data owner.
 
+ import { ic } from './icons'
+
 export type FNodeType =
   | 'agent'
   | 'schedule'
@@ -188,7 +190,7 @@ export class FlowCanvas {
         <div class="flow-world"><svg class="flow-wires" width="4000" height="2600"></svg></div>
       </div>
       <div class="flow-zoom">
-        <button data-z="out">−</button><span class="flow-zval mono">100%</span><button data-z="in">+</button><button data-z="fit" title="Fit to view">⤢</button>
+        <button data-z="out">−</button><span class="flow-zval mono">100%</span><button data-z="in">+</button><button data-z="fit" title="Fit to view">${ic('maximize')}</button>
       </div>
       <div class="flow-legend"></div>
       <div class="flow-modal hidden"><div class="flow-modal-bg"></div><div class="flow-dialog" role="dialog" aria-modal="true"></div></div>
@@ -317,7 +319,7 @@ export class FlowCanvas {
       <div class="flow-nhead">
         <span class="flow-nic">${svgIcon(n.type)}</span>
         <span class="flow-nmeta"><span class="flow-ntype">${TYPES[n.type].label}</span><span class="flow-ntitle">${esc(n.title)}</span></span>
-        ${editable ? '<button class="flow-editbtn" title="Edit" aria-label="Edit">✎</button>' : ''}
+        ${editable ? `<button class="flow-editbtn" title="Edit" aria-label="Edit">${ic('pencil')}</button>` : ''}
       </div>
       <div class="flow-nbody">
         ${n.sub ? `<p class="flow-nsub">${n.sub}</p>` : ''}
@@ -466,8 +468,8 @@ export class FlowCanvas {
       <div class="flow-dialog-head">
         <span class="flow-nic">${svgIcon(n.type)}</span>
         <span class="t"><span class="flow-ntype">${draft ? 'New ' + TYPES[n.type].label.toLowerCase() : TYPES[n.type].label}</span><div class="flow-ntitle">${esc(n.title)}</div></span>
-        <span class="flow-saved" data-saved>saved ✓</span>
-        <button class="flow-x" data-x aria-label="Close">✕</button>
+        <span class="flow-saved" data-saved>saved ${ic('check')}</span>
+        <button class="flow-x" data-x aria-label="Close">${ic('x')}</button>
       </div>
       <div class="flow-dialog-body">
         ${fields || '<p class="flow-nsub">Nothing to edit here — this node is wired from the canvas.</p>'}
@@ -478,7 +480,7 @@ export class FlowCanvas {
         <div class="flow-dialog-actions">
           ${draft ? '<button class="flow-btn" data-discard>Discard</button><button class="flow-btn primary" data-create>Create</button>' : ''}
           ${!draft && n.type === 'chat' ? '<button class="flow-btn primary" data-chat>Open chat</button>' : ''}
-          ${!draft && n.canRun ? '<button class="flow-btn" data-run>▶ Test</button>' : ''}
+          ${!draft && n.canRun ? `<button class="flow-btn" data-run>${ic('play')} Test</button>` : ''}
           ${!draft && n.canDelete ? '<button class="flow-btn danger" data-del>Remove</button>' : ''}
         </div>
       </div>`
@@ -806,7 +808,7 @@ export class FlowCanvas {
         b.classList.toggle('is-new', isNew)
         if (entry.sub) b.title = entry.sub
         else if (entry.linked) b.title = 'already linked to this agent'
-        b.innerHTML = `<span class="chip">${svgIcon(entry.icon)}</span><span>${esc(entry.label)}</span>${entry.linked ? '<span class="flow-pal-check">✓</span>' : ''}`
+        b.innerHTML = `<span class="chip">${svgIcon(entry.icon)}</span><span>${esc(entry.label)}</span>${entry.linked ? `<span class="flow-pal-check">${ic('check')}</span>` : ''}`
         if (entry.linked) {
           // Already referenced — inert (remove it from the agent via the node's
           // Remove button on the canvas).

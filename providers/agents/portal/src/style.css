@@ -12,6 +12,16 @@ kedge-provider-agents {
   color: var(--color-text-primary, inherit);
 }
 
+/* Inline SVG icons (see icons.ts): inherit color + size from surrounding text,
+ * so they sit cleanly inside buttons, chips, labels and headings. */
+kedge-provider-agents .ic { width: 1.05em; height: 1.05em; display: inline-block; vertical-align: -0.16em; flex: none; stroke-width: 2; }
+kedge-provider-agents button .ic, kedge-provider-agents .agents-chip .ic { vertical-align: -0.16em; }
+/* Buttons/labels that pair an icon with text get a small gap. */
+kedge-provider-agents .agents-navtab, kedge-provider-agents .agents-subtab,
+kedge-provider-agents .agents-card-chat, kedge-provider-agents .agents-model-actions button,
+kedge-provider-agents .agents-back, kedge-provider-agents .agents-health,
+kedge-provider-agents .agents-chip { display: inline-flex; align-items: center; gap: 5px; }
+
 kedge-provider-agents .agents-app { display: flex; flex-direction: column; gap: 16px; min-height: 560px; }
 kedge-provider-agents .agents-empty { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; min-height: 340px; }
 kedge-provider-agents .agents-page { display: flex; flex-direction: column; gap: 14px; }
@@ -507,3 +517,73 @@ kedge-provider-agents .agents-linkbtn { background: transparent; border: 0; colo
 kedge-provider-agents .agents-checkrow { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 kedge-provider-agents .agents-toolset-form, kedge-provider-agents .agents-obj-form { display: flex; flex-direction: column; gap: 12px; }
 kedge-provider-agents .mono { font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; }
+
+/* ===================================================================
+ * Models: usage dashboard + catalog-enriched credential cards.
+ * =================================================================== */
+kedge-provider-agents .agents-section-h { margin: 8px 0 0; font-size: 15px; font-weight: 600; }
+
+/* dashboard */
+kedge-provider-agents .agents-dash { display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 14px;
+  background: var(--color-surface-raised, #fff); border: 1px solid var(--color-border-subtle, rgba(0,0,0,0.06)); }
+kedge-provider-agents .agents-dash-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+kedge-provider-agents .agents-dash-head h3 { margin: 0; }
+kedge-provider-agents .agents-dash-loading { padding: 24px; text-align: center; }
+kedge-provider-agents .agents-seg { display: inline-flex; background: var(--color-surface, #eef1f7); border: 1px solid var(--color-border-default, #d9e0ec); border-radius: 9px; padding: 2px; }
+kedge-provider-agents .agents-seg button { border: 0; background: transparent; color: var(--color-text-secondary, #556); font: inherit; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 7px; cursor: pointer; }
+kedge-provider-agents .agents-seg button.on { background: var(--color-surface-raised, #fff); color: var(--color-text-primary, #123); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+kedge-provider-agents .agents-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+kedge-provider-agents .agents-stat { padding: 12px 14px; border-radius: 11px; background: var(--color-surface, #f4f6fb); border: 1px solid var(--color-border-subtle, rgba(0,0,0,.05)); }
+kedge-provider-agents .agents-stat-v { font-size: 22px; font-weight: 700; color: var(--color-text-primary, #123); line-height: 1.1; }
+kedge-provider-agents .agents-stat-k { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--color-text-muted, #889); margin-top: 4px; }
+kedge-provider-agents .agents-stat-sub { font-size: 11px; color: var(--color-text-secondary, #667); margin-top: 2px; }
+kedge-provider-agents .agents-dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+kedge-provider-agents .agents-dash-card { padding: 12px 14px; border-radius: 11px; background: var(--color-surface, #f4f6fb); border: 1px solid var(--color-border-subtle, rgba(0,0,0,.05)); display: flex; flex-direction: column; gap: 10px; }
+kedge-provider-agents .agents-dash-card-h { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--color-text-muted, #889); }
+
+/* sparkline (monochrome, accent-hued, theme-aware) */
+kedge-provider-agents .agents-spark { width: 100%; height: 40px; display: block; }
+kedge-provider-agents .agents-spark-line { fill: none; stroke: var(--color-accent, #6d4fe0); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+kedge-provider-agents .agents-spark-fill { fill: var(--color-accent, #6d4fe0); opacity: .14; stroke: none; }
+kedge-provider-agents .agents-spark-empty { font-size: 12px; padding: 10px 0; }
+
+/* horizontal bars */
+kedge-provider-agents .agents-bars { display: flex; flex-direction: column; gap: 7px; }
+kedge-provider-agents .agents-bar-row { display: grid; grid-template-columns: 84px 1fr auto; align-items: center; gap: 8px; font-size: 12px; }
+kedge-provider-agents .agents-bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-secondary, #556); }
+kedge-provider-agents .agents-bar-track { height: 8px; border-radius: 999px; background: var(--color-surface-overlay, rgba(0,0,0,.06)); overflow: hidden; }
+kedge-provider-agents .agents-bar-fill { height: 100%; border-radius: 999px; background: var(--color-accent, #6d4fe0); }
+kedge-provider-agents .agents-bar-val { font-size: 11px; color: var(--color-text-muted, #889); white-space: nowrap; }
+
+/* credential cards */
+kedge-provider-agents .agents-model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+kedge-provider-agents .agents-model-card { display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: 14px;
+  background: var(--color-surface-raised, #fff); border: 1px solid var(--color-border-subtle, rgba(0,0,0,0.06)); }
+kedge-provider-agents .agents-model-card.is-editing { border-color: var(--color-accent, #6d4fe0); }
+kedge-provider-agents .agents-model-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+kedge-provider-agents .agents-model-title { display: flex; gap: 10px; align-items: center; min-width: 0; }
+kedge-provider-agents .agents-model-glyph { width: 34px; height: 34px; flex: none; display: grid; place-items: center; font-size: 17px; border-radius: 9px; background: var(--color-accent-subtle, rgba(109,79,224,.1)); }
+kedge-provider-agents .agents-model-title h4 { margin: 0; font-size: 15px; font-weight: 600; }
+kedge-provider-agents .agents-model-sub { font-size: 12px; color: var(--color-text-secondary, #667); overflow: hidden; text-overflow: ellipsis; }
+kedge-provider-agents .agents-model-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+kedge-provider-agents .agents-chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--color-surface, #eef1f7); border: 1px solid var(--color-border-default, #d9e0ec); color: var(--color-text-secondary, #556); }
+kedge-provider-agents .agents-chip-price { background: var(--color-accent-subtle, rgba(109,79,224,.1)); border-color: transparent; color: var(--color-accent, #6d4fe0); font-weight: 600; }
+kedge-provider-agents .agents-chip-warn { background: var(--color-warning-surface, rgba(234,179,8,.14)); border-color: transparent; color: var(--color-warning, #d97706); }
+kedge-provider-agents .agents-chip-btn { cursor: pointer; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+kedge-provider-agents .agents-chip-btn:hover { border-color: var(--color-accent, #6d4fe0); color: var(--color-accent, #6d4fe0); }
+kedge-provider-agents .agents-model-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
+kedge-provider-agents .agents-model-assign { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+kedge-provider-agents .agents-chip-primary { background: var(--color-accent-subtle, rgba(109,79,224,.1)); border-color: transparent; color: var(--color-accent, #6d4fe0); font-weight: 600; }
+kedge-provider-agents .agents-chip-fallback { border-style: dashed; color: var(--color-text-secondary, #667); }
+kedge-provider-agents .agents-model-meta .mono { font-size: 11px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+kedge-provider-agents .agents-model-discovered { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: 12px; padding: 8px; border-radius: 9px; background: var(--color-surface, #f4f6fb); }
+kedge-provider-agents .agents-model-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+kedge-provider-agents .agents-model-actions button.secondary { font-size: 12.5px; }
+kedge-provider-agents .agents-rotate-form { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 11px; background: var(--color-surface, #f4f6fb); }
+kedge-provider-agents .agents-model-create { margin-top: 4px; }
+
+/* health badge */
+kedge-provider-agents .agents-health { font-size: 11px; font-weight: 600; white-space: nowrap; padding: 2px 8px; border-radius: 999px; }
+kedge-provider-agents .agents-health-ok { color: var(--color-success, #10b981); background: var(--color-success-surface, rgba(16,185,129,.12)); }
+kedge-provider-agents .agents-health-bad { color: var(--color-danger, #ef4444); background: var(--color-danger-surface, rgba(239,68,68,.1)); }
+kedge-provider-agents .agents-health-unknown { color: var(--color-text-muted, #889); background: var(--color-surface-overlay, rgba(0,0,0,.05)); }

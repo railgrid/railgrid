@@ -499,7 +499,7 @@ function flowDraftFor(key: string): DraftSpec | null {
           label: 'Tool',
           kind: 'select',
           value: '',
-          options: [{ value: '', label: `＋ Create a new ${t.label} tool` }, ...existing.map((c) => ({ value: c.metadata.name, label: c.spec.displayName || c.metadata.name }))],
+          options: [{ value: '', label: `+ Create a new ${t.label} tool` }, ...existing.map((c) => ({ value: c.metadata.name, label: c.spec.displayName || c.metadata.name }))],
           hint: existing.length ? 'reuse one you already have, or create a new one below' : undefined,
         },
         {
@@ -531,7 +531,7 @@ function flowDraftFor(key: string): DraftSpec | null {
           label: 'Toolset',
           kind: 'select',
           value: '',
-          options: [{ value: '', label: '＋ Create a new toolset' }, ...unlinked.map((t) => ({ value: t.metadata.name, label: t.spec.displayName || t.metadata.name }))],
+          options: [{ value: '', label: '+ Create a new toolset' }, ...unlinked.map((t) => ({ value: t.metadata.name, label: t.spec.displayName || t.metadata.name }))],
           hint: unlinked.length ? 'link a shared one, or create a new bundle below' : undefined,
         },
         { key: 'name', label: 'New toolset name', kind: 'text', placeholder: 'dev-tools', hint: 'only when creating a new toolset' },

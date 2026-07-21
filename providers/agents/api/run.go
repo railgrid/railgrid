@@ -77,6 +77,7 @@ type runResult struct {
 	Usage   struct {
 		InputTokens  int64 `json:"inputTokens"`
 		OutputTokens int64 `json:"outputTokens"`
+		USDMicros    int64 `json:"usdMicros"`
 	} `json:"usage"`
 }
 
@@ -168,19 +169,26 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		ID: uuid.NewString(), AgentName: agent.Name, SessionID: sessionID, RunID: runID,
 		Role: "assistant", Content: res.Content, CreatedAt: end,
 	})
+	// Estimate cost from the catalog so budgets enforce dollars (not just
+	// tokens) and the Models dashboard can show spend. Cost is attributed to the
+	// agent's primary model; unknown models cost 0 rather than a fabricated
+	// number.
+	costMicros := llm.CostMicros(s.primaryModelName(ctx, run.Creds, agent), res.Usage.InputTokens, res.Usage.OutputTokens)
 	if run, gerr := s.store.GetRun(ctx, scope, runID); gerr == nil {
 		run.Phase = store.RunPhaseSucceeded
 		run.InputTokens = res.Usage.InputTokens
 		run.OutputTokens = res.Usage.OutputTokens
+		run.USDMicros = costMicros
 		run.UpdatedAt = end
 		run.FinishedAt = &end
 		_ = s.store.SaveRun(ctx, scope, run)
 	}
-	_, _ = s.store.AddUsage(ctx, scope, agent.Name, res.Usage.InputTokens, res.Usage.OutputTokens, 0, end, 30*24*time.Hour)
+	_, _ = s.store.AddUsage(ctx, scope, agent.Name, res.Usage.InputTokens, res.Usage.OutputTokens, costMicros, end, 30*24*time.Hour)
 
 	out := runResult{RunID: runID, Content: res.Content}
 	out.Usage.InputTokens = res.Usage.InputTokens
 	out.Usage.OutputTokens = res.Usage.OutputTokens
+	out.Usage.USDMicros = costMicros
 	return out, nil
 }
 

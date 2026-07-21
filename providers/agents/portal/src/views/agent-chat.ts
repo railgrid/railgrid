@@ -4,6 +4,7 @@
 // there is one element instance for the app's lifetime, and keeping it here (not
 // in the store) means menu re-renders never disturb a live transcript.
 
+import { ic } from '../icons'
 import type { ViewCtx } from '../view'
 import type { Agent, ChatMessage, SessionMeta } from '../types'
 import { escapeHTML, sessionLabel } from '../types'
@@ -168,7 +169,7 @@ export function render(a: Agent): string {
     <div class="agents-chat">
       <div class="agents-chat-head">
         <select class="agents-session-picker" ${streaming ? 'disabled' : ''} title="Chat sessions">${picker}</select>
-        <button type="button" class="agents-newchat secondary" ${streaming ? 'disabled' : ''}>＋ New chat</button>
+        <button type="button" class="agents-newchat secondary" ${streaming ? 'disabled' : ''}>${ic('plus')} New chat</button>
       </div>
       ${error ? `<div class="agents-err">${escapeHTML(error)}</div>` : ''}
       <div class="agents-log">
@@ -177,7 +178,7 @@ export function render(a: Agent): string {
             ? messages
                 .map((m) =>
                   m.role === 'tool'
-                    ? `<div class="agents-msg tool ${m.error ? 'err' : ''}"><div class="agents-toolrow">🔧 ${escapeHTML(m.content)}</div></div>`
+                    ? `<div class="agents-msg tool ${m.error ? 'err' : ''}"><div class="agents-toolrow">${ic('wrench')} ${escapeHTML(m.content)}</div></div>`
                     : `<div class="agents-msg ${m.role}"><div class="agents-role">${m.role}</div><div class="agents-body">${escapeHTML(m.content) || (streaming && m.role === 'assistant' ? '…' : '')}</div></div>`,
                 )
                 .join('')

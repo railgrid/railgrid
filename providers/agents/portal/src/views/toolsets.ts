@@ -2,6 +2,7 @@
 // to many agents (in each agent's Flow, drag the toolset onto the agent).
 // Checked tool-connections drive the derived families.
 
+import { ic } from '../icons'
 import type { ViewCtx } from '../view'
 import { escapeHTML } from '../types'
 import { createToolset, updateToolset, deleteToolset } from '../actions'
@@ -15,7 +16,7 @@ export function render(vc: ViewCtx): string {
     vc.store.agents.filter((a) => [...(a.spec?.tools?.interactive?.toolsets || []), ...(a.spec?.tools?.background?.toolsets || [])].includes(name)).length
   const rows =
     vc.store.toolsets.length === 0
-      ? `<tr class="agents-empty-row"><td colspan="4"><span class="agents-empty">🧰 No toolsets yet — create one below or in an agent's Flow view.</span></td></tr>`
+      ? `<tr class="agents-empty-row"><td colspan="4"><span class="agents-empty">${ic('package')} No toolsets yet — create one below or in an agent's Flow view.</span></td></tr>`
       : vc.store.toolsets
           .map((t) => {
             const conns = t.spec.connections || []
@@ -25,8 +26,8 @@ export function render(vc: ViewCtx): string {
               <td>${conns.length ? conns.map((c) => `<span class="agents-badge">${escapeHTML(c)}</span>`).join(' ') : '<span class="muted">—</span>'}</td>
               <td class="muted">${used} agent${used === 1 ? '' : 's'}</td>
               <td class="agents-row-actions">
-                <button class="agents-iconbtn" data-edittoolset="${escapeHTML(t.metadata.name)}" title="Edit">✏️</button>
-                <button class="agents-iconbtn agents-iconbtn-danger" data-deltoolset="${escapeHTML(t.metadata.name)}" title="Delete">🗑</button>
+                <button class="agents-iconbtn" data-edittoolset="${escapeHTML(t.metadata.name)}" title="Edit">${ic('pencil')}</button>
+                <button class="agents-iconbtn agents-iconbtn-danger" data-deltoolset="${escapeHTML(t.metadata.name)}" title="Delete">${ic('trash')}</button>
               </td>
             </tr>`
           })
@@ -39,7 +40,7 @@ export function render(vc: ViewCtx): string {
             (c) => `<label class="agents-check"><input type="checkbox" name="connection" value="${escapeHTML(c.metadata.name)}" ${on.has(c.metadata.name) ? 'checked' : ''} /> ${escapeHTML(c.metadata.name)} <span class="agents-hint">${escapeHTML(c.spec.type)}</span></label>`,
           )
           .join('')
-      : `<span class="muted">No tools yet — create MCP/GitHub/web tools under 🔌 Connections. Cluster edges are always on.</span>`
+      : `<span class="muted">No tools yet — create MCP/GitHub/web tools under ${ic('plug')} Connections. Cluster edges are always on.</span>`
   const form = editing
     ? `<form class="agents-toolset-form" data-edit="${escapeHTML(editing.metadata.name)}">
         <h4>Edit toolset <code>${escapeHTML(editing.metadata.name)}</code></h4>

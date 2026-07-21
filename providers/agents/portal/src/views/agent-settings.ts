@@ -2,6 +2,7 @@
 // monthly budget, and delegation. Tools/toolsets are wired in the Flow tab — the
 // save here deliberately omits them so it never clobbers tool policy.
 
+import { ic } from '../icons'
 import type { ViewCtx } from '../view'
 import type { Agent } from '../types'
 import { escapeHTML } from '../types'
@@ -20,7 +21,7 @@ export function render(vc: ViewCtx, a: Agent): string {
         <label>Display name<input name="displayName" value="${escapeHTML(a.spec?.displayName || a.metadata.name)}" /></label>
         <label>Model credential
           <select name="modelCredential">${credOptions}</select>
-          ${vc.store.credentials.length === 0 ? `<span class="muted" style="font-size:12px">No models yet — add one under ⚙ Models.</span>` : ''}
+          ${vc.store.credentials.length === 0 ? `<span class="muted" style="font-size:12px">No models yet — add one under ${ic('settings')} Models.</span>` : ''}
         </label>
         <label>System prompt (persona + standing instructions)
           <textarea name="systemPrompt" rows="4" placeholder="You are a concise assistant that…">${escapeHTML(a.spec?.systemPrompt || '')}</textarea>

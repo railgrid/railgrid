@@ -2,6 +2,7 @@
 // agent via agentRef and fired by an external source (webhook / github). Same
 // table + Agent-select form pattern as schedules.
 
+import { ic } from '../icons'
 import type { ViewCtx } from '../view'
 import type { Trigger } from '../types'
 import { escapeHTML, fmtTime } from '../types'
@@ -38,7 +39,7 @@ export function render(vc: ViewCtx): string {
   const showForm = creating || !!editing
   const rows =
     vc.store.triggers.length === 0
-      ? `<tr class="agents-empty-row"><td colspan="6"><span class="agents-empty">⚡ No triggers yet — add one below.</span></td></tr>`
+      ? `<tr class="agents-empty-row"><td colspan="6"><span class="agents-empty">${ic('zap')} No triggers yet — add one below.</span></td></tr>`
       : vc.store.triggers
           .map((t) => {
             const status = t.spec.suspend ? '<span class="agents-badge">paused</span>' : t.status?.lastFired ? `last ${escapeHTML(fmtTime(t.status.lastFired))}` : 'armed'
@@ -48,17 +49,17 @@ export function render(vc: ViewCtx): string {
               <td class="mono">${escapeHTML(t.spec.source)}${t.spec.connectionRef ? ` <span class="muted">${escapeHTML(t.spec.connectionRef)}</span>` : ''}</td>
               <td class="muted">${status}</td>
               <td class="agents-row-actions">
-                <button class="agents-iconbtn" data-runtrig="${escapeHTML(t.metadata.name)}" title="Fire now">▶</button>
-                <button class="agents-iconbtn" data-edittrig="${escapeHTML(t.metadata.name)}" title="Edit">✏️</button>
-                <button class="agents-iconbtn" data-susptrig="${escapeHTML(t.metadata.name)}" data-susp="${t.spec.suspend ? '1' : '0'}" title="${t.spec.suspend ? 'Resume' : 'Pause'}">${t.spec.suspend ? '▶️' : '⏸'}</button>
-                <button class="agents-iconbtn agents-iconbtn-danger" data-deltrig="${escapeHTML(t.metadata.name)}" title="Delete">🗑</button>
+                <button class="agents-iconbtn" data-runtrig="${escapeHTML(t.metadata.name)}" title="Fire now">${ic('play')}</button>
+                <button class="agents-iconbtn" data-edittrig="${escapeHTML(t.metadata.name)}" title="Edit">${ic('pencil')}</button>
+                <button class="agents-iconbtn" data-susptrig="${escapeHTML(t.metadata.name)}" data-susp="${t.spec.suspend ? '1' : '0'}" title="${t.spec.suspend ? 'Resume' : 'Pause'}">${t.spec.suspend ? ic('play') : ic('pause')}</button>
+                <button class="agents-iconbtn agents-iconbtn-danger" data-deltrig="${escapeHTML(t.metadata.name)}" title="Delete">${ic('trash')}</button>
               </td>
             </tr>`
           })
           .join('')
   return `
     <div class="agents-panel">
-      <div class="agents-panel-head"><h3>Triggers</h3>${showForm ? '' : `<button data-newobj ${vc.store.agents.length ? '' : 'disabled title="Create an agent first"'}>＋ New trigger</button>`}</div>
+      <div class="agents-panel-head"><h3>Triggers</h3>${showForm ? '' : `<button data-newobj ${vc.store.agents.length ? '' : 'disabled title="Create an agent first"'}>${ic('plus')} New trigger</button>`}</div>
       <p class="muted">External events that wake an agent. Each fires a specific agent. ${vc.store.agents.length ? '' : 'Create an agent first.'}</p>
       <table class="agents-table">
         <thead><tr><th>Name</th><th>Agent</th><th>Source</th><th>Status</th><th class="agents-th-actions">Actions</th></tr></thead>
