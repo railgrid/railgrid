@@ -245,8 +245,9 @@ func ApplySchemasFromDir(ctx context.Context, cl dynamic.Interface, dir string) 
 //
 // Merge, don't clobber: spec.resources has multiple writers (this init step,
 // plus any runtime controller that mints per-object entries, e.g. the
-// infrastructure templates virtual storage). Only entries this step owns
-// (keyed by group+name) are upserted; the rest are preserved.
+// infrastructure templates virtual storage). Entries in the API groups this
+// step owns are fully reconciled — upserted, and stale ones (renamed/removed
+// resources) pruned. Entries in other groups are preserved untouched.
 func ApplyAPIExport(ctx context.Context, cl dynamic.Interface, exportName string, schemaNames []string, claims []PermissionClaim) error {
 	resources := make([]any, 0, len(schemaNames))
 	for _, n := range schemaNames {
@@ -444,33 +445,45 @@ func applyUnstructured(ctx context.Context, cl dynamic.Interface, gvr schema.Gro
 }
 
 // mergeAPIExportResources upserts the owned entries (keyed by group+name) into
-// existing, preserving every existing entry not owned. Owned entries win and
-// come first for deterministic output.
+// existing. Owned entries win and come first for deterministic output.
+//
+// Within the API groups init owns (the groups its schema files declare), the
+// owned set is authoritative: a pre-existing entry in an owned group whose
+// name is no longer owned is a leftover from a renamed/removed resource
+// (e.g. agentruns → runs) and is pruned. Entries in foreign groups are
+// preserved — those belong to runtime writers (e.g. the infrastructure
+// templates controller minting per-template entries in per-template groups).
 func mergeAPIExportResources(existing, owned []any) []any {
-	key := func(r any) (string, bool) {
+	parse := func(r any) (group, name string, ok bool) {
 		m, ok := r.(map[string]any)
 		if !ok {
-			return "", false
+			return "", "", false
 		}
-		group, _ := m["group"].(string)
-		name, _ := m["name"].(string)
-		return group + "/" + name, true
+		group, _ = m["group"].(string)
+		name, _ = m["name"].(string)
+		return group, name, true
 	}
 	ownedKeys := make(map[string]struct{}, len(owned))
+	ownedGroups := make(map[string]struct{}, len(owned))
 	for _, r := range owned {
-		if k, ok := key(r); ok {
-			ownedKeys[k] = struct{}{}
+		if group, name, ok := parse(r); ok {
+			ownedKeys[group+"/"+name] = struct{}{}
+			ownedGroups[group] = struct{}{}
 		}
 	}
 	out := make([]any, 0, len(owned)+len(existing))
 	out = append(out, owned...)
 	for _, r := range existing {
-		k, ok := key(r)
+		group, name, ok := parse(r)
 		if !ok {
 			out = append(out, r)
 			continue
 		}
-		if _, isOwned := ownedKeys[k]; isOwned {
+		if _, isOwned := ownedKeys[group+"/"+name]; isOwned {
+			continue
+		}
+		if _, groupOwned := ownedGroups[group]; groupOwned {
+			// Stale entry in an init-owned group — prune.
 			continue
 		}
 		out = append(out, r)

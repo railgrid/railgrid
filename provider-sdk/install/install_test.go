@@ -40,6 +40,7 @@ func TestMergeAPIExportResources(t *testing.T) {
 	}
 	existing := []any{
 		res("code.kedge.faros.sh", "connections"),         // owned → replaced
+		res("code.kedge.faros.sh", "coderepos"),           // stale in owned group → pruned
 		res("infrastructure.kedge.faros.sh", "templates"), // foreign → preserved
 		"unparseable", // kept verbatim
 	}
@@ -59,11 +60,17 @@ func TestMergeAPIExportResources(t *testing.T) {
 	if m, ok := out[1].(map[string]any); !ok || m["name"] != "repositories" {
 		t.Errorf("out[1] = %v, want owned repositories second", out[1])
 	}
-	// foreign templates preserved (not dropped by the connections overlap)
-	foundTemplates, foundUnparseable := false, false
+	// foreign templates preserved (not dropped by the connections overlap);
+	// stale coderepos in the owned group pruned
+	foundTemplates, foundUnparseable, foundStale := false, false, false
 	for _, r := range out {
-		if m, ok := r.(map[string]any); ok && m["name"] == "templates" {
-			foundTemplates = true
+		if m, ok := r.(map[string]any); ok {
+			switch m["name"] {
+			case "templates":
+				foundTemplates = true
+			case "coderepos":
+				foundStale = true
+			}
 		}
 		if s, ok := r.(string); ok && s == "unparseable" {
 			foundUnparseable = true
@@ -74,5 +81,8 @@ func TestMergeAPIExportResources(t *testing.T) {
 	}
 	if !foundUnparseable {
 		t.Error("unparseable entry was dropped")
+	}
+	if foundStale {
+		t.Error("stale 'coderepos' entry in an owned group was not pruned")
 	}
 }
