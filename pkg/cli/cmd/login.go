@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -261,6 +262,18 @@ func mergeKubeconfig(kubeconfigBytes []byte) error {
 
 	// Merge: overwrite clusters, contexts, and auth infos from the new config.
 	for k, v := range newConfig.Clusters {
+		// Re-login always points the cluster at the home workspace. When the
+		// user previously switched workspaces with `kedge use` on the same
+		// hub, keep that selection — only credentials and TLS settings are
+		// refreshed. Logging into a different hub still takes the new URL.
+		if prev := existingConfig.Clusters[k]; prev != nil && strings.Contains(prev.Server, "/clusters/") {
+			prevBase, prevCluster := apiurl.SplitBaseAndCluster(prev.Server)
+			newBase, newCluster := apiurl.SplitBaseAndCluster(v.Server)
+			if prevBase == newBase && prevCluster != newCluster {
+				v.Server = prev.Server
+				fmt.Printf("Keeping previously selected workspace: %s\n", prev.Server)
+			}
+		}
 		existingConfig.Clusters[k] = v
 	}
 	for k, v := range newConfig.AuthInfos {
