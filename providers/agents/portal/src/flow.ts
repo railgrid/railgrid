@@ -71,31 +71,44 @@ export interface FlowModel {
   key: string // stable per-agent key for position persistence
   nodes: FNode[]
   wires: FWire[]
+  palette: PaletteGroup[] // left-rail contents, derived from live data by the host
 }
 
 export interface FlowCallbacks {
   onEdit(nodeId: string, values: Record<string, string | string[]>): void
   onLink(from: [string, string], to: [string, string]): void
-  onAdd(key: string): void
   onRun(nodeId: string): void
   onDelete(nodeId: string): void
   onOpenChat(): void
   onToast(msg: string): void
-  // draftFor returns the create-form spec for a draggable/creatable palette key,
-  // or null for keys that aren't standalone objects (chat/tools/notify/delegate).
+  // draftFor returns the create-form spec for a "new:<key>" palette entry, or
+  // null for keys that aren't standalone objects (chat/tools/notify/delegate).
   draftFor(key: string): DraftSpec | null
   // create writes the object from the draft's values; returns the real node id
   // (e.g. "sched:daily") on success so the canvas can place it, or null on fail.
   create(key: string, values: Record<string, string | string[]>): Promise<string | null>
+  // addExisting references an already-existing object (dragged from the palette)
+  // to this agent — patches the reference and returns the real node id for
+  // placement, or null on failure/toast.
+  addExisting(id: string): Promise<string | null>
 }
 
-// PaletteItem is one entry in the left rail: a create-key, its label, and the
-// node type used for its icon/color.
-interface PaletteItem {
-  key: string
+// A palette entry is either an existing object (id = its real node id, e.g.
+// "sched:daily" / "toolset:ops" / "conn:tg") or a create action (id =
+// "new:<draftKey>"). linked entries are already referenced by this agent and
+// render dimmed + inert.
+export interface PaletteEntry {
+  id: string
   label: string
   icon: FNodeType
+  linked?: boolean
+  sub?: string
 }
+export interface PaletteGroup {
+  label: string
+  entries: PaletteEntry[]
+}
+const NEW_PREFIX = 'new:'
 
 interface TypeDef {
   label: string
@@ -117,26 +130,6 @@ const TYPES: Record<FNodeType, TypeDef> = {
   delegate: { label: 'Delegate', color: '--flow-delegate', icon: '<circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="17.5" cy="9" r="2.2"/><path d="M6 8.2v7.6M6 12h5.5a4 4 0 0 0 4-4"/>' },
 }
 
-const RAIL: [string, PaletteItem[]][] = [
-  ['In', [
-    { key: 'schedule', label: 'Schedule', icon: 'schedule' },
-    { key: 'trigger', label: 'Trigger', icon: 'trigger' },
-    { key: 'chat', label: 'Chat', icon: 'chat' },
-  ]],
-  ['Tools', [
-    { key: 'tool-mcp', label: 'MCP', icon: 'tool' },
-    { key: 'tool-github', label: 'GitHub', icon: 'tool' },
-    { key: 'tool-web', label: 'Web search', icon: 'tool' },
-    { key: 'toolset', label: 'Toolset', icon: 'toolset' },
-  ]],
-  ['Brain', [{ key: 'model', label: 'Model', icon: 'model' }]],
-  ['Out', [
-    { key: 'output', label: 'Notify', icon: 'output' },
-    { key: 'delegate', label: 'Delegate', icon: 'delegate' },
-  ]],
-  ['IO', [{ key: 'connection', label: 'Connection', icon: 'connection' }]],
-]
-
 const NS = 'http://www.w3.org/2000/svg'
 const NW = 224
 const PORT0 = 60
@@ -153,7 +146,8 @@ interface Pos {
 
 export class FlowCanvas {
   private cb: FlowCallbacks
-  private model: FlowModel = { key: '', nodes: [], wires: [] }
+  private model: FlowModel = { key: '', nodes: [], wires: [], palette: [] }
+  private railEl!: HTMLElement
   private world!: HTMLElement
   private svg!: SVGSVGElement
   private canvas!: HTMLElement
@@ -206,7 +200,8 @@ export class FlowCanvas {
     this.dialog = root.querySelector('.flow-dialog') as HTMLElement
     ;(this.modal.querySelector('.flow-modal-bg') as HTMLElement).onclick = () => this.closeEditor()
     this.toastEl = root.querySelector('.flow-toast') as HTMLElement
-    this.buildRail(root.querySelector('.flow-rail') as HTMLElement)
+    this.railEl = root.querySelector('.flow-rail') as HTMLElement
+    this.buildRail()
     this.buildLegend(root.querySelector('.flow-legend') as HTMLElement)
     this.wireZoom(root)
     this.wirePan()
@@ -224,6 +219,7 @@ export class FlowCanvas {
       this.needFit = !this.loadPositions(model.key)
     }
     this.model = model
+    this.buildRail() // palette is derived from live data, so rebuild each update
     this.layout()
     this.syncNodes()
     this.renderWires()
@@ -789,31 +785,67 @@ export class FlowCanvas {
   }
 
   // ---- palette --------------------------------------------------------------
-  private buildRail(rail: HTMLElement): void {
-    for (const [label, list] of RAIL) {
+  // The rail is data-driven: the host supplies groups of existing objects
+  // (dragging one references it to this agent) plus "＋ new" create entries.
+  private buildRail(): void {
+    const rail = this.railEl
+    rail.innerHTML = ''
+    for (const group of this.model.palette) {
       const l = document.createElement('div')
       l.className = 'flow-rlab'
-      l.textContent = label
+      l.textContent = group.label
       rail.appendChild(l)
-      for (const item of list) {
+      for (const entry of group.entries) {
         const b = document.createElement('button')
         b.className = 'flow-palnode'
-        b.style.setProperty('--nc', cvar(item.icon))
-        b.style.setProperty('--nc-soft', `color-mix(in srgb, ${cvar(item.icon)} 15%, var(--color-surface-raised, #fff))`)
-        b.style.setProperty('--nc-line', `color-mix(in srgb, ${cvar(item.icon)} 40%, var(--color-border-default, #ccc))`)
-        const creatable = !!this.cb.draftFor(item.key)
-        b.classList.toggle('draggable', creatable)
-        b.innerHTML = `<span class="chip">${svgIcon(item.icon)}</span><span>${item.label}</span>`
-        if (creatable) this.wirePaletteDrag(b, item.key, item.icon)
-        else b.onclick = () => this.cb.onAdd(item.key)
+        b.style.setProperty('--nc', cvar(entry.icon))
+        b.style.setProperty('--nc-soft', `color-mix(in srgb, ${cvar(entry.icon)} 15%, var(--color-surface-raised, #fff))`)
+        b.style.setProperty('--nc-line', `color-mix(in srgb, ${cvar(entry.icon)} 40%, var(--color-border-default, #ccc))`)
+        const isNew = entry.id.startsWith(NEW_PREFIX)
+        b.classList.toggle('linked', !!entry.linked)
+        b.classList.toggle('is-new', isNew)
+        if (entry.sub) b.title = entry.sub
+        else if (entry.linked) b.title = 'already linked to this agent'
+        b.innerHTML = `<span class="chip">${svgIcon(entry.icon)}</span><span>${esc(entry.label)}</span>${entry.linked ? '<span class="flow-pal-check">✓</span>' : ''}`
+        if (entry.linked) {
+          // Already referenced — inert (remove it from the agent via the node's
+          // Remove button on the canvas).
+          b.disabled = true
+        } else if (isNew) {
+          const key = entry.id.slice(NEW_PREFIX.length)
+          b.classList.add('draggable')
+          this.wirePaletteDrag(b, entry.icon, (world) => this.createDraft(key, world))
+        } else {
+          b.classList.add('draggable')
+          const id = entry.id
+          this.wirePaletteDrag(b, entry.icon, (world) => void this.addExistingAt(id, world))
+        }
         rail.appendChild(b)
       }
     }
   }
 
-  // A palette item for a creatable key: click drops a draft at canvas centre;
-  // drag drops it where released. Either way the draft opens for editing.
-  private wirePaletteDrag(b: HTMLElement, key: string, icon: FNodeType): void {
+  // Reference an existing object (dragged from the palette) to this agent, then
+  // place its node where it was dropped. Mirrors doCreate's placement path.
+  private async addExistingAt(id: string, pos: Pos): Promise<void> {
+    const realId = await this.cb.addExisting(id)
+    if (!realId) return
+    // addExisting reloaded data → the real node already rendered at an
+    // auto-layout spot. Move it to where the palette item was dropped.
+    this.pos.set(realId, pos)
+    const el = this.nodeEls.get(realId)
+    if (el) {
+      el.style.left = pos.x + 'px'
+      el.style.top = pos.y + 'px'
+    }
+    this.renderWires()
+    this.savePositions()
+  }
+
+  // Ghost-drag mechanics shared by create entries and existing-object entries:
+  // click drops at canvas centre; drag drops where released. onDrop receives the
+  // world-space position.
+  private wirePaletteDrag(b: HTMLElement, icon: FNodeType, onDrop: (world: Pos) => void): void {
     b.onpointerdown = (e) => {
       e.preventDefault()
       const sx = e.clientX
@@ -844,7 +876,7 @@ export class FlowCanvas {
           dropped && over
             ? { x: (ev.clientX - r.left - this.view.x) / this.view.k - NW / 2, y: (ev.clientY - r.top - this.view.y) / this.view.k - 40 }
             : { x: (r.width / 2 - this.view.x) / this.view.k - NW / 2, y: (r.height / 2 - this.view.y) / this.view.k - 40 }
-        if (!dropped || over) this.createDraft(key, world)
+        if (!dropped || over) onDrop(world)
       }
       window.addEventListener('pointermove', move)
       window.addEventListener('pointerup', up)

@@ -16,6 +16,28 @@ kedge-provider-agents .agents-app { display: flex; flex-direction: column; gap: 
 kedge-provider-agents .agents-empty { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; min-height: 340px; }
 kedge-provider-agents .agents-page { display: flex; flex-direction: column; gap: 14px; }
 
+/* --- top menu nav bar --- */
+kedge-provider-agents .agents-nav {
+  display: flex; gap: 4px; flex-wrap: wrap; align-items: center;
+  padding-bottom: 10px; border-bottom: 1px solid var(--color-border-default, rgba(0, 0, 0, 0.1));
+}
+kedge-provider-agents .agents-navtab {
+  background: transparent; color: var(--color-text-secondary, currentColor); border: 0; cursor: pointer;
+  padding: 7px 13px; border-radius: 9px; font: inherit; font-weight: 500; font-size: 13.5px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+kedge-provider-agents .agents-navtab:hover { background: var(--color-surface-hover, rgba(0, 0, 0, 0.05)); color: var(--color-text-primary, inherit); }
+kedge-provider-agents .agents-navtab.sel { background: var(--color-accent-subtle, rgba(109, 79, 224, 0.1)); color: var(--color-accent, #6d4fe0); font-weight: 600; }
+kedge-provider-agents .agents-navcount {
+  display: inline-block; min-width: 18px; text-align: center; padding: 0 5px; font-size: 11px; font-weight: 600;
+  border-radius: 999px; background: var(--color-surface-overlay, rgba(0, 0, 0, 0.08)); color: var(--color-text-secondary, currentColor);
+}
+kedge-provider-agents .agents-navtab.sel .agents-navcount { background: var(--color-accent, #6d4fe0); color: #fff; }
+
+/* --- panel header (title + New button) for list menus --- */
+kedge-provider-agents .agents-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+kedge-provider-agents .agents-panel-head h3 { margin: 0; }
+
 /* --- back button --- */
 kedge-provider-agents .agents-back {
   align-self: flex-start; background: transparent; color: var(--color-text-secondary, currentColor);
@@ -23,13 +45,8 @@ kedge-provider-agents .agents-back {
 }
 kedge-provider-agents .agents-back:hover { background: var(--color-surface-hover, rgba(0, 0, 0, 0.05)); color: var(--color-text-primary, inherit); }
 
-/* --- home: header + agent card grid --- */
-kedge-provider-agents .agents-home { display: flex; flex-direction: column; gap: 18px; }
-kedge-provider-agents .agents-home-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-kedge-provider-agents .agents-home-head h1 { margin: 0; font-size: 22px; font-weight: 600; }
-kedge-provider-agents .agents-home-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-kedge-provider-agents .agents-home-actions button { font-size: 13px; }
-
+/* --- agents menu: agent card grid --- */
+kedge-provider-agents .agents-menu { display: flex; flex-direction: column; gap: 18px; }
 kedge-provider-agents .agents-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
 kedge-provider-agents .agents-card {
   display: flex; flex-direction: column; gap: 10px; min-height: 160px; padding: 18px;
@@ -55,7 +72,8 @@ kedge-provider-agents .agents-card-foot {
   display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--color-text-muted, inherit);
   border-top: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06)); padding-top: 10px;
 }
-kedge-provider-agents .agents-card-actions { display: flex; gap: 8px; }
+kedge-provider-agents .agents-card-actions { display: flex; gap: 8px; align-items: center; }
+kedge-provider-agents .agents-card-flow { font-size: 12.5px; padding: 8px 10px; white-space: nowrap; }
 kedge-provider-agents .agents-card-chat {
   flex: 1; padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
   border-radius: 10px; border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
@@ -216,7 +234,7 @@ kedge-provider-agents .agents-inbound-on { color: var(--color-success, #10b981);
  * page growing without limit. The offset clears the portal header + agent
  * sub-nav above; min-height keeps it usable on very short screens (the outer
  * page scrolls only then). .agents-log is the single scroll region. */
-kedge-provider-agents .agents-chat { display: flex; flex-direction: column; height: calc(100vh - 230px); min-height: 360px; overflow: hidden; }
+kedge-provider-agents .agents-chat { display: flex; flex-direction: column; height: calc(100vh - 280px); min-height: 360px; overflow: hidden; }
 kedge-provider-agents .agents-chat-head { flex: none; display: flex; gap: 8px; align-items: center; padding-bottom: 10px; margin-bottom: 6px; border-bottom: 1px solid var(--color-border-default, #e3e8f0); }
 kedge-provider-agents .agents-session-picker { flex: 1; min-width: 0; max-width: 320px; font-size: 12.5px; }
 kedge-provider-agents .agents-newchat { white-space: nowrap; font-size: 12.5px; }
@@ -334,10 +352,7 @@ kedge-provider-agents {
   --flow-grid: color-mix(in srgb, var(--color-text-muted, #889) 16%, transparent);
 }
 
-kedge-provider-agents .agents-detail-actions { display: flex; align-items: center; gap: 10px; }
-kedge-provider-agents .agents-viewseg { display: inline-flex; background: var(--color-surface, #eef1f7); border: 1px solid var(--color-border-default, #d9e0ec); border-radius: 9px; padding: 2px; }
-kedge-provider-agents .agents-viewseg button { border: 0; background: transparent; color: var(--color-text-secondary, #556); font: inherit; font-size: 12.5px; font-weight: 600; padding: 5px 12px; border-radius: 7px; cursor: pointer; }
-kedge-provider-agents .agents-viewseg button.on { background: var(--color-surface-raised, #fff); color: var(--color-text-primary, #123); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+kedge-provider-agents .agents-detail-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 kedge-provider-agents .agents-detail.is-flow { display: flex; flex-direction: column; }
 kedge-provider-agents .agents-flow-host { position: relative; height: min(76vh, 940px); min-height: 540px; }
@@ -405,7 +420,13 @@ kedge-provider-agents .flow-palnode { width: 54px; display: flex; flex-direction
 kedge-provider-agents .flow-palnode:hover { background: var(--color-surface, #eef1f7); border-color: var(--color-border-default, #d9e0ec); color: var(--color-text-primary, #123); }
 kedge-provider-agents .flow-palnode .chip { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; background: var(--nc-soft); color: var(--nc); border: 1px solid var(--nc-line); }
 kedge-provider-agents .flow-palnode .chip svg { width: 16px; height: 16px; }
-kedge-provider-agents .flow-palnode span:last-child { font-size: 9.5px; text-align: center; }
+kedge-provider-agents .flow-palnode span { font-size: 9.5px; text-align: center; overflow: hidden; text-overflow: ellipsis; max-width: 100%; white-space: nowrap; }
+/* existing objects already referenced by this agent: dimmed + inert */
+kedge-provider-agents .flow-palnode.linked { opacity: 0.45; cursor: default; }
+kedge-provider-agents .flow-palnode.linked:hover { background: transparent; border-color: transparent; color: var(--color-text-secondary, #556); }
+kedge-provider-agents .flow-pal-check { font-size: 9px; font-weight: 700; color: var(--flow-tools); }
+/* "＋ new" create entries: dashed chip to distinguish from real objects */
+kedge-provider-agents .flow-palnode.is-new .chip { border-style: dashed; }
 
 /* zoom + legend */
 kedge-provider-agents .flow-zoom { position: absolute; right: 316px; bottom: 14px; z-index: 4; display: flex; align-items: center; gap: 2px; padding: 3px; background: color-mix(in srgb, var(--color-surface-raised, #fff) 88%, transparent); backdrop-filter: blur(8px); border: 1px solid var(--color-border-default, #d9e0ec); border-radius: 10px; box-shadow: 0 8px 24px rgba(20,40,80,.10); }
@@ -481,17 +502,8 @@ kedge-provider-agents .flow-node.draft { border-style: dashed; border-color: col
 kedge-provider-agents .flow-node.draft .flow-ntitle { color: var(--color-text-muted, #889); font-style: italic; }
 kedge-provider-agents .flow-wire.draft, kedge-provider-agents .flow-node.draft .flow-port { opacity: .7; }
 
-/* --- reframed List: overview + toolsets --- */
-kedge-provider-agents .agents-info { padding: 9px 12px; border-radius: 10px; font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  background: var(--color-accent-subtle, rgba(109,79,224,.08)); border: 1px solid var(--color-accent, #6d4fe0); color: var(--color-text-primary, inherit); }
+/* --- object list forms (toolsets, schedules, triggers) --- */
 kedge-provider-agents .agents-linkbtn { background: transparent; border: 0; color: var(--color-accent, #6d4fe0); font: inherit; font-weight: 600; cursor: pointer; padding: 2px 4px; text-decoration: underline; }
-kedge-provider-agents .agents-overview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
-kedge-provider-agents .agents-ov-card { padding: 12px 14px; border-radius: 12px; background: var(--color-surface-raised, #fff); border: 1px solid var(--color-border-subtle, rgba(0,0,0,.06)); }
-kedge-provider-agents .agents-ov-k { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--color-text-muted, #889); margin-bottom: 6px; }
-kedge-provider-agents .agents-ov-v { font-size: 14px; font-weight: 600; color: var(--color-text-primary, #123); display: flex; flex-wrap: wrap; gap: 4px; }
-kedge-provider-agents .agents-ov-v.warn { color: var(--color-warning, #d97706); }
-kedge-provider-agents .agents-ov-v.muted { color: var(--color-text-muted, #889); font-weight: 400; }
-kedge-provider-agents .agents-ov-sub { margin-top: 5px; font-size: 12px; font-weight: 400; color: var(--color-text-muted, #889); }
 kedge-provider-agents .agents-checkrow { display: flex; flex-wrap: wrap; gap: 8px 16px; }
-kedge-provider-agents .agents-toolset-form { display: flex; flex-direction: column; gap: 12px; }
+kedge-provider-agents .agents-toolset-form, kedge-provider-agents .agents-obj-form { display: flex; flex-direction: column; gap: 12px; }
 kedge-provider-agents .mono { font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; }
