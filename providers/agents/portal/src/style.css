@@ -238,6 +238,12 @@ kedge-provider-agents .agents-linkbtn {
 }
 kedge-provider-agents .agents-linkbtn:hover { border-style: solid; background: var(--color-surface-hover, rgba(0,0,0,0.04)); }
 kedge-provider-agents .agents-inbound-on { color: var(--color-success, #10b981); font-weight: 700; }
+/* Wiring tab: stacked form panels, an inbound status line, and link checklists. */
+kedge-provider-agents .agents-wiring { display: flex; flex-direction: column; gap: 18px; }
+kedge-provider-agents .agents-inbound-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+kedge-provider-agents .agents-inbound-actions { margin-left: auto; display: flex; gap: 8px; }
+kedge-provider-agents .agents-wire-fs { border: 1px solid var(--color-border-default, #d9e0ec); border-radius: 10px; padding: 11px 13px; display: flex; flex-direction: column; gap: 7px; }
+kedge-provider-agents .agents-wire-fs legend { font-weight: 600; padding: 0 6px; display: inline-flex; align-items: center; gap: 5px; }
 
 /* --- chat --- */
 /* Bound the chat to the viewport so the log scrolls internally instead of the
@@ -384,11 +390,11 @@ kedge-provider-agents .flow-wire-hit { fill: none; stroke: transparent; stroke-w
 /* node card */
 kedge-provider-agents .flow-node { position: absolute; width: 224px; background: var(--color-surface-raised, #fff);
   border: 1px solid var(--color-border-default, #d9e0ec); border-radius: 13px; box-shadow: 0 1px 2px rgba(20,40,80,.06), 0 8px 22px rgba(20,40,80,.10);
-  user-select: none; --nc: var(--flow-agent); transition: box-shadow .15s, border-color .15s; }
+  user-select: none; --nc: var(--flow-agent); transition: box-shadow .15s, border-color .15s; cursor: grab; }
 kedge-provider-agents .flow-node.core { width: 238px; }
 kedge-provider-agents .flow-node.enter { animation: flow-pop .24s cubic-bezier(.2,.8,.3,1); }
 @keyframes flow-pop { from { transform: scale(.9); opacity: 0; } }
-kedge-provider-agents .flow-node.dragging { box-shadow: 0 4px 12px rgba(20,40,80,.18), 0 24px 60px rgba(20,40,80,.28); z-index: 4; }
+kedge-provider-agents .flow-node.dragging { box-shadow: 0 4px 12px rgba(20,40,80,.18), 0 24px 60px rgba(20,40,80,.28); z-index: 4; cursor: grabbing; }
 kedge-provider-agents .flow-node.sel { border-color: color-mix(in srgb, var(--nc) 60%, var(--color-border-default)); box-shadow: 0 2px 10px rgba(20,40,80,.12), 0 0 0 3px color-mix(in srgb, var(--nc) 28%, transparent); }
 kedge-provider-agents .flow-nhead { display: flex; align-items: center; gap: 9px; padding: 10px 11px; cursor: grab; }
 kedge-provider-agents .flow-nic { width: 28px; height: 28px; border-radius: 8px; flex: none; display: grid; place-items: center; background: var(--nc-soft); color: var(--nc); border: 1px solid var(--nc-line); }
@@ -489,6 +495,9 @@ kedge-provider-agents .flow-wireitem { display: flex; align-items: center; gap: 
 kedge-provider-agents .flow-wireitem.muted { color: var(--color-text-muted, #889); }
 kedge-provider-agents .flow-wireitem .sw { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 kedge-provider-agents .flow-wireitem .dir { color: var(--color-text-muted, #889); font: 700 10px/1 "IBM Plex Mono", ui-monospace, monospace; }
+kedge-provider-agents .flow-inbound { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-text-secondary, #556); padding: 7px 9px; background: var(--color-surface, #f4f6fb); border: 1px solid var(--color-border-default, #d9e0ec); border-radius: 8px; }
+kedge-provider-agents .flow-inbound .flow-inbound-note { flex: 1; }
+kedge-provider-agents .flow-inbound .flow-btn { padding: 5px 12px; font-size: 12px; }
 kedge-provider-agents .flow-btn { border: 1px solid var(--color-border-default, #d9e0ec); background: var(--color-surface, #f4f6fb); color: var(--color-text-primary, #123); font: inherit; font-weight: 600; font-size: 12.5px; padding: 8px 14px; border-radius: 9px; cursor: pointer; }
 kedge-provider-agents .flow-btn:hover { border-color: var(--color-border-strong, #bbb); }
 kedge-provider-agents .flow-btn.primary { background: var(--color-accent, #0fb9a3); border-color: transparent; color: #fff; }

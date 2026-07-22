@@ -19,12 +19,16 @@ function connOptions(vc: ViewCtx, selected: string): string {
   return [`<option value="">— none —</option>`, ...vc.store.connections.map((c) => `<option value="${escapeHTML(c.metadata.name)}" ${c.metadata.name === selected ? 'selected' : ''}>${escapeHTML(c.metadata.name)}</option>`)].join('')
 }
 
-function formHTML(vc: ViewCtx, editing: Trigger | undefined): string {
+function formHTML(vc: ViewCtx, editing: Trigger | undefined, agentRef?: string): string {
   const s = editing?.spec
   const source = s?.source || 'webhook'
+  // Scoped to one agent (Wiring tab): agent is fixed, bound in wire().
+  const nameRow = agentRef
+    ? `<label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="on-issue" /></label>`
+    : `<div class="agents-grid2"><label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="on-issue" /></label><label>Agent<select name="agentRef" required>${agentOptions(vc, '')}</select></label></div>`
   return `<form class="agents-obj-form" ${editing ? `data-edit="${escapeHTML(editing.metadata.name)}"` : ''}>
       <h4>${editing ? `Edit trigger <code>${escapeHTML(editing.metadata.name)}</code>` : 'New trigger'}</h4>
-      ${editing ? '' : `<div class="agents-grid2"><label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="on-issue" /></label><label>Agent<select name="agentRef" required>${agentOptions(vc, '')}</select></label></div>`}
+      ${editing ? '' : nameRow}
       <div class="agents-grid2">
         <label>Source<select name="source">${['webhook', 'github'].map((v) => `<option value="${v}" ${v === source ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
         <label>Connection<select name="connectionRef">${connOptions(vc, s?.connectionRef || '')}</select></label>
@@ -35,18 +39,21 @@ function formHTML(vc: ViewCtx, editing: Trigger | undefined): string {
     </form>`
 }
 
-export function render(vc: ViewCtx): string {
-  const editing = editName ? vc.store.triggers.find((t) => t.metadata.name === editName) : undefined
+export function render(vc: ViewCtx, agentRef?: string): string {
+  const scoped = !!agentRef
+  const list = scoped ? vc.store.triggers.filter((t) => t.spec.agentRef === agentRef) : vc.store.triggers
+  const editing = editName ? list.find((t) => t.metadata.name === editName) : undefined
   const showForm = creating || !!editing
+  const cols = scoped ? 4 : 5
   const rows =
-    vc.store.triggers.length === 0
-      ? `<tr class="agents-empty-row"><td colspan="6"><span class="agents-empty">${ic('zap')} No triggers yet — add one below.</span></td></tr>`
-      : vc.store.triggers
+    list.length === 0
+      ? `<tr class="agents-empty-row"><td colspan="${cols}"><span class="agents-empty">${ic('zap')} No triggers yet — add one below.</span></td></tr>`
+      : list
           .map((t) => {
             const status = t.spec.suspend ? '<span class="agents-badge">paused</span>' : t.status?.lastFired ? `last ${escapeHTML(fmtTime(t.status.lastFired))}` : 'armed'
             return `<tr class="${editName === t.metadata.name ? 'is-editing' : ''}">
               <td><strong>${escapeHTML(t.metadata.name)}</strong></td>
-              <td><button class="agents-linkbtn" data-goagent="${escapeHTML(t.spec.agentRef)}">${escapeHTML(t.spec.agentRef)}</button></td>
+              ${scoped ? '' : `<td><button class="agents-linkbtn" data-goagent="${escapeHTML(t.spec.agentRef)}">${escapeHTML(t.spec.agentRef)}</button></td>`}
               <td class="mono">${escapeHTML(t.spec.source)}${t.spec.connectionRef ? ` <span class="muted">${escapeHTML(t.spec.connectionRef)}</span>` : ''}</td>
               <td class="muted">${status}</td>
               <td class="agents-row-actions">
@@ -61,16 +68,16 @@ export function render(vc: ViewCtx): string {
   return `
     <div class="agents-panel">
       <div class="agents-panel-head"><h3>Triggers</h3>${showForm ? '' : `<button data-newobj ${vc.store.agents.length ? '' : 'disabled title="Create an agent first"'}>${ic('plus')} New trigger</button>`}</div>
-      <p class="muted">External events that wake an agent. Each fires a specific agent. ${vc.store.agents.length ? '' : 'Create an agent first.'}</p>
+      <p class="muted">External events that wake an agent${scoped ? '' : '. Each fires a specific agent'}. ${vc.store.agents.length ? '' : 'Create an agent first.'}</p>
       <table class="agents-table">
-        <thead><tr><th>Name</th><th>Agent</th><th>Source</th><th>Status</th><th class="agents-th-actions">Actions</th></tr></thead>
+        <thead><tr><th>Name</th>${scoped ? '' : '<th>Agent</th>'}<th>Source</th><th>Status</th><th class="agents-th-actions">Actions</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      ${showForm ? formHTML(vc, editing) : ''}
+      ${showForm ? formHTML(vc, editing, agentRef) : ''}
     </div>`
 }
 
-export function wire(vc: ViewCtx, root: HTMLElement): void {
+export function wire(vc: ViewCtx, root: HTMLElement, agentRef?: string): void {
   root.querySelector<HTMLElement>('[data-newobj]')?.addEventListener('click', () => {
     creating = true
     editName = null
@@ -112,9 +119,9 @@ export function wire(vc: ViewCtx, root: HTMLElement): void {
       editName = null
     } else {
       const name = g('name')
-      const agentRef = g('agentRef')
-      if (!name || !agentRef) return
-      void createTrigger(vc, { name, agentRef, ...patch }).then((ok) => {
+      const ref = agentRef || g('agentRef')
+      if (!name || !ref) return
+      void createTrigger(vc, { name, agentRef: ref, ...patch }).then((ok) => {
         if (ok) creating = false
       })
     }

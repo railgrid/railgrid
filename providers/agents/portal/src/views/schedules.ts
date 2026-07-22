@@ -17,12 +17,17 @@ function agentOptions(vc: ViewCtx, selected: string): string {
   return vc.store.agents.map((a) => `<option value="${escapeHTML(a.metadata.name)}" ${a.metadata.name === selected ? 'selected' : ''}>${escapeHTML(a.spec?.displayName || a.metadata.name)}</option>`).join('')
 }
 
-function formHTML(vc: ViewCtx, editing: Schedule | undefined): string {
+function formHTML(vc: ViewCtx, editing: Schedule | undefined, agentRef?: string): string {
   const s = editing?.spec
   const type = s?.type || 'cron'
+  // When scoped to one agent (the Wiring tab), the agent is fixed — bind it in
+  // wire() and collect only the name.
+  const nameRow = agentRef
+    ? `<label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="daily-digest" /></label>`
+    : `<div class="agents-grid2"><label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="daily-digest" /></label><label>Agent<select name="agentRef" required>${agentOptions(vc, '')}</select></label></div>`
   return `<form class="agents-obj-form" ${editing ? `data-edit="${escapeHTML(editing.metadata.name)}"` : ''}>
       <h4>${editing ? `Edit schedule <code>${escapeHTML(editing.metadata.name)}</code>` : 'New schedule'}</h4>
-      ${editing ? '' : `<div class="agents-grid2"><label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="daily-digest" /></label><label>Agent<select name="agentRef" required>${agentOptions(vc, '')}</select></label></div>`}
+      ${editing ? '' : nameRow}
       <div class="agents-grid2">
         <label>Type<select name="type">${['cron', 'wakeup'].map((t) => `<option value="${t}" ${t === type ? 'selected' : ''}>${t === 'wakeup' ? 'one-shot (runAt)' : 'recurring (cron)'}</option>`).join('')}</select></label>
         <label>Timezone<input name="timeZone" value="${escapeHTML(s?.timeZone || '')}" placeholder="Europe/Vilnius" /></label>
@@ -35,20 +40,23 @@ function formHTML(vc: ViewCtx, editing: Schedule | undefined): string {
     </form>`
 }
 
-export function render(vc: ViewCtx): string {
-  const editing = editName ? vc.store.schedules.find((s) => s.metadata.name === editName) : undefined
+export function render(vc: ViewCtx, agentRef?: string): string {
+  const scoped = !!agentRef
+  const list = scoped ? vc.store.schedules.filter((s) => s.spec.agentRef === agentRef) : vc.store.schedules
+  const editing = editName ? list.find((s) => s.metadata.name === editName) : undefined
   const showForm = creating || !!editing
+  const cols = scoped ? 4 : 5
   const rows =
-    vc.store.schedules.length === 0
-      ? `<tr class="agents-empty-row"><td colspan="6"><span class="agents-empty">${ic('clock')} No schedules yet — add one below.</span></td></tr>`
-      : vc.store.schedules
+    list.length === 0
+      ? `<tr class="agents-empty-row"><td colspan="${cols}"><span class="agents-empty">${ic('clock')} No schedules yet — add one below.</span></td></tr>`
+      : list
           .map((s) => {
             const when = s.spec.type === 'wakeup' ? s.spec.runAt || '' : s.spec.schedule || ''
             const dis = s.status?.disabledReason
             const status = dis ? `<span class="agents-badge">${escapeHTML(dis)}</span>` : s.spec.suspend ? '<span class="agents-badge">paused</span>' : s.status?.nextRun ? `next ${escapeHTML(fmtTime(s.status.nextRun))}` : 'armed'
             return `<tr class="${editName === s.metadata.name ? 'is-editing' : ''}">
               <td><strong>${escapeHTML(s.metadata.name)}</strong></td>
-              <td><button class="agents-linkbtn" data-goagent="${escapeHTML(s.spec.agentRef)}">${escapeHTML(s.spec.agentRef)}</button></td>
+              ${scoped ? '' : `<td><button class="agents-linkbtn" data-goagent="${escapeHTML(s.spec.agentRef)}">${escapeHTML(s.spec.agentRef)}</button></td>`}
               <td class="mono">${escapeHTML(when)}${s.spec.timeZone ? ` <span class="muted">${escapeHTML(s.spec.timeZone)}</span>` : ''}</td>
               <td class="muted">${status}</td>
               <td class="agents-row-actions">
@@ -63,16 +71,16 @@ export function render(vc: ViewCtx): string {
   return `
     <div class="agents-panel">
       <div class="agents-panel-head"><h3>Schedules</h3>${showForm ? '' : `<button data-newobj ${vc.store.agents.length ? '' : 'disabled title="Create an agent first"'}>${ic('plus')} New schedule</button>`}</div>
-      <p class="muted">Recurring or one-shot tasks. Each runs as a specific agent. ${vc.store.agents.length ? '' : 'Create an agent first.'}</p>
+      <p class="muted">Recurring or one-shot tasks${scoped ? ' that run as this agent' : '. Each runs as a specific agent'}. ${vc.store.agents.length ? '' : 'Create an agent first.'}</p>
       <table class="agents-table">
-        <thead><tr><th>Name</th><th>Agent</th><th>When</th><th>Status</th><th class="agents-th-actions">Actions</th></tr></thead>
+        <thead><tr><th>Name</th>${scoped ? '' : '<th>Agent</th>'}<th>When</th><th>Status</th><th class="agents-th-actions">Actions</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      ${showForm ? formHTML(vc, editing) : ''}
+      ${showForm ? formHTML(vc, editing, agentRef) : ''}
     </div>`
 }
 
-export function wire(vc: ViewCtx, root: HTMLElement): void {
+export function wire(vc: ViewCtx, root: HTMLElement, agentRef?: string): void {
   root.querySelector<HTMLElement>('[data-newobj]')?.addEventListener('click', () => {
     creating = true
     editName = null
@@ -130,9 +138,9 @@ export function wire(vc: ViewCtx, root: HTMLElement): void {
       editName = null
     } else {
       const name = g('name')
-      const agentRef = g('agentRef')
-      if (!name || !agentRef) return
-      void createSchedule(vc, { name, agentRef, ...patch }).then((ok) => {
+      const ref = agentRef || g('agentRef')
+      if (!name || !ref) return
+      void createSchedule(vc, { name, agentRef: ref, ...patch }).then((ok) => {
         if (ok) creating = false
       })
     }

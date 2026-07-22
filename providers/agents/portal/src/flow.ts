@@ -50,6 +50,13 @@ export interface FNode {
   canDelete?: boolean
   draft?: boolean // unsaved: shows a Create button instead of auto-save
   createKey?: string // palette key used to create this draft
+  // Channel nodes: the inbound (channel → agent) leg, shown as its own row in
+  // the modal so it's clear a linked channel talks both ways.
+  inbound?: {
+    state: 'auto' | 'on' | 'off' | 'unlinked' // auto = bot gateway, needs no toggle
+    canEnable: boolean // telegram/slack expose an enable-inbound action
+    note: string
+  }
 }
 
 // DraftSpec describes a new, unsaved node dropped from the palette: the fields
@@ -83,6 +90,8 @@ export interface FlowCallbacks {
   onDelete(nodeId: string): void
   onOpenChat(): void
   onToast(msg: string): void
+  // Turn on inbound chat for a channel node (telegram/slack webhook registration).
+  onEnableInbound(nodeId: string): void
   // draftFor returns the create-form spec for a "new:<key>" palette entry, or
   // null for keys that aren't standalone objects (chat/tools/notify/delegate).
   draftFor(key: string): DraftSpec | null
@@ -331,20 +340,21 @@ export class FlowCanvas {
     const p = this.pos.get(n.id) as Pos
     el.style.left = p.x + 'px'
     el.style.top = p.y + 'px'
-    const head = el.querySelector('.flow-nhead') as HTMLElement
-    head.onpointerdown = (e) => this.startDragNode(e, n)
     const editBtn = el.querySelector('.flow-editbtn') as HTMLElement | null
     if (editBtn) {
-      // Pointerdown-stop keeps the header-drag from swallowing the click.
+      // Pointerdown-stop keeps the node-drag from swallowing the click.
       editBtn.onpointerdown = (e) => e.stopPropagation()
       editBtn.onclick = (e) => {
         e.stopPropagation()
         this.openEditor(n.id)
       }
     }
+    // The whole card is the drag handle — grabbing anywhere but a port or a
+    // button moves the node (a click that doesn't move just selects it).
     el.onpointerdown = (e) => {
-      if ((e.target as HTMLElement).classList.contains('flow-port')) return
-      this.select(n.id)
+      const t = e.target as HTMLElement
+      if (t.classList.contains('flow-port') || t.closest('button')) return
+      this.startDragNode(e, n)
     }
     el.ondblclick = (e) => {
       if ((e.target as HTMLElement).classList.contains('flow-port')) return
@@ -464,6 +474,15 @@ export class FlowCanvas {
     const fields = (n.fields || []).map((f) => this.fieldHTML(f)).join('')
     const editable = (n.fields || []).some((f) => f.kind !== 'static')
     const draft = !!n.draft
+    const inb = n.inbound
+    const inbHTML =
+      !draft && inb
+        ? `<div class="flow-field"><label>Inbound chat</label><div class="flow-inbound">
+             <span class="flow-led ${inb.state === 'off' || inb.state === 'unlinked' ? 'off' : 'ok'}"></span>
+             <span class="flow-inbound-note">${esc(inb.note)}</span>
+             ${inb.canEnable ? '<button class="flow-btn" data-inbound>Enable</button>' : ''}
+           </div></div>`
+        : ''
     this.dialog.innerHTML = `
       <div class="flow-dialog-head">
         <span class="flow-nic">${svgIcon(n.type)}</span>
@@ -473,6 +492,7 @@ export class FlowCanvas {
       </div>
       <div class="flow-dialog-body">
         ${fields || '<p class="flow-nsub">Nothing to edit here — this node is wired from the canvas.</p>'}
+        ${inbHTML}
         ${draft ? '' : `<div class="flow-field"><label>Cables</label><div class="flow-wirelist">${cables}</div></div>`}
       </div>
       <div class="flow-dialog-foot">
@@ -495,6 +515,8 @@ export class FlowCanvas {
         this.closeEditor()
         this.cb.onDelete(n.id)
       }
+    const inbBtn = this.dialog.querySelector('[data-inbound]') as HTMLElement | null
+    if (inbBtn) inbBtn.onclick = () => this.cb.onEnableInbound(n.id)
     const discardBtn = this.dialog.querySelector('[data-discard]') as HTMLElement | null
     if (discardBtn) discardBtn.onclick = () => this.discardEditing()
     const createBtn = this.dialog.querySelector('[data-create]') as HTMLElement | null

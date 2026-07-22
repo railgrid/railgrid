@@ -10,10 +10,10 @@
 //   #/connections #/toolsets #/schedules #/triggers #/models #/inbox
 
 export type MenuKey = 'agents' | 'connections' | 'toolsets' | 'schedules' | 'triggers' | 'models' | 'inbox'
-export type AgentTab = 'chat' | 'flow' | 'settings'
+export type AgentTab = 'chat' | 'flow' | 'wiring' | 'settings'
 
 export const MENUS: MenuKey[] = ['agents', 'connections', 'toolsets', 'schedules', 'triggers', 'models', 'inbox']
-const AGENT_TABS: AgentTab[] = ['chat', 'flow', 'settings']
+const AGENT_TABS: AgentTab[] = ['chat', 'flow', 'wiring', 'settings']
 
 export type Route = { kind: 'menu'; menu: MenuKey } | { kind: 'agent'; name: string; tab: AgentTab }
 

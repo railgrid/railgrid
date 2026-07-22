@@ -10,11 +10,13 @@ import { escapeHTML } from '../types'
 import { deleteAgent } from '../actions'
 import * as chat from './agent-chat'
 import * as settings from './agent-settings'
+import * as wiring from './agent-wiring'
 import * as flowView from './flow-view'
 
 const TABS: [AgentTab, string][] = [
   ['chat', `${ic('message')} Chat`],
   ['flow', `${ic('workflow')} Flow`],
+  ['wiring', `${ic('sliders')} Wiring`],
   ['settings', `${ic('settings')} Settings`],
 ]
 
@@ -25,7 +27,14 @@ export function render(vc: ViewCtx, name: string, tab: AgentTab): string {
     // error, since the list refreshes into place.
     return `<div class="agents-detail"><div class="agents-detail-head"><div class="agents-detail-title"><button class="agents-back" data-back>${ic('arrow-left')} Agents</button></div></div><div class="agents-empty"><p class="muted">Loading agent…</p></div></div>`
   }
-  const body = tab === 'chat' ? chat.render(a) : tab === 'settings' ? settings.render(vc, a) : `<div class="agents-flow-host" data-flow-host></div>`
+  const body =
+    tab === 'chat'
+      ? chat.render(a)
+      : tab === 'settings'
+        ? settings.render(vc, a)
+        : tab === 'wiring'
+          ? wiring.render(vc, a)
+          : `<div class="agents-flow-host" data-flow-host></div>`
   return `
     <div class="agents-detail ${tab === 'flow' ? 'is-flow' : ''}">
       <div class="agents-detail-head">
@@ -58,5 +67,6 @@ export function wire(vc: ViewCtx, root: HTMLElement, name: string, tab: AgentTab
   if (!a) return
   if (tab === 'chat') chat.wire(vc, root, a)
   else if (tab === 'settings') settings.wire(vc, root, a)
+  else if (tab === 'wiring') wiring.wire(vc, root, a)
   else flowView.mount(vc, root, name)
 }

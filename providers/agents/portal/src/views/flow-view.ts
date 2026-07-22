@@ -25,6 +25,7 @@ import {
   runTrigger,
   linkToolset,
   wireToolTo,
+  enableInbound,
 } from '../actions'
 
 let flow: FlowCanvas | null = null
@@ -55,6 +56,7 @@ function callbacks(): FlowCallbacks {
     onDelete: (id) => void flowDelete(id),
     onOpenChat: () => cur && cur.vc.navigate({ kind: 'agent', name: cur.agent, tab: 'chat' }),
     onToast: (m) => flow?.toast(m),
+    onEnableInbound: (id) => void flowEnableInbound(id),
     draftFor: (t) => flowDraftFor(t),
     create: (t, values) => flowCreate(t, values),
     addExisting: (id) => flowAddExisting(id),
@@ -232,15 +234,35 @@ function flowModel(vc: ViewCtx, name: string): FlowModel {
     const id = 'conn:' + cn
     const used = usedConns.has(cn)
     const webish = c.spec.type === 'websearch'
+    // A channel talks two ways to the agent, keyed on the SAME notify link:
+    // NOTIFY (agent → channel, outbound) and LISTEN (channel → agent, inbound).
+    const isDiscordWebhook = c.spec.type === 'discord' && (c.spec.channel || '').startsWith('https://')
+    const isDiscordBot = c.spec.type === 'discord' && !isDiscordWebhook
+    const canReceive = c.spec.type === 'telegram' || c.spec.type === 'slack' || isDiscordBot
+    const isNotify = notify === cn
+    const inboundActive = isNotify && canReceive && (isDiscordBot || !!c.status?.webhookPath)
+    const inbound = isChannel
+      ? !canReceive
+        ? { state: 'off' as const, canEnable: false, note: 'Send-only channel — it can notify you, but can’t receive chat.' }
+        : !isNotify
+          ? { state: 'unlinked' as const, canEnable: false, note: 'Not linked yet — drag this channel onto the agent (or set it as Notify) to route messages here.' }
+          : isDiscordBot
+            ? { state: 'auto' as const, canEnable: false, note: 'Automatic — the Discord bot delivers messages to this agent while it’s linked.' }
+            : c.status?.webhookPath
+              ? { state: 'on' as const, canEnable: false, note: 'Receiving — messages from this channel reach the agent.' }
+              : { state: 'off' as const, canEnable: true, note: 'Not receiving yet — click Enable to register the inbound webhook.' }
+      : undefined
+    const outPort = isChannel ? 'listen' : 'events'
     nodes.push({
       id,
       type: isTool ? 'tool' : 'connection',
       title: c.spec.displayName || cn,
       ins: isChannel ? ['notify'] : [],
-      outs: ['events'],
+      outs: [outPort],
       sub: `<span class="mono">${escapeHTML(c.spec.type)}</span>${c.status?.oauthConnected ? ' · connected' : webish ? '' : used ? '' : ' · unwired'}`,
       status: c.status?.oauthConnected || c.status?.phase === 'Ready' || webish ? ['ok', webish ? 'ready' : 'connected'] : ['warn', c.status?.phase || 'setup'],
       canDelete: isTool,
+      inbound,
       fields: isTool
         ? [
             { key: 'displayName', label: 'Display name', kind: 'text', value: c.spec.displayName || cn },
@@ -254,9 +276,10 @@ function flowModel(vc: ViewCtx, name: string): FlowModel {
           ],
     })
     trigs.forEach((t) => {
-      if (t.spec.connectionRef === cn) wires.push({ from: [id, 'events'], to: ['trig:' + t.metadata.name, 'src'] })
+      if (t.spec.connectionRef === cn) wires.push({ from: [id, outPort], to: ['trig:' + t.metadata.name, 'src'] })
     })
-    if (notify === cn && isChannel) wires.push({ from: ['agent', 'result'], to: [id, 'notify'] })
+    if (isNotify && isChannel) wires.push({ from: ['agent', 'result'], to: [id, 'notify'] })
+    if (inboundActive) wires.push({ from: [id, 'listen'], to: ['agent', 'input'] })
     if (isTool && agentTools.has(cn)) wires.push({ from: [id, 'events'], to: ['agent', 'tools'] })
   }
 
@@ -631,6 +654,11 @@ async function flowLink(from: [string, string], to: [string, string]): Promise<v
   if (fromNode === 'agent' && toNode.startsWith('conn:') && toPort === 'notify') {
     return void updateAgent(vc, agent, { notifyConnection: toNode.slice(5) }, 'Notify channel set.')
   }
+  // connection.listen → agent.input : link a channel inbound. The notify link is
+  // symmetric — it also routes messages FROM the channel to the agent.
+  if (fromNode.startsWith('conn:') && toNode === 'agent' && toPort === 'input') {
+    return void updateAgent(vc, agent, { notifyConnection: fromNode.slice(5) }, 'Channel linked — it can message the agent both ways.')
+  }
   // toolset.use → agent.tools : link the shared toolset to this agent
   if (fromNode.startsWith('toolset:') && toNode === 'agent' && toPort === 'tools') {
     await linkToolset(vc, agent, fromNode.slice(8))
@@ -694,6 +722,13 @@ async function flowEdit(id: string, values: Record<string, string | string[]>): 
   } else if (id.startsWith('toolset:')) {
     if ('displayName' in values) await updateToolset(vc, id.slice(8), { displayName: str(values.displayName) })
   }
+}
+
+// Turn on inbound chat for a channel node: registers the webhook (telegram/slack)
+// so the channel the agent notifies can also talk back to it.
+async function flowEnableInbound(id: string): Promise<void> {
+  if (!cur || !id.startsWith('conn:')) return
+  await enableInbound(cur.vc, id.slice(5))
 }
 
 async function flowRun(id: string): Promise<void> {
