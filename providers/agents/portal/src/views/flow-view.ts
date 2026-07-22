@@ -6,6 +6,7 @@
 // dragging one references it to this agent (addExisting), and each group has a
 // "＋ new" create entry (draftFor/create).
 
+import { confirmModal } from '../portalkit/modal'
 import { FlowCanvas } from '../flow'
 import type { FlowModel, FNode, FWire, FlowCallbacks, DraftSpec, PaletteGroup, PaletteEntry } from '../flow'
 import type { ViewCtx } from '../view'
@@ -368,14 +369,14 @@ async function flowAddExisting(id: string): Promise<string | null> {
     if (id.startsWith('sched:')) {
       const n = id.slice(6)
       const s = vc.store.schedules.find((x) => x.metadata.name === n)
-      if (s && s.spec.agentRef && s.spec.agentRef !== agent && !confirm(`Reassign schedule ${n} from ${s.spec.agentRef} to ${agent}?`)) return null
+      if (s && s.spec.agentRef && s.spec.agentRef !== agent && !(await confirmModal({ title: `Reassign schedule “${n}”?`, message: `It currently runs as ${s.spec.agentRef}. Reassign it to ${agent}?`, confirmLabel: 'Reassign' }))) return null
       await updateSchedule(vc, n, { agentRef: agent }, 'Schedule assigned.')
       return id
     }
     if (id.startsWith('trig:')) {
       const n = id.slice(5)
       const t = vc.store.triggers.find((x) => x.metadata.name === n)
-      if (t && t.spec.agentRef && t.spec.agentRef !== agent && !confirm(`Reassign trigger ${n} from ${t.spec.agentRef} to ${agent}?`)) return null
+      if (t && t.spec.agentRef && t.spec.agentRef !== agent && !(await confirmModal({ title: `Reassign trigger “${n}”?`, message: `It currently fires ${t.spec.agentRef}. Reassign it to ${agent}?`, confirmLabel: 'Reassign' }))) return null
       await updateTrigger(vc, n, { agentRef: agent }, 'Trigger assigned.')
       return id
     }
@@ -706,9 +707,9 @@ async function flowDelete(id: string): Promise<void> {
   if (!cur) return
   const { vc, agent } = cur
   if (id.startsWith('sched:')) {
-    if (confirm(`Delete schedule ${id.slice(6)}?`)) await deleteSchedule(vc, id.slice(6))
+    if (await confirmModal({ title: `Delete schedule “${id.slice(6)}”?`, danger: true, confirmLabel: 'Delete' })) await deleteSchedule(vc, id.slice(6))
   } else if (id.startsWith('trig:')) {
-    if (confirm(`Delete trigger ${id.slice(5)}?`)) await deleteTrigger(vc, id.slice(5))
+    if (await confirmModal({ title: `Delete trigger “${id.slice(5)}”?`, danger: true, confirmLabel: 'Delete' })) await deleteTrigger(vc, id.slice(5))
   } else if (id.startsWith('delegate:')) {
     const a = vc.store.agent(agent)
     const next = (a?.spec?.delegates || []).filter((d) => d !== id.slice(9))

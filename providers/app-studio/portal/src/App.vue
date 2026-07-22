@@ -29,6 +29,8 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api, isProjectAPIInitializingError } from './api'
+import PkConfirmDialog from './portalkit/ConfirmDialog.vue'
+import { confirmDialog } from './portalkit/confirm'
 import {
   canSubmitCreatePrompt,
   createSetupItems,
@@ -1074,7 +1076,7 @@ async function applyDevelopmentTemplate() {
   if (!projectName || !template || developmentTemplateBusy.value) return
   // Switching templates re-provisions the development environment; the
   // workspace and git repository survive, but the running instance does not.
-  if (!window.confirm(`Switch the development environment to the "${template}" template? The current development instance will be replaced (your code stays in the workspace and git).`)) return
+  if (!(await confirmDialog({ title: `Switch to the "${template}" template?`, message: 'The current development instance will be replaced (your code stays in the workspace and git).', confirmLabel: 'Switch' }))) return
   developmentTemplateBusy.value = true
   developmentSyncError.value = null
   developmentSyncStatus.value = null
@@ -1254,7 +1256,7 @@ async function hydrateDevelopmentWorkspace() {
   const projectName = selected.value?.name
   if (!projectName || developmentHydrateBusy.value) return
   // Hydration overwrites workspace files with the repository's tree.
-  if (!window.confirm('Load the workspace from the git repository? Files in the workspace will be overwritten with the repository versions (workspace-only files are kept).')) return
+  if (!(await confirmDialog({ title: 'Load the workspace from git?', message: 'Files in the workspace will be overwritten with the repository versions (workspace-only files are kept).', confirmLabel: 'Load' }))) return
   developmentHydrateBusy.value = true
   developmentSyncError.value = null
   developmentSyncStatus.value = null
@@ -1512,7 +1514,7 @@ async function saveLLMSettings() {
 }
 
 async function clearLLMKey() {
-  if (!window.confirm('Clear the configured LLM API key?')) return
+  if (!(await confirmDialog({ title: 'Clear the configured LLM API key?', danger: true, confirmLabel: 'Clear' }))) return
   llmSaving.value = true
   llmStatus.value = null
   try {
@@ -4746,4 +4748,5 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
     @cancel="closeDeleteProjectDialog"
     @confirm="confirmDeleteProject"
   />
+  <PkConfirmDialog />
 </template>

@@ -6,6 +6,8 @@ import Wizard from './Wizard.vue'
 import Detail from './Detail.vue'
 import Workloads from './Workloads.vue'
 import Services from './Services.vue'
+import ConfirmDialog from './portalkit/ConfirmDialog.vue'
+import { confirmDialog } from './portalkit/confirm'
 import type { Edge, EdgeType, KedgeContext, ErrorResponse } from './types'
 
 const props = defineProps<{ ctx: KedgeContext | null }>()
@@ -72,7 +74,7 @@ function onWizardDone() {
 }
 
 async function onDelete(edge: Edge) {
-  if (!confirm(`Delete ${edge.type === 'server' ? 'server' : 'cluster'} "${edge.name}"?`)) return
+  if (!(await confirmDialog({ title: `Delete ${edge.type === 'server' ? 'server' : 'cluster'} "${edge.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
   try {
     await deleteEdge(edge)
     await refresh()
@@ -203,5 +205,6 @@ function rel(ts?: string): string {
       </table>
     </div>
     </template>
+    <ConfirmDialog />
   </div>
 </template>

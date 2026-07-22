@@ -2,7 +2,7 @@
 // monthly budget, and delegation. Tools/toolsets are wired in the Flow tab — the
 // save here deliberately omits them so it never clobbers tool policy.
 
-import { ic } from '../icons'
+import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
 import type { Agent } from '../types'
 import { escapeHTML } from '../types'

@@ -3,7 +3,8 @@
 // Type-driven create (CONN_DEFS), edit with Discord special-casing, test /
 // enable-inbound / OAuth-connect actions.
 
-import { ic } from '../icons'
+import { confirmModal } from '../portalkit/modal'
+import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
 import type { Connection } from '../types'
 import { escapeHTML } from '../types'
@@ -172,8 +173,8 @@ export function render(vc: ViewCtx): string {
 
 export function wire(vc: ViewCtx, root: HTMLElement): void {
   root.querySelectorAll<HTMLElement>('[data-delconn]').forEach((el) =>
-    el.addEventListener('click', () => {
-      if (confirm(`Delete connection ${el.dataset.delconn}?`)) void deleteConnection(vc, el.dataset.delconn!)
+    el.addEventListener('click', async () => {
+      if (await confirmModal({ title: `Delete connection “${el.dataset.delconn}”?`, danger: true, confirmLabel: 'Delete' })) void deleteConnection(vc, el.dataset.delconn!)
     }),
   )
   root.querySelectorAll<HTMLElement>('[data-oauth]').forEach((el) => el.addEventListener('click', () => void oauthConnect(vc, el.dataset.oauth!)))

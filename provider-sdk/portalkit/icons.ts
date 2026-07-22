@@ -1,7 +1,14 @@
+// CANONICAL SOURCE — provider-sdk/portalkit. Do not edit the copies vendored
+// into individual portals (providers/*/portal/src/portalkit/); edit here and run
+// `make sync-portalkit`. Builds must stay self-contained (each portal ships its
+// own copy, no workspace/symlink), so the kit is synced rather than imported.
+//
 // Inline SVG icon set — a small, self-contained Lucide-style stroke library
 // (MIT-derived paths, hand-inlined so the bundle has no runtime dependency and
 // stays CSP-safe). Icons inherit the current text color and font size (1em),
 // so they drop into buttons, labels, chips and headings without extra styling.
+// For the string-building (vanilla-TS) portals — agents, kuery, quickstart. Vue
+// portals use lucide-vue-next instead.
 //
 // Usage: `${ic('trash')}` inside an HTML template literal. Prefer these over
 // emoji everywhere for a consistent, professional look across light/dark.
@@ -95,6 +102,17 @@ const PATHS: Record<IconName, string> = {
   dollar: '<path d="M12 2v20M17 6a4 4 0 0 0-4-3H11a3.5 3.5 0 0 0 0 7h2a3.5 3.5 0 0 1 0 7h-2a4 4 0 0 1-4-3"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>',
   flask: '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4A2 2 0 0 0 19 18l-5-9V3M7.5 14h9"/>',
+}
+
+// Self-inject the .ic sizing rule once (browser only), so any portal that
+// imports ic() gets correct icon sizing without wiring a separate stylesheet —
+// important for the raw-CSS-injection portals (agents/kuery/quickstart).
+const ICON_STYLE_ID = 'kedge-portalkit-icons-css'
+if (typeof document !== 'undefined' && !document.getElementById(ICON_STYLE_ID)) {
+  const s = document.createElement('style')
+  s.id = ICON_STYLE_ID
+  s.textContent = '.ic{width:1.05em;height:1.05em;display:inline-block;vertical-align:-0.16em;flex:none;stroke-width:2}'
+  document.head.appendChild(s)
 }
 
 // ic returns the inline SVG markup for an icon, optionally with extra classes.

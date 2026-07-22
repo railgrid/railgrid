@@ -15,7 +15,7 @@
 import { ApiClient } from './api'
 import { AppStore } from './store'
 import type { KedgeContext } from './types'
-import { ic, type IconName } from './icons'
+import { ic, type IconName } from './portalkit/icons'
 import { escapeHTML } from './types'
 import { DEFAULT_ROUTE, MENUS, parseHash, syncHash, type MenuKey, type Route } from './router'
 import type { ViewCtx } from './view'

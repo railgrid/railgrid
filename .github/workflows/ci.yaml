@@ -50,6 +50,13 @@ jobs:
     - name: Verify boilerplate
       run: make verify-boilerplate
 
+  verify-portalkit:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Verify portalkit is synced
+      run: make verify-portalkit
+
   verify-codegen:
     runs-on: ubuntu-latest
     steps:

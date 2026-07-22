@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { RefreshCw, Trash2, Plus, Boxes, Pencil } from 'lucide-vue-next'
+import { RefreshCw, Trash2, Plus, Boxes, Pencil, Check } from 'lucide-vue-next'
 import {
   listServices, createKubeEdgeService, deleteEdgeService, listEdges,
   fetchServiceCatalog,
 } from './api'
 import type { CatalogEntry } from './api'
 import type { EdgeService, EdgeServiceDraft, Edge, ErrorResponse } from './types'
+import { confirmDialog } from './portalkit/confirm'
 import ServiceEdit from './ServiceEdit.vue'
 
 // Service type catalog — fetched from the backend (svccatalog.All()) so the form
@@ -177,7 +178,7 @@ async function onCreate() {
 }
 
 async function onDelete(s: EdgeService) {
-  if (!confirm(`Delete service "${s.name}"? Its MCP tools stop being exposed.`)) return
+  if (!(await confirmDialog({ title: `Delete service "${s.name}"?`, message: 'Its MCP tools stop being exposed.', danger: true, confirmLabel: 'Delete' }))) return
   try {
     await deleteEdgeService(s.name)
     await refresh()
@@ -330,7 +331,7 @@ function phaseClass(p?: string): string {
             <td class="mono muted">{{ catalogFor(s.serviceType)?.displayName || s.serviceType || '—' }}</td>
             <td class="mono muted">{{ s.host || (s.targetNamespace ? s.targetNamespace + '/' : '') + (s.targetName || '—') }}:{{ s.port || '' }}</td>
             <td><span class="status" :class="phaseClass(s.phase)">{{ s.phase || 'Pending' }}</span></td>
-            <td>{{ s.hasCredentials ? '✓' : '—' }}</td>
+            <td><Check v-if="s.hasCredentials" :size="16" class="ok-check" /><span v-else class="muted">—</span></td>
             <td class="actions">
               <button class="icon" title="Edit" @click.stop="openEdit(s)"><Pencil :size="14" /></button>
               <button class="icon danger" title="Delete" @click.stop="onDelete(s)"><Trash2 :size="14" /></button>

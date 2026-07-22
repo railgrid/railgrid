@@ -8,6 +8,7 @@ import { registerProviderRoutes } from '@/router/providers'
 import { SESSION_EXPIRED_EVENT } from '@/composables/useGraphQL'
 import ControlPlaneProvisioning from '@/components/ControlPlaneProvisioning.vue'
 import TerminalDock from '@/components/TerminalDock.vue'
+import PkConfirmDialog from '@/portalkit/ConfirmDialog.vue'
 
 const auth = useAuthStore()
 const providers = useProvidersStore()
@@ -108,4 +109,5 @@ watch(
        lives *inside* router-view, so keeping the dock here is what preserves the
        live xterm buffer + SSH WebSocket across route changes. -->
   <TerminalDock />
+  <PkConfirmDialog />
 </template>

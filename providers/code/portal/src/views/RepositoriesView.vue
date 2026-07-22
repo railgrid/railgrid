@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import type { Connection, ErrorResponse, Repository } from '../types'
-import { confirmDialog } from '../components/confirm'
+import { confirmDialog } from '../portalkit/confirm'
 
 const emit = defineEmits<{ (e: 'open', name: string): void }>()
 

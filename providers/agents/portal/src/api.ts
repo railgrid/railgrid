@@ -5,11 +5,9 @@
 // X-Kedge-Org / X-Kedge-Workspace headers the backend requires.
 
 import type { KedgeContext } from './types'
+import { readTenant, hasWorkspace as sharedHasWorkspace, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
 
-export interface Tenant {
-  orgUUID: string | null
-  workspaceUUID: string | null
-}
+export type { Tenant }
 
 // SSE frame parsed from the streaming chat endpoint.
 export interface ChatEvent {
@@ -25,26 +23,17 @@ export class ApiClient {
   }
 
   // The host passes basePath as /ui/providers/agents; the API lives under the
-  // service-proxy path, so rewrite the prefix.
+  // service-proxy path (portalkit/tenant.serviceBase rewrites the prefix).
   private url(path: string): string {
-    const base = (this.ctx?.basePath || '/ui/providers/agents').replace(/^\/ui\/providers\//, '/services/providers/')
-    return base + path
+    return serviceBase(this.ctx?.basePath || '/ui/providers/agents') + path
   }
 
   tenant(): Tenant {
-    try {
-      const raw = localStorage.getItem('kedge:portal:tenant')
-      if (!raw) return { orgUUID: null, workspaceUUID: null }
-      const p = JSON.parse(raw) as { orgUUID?: string | null; workspaceUUID?: string | null }
-      return { orgUUID: p.orgUUID ?? null, workspaceUUID: p.workspaceUUID ?? null }
-    } catch {
-      return { orgUUID: null, workspaceUUID: null }
-    }
+    return readTenant()
   }
 
   hasWorkspace(): boolean {
-    const t = this.tenant()
-    return !!t.orgUUID && !!t.workspaceUUID
+    return sharedHasWorkspace()
   }
 
   // tenantKey identifies the current workspace for change-detection (load dedupe).
@@ -53,13 +42,7 @@ export class ApiClient {
   }
 
   private headers(hasBody: boolean): Record<string, string> {
-    const t = this.tenant()
-    const h: Record<string, string> = { Accept: 'application/json' }
-    if (hasBody) h['Content-Type'] = 'application/json'
-    if (this.ctx?.token) h.Authorization = `Bearer ${this.ctx.token}`
-    if (t.orgUUID) h['X-Kedge-Org'] = t.orgUUID
-    if (t.workspaceUUID) h['X-Kedge-Workspace'] = t.workspaceUUID
-    return h
+    return tenantHeaders({ token: this.ctx?.token, json: hasBody })
   }
 
   async get<T>(path: string): Promise<T> {

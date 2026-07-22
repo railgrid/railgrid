@@ -6,7 +6,7 @@
 // callbacks; it never talks to the API itself — the mapping from a dragged cable
 // to a real spec mutation lives with the data owner.
 
- import { ic } from './icons'
+ import { ic } from './portalkit/icons'
 
 export type FNodeType =
   | 'agent'

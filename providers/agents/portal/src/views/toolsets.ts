@@ -2,7 +2,8 @@
 // to many agents (in each agent's Flow, drag the toolset onto the agent).
 // Checked tool-connections drive the derived families.
 
-import { ic } from '../icons'
+import { confirmModal } from '../portalkit/modal'
+import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
 import { escapeHTML } from '../types'
 import { createToolset, updateToolset, deleteToolset } from '../actions'
@@ -81,8 +82,8 @@ export function wire(vc: ViewCtx, root: HTMLElement): void {
     vc.rerender()
   })
   root.querySelectorAll<HTMLElement>('[data-deltoolset]').forEach((el) =>
-    el.addEventListener('click', () => {
-      if (confirm(`Delete toolset ${el.dataset.deltoolset}? Agents linking it will lose those tools.`)) void deleteToolset(vc, el.dataset.deltoolset!)
+    el.addEventListener('click', async () => {
+      if (await confirmModal({ title: `Delete toolset “${el.dataset.deltoolset}”?`, message: 'Agents linking it will lose those tools.', danger: true, confirmLabel: 'Delete' })) void deleteToolset(vc, el.dataset.deltoolset!)
     }),
   )
   const form = root.querySelector<HTMLFormElement>('.agents-toolset-form')

@@ -2,7 +2,8 @@
 // agent's detail page (Chat first). Each card has quick Chat / Flow actions and
 // a delete. A dashed "new agent" tile creates one and jumps into it.
 
-import { ic } from '../icons'
+import { confirmModal } from '../portalkit/modal'
+import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
 import { escapeHTML } from '../types'
 import { createAgent, deleteAgent } from '../actions'
@@ -65,10 +66,10 @@ export function wire(vc: ViewCtx, root: HTMLElement): void {
     }),
   )
   root.querySelectorAll<HTMLButtonElement>('[data-delagent]').forEach((el) =>
-    el.addEventListener('click', (e) => {
+    el.addEventListener('click', async (e) => {
       e.stopPropagation()
       const name = el.dataset.delagent!
-      if (confirm(`Delete agent ${name} and its history?`)) void deleteAgent(vc, name)
+      if (await confirmModal({ title: `Delete agent “${name}”?`, message: 'This also deletes its chat history.', danger: true, confirmLabel: 'Delete' })) void deleteAgent(vc, name)
     }),
   )
   const nf = root.querySelector<HTMLFormElement>('.agents-card-new')

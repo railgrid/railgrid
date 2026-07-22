@@ -7,7 +7,7 @@ import ConnectionDetailView from './views/ConnectionDetailView.vue'
 import RepositoriesView from './views/RepositoriesView.vue'
 import RepoDetailView from './views/RepoDetailView.vue'
 import PackagesView from './views/PackagesView.vue'
-import ConfirmDialog from './components/ConfirmDialog.vue'
+import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 
 // Sub-path routing (the shell pushes the trailing /providers/code/<sub> segment):
 //   ''  | 'connections'        → Connections

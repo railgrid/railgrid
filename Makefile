@@ -1,3 +1,4 @@
+.PHONY: sync-portalkit verify-portalkit
 .PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
@@ -304,6 +305,16 @@ codegen: crds codegen-code-provider codegen-app-studio-provider codegen-databric
 verify-codegen: codegen ## Verify codegen is up to date
 	@if ! git diff --quiet HEAD; then \
 		echo "ERROR: codegen produced a diff. Please run 'make codegen' and commit the result."; \
+		git diff --stat; \
+		exit 1; \
+	fi
+
+sync-portalkit: ## Vendor the shared portalkit (provider-sdk/portalkit) into vanilla-TS portals
+	@hack/sync-portalkit.sh
+
+verify-portalkit: sync-portalkit ## Verify vendored portalkit copies are in sync with the canonical source
+	@if ! git diff --quiet HEAD; then \
+		echo "ERROR: portalkit copies are stale. Please run 'make sync-portalkit' and commit the result."; \
 		git diff --stat; \
 		exit 1; \
 	fi
@@ -2004,7 +2015,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-boilerplate verify-codegen vet lint build test ## Run all checks
+verify: verify-boilerplate verify-codegen verify-portalkit vet lint build test ## Run all checks
 
 # --- Helm chart packaging ---
 

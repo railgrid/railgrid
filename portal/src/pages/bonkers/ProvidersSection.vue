@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { Plus, Trash2, Download } from 'lucide-vue-next'
 
 import { useAdminStore } from '@/stores/admin'
+import { confirmDialog } from '@/portalkit/confirm'
 
 const admin = useAdminStore()
 
@@ -41,7 +42,7 @@ async function downloadKubeconfig(name: string) {
 }
 
 async function remove(name: string) {
-  if (!confirm(`Delete Provider "${name}"? This tears down its workspace (full teardown).`)) return
+  if (!(await confirmDialog({ title: `Delete Provider "${name}"?`, message: 'This tears down its workspace (full teardown).', danger: true, confirmLabel: 'Delete' }))) return
   busy.value = true
   actionError.value = null
   try {

@@ -2,7 +2,8 @@
 // delete) over one of three tab bodies. Chat is the default. The flow tab mounts
 // the imperative FlowCanvas after render.
 
-import { ic } from '../icons'
+import { confirmModal } from '../portalkit/modal'
+import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
 import type { AgentTab } from '../router'
 import { escapeHTML } from '../types'
@@ -48,8 +49,8 @@ export function wire(vc: ViewCtx, root: HTMLElement, name: string, tab: AgentTab
   root.querySelectorAll<HTMLElement>('[data-subtab]').forEach((el) =>
     el.addEventListener('click', () => vc.navigate({ kind: 'agent', name, tab: el.dataset.subtab as AgentTab })),
   )
-  root.querySelector<HTMLElement>('[data-delagent]')?.addEventListener('click', () => {
-    if (confirm(`Delete agent ${name} and its history?`)) {
+  root.querySelector<HTMLElement>('[data-delagent]')?.addEventListener('click', async () => {
+    if (await confirmModal({ title: `Delete agent “${name}”?`, message: 'This also deletes its chat history.', danger: true, confirmLabel: 'Delete' })) {
       void deleteAgent(vc, name).then(() => vc.navigate({ kind: 'menu', menu: 'agents' }))
     }
   })

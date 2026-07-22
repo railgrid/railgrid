@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
-import ResourceTable from '../components/ResourceTable.vue'
-import StatusBadge from '../components/StatusBadge.vue'
+import ResourceTable from '../portalkit/ResourceTable.vue'
+import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
-import { confirmDialog } from '../components/confirm'
+import { confirmDialog } from '../portalkit/confirm'
 import { importPrerequisiteMessage, nextValidWarehouseRef, warehousesForConnection } from '../tableRefs'
 import type { Connection, ErrorResponse, Table, Warehouse } from '../types'
 

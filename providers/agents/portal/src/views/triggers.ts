@@ -2,7 +2,8 @@
 // agent via agentRef and fired by an external source (webhook / github). Same
 // table + Agent-select form pattern as schedules.
 
-import { ic } from '../icons'
+import { confirmModal } from '../portalkit/modal'
+import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
 import type { Trigger } from '../types'
 import { escapeHTML, fmtTime } from '../types'
@@ -90,8 +91,8 @@ export function wire(vc: ViewCtx, root: HTMLElement): void {
     el.addEventListener('click', () => void updateTrigger(vc, el.dataset.susptrig!, { suspend: el.dataset.susp !== '1' }, el.dataset.susp === '1' ? 'Trigger resumed.' : 'Trigger paused.')),
   )
   root.querySelectorAll<HTMLElement>('[data-deltrig]').forEach((el) =>
-    el.addEventListener('click', () => {
-      if (confirm(`Delete trigger ${el.dataset.deltrig}?`)) void deleteTrigger(vc, el.dataset.deltrig!)
+    el.addEventListener('click', async () => {
+      if (await confirmModal({ title: `Delete trigger “${el.dataset.deltrig}”?`, danger: true, confirmLabel: 'Delete' })) void deleteTrigger(vc, el.dataset.deltrig!)
     }),
   )
   root.querySelector<HTMLElement>('[data-objcancel]')?.addEventListener('click', () => {

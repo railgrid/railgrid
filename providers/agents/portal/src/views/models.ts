@@ -9,7 +9,8 @@
 //
 // Each credential is its own Secret (kedge-agents-model-<name>).
 
-import { ic } from '../icons'
+import { confirmModal } from '../portalkit/modal'
+import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
 import type { Credential } from '../types'
 import { escapeHTML } from '../types'
@@ -396,8 +397,8 @@ export function wire(vc: ViewCtx, root: HTMLElement): void {
     vc.rerender()
   })
   root.querySelectorAll<HTMLElement>('[data-delcred]').forEach((el) =>
-    el.addEventListener('click', () => {
-      if (confirm(`Delete credential ${el.dataset.delcred}? Agents using it will need reassigning.`)) void deleteCredential(vc, el.dataset.delcred!)
+    el.addEventListener('click', async () => {
+      if (await confirmModal({ title: `Delete credential “${el.dataset.delcred}”?`, message: 'Agents using it will need reassigning.', danger: true, confirmLabel: 'Delete' })) void deleteCredential(vc, el.dataset.delcred!)
     }),
   )
   // Click a discovered model chip → set that credential's model.

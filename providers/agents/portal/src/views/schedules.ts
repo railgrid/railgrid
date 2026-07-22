@@ -3,7 +3,8 @@
 // backend rejects an empty agentRef), cron/timezone or one-shot runAt, task,
 // suspend. Run-now, edit, suspend toggle, delete per row.
 
-import { ic } from '../icons'
+import { confirmModal } from '../portalkit/modal'
+import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
 import type { Schedule } from '../types'
 import { escapeHTML, fmtTime } from '../types'
@@ -92,8 +93,8 @@ export function wire(vc: ViewCtx, root: HTMLElement): void {
     el.addEventListener('click', () => void updateSchedule(vc, el.dataset.suspsched!, { suspend: el.dataset.susp !== '1' }, el.dataset.susp === '1' ? 'Schedule resumed.' : 'Schedule paused.')),
   )
   root.querySelectorAll<HTMLElement>('[data-delsched]').forEach((el) =>
-    el.addEventListener('click', () => {
-      if (confirm(`Delete schedule ${el.dataset.delsched}?`)) void deleteSchedule(vc, el.dataset.delsched!)
+    el.addEventListener('click', async () => {
+      if (await confirmModal({ title: `Delete schedule “${el.dataset.delsched}”?`, danger: true, confirmLabel: 'Delete' })) void deleteSchedule(vc, el.dataset.delsched!)
     }),
   )
   root.querySelector<HTMLElement>('[data-objcancel]')?.addEventListener('click', () => {

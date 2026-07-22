@@ -2,6 +2,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { ArrowLeft, RefreshCw, Trash2, CircleDot, Server, Boxes, Copy, Check, TerminalSquare, Home, Plug, Plus, ArrowUpCircle, ChevronDown, ChevronUp } from 'lucide-vue-next'
 import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, createKubeEdgeService, deleteEdgeService } from './api'
+import { confirmDialog } from './portalkit/confirm'
 import type { EdgeDetail, EdgeService, EdgeType, ErrorResponse } from './types'
 
 const props = defineProps<{ name: string; type: EdgeType; cluster: string | null; token: string | null }>()
@@ -40,7 +41,7 @@ async function load() {
 
 async function onDelete() {
   if (!edge.value) return
-  if (!confirm(`Delete ${props.type === 'server' ? 'server' : 'cluster'} "${props.name}"?`)) return
+  if (!(await confirmDialog({ title: `Delete ${props.type === 'server' ? 'server' : 'cluster'} "${props.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
   try {
     await deleteEdge(edge.value)
     emit('deleted')
@@ -143,7 +144,7 @@ async function submitAdd() {
 }
 
 async function removeService(name: string) {
-  if (!confirm(`Delete service "${name}"?`)) return
+  if (!(await confirmDialog({ title: `Delete service "${name}"?`, danger: true, confirmLabel: 'Delete' }))) return
   try {
     await deleteEdgeService(name)
     await loadServices()

@@ -236,6 +236,45 @@ Build chain (Makefile):
 The Tilt dev loop proxies all UI to the Vite dev server (`--portal-dev-url`) and
 skips the slow provider-portal builds.
 
+### 5.7 Shared portal UI kit (`portalkit`)
+
+Shared UI primitives live under `provider-sdk/` and are **copy-synced** into each
+portal's `src/portalkit/`, because the portals build self-contained (no npm
+workspace / symlink — a standalone Docker build context must work). Edit the
+**canonical** source, then `make sync-portalkit`; CI runs `make verify-portalkit`
+(and it's in `make verify`) to fail on drift.
+
+- **`provider-sdk/portalkit/`** — plain-TS kit for the **string-building
+  (vanilla-TS)** portals (`agents`, `kuery`, `quickstart`):
+  - `icons.ts` — `ic('name')` returns an inline SVG string (self-injects its
+    `.ic` sizing). Use instead of emoji.
+  - `modal.ts` — `confirmModal()` / `alertModal()` (promise-based, replaces
+    native dialogs).
+  - `tenant.ts` — see below.
+- **`provider-sdk/portalkit-vue/`** — kit for the **Vue SFC** portals (`code`,
+  `databricks`, `edges`, `app-studio`, `infrastructure`, root `portal`):
+  - `confirm.ts` + `ConfirmDialog.vue` — promise `confirmDialog()` (mount one
+    `<ConfirmDialog />` at the app root).
+  - `ResourceTable.vue`, `ConditionsPanel.vue`, `StatusBadge.vue`.
+
+**`tenant.ts` is security-critical** and shared by BOTH kinds (plain TS). It owns
+the ONE copy of the hub-proxy contract — `readTenant()` (localStorage
+`kedge:portal:tenant`), `tenantHeaders({token, json})` (`Authorization` +
+`X-Kedge-Org` + `X-Kedge-Workspace`), and `serviceBase()` (`/ui/providers/*` →
+`/services/providers/*`). The wrong header/key means 401/403, so **do not
+re-inline this** — call the helper. Two auth models coexist and this only covers
+the first:
+- **hub-proxy model** (uses `tenant.ts`): `agents`, `app-studio` (migrated);
+  `kuery`/`quickstart` read the tenant off `kedge-context` instead, so they only
+  use `serviceBase`.
+- **cluster-in-path model** (`code`, `edges`, `infrastructure`, and databricks'
+  GraphQL): address kcp by `/graphql/<cluster>` or `/services/providers/<name>`
+  with just the bearer token; they don't use `tenantHeaders`.
+
+Rule of thumb: **need a confirm, an icon, a table, a status pill, or tenant
+headers → import from `portalkit`, don't reinvent.** New shared primitive → add
+it to the canonical source under `provider-sdk/` and re-sync.
+
 ### 5.4 Tenant isolation in providers
 
 Providers that talk to kcp build a **per-(tenant, caller) dynamic client**: the
@@ -399,24 +438,24 @@ utility (`backdrop-blur` + translucent bg), backgrounds use `.dot-grid` /
 
 ### Component standards — reuse, don't reinvent
 
-| Need | Use | Pattern |
-|------|-----|---------|
-| **Modal / popup** | shape of `components/ConfirmDialog.vue` | `Teleport to="body"`; full-screen `fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm`; panel `w-full max-w-md rounded-2xl border border-border-subtle bg-surface-raised p-6 shadow-2xl`; close on backdrop `@click.self` and **Esc** (`useEscapeKey` composable); icon tile + title (`text-[14px] font-semibold`) + message (`text-[12px] text-text-secondary`); actions bottom-right (`Cancel` ghost + primary). |
-| **Confirm / destructive action** | `components/ConfirmDialog.vue` | Don't hand-roll; pass `title`/`message`/`confirmLabel`/`busy`. Destructive = `bg-danger`. |
-| **Table / list** | `components/ResourceTable.vue` | `overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised/80 backdrop-blur`; uppercase `text-[10px] tracking-[0.15em] text-text-muted` headers; `text-[13px]` cells; row hover `hover:bg-accent/[0.03]`, `group-hover:text-text-primary`; built-in loading shimmer, error, and empty (`Inbox` icon + "No data") states. Use named slots per column key for custom cells. |
-| **Status / phase** | `components/StatusBadge.vue` | Pill with semantic color + dot; `ready` shows a live pulsing dot. Maps `ready/active`→success, `pending/scheduling`→warning, `terminating`/disconnected→danger. |
-| Wizard / multi-step | `FirstEdgeWizard.vue`, `FirstWorkspaceWizard.vue` | |
-| YAML display | `YamlViewer.vue` | |
-| Tenant context | `TenantSwitcher.vue`, `TenantContextChip.vue` | |
-| Theme toggle | `ThemeSwitch.vue` | |
+The shared, security- and consistency-critical primitives now live in the
+**portalkit** (see §5.7) and are vendored into each portal's `src/portalkit/`.
+Prefer them; never hand-roll a native `window.confirm/alert` or a bespoke copy.
 
-Icons: **lucide-vue-next** only, typically `h-4 w-4` with `:stroke-width="1.75"`
-(or `2` for small/close icons). Don't mix icon sets.
+| Need | Use (Vue) | Use (vanilla-TS) | Pattern |
+|------|-----------|------------------|---------|
+| **Confirm / destructive action** | `confirmDialog()` from `portalkit/confirm.ts` (+ one `<ConfirmDialog />` from `portalkit/ConfirmDialog.vue` mounted at the app root) | `confirmModal()` from `portalkit/modal.ts` | Promise-based; `await confirmDialog({ title, message?, confirmLabel?, danger? })` → `true/false`. **Never** `window.confirm/alert` — CI-free but reviewer-enforced. |
+| **Table / list** | `portalkit/ResourceTable.vue` | — | uppercase `text-[10px]` headers, `text-[13px]` cells, built-in loading/error/empty states; named slots per column. |
+| **Status / phase** | `portalkit/StatusBadge.vue` | — | Pill + dot; `ready` pulses. `ready/active`→success, `pending`→warning, `terminating`/disconnected→danger. |
+| **Icons** | `lucide-vue-next` (`h-4 w-4`, `:stroke-width="1.75"`) | `ic('name')` from `portalkit/icons.ts` | Vanilla portals get an inline SVG string; **no emoji anywhere**. |
+| **Tenant headers / basePath** | `portalkit/tenant.ts` (`readTenant`, `tenantHeaders`, `serviceBase`) | same | Security-critical; must match the hub proxy — see §5.7. |
+| Wizard / multi-step | `FirstEdgeWizard.vue`, `FirstWorkspaceWizard.vue` | — | |
+| YAML display | `YamlViewer.vue` | — | |
+| Theme toggle | `ThemeSwitch.vue` | — | |
 
-When a provider needs something not in `portal/src/components/`, prefer adding it
-there (or matching its token/scale conventions exactly) over inventing a
-provider-local variant — consistency across the embedded micro-frontends is the
-whole point.
+When a provider needs something not in the portalkit or `portal/src/components/`,
+prefer adding it to the canonical kit (§5.7) over inventing a provider-local
+variant — consistency across the embedded micro-frontends is the whole point.
 
 ### Page content width — one column, set centrally
 

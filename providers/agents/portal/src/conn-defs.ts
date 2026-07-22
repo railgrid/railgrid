@@ -2,7 +2,7 @@
 // TYPE-DRIVEN: pick what you're connecting, then a form with only that type's
 // fields, each labelled with where to get the value.
 
-import type { IconName } from './icons'
+import type { IconName } from './portalkit/icons'
 
 export const PROVIDER_PRESETS: { id: string; label: string; baseURL: string; modelHint: string }[] = [
   { id: 'openai', label: 'OpenAI', baseURL: 'https://api.openai.com/v1', modelHint: 'gpt-4o' },

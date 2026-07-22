@@ -37,18 +37,11 @@ export function isProjectAPIInitializingError(err: unknown): err is ProjectAPIIn
   return err instanceof ProjectAPIInitializingError
 }
 
+// tenantSelection reads the active org/workspace. Delegates to the shared,
+// security-critical portalkit/tenant helper so the storage key + shape stay in
+// lockstep with every other portal.
 function tenantSelection(): TenantSelection {
-  try {
-    const raw = localStorage.getItem('kedge:portal:tenant')
-    if (!raw) return { orgUUID: null, workspaceUUID: null }
-    const parsed = JSON.parse(raw) as { orgUUID?: string | null; workspaceUUID?: string | null }
-    return {
-      orgUUID: parsed.orgUUID ?? null,
-      workspaceUUID: parsed.workspaceUUID ?? null,
-    }
-  } catch {
-    return { orgUUID: null, workspaceUUID: null }
-  }
+  return readTenant()
 }
 
 // providerBase resolves the hub backend-proxy prefix for this provider from the
@@ -57,7 +50,7 @@ function tenantSelection(): TenantSelection {
 // verified X-Kedge-Tenant/X-Kedge-User headers, and forwards to the provider's
 // /api/* routes. Falls back to the well-known prefix if no basePath arrived yet.
 function providerBase(ctx: KedgeContext | null): string {
-  const derived = (ctx?.basePath || '').replace(/^\/ui\/providers\//, '/services/providers/')
+  const derived = ctx?.basePath ? serviceBase(ctx.basePath) : ''
   return (derived || '/services/providers/app-studio').replace(/\/$/, '')
 }
 
@@ -72,12 +65,7 @@ function baseURL(ctx: KedgeContext | null): string {
 }
 
 async function request<T>(ctx: KedgeContext | null, method: string, path: string, body?: unknown): Promise<T> {
-  const t = tenantSelection()
-  const headers: Record<string, string> = { Accept: 'application/json' }
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
-  if (ctx?.token) headers.Authorization = `Bearer ${ctx.token}`
-  if (t.orgUUID) headers['X-Kedge-Org'] = t.orgUUID
-  if (t.workspaceUUID) headers['X-Kedge-Workspace'] = t.workspaceUUID
+  const headers = tenantHeaders({ token: ctx?.token, json: body !== undefined })
 
   const res = await fetch(path, {
     method,
@@ -493,14 +481,9 @@ async function requestStream(
   onEvent: (event: ProjectMessageStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const t = tenantSelection()
-  const headers: Record<string, string> = {
-    Accept: 'text/event-stream',
-    'Content-Type': 'application/json',
-  }
-  if (ctx?.token) headers.Authorization = `Bearer ${ctx.token}`
-  if (t.orgUUID) headers['X-Kedge-Org'] = t.orgUUID
-  if (t.workspaceUUID) headers['X-Kedge-Workspace'] = t.workspaceUUID
+  // Same tenant headers as request(), but an SSE Accept instead of JSON.
+  const headers = tenantHeaders({ token: ctx?.token, json: true })
+  headers.Accept = 'text/event-stream'
 
   const res = await fetch(path, {
     method,

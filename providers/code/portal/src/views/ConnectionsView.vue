@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import type { Connection, ErrorResponse } from '../types'
-import { confirmDialog } from '../components/confirm'
+import { confirmDialog } from '../portalkit/confirm'
 
 const emit = defineEmits<{ (e: 'open', name: string): void }>()
 
@@ -177,7 +177,7 @@ onUnmounted(() => {
         <div class="field"><span class="field-label">Name</span><input v-model="name" placeholder="my-github" autocomplete="off" /></div>
         <div class="field"><span class="field-label">Owner (org or user)</span><input v-model="owner" placeholder="acme" autocomplete="off" /></div>
         <div v-if="connType === 'pat'" class="field"><span class="field-label">Personal access token</span><input v-model="token" type="password" placeholder="ghp_…" autocomplete="off" /></div>
-        <div v-else class="field"><span class="field-label">Credential</span><input value="GitHub OAuth — authorized ✓" disabled /></div>
+        <div v-else class="field"><span class="field-label">Credential</span><input value="GitHub OAuth — authorized" disabled /></div>
         <div v-if="connType === 'pat'" class="field"><span class="field-label">Base URL (GHES, optional)</span><input v-model="baseURL" placeholder="https://github.example.com/api/v3" autocomplete="off" /></div>
         <div class="actions">
           <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Connecting…' : 'Create' }}</button>

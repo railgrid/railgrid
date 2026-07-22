@@ -1,3 +1,4 @@
+<!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
 <script setup lang="ts">
 import { AlertCircle, Inbox } from 'lucide-vue-next'
 

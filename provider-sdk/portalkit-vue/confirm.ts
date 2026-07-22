@@ -1,3 +1,8 @@
+// CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies
+// under providers/*/portal/src/portalkit/; edit here and run
+// `make sync-portalkit`. The Vue provider portals build self-contained (no npm
+// workspace), so this kit is copy-synced rather than imported.
+//
 // Promise-based confirm dialog, replacing the browser's native window.confirm so
 // destructive actions use an in-app modal that matches the portal's styling.
 // A single <ConfirmDialog> (mounted once in App.vue) renders this shared state;

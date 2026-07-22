@@ -32,6 +32,7 @@ UI reflects that.
 import { computed, onMounted, ref, watch } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import { useTenantStore, type MemberRow, type SARow, type TokenResponse } from '@/stores/tenant'
+import { confirmDialog } from '@/portalkit/confirm'
 import {
   Building2,
   FolderTree,
@@ -135,7 +136,7 @@ async function onDeleteOrg() {
     flash('error', 'Personal organizations cannot be deleted.')
     return
   }
-  if (!window.confirm(`Delete organization "${tenant.activeOrg.displayName}"? It enters a 30-day grace window and can be restored.`)) return
+  if (!(await confirmDialog({ title: `Delete organization "${tenant.activeOrg.displayName}"?`, message: 'It enters a 30-day grace window and can be restored.', danger: true, confirmLabel: 'Delete' }))) return
   orgBusy.value = true
   try {
     const ok = await tenant.deleteOrg(tenant.activeOrg.uuid)
@@ -217,7 +218,7 @@ async function saveWSName(uuid: string) {
 async function onDeleteWorkspace(uuid: string, name: string | undefined) {
   if (!tenant.orgUUID) return
   const label = name || uuid
-  if (!window.confirm(`Delete workspace "${label}"? It enters a 30-day grace window and can be restored.`)) return
+  if (!(await confirmDialog({ title: `Delete workspace "${label}"?`, message: 'It enters a 30-day grace window and can be restored.', danger: true, confirmLabel: 'Delete' }))) return
   wsBusy.value = { ...wsBusy.value, [uuid]: true }
   try {
     const ok = await tenant.deleteWorkspace(tenant.orgUUID, uuid)
@@ -333,9 +334,7 @@ async function onRemoveMember(user: string) {
   // Single confirm. cascade=true is the safe default for the UI: leaving a
   // workspace membership behind after removing someone from the org would
   // be surprising. Power users wanting org-only removal go through the API.
-  if (!window.confirm(
-    `Remove ${user} from the organization?\nThey will also be removed from every workspace in this org.`,
-  )) return
+  if (!(await confirmDialog({ title: `Remove ${user} from the organization?`, message: 'They will also be removed from every workspace in this org.', danger: true, confirmLabel: 'Remove' }))) return
   memberBusy.value = { ...memberBusy.value, [user]: true }
   try {
     const ok = await tenant.removeOrgMember(tenant.orgUUID, user, true)
@@ -358,7 +357,7 @@ async function onLeaveOrg() {
     flash('error', 'You cannot leave your personal organization.')
     return
   }
-  if (!window.confirm(`Leave organization "${tenant.activeOrg.displayName}"?`)) return
+  if (!(await confirmDialog({ title: `Leave organization "${tenant.activeOrg.displayName}"?`, confirmLabel: 'Leave' }))) return
   memberBusy.value = { ...memberBusy.value, __self__: true }
   try {
     const ok = await tenant.leaveOrg(tenant.activeOrg.uuid)
@@ -438,7 +437,7 @@ async function onChangeWsMemberRole(user: string, role: 'admin' | 'member') {
 
 async function onRemoveWsMember(user: string) {
   if (!tenant.orgUUID || !tenant.workspaceUUID) return
-  if (!window.confirm(`Remove ${user} from this workspace?`)) return
+  if (!(await confirmDialog({ title: `Remove ${user} from this workspace?`, danger: true, confirmLabel: 'Remove' }))) return
   wsMemberBusy.value = { ...wsMemberBusy.value, [user]: true }
   try {
     const ok = await tenant.removeWorkspaceMember(tenant.orgUUID, tenant.workspaceUUID, user)
@@ -513,7 +512,7 @@ async function onCreateSA() {
 
 async function onDeleteSA(uuid: string, name: string) {
   if (!tenant.orgUUID || !tenant.workspaceUUID) return
-  if (!window.confirm(`Delete service account "${name}"? Active tokens will stop working.`)) return
+  if (!(await confirmDialog({ title: `Delete service account "${name}"?`, message: 'Active tokens will stop working.', danger: true, confirmLabel: 'Delete' }))) return
   saBusy.value = { ...saBusy.value, [uuid]: true }
   try {
     const ok = await tenant.deleteServiceAccount(tenant.orgUUID, tenant.workspaceUUID, uuid)
@@ -551,7 +550,7 @@ async function onIssueToken(uuid: string, name: string) {
 
 async function onRevokeTokens(uuid: string, name: string) {
   if (!tenant.orgUUID || !tenant.workspaceUUID) return
-  if (!window.confirm(`Revoke all tokens for "${name}"? Existing token holders will be locked out.`)) return
+  if (!(await confirmDialog({ title: `Revoke all tokens for "${name}"?`, message: 'Existing token holders will be locked out.', danger: true, confirmLabel: 'Revoke' }))) return
   saBusy.value = { ...saBusy.value, [uuid]: true }
   try {
     const ok = await tenant.revokeSATokens(tenant.orgUUID, tenant.workspaceUUID, uuid)

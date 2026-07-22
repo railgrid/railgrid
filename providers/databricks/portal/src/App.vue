@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { setBasePath, setTenant, setTenantSelection, setToken } from './api'
-import ConfirmHost from './components/ConfirmHost.vue'
+import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import type { KedgeContext } from './types'
 import ConnectionDetailView from './views/ConnectionDetailView.vue'
 import ConnectionsView from './views/ConnectionsView.vue'
@@ -71,6 +71,6 @@ function navigate(path: string) {
       <TablesView v-else @open="(n: string) => navigate('tables/' + encodeURIComponent(n))" />
     </template>
 
-    <ConfirmHost />
+    <ConfirmDialog />
   </div>
 </template>

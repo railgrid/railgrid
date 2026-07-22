@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { RefreshCw, Trash2, Plus, Boxes, ChevronRight, ChevronDown, Store, Rocket } from 'lucide-vue-next'
 import { listWorkloads, createWorkload, deleteWorkload, deployMarketplaceApp, listEdges, type WorkloadDraft } from './api'
 import type { Workload, Edge, ErrorResponse } from './types'
+import { confirmDialog } from './portalkit/confirm'
 import { MARKETPLACE_CATEGORIES, type MarketplaceApp } from './marketplace'
 
 const workloads = ref<Workload[]>([])
@@ -114,7 +115,7 @@ async function onCreate() {
 }
 
 async function onDelete(w: Workload) {
-  if (!confirm(`Delete workload "${w.name}"? Its Deployments on every edge are removed.`)) return
+  if (!(await confirmDialog({ title: `Delete workload "${w.name}"?`, message: 'Its Deployments on every edge are removed.', danger: true, confirmLabel: 'Delete' }))) return
   try {
     await deleteWorkload(w.name)
     await refresh()

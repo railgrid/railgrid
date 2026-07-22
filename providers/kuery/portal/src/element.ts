@@ -7,6 +7,7 @@
 // Plain custom element in light DOM (the portal's CSS variables cascade
 // in); see main.ts for registration and style.css for the rules.
 
+import { ic } from './portalkit/icons'
 import {
   buildElements,
   buildTopologyElements,
@@ -824,7 +825,7 @@ export class KueryElement extends HTMLElement {
         <p class="meta">Write a kuery QuerySpec and run it against your fleet. Editor autocompletes from the schema (Ctrl/Cmd-Space). Every query is scoped to your workspace automatically.</p>
         <div class="toolbar">
           <select id="pg-example">${exampleOpts}</select>
-          <button id="pg-run">${this._pgRunning ? 'Running…' : 'Run ▸'}</button>
+          <button id="pg-run">${this._pgRunning ? 'Running…' : `Run ${ic('play')}`}</button>
           <button id="pg-docs-toggle" type="button">API &amp; access</button>
         </div>
         <div class="pg-split">

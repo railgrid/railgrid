@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import ResourceTable from '../components/ResourceTable.vue'
-import StatusBadge from '../components/StatusBadge.vue'
+import ResourceTable from '../portalkit/ResourceTable.vue'
+import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
-import { confirmDialog } from '../components/confirm'
+import { confirmDialog } from '../portalkit/confirm'
 import type { Connection, ErrorResponse, Warehouse } from '../types'
 
 const emit = defineEmits<{ (e: 'open', name: string): void }>()

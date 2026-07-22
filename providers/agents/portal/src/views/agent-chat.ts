@@ -4,7 +4,7 @@
 // there is one element instance for the app's lifetime, and keeping it here (not
 // in the store) means menu re-renders never disturb a live transcript.
 
-import { ic } from '../icons'
+import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
 import type { Agent, ChatMessage, SessionMeta } from '../types'
 import { escapeHTML, sessionLabel } from '../types'

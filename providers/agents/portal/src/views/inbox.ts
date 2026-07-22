@@ -1,7 +1,7 @@
 // Inbox menu: approvals and questions agents raise across the workspace.
 // Approve/deny grants one tool call.
 
-import { ic } from '../icons'
+import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
 import { escapeHTML } from '../types'
 import { resolveInbox } from '../actions'

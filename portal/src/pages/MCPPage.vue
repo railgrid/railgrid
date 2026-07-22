@@ -35,6 +35,7 @@ import {
 import { authFetch } from '@/auth/session'
 import { useTenantStore } from '@/stores/tenant'
 import AppLayout from '@/components/AppLayout.vue'
+import { confirmDialog } from '@/portalkit/confirm'
 import ResourceTable from '@/components/ResourceTable.vue'
 
 interface FederatedTool {
@@ -215,7 +216,7 @@ async function create() {
 async function remove(name: string) {
   const b = base()
   if (!b) return
-  if (!confirm(`Delete MCP server "${name}"? Its access token will be revoked.`)) return
+  if (!(await confirmDialog({ title: `Delete MCP server "${name}"?`, message: 'Its access token will be revoked.', danger: true, confirmLabel: 'Delete' }))) return
   try {
     const res = await authFetch(`${b}/${encodeURIComponent(name)}`, { tenant: true, method: 'DELETE' })
     if (!res.ok && res.status !== 204) throw new Error(`Delete failed (${res.status})`)
