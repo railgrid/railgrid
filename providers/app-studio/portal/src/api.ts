@@ -20,6 +20,7 @@ import type {
   ProviderItem,
 } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
+import { readTenant, serviceBase, tenantHeaders } from './portalkit/tenant'
 
 interface TenantSelection {
   orgUUID: string | null
