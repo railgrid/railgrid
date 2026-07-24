@@ -89,7 +89,19 @@ func TenantNamespace(tenantPath string) string { return tenantNamespaceName(tena
 // Secrets and the default-SA imagePullSecrets — must target this namespace,
 // not the kedge-tenants-<hash> control-plane namespace (TenantNamespace),
 // or they land in an empty namespace no pod can see.
+//
+// An empty sourceNamespace defaults to "default": instances created without an
+// explicit namespace (e.g. App Studio's promoted Application/SimpleWebApp) carry
+// namespace "" on the instance object, yet their children materialize into
+// "<sourceCluster>-default" (children default to the "default" namespace). Bare
+// concatenation would produce "<sourceCluster>-", which is both an invalid
+// RFC 1123 label (trailing "-") and the wrong target — the bridged Secret would
+// miss the namespace the pods actually run in. Defaulting here keeps the bridge
+// aligned with kro's child placement.
 func RuntimeNamespace(sourceCluster, sourceNamespace string) string {
+	if sourceNamespace == "" {
+		sourceNamespace = "default"
+	}
 	return sourceCluster + "-" + sourceNamespace
 }
 
