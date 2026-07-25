@@ -103,3 +103,7 @@ kuery.db-wal
 # TypeScript incremental build artifact
 portal/tsconfig.tsbuildinfo
 *.tsbuildinfo
+
+# Agent harness artifacts
+.superpowers/
+docs/superpowers/
