@@ -331,6 +331,11 @@ func (s *Server) generateProjectAssistantStreamWithStart(
 		TurnProfile:              turnPolicy.profile,
 		TurnPolicy:               turnPolicy,
 	}
+	if durable, ok := r.Context().Value(projectAssistantSupervisorRunContextKey{}).(store.AssistantRun); ok {
+		durableCopy := durable
+		req.AssistantRun = &durableCopy
+		req.snapshotAccumulator = s.projectAssistantSupervisor().accumulatorFor(req.MessageScope, durable.ID)
+	}
 	if start != nil && start.InitialApprovedPlan != nil {
 		req.InitialApprovedPlan = cloneProjectAssistantApprovedPlan(start.InitialApprovedPlan)
 	}
@@ -2044,7 +2049,7 @@ func appendProjectAssistantBuilderPromptForInitialPlan(b *strings.Builder, repoR
 	if initialPlan {
 		b.WriteString("The user explicitly authorized this fresh project's initial source build. Do not call request_project_plan_approval before write_file, apply_patch, or mkdir in this run. This authorization does not cover template selection, runtime actions, infrastructure provisioning, repository changes, or commit_project_files; commit_project_files still requires explicit user approval. ")
 	} else {
-		b.WriteString("Before source edits, call request_project_plan_approval with a concise batch plan, target path envelope, allowed edit operations, and acceptance criteria; after approval, keep workspace edits inside that envelope. ")
+		b.WriteString("Before source edits, call request_project_plan_approval with a concise batch plan, target path envelope, and acceptance criteria; after approval, keep workspace edits inside that envelope. ")
 	}
 	b.WriteString("After source edits are authorized: Prefer a single response containing all independent write_file, apply_patch, and mkdir calls for the current step; never wait for one result before another independent write. App Studio executes those calls in listed order. Keep calls separate when an argument depends on a prior mutation, and never batch reads, verification, template selection, runtime actions, or commit_project_files with those writes. ")
 	b.WriteString("Do not give the user manual copy/paste file replacement instructions when App Studio edit tools are available; request approval and apply the change in the workspace instead. ")

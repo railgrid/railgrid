@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -63,7 +64,8 @@ func TestProjectAssistantPlanApprovalAllowsScopedWritesButNotCommit(t *testing.T
 	state.ApprovePlan(projectAssistantApprovedPlan{
 		Summary:      "Build dashboard",
 		TargetPaths:  []string{"src/", "package.json"},
-		Operations:   []string{projectToolWriteFile, projectToolApplyPatch, projectToolMkdir},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
 		ApprovedAt:   testProjectAssistantApprovalTime(),
 		ApprovalTool: projectToolRequestProjectPlanApproval,
 	})
@@ -108,12 +110,88 @@ func TestProjectAssistantPlanApprovalAllowsScopedWritesButNotCommit(t *testing.T
 	}
 }
 
+func TestProjectAssistantWorkspaceMutationGrantAllowsCanonicalEditsWithinScope(t *testing.T) {
+	plan := &projectAssistantApprovedPlan{
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+		TargetPaths:  []string{"src/", "package.json"},
+	}
+
+	for _, tt := range []struct {
+		name string
+		tool string
+		path string
+		want bool
+	}{
+		{name: "write file", tool: projectToolWriteFile, path: "src/App.tsx", want: true},
+		{name: "apply patch", tool: projectToolApplyPatch, path: "src/App.tsx", want: true},
+		{name: "make directory", tool: projectToolMkdir, path: "src/components", want: true},
+		{name: "exact file", tool: projectToolApplyPatch, path: "package.json", want: true},
+		{name: "outside scope", tool: projectToolWriteFile, path: "README.md"},
+		{name: "unknown write tool", tool: "custom_write_tool", path: "src/App.tsx"},
+		{name: "namespaced write lookalike", tool: "provider__write_file", path: "src/App.tsx"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := projectAssistantApprovedPlanAllowsWrite(plan, tt.tool, map[string]any{"path": tt.path})
+			if got != tt.want {
+				t.Fatalf("plan allows %s on %q = %t, want %t", tt.tool, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantOperationOnlyGrantIsInactive(t *testing.T) {
+	for _, raw := range []string{
+		`{"targetPaths":["src/"],"operations":["write_file"]}`,
+		`{"operations":["write_file"],"allowAllWrites":true}`,
+	} {
+		var plan projectAssistantApprovedPlan
+		if err := json.Unmarshal([]byte(raw), &plan); err != nil {
+			t.Fatalf("decode obsolete grant: %v", err)
+		}
+		if projectAssistantApprovedPlanActive(&plan) {
+			t.Fatalf("obsolete grant should be inactive after capability migration: %s", raw)
+		}
+		if projectAssistantApprovedPlanAllowsWrite(&plan, projectToolWriteFile, map[string]any{"path": "src/App.tsx"}) {
+			t.Fatalf("obsolete grant must not authorize workspace mutation: %s", raw)
+		}
+	}
+}
+
+func TestProjectAssistantPlanScopeExpansionRequiresApproval(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.ApprovePlan(projectAssistantApprovedPlan{
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+		TargetPaths:  []string{"src/"},
+	})
+	spec := projectAssistantToolSpec{
+		Name: projectToolRequestProjectPlanApproval,
+		Risk: projectAssistantToolRiskPlan,
+	}
+
+	sameScope := projectAssistantPermissionForToolWithRunState(spec, false, state, map[string]any{
+		"targetPaths": []any{"src/App.tsx"},
+	})
+	if sameScope != projectAssistantPermissionAllow {
+		t.Fatalf("same-scope plan permission = %q, want %q", sameScope, projectAssistantPermissionAllow)
+	}
+
+	expandedScope := projectAssistantPermissionForToolWithRunState(spec, false, state, map[string]any{
+		"targetPaths": []any{"src/", "secrets/"},
+	})
+	if expandedScope != projectAssistantPermissionAsk {
+		t.Fatalf("expanded-scope plan permission = %q, want %q", expandedScope, projectAssistantPermissionAsk)
+	}
+}
+
 func TestProjectAssistantAutoApprovePreservesApprovedPlanScope(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.ApprovePlan(projectAssistantApprovedPlan{
 		Summary:      "Update the app shell",
 		TargetPaths:  []string{"src/"},
-		Operations:   []string{projectToolWriteFile},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
 		ApprovedAt:   testProjectAssistantApprovalTime(),
 		ApprovalTool: projectToolRequestProjectPlanApproval,
 	})
@@ -137,10 +215,10 @@ func TestProjectAssistantAutoApprovePreservesApprovedPlanScope(t *testing.T) {
 			want: projectAssistantPermissionDecision("replan"),
 		},
 		{
-			name: "unapproved operation requires replanning without a headless write prompt",
+			name: "alternate canonical edit tool is allowed by the capability",
 			spec: projectAssistantToolSpec{Name: projectToolApplyPatch, Risk: projectAssistantToolRiskWrite},
 			args: map[string]any{"path": "src/App.tsx"},
-			want: projectAssistantPermissionDecision("replan"),
+			want: projectAssistantPermissionAllow,
 		},
 		{
 			name: "write tool outside the plan authorization model remains denied",
@@ -165,14 +243,16 @@ func TestProjectAssistantAutoApprovePreservesApprovedPlanScope(t *testing.T) {
 	}
 }
 
-func TestProjectAssistantAllowAllWritesGrantAuthorizesAnyPath(t *testing.T) {
+func TestProjectAssistantInitialCreationWildcardAuthorizesAnyPath(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.ApprovePlan(projectAssistantApprovedPlan{
-		Summary:        "User approved workspace writes until the next commit.",
-		Operations:     []string{projectToolWriteFile, projectToolApplyPatch, projectToolMkdir},
+		Summary:        "Initial project creation prompt authorizes source edits for this run.",
+		Version:        projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities:   []string{projectAssistantCapabilityWorkspaceMutate},
 		AllowAllWrites: true,
 		ApprovedAt:     testProjectAssistantApprovalTime(),
-		ApprovalTool:   "permission_allow_write",
+		ApprovalTool:   "project_create_prompt",
+		RunLocal:       true,
 	})
 
 	for _, path := range []string{"src/App.tsx", "README.md", "deploy/values.yaml"} {
@@ -195,6 +275,43 @@ func TestProjectAssistantAllowAllWritesGrantAuthorizesAnyPath(t *testing.T) {
 	})
 	if commitDecision != projectAssistantPermissionAsk {
 		t.Fatalf("commit permission = %q, want %q", commitDecision, projectAssistantPermissionAsk)
+	}
+}
+
+func TestProjectAssistantWorkspaceGrantRejectsUnsafePaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		approved  string
+		candidate string
+	}{
+		{name: "traversal", approved: "secrets/app.ts", candidate: "src/../secrets/app.ts"},
+		{name: "absolute", approved: "src/App.tsx", candidate: "/src/App.tsx"},
+		{name: "reserved", approved: ".git/config", candidate: ".git/config"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := &projectAssistantApprovedPlan{
+				TargetPaths:  []string{tt.approved},
+				Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+				Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+			}
+			if projectAssistantApprovedPlanAllowsWrite(plan, projectToolWriteFile, map[string]any{"path": tt.candidate}) {
+				t.Fatalf("unsafe path %q was authorized by grant %#v", tt.candidate, plan.TargetPaths)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantUnsafePlanTargetIsDenied(t *testing.T) {
+	decision := projectAssistantPermissionForToolWithRunState(
+		projectAssistantToolSpec{Name: projectToolRequestProjectPlanApproval, Risk: projectAssistantToolRiskPlan},
+		false,
+		newProjectEinoAssistantRunState(),
+		map[string]any{"targetPaths": []any{"src/../secrets/"}},
+	)
+	if decision != projectAssistantPermissionDeny {
+		t.Fatalf("unsafe plan permission = %q, want %q", decision, projectAssistantPermissionDeny)
 	}
 }
 
@@ -294,6 +411,24 @@ func TestProjectAssistantPermissionReasonsDescribeExactActionAndTarget(t *testin
 			args: map[string]any{"ref": "feature/orders"},
 			want: []string{"build workflow", `"feature/orders"`, "without changing code"},
 		},
+		{
+			name: "path scoped plan capability",
+			spec: projectAssistantToolSpec{Name: projectToolRequestProjectPlanApproval, Risk: projectAssistantToolRiskPlan},
+			args: map[string]any{"targetPaths": []any{"src/", "package.json"}},
+			want: []string{`"src/"`, `"package.json"`, "workspace edit tools", "until the next commit request"},
+		},
+		{
+			name: "direct write capability",
+			spec: projectAssistantToolSpec{Name: projectToolWriteFile, Risk: projectAssistantToolRiskWrite},
+			args: map[string]any{"path": "src/App.tsx"},
+			want: []string{`"src/App.tsx"`, "workspace edit tools", "until the next commit request"},
+		},
+		{
+			name: "direct mkdir subtree capability",
+			spec: projectAssistantToolSpec{Name: projectToolMkdir, Risk: projectAssistantToolRiskWrite},
+			args: map[string]any{"path": "src/components"},
+			want: []string{`"src/components/"`, "workspace edit tools", "until the next commit request"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -308,7 +443,7 @@ func TestProjectAssistantPermissionReasonsDescribeExactActionAndTarget(t *testin
 	}
 }
 
-func TestProjectAssistantPlanApprovalWithoutOperationsDoesNotAuthorizeWrites(t *testing.T) {
+func TestProjectAssistantPlanApprovalWithoutCapabilityDoesNotAuthorizeWrites(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.ApprovePlan(projectAssistantApprovedPlan{
 		Summary:      "Build dashboard",

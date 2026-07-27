@@ -55,6 +55,41 @@ func TestProjectEinoAssistantFilesystemMiddlewareInventory(t *testing.T) {
 	}
 
 	want := []string{projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep}
+	requiredGuidance := map[string][]string{
+		projectToolLS: {
+			"exploring",
+			"before using read_file",
+		},
+		projectToolReadFile: {
+			"up to 2000 lines",
+			"pagination",
+			"offset",
+			"limit",
+			"always specify a positive limit",
+			"line numbers starting at 1",
+			"multiple tools in a single response",
+			"batch",
+			"before editing",
+		},
+		projectToolGlob: {
+			"**/*.js",
+			"find files by name patterns",
+			"multiple tools in a single response",
+			"batch",
+		},
+		projectToolGrep: {
+			"regex",
+			"glob parameter",
+			"files_with_matches",
+			"multiline",
+		},
+	}
+	forbiddenGuidance := map[string][]string{
+		projectToolReadFile: {
+			"omit limit",
+			"full-file read",
+		},
+	}
 	if len(runCtx.Tools) != len(want) {
 		t.Fatalf("tool count = %d, want %d", len(runCtx.Tools), len(want))
 	}
@@ -73,6 +108,16 @@ func TestProjectEinoAssistantFilesystemMiddlewareInventory(t *testing.T) {
 		for _, forbidden := range []string{"absolute path", "any file on the machine"} {
 			if strings.Contains(desc, forbidden) {
 				t.Errorf("%s description = %q, must not contain %q", info.Name, info.Desc, forbidden)
+			}
+		}
+		for _, phrase := range requiredGuidance[info.Name] {
+			if !strings.Contains(desc, phrase) {
+				t.Errorf("%s description = %q, want guidance %q", info.Name, info.Desc, phrase)
+			}
+		}
+		for _, phrase := range forbiddenGuidance[info.Name] {
+			if strings.Contains(desc, phrase) {
+				t.Errorf("%s description = %q, must not contain misleading guidance %q", info.Name, info.Desc, phrase)
 			}
 		}
 	}

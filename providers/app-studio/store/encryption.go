@@ -144,20 +144,28 @@ func (s *encryptedStore) AppendMessage(ctx context.Context, scope Scope, msg Mes
 	if err := scope.validate(); err != nil {
 		return err
 	}
+	msg, err := s.encryptMessage(scope, msg)
+	if err != nil {
+		return err
+	}
+	return s.inner.AppendMessage(ctx, scope, msg)
+}
+
+func (s *encryptedStore) encryptMessage(scope Scope, msg Message) (Message, error) {
 	if msg.Content == "" || msg.ContentEncrypted {
-		return s.inner.AppendMessage(ctx, scope, msg)
+		return msg, nil
 	}
 	aead := s.keys[s.active]
 	nonce := make([]byte, aead.NonceSize())
 	if _, err := io.ReadFull(cryptoRand.Reader, nonce); err != nil {
-		return fmt.Errorf("generate message nonce: %w", err)
+		return Message{}, fmt.Errorf("generate message nonce: %w", err)
 	}
 	ciphertext := aead.Seal(nil, nonce, []byte(msg.Content), messageAAD(scope, msg))
 	payload := append(nonce, ciphertext...)
 	msg.Content = base64.RawStdEncoding.EncodeToString(payload)
 	msg.ContentEncrypted = true
 	msg.ContentKeyID = s.active
-	return s.inner.AppendMessage(ctx, scope, msg)
+	return msg, nil
 }
 
 func (s *encryptedStore) ListMessages(ctx context.Context, scope Scope, limit int, cursor string) (Page, error) {
@@ -203,6 +211,62 @@ func (s *encryptedStore) SaveAssistantRun(ctx context.Context, scope Scope, run 
 	return s.inner.SaveAssistantRun(ctx, scope, run)
 }
 
+func (s *encryptedStore) CreateAssistantRun(ctx context.Context, scope Scope, user Message, assistant Message, run AssistantRun) (AssistantRun, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
+	}
+	user, err := s.encryptMessage(scope, user)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	assistant, err = s.encryptMessage(scope, assistant)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	checkpoint, err := s.encryptAssistantRunBlob(scope, run, "checkpoint", run.Checkpoint)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	audit, err := s.encryptAssistantRunBlob(scope, run, "audit", run.Audit)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	run.Checkpoint = checkpoint
+	run.Audit = audit
+	created, err := s.inner.CreateAssistantRun(ctx, scope, user, assistant, run)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	if err := s.decryptAssistantRunBlobs(scope, &created); err != nil {
+		return AssistantRun{}, err
+	}
+	return created, nil
+}
+
+func (s *encryptedStore) SaveAssistantRunSnapshot(ctx context.Context, scope Scope, run AssistantRun, messages []Message, expectedRevision int64) error {
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	checkpoint, err := s.encryptAssistantRunBlob(scope, run, "checkpoint", run.Checkpoint)
+	if err != nil {
+		return err
+	}
+	audit, err := s.encryptAssistantRunBlob(scope, run, "audit", run.Audit)
+	if err != nil {
+		return err
+	}
+	run.Checkpoint = checkpoint
+	run.Audit = audit
+	encryptedMessages := make([]Message, len(messages))
+	for i := range messages {
+		encryptedMessages[i], err = s.encryptMessage(scope, messages[i])
+		if err != nil {
+			return err
+		}
+	}
+	return s.inner.SaveAssistantRunSnapshot(ctx, scope, run, encryptedMessages, expectedRevision)
+}
+
 func (s *encryptedStore) CompareAndSwapAssistantRun(ctx context.Context, scope Scope, run AssistantRun, expectedRequestID string) error {
 	if err := scope.validate(); err != nil {
 		return err
@@ -233,6 +297,28 @@ func (s *encryptedStore) ClaimAssistantRun(ctx context.Context, scope Scope, id 
 
 func (s *encryptedStore) GetAssistantRun(ctx context.Context, scope Scope, id string) (AssistantRun, error) {
 	run, err := s.inner.GetAssistantRun(ctx, scope, id)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
+		return AssistantRun{}, err
+	}
+	return run, nil
+}
+
+func (s *encryptedStore) FindAssistantRunByClientRequestID(ctx context.Context, scope Scope, clientRequestID string) (AssistantRun, error) {
+	run, err := s.inner.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
+		return AssistantRun{}, err
+	}
+	return run, nil
+}
+
+func (s *encryptedStore) LatestAssistantRun(ctx context.Context, scope Scope) (AssistantRun, error) {
+	run, err := s.inner.LatestAssistantRun(ctx, scope)
 	if err != nil {
 		return AssistantRun{}, err
 	}

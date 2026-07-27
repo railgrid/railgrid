@@ -196,9 +196,16 @@ func TestProjectEinoAssistantToolPropagatesControlFlowErrors(t *testing.T) {
 	}
 }
 
-func TestEinoApprovePlanToolRejectsMissingAllowedOperations(t *testing.T) {
+func TestEinoApprovePlanToolDerivesWorkspaceMutationCapability(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	runState := newProjectEinoAssistantRunState()
-	tool := projectEinoAssistantTool{runState: runState}
+	tool := projectEinoAssistantTool{
+		server: server,
+		req: projectAssistantRunRequest{
+			MessageScope: store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"},
+		},
+		runState: runState,
+	}
 
 	result, err := tool.invokeApprovedPlanTool(context.Background(), "call-plan", projectAssistantToolSpec{
 		Name: projectToolRequestProjectPlanApproval,
@@ -213,11 +220,63 @@ func TestEinoApprovePlanToolRejectsMissingAllowedOperations(t *testing.T) {
 		t.Fatalf("invokeApprovedPlanTool returned error: %v", err)
 	}
 
-	if !strings.Contains(result, "allowedOperations is required") {
-		t.Fatalf("result = %q, want allowedOperations validation error", result)
+	if !strings.Contains(result, `"status":"approved"`) {
+		t.Fatalf("result = %q, want approved plan", result)
 	}
-	if plan := runState.ApprovedPlan(); plan != nil {
-		t.Fatalf("approved plan = %#v, want nil after malformed approve_plan", plan)
+	plan := runState.ApprovedPlan()
+	if plan == nil {
+		t.Fatal("approved plan = nil")
+	}
+	if plan.Version != projectAssistantApprovedPlanVersionWorkspaceMutation {
+		t.Fatalf("approved plan version = %d, want %d", plan.Version, projectAssistantApprovedPlanVersionWorkspaceMutation)
+	}
+	if !stringSliceEqual(plan.Capabilities, []string{projectAssistantCapabilityWorkspaceMutate}) {
+		t.Fatalf("approved plan capabilities = %#v, want workspace mutation", plan.Capabilities)
+	}
+	for _, toolName := range []string{projectToolWriteFile, projectToolApplyPatch, projectToolMkdir} {
+		if !projectAssistantApprovedPlanAllowsWrite(plan, toolName, map[string]any{"path": "src/App.tsx"}) {
+			t.Fatalf("derived workspace grant does not authorize %s", toolName)
+		}
+	}
+}
+
+func TestEinoApprovePlanReplacesExpandedScopeInsteadOfUnioning(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	runState := newProjectEinoAssistantRunState()
+	runState.ApprovePlan(projectAssistantApprovedPlan{
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+		TargetPaths:  []string{"src/"},
+	})
+	tool := projectEinoAssistantTool{
+		server:   server,
+		req:      projectAssistantRunRequest{MessageScope: scope},
+		runState: runState,
+	}
+
+	result, err := tool.invokeApprovedPlanTool(
+		context.Background(),
+		"call-plan",
+		projectAssistantToolSpec{Name: projectToolRequestProjectPlanApproval, Risk: projectAssistantToolRiskPlan},
+		map[string]any{
+			"summary":     "Move implementation to generated output",
+			"steps":       []any{"write generated files"},
+			"targetPaths": []any{"generated/"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("invokeApprovedPlanTool returned error: %v", err)
+	}
+	if !strings.Contains(result, `"status":"approved"`) {
+		t.Fatalf("result = %q, want approved plan", result)
+	}
+	plan := runState.ApprovedPlan()
+	if plan == nil {
+		t.Fatal("approved plan = nil")
+	}
+	if !stringSliceEqual(plan.TargetPaths, []string{"generated/"}) {
+		t.Fatalf("approved plan paths = %#v, want replacement scope only", plan.TargetPaths)
 	}
 }
 
@@ -239,10 +298,9 @@ func TestEinoApprovePlanToolFailsClosedOnGrantRevisionConflict(t *testing.T) {
 		"call-plan",
 		projectAssistantToolSpec{Name: projectToolRequestProjectPlanApproval, Risk: projectAssistantToolRiskPlan},
 		map[string]any{
-			"summary":           "Update the app",
-			"steps":             []any{"edit source"},
-			"targetPaths":       []any{"src/"},
-			"allowedOperations": []any{projectToolWriteFile},
+			"summary":     "Update the app",
+			"steps":       []any{"edit source"},
+			"targetPaths": []any{"src/"},
 		},
 	)
 	if !errors.Is(err, errProjectAssistantPlanGrantPersistence) || result != "" {
@@ -250,6 +308,32 @@ func TestEinoApprovePlanToolFailsClosedOnGrantRevisionConflict(t *testing.T) {
 	}
 	if plan := runState.ApprovedPlan(); plan != nil {
 		t.Fatalf("in-memory plan after persistence conflict = %#v, want nil", plan)
+	}
+}
+
+func TestEinoPendingLegacyPlanApprovalCannotBecomeCapabilityGrant(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	tool := projectEinoAssistantTool{runState: runState}
+
+	result, err := tool.invokeApprovedPlanTool(
+		context.Background(),
+		"call-legacy-plan",
+		projectAssistantToolSpec{Name: projectToolRequestProjectPlanApproval, Risk: projectAssistantToolRiskPlan},
+		map[string]any{
+			"summary":           "Update the app",
+			"steps":             []any{"edit source"},
+			"targetPaths":       []any{"src/"},
+			"allowedOperations": []any{projectToolWriteFile},
+		},
+	)
+	if err != nil {
+		t.Fatalf("invokeApprovedPlanTool returned error: %v", err)
+	}
+	if !strings.Contains(result, "must be requested again") {
+		t.Fatalf("legacy plan result = %q, want a fresh-approval requirement", result)
+	}
+	if plan := runState.ApprovedPlan(); plan != nil {
+		t.Fatalf("legacy pending approval created capability grant %#v", plan)
 	}
 }
 
@@ -266,12 +350,91 @@ func TestEinoDirectWriteGrantFailsClosedOnGrantRevisionConflict(t *testing.T) {
 		runState: runState,
 	}
 
-	err := tool.grantAllWritesUntilCommit(context.Background())
+	err := tool.grantWriteUntilCommit(context.Background(), projectToolWriteFile, map[string]any{"path": "src/App.tsx"})
 	if !errors.Is(err, errProjectAssistantPlanGrantPersistence) {
-		t.Fatalf("grantAllWritesUntilCommit error = %v, want terminal persistence conflict", err)
+		t.Fatalf("grantWriteUntilCommit error = %v, want terminal persistence conflict", err)
 	}
 	if plan := runState.ApprovedPlan(); plan != nil {
 		t.Fatalf("in-memory direct grant after persistence conflict = %#v, want nil", plan)
+	}
+}
+
+func TestEinoDirectWriteGrantAuthorizesCanonicalEditsOnlyOnApprovedPath(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	runState := newProjectEinoAssistantRunState()
+	tool := projectEinoAssistantTool{
+		server:   server,
+		req:      projectAssistantRunRequest{MessageScope: scope},
+		runState: runState,
+	}
+
+	if err := tool.grantWriteUntilCommit(context.Background(), projectToolWriteFile, map[string]any{"path": "src/App.tsx"}); err != nil {
+		t.Fatalf("grantWriteUntilCommit returned error: %v", err)
+	}
+	plan := runState.ApprovedPlan()
+	if plan == nil {
+		t.Fatal("direct write grant = nil")
+	}
+	if !stringSliceEqual(plan.TargetPaths, []string{"src/App.tsx"}) {
+		t.Fatalf("direct write grant paths = %#v, want exact approved path", plan.TargetPaths)
+	}
+	if !projectAssistantApprovedPlanAllowsWrite(plan, projectToolApplyPatch, map[string]any{"path": "src/App.tsx"}) {
+		t.Fatal("direct write grant should authorize apply_patch on the approved path")
+	}
+	if projectAssistantApprovedPlanAllowsWrite(plan, projectToolWriteFile, map[string]any{"path": "src/Other.tsx"}) {
+		t.Fatal("direct write grant must not authorize a different path")
+	}
+}
+
+func TestEinoDirectMkdirGrantAuthorizesChildEdits(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	runState := newProjectEinoAssistantRunState()
+	tool := projectEinoAssistantTool{
+		server:   server,
+		req:      projectAssistantRunRequest{MessageScope: scope},
+		runState: runState,
+	}
+
+	if err := tool.grantWriteUntilCommit(context.Background(), projectToolMkdir, map[string]any{"path": "src/components"}); err != nil {
+		t.Fatalf("grantWriteUntilCommit returned error: %v", err)
+	}
+	plan := runState.ApprovedPlan()
+	if plan == nil {
+		t.Fatal("direct mkdir grant = nil")
+	}
+	if !stringSliceEqual(plan.TargetPaths, []string{"src/components/"}) {
+		t.Fatalf("direct mkdir grant paths = %#v, want directory subtree", plan.TargetPaths)
+	}
+	if !projectAssistantApprovedPlanAllowsWrite(plan, projectToolWriteFile, map[string]any{"path": "src/components/Foo.tsx"}) {
+		t.Fatal("direct mkdir grant should authorize writes below the approved directory")
+	}
+}
+
+func TestEinoDirectWriteGrantDoesNotMergeObsoleteAuthority(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	runState := newProjectEinoAssistantRunState()
+	runState.ApprovePlan(projectAssistantApprovedPlan{
+		TargetPaths:    []string{"secrets/"},
+		AllowAllWrites: true,
+	})
+	tool := projectEinoAssistantTool{
+		server:   server,
+		req:      projectAssistantRunRequest{MessageScope: scope},
+		runState: runState,
+	}
+
+	if err := tool.grantWriteUntilCommit(context.Background(), projectToolWriteFile, map[string]any{"path": "src/App.tsx"}); err != nil {
+		t.Fatalf("grantWriteUntilCommit returned error: %v", err)
+	}
+	plan := runState.ApprovedPlan()
+	if plan == nil {
+		t.Fatal("direct write grant = nil")
+	}
+	if plan.AllowAllWrites || !stringSliceEqual(plan.TargetPaths, []string{"src/App.tsx"}) {
+		t.Fatalf("direct write grant = %#v, want only fresh approved path", plan)
 	}
 }
 
@@ -288,10 +451,11 @@ func TestEinoToolReplansWhenPersistedGrantDoesNotCoverAutoApprovedWrite(t *testi
 		AutoApproveActions: true,
 	}
 	stalePlan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
-		Summary:     "Update the public client.",
-		Steps:       []string{"update public/index.html", "update public/app.js"},
-		TargetPaths: []string{"public/index.html", "public/app.js"},
-		Operations:  []string{projectToolWriteFile},
+		Summary:      "Update the public client.",
+		Steps:        []string{"update public/index.html", "update public/app.js"},
+		TargetPaths:  []string{"public/index.html", "public/app.js"},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
 	})
 	if err := server.saveProjectAssistantApprovedPlan(context.Background(), req.MessageScope, &stalePlan); err != nil {
 		t.Fatalf("saveProjectAssistantApprovedPlan returned error: %v", err)
@@ -382,7 +546,6 @@ func TestEinoToolReplansWhenPersistedGrantDoesNotCoverAutoApprovedWrite(t *testi
 		"summary":"Add the server behavior.",
 		"steps":["Update server.js"],
 		"targetPaths":["server.js"],
-		"allowedOperations":["write_file"],
 		"acceptanceCriteria":["server.js is updated"]
 	}`)
 	if err != nil {
@@ -394,8 +557,8 @@ func TestEinoToolReplansWhenPersistedGrantDoesNotCoverAutoApprovedWrite(t *testi
 	replacement := runState.ApprovedPlan()
 	if replacement == nil ||
 		!stringSliceEqual(replacement.TargetPaths, []string{"server.js"}) ||
-		!stringSliceEqual(replacement.Operations, []string{projectToolWriteFile}) {
-		t.Fatalf("replacement plan = %#v, want server.js write envelope only", replacement)
+		!stringSliceEqual(replacement.Capabilities, []string{projectAssistantCapabilityWorkspaceMutate}) {
+		t.Fatalf("replacement plan = %#v, want server.js workspace mutation envelope only", replacement)
 	}
 	if persisted := server.loadProjectAssistantApprovedPlan(context.Background(), req.MessageScope); persisted == nil ||
 		!stringSliceEqual(persisted.TargetPaths, []string{"server.js"}) {
@@ -427,10 +590,11 @@ func TestEinoToolFailsClosedWhenPersistedGrantCannotBeRetired(t *testing.T) {
 		AutoApproveActions: true,
 	}
 	stalePlan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
-		Summary:     "Update the public client.",
-		Steps:       []string{"update public/app.js"},
-		TargetPaths: []string{"public/app.js"},
-		Operations:  []string{projectToolWriteFile},
+		Summary:      "Update the public client.",
+		Steps:        []string{"update public/app.js"},
+		TargetPaths:  []string{"public/app.js"},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
 	})
 	if err := server.saveProjectAssistantApprovedPlan(context.Background(), req.MessageScope, &stalePlan); err != nil {
 		t.Fatalf("saveProjectAssistantApprovedPlan returned error: %v", err)
@@ -488,10 +652,11 @@ func TestEinoCommitRetiresPersistedGrantBeforeRepositoryMutation(t *testing.T) {
 		MessageScope: projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
 	}
 	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
-		Summary:     "Update the application.",
-		Steps:       []string{"update src/App.tsx"},
-		TargetPaths: []string{"src/App.tsx"},
-		Operations:  []string{projectToolWriteFile},
+		Summary:      "Update the application.",
+		Steps:        []string{"update src/App.tsx"},
+		TargetPaths:  []string{"src/App.tsx"},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
 	})
 	if err := server.saveProjectAssistantApprovedPlan(context.Background(), req.MessageScope, &plan); err != nil {
 		t.Fatalf("saveProjectAssistantApprovedPlan returned error: %v", err)
@@ -519,12 +684,14 @@ func TestEinoCommitRetiresPersistedGrantBeforeRepositoryMutation(t *testing.T) {
 		runState: runState,
 	}
 
-	result, err := commitAdapter.invokeAllowedTool(
+	err := commitAdapter.requestPermission(
 		context.Background(),
 		"call-commit",
 		commitAdapter.tool.Spec(),
 		map[string]any{"message": "Update application"},
+		`{"message":"Update application"}`,
 	)
+	result := ""
 	if err == nil || !strings.Contains(err.Error(), "retire approved plan before commit") {
 		t.Fatalf("commit error = %v, want pre-commit plan retirement failure", err)
 	}

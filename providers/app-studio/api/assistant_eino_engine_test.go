@@ -775,7 +775,8 @@ func TestEinoAssistantEngineDeepPhaseRejectsHiddenRepeatedPlanWithoutWideningGra
 		Summary:            "Update the application shell.",
 		Steps:              []string{"edit the application shell"},
 		TargetPaths:        []string{"src/"},
-		Operations:         []string{projectToolWriteFile},
+		Version:            projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities:       []string{projectAssistantCapabilityWorkspaceMutate},
 		AcceptanceCriteria: []string{"the application shell is updated"},
 		ApprovalTool:       projectToolRequestProjectPlanApproval,
 	})
@@ -907,9 +908,10 @@ func TestEinoAssistantEngineDeepPhasePreservesTerminalPhaseAcrossReductionAfterS
 				req.InitialApprovedPlan = &initialPlan
 			} else {
 				grant := projectAssistantApprovedPlan{
-					Steps:       []string{"write the change", "verify the preview"},
-					TargetPaths: []string{"src/"},
-					Operations:  []string{projectToolWriteFile},
+					Steps:        []string{"write the change", "verify the preview"},
+					TargetPaths:  []string{"src/"},
+					Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+					Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
 				}
 				if err := server.saveProjectAssistantApprovedPlan(context.Background(), req.MessageScope, &grant); err != nil {
 					t.Fatalf("saveProjectAssistantApprovedPlan returned error: %v", err)
@@ -1144,9 +1146,11 @@ func TestEinoAssistantEngineUsesScopedCanonicalFilesystemReads(t *testing.T) {
 	implementationReq := projectEinoRunRequestForProfileTest(projectAssistantTurnProfileImplementation)
 	implementationReq.TurnPolicy = projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation)
 	implementationReq.InitialApprovedPlan = &projectAssistantApprovedPlan{
-		Summary:    "Inspect the implementation inventory.",
-		Steps:      []string{"Inspect", "Edit"},
-		Operations: []string{projectToolWriteFile},
+		Summary:        "Inspect the implementation inventory.",
+		Steps:          []string{"Inspect", "Edit"},
+		Version:        projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities:   []string{projectAssistantCapabilityWorkspaceMutate},
+		AllowAllWrites: true,
 	}
 	_, err = implementationEngine.StreamProjectAssistant(ctx, implementationReq)
 	var inputErr *projectAssistantInputRequiredError
@@ -1185,6 +1189,9 @@ func TestEinoAssistantEngineUsesScopedCanonicalFilesystemReads(t *testing.T) {
 				newTools: newProjectEinoAssistantToolsFactory(server),
 			}
 			req := projectEinoRunRequestForProfileTest(profile)
+			req.Project.Name = "demo-" + string(profile)
+			req.WorkspaceScope.ProjectName = req.Project.Name
+			req.MessageScope.ProjectName = req.Project.Name
 			req.TurnPolicy = projectAssistantTurnPolicyForProfile(profile)
 			if _, err := engine.StreamProjectAssistant(ctx, req); err != nil {
 				t.Fatalf("StreamProjectAssistant returned error: %v", err)
@@ -1283,9 +1290,11 @@ func TestEinoAssistantEngineTerminalPhaseDeniesCanonicalReadBeforeTelemetry(t *t
 		events = append(events, event)
 	}
 	req.InitialApprovedPlan = &projectAssistantApprovedPlan{
-		Summary:    "Previously completed initial project build.",
-		Steps:      []string{"Write", "Verify"},
-		Operations: []string{projectToolWriteFile},
+		Summary:        "Previously completed initial project build.",
+		Steps:          []string{"Write", "Verify"},
+		Version:        projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities:   []string{projectAssistantCapabilityWorkspaceMutate},
+		AllowAllWrites: true,
 	}
 	runState := newProjectEinoAssistantRunState()
 	runState.SetTurnPolicy(req.TurnPolicy)
@@ -2133,10 +2142,11 @@ func TestEinoAssistantEngineAutoApprovesWriteTools(t *testing.T) {
 			TurnProfile:        projectAssistantTurnProfileImplementation,
 			TurnPolicy:         projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
 			InitialApprovedPlan: &projectAssistantApprovedPlan{
-				Summary:     "Write the first source file only.",
-				Steps:       []string{"write the first source file"},
-				TargetPaths: []string{"src/one.tsx"},
-				Operations:  []string{projectToolWriteFile},
+				Summary:      "Write the first source file only.",
+				Steps:        []string{"write the first source file"},
+				TargetPaths:  []string{"src/one.tsx"},
+				Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+				Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
 			},
 			StreamCallbacks: projectAssistantStreamCallbacks{
 				OnAssistantEvent: func(event projectAssistantEvent) {
@@ -2387,9 +2397,10 @@ func TestEinoAssistantEnginePersistedPlanGrantSkipsApprovalOnNewTurn(t *testing.
 
 	// Seed a grant as if a previous turn already earned plan approval.
 	grant := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
-		Summary:     "Build app shell",
-		TargetPaths: []string{"src/"},
-		Operations:  []string{projectToolWriteFile},
+		Summary:      "Build app shell",
+		TargetPaths:  []string{"src/"},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
 	})
 	if err := server.saveProjectAssistantApprovedPlan(context.Background(), req.MessageScope, &grant); err != nil {
 		t.Fatalf("saveProjectAssistantApprovedPlan returned error: %v", err)
@@ -2456,7 +2467,7 @@ func TestEinoAssistantEngineCommitRequestConsumesApprovedPlan(t *testing.T) {
 				newProjectEinoAssistantServerTool(server, planTool, req, state),
 				newProjectEinoAssistantServerTool(server, writeTool, req, state),
 				newProjectEinoAssistantServerTool(server, verifyTool, req, state),
-				newProjectEinoAssistantTool(commitTool, req, state),
+				newProjectEinoAssistantServerTool(server, commitTool, req, state),
 			}, nil
 		},
 	}
@@ -2522,6 +2533,9 @@ func TestEinoAssistantEngineCommitRequestConsumesApprovedPlan(t *testing.T) {
 	}
 	if commitCheckpoint.ApprovedPlan != nil {
 		t.Fatalf("commit checkpoint approved plan = %#v, want nil after commit request", commitCheckpoint.ApprovedPlan)
+	}
+	if grant := server.loadProjectAssistantApprovedPlan(context.Background(), req.MessageScope); grant != nil {
+		t.Fatalf("durable grant after commit request = %#v, want revoked before the user decides", grant)
 	}
 
 	_, err = engine.ResumeProjectAssistant(
@@ -3083,7 +3097,7 @@ func (m *planThenWriteEinoChatModel) Generate(ctx context.Context, input []*sche
 			Type: "function",
 			Function: schema.FunctionCall{
 				Name:      projectToolRequestProjectPlanApproval,
-				Arguments: `{"summary":"Build app shell","steps":["Write the app entry"],"targetPaths":["src/"],"allowedOperations":["write_file"],"acceptanceCriteria":["src/App.tsx exists"]}`,
+				Arguments: `{"summary":"Build app shell","steps":["Write the app entry"],"targetPaths":["src/"],"acceptanceCriteria":["src/App.tsx exists"]}`,
 			},
 		}}), nil
 	case 2:
@@ -3124,7 +3138,7 @@ func (m *planWriteCommitWriteEinoChatModel) Generate(ctx context.Context, input 
 			Type: "function",
 			Function: schema.FunctionCall{
 				Name:      projectToolRequestProjectPlanApproval,
-				Arguments: `{"summary":"Build app shell","steps":["Write the app entry"],"targetPaths":["src/"],"allowedOperations":["write_file"],"acceptanceCriteria":["src/App.tsx exists"]}`,
+				Arguments: `{"summary":"Build app shell","steps":["Write the app entry"],"targetPaths":["src/"],"acceptanceCriteria":["src/App.tsx exists"]}`,
 			},
 		}}), nil
 	case 2:
@@ -3395,7 +3409,7 @@ func (m *canonicalFilesystemReadEinoChatModel) Generate(
 			Type: "function",
 			Function: schema.FunctionCall{
 				Name:      projectToolRequestProjectPlanApproval,
-				Arguments: `{"summary":"Update the project","steps":["Inspect","Edit"],"targetPaths":["src/"],"allowedOperations":["write_file"],"acceptanceCriteria":["Project updated"]}`,
+				Arguments: `{"summary":"Update the project","steps":["Inspect","Edit"],"targetPaths":["src/"],"acceptanceCriteria":["Project updated"]}`,
 			},
 		}}), nil
 	}
@@ -3453,7 +3467,7 @@ func (m *planThenReportToolCapturingEinoChatModel) Generate(ctx context.Context,
 			Type: "function",
 			Function: schema.FunctionCall{
 				Name:      projectToolRequestProjectPlanApproval,
-				Arguments: `{"summary":"Build app shell","steps":["Inspect the app","Write the app entry"],"targetPaths":["src/"],"allowedOperations":["write_file"],"acceptanceCriteria":["src/App.tsx exists"]}`,
+				Arguments: `{"summary":"Build app shell","steps":["Inspect the app","Write the app entry"],"targetPaths":["src/"],"acceptanceCriteria":["src/App.tsx exists"]}`,
 			},
 		}}), nil
 	}
@@ -3556,7 +3570,7 @@ func (m *hiddenRepeatedPlanEinoChatModel) Generate(ctx context.Context, input []
 			Type: "function",
 			Function: schema.FunctionCall{
 				Name:      projectToolRequestProjectPlanApproval,
-				Arguments: `{"summary":"Widen hidden grant","steps":["edit secrets"],"targetPaths":["secrets/"],"allowedOperations":["apply_patch"],"acceptanceCriteria":["secrets changed"]}`,
+				Arguments: `{"summary":"Widen hidden grant","steps":["edit secrets"],"targetPaths":["secrets/"],"acceptanceCriteria":["secrets changed"]}`,
 			},
 		}}), nil
 	}

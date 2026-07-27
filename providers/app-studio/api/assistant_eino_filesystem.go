@@ -37,11 +37,43 @@ const (
 )
 
 var (
-	projectEinoFilesystemLSDescription   = `List files and directories at a project-relative path in the current App Studio project. Use "." to list the project root.`
-	projectEinoFilesystemReadDescription = `Read bounded text from a project-relative file in the current App Studio project. file_path is project-relative. offset is a one-based line number and limit is the number of lines to return.`
-	projectEinoFilesystemGlobDescription = `Find files in the current App Studio project using a glob pattern. pattern and the optional path are project-relative. Use ** for recursive matching.`
-	projectEinoFilesystemGrepDescription = `Search bounded project files for a regular expression. The optional path and glob filters are project-relative to the current App Studio project.`
-	projectEinoFilesystemInstruction     = `Use only project-relative paths with ls, read_file, glob, and grep. Use ls or glob to discover project files, read_file for bounded targeted reads, and grep to locate code. These tools can inspect only the current App Studio project and cannot modify files or execute commands.`
+	projectEinoFilesystemLSDescription = `Lists files and directories in the current App Studio project, filtering by a project-relative path. Use "." to list the project root.
+
+Usage:
+- The ls tool returns all files and directories in the specified project directory.
+- Use it for exploring the project and finding the right file to read.
+- You should almost always use this tool before using read_file.`
+	projectEinoFilesystemReadDescription = `Reads a project-relative file from the current App Studio project.
+
+Usage:
+- The file_path parameter must be project-relative.
+- By default, it reads up to 2000 lines starting from the beginning of the file.
+- For large files and project exploration, use pagination with offset and limit parameters to avoid context overflow.
+	  - First scan: read_file(file_path, limit=100) to see file structure.
+	  - Read more sections: read_file(file_path, offset=101, limit=200) for the next 200 lines.
+	  - Always specify a positive limit. Omitted or non-positive limits default to 2000 lines; continue with explicit offset and limit values for later ranges.
+- Offset is a one-based line number and limit is the number of lines to return.
+- Results include line numbers starting at 1.
+- You can call multiple tools in a single response. Batch independent reads of potentially useful files.
+- Always make sure an existing file has been read before editing it.`
+	projectEinoFilesystemGlobDescription = `Fast file pattern matching for the current App Studio project.
+- Pattern and the optional path are project-relative.
+- Supports glob patterns like "**/*.js" or "src/**/*.ts".
+- Use this tool when you need to find files by name patterns.
+- You can call multiple tools in a single response. Batch independent searches that are potentially useful.
+
+Examples:
+- "**/*.py" finds all Python files in the project.
+- "*.txt" finds text files in the project root.
+- "subdir/**/*.md" finds markdown files under a project subdirectory.`
+	projectEinoFilesystemGrepDescription = `Searches project-relative files for content before broadly reading files.
+
+Usage:
+- Pattern uses regex syntax, such as "log.*Error" or "function\\s+\\w+".
+- Filter files with the glob parameter, such as "*.js" or "**/*.tsx", or the type parameter, such as "js", "py", or "rust".
+- Output modes: "content" shows matching lines, "files_with_matches" shows only file paths, and "count" shows match counts.
+- By default patterns match within single lines only. For cross-line patterns, use multiline: true.`
+	projectEinoFilesystemInstruction = `Search with grep or glob before broadly reading files. Batch independent workspace reads in one model response, and use sequential reads only when a later range depends on an earlier result. Read existing files before proposing or applying edits. These tools are read-only and limited to the current App Studio project.`
 )
 
 func projectEinoAssistantFilesystemReadTool(name string) bool {

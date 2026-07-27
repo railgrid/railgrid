@@ -53,6 +53,7 @@ type Server struct {
 	assistantEngine              projectAssistantEngine
 	assistantTurnRouter          projectAssistantTurnRouter
 	assistantRunManager          *projectAssistantRunManager
+	assistantSupervisor          *projectAssistantSupervisor
 	developmentSyncLocks         map[string]*sync.Mutex
 	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string)
 	// previewEdgeProbe + edgeReadyURLs implement the preview edge-readiness
@@ -69,6 +70,11 @@ func New(gql *tenant.GraphQLClient, msgStore store.Store, hubBase string, mcpIns
 
 // NewWithWorkspace constructs a Server with an explicit project workspace store.
 func NewWithWorkspace(gql *tenant.GraphQLClient, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
+	return NewWithWorkspaceContext(context.Background(), gql, msgStore, workspaces, hubBase, mcpInsecureSkipTLSVerify)
+}
+
+// NewWithWorkspaceContext binds assistant workers to the provider lifecycle.
+func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
 	s := &Server{
 		gql:                      gql,
 		store:                    msgStore,
@@ -78,7 +84,19 @@ func NewWithWorkspace(gql *tenant.GraphQLClient, msgStore store.Store, workspace
 	}
 	s.assistantEngine = NewEinoAssistantEngine(s)
 	s.assistantRunManager = newProjectAssistantRunManager()
+	s.assistantSupervisor = newProjectAssistantSupervisor(parent, msgStore)
 	return s
+}
+
+func (s *Server) Shutdown(ctx context.Context) { s.projectAssistantSupervisor().Shutdown(ctx) }
+
+func (s *Server) projectAssistantSupervisor() *projectAssistantSupervisor {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.assistantSupervisor == nil {
+		s.assistantSupervisor = newProjectAssistantSupervisor(context.Background(), s.store)
+	}
+	return s.assistantSupervisor
 }
 
 func (s *Server) SetAutoApproveAssistantActions(enabled bool) {
@@ -150,6 +168,7 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}", s.patchProject).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}", s.deleteProject).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/messages", s.listProjectMessages).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/messages", s.startProjectAssistantRun).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/messages/stream", s.createProjectMessageStream).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/template", s.putProjectTemplate).Methods(http.MethodPut)
 	r.HandleFunc("/api/projects/{project}/promotion", s.getProjectPromotion).Methods(http.MethodGet)
@@ -163,6 +182,8 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/authorize-development-preview", s.authorizeProjectDevelopmentPreview).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/resume", s.resumeProjectAssistant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/abort", s.abortProjectAssistant).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/runs/latest", s.latestProjectAssistantRun).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/{run}/stream", s.streamProjectAssistantSnapshots).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/memory", s.getProjectMemory).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/memory", s.patchProjectMemory).Methods(http.MethodPatch)
 }

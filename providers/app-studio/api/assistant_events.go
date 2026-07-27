@@ -169,6 +169,29 @@ func (w *projectAssistantStreamWriter) WriteAcceptedAssistantContent(ctx context
 	return w.write(projectMessageStreamEventFromUI(projectAssistantUIDataAppendEvent(w.assistantID, w.assistantDataKey, delta)))
 }
 
+// WriteDurableAssistantContent applies a complete durable snapshot. Unlike
+// WriteAcceptedAssistantContent it never treats the input as a token delta:
+// reconnects and legacy adapters receive full revisions and must replace the
+// stable data-model value instead of appending it again.
+func (w *projectAssistantStreamWriter) WriteDurableAssistantContent(ctx context.Context, content string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := w.ensureAssistantContentShell(ctx); err != nil {
+		return err
+	}
+	if w.acceptedAssistantContent == content && w.provisionalAssistantContent == "" {
+		return nil
+	}
+	w.acceptedAssistantContent = content
+	w.provisionalAssistantContent = ""
+	return w.write(projectMessageStreamEventFromUI(projectAssistantUIDataUpdateEvent(
+		w.assistantID,
+		w.assistantDataKey,
+		content,
+	)))
+}
+
 func (w *projectAssistantStreamWriter) WriteProvisionalAssistantContent(ctx context.Context, content string) error {
 	if err := ctx.Err(); err != nil {
 		return err

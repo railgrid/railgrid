@@ -41,7 +41,7 @@ func TestMemoryStorePaginationAndCleanup(t *testing.T) {
 	}
 	if err := s.SaveAssistantRun(context.Background(), scope, AssistantRun{
 		ID:        "run-old",
-		Status:    AssistantRunStatusPendingPermission,
+		Status:    AssistantRunStatusCompleted,
 		RequestID: "perm-old",
 		CreatedAt: base,
 		UpdatedAt: base,

@@ -5,7 +5,9 @@ import type {
   ListResponse,
   Project,
   ProjectHydrateResult,
-  ProjectAssistantResumeResponse,
+  ProjectAssistantRunStart,
+  ProjectAssistantAbortResponse,
+  ProjectAssistantSnapshot,
   ProjectAssistantUIComponent,
   ProjectAssistantUIEvent,
   ProjectLLMSettings,
@@ -31,6 +33,13 @@ export class ProjectAPIInitializingError extends Error {
   constructor(message = 'App Studio is still initializing for this workspace. Try again shortly.') {
     super(message)
     this.name = 'ProjectAPIInitializingError'
+  }
+}
+
+export class ProjectAPIRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+    this.name = 'ProjectAPIRequestError'
   }
 }
 
@@ -89,7 +98,7 @@ async function request<T>(ctx: KedgeContext | null, method: string, path: string
     if (isProjectAPIInitializingResponse(res.status, reason, detail)) {
       throw new ProjectAPIInitializingError(detail)
     }
-    throw new Error(detail)
+    throw new ProjectAPIRequestError(detail, res.status)
   }
   return (text ? JSON.parse(text) : null) as T
 }
@@ -557,6 +566,49 @@ async function requestStream(
   }
 }
 
+async function requestAssistantSnapshotStream(
+  ctx: KedgeContext | null,
+  name: string,
+  runID: string,
+  afterRevision: number,
+  onSnapshot: (snapshot: ProjectAssistantSnapshot) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const headers = tenantHeaders({ token: ctx?.token })
+  headers.Accept = 'text/event-stream'
+  headers['Last-Event-ID'] = String(afterRevision)
+  const res = await fetch(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/${encodeURIComponent(runID)}/stream?afterRevision=${encodeURIComponent(String(afterRevision))}`, {
+    credentials: 'same-origin', headers, signal,
+  })
+  if (!res.ok) throw new Error(`assistant stream failed: ${res.status} ${res.statusText}`)
+  if (!res.body) throw new Error('missing assistant stream body')
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const flush = (raw: string) => {
+    let event = ''
+    let data = ''
+    for (const line of raw.split('\n')) {
+      if (line.startsWith('event:')) event = line.slice(6).trim()
+      if (line.startsWith('data:')) data = data ? `${data}\n${line.slice(5).trimStart()}` : line.slice(5).trimStart()
+    }
+    if (event === 'snapshot' && data) onSnapshot(JSON.parse(data) as ProjectAssistantSnapshot)
+  }
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      for (;;) {
+        const separator = buffer.indexOf('\n\n')
+        if (separator < 0) break
+        flush(buffer.slice(0, separator))
+        buffer = buffer.slice(separator + 2)
+      }
+    }
+  } finally { reader.releaseLock() }
+}
+
 export const api = {
   async listProviders(ctx: KedgeContext | null): Promise<ProviderItem[]> {
     const body = await request<ListResponse<ProviderItem>>(ctx, 'GET', '/api/providers')
@@ -748,13 +800,29 @@ export const api = {
     )
   },
 
+  async startAssistantRun(ctx: KedgeContext | null, name: string, body: { content: string; clientRequestID: string; initialProjectPrompt?: boolean }): Promise<ProjectAssistantRunStart> {
+    return request<ProjectAssistantRunStart>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/messages`, body)
+  },
+
+  async getLatestAssistantRun(ctx: KedgeContext | null, name: string): Promise<ProjectAssistantSnapshot | undefined> {
+    const headers = tenantHeaders({ token: ctx?.token })
+    const res = await fetch(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/runs/latest`, { credentials: 'same-origin', headers })
+    if (res.status === 204) return undefined
+    if (!res.ok) throw new Error(`latest assistant run failed: ${res.status} ${res.statusText}`)
+    return res.json() as Promise<ProjectAssistantSnapshot>
+  },
+
+  async streamAssistantRun(ctx: KedgeContext | null, name: string, runID: string, afterRevision: number, onSnapshot: (snapshot: ProjectAssistantSnapshot) => void, signal?: AbortSignal): Promise<void> {
+    return requestAssistantSnapshotStream(ctx, name, runID, afterRevision, onSnapshot, signal)
+  },
+
   async resumeAssistantRun(
     ctx: KedgeContext | null,
     name: string,
     runID: string,
     body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; assistantMessageID?: string },
-  ): Promise<ProjectAssistantResumeResponse> {
-    return request<ProjectAssistantResumeResponse>(
+  ): Promise<ProjectAssistantSnapshot> {
+    return request<ProjectAssistantSnapshot>(
       ctx,
       'POST',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/${encodeURIComponent(runID)}/resume`,
@@ -762,8 +830,8 @@ export const api = {
     )
   },
 
-  async abortAssistantRun(ctx: KedgeContext | null, name: string, runID: string): Promise<ProjectAssistantResumeResponse> {
-    return request<ProjectAssistantResumeResponse>(
+  async abortAssistantRun(ctx: KedgeContext | null, name: string, runID: string): Promise<ProjectAssistantAbortResponse> {
+    return request<ProjectAssistantAbortResponse>(
       ctx,
       'POST',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/${encodeURIComponent(runID)}/abort`,

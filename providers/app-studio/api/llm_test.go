@@ -139,3 +139,15 @@ func TestInitialCreationBuilderPromptSkipsPlanAndBatchesIndependentWrites(t *tes
 		}
 	}
 }
+
+func TestBuilderPromptKeepsApprovalPolicyIndependentOfToolNames(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	prompt := projectSystemPromptForInitialPlan(project, &ProjectRepositoryView{Ref: "demo-repo", Ready: true}, projectAssistantTurnProfileImplementation, false)
+
+	if !strings.Contains(prompt, "target path envelope") {
+		t.Fatalf("builder prompt missing path-scoped approval guidance:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "allowed edit operations") || strings.Contains(prompt, "allowedOperations") {
+		t.Fatalf("builder prompt exposed tool names as approval policy:\n%s", prompt)
+	}
+}

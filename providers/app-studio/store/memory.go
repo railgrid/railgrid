@@ -160,6 +160,102 @@ func (s *MemoryStore) SaveAssistantRun(_ context.Context, scope Scope, run Assis
 	if s.assistantRuns[scope] == nil {
 		s.assistantRuns[scope] = map[string]AssistantRun{}
 	}
+	if existing, exists := s.assistantRuns[scope][run.ID]; exists {
+		run.CreatedAt = existing.CreatedAt
+		run.ClientRequestID = existing.ClientRequestID
+		run.UserMessageID = existing.UserMessageID
+		run.Revision = existing.Revision
+	}
+	if AssistantRunIsConversation(run) && run.ClientRequestID != "" {
+		for id, existing := range s.assistantRuns[scope] {
+			if id != run.ID && AssistantRunIsConversation(existing) && existing.ClientRequestID == run.ClientRequestID {
+				return fmt.Errorf("%w: client request %q", ErrAssistantRunConflict, run.ClientRequestID)
+			}
+		}
+	}
+	if AssistantRunIsConversation(run) && !assistantRunStatusTerminal(run.Status) {
+		for id, existing := range s.assistantRuns[scope] {
+			if id != run.ID && AssistantRunIsConversation(existing) && !assistantRunStatusTerminal(existing.Status) {
+				return fmt.Errorf("%w: project already has active assistant run %q", ErrAssistantRunConflict, existing.ID)
+			}
+		}
+	}
+	s.assistantRuns[scope][run.ID] = run
+	return nil
+}
+
+func (s *MemoryStore) CreateAssistantRun(_ context.Context, scope Scope, user Message, assistant Message, run AssistantRun) (AssistantRun, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
+	}
+	if err := validateNewAssistantRun(user, assistant, run); err != nil {
+		return AssistantRun{}, err
+	}
+	user = prepareMessage(scope, user)
+	assistant = prepareMessage(scope, assistant)
+	run = prepareAssistantRun(scope, run)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.assistantRuns[scope] {
+		if AssistantRunIsConversation(existing) && existing.ClientRequestID == run.ClientRequestID {
+			return cloneAssistantRun(existing), nil
+		}
+	}
+	if AssistantRunIsConversation(run) && !assistantRunStatusTerminal(run.Status) {
+		for _, existing := range s.assistantRuns[scope] {
+			if AssistantRunIsConversation(existing) && !assistantRunStatusTerminal(existing.Status) {
+				return AssistantRun{}, fmt.Errorf("%w: project already has active assistant run %q", ErrAssistantRunConflict, existing.ID)
+			}
+		}
+	}
+	if s.messages[scope] == nil {
+		s.messages[scope] = map[string]Message{}
+	}
+	if s.assistantRuns[scope] == nil {
+		s.assistantRuns[scope] = map[string]AssistantRun{}
+	}
+	s.messages[scope][user.ID] = user
+	s.messages[scope][assistant.ID] = assistant
+	s.assistantRuns[scope][run.ID] = run
+	return cloneAssistantRun(run), nil
+}
+
+func (s *MemoryStore) SaveAssistantRunSnapshot(_ context.Context, scope Scope, run AssistantRun, messages []Message, expectedRevision int64) error {
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	if err := validateAssistantRunSnapshot(run, messages, expectedRevision); err != nil {
+		return err
+	}
+	run = prepareAssistantRun(scope, run)
+	prepared := make([]Message, len(messages))
+	for i := range messages {
+		prepared[i] = prepareMessage(scope, messages[i])
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.assistantRuns[scope][run.ID]
+	if !ok || current.Revision != expectedRevision {
+		return fmt.Errorf("%w: assistant run %q", ErrAssistantRunConflict, run.ID)
+	}
+	if AssistantRunIsConversation(run) && !assistantRunStatusTerminal(run.Status) {
+		for id, existing := range s.assistantRuns[scope] {
+			if id != run.ID && AssistantRunIsConversation(existing) && !assistantRunStatusTerminal(existing.Status) {
+				return fmt.Errorf("%w: project already has active assistant run %q", ErrAssistantRunConflict, existing.ID)
+			}
+		}
+	}
+	run.CreatedAt = current.CreatedAt
+	run.ClientRequestID = current.ClientRequestID
+	run.UserMessageID = current.UserMessageID
+	if s.messages[scope] == nil {
+		s.messages[scope] = map[string]Message{}
+	}
+	for _, message := range prepared {
+		s.messages[scope][message.ID] = message
+	}
 	s.assistantRuns[scope][run.ID] = run
 	return nil
 }
@@ -193,6 +289,19 @@ func (s *MemoryStore) CompareAndSwapAssistantRun(_ context.Context, scope Scope,
 	}
 	if s.assistantRuns[scope] == nil {
 		s.assistantRuns[scope] = map[string]AssistantRun{}
+	}
+	if exists {
+		run.CreatedAt = current.CreatedAt
+		run.ClientRequestID = current.ClientRequestID
+		run.UserMessageID = current.UserMessageID
+		run.Revision = current.Revision
+	}
+	if AssistantRunIsConversation(run) && !assistantRunStatusTerminal(run.Status) {
+		for id, existing := range s.assistantRuns[scope] {
+			if id != run.ID && AssistantRunIsConversation(existing) && !assistantRunStatusTerminal(existing.Status) {
+				return fmt.Errorf("%w: project already has active assistant run %q", ErrAssistantRunConflict, existing.ID)
+			}
+		}
 	}
 	s.assistantRuns[scope][run.ID] = run
 	return nil
@@ -252,10 +361,44 @@ func (s *MemoryStore) GetAssistantRun(_ context.Context, scope Scope, id string)
 	if !ok {
 		return AssistantRun{}, fmt.Errorf("%w: %q", ErrAssistantRunNotFound, id)
 	}
-	run.ProjectName = scope.ProjectName
-	run.Checkpoint = cloneRawMessage(run.Checkpoint)
-	run.Audit = cloneRawMessage(run.Audit)
-	return run, nil
+	return cloneAssistantRun(run), nil
+}
+
+func (s *MemoryStore) FindAssistantRunByClientRequestID(_ context.Context, scope Scope, clientRequestID string) (AssistantRun, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
+	}
+	if clientRequestID == "" {
+		return AssistantRun{}, fmt.Errorf("assistant run client request id is required")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, run := range s.assistantRuns[scope] {
+		if AssistantRunIsConversation(run) && run.ClientRequestID == clientRequestID {
+			return cloneAssistantRun(run), nil
+		}
+	}
+	return AssistantRun{}, fmt.Errorf("%w: client request %q", ErrAssistantRunNotFound, clientRequestID)
+}
+
+func (s *MemoryStore) LatestAssistantRun(_ context.Context, scope Scope) (AssistantRun, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var latest AssistantRun
+	found := false
+	for _, run := range s.assistantRuns[scope] {
+		if AssistantRunIsConversation(run) && (!found || run.UpdatedAt.After(latest.UpdatedAt) || (run.UpdatedAt.Equal(latest.UpdatedAt) && run.ID > latest.ID)) {
+			latest = run
+			found = true
+		}
+	}
+	if !found {
+		return AssistantRun{}, fmt.Errorf("%w: latest run", ErrAssistantRunNotFound)
+	}
+	return cloneAssistantRun(latest), nil
 }
 
 func (s *MemoryStore) DeleteProjectMessages(_ context.Context, scope Scope) error {
@@ -286,7 +429,7 @@ func (s *MemoryStore) DeleteMessagesOlderThan(_ context.Context, before time.Tim
 	}
 	for scope, runs := range s.assistantRuns {
 		for id, run := range runs {
-			if run.UpdatedAt.Before(before) {
+			if AssistantRunIsConversation(run) && run.UpdatedAt.Before(before) {
 				delete(runs, id)
 				deleted++
 			}
@@ -321,6 +464,76 @@ func cloneRawMessage(src []byte) []byte {
 	dst := make([]byte, len(src))
 	copy(dst, src)
 	return dst
+}
+
+func cloneAssistantRun(run AssistantRun) AssistantRun {
+	run.Checkpoint = cloneRawMessage(run.Checkpoint)
+	run.Audit = cloneRawMessage(run.Audit)
+	return run
+}
+
+func prepareMessage(scope Scope, msg Message) Message {
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now().UTC()
+	}
+	if msg.UpdatedAt.IsZero() {
+		msg.UpdatedAt = msg.CreatedAt
+	}
+	msg.ProjectName = scope.ProjectName
+	msg.Metadata = cloneMetadata(msg.Metadata)
+	return msg
+}
+
+func prepareAssistantRun(scope Scope, run AssistantRun) AssistantRun {
+	if run.CreatedAt.IsZero() {
+		run.CreatedAt = time.Now().UTC()
+	}
+	if run.UpdatedAt.IsZero() {
+		run.UpdatedAt = run.CreatedAt
+	}
+	run.ProjectName = scope.ProjectName
+	run.Checkpoint = cloneRawMessage(run.Checkpoint)
+	run.Audit = cloneRawMessage(run.Audit)
+	return run
+}
+
+func validateNewAssistantRun(user Message, assistant Message, run AssistantRun) error {
+	if user.ID == "" || assistant.ID == "" {
+		return fmt.Errorf("user and assistant message ids are required")
+	}
+	if user.ID == assistant.ID {
+		return fmt.Errorf("user and assistant message ids must differ")
+	}
+	if run.ID == "" || run.Status == "" || run.ClientRequestID == "" || run.ActiveMessageID == "" {
+		return fmt.Errorf("assistant run id, status, client request id, and active message id are required")
+	}
+	// Empty is accepted for pre-durable-run callers and rows created before the
+	// originating-message field existed. New HTTP starts always set it.
+	if run.UserMessageID != "" && run.UserMessageID != user.ID {
+		return fmt.Errorf("assistant run user message id must match user message")
+	}
+	if run.ActiveMessageID != assistant.ID {
+		return fmt.Errorf("assistant run active message id must match assistant message")
+	}
+	if run.Revision != 1 {
+		return fmt.Errorf("new assistant run revision must be 1")
+	}
+	return nil
+}
+
+func validateAssistantRunSnapshot(run AssistantRun, messages []Message, expectedRevision int64) error {
+	if run.ID == "" || run.Status == "" {
+		return fmt.Errorf("assistant run id and status are required")
+	}
+	if expectedRevision < 1 || run.Revision != expectedRevision+1 {
+		return fmt.Errorf("%w: assistant run %q revision must advance from %d to %d", ErrAssistantRunConflict, run.ID, expectedRevision, expectedRevision+1)
+	}
+	for _, message := range messages {
+		if message.ID == "" {
+			return fmt.Errorf("snapshot message id is required")
+		}
+	}
+	return nil
 }
 
 func normalizeLimit(limit int) int {

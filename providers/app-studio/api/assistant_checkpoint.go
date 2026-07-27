@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +35,7 @@ import (
 )
 
 type projectAssistantCheckpointState struct {
+	AssistantMessageID        string                               `json:"assistantMessageID,omitempty"`
 	ToolCalls                 []chatToolCall                       `json:"toolCalls"`
 	CurrentIndex              int                                  `json:"currentIndex"`
 	ProjectRepositoryRef      string                               `json:"projectRepositoryRef,omitempty"`
@@ -85,6 +87,126 @@ type projectAssistantResumeResponse struct {
 	Checkpoint       *projectAssistantCheckpoint        `json:"-"`
 	AssistantContent string                             `json:"-"`
 	Result           string                             `json:"-"`
+}
+
+func projectAssistantCheckpointActiveMessageID(state projectAssistantCheckpointState) string {
+	return strings.TrimSpace(state.AssistantMessageID)
+}
+
+func projectAssistantPausedRunInterruptMatchesMessage(run store.AssistantRun, message store.Message) bool {
+	if message.Role != aiv1alpha1.ProjectMessageRoleAssistant {
+		return false
+	}
+	if messageRunID, _ := message.Metadata[projectAssistantMetadataRunID].(string); messageRunID != "" && messageRunID != run.ID {
+		return false
+	}
+	interrupt := projectAssistantUIInterruptFromMetadata(message.Metadata[projectMessageMetadataAssistantInterrupt])
+	return interrupt != nil && interrupt.Action != nil && interrupt.Status == "pending" &&
+		interrupt.Action.RunID == run.ID && interrupt.Action.RequestID == run.RequestID &&
+		(interrupt.Action.AssistantMessageID == "" || interrupt.Action.AssistantMessageID == message.ID)
+}
+
+func (s *Server) findProjectAssistantPausedRunMessageByInterrupt(ctx context.Context, scope store.Scope, run store.AssistantRun) (store.Message, bool, error) {
+	var candidate *store.Message
+	cursor := ""
+	for {
+		page, err := s.store.ListMessages(ctx, scope, 250, cursor)
+		if err != nil {
+			return store.Message{}, false, err
+		}
+		for _, message := range page.Items {
+			if !projectAssistantPausedRunInterruptMatchesMessage(run, message) {
+				continue
+			}
+			if candidate != nil {
+				return store.Message{}, false, nil
+			}
+			candidateMessage := message
+			candidate = &candidateMessage
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if candidate == nil {
+		return store.Message{}, false, nil
+	}
+	return *candidate, true, nil
+}
+
+// normalizeProjectAssistantPausedRun repairs legacy paused rows that predate
+// durable message identity columns. The checkpoint is the authoritative source
+// for its assistant message; do not infer a message by chronology or content.
+// For checkpoints written before that field existed, a resume request may name
+// the message only when its persisted interrupt binds the exact run and request.
+func (s *Server) normalizeProjectAssistantPausedRun(
+	ctx context.Context,
+	scope store.Scope,
+	run store.AssistantRun,
+	resumeAssistantMessageID string,
+) (store.AssistantRun, error) {
+	if s == nil || s.store == nil || run.ActiveMessageID != "" ||
+		(run.Status != store.AssistantRunStatusPendingPermission && run.Status != store.AssistantRunStatusPendingInput) {
+		return run, nil
+	}
+	var checkpoint projectAssistantCheckpointState
+	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil {
+		return run, fmt.Errorf("decode assistant checkpoint for run normalization: %w", err)
+	}
+	assistantMessageID := projectAssistantCheckpointActiveMessageID(checkpoint)
+	fromCheckpoint := assistantMessageID != ""
+	var message store.Message
+	if !fromCheckpoint {
+		assistantMessageID = strings.TrimSpace(resumeAssistantMessageID)
+		if assistantMessageID != "" {
+			candidate, err := s.findProjectMessage(ctx, scope, assistantMessageID)
+			if err != nil || !projectAssistantPausedRunInterruptMatchesMessage(run, candidate) {
+				return run, nil
+			}
+			message = candidate
+		} else {
+			candidate, found, err := s.findProjectAssistantPausedRunMessageByInterrupt(ctx, scope, run)
+			if err != nil {
+				return run, fmt.Errorf("find interrupt-bound assistant message: %w", err)
+			}
+			if !found {
+				return run, nil
+			}
+			assistantMessageID = candidate.ID
+			message = candidate
+		}
+	}
+	if fromCheckpoint {
+		var err error
+		message, err = s.findProjectMessage(ctx, scope, assistantMessageID)
+		if err != nil {
+			return run, fmt.Errorf("find checkpoint assistant message: %w", err)
+		}
+	}
+	if message.Role != aiv1alpha1.ProjectMessageRoleAssistant {
+		return run, fmt.Errorf("checkpoint assistant message %q is not an assistant message", assistantMessageID)
+	}
+	if messageRunID, _ := message.Metadata[projectAssistantMetadataRunID].(string); messageRunID != "" && messageRunID != run.ID {
+		return run, fmt.Errorf("checkpoint assistant message %q belongs to run %q", assistantMessageID, messageRunID)
+	}
+	run.ActiveMessageID = assistantMessageID
+	if err := s.store.SaveAssistantRun(ctx, scope, run); err != nil {
+		return run, fmt.Errorf("save normalized assistant run: %w", err)
+	}
+	return run, nil
+}
+
+func (s *Server) saveProjectAssistantRun(ctx context.Context, scope store.Scope, run store.AssistantRun) error {
+	if accumulator := s.projectAssistantSupervisor().accumulatorFor(scope, run.ID); accumulator != nil {
+		return accumulator.UpdateRun(ctx, func(current *store.AssistantRun) {
+			current.Status = run.Status
+			current.RequestID = run.RequestID
+			current.Checkpoint = run.Checkpoint
+			current.Audit = run.Audit
+		})
+	}
+	return s.store.SaveAssistantRun(ctx, scope, run)
 }
 
 type projectAssistantRunAudit struct {
@@ -186,6 +308,9 @@ func (s *Server) saveProjectAssistantEinoPermissionCheckpoint(
 	state.LastToolMessages = cloneChatMessages(state.LastToolMessages)
 	state.ApprovedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
 	state.Eino = cloneProjectAssistantEinoCheckpointState(state.Eino)
+	if state.AssistantMessageID == "" && req.AssistantRun != nil {
+		state.AssistantMessageID = strings.TrimSpace(req.AssistantRun.ActiveMessageID)
+	}
 	if strings.TrimSpace(state.Eino.InterruptType) == "" {
 		state.Eino.InterruptType = projectAssistantInterruptTypePermission
 	}
@@ -210,9 +335,16 @@ func (s *Server) saveProjectAssistantEinoPermissionCheckpoint(
 	run.RequestID = requestID
 	run.Checkpoint = raw
 	run.UpdatedAt = now
-	if err := s.store.SaveAssistantRun(ctx, req.MessageScope, run); err != nil {
+	if req.snapshotAccumulator != nil {
+		if err := req.snapshotAccumulator.UpdateRun(ctx, func(current *store.AssistantRun) {
+			current.Status, current.RequestID, current.Checkpoint = run.Status, run.RequestID, run.Checkpoint
+		}); err != nil {
+			return nil, projectAssistantPermission{}, projectAssistantCheckpoint{}, err
+		}
+	} else if err := s.saveProjectAssistantRun(ctx, req.MessageScope, run); err != nil {
 		return nil, projectAssistantPermission{}, projectAssistantCheckpoint{}, err
 	}
+	req.AssistantRun = &run
 
 	checkpointCreatedAt := now
 	permission := projectAssistantPermissionForEinoInterrupt(requestID, state.ToolCalls[state.CurrentIndex], info)
@@ -252,6 +384,9 @@ func (s *Server) saveProjectAssistantEinoFollowUpCheckpoint(
 	state.LastToolMessages = cloneChatMessages(state.LastToolMessages)
 	state.ApprovedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
 	state.Eino = cloneProjectAssistantEinoCheckpointState(state.Eino)
+	if state.AssistantMessageID == "" && req.AssistantRun != nil {
+		state.AssistantMessageID = strings.TrimSpace(req.AssistantRun.ActiveMessageID)
+	}
 	state.Eino.InterruptType = projectAssistantInterruptTypeFollowUp
 	raw, err := json.Marshal(state)
 	if err != nil {
@@ -274,9 +409,16 @@ func (s *Server) saveProjectAssistantEinoFollowUpCheckpoint(
 	run.RequestID = requestID
 	run.Checkpoint = raw
 	run.UpdatedAt = now
-	if err := s.store.SaveAssistantRun(ctx, req.MessageScope, run); err != nil {
+	if req.snapshotAccumulator != nil {
+		if err := req.snapshotAccumulator.UpdateRun(ctx, func(current *store.AssistantRun) {
+			current.Status, current.RequestID, current.Checkpoint = run.Status, run.RequestID, run.Checkpoint
+		}); err != nil {
+			return nil, projectAssistantFollowUp{}, projectAssistantCheckpoint{}, err
+		}
+	} else if err := s.saveProjectAssistantRun(ctx, req.MessageScope, run); err != nil {
 		return nil, projectAssistantFollowUp{}, projectAssistantCheckpoint{}, err
 	}
+	req.AssistantRun = &run
 
 	checkpointCreatedAt := now
 	followUp := projectAssistantFollowUpForEinoInterrupt(requestID, info)
@@ -361,8 +503,26 @@ func projectAssistantPermissionReasonForArguments(spec projectAssistantToolSpec,
 	}
 	switch spec.Risk {
 	case projectAssistantToolRiskWrite:
+		if projectAssistantDirectApprovalGrantsWritePlan(spec.Name) {
+			if target, err := projectAssistantWriteTargetPath(spec.Name, args); err == nil {
+				return fmt.Sprintf(
+					"Allow App Studio to create or modify %q using workspace edit tools until the next commit request.",
+					target,
+				)
+			}
+		}
 		return "This action will modify files in the App Studio workspace."
 	case projectAssistantToolRiskPlan:
+		if targets := projectAssistantApprovalTargetPaths(projectToolStringList(args["targetPaths"])); len(targets) > 0 {
+			quoted := make([]string, 0, len(targets))
+			for _, target := range targets {
+				quoted = append(quoted, fmt.Sprintf("%q", target))
+			}
+			return fmt.Sprintf(
+				"Allow App Studio to create or modify files in %s using workspace edit tools until the next commit request.",
+				strings.Join(quoted, ", "),
+			)
+		}
 		return "This plan will allow App Studio to modify the approved workspace paths until the next commit request."
 	case projectAssistantToolRiskCommit:
 		return "This action will commit App Studio workspace changes to the linked repository."
@@ -371,6 +531,24 @@ func projectAssistantPermissionReasonForArguments(spec projectAssistantToolSpec,
 	default:
 		return "This action requires approval."
 	}
+}
+
+func projectAssistantApprovalTargetPaths(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if target := projectAssistantApprovalTargetPath(value); target != "" {
+			out = append(out, target)
+		}
+	}
+	return normalizeProjectAssistantStringList(out)
+}
+
+func projectAssistantApprovalTargetPath(value string) string {
+	value, err := projectAssistantCanonicalGrantTarget(value, false)
+	if err != nil {
+		return ""
+	}
+	return value
 }
 
 func projectAssistantPermissionForCall(requestID string, tc chatToolCall, spec projectAssistantToolSpec) projectAssistantPermission {
@@ -411,6 +589,10 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 	if err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
+	preflightRun, err = s.normalizeProjectAssistantPausedRun(ctx, messageScope, preflightRun, req.AssistantMessageID)
+	if err != nil {
+		return projectAssistantResumeResponse{}, err
+	}
 	var preflightState projectAssistantCheckpointState
 	if err := json.Unmarshal(preflightRun.Checkpoint, &preflightState); err != nil {
 		return projectAssistantResumeResponse{}, fmt.Errorf("decode assistant checkpoint: %w", err)
@@ -438,7 +620,15 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 			return projectAssistantResumeResponse{}, err
 		}
 	}
-	run, err := s.store.ClaimAssistantRun(ctx, messageScope, runID, strings.TrimSpace(req.RequestID), time.Now().UTC())
+	var run store.AssistantRun
+	if accumulator := s.projectAssistantSupervisor().accumulatorFor(messageScope, runID); accumulator != nil {
+		run, err = accumulator.ClaimPending(ctx, strings.TrimSpace(req.RequestID))
+	} else {
+		// Legacy direct callers do not have a server-owned worker. HTTP resume
+		// always starts through the supervisor and therefore takes the serialized
+		// branch above.
+		run, err = s.store.ClaimAssistantRun(ctx, messageScope, runID, strings.TrimSpace(req.RequestID), time.Now().UTC())
+	}
 	if err != nil {
 		if strings.Contains(err.Error(), "not waiting") || strings.Contains(err.Error(), "request id is required") {
 			if clearErr := s.clearProjectAssistantPendingMessageForNonWaitingRun(ctx, messageScope, preflightRun, req); clearErr != nil {
@@ -479,7 +669,7 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 		if err != nil {
 			return projectAssistantResumeResponse{}, err
 		}
-		if saveErr := s.store.SaveAssistantRun(ctx, messageScope, run); saveErr != nil {
+		if saveErr := s.saveProjectAssistantRun(ctx, messageScope, run); saveErr != nil {
 			return projectAssistantResumeResponse{}, saveErr
 		}
 		out.Status = run.Status
@@ -583,9 +773,35 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, errProjectLLMNotConfigured)
 	}
 
-	assistantID := newMessageID()
+	assistantID := strings.TrimSpace(run.ActiveMessageID)
+	if assistantID == "" {
+		assistantID = newMessageID()
+	}
 	assistantContent := &strings.Builder{}
-	var streamedToolCalls []projectToolCallStreamEvent
+	accumulator := s.projectAssistantSupervisor().accumulatorFor(messageScope, run.ID)
+	metadataState := &projectAssistantDurableMetadataState{status: "Working"}
+	var snapshotErr error
+	var snapshotErrMu sync.Mutex
+	recordSnapshotErr := func(err error) {
+		if err == nil {
+			return
+		}
+		snapshotErrMu.Lock()
+		if snapshotErr == nil {
+			snapshotErr = err
+		}
+		snapshotErrMu.Unlock()
+	}
+	getSnapshotErr := func() error {
+		snapshotErrMu.Lock()
+		defer snapshotErrMu.Unlock()
+		return snapshotErr
+	}
+	persistMetadata := func(ctx context.Context, runStatus *store.AssistantRunStatus) {
+		if accumulator != nil {
+			recordSnapshotErr(s.persistProjectAssistantDurableMetadata(ctx, accumulator, projectWorkspaceScope(id, p.Name), metadataState, runStatus))
+		}
+	}
 	var pendingPermissionToolCallID string
 	var pendingFollowUpToolCallID string
 	emitAssistantEvent := func(event projectAssistantEvent) {
@@ -594,7 +810,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 			if event.Permission != nil && event.Permission.ToolCallID != "" {
 				pendingPermissionToolCallID = event.Permission.ToolCallID
 				out.Permission = event.Permission
-				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
+				metadataState.toolCalls = upsertProjectToolCallStreamEvent(metadataState.toolCalls, projectToolCallStreamEvent{
 					ID:         event.Permission.ToolCallID,
 					Name:       event.Permission.ToolName,
 					Status:     "permission_required",
@@ -606,14 +822,14 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 			if event.Checkpoint != nil {
 				out.Checkpoint = event.Checkpoint
 				if pendingPermissionToolCallID != "" {
-					streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
+					metadataState.toolCalls = upsertProjectToolCallStreamEvent(metadataState.toolCalls, projectToolCallStreamEvent{
 						ID:         pendingPermissionToolCallID,
 						Status:     "permission_required",
 						Checkpoint: event.Checkpoint,
 					})
 				}
 				if pendingFollowUpToolCallID != "" {
-					streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
+					metadataState.toolCalls = upsertProjectToolCallStreamEvent(metadataState.toolCalls, projectToolCallStreamEvent{
 						ID:         pendingFollowUpToolCallID,
 						Status:     "input_required",
 						Checkpoint: event.Checkpoint,
@@ -624,7 +840,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 			if event.FollowUp != nil && event.FollowUp.ToolCallID != "" {
 				pendingFollowUpToolCallID = event.FollowUp.ToolCallID
 				out.FollowUp = event.FollowUp
-				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
+				metadataState.toolCalls = upsertProjectToolCallStreamEvent(metadataState.toolCalls, projectToolCallStreamEvent{
 					ID:       event.FollowUp.ToolCallID,
 					Name:     projectToolAskFollowUp,
 					Status:   "input_required",
@@ -633,12 +849,13 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 				})
 			}
 		}
+		persistMetadata(ctx, nil)
 	}
 	streamToolCall := func(toolCall projectToolCallStreamEvent) {
 		if toolCall.ID == "" || toolCall.Status == "" {
 			return
 		}
-		streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, toolCall)
+		metadataState.toolCalls = upsertProjectToolCallStreamEvent(metadataState.toolCalls, toolCall)
 	}
 	resumeRun := run
 	engineReq := projectAssistantRunRequest{
@@ -656,13 +873,20 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		AutoApproveActions:       s.autoApproveAssistantActions(),
 		Continuation:             &state,
 		AssistantRun:             &resumeRun,
+		snapshotAccumulator:      accumulator,
 		StreamCallbacks: projectAssistantStreamCallbacks{
 			OnChunk: func(chunk string) {
 				assistantContent.WriteString(chunk)
+				if accumulator != nil {
+					recordSnapshotErr(accumulator.UpdateText(ctx, assistantContent.String(), false))
+				}
 			},
-			OnStatus: func(string) {},
+			OnProvisionalText:  func(string) { metadataState.provisional = true; persistMetadata(ctx, nil) },
+			OnProvisionalReset: func() { metadataState.provisional = false; persistMetadata(ctx, nil) },
+			OnStatus:           func(status string) { metadataState.status = status; persistMetadata(ctx, nil) },
 			OnToolCall: func(toolCall projectToolCallStreamEvent) {
 				streamToolCall(toolCall)
+				persistMetadata(ctx, nil)
 			},
 			OnAssistantEvent: emitAssistantEvent,
 		},
@@ -690,11 +914,14 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	currentRequestID := run.RequestID
 	currentToolCallID := strings.TrimSpace(state.Eino.ToolCallID)
 	result, err := s.projectAssistantEngine().ResumeProjectAssistant(ctx, engineReq, resumeReq, state)
+	if persistErr := getSnapshotErr(); persistErr != nil {
+		return projectAssistantResumeResponse{}, fmt.Errorf("persist resumed assistant snapshot: %w", persistErr)
+	}
 	run.Audit = append([]byte(nil), resumeRun.Audit...)
-	currentToolCall := projectAssistantResumeToolCall(streamedToolCalls, currentToolCallID)
+	currentToolCall := projectAssistantResumeToolCall(metadataState.toolCalls, currentToolCallID)
 	out.ToolCall = currentToolCall
 	out.Result = projectAssistantResumeToolResult(result.Content, currentToolCall)
-	previewRefreshNeeded := s.projectAssistantPreviewRefreshNeeded(ctx, engineReq.WorkspaceScope, "", false, streamedToolCalls)
+	previewRefreshNeeded := s.projectAssistantPreviewRefreshNeeded(ctx, engineReq.WorkspaceScope, "", false, metadataState.toolCalls)
 	if err != nil {
 		var permissionErr *projectAssistantPermissionRequiredError
 		if !errors.As(err, &permissionErr) {
@@ -719,7 +946,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 				if err != nil {
 					return projectAssistantResumeResponse{}, err
 				}
-				if err := s.store.SaveAssistantRun(persistCtx, messageScope, pendingRun); err != nil {
+				if err := s.saveProjectAssistantRun(persistCtx, messageScope, pendingRun); err != nil {
 					return projectAssistantResumeResponse{}, err
 				}
 				out.RunID = pendingRun.ID
@@ -737,7 +964,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 					return projectAssistantResumeResponse{}, err
 				}
 				if strings.TrimSpace(out.AssistantContent) != "" {
-					assistantMessage, err := s.resumedPendingProjectAssistantMessage(persistCtx, messageScope, assistantMessageID, assistantID, out, streamedToolCalls)
+					assistantMessage, err := s.resumedPendingProjectAssistantMessage(persistCtx, messageScope, assistantMessageID, assistantID, out, metadataState.toolCalls)
 					if err != nil {
 						return projectAssistantResumeResponse{}, err
 					}
@@ -767,7 +994,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		if err != nil {
 			return projectAssistantResumeResponse{}, err
 		}
-		if err := s.store.SaveAssistantRun(persistCtx, messageScope, pendingRun); err != nil {
+		if err := s.saveProjectAssistantRun(persistCtx, messageScope, pendingRun); err != nil {
 			return projectAssistantResumeResponse{}, err
 		}
 		out.RunID = pendingRun.ID
@@ -785,7 +1012,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 			return projectAssistantResumeResponse{}, err
 		}
 		if strings.TrimSpace(out.AssistantContent) != "" {
-			assistantMessage, err := s.resumedPendingProjectAssistantMessage(persistCtx, messageScope, assistantMessageID, assistantID, out, streamedToolCalls)
+			assistantMessage, err := s.resumedPendingProjectAssistantMessage(persistCtx, messageScope, assistantMessageID, assistantID, out, metadataState.toolCalls)
 			if err != nil {
 				return projectAssistantResumeResponse{}, err
 			}
@@ -796,6 +1023,17 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 
 	persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
 	defer cancelPersist()
+	out.Status = store.AssistantRunStatusCompleted
+	appendProjectAssistantResumeResolvedUI(&out, strings.TrimSpace(resumeReq.AssistantMessageID), currentRequestID, currentToolCall)
+	appendProjectAssistantResumeDevelopmentPreviewRefreshUI(&out, previewRefreshNeeded)
+	if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
+		return projectAssistantResumeResponse{}, err
+	}
+	if assistantMessage, err := s.appendResumedProjectAssistantMessageFromContent(persistCtx, messageScope, assistantID, result.Content, assistantContent.String(), projectAssistantMessageMetadata("", metadataState.toolCalls)); err != nil {
+		return projectAssistantResumeResponse{}, err
+	} else if assistantMessage != nil {
+		out.AssistantMessage = assistantMessage
+	}
 	run.Status = store.AssistantRunStatusCompleted
 	run.UpdatedAt = time.Now().UTC()
 	run, err = appendProjectAssistantRunAudit(run, projectAssistantPermissionAudit{
@@ -812,20 +1050,22 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	if err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
-	if err := s.store.SaveAssistantRun(persistCtx, messageScope, run); err != nil {
+	if accumulator != nil {
+		if err := accumulator.UpdateRun(persistCtx, func(current *store.AssistantRun) {
+			current.Audit = append([]byte(nil), run.Audit...)
+		}); err != nil {
+			return projectAssistantResumeResponse{}, err
+		}
+		// The HTTP supervisor publishes the completed status with the same
+		// accumulator after this helper returns. Do not save a terminal run here:
+		// that would expose completion before the message metadata transition.
+		out.Status = store.AssistantRunStatusCompleted
+		return out, nil
+	}
+	if err := s.saveProjectAssistantRun(persistCtx, messageScope, run); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
 	out.Status = run.Status
-	appendProjectAssistantResumeResolvedUI(&out, strings.TrimSpace(resumeReq.AssistantMessageID), currentRequestID, currentToolCall)
-	appendProjectAssistantResumeDevelopmentPreviewRefreshUI(&out, previewRefreshNeeded)
-	if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
-		return projectAssistantResumeResponse{}, err
-	}
-	if assistantMessage, err := s.appendResumedProjectAssistantMessageFromContent(persistCtx, messageScope, assistantID, result.Content, assistantContent.String(), projectAssistantMessageMetadata("", streamedToolCalls)); err != nil {
-		return projectAssistantResumeResponse{}, err
-	} else if assistantMessage != nil {
-		out.AssistantMessage = assistantMessage
-	}
 	return out, nil
 }
 
@@ -937,7 +1177,7 @@ func (s *Server) completeClaimedProjectAssistantRunAfterResumeError(
 	if auditErr != nil {
 		return projectAssistantResumeResponse{}, auditErr
 	}
-	if err := s.store.SaveAssistantRun(persistCtx, messageScope, run); err != nil {
+	if err := s.saveProjectAssistantRun(persistCtx, messageScope, run); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
 	out.Status = run.Status
@@ -964,10 +1204,17 @@ func (s *Server) abortProjectAssistantRun(
 	if err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
+	run, err = s.normalizeProjectAssistantPausedRun(ctx, messageScope, run, "")
+	if err != nil {
+		return projectAssistantResumeResponse{}, err
+	}
 	switch run.Status {
 	case store.AssistantRunStatusPendingPermission, store.AssistantRunStatusPendingInput:
 	default:
 		return projectAssistantResumeResponse{}, newValidationError("assistant run is not waiting for input")
+	}
+	if err := s.clearProjectAssistantApprovedPlan(ctx, messageScope); err != nil {
+		return projectAssistantResumeResponse{}, fmt.Errorf("revoke App Studio workspace grant before abort: %w", err)
 	}
 	now := time.Now().UTC()
 	run, err = s.store.ClaimAssistantRun(ctx, messageScope, run.ID, run.RequestID, now)
@@ -993,7 +1240,7 @@ func (s *Server) abortProjectAssistantRun(
 	if err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
-	if err := s.store.SaveAssistantRun(ctx, messageScope, run); err != nil {
+	if err := s.saveProjectAssistantRun(ctx, messageScope, run); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
 	if err := s.clearProjectAssistantPendingMessagesForRun(ctx, messageScope, run.ID); err != nil {
@@ -1049,6 +1296,23 @@ func (s *Server) appendResumedProjectAssistantMessage(
 	content string,
 	metadata map[string]any,
 ) (*aiv1alpha1.ProjectMessage, error) {
+	if accumulator := s.projectAssistantSupervisor().accumulatorForActiveMessage(scope, id); accumulator != nil {
+		if err := accumulator.UpdateSnapshot(ctx, func(run *store.AssistantRun, message *store.Message) {
+			message.Content = content
+			next := *run
+			next.Revision++
+			provisional, _ := message.Metadata[projectAssistantMetadataProvisional].(bool)
+			message.Metadata = projectAssistantDurableMetadataFromExisting(next, projectAssistantRunDisplayStatus(run.Status, "Working"), provisional, message.Metadata)
+		}); err != nil {
+			return nil, err
+		}
+		msg, err := s.findProjectMessage(ctx, scope, id)
+		if err != nil {
+			return nil, err
+		}
+		apiMessage := projectMessageToAPI(msg)
+		return &apiMessage, nil
+	}
 	if err := appendProjectAssistantMessage(ctx, s.store, scope, id, content, metadata); err != nil {
 		return nil, err
 	}

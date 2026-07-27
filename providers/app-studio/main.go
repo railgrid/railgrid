@@ -137,7 +137,7 @@ func runServe() {
 	}
 	defer closeStore()
 
-	apiServer := api.NewWithWorkspace(
+	apiServer := api.NewWithWorkspaceContext(ctx,
 		gqlClient,
 		msgStore,
 		openWorkspaceStore(),
@@ -181,6 +181,7 @@ func runServe() {
 	log.Printf("shutting down")
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	apiServer.Shutdown(shutdown)
 	if err := srv.Shutdown(shutdown); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}

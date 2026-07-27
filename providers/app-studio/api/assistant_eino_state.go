@@ -24,21 +24,25 @@ import (
 	"time"
 )
 
+const (
+	projectAssistantApprovedPlanVersionWorkspaceMutation = 2
+	projectAssistantCapabilityWorkspaceMutate            = "workspace.mutate"
+)
+
 type projectAssistantApprovedPlan struct {
 	Summary            string    `json:"summary,omitempty"`
 	Steps              []string  `json:"steps,omitempty"`
 	TargetPaths        []string  `json:"targetPaths,omitempty"`
-	Operations         []string  `json:"operations,omitempty"`
+	Version            int       `json:"version,omitempty"`
+	Capabilities       []string  `json:"capabilities,omitempty"`
 	AcceptanceCriteria []string  `json:"acceptanceCriteria,omitempty"`
 	ApprovedAt         time.Time `json:"approvedAt,omitempty"`
 	ApprovalTool       string    `json:"approvalTool,omitempty"`
 	// RunLocal marks authorization that is valid only for the current Eino
 	// run/checkpoint and must never be promoted into the cross-turn grant.
 	RunLocal bool `json:"runLocal,omitempty"`
-	// AllowAllWrites grants every workspace write tool, on any path, until the
-	// next commit. It is set when the user approves a write prompt directly (as
-	// opposed to a model-supplied plan envelope), so a single "Allow" does not
-	// re-prompt for each subsequent edit.
+	// AllowAllWrites is the run-local, unbounded source-edit authority derived
+	// only from an explicit fresh-project creation request.
 	AllowAllWrites bool `json:"allowAllWrites,omitempty"`
 }
 
@@ -409,7 +413,9 @@ func cloneProjectAssistantApprovedPlan(src *projectAssistantApprovedPlan) *proje
 	out := *src
 	out.Steps = append([]string(nil), src.Steps...)
 	out.TargetPaths = append([]string(nil), src.TargetPaths...)
-	out.Operations = append([]string(nil), src.Operations...)
+	if src.Capabilities != nil {
+		out.Capabilities = append([]string{}, src.Capabilities...)
+	}
 	out.AcceptanceCriteria = append([]string(nil), src.AcceptanceCriteria...)
 	return &out
 }
@@ -418,7 +424,7 @@ func normalizeProjectAssistantApprovedPlan(plan projectAssistantApprovedPlan) pr
 	plan.Summary = strings.TrimSpace(plan.Summary)
 	plan.Steps = normalizeProjectAssistantStringList(plan.Steps)
 	plan.TargetPaths = normalizeProjectAssistantStringList(plan.TargetPaths)
-	plan.Operations = normalizeProjectAssistantStringList(plan.Operations)
+	plan.Capabilities = normalizeProjectAssistantStringList(plan.Capabilities)
 	plan.AcceptanceCriteria = normalizeProjectAssistantStringList(plan.AcceptanceCriteria)
 	plan.ApprovalTool = strings.TrimSpace(plan.ApprovalTool)
 	if plan.ApprovedAt.IsZero() {

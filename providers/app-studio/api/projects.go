@@ -66,8 +66,10 @@ type PatchProjectMemoryRequest struct {
 }
 
 type CreateProjectMessageRequest struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content"`
+	Role                 string `json:"role,omitempty"`
+	Content              string `json:"content"`
+	ClientRequestID      string `json:"clientRequestID,omitempty"`
+	InitialProjectPrompt bool   `json:"initialProjectPrompt,omitempty"`
 }
 
 type ProjectView struct {
@@ -573,10 +575,6 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 		writeProjectError(w, newValidationError("prompt is required"))
 		return
 	}
-	msgStore, ok := s.requireStore(w)
-	if !ok {
-		return
-	}
 	flusher, ok := startProjectMessageStream(w)
 	if !ok {
 		return
@@ -610,11 +608,6 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 		writeStreamError(err)
 		return
 	}
-	if err := appendProjectUserMessage(r.Context(), msgStore, projectMessageScope(id.orgUUID, id.workspaceUUID, created.Name), req.Prompt); err != nil {
-		s.cleanupCreatedProjectSetup(r.Context(), c, id, created)
-		writeStreamError(err)
-		return
-	}
 	view := projectView(r.Context(), c, created, id)
 	if err := writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
 		Type:    "project",
@@ -622,10 +615,11 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 	}); err != nil {
 		return
 	}
-	if err := writeStatus("Working"); err != nil {
-		return
-	}
-	s.streamProjectAssistantWithStart(w, flusher, r, c, id, created, msgStore, assistantID, projectAssistantStreamStartForCreatePreflight(preflight))
+	// The initial project event is legacy wire compatibility only. Once the
+	// Project exists, its first prompt enters the same durable start boundary as
+	// every later turn, so closing this SSE cannot cancel execution or create a
+	// second user message.
+	s.startAndStreamLegacyProjectAssistant(w, r, c, id, created, req.Prompt, "legacy-create-"+uuid.NewString(), projectAssistantStreamStartForCreatePreflight(preflight))
 }
 
 func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Request) {
@@ -651,20 +645,12 @@ func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	msgStore, ok := s.requireStore(w)
-	if !ok {
-		return
+	if strings.TrimSpace(req.ClientRequestID) == "" {
+		// Older embedded portals did not send an idempotency key. Give their
+		// one POST a durable identity without changing their wire contract.
+		req.ClientRequestID = "legacy-" + uuid.NewString()
 	}
-	if err := appendProjectUserMessage(r.Context(), msgStore, projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name), req.Content); err != nil {
-		writeProjectError(w, err)
-		return
-	}
-
-	flusher, ok := startProjectMessageStream(w)
-	if !ok {
-		return
-	}
-	s.streamProjectAssistant(w, flusher, r, c, id, p, msgStore, "")
+	s.startAndStreamLegacyProjectAssistant(w, r, c, id, p, req.Content, req.ClientRequestID, nil)
 }
 
 func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) {
@@ -676,17 +662,89 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	resp, err := s.resumeProjectAssistantRunWithRepositoryAndClient(r.Context(), r, id, c, p, projectRepositoryView(r.Context(), c, p), mux.Vars(r)["run"], req)
+	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
+	runID := mux.Vars(r)["run"]
+	run, err := s.store.GetAssistantRun(r.Context(), scope, runID)
 	if err != nil {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	if run.Status != store.AssistantRunStatusPendingPermission && run.Status != store.AssistantRunStatusPendingInput {
+		writeProjectError(w, newValidationError("assistant run is not waiting for input"))
+		return
+	}
+	run, err = s.normalizeProjectAssistantPausedRun(r.Context(), scope, run, req.AssistantMessageID)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	message, err := s.findProjectMessage(r.Context(), scope, run.ActiveMessageID)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	supervisor := s.projectAssistantSupervisor()
+	if err := supervisor.Start(r.Context(), scope, run, message, func(ctx context.Context, accumulator *projectAssistantSnapshotAccumulator) {
+		resp, resumeErr := s.resumeProjectAssistantRunWithRepositoryAndClient(ctx, r.Clone(ctx), id, c, p, projectRepositoryView(ctx, c, p), runID, req)
+		if resumeErr == nil && resp.Status == store.AssistantRunStatusCompleted {
+			_ = accumulator.SetStatus(context.Background(), store.AssistantRunStatusCompleted)
+			return
+		}
+		if errors.Is(resumeErr, context.Canceled) || errors.Is(context.Cause(ctx), context.Canceled) {
+			_ = accumulator.SetStatus(context.Background(), store.AssistantRunStatusAborted)
+			return
+		}
+		if resumeErr != nil {
+			_ = accumulator.SetStatus(context.Background(), store.AssistantRunStatusFailed)
+			return
+		}
+		_ = accumulator.SetStatus(context.Background(), resp.Status)
+	}); err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	s.projectAssistantSupervisor().log("resume", scope, run)
+	writeJSON(w, http.StatusAccepted, projectAssistantRunSnapshot{Run: run, Message: message})
 }
 
 func (s *Server) abortProjectAssistant(w http.ResponseWriter, r *http.Request) {
 	_, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
+		return
+	}
+	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
+	if aborted, err := s.projectAssistantSupervisor().AbortWith(scope, mux.Vars(r)["run"], func(run *store.AssistantRun, message *store.Message) error {
+		if err := s.clearProjectAssistantApprovedPlan(r.Context(), scope); err != nil {
+			return fmt.Errorf("revoke App Studio workspace grant before abort: %w", err)
+		}
+		now := time.Now().UTC()
+		updated, auditErr := finalizeProjectAssistantRunAudit(*run, projectAssistantAuditOutcomeAborted, now)
+		if auditErr != nil {
+			return auditErr
+		}
+		updated, auditErr = appendProjectAssistantRunAudit(updated, projectAssistantPermissionAudit{
+			RequestID:  updated.RequestID,
+			Decision:   projectAssistantPermissionDeny,
+			Actor:      id.user,
+			Error:      "aborted by user",
+			ResolvedAt: now,
+		})
+		if auditErr != nil {
+			return auditErr
+		}
+		*run = updated
+		projectAssistantClearPendingInterruptMetadata(message, run.ID)
+		return nil
+	}); err != nil {
+		writeProjectError(w, err)
+		return
+	} else if aborted {
+		run, err := s.store.GetAssistantRun(r.Context(), scope, mux.Vars(r)["run"])
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, projectAssistantResumeResponse{RunID: run.ID, RequestID: run.RequestID, Status: run.Status, Decision: projectAssistantPermissionDeny})
 		return
 	}
 	resp, err := s.abortProjectAssistantRun(r.Context(), id, p, mux.Vars(r)["run"])
@@ -695,6 +753,20 @@ func (s *Server) abortProjectAssistant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func projectAssistantClearPendingInterruptMetadata(message *store.Message, runID string) {
+	if message == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	interrupt := projectAssistantUIInterruptFromMetadata(message.Metadata[projectMessageMetadataAssistantInterrupt])
+	if interrupt == nil || interrupt.Action == nil || interrupt.Action.RunID != runID {
+		return
+	}
+	metadata := cloneAnyMap(message.Metadata)
+	delete(metadata, projectMessageMetadataStatus)
+	delete(metadata, projectMessageMetadataAssistantInterrupt)
+	message.Metadata = metadata
 }
 
 func startProjectMessageStream(w http.ResponseWriter) (http.Flusher, bool) {
@@ -1159,6 +1231,9 @@ func (s *Server) updateProjectAssistantPermissionMessage(
 		metadata[projectMessageMetadataAssistantActions] = actions
 	} else {
 		delete(metadata, projectMessageMetadataAssistantActions)
+	}
+	if accumulator := s.projectAssistantSupervisor().accumulatorForActiveMessage(scope, msg.ID); accumulator != nil {
+		return accumulator.UpdateMessage(ctx, content, metadata)
 	}
 	now := time.Now().UTC()
 	return s.store.AppendMessage(ctx, scope, store.Message{

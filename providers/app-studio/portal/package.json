@@ -11,6 +11,7 @@
     "test:preview-state": "node --test src/previewState.test.mjs",
     "test:create-readiness": "node --test src/createReadiness.test.mjs",
     "test:assistant-progress": "node --test src/assistantProgress.test.mjs",
+    "test:conversation-resilience": "node --test src/conversationResilience.test.mjs",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

@@ -18,8 +18,9 @@ package api
 
 import (
 	"fmt"
-	pathpkg "path"
 	"strings"
+
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 type projectAssistantPermissionDecision string
@@ -47,11 +48,24 @@ func projectAssistantPermissionForToolWithRunState(spec projectAssistantToolSpec
 	case projectAssistantToolRiskRead, projectAssistantToolRiskInput:
 		return projectAssistantPermissionAllow
 	case projectAssistantToolRiskPlan:
-		// The first plan in a commit cycle prompts the user. Once a grant is
-		// active it stays active until the next commit, so re-stating the plan
-		// on later turns must not re-prompt — it only widens the envelope.
-		if autoApprove || projectAssistantApprovedPlanActive(runState.ApprovedPlan()) {
+		var proposedPlan projectAssistantApprovedPlan
+		if projectToolBaseName(spec.Name) == projectToolRequestProjectPlanApproval {
+			var err error
+			proposedPlan, err = projectAssistantApprovedPlanFromArguments(args)
+			if err != nil {
+				return projectAssistantPermissionDeny
+			}
+		}
+		if autoApprove {
 			return projectAssistantPermissionAllow
+		}
+		if runState != nil && projectToolBaseName(spec.Name) == projectToolRequestProjectPlanApproval {
+			activePlan := runState.ApprovedPlan()
+			if projectAssistantApprovedPlanActive(activePlan) {
+				if projectAssistantApprovedPlanCoversPlan(activePlan, &proposedPlan) {
+					return projectAssistantPermissionAllow
+				}
+			}
 		}
 		return projectAssistantPermissionAsk
 	case projectAssistantToolRiskWrite:
@@ -79,31 +93,34 @@ func projectAssistantPermissionForToolWithRunState(spec projectAssistantToolSpec
 }
 
 func projectAssistantApprovedPlanActive(plan *projectAssistantApprovedPlan) bool {
-	return plan != nil && (len(plan.Operations) > 0 || plan.AllowAllWrites)
+	return plan != nil &&
+		plan.Version == projectAssistantApprovedPlanVersionWorkspaceMutation &&
+		projectAssistantApprovedPlanHasCapability(plan, projectAssistantCapabilityWorkspaceMutate) &&
+		(!plan.AllowAllWrites || plan.RunLocal) &&
+		(plan.RunLocal || len(plan.TargetPaths) > 0)
 }
 
 func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan, toolName string, args map[string]any) bool {
-	if plan == nil {
+	if !projectAssistantApprovedPlanActive(plan) {
 		return false
 	}
-	toolName = projectToolBaseName(toolName)
+	toolName = strings.TrimSpace(toolName)
 	switch toolName {
 	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
-	case projectToolSelectTemplate:
-		return projectAssistantApprovedPlanAllowsOperation(plan, toolName)
 	default:
 		return false
 	}
-	// A direct user approval of a write prompt grants every write tool on any
-	// path until the next commit, so subsequent edits do not re-prompt.
+	// Initial project creation is the only unbounded grant. It is derived from
+	// the user's create request and remains local to that Eino run.
 	if plan.AllowAllWrites {
-		return true
+		_, err := projectAssistantWriteTargetPath(toolName, args)
+		return plan.RunLocal && err == nil
 	}
-	if !projectAssistantApprovedPlanAllowsOperation(plan, toolName) {
+	if !projectAssistantApprovedPlanHasCapability(plan, projectAssistantCapabilityWorkspaceMutate) {
 		return false
 	}
-	targetPath := projectAssistantWriteTargetPath(toolName, args)
-	if targetPath == "" {
+	targetPath, err := projectAssistantWriteTargetPath(toolName, args)
+	if err != nil {
 		return false
 	}
 	for _, approved := range plan.TargetPaths {
@@ -114,8 +131,66 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 	return false
 }
 
+func projectAssistantApprovedPlanHasCapability(plan *projectAssistantApprovedPlan, capability string) bool {
+	if plan == nil {
+		return false
+	}
+	capability = strings.TrimSpace(capability)
+	for _, candidate := range plan.Capabilities {
+		if strings.TrimSpace(candidate) == capability {
+			return true
+		}
+	}
+	return false
+}
+
+func projectAssistantApprovedPlanCoversPlan(existing, proposed *projectAssistantApprovedPlan) bool {
+	if !projectAssistantApprovedPlanActive(existing) || proposed == nil || len(proposed.TargetPaths) == 0 {
+		return false
+	}
+	if projectAssistantApprovedPlanHasCapability(proposed, projectAssistantCapabilityWorkspaceMutate) &&
+		!existing.AllowAllWrites &&
+		!projectAssistantApprovedPlanHasCapability(existing, projectAssistantCapabilityWorkspaceMutate) {
+		return false
+	}
+	if existing.AllowAllWrites {
+		return true
+	}
+	for _, requested := range proposed.TargetPaths {
+		covered := false
+		for _, approved := range existing.TargetPaths {
+			if projectAssistantApprovedTargetWithinApprovedTarget(requested, approved) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
+func projectAssistantApprovedTargetWithinApprovedTarget(requested, approved string) bool {
+	requestedDirectory := strings.HasSuffix(strings.TrimSpace(requested), "/")
+	approvedDirectory := strings.HasSuffix(strings.TrimSpace(approved), "/")
+	var err error
+	requested, err = projectAssistantCanonicalGrantTarget(requested, requestedDirectory)
+	if err != nil {
+		return false
+	}
+	approved, err = projectAssistantCanonicalGrantTarget(approved, approvedDirectory)
+	if err != nil {
+		return false
+	}
+	if requestedDirectory && !approvedDirectory {
+		return false
+	}
+	return requested == approved || (approvedDirectory && strings.HasPrefix(strings.TrimSuffix(requested, "/"), approved))
+}
+
 func projectAssistantPlanCanAuthorizeWriteTool(toolName string) bool {
-	switch projectToolBaseName(toolName) {
+	switch strings.TrimSpace(toolName) {
 	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
 		return true
 	default:
@@ -132,55 +207,57 @@ func projectAssistantDirectApprovalGrantsWritePlan(toolName string) bool {
 	}
 }
 
-func projectAssistantApprovedPlanAllowsOperation(plan *projectAssistantApprovedPlan, toolName string) bool {
-	if plan == nil {
-		return false
-	}
-	if len(plan.Operations) == 0 {
-		return false
-	}
-	for _, op := range plan.Operations {
-		if projectToolBaseName(op) == toolName {
-			return true
-		}
-	}
-	return false
-}
-
-func projectAssistantWriteTargetPath(toolName string, args map[string]any) string {
-	switch projectToolBaseName(toolName) {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
-		return normalizeProjectAssistantRelativePath(projectToolString(args["path"]))
+func projectAssistantWriteTargetPath(toolName string, args map[string]any) (string, error) {
+	switch strings.TrimSpace(toolName) {
+	case projectToolWriteFile, projectToolApplyPatch:
+		return projectAssistantCanonicalGrantTarget(projectToolString(args["path"]), false)
+	case projectToolMkdir:
+		return projectAssistantCanonicalGrantTarget(projectToolString(args["path"]), true)
 	default:
-		return ""
+		return "", fmt.Errorf("tool %q cannot use workspace mutation grants", toolName)
 	}
 }
 
 func projectAssistantPathWithinApprovedTarget(candidate, approved string) bool {
-	candidate = normalizeProjectAssistantRelativePath(candidate)
-	approved = strings.TrimSpace(approved)
-	if approved == "" || candidate == "" {
+	approvedDirectory := strings.HasSuffix(strings.TrimSpace(approved), "/")
+	var err error
+	candidate, err = projectAssistantCanonicalGrantTarget(candidate, false)
+	if err != nil {
 		return false
 	}
-	directory := strings.HasSuffix(approved, "/")
-	approved = normalizeProjectAssistantRelativePath(approved)
-	if approved == "" {
+	approved, err = projectAssistantCanonicalGrantTarget(approved, approvedDirectory)
+	if err != nil {
 		return false
 	}
-	if directory {
-		return candidate == approved || strings.HasPrefix(candidate, approved+"/")
+	if approvedDirectory {
+		return candidate == strings.TrimSuffix(approved, "/") || strings.HasPrefix(candidate, approved)
 	}
 	return candidate == approved
 }
 
-func normalizeProjectAssistantRelativePath(value string) string {
+func projectAssistantCanonicalGrantTarget(value string, directory bool) (string, error) {
 	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
-	value = strings.TrimPrefix(value, "/")
-	value = pathpkg.Clean(value)
-	if value == "." || strings.HasPrefix(value, "../") || value == ".." {
-		return ""
+	directory = directory || strings.HasSuffix(value, "/")
+	clean, err := workspace.CleanProjectPath(value)
+	if err != nil {
+		return "", err
 	}
-	return value
+	if directory {
+		return clean + "/", nil
+	}
+	return clean, nil
+}
+
+func projectAssistantCanonicalGrantTargets(values []string) ([]string, error) {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		clean, err := projectAssistantCanonicalGrantTarget(value, false)
+		if err != nil {
+			return nil, fmt.Errorf("invalid workspace grant target %q: %w", value, err)
+		}
+		out = append(out, clean)
+	}
+	return normalizeProjectAssistantStringList(out), nil
 }
 
 func parseProjectAssistantPermissionDecision(value string) (projectAssistantPermissionDecision, error) {

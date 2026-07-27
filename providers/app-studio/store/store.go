@@ -59,25 +59,43 @@ type Message struct {
 type AssistantRunStatus string
 
 const (
+	// AssistantRunIDApprovedPlanGrant is reserved for the cross-turn plan grant.
+	// It is persisted as an AssistantRun so its blob remains encrypted, but it
+	// does not participate in user-visible conversation lifecycle semantics.
+	AssistantRunIDApprovedPlanGrant = "approved-plan-grant"
+
 	AssistantRunStatusPendingPermission AssistantRunStatus = "pending_permission"
 	AssistantRunStatusPendingInput      AssistantRunStatus = "pending_input"
 	AssistantRunStatusRunning           AssistantRunStatus = "running"
 	AssistantRunStatusCompleted         AssistantRunStatus = "completed"
 	AssistantRunStatusAborted           AssistantRunStatus = "aborted"
+	AssistantRunStatusFailed            AssistantRunStatus = "failed"
+	AssistantRunStatusInterrupted       AssistantRunStatus = "interrupted"
 )
 
 // AssistantRun stores resumable assistant execution state. Checkpoint is an
 // App Studio API-owned JSON payload so store implementations do not need to
 // know private chat/tool types.
 type AssistantRun struct {
-	ID          string             `json:"id"`
-	ProjectName string             `json:"projectName,omitempty"`
-	Status      AssistantRunStatus `json:"status"`
-	RequestID   string             `json:"requestID,omitempty"`
-	Checkpoint  json.RawMessage    `json:"checkpoint,omitempty"`
-	Audit       json.RawMessage    `json:"audit,omitempty"`
-	CreatedAt   time.Time          `json:"createdAt"`
-	UpdatedAt   time.Time          `json:"updatedAt"`
+	ID              string             `json:"id"`
+	ProjectName     string             `json:"projectName,omitempty"`
+	Status          AssistantRunStatus `json:"status"`
+	ClientRequestID string             `json:"clientRequestID,omitempty"`
+	UserMessageID   string             `json:"userMessageID,omitempty"`
+	ActiveMessageID string             `json:"activeMessageID,omitempty"`
+	Revision        int64              `json:"revision,omitempty"`
+	RequestID       string             `json:"requestID,omitempty"`
+	Checkpoint      json.RawMessage    `json:"checkpoint,omitempty"`
+	Audit           json.RawMessage    `json:"audit,omitempty"`
+	CreatedAt       time.Time          `json:"createdAt"`
+	UpdatedAt       time.Time          `json:"updatedAt"`
+}
+
+// AssistantRunIsConversation reports whether a row participates in durable
+// assistant conversation lifecycle semantics. Reserved rows remain available
+// through GetAssistantRun for their owning feature.
+func AssistantRunIsConversation(run AssistantRun) bool {
+	return run.ID != AssistantRunIDApprovedPlanGrant
 }
 
 // Page is an ordered slice of messages plus the next cursor for pagination.
@@ -93,11 +111,24 @@ type Store interface {
 	ListMessages(ctx context.Context, scope Scope, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, limit int) ([]Message, error)
 	SaveAssistantRun(ctx context.Context, scope Scope, run AssistantRun) error
+	CreateAssistantRun(ctx context.Context, scope Scope, user Message, assistant Message, run AssistantRun) (AssistantRun, error)
+	SaveAssistantRunSnapshot(ctx context.Context, scope Scope, run AssistantRun, messages []Message, expectedRevision int64) error
 	CompareAndSwapAssistantRun(ctx context.Context, scope Scope, run AssistantRun, expectedRequestID string) error
 	ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error)
 	GetAssistantRun(ctx context.Context, scope Scope, id string) (AssistantRun, error)
+	FindAssistantRunByClientRequestID(ctx context.Context, scope Scope, clientRequestID string) (AssistantRun, error)
+	LatestAssistantRun(ctx context.Context, scope Scope) (AssistantRun, error)
 	DeleteProjectMessages(ctx context.Context, scope Scope) error
 	DeleteMessagesOlderThan(ctx context.Context, before time.Time) (int64, error)
+}
+
+func assistantRunStatusTerminal(status AssistantRunStatus) bool {
+	switch status {
+	case AssistantRunStatusCompleted, AssistantRunStatusAborted, AssistantRunStatusFailed, AssistantRunStatusInterrupted:
+		return true
+	default:
+		return false
+	}
 }
 
 type cursorPayload struct {

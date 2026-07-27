@@ -283,6 +283,14 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 	if projectToolBaseName(spec.Name) == projectToolAskFollowUp {
 		return t.requestFollowUp(ctx, callID, spec, args)
 	}
+	if err := projectAssistantValidateGrantBearingToolArguments(spec, args); err != nil {
+		return t.finishFailedToolCall(
+			callID,
+			spec.Name,
+			argumentsInJSON,
+			"invalid workspace approval scope: "+err.Error(),
+		), nil
+	}
 
 	switch projectAssistantPermissionForToolWithRunState(spec, t.req.AutoApproveActions, t.runState, args) {
 	case projectAssistantPermissionAllow:
@@ -318,11 +326,6 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 	})
 	if projectToolBaseName(spec.Name) == projectToolRequestProjectPlanApproval {
 		return t.invokeApprovedPlanTool(ctx, callID, spec, args)
-	}
-	if spec.Risk == projectAssistantToolRiskCommit {
-		if err := t.retireApprovedPlan(ctx); err != nil {
-			return "", fmt.Errorf("%w: retire approved plan before commit: %v", errProjectAssistantPlanRetirement, err)
-		}
 	}
 	result, err := t.tool.Call(ctx, projectAssistantToolCallRequest{
 		Identity:             t.req.Identity,
@@ -431,15 +434,18 @@ func (t projectEinoAssistantTool) resumeFollowUp(ctx context.Context, callID str
 }
 
 func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, callID string, spec projectAssistantToolSpec, args map[string]any) (string, error) {
-	plan := projectAssistantApprovedPlanFromArguments(args)
-	if len(plan.Operations) == 0 {
-		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), "allowedOperations is required"), nil
+	plan, err := projectAssistantApprovedPlanFromArguments(args)
+	if err != nil {
+		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), err.Error()), nil
 	}
 	if existing := t.runState.ApprovedPlan(); existing != nil {
-		plan = mergeProjectAssistantApprovedPlans(*existing, plan)
+		if projectAssistantApprovedPlanCoversPlan(existing, &plan) {
+			plan = *existing
+		}
 	}
 	t.runState.ApprovePlan(plan)
-	// Persist the grant so it survives into later turns until the next commit.
+	// Persist the grant so it survives later turns until a commit request,
+	// cancellation, or an explicitly approved replacement scope.
 	// Best effort: a failed write only means the user is re-prompted next turn.
 	if stored := t.runState.ApprovedPlan(); stored != nil {
 		persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
@@ -458,10 +464,10 @@ func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, ca
 		}
 	}
 	resultPayload := map[string]any{
-		"status":      "approved",
-		"summary":     plan.Summary,
-		"targetPaths": plan.TargetPaths,
-		"operations":  plan.Operations,
+		"status":       "approved",
+		"summary":      plan.Summary,
+		"targetPaths":  plan.TargetPaths,
+		"capabilities": plan.Capabilities,
 	}
 	raw, err := json.Marshal(resultPayload)
 	if err != nil {
@@ -480,18 +486,22 @@ func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, ca
 	return result, nil
 }
 
-// grantAllWritesUntilCommit records a blanket write grant after the user
-// approves a write prompt directly, so subsequent edits do not re-prompt until
-// the next commit retires the grant. It merges with any active plan envelope
-// and fails closed if the durable grant cannot be persisted.
-func (t projectEinoAssistantTool) grantAllWritesUntilCommit(ctx context.Context) error {
+// grantWriteUntilCommit records the exact path from a directly approved write
+// as a workspace-mutation grant. It merges only scopes that the user has
+// already approved and fails closed if the durable grant cannot be persisted.
+func (t projectEinoAssistantTool) grantWriteUntilCommit(ctx context.Context, toolName string, args map[string]any) error {
+	targetPath, err := projectAssistantWriteTargetPath(toolName, args)
+	if err != nil {
+		return fmt.Errorf("approved workspace write path is invalid: %w", err)
+	}
 	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
-		Summary:        "User approved workspace writes until the next commit.",
-		Operations:     []string{projectToolWriteFile, projectToolApplyPatch, projectToolMkdir},
-		AllowAllWrites: true,
-		ApprovalTool:   "permission_allow_write",
+		Summary:      "User approved a workspace path for source edits until the next commit request.",
+		TargetPaths:  []string{targetPath},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+		ApprovalTool: "permission_allow_write",
 	})
-	if existing := t.runState.ApprovedPlan(); existing != nil {
+	if existing := t.runState.ApprovedPlan(); projectAssistantApprovedPlanActive(existing) {
 		plan = mergeProjectAssistantApprovedPlans(*existing, plan)
 	}
 	t.runState.ApprovePlan(plan)
@@ -522,7 +532,9 @@ func (t projectEinoAssistantTool) appendBuilderEvent(eventType string) {
 
 func (t projectEinoAssistantTool) requestPermission(ctx context.Context, callID string, spec projectAssistantToolSpec, args map[string]any, argumentsInJSON string) error {
 	if spec.Risk == projectAssistantToolRiskCommit {
-		t.runState.ClearApprovedPlan()
+		if err := t.retireApprovedPlan(ctx); err != nil {
+			return fmt.Errorf("%w: retire approved plan before commit approval: %v", errProjectAssistantPlanRetirement, err)
+		}
 	}
 	reason := projectAssistantPermissionReasonForArguments(spec, args)
 	t.emitToolCall(projectToolCallStreamEvent{
@@ -577,10 +589,9 @@ func (t projectEinoAssistantTool) resumePermission(ctx context.Context, callID s
 		}
 		if spec.Risk == projectAssistantToolRiskWrite &&
 			projectAssistantDirectApprovalGrantsWritePlan(spec.Name) {
-			// The user approved a source write directly. Remember it as a
-			// blanket source-write grant until the next commit so each later
-			// edit does not re-prompt.
-			if err := t.grantAllWritesUntilCommit(ctx); err != nil {
+			// The user approved a source write directly. Remember its path
+			// as a source-mutation grant until the next commit.
+			if err := t.grantWriteUntilCommit(ctx, spec.Name, args); err != nil {
 				return "", err
 			}
 		}
@@ -718,13 +729,37 @@ func projectEinoPermissionBarrierToolResult() string {
 	return "Tool call skipped: waiting for approval of a previous tool call"
 }
 
-func projectAssistantApprovedPlanFromArguments(args map[string]any) projectAssistantApprovedPlan {
+func projectAssistantApprovedPlanFromArguments(args map[string]any) (projectAssistantApprovedPlan, error) {
+	if _, legacy := args["allowedOperations"]; legacy {
+		return projectAssistantApprovedPlan{}, errors.New("this plan approval predates workspace capabilities and must be requested again")
+	}
+	targetPaths, err := projectAssistantCanonicalGrantTargets(projectToolStringList(args["targetPaths"]))
+	if err != nil {
+		return projectAssistantApprovedPlan{}, err
+	}
+	if len(targetPaths) == 0 {
+		return projectAssistantApprovedPlan{}, errors.New("targetPaths is required")
+	}
 	return normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
 		Summary:            projectToolString(args["summary"]),
 		Steps:              projectToolStringList(args["steps"]),
-		TargetPaths:        projectToolStringList(args["targetPaths"]),
-		Operations:         projectToolStringList(args["allowedOperations"]),
+		TargetPaths:        targetPaths,
+		Version:            projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities:       []string{projectAssistantCapabilityWorkspaceMutate},
 		AcceptanceCriteria: projectToolStringList(args["acceptanceCriteria"]),
 		ApprovalTool:       projectToolRequestProjectPlanApproval,
-	})
+	}), nil
+}
+
+func projectAssistantValidateGrantBearingToolArguments(spec projectAssistantToolSpec, args map[string]any) error {
+	switch strings.TrimSpace(spec.Name) {
+	case projectToolRequestProjectPlanApproval:
+		_, err := projectAssistantApprovedPlanFromArguments(args)
+		return err
+	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+		_, err := projectAssistantWriteTargetPath(spec.Name, args)
+		return err
+	default:
+		return nil
+	}
 }

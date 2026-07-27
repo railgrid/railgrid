@@ -34,9 +34,9 @@ import (
 // holds the active plan-approval grant for a project. Real assistant runs use
 // "run-<uuid>" ids, so this fixed id never collides. Reusing the AssistantRun
 // blob keeps the grant encrypted at rest and persisted per project without a
-// new store method or schema migration. The grant lives until the next commit,
-// which matches the approval prompt's promise to the user.
-const projectAssistantApprovedPlanGrantRunID = "approved-plan-grant"
+// new store method or schema migration. The grant is retired by the next commit
+// request, run cancellation, or an explicitly approved replacement scope.
+const projectAssistantApprovedPlanGrantRunID = store.AssistantRunIDApprovedPlanGrant
 
 var errProjectAssistantCheckpointGrantStale = errors.New("assistant checkpoint plan grant is stale")
 
@@ -52,8 +52,10 @@ type projectAssistantApprovedPlanGrantRecord struct {
 // always requires separate template-selection and commit approval.
 func projectAssistantInitialCreationPlan() projectAssistantApprovedPlan {
 	return normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
-		Summary:        "Initial project creation prompt authorizes source edits for this run.",
-		Operations:     []string{projectToolWriteFile, projectToolApplyPatch, projectToolMkdir},
+		Summary:      "Initial project creation prompt authorizes source edits for this run.",
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+		// Initial creation does not know the generated project paths yet.
 		AllowAllWrites: true,
 		ApprovedAt:     time.Now().UTC(),
 		ApprovalTool:   "project_create_prompt",
@@ -103,41 +105,26 @@ func (s *Server) loadProjectAssistantApprovedPlanGrant(
 		if run.RequestID != "" && run.RequestID != strings.TrimSpace(record.Revision) {
 			return nil, "", errors.New("app studio plan grant revision metadata does not match its payload")
 		}
-		if record.Plan == nil || len(record.Plan.Operations) == 0 {
+		if record.Plan == nil {
 			return nil, strings.TrimSpace(record.Revision), nil
 		}
 		normalized := normalizeProjectAssistantApprovedPlan(*record.Plan)
+		if !projectAssistantApprovedPlanActive(&normalized) {
+			return nil, strings.TrimSpace(record.Revision), nil
+		}
 		return &normalized, strings.TrimSpace(record.Revision), nil
 	}
 
-	// Compatibility for pre-revision active grants. Their persisted update
-	// timestamp is a stable generation token; an empty legacy object is no
-	// authority and has no generation.
-	var legacy projectAssistantApprovedPlan
-	if err := json.Unmarshal(run.Checkpoint, &legacy); err != nil {
-		return nil, "", fmt.Errorf("decode legacy App Studio plan grant: %w", err)
-	}
-	if len(legacy.Operations) == 0 {
-		revision, err := s.retireProjectAssistantApprovedPlan(ctx, scope, "")
-		if errors.Is(err, store.ErrAssistantRunConflict) {
-			return s.loadProjectAssistantApprovedPlanGrant(ctx, scope)
-		}
-		if err != nil {
-			return nil, "", fmt.Errorf("migrate legacy App Studio plan tombstone: %w", err)
-		}
-		return nil, revision, nil
-	}
-	normalized := normalizeProjectAssistantApprovedPlan(legacy)
-	revision, err := s.persistProjectAssistantApprovedPlan(ctx, scope, &normalized, "")
+	// Pre-revision rows are intentionally not compatible with capability
+	// grants. Retire them instead of translating old tool-name authority.
+	revision, err := s.retireProjectAssistantApprovedPlan(ctx, scope, "")
 	if errors.Is(err, store.ErrAssistantRunConflict) {
-		// Another pod migrated or replaced the legacy row first. Reload the
-		// now-authoritative record instead of trusting the stale payload.
 		return s.loadProjectAssistantApprovedPlanGrant(ctx, scope)
 	}
 	if err != nil {
-		return nil, "", fmt.Errorf("migrate legacy App Studio plan grant: %w", err)
+		return nil, "", fmt.Errorf("retire pre-capability App Studio plan grant: %w", err)
 	}
-	return &normalized, revision, nil
+	return nil, revision, nil
 }
 
 // projectAssistantApprovedPlanForCheckpointResume reconciles authorization
@@ -249,13 +236,15 @@ func (s *Server) retireProjectAssistantApprovedPlan(
 	return revision, nil
 }
 
-// mergeProjectAssistantApprovedPlans keeps the latest plan's narrative while
-// unioning the approved path/operation envelope, so a re-stated plan can only
-// widen what is already allowed, never silently shrink it mid-session.
+// mergeProjectAssistantApprovedPlans is used only after a separate direct
+// user approval. Model-authored plan restatements never call this helper.
 func mergeProjectAssistantApprovedPlans(existing, next projectAssistantApprovedPlan) projectAssistantApprovedPlan {
 	merged := next
 	merged.TargetPaths = normalizeProjectAssistantStringList(append(append([]string(nil), existing.TargetPaths...), next.TargetPaths...))
-	merged.Operations = normalizeProjectAssistantStringList(append(append([]string(nil), existing.Operations...), next.Operations...))
+	merged.Capabilities = normalizeProjectAssistantStringList(append(append([]string(nil), existing.Capabilities...), next.Capabilities...))
+	if existing.Version > merged.Version {
+		merged.Version = existing.Version
+	}
 	merged.AllowAllWrites = existing.AllowAllWrites || next.AllowAllWrites
 	merged.RunLocal = existing.RunLocal || next.RunLocal
 	return merged

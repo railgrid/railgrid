@@ -30,12 +30,13 @@ func TestProjectAssistantInitialCreationPlanCannotPersistAcrossTurns(t *testing.
 	server := &Server{store: store.NewMemoryStore()}
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
 	initial := projectAssistantInitialCreationPlan()
-	if projectAssistantApprovedPlanAllowsOperation(&initial, projectToolSelectTemplate) {
+	if projectAssistantApprovedPlanAllowsWrite(&initial, projectToolSelectTemplate, map[string]any{"template": "simple-webapp"}) {
 		t.Fatal("initial creation plan authorized template selection")
 	}
 	merged := mergeProjectAssistantApprovedPlans(initial, projectAssistantApprovedPlan{
-		Summary:    "Model restated the initial plan",
-		Operations: []string{projectToolWriteFile},
+		Summary:      "Model restated the initial plan",
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
 	})
 
 	if err := server.saveProjectAssistantApprovedPlan(context.Background(), scope, &merged); err != nil {
@@ -51,7 +52,8 @@ func TestProjectAssistantRetiredGrantCannotBeRestoredFromPendingCheckpoints(t *t
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
 	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
 		Summary:        "Edit the application.",
-		Operations:     []string{projectToolWriteFile},
+		Version:        projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities:   []string{projectAssistantCapabilityWorkspaceMutate},
 		AllowAllWrites: true,
 		ApprovedAt:     time.Now().Add(-time.Minute),
 	})
@@ -87,7 +89,9 @@ func TestProjectAssistantOldCheckpointCannotInheritReplacementGrant(t *testing.T
 	server := &Server{store: store.NewMemoryStore()}
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
 	first := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
-		Operations: []string{projectToolWriteFile},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+		TargetPaths:  []string{"src/"},
 	})
 	if err := server.saveProjectAssistantApprovedPlan(context.Background(), scope, &first); err != nil {
 		t.Fatalf("save first grant returned error: %v", err)
@@ -100,7 +104,9 @@ func TestProjectAssistantOldCheckpointCannotInheritReplacementGrant(t *testing.T
 		t.Fatalf("clear first grant returned error: %v", err)
 	}
 	second := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
-		Operations: []string{projectToolApplyPatch},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+		TargetPaths:  []string{"app/"},
 	})
 	if err := server.saveProjectAssistantApprovedPlan(context.Background(), scope, &second); err != nil {
 		t.Fatalf("save replacement grant returned error: %v", err)
@@ -123,7 +129,9 @@ func TestProjectAssistantStaleWriterCannotOverwriteRetirementTombstone(t *testin
 	server := &Server{store: store.NewMemoryStore()}
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
 	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
-		Operations: []string{projectToolWriteFile},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+		TargetPaths:  []string{"src/"},
 	})
 	if err := server.saveProjectAssistantApprovedPlan(context.Background(), scope, &plan); err != nil {
 		t.Fatalf("saveProjectAssistantApprovedPlan returned error: %v", err)
@@ -157,17 +165,11 @@ func TestProjectAssistantStaleWriterCannotOverwriteRetirementTombstone(t *testin
 	}
 }
 
-func TestProjectAssistantLegacyGrantMigratesBeforeRetirement(t *testing.T) {
+func TestProjectAssistantOperationOnlyGrantBecomesRetiredTombstone(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := &Server{store: messages}
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
-	legacy := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
-		Operations: []string{projectToolWriteFile},
-	})
-	raw, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatalf("marshal legacy grant returned error: %v", err)
-	}
+	raw := json.RawMessage(`{"operations":["write_file"],"targetPaths":["src/"]}`)
 	if err := messages.SaveAssistantRun(context.Background(), scope, store.AssistantRun{
 		ID:         projectAssistantApprovedPlanGrantRunID,
 		Status:     store.AssistantRunStatusCompleted,
@@ -178,10 +180,10 @@ func TestProjectAssistantLegacyGrantMigratesBeforeRetirement(t *testing.T) {
 
 	got, revision, err := server.loadProjectAssistantApprovedPlanGrant(context.Background(), scope)
 	if err != nil {
-		t.Fatalf("load legacy grant returned error: %v", err)
+		t.Fatalf("load operation-only grant returned error: %v", err)
 	}
-	if got == nil || revision == "" {
-		t.Fatalf("migrated grant = %#v revision %q, want active revised grant", got, revision)
+	if got != nil || revision == "" {
+		t.Fatalf("operation-only grant = %#v revision %q, want retired tombstone", got, revision)
 	}
 	persisted, err := messages.GetAssistantRun(context.Background(), scope, projectAssistantApprovedPlanGrantRunID)
 	if err != nil {
@@ -190,17 +192,20 @@ func TestProjectAssistantLegacyGrantMigratesBeforeRetirement(t *testing.T) {
 	if persisted.RequestID != revision {
 		t.Fatalf("persisted revision = %q, want %q", persisted.RequestID, revision)
 	}
-	if err := server.clearProjectAssistantApprovedPlan(context.Background(), scope); err != nil {
-		t.Fatalf("retire migrated grant returned error: %v", err)
+	var record projectAssistantApprovedPlanGrantRecord
+	if err := json.Unmarshal(persisted.Checkpoint, &record); err != nil {
+		t.Fatalf("decode tombstone returned error: %v", err)
 	}
-	if active := server.loadProjectAssistantApprovedPlan(context.Background(), scope); active != nil {
-		t.Fatalf("active grant after retirement = %#v, want nil", active)
+	if record.Plan != nil {
+		t.Fatalf("persisted tombstone plan = %#v, want nil", record.Plan)
 	}
 }
 
 func TestProjectAssistantCheckpointGrantValidationFailsClosedOnStoreError(t *testing.T) {
 	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
-		Operations: []string{projectToolWriteFile},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+		TargetPaths:  []string{"src/"},
 	})
 	server := &Server{store: failingProjectAssistantGrantReadStore{
 		Store: store.NewMemoryStore(),

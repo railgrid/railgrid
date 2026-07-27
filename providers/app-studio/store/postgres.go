@@ -18,14 +18,17 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 const messageSchemaVersion = "v3"
+const durableAssistantRunSchemaVersion = "v4"
+const assistantRunConversationIndexSchemaVersion = "v5"
 
 const createMessageSchemaMigrationsTable = `CREATE TABLE IF NOT EXISTS app_studio_message_schema_migrations (
 	version text PRIMARY KEY,
@@ -127,6 +130,37 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 			ON app_studio_assistant_runs (org_uuid, workspace_uuid, project_name, updated_at, run_id)`,
 	}
 	if err := ensureSchemaVersion(ctx, tx, messageSchemaVersion, stmts...); err != nil {
+		return err
+	}
+	durableRunStmts := []string{
+		`ALTER TABLE app_studio_assistant_runs ADD COLUMN IF NOT EXISTS client_request_id text NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_studio_assistant_runs ADD COLUMN IF NOT EXISTS user_message_id text NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_studio_assistant_runs ADD COLUMN IF NOT EXISTS active_message_id text NOT NULL DEFAULT ''`,
+		`ALTER TABLE app_studio_assistant_runs ADD COLUMN IF NOT EXISTS revision bigint NOT NULL DEFAULT 0`,
+		`UPDATE app_studio_assistant_runs
+		SET status = 'interrupted'
+		WHERE status = 'running'`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS app_studio_assistant_runs_scope_client_request_idx
+			ON app_studio_assistant_runs (org_uuid, workspace_uuid, project_name, client_request_id)
+			WHERE client_request_id <> '' AND run_id <> 'approved-plan-grant'`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS app_studio_assistant_runs_scope_active_idx
+			ON app_studio_assistant_runs (org_uuid, workspace_uuid, project_name)
+			WHERE run_id <> 'approved-plan-grant' AND status NOT IN ('completed', 'aborted', 'failed', 'interrupted')`,
+	}
+	if err := ensureSchemaVersion(ctx, tx, durableAssistantRunSchemaVersion, durableRunStmts...); err != nil {
+		return err
+	}
+	conversationIndexStmts := []string{
+		`DROP INDEX IF EXISTS app_studio_assistant_runs_scope_client_request_idx`,
+		`DROP INDEX IF EXISTS app_studio_assistant_runs_scope_active_idx`,
+		`CREATE UNIQUE INDEX app_studio_assistant_runs_scope_client_request_idx
+			ON app_studio_assistant_runs (org_uuid, workspace_uuid, project_name, client_request_id)
+			WHERE client_request_id <> '' AND run_id <> 'approved-plan-grant'`,
+		`CREATE UNIQUE INDEX app_studio_assistant_runs_scope_active_idx
+			ON app_studio_assistant_runs (org_uuid, workspace_uuid, project_name)
+			WHERE run_id <> 'approved-plan-grant' AND status NOT IN ('completed', 'aborted', 'failed', 'interrupted')`,
+	}
+	if err := ensureSchemaVersion(ctx, tx, assistantRunConversationIndexSchemaVersion, conversationIndexStmts...); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -346,21 +380,152 @@ func (s *PostgresStore) SaveAssistantRun(ctx context.Context, scope Scope, run A
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO app_studio_assistant_runs (
 			org_uuid, workspace_uuid, project_name, run_id,
-			status, request_id, checkpoint, audit, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			status, client_request_id, user_message_id, active_message_id, revision, request_id,
+			checkpoint, audit, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		ON CONFLICT (org_uuid, workspace_uuid, project_name, run_id)
 		DO UPDATE SET
 			status = EXCLUDED.status,
+			user_message_id = EXCLUDED.user_message_id,
+			active_message_id = EXCLUDED.active_message_id,
 			request_id = EXCLUDED.request_id,
 			checkpoint = EXCLUDED.checkpoint,
 			audit = EXCLUDED.audit,
 			updated_at = EXCLUDED.updated_at
 	`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, run.ID,
-		run.Status, run.RequestID, string(normalizedCheckpoint), string(normalizedAudit), run.CreatedAt.UTC(), run.UpdatedAt.UTC(),
+		run.Status, run.ClientRequestID, run.UserMessageID, run.ActiveMessageID, run.Revision, run.RequestID,
+		string(normalizedCheckpoint), string(normalizedAudit), run.CreatedAt.UTC(), run.UpdatedAt.UTC(),
 	)
 	if err != nil {
+		if isAssistantRunUniqueViolation(err) {
+			return fmt.Errorf("%w: project already has active assistant run", ErrAssistantRunConflict)
+		}
 		return fmt.Errorf("upsert assistant run: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) CreateAssistantRun(ctx context.Context, scope Scope, user Message, assistant Message, run AssistantRun) (AssistantRun, error) {
+	if s == nil || s.db == nil {
+		return AssistantRun{}, fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
+	}
+	if err := validateNewAssistantRun(user, assistant, run); err != nil {
+		return AssistantRun{}, err
+	}
+	user = prepareMessage(scope, user)
+	assistant = prepareMessage(scope, assistant)
+	run = prepareAssistantRun(scope, run)
+	checkpoint, audit, err := normalizeAssistantRunJSON(run)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AssistantRun{}, fmt.Errorf("begin create assistant run: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	row := tx.QueryRowContext(ctx, `
+		INSERT INTO app_studio_assistant_runs (
+			org_uuid, workspace_uuid, project_name, run_id, status,
+			client_request_id, user_message_id, active_message_id, revision, request_id,
+			checkpoint, audit, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		ON CONFLICT DO NOTHING
+		RETURNING run_id, status, client_request_id, user_message_id, active_message_id, revision,
+		          request_id, checkpoint, audit, created_at, updated_at
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, run.ID, run.Status,
+		run.ClientRequestID, run.UserMessageID, run.ActiveMessageID, run.Revision, run.RequestID,
+		string(checkpoint), string(audit), run.CreatedAt.UTC(), run.UpdatedAt.UTC())
+	inserted, err := scanAssistantRun(row, scope.ProjectName)
+	if err == sql.ErrNoRows {
+		existing, lookupErr := getAssistantRunByClientRequestID(ctx, tx, scope, run.ClientRequestID)
+		if lookupErr == nil {
+			if err := tx.Commit(); err != nil {
+				return AssistantRun{}, fmt.Errorf("commit duplicate assistant run lookup: %w", err)
+			}
+			return existing, nil
+		}
+		if errors.Is(lookupErr, ErrAssistantRunNotFound) {
+			return AssistantRun{}, fmt.Errorf("%w: project already has an active assistant run", ErrAssistantRunConflict)
+		}
+		return AssistantRun{}, lookupErr
+	}
+	if err != nil {
+		return AssistantRun{}, fmt.Errorf("insert assistant run: %w", err)
+	}
+	if err := appendMessageTx(ctx, tx, scope, user); err != nil {
+		return AssistantRun{}, err
+	}
+	if err := appendMessageTx(ctx, tx, scope, assistant); err != nil {
+		return AssistantRun{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AssistantRun{}, fmt.Errorf("commit create assistant run: %w", err)
+	}
+	return inserted, nil
+}
+
+func (s *PostgresStore) SaveAssistantRunSnapshot(ctx context.Context, scope Scope, run AssistantRun, messages []Message, expectedRevision int64) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	if err := validateAssistantRunSnapshot(run, messages, expectedRevision); err != nil {
+		return err
+	}
+	run = prepareAssistantRun(scope, run)
+	checkpoint, audit, err := normalizeAssistantRunJSON(run)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin save assistant run snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE app_studio_assistant_runs
+		SET status = $5,
+			active_message_id = $6,
+			revision = $7,
+			request_id = $8,
+			checkpoint = $9,
+			audit = $10,
+			updated_at = $11
+		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND run_id = $4
+		  AND revision = $12
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, run.ID,
+		run.Status, run.ActiveMessageID, run.Revision, run.RequestID,
+		string(checkpoint), string(audit), run.UpdatedAt.UTC(), expectedRevision)
+	if err != nil {
+		if isAssistantRunUniqueViolation(err) {
+			return fmt.Errorf("%w: project already has active assistant run", ErrAssistantRunConflict)
+		}
+		return fmt.Errorf("update assistant run snapshot: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count updated assistant run snapshot: %w", err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("%w: assistant run %q", ErrAssistantRunConflict, run.ID)
+	}
+	for _, message := range messages {
+		if err := appendMessageTx(ctx, tx, scope, prepareMessage(scope, message)); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit assistant run snapshot: %w", err)
 	}
 	return nil
 }
@@ -412,11 +577,14 @@ func (s *PostgresStore) CompareAndSwapAssistantRun(
 		result, err = s.db.ExecContext(ctx, `
 			INSERT INTO app_studio_assistant_runs (
 				org_uuid, workspace_uuid, project_name, run_id,
-				status, request_id, checkpoint, audit, created_at, updated_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+				status, client_request_id, user_message_id, active_message_id, revision, request_id,
+				checkpoint, audit, created_at, updated_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 			ON CONFLICT (org_uuid, workspace_uuid, project_name, run_id)
 			DO UPDATE SET
 				status = EXCLUDED.status,
+				user_message_id = EXCLUDED.user_message_id,
+				active_message_id = EXCLUDED.active_message_id,
 				request_id = EXCLUDED.request_id,
 				checkpoint = EXCLUDED.checkpoint,
 				audit = EXCLUDED.audit,
@@ -424,27 +592,32 @@ func (s *PostgresStore) CompareAndSwapAssistantRun(
 			WHERE app_studio_assistant_runs.request_id = ''
 		`,
 			scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, run.ID,
-			run.Status, run.RequestID, string(normalizedCheckpoint), string(normalizedAudit), run.CreatedAt.UTC(), run.UpdatedAt.UTC(),
+			run.Status, run.ClientRequestID, run.UserMessageID, run.ActiveMessageID, run.Revision, run.RequestID,
+			string(normalizedCheckpoint), string(normalizedAudit), run.CreatedAt.UTC(), run.UpdatedAt.UTC(),
 		)
 	} else {
 		result, err = s.db.ExecContext(ctx, `
 			UPDATE app_studio_assistant_runs
 			SET status = $5,
-				request_id = $6,
-				checkpoint = $7,
-				audit = $8,
-				updated_at = $9
+				active_message_id = $6,
+				request_id = $7,
+				checkpoint = $8,
+				audit = $9,
+				updated_at = $10
 			WHERE org_uuid = $1
 				AND workspace_uuid = $2
 				AND project_name = $3
 				AND run_id = $4
-				AND request_id = $10
+				AND request_id = $11
 		`,
 			scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, run.ID,
-			run.Status, run.RequestID, string(normalizedCheckpoint), string(normalizedAudit), run.UpdatedAt.UTC(), expectedRequestID,
+			run.Status, run.ActiveMessageID, run.RequestID, string(normalizedCheckpoint), string(normalizedAudit), run.UpdatedAt.UTC(), expectedRequestID,
 		)
 	}
 	if err != nil {
+		if isAssistantRunUniqueViolation(err) {
+			return fmt.Errorf("%w: project already has active assistant run", ErrAssistantRunConflict)
+		}
 		return fmt.Errorf("compare and swap assistant run: %w", err)
 	}
 	updated, err := result.RowsAffected()
@@ -517,7 +690,8 @@ func (s *PostgresStore) ClaimAssistantRun(ctx context.Context, scope Scope, id s
 		  AND run_id = $6
 		  AND request_id = $7
 		  AND status IN ($8, $9)
-		RETURNING run_id, status, request_id, checkpoint, audit, created_at, updated_at
+		RETURNING run_id, status, client_request_id, user_message_id, active_message_id, revision,
+		          request_id, checkpoint, audit, created_at, updated_at
 	`,
 		AssistantRunStatusRunning, now.UTC(),
 		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, id, requestID,
@@ -545,7 +719,8 @@ func (s *PostgresStore) GetAssistantRun(ctx context.Context, scope Scope, id str
 		return AssistantRun{}, fmt.Errorf("assistant run id is required")
 	}
 	row := s.db.QueryRowContext(ctx, `
-		SELECT run_id, status, request_id, checkpoint, audit, created_at, updated_at
+		SELECT run_id, status, client_request_id, user_message_id, active_message_id, revision,
+		       request_id, checkpoint, audit, created_at, updated_at
 		FROM app_studio_assistant_runs
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND run_id = $4
 	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, id)
@@ -556,6 +731,45 @@ func (s *PostgresStore) GetAssistantRun(ctx context.Context, scope Scope, id str
 			return AssistantRun{}, fmt.Errorf("%w: %q", ErrAssistantRunNotFound, id)
 		}
 		return AssistantRun{}, fmt.Errorf("get assistant run: %w", err)
+	}
+	return run, nil
+}
+
+func (s *PostgresStore) FindAssistantRunByClientRequestID(ctx context.Context, scope Scope, clientRequestID string) (AssistantRun, error) {
+	if s == nil || s.db == nil {
+		return AssistantRun{}, fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
+	}
+	if clientRequestID == "" {
+		return AssistantRun{}, fmt.Errorf("assistant run client request id is required")
+	}
+	return getAssistantRunByClientRequestID(ctx, s.db, scope, clientRequestID)
+}
+
+func (s *PostgresStore) LatestAssistantRun(ctx context.Context, scope Scope) (AssistantRun, error) {
+	if s == nil || s.db == nil {
+		return AssistantRun{}, fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT run_id, status, client_request_id, user_message_id, active_message_id, revision,
+		       request_id, checkpoint, audit, created_at, updated_at
+		FROM app_studio_assistant_runs
+		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3
+		  AND run_id <> $4
+		ORDER BY updated_at DESC, run_id DESC
+		LIMIT 1
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, AssistantRunIDApprovedPlanGrant)
+	run, err := scanAssistantRun(row, scope.ProjectName)
+	if err == sql.ErrNoRows {
+		return AssistantRun{}, fmt.Errorf("%w: latest run", ErrAssistantRunNotFound)
+	}
+	if err != nil {
+		return AssistantRun{}, fmt.Errorf("get latest assistant run: %w", err)
 	}
 	return run, nil
 }
@@ -594,7 +808,7 @@ func (s *PostgresStore) DeleteMessagesOlderThan(ctx context.Context, before time
 	if err != nil {
 		return 0, fmt.Errorf("count deleted messages: %w", err)
 	}
-	runRes, err := s.db.ExecContext(ctx, `DELETE FROM app_studio_assistant_runs WHERE updated_at < $1`, before.UTC())
+	runRes, err := s.db.ExecContext(ctx, `DELETE FROM app_studio_assistant_runs WHERE updated_at < $1 AND run_id <> $2`, before.UTC(), AssistantRunIDApprovedPlanGrant)
 	if err != nil {
 		return 0, fmt.Errorf("delete stale assistant runs: %w", err)
 	}
@@ -638,6 +852,82 @@ func scanMessage(row interface {
 	return msg, nil
 }
 
+func appendMessageTx(ctx context.Context, tx *sql.Tx, scope Scope, msg Message) error {
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]any{}
+	}
+	metadata, err := json.Marshal(msg.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal message metadata: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO app_studio_messages (
+			org_uuid, workspace_uuid, project_name, message_id,
+			role, content, content_encrypted, content_key_id,
+			metadata, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		ON CONFLICT (org_uuid, workspace_uuid, project_name, message_id)
+		DO UPDATE SET
+			role = EXCLUDED.role,
+			content = EXCLUDED.content,
+			content_encrypted = EXCLUDED.content_encrypted,
+			content_key_id = EXCLUDED.content_key_id,
+			metadata = EXCLUDED.metadata,
+			created_at = EXCLUDED.created_at,
+			updated_at = EXCLUDED.updated_at
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, msg.ID,
+		msg.Role, msg.Content, msg.ContentEncrypted, msg.ContentKeyID,
+		metadata, msg.CreatedAt.UTC(), msg.UpdatedAt.UTC()); err != nil {
+		return fmt.Errorf("upsert snapshot message: %w", err)
+	}
+	return nil
+}
+
+func normalizeAssistantRunJSON(run AssistantRun) (json.RawMessage, json.RawMessage, error) {
+	checkpoint := run.Checkpoint
+	if len(checkpoint) == 0 {
+		checkpoint = json.RawMessage(`{}`)
+	}
+	normalizedCheckpoint, err := normalizePostgresJSONB(checkpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("assistant run checkpoint is not valid json: %w", err)
+	}
+	audit := run.Audit
+	if len(audit) == 0 {
+		audit = json.RawMessage(`{}`)
+	}
+	normalizedAudit, err := normalizePostgresJSONB(audit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("assistant run audit is not valid json: %w", err)
+	}
+	return normalizedCheckpoint, normalizedAudit, nil
+}
+
+func getAssistantRunByClientRequestID(ctx context.Context, queryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, scope Scope, clientRequestID string) (AssistantRun, error) {
+	row := queryer.QueryRowContext(ctx, `
+		SELECT run_id, status, client_request_id, user_message_id, active_message_id, revision,
+		       request_id, checkpoint, audit, created_at, updated_at
+		FROM app_studio_assistant_runs
+		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND client_request_id = $4
+		  AND run_id <> $5
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, clientRequestID, AssistantRunIDApprovedPlanGrant)
+	run, err := scanAssistantRun(row, scope.ProjectName)
+	if err == sql.ErrNoRows {
+		return AssistantRun{}, fmt.Errorf("%w: client request %q", ErrAssistantRunNotFound, clientRequestID)
+	}
+	if err != nil {
+		return AssistantRun{}, fmt.Errorf("get assistant run by client request id: %w", err)
+	}
+	return run, nil
+}
+
+func isAssistantRunUniqueViolation(err error) bool {
+	var postgresErr *pq.Error
+	return errors.As(err, &postgresErr) && postgresErr.Code == "23505"
+}
+
 func scanAssistantRun(row interface {
 	Scan(dest ...any) error
 }, projectName string) (AssistantRun, error) {
@@ -646,6 +936,10 @@ func scanAssistantRun(row interface {
 	if err := row.Scan(
 		&run.ID,
 		&status,
+		&run.ClientRequestID,
+		&run.UserMessageID,
+		&run.ActiveMessageID,
+		&run.Revision,
 		&run.RequestID,
 		&run.Checkpoint,
 		&run.Audit,

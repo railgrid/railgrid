@@ -24,6 +24,38 @@ export interface ProjectMessage {
   createdAt: string
 }
 
+export type ProjectAssistantRunStatus = 'pending_permission' | 'pending_input' | 'running' | 'completed' | 'aborted' | 'failed' | 'interrupted'
+
+export interface ProjectAssistantRun {
+  id: string
+  status: ProjectAssistantRunStatus
+  revision: number
+  activeMessageID: string
+  clientRequestID?: string
+  userMessageID?: string
+  requestID?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface ProjectAssistantSnapshot {
+  run: ProjectAssistantRun
+  message: ProjectMessage
+}
+
+export interface ProjectAssistantRunStart {
+  run: ProjectAssistantRun
+  user?: ProjectMessage
+  assistant: ProjectMessage
+}
+
+export interface ProjectAssistantAbortResponse {
+  runID: string
+  requestID: string
+  status: ProjectAssistantRunStatus
+  decision?: 'allow' | 'deny'
+}
+
 export type ProjectAssistantActionStatus = 'requested' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'succeeded' | 'failed' | 'rejected'
 
 export interface ProjectAssistantUIAction {

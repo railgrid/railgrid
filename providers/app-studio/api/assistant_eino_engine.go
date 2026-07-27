@@ -201,6 +201,12 @@ func (e projectEinoAssistantEngine) startProjectAssistantRunAudit(
 		return nil, nil
 	}
 	now := time.Now().UTC()
+	if req.AssistantRun != nil && strings.TrimSpace(req.AssistantRun.ID) != "" {
+		recorder := newProjectAssistantRunAuditRecorder(*req, req.AssistantRun, req.AssistantRun.CreatedAt)
+		req.auditRecorder = recorder
+		recorder.wrapCallbacks(&req.StreamCallbacks)
+		return recorder, nil
+	}
 	run := &store.AssistantRun{
 		ID:          runID,
 		ProjectName: req.Project.Name,
@@ -253,6 +259,16 @@ func (e projectEinoAssistantEngine) finishProjectAssistantRunAudit(
 		}
 	}
 	recorder.finalize(outcome)
+	if req.snapshotAccumulator != nil {
+		updated := *req.AssistantRun
+		if err := req.snapshotAccumulator.UpdateRun(context.Background(), func(run *store.AssistantRun) { run.Audit = updated.Audit }); err != nil {
+			if runErr != nil {
+				return errors.Join(runErr, err)
+			}
+			return err
+		}
+		return runErr
+	}
 	req.AssistantRun.Status = store.AssistantRunStatusCompleted
 	req.AssistantRun.RequestID = ""
 	req.AssistantRun.UpdatedAt = time.Now().UTC()
