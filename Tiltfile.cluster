@@ -783,9 +783,6 @@ local_resource(
     # instance's own public URL (docs/app-studio-template-sandboxes.md) — no
     # preview-gateway env.
     serve_cmd=('KEDGE_PROVIDER_KUBECONFIG={kc} ' +
-               # Opaque chat disclosures (generic labels, no tool names /
-               # summarized output) — drop this to get full summary disclosure.
-               'APP_STUDIO_TOOL_DISCLOSURE=minimal ' +
                'make run-provider-app-studio').format(
                    kc=KCP_ADMIN_KUBECONFIG),
     deps=[

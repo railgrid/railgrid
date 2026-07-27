@@ -66,6 +66,7 @@ Environment variables consumed by the binary:
 | `APP_STUDIO_MESSAGE_RETENTION` | Retention window (`time.ParseDuration`, e.g. `720h`) |
 | `APP_STUDIO_WORKSPACE_ROOT` | Filesystem root for App Studio project workspaces and local file tools |
 | `APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verify on MCP calls (dev) |
+| `APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verification only for preview readiness probes (local dev with a self-signed Gateway) |
 
 ## Local message history
 

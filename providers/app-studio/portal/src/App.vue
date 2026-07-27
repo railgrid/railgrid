@@ -37,6 +37,7 @@ import {
   gitConnectionReady,
   type ProjectCreateReadiness,
 } from './createReadiness'
+import { parseAssistantTraceHeader, summarizeAssistantTrace } from './assistantProgress'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import CheckpointChip from '@/components/CheckpointChip.vue'
@@ -2889,7 +2890,10 @@ function assistantTraceCards(message: ProjectMessageView): ProjectAssistantSurfa
 function assistantTraceItems(message: ProjectMessageView): AssistantTraceItem[] {
   return assistantTraceCards(message).map((card) => {
     const lines = card.body.split('\n').map((line) => line.trim()).filter(Boolean)
-    const label = assistantTraceLabel(lines[0] || card.role)
+    const header = card.role === 'tool call' || card.role === 'tool result' || card.tool
+      ? parseAssistantTraceHeader(lines[0] || card.role, card.tool)
+      : { label: lines[0] || card.role }
+    const label = assistantTraceLabel(header.label)
     return {
       id: card.id,
       role: card.role,
@@ -2897,7 +2901,7 @@ function assistantTraceItems(message: ProjectMessageView): AssistantTraceItem[] 
       // Prefer the real tool output over the generic count text.
       detail: card.output || lines.slice(1).join('\n') || lines[0] || card.role,
       status: assistantTraceStatus(card.role),
-      tool: card.tool,
+      tool: header.tool,
       output: card.output,
     }
   })
@@ -2928,14 +2932,7 @@ function assistantTraceLabel(value: string): string {
 }
 
 function assistantTraceSummary(message: ProjectMessageView): string {
-  // Prefer the concrete tool names over the generic kind labels so the
-  // collapsed row already says WHAT ran (read_project_file · write_file …).
-  const labels = assistantTraceItems(message)
-    .map((item) => item.tool || item.label)
-    .filter(Boolean)
-  if (labels.length === 0) return ''
-  const visible = labels.slice(0, 3).join(' · ')
-  return labels.length > 3 ? `${visible} · ${labels.length - 3} more` : visible
+  return summarizeAssistantTrace(assistantTraceItems(message))
 }
 
 function assistantTraceCountLabel(message: ProjectMessageView): string {
@@ -3637,7 +3634,13 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 </div>
               </div>
             </div>
-            <div v-if="conversationWorkingLabel" class="flex w-full justify-start" aria-live="polite">
+            <div
+              v-if="conversationWorkingLabel"
+              class="flex w-full justify-start"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
               <div class="flex min-w-0 items-center gap-2 py-1 text-[13px] leading-6 text-text-muted">
                 <Loader2 class="h-3.5 w-3.5 shrink-0 animate-spin text-accent" :stroke-width="1.75" />
                 <span class="font-medium text-text-secondary">{{ conversationWorkingLabel }}</span>

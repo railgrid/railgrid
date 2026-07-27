@@ -1291,7 +1291,8 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_PROVIDER_KUBECONFIG)" "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
 		APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS}" \
-				APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
+		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
+		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
 			$(BINDIR)/app-studio-provider; \
 	else \
 		echo "  store: $${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}"; \
@@ -1304,7 +1305,8 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_PROVIDER_KUBECONFIG)" "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
 		APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS}" \
-				APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
+		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
+		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
 			$(BINDIR)/app-studio-provider; \
 	fi
 

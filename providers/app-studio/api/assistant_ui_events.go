@@ -19,6 +19,7 @@ package api
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -296,7 +297,106 @@ func discloseProjectAssistantUIAction(action projectAssistantUIAction, name, arg
 	if action.Detail == "" {
 		action.Detail = strings.TrimSpace(errText)
 	}
+	action.Label = projectAssistantUIActionSpecificLabel(action)
 	return action
+}
+
+func projectAssistantUIActionSpecificLabel(action projectAssistantUIAction) string {
+	active := action.Status == "requested" || action.Status == "running"
+	failed := action.Status == "failed" || action.Status == "rejected"
+	if failed {
+		return action.Label
+	}
+
+	base := projectToolBaseName(action.Tool)
+	path := projectAssistantUISummaryField(action.Arguments, "path")
+	if path == "" {
+		path = projectAssistantUISummaryField(action.Detail, "file")
+	}
+	switch base {
+	case projectToolReadProjectFile:
+		if path != "" {
+			return projectAssistantUIActionLabel(active, false, "Reading "+path, "Read "+path, action.Label)
+		}
+	case projectToolListProjectFiles:
+		if count, ok := projectAssistantUISummaryCount(action.Detail, "path(s)"); ok {
+			return projectAssistantUIActionLabel(
+				active,
+				false,
+				"Reading project files",
+				fmt.Sprintf("Read %d project files", count),
+				action.Label,
+			)
+		}
+	case projectToolSearchProjectFiles:
+		if count, ok := projectAssistantUISummaryCount(action.Detail, "match(es)"); ok {
+			return projectAssistantUIActionLabel(
+				active,
+				false,
+				"Searching project",
+				fmt.Sprintf("Found %d project matches", count),
+				action.Label,
+			)
+		}
+	case projectToolWriteFile, projectToolApplyPatch:
+		if path != "" {
+			return projectAssistantUIActionLabel(active, false, "Updating "+path, "Updated "+path, action.Label)
+		}
+	case projectToolMkdir:
+		if path != "" {
+			return projectAssistantUIActionLabel(active, false, "Creating "+path, "Created "+path, action.Label)
+		}
+	case projectToolVerifyDevelopmentRuntime:
+		return projectAssistantUIActionLabel(active, false, "Checking development preview", "Checked development preview", action.Label)
+	case projectToolGetPreviewURL:
+		return projectAssistantUIActionLabel(active, false, "Checking preview", "Checked preview", action.Label)
+	case projectToolCheckProjectReadiness:
+		return projectAssistantUIActionLabel(active, false, "Checking project readiness", "Checked project readiness", action.Label)
+	case projectToolPrepareProjectDeployment:
+		return projectAssistantUIActionLabel(active, false, "Preparing development preview", "Prepared development preview", action.Label)
+	case projectToolGetRuntimeStatus:
+		return projectAssistantUIActionLabel(active, false, "Checking development runtime", "Checked development runtime", action.Label)
+	case projectToolCommitFiles, projectToolCommitProjectFiles:
+		count, ok := projectAssistantUISummaryCount(action.Detail, "file(s):")
+		if !ok {
+			count, ok = projectAssistantUISummaryCount(action.Arguments, "file(s):")
+		}
+		if ok {
+			return projectAssistantUIActionLabel(
+				active,
+				false,
+				fmt.Sprintf("Committing %d files", count),
+				fmt.Sprintf("Committed %d files", count),
+				action.Label,
+			)
+		}
+	}
+	return action.Label
+}
+
+func projectAssistantUISummaryField(summary, field string) string {
+	prefix := field + " "
+	for _, part := range strings.Split(summary, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(part, prefix))
+		}
+	}
+	return ""
+}
+
+func projectAssistantUISummaryCount(summary, marker string) (int, bool) {
+	fields := strings.Fields(summary)
+	for i := 1; i < len(fields); i++ {
+		if strings.Trim(fields[i], ";") != marker {
+			continue
+		}
+		count, err := strconv.Atoi(strings.Trim(fields[i-1], ";"))
+		if err == nil && count >= 0 {
+			return count, true
+		}
+	}
+	return 0, false
 }
 
 // projectAssistantUIActionToolArguments guards the disclosure boundary: the
@@ -410,7 +510,7 @@ func projectAssistantUIActionKind(name string) string {
 		return projectAssistantUIActionPlan
 	case base == projectToolPlanProjectChanges:
 		return projectAssistantUIActionPlan
-	case base == projectToolCheckProjectReadiness || base == projectToolPrepareProjectDeployment || base == projectToolGetRuntimeStatus || base == projectToolGetPreviewURL || base == projectToolGetRuntimeLogs || base == projectToolRestartRuntime || base == projectToolSetRuntimeEnv:
+	case base == projectToolCheckProjectReadiness || base == projectToolPrepareProjectDeployment || base == projectToolVerifyDevelopmentRuntime || base == projectToolGetRuntimeStatus || base == projectToolGetPreviewURL || base == projectToolGetRuntimeLogs || base == projectToolRestartRuntime || base == projectToolSetRuntimeEnv:
 		return projectAssistantUIActionRun
 	case base == projectToolCommitProjectFiles || base == projectToolCommitFiles:
 		return projectAssistantUIActionCommit

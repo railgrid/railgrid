@@ -32,7 +32,12 @@ const (
 	projectAssistantTurnAbort   projectAssistantTurnKind = "abort"
 )
 
-var errProjectAssistantTurnPreempted = errors.New("assistant turn preempted")
+const projectAssistantRunHandoffTimeout = 10 * time.Second
+
+var (
+	errProjectAssistantTurnPreempted      = errors.New("assistant turn preempted")
+	errProjectAssistantTurnHandoffTimeout = errors.New("assistant turn handoff timed out")
+)
 
 // projectAssistantTurnItem is intentionally small and value-only so a later
 // Eino TurnLoop checkpoint can persist queued work without serializing request,
@@ -88,13 +93,15 @@ type projectAssistantActiveTurn struct {
 }
 
 type projectAssistantRunManager struct {
-	mu     sync.Mutex
-	active map[projectAssistantRunKey]*projectAssistantActiveTurn
+	mu             sync.Mutex
+	active         map[projectAssistantRunKey]*projectAssistantActiveTurn
+	handoffTimeout time.Duration
 }
 
 func newProjectAssistantRunManager() *projectAssistantRunManager {
 	return &projectAssistantRunManager{
-		active: map[projectAssistantRunKey]*projectAssistantActiveTurn{},
+		active:         map[projectAssistantRunKey]*projectAssistantActiveTurn{},
+		handoffTimeout: projectAssistantRunHandoffTimeout,
 	}
 }
 
@@ -112,15 +119,8 @@ func (m *projectAssistantRunManager) Begin(ctx context.Context, item projectAssi
 		cancel: cancel,
 		done:   make(chan struct{}),
 	}
-	m.mu.Lock()
-	if previous := m.active[key]; previous != nil {
-		previous.cancel(errProjectAssistantTurnPreempted)
-	}
-	m.active[key] = active
-	m.mu.Unlock()
-
 	var once sync.Once
-	return runCtx, func() {
+	finish := func() {
 		once.Do(func() {
 			m.mu.Lock()
 			if m.active[key] == active {
@@ -131,6 +131,48 @@ func (m *projectAssistantRunManager) Begin(ctx context.Context, item projectAssi
 			close(active.done)
 		})
 	}
+
+	for {
+		m.mu.Lock()
+		previous := m.active[key]
+		if previous == nil {
+			m.active[key] = active
+			m.mu.Unlock()
+			break
+		}
+		previous.cancel(errProjectAssistantTurnPreempted)
+		m.mu.Unlock()
+
+		handoffTimeout := m.handoffTimeout
+		if handoffTimeout <= 0 {
+			handoffTimeout = projectAssistantRunHandoffTimeout
+		}
+		timer := time.NewTimer(handoffTimeout)
+		select {
+		case <-previous.done:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			finish()
+			return runCtx, func() {}
+		case <-timer.C:
+			cancel(errProjectAssistantTurnHandoffTimeout)
+			finish()
+			return runCtx, func() {}
+		}
+	}
+
+	return runCtx, finish
 }
 
 func (m *projectAssistantRunManager) activeCount() int {

@@ -17,6 +17,8 @@ limitations under the License.
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +32,9 @@ type projectAssistantApprovedPlan struct {
 	AcceptanceCriteria []string  `json:"acceptanceCriteria,omitempty"`
 	ApprovedAt         time.Time `json:"approvedAt,omitempty"`
 	ApprovalTool       string    `json:"approvalTool,omitempty"`
+	// RunLocal marks authorization that is valid only for the current Eino
+	// run/checkpoint and must never be promoted into the cross-turn grant.
+	RunLocal bool `json:"runLocal,omitempty"`
 	// AllowAllWrites grants every workspace write tool, on any path, until the
 	// next commit. It is set when the user approves a write prompt directly (as
 	// opposed to a model-supplied plan envelope), so a single "Allow" does not
@@ -40,18 +45,19 @@ type projectAssistantApprovedPlan struct {
 type projectEinoAssistantRunState struct {
 	mu sync.Mutex
 
-	messages             []chatMessage
-	lastToolMessages     []chatMessage
-	toolCalls            []chatToolCall
-	seenToolCalls        map[string]int
-	turn                 int
-	turnPolicy           projectAssistantTurnPolicy
-	projectRepositoryRef string
-	toolPrompt           string
-	toolDiscovery        *projectEinoAssistantToolDiscovery
-	sessionSnapshot      *projectEinoAssistantSessionSnapshot
-	permissionBarrier    bool
-	approvedPlan         *projectAssistantApprovedPlan
+	messages                  []chatMessage
+	lastToolMessages          []chatMessage
+	toolCalls                 []chatToolCall
+	seenToolCalls             map[string]int
+	turn                      int
+	turnPolicy                projectAssistantTurnPolicy
+	projectRepositoryRef      string
+	toolPrompt                string
+	toolDiscovery             *projectEinoAssistantToolDiscovery
+	sessionSnapshot           *projectEinoAssistantSessionSnapshot
+	permissionBarrier         bool
+	approvedPlan              *projectAssistantApprovedPlan
+	approvedPlanGrantRevision string
 }
 
 func newProjectEinoAssistantRunState() *projectEinoAssistantRunState {
@@ -164,11 +170,12 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.messages = cloneChatMessages(state.Messages)
 	s.lastToolMessages = cloneChatMessages(state.LastToolMessages)
 	s.toolCalls = cloneProjectAssistantToolCalls(state.ToolCalls)
-	s.seenToolCalls = cloneProjectAssistantSeenToolCalls(state.SeenToolCalls)
+	s.seenToolCalls = projectEinoAssistantSanitizeSeenToolCalls(state.SeenToolCalls)
 	s.turn = state.Turn
 	s.turnPolicy = projectAssistantTurnPolicyForCheckpoint(state)
 	s.projectRepositoryRef = strings.TrimSpace(state.ProjectRepositoryRef)
 	s.approvedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
+	s.approvedPlanGrantRevision = strings.TrimSpace(state.ApprovedPlanGrantRevision)
 	s.sessionSnapshot = cloneProjectEinoAssistantSessionSnapshot(state.SessionSnapshot)
 }
 
@@ -209,6 +216,24 @@ func (s *projectEinoAssistantRunState) ClearApprovedPlan() {
 	s.approvedPlan = nil
 }
 
+func (s *projectEinoAssistantRunState) SetApprovedPlanGrantRevision(revision string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.approvedPlanGrantRevision = strings.TrimSpace(revision)
+}
+
+func (s *projectEinoAssistantRunState) ApprovedPlanGrantRevision() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.approvedPlanGrantRevision
+}
+
 func (s *projectEinoAssistantRunState) RecordModelInput(messages []chatMessage) {
 	if s == nil {
 		return
@@ -228,7 +253,7 @@ func (s *projectEinoAssistantRunState) RecordAssistantReply(reply projectAssista
 		ensureProjectToolCallIDs(reply.ToolCalls)
 		s.toolCalls = cloneProjectAssistantToolCalls(reply.ToolCalls)
 		for _, tc := range reply.ToolCalls {
-			sig := tc.Function.Name + "\x00" + tc.Function.Arguments
+			sig := projectEinoAssistantToolCallSignature(tc.Function.Name, tc.Function.Arguments)
 			s.seenToolCalls[sig]++
 		}
 		s.messages = append(s.messages, chatMessage{
@@ -306,16 +331,34 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return projectAssistantCheckpointState{
-		Messages:             cloneChatMessages(s.messages),
-		LastToolMessages:     cloneChatMessages(s.lastToolMessages),
-		ToolCalls:            cloneProjectAssistantToolCalls(s.toolCalls),
-		SeenToolCalls:        cloneProjectAssistantSeenToolCalls(s.seenToolCalls),
-		Turn:                 s.turn,
-		ProjectRepositoryRef: strings.TrimSpace(s.projectRepositoryRef),
-		TurnPolicy:           projectAssistantCheckpointTurnPolicyForPolicy(s.turnPolicy),
-		ApprovedPlan:         cloneProjectAssistantApprovedPlan(s.approvedPlan),
-		SessionSnapshot:      cloneProjectEinoAssistantSessionSnapshot(s.sessionSnapshot),
+		Messages:                  cloneChatMessages(s.messages),
+		LastToolMessages:          cloneChatMessages(s.lastToolMessages),
+		ToolCalls:                 cloneProjectAssistantToolCalls(s.toolCalls),
+		SeenToolCalls:             projectEinoAssistantSanitizeSeenToolCalls(s.seenToolCalls),
+		Turn:                      s.turn,
+		ProjectRepositoryRef:      strings.TrimSpace(s.projectRepositoryRef),
+		TurnPolicy:                projectAssistantCheckpointTurnPolicyForPolicy(s.turnPolicy),
+		ApprovedPlan:              cloneProjectAssistantApprovedPlan(s.approvedPlan),
+		ApprovedPlanGrantRevision: strings.TrimSpace(s.approvedPlanGrantRevision),
+		SessionSnapshot:           cloneProjectEinoAssistantSessionSnapshot(s.sessionSnapshot),
 	}
+}
+
+func projectEinoAssistantToolCallSignature(name, arguments string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(name) + "\x00" + arguments))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func projectEinoAssistantSanitizeSeenToolCalls(src map[string]int) map[string]int {
+	out := make(map[string]int, len(src))
+	for signature, count := range src {
+		if !strings.HasPrefix(signature, "sha256:") {
+			sum := sha256.Sum256([]byte(signature))
+			signature = "sha256:" + hex.EncodeToString(sum[:])
+		}
+		out[signature] += count
+	}
+	return out
 }
 
 func (s *projectEinoAssistantRunState) ToolLoopFallback() string {

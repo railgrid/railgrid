@@ -19,8 +19,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"k8s.io/klog/v2"
 
 	"github.com/faroshq/provider-app-studio/store"
@@ -34,6 +38,29 @@ import (
 // which matches the approval prompt's promise to the user.
 const projectAssistantApprovedPlanGrantRunID = "approved-plan-grant"
 
+var errProjectAssistantCheckpointGrantStale = errors.New("assistant checkpoint plan grant is stale")
+
+type projectAssistantApprovedPlanGrantRecord struct {
+	Revision string                        `json:"revision"`
+	Plan     *projectAssistantApprovedPlan `json:"plan,omitempty"`
+}
+
+// projectAssistantInitialCreationPlan is the narrow authorization implied by
+// an explicit prompt submitted to create a new Project. It stays in the
+// Eino run/checkpoint only; unlike a user-approved plan it is never written to
+// the cross-turn grant store. Permission policy limits it to source edits and
+// always requires separate template-selection and commit approval.
+func projectAssistantInitialCreationPlan() projectAssistantApprovedPlan {
+	return normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
+		Summary:        "Initial project creation prompt authorizes source edits for this run.",
+		Operations:     []string{projectToolWriteFile, projectToolApplyPatch, projectToolMkdir},
+		AllowAllWrites: true,
+		ApprovedAt:     time.Now().UTC(),
+		ApprovalTool:   "project_create_prompt",
+		RunLocal:       true,
+	})
+}
+
 func projectAssistantApprovedPlanScopeReady(scope store.Scope) bool {
 	return scope.OrgUUID != "" && scope.WorkspaceUUID != "" && scope.ProjectName != ""
 }
@@ -42,64 +69,184 @@ func projectAssistantApprovedPlanScopeReady(scope store.Scope) bool {
 // a project, or nil when none is active. It is best effort: any load failure is
 // logged and treated as "no grant" so a single bad read never blocks a turn.
 func (s *Server) loadProjectAssistantApprovedPlan(ctx context.Context, scope store.Scope) *projectAssistantApprovedPlan {
-	if s == nil || s.store == nil || !projectAssistantApprovedPlanScopeReady(scope) {
-		return nil
-	}
-	run, err := s.store.GetAssistantRun(ctx, scope, projectAssistantApprovedPlanGrantRunID)
+	plan, _, err := s.loadProjectAssistantApprovedPlanGrant(ctx, scope)
 	if err != nil {
-		// Missing grant is the common case (returned as an error); only note
-		// it at high verbosity so genuine store errors remain discoverable.
 		klog.FromContext(ctx).V(4).Info("no active App Studio plan grant", "project", scope.ProjectName, "reason", err.Error())
 		return nil
 	}
+	return plan
+}
+
+func (s *Server) loadProjectAssistantApprovedPlanGrant(
+	ctx context.Context,
+	scope store.Scope,
+) (*projectAssistantApprovedPlan, string, error) {
+	if s == nil || s.store == nil || !projectAssistantApprovedPlanScopeReady(scope) {
+		return nil, "", errors.New("assistant plan grant store is not configured")
+	}
+	run, err := s.store.GetAssistantRun(ctx, scope, projectAssistantApprovedPlanGrantRunID)
+	if err != nil {
+		if errors.Is(err, store.ErrAssistantRunNotFound) {
+			return nil, "", nil
+		}
+		return nil, "", fmt.Errorf("read App Studio plan grant: %w", err)
+	}
 	if len(run.Checkpoint) == 0 {
-		return nil
+		return nil, "", nil
 	}
-	var plan projectAssistantApprovedPlan
-	if err := json.Unmarshal(run.Checkpoint, &plan); err != nil {
-		klog.FromContext(ctx).Error(err, "decode App Studio plan grant", "project", scope.ProjectName)
-		return nil
+
+	var record projectAssistantApprovedPlanGrantRecord
+	if err := json.Unmarshal(run.Checkpoint, &record); err != nil {
+		return nil, "", fmt.Errorf("decode App Studio plan grant record: %w", err)
 	}
-	if len(plan.Operations) == 0 {
-		// A cleared grant is persisted as an empty object; treat it as none.
-		return nil
+	if strings.TrimSpace(record.Revision) != "" {
+		if run.RequestID != "" && run.RequestID != strings.TrimSpace(record.Revision) {
+			return nil, "", errors.New("app studio plan grant revision metadata does not match its payload")
+		}
+		if record.Plan == nil || len(record.Plan.Operations) == 0 {
+			return nil, strings.TrimSpace(record.Revision), nil
+		}
+		normalized := normalizeProjectAssistantApprovedPlan(*record.Plan)
+		return &normalized, strings.TrimSpace(record.Revision), nil
 	}
-	normalized := normalizeProjectAssistantApprovedPlan(plan)
-	return &normalized
+
+	// Compatibility for pre-revision active grants. Their persisted update
+	// timestamp is a stable generation token; an empty legacy object is no
+	// authority and has no generation.
+	var legacy projectAssistantApprovedPlan
+	if err := json.Unmarshal(run.Checkpoint, &legacy); err != nil {
+		return nil, "", fmt.Errorf("decode legacy App Studio plan grant: %w", err)
+	}
+	if len(legacy.Operations) == 0 {
+		revision, err := s.retireProjectAssistantApprovedPlan(ctx, scope, "")
+		if errors.Is(err, store.ErrAssistantRunConflict) {
+			return s.loadProjectAssistantApprovedPlanGrant(ctx, scope)
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("migrate legacy App Studio plan tombstone: %w", err)
+		}
+		return nil, revision, nil
+	}
+	normalized := normalizeProjectAssistantApprovedPlan(legacy)
+	revision, err := s.persistProjectAssistantApprovedPlan(ctx, scope, &normalized, "")
+	if errors.Is(err, store.ErrAssistantRunConflict) {
+		// Another pod migrated or replaced the legacy row first. Reload the
+		// now-authoritative record instead of trusting the stale payload.
+		return s.loadProjectAssistantApprovedPlanGrant(ctx, scope)
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("migrate legacy App Studio plan grant: %w", err)
+	}
+	return &normalized, revision, nil
+}
+
+// projectAssistantApprovedPlanForCheckpointResume reconciles authorization
+// captured in a pending checkpoint with the current durable grant record. The
+// durable record is authoritative so a commit tombstone cannot be bypassed by
+// resuming an older checkpoint.
+func (s *Server) projectAssistantApprovedPlanForCheckpointResume(
+	ctx context.Context,
+	scope store.Scope,
+	checkpointPlan *projectAssistantApprovedPlan,
+	checkpointRevision string,
+) (*projectAssistantApprovedPlan, string, error) {
+	activePlan, activeRevision, err := s.loadProjectAssistantApprovedPlanGrant(ctx, scope)
+	if err != nil {
+		return nil, "", err
+	}
+	if strings.TrimSpace(checkpointRevision) != activeRevision {
+		return nil, activeRevision, fmt.Errorf(
+			"%w: checkpoint revision %q does not match active revision %q",
+			errProjectAssistantCheckpointGrantStale,
+			strings.TrimSpace(checkpointRevision),
+			activeRevision,
+		)
+	}
+	if checkpointPlan == nil {
+		return nil, activeRevision, nil
+	}
+	if checkpointPlan.RunLocal {
+		return cloneProjectAssistantApprovedPlan(checkpointPlan), activeRevision, nil
+	}
+	return activePlan, activeRevision, nil
 }
 
 func (s *Server) saveProjectAssistantApprovedPlan(ctx context.Context, scope store.Scope, plan *projectAssistantApprovedPlan) error {
-	if s == nil || s.store == nil || plan == nil || !projectAssistantApprovedPlanScopeReady(scope) {
-		return nil
-	}
-	raw, err := json.Marshal(plan)
+	_, revision, err := s.loadProjectAssistantApprovedPlanGrant(ctx, scope)
 	if err != nil {
 		return err
 	}
+	_, err = s.persistProjectAssistantApprovedPlan(ctx, scope, plan, revision)
+	return err
+}
+
+func (s *Server) persistProjectAssistantApprovedPlan(
+	ctx context.Context,
+	scope store.Scope,
+	plan *projectAssistantApprovedPlan,
+	expectedRevision string,
+) (string, error) {
+	if s == nil || s.store == nil || plan == nil || plan.RunLocal || !projectAssistantApprovedPlanScopeReady(scope) {
+		return "", nil
+	}
+	revision := uuid.NewString()
+	raw, err := json.Marshal(projectAssistantApprovedPlanGrantRecord{
+		Revision: revision,
+		Plan:     cloneProjectAssistantApprovedPlan(plan),
+	})
+	if err != nil {
+		return "", err
+	}
 	now := time.Now().UTC()
-	return s.store.SaveAssistantRun(ctx, scope, store.AssistantRun{
+	if err := s.store.CompareAndSwapAssistantRun(ctx, scope, store.AssistantRun{
 		ID:         projectAssistantApprovedPlanGrantRunID,
 		Status:     store.AssistantRunStatusCompleted,
+		RequestID:  revision,
 		Checkpoint: raw,
 		CreatedAt:  now,
 		UpdatedAt:  now,
-	})
+	}, strings.TrimSpace(expectedRevision)); err != nil {
+		return "", err
+	}
+	return revision, nil
 }
 
 // clearProjectAssistantApprovedPlan retires the active grant by persisting an
 // empty payload, so the next edit turn prompts for plan approval again.
 func (s *Server) clearProjectAssistantApprovedPlan(ctx context.Context, scope store.Scope) error {
+	_, revision, err := s.loadProjectAssistantApprovedPlanGrant(ctx, scope)
+	if err != nil {
+		return err
+	}
+	_, err = s.retireProjectAssistantApprovedPlan(ctx, scope, revision)
+	return err
+}
+
+func (s *Server) retireProjectAssistantApprovedPlan(
+	ctx context.Context,
+	scope store.Scope,
+	expectedRevision string,
+) (string, error) {
 	if s == nil || s.store == nil || !projectAssistantApprovedPlanScopeReady(scope) {
-		return nil
+		return "", nil
+	}
+	revision := uuid.NewString()
+	raw, err := json.Marshal(projectAssistantApprovedPlanGrantRecord{Revision: revision})
+	if err != nil {
+		return "", err
 	}
 	now := time.Now().UTC()
-	return s.store.SaveAssistantRun(ctx, scope, store.AssistantRun{
+	if err := s.store.CompareAndSwapAssistantRun(ctx, scope, store.AssistantRun{
 		ID:         projectAssistantApprovedPlanGrantRunID,
 		Status:     store.AssistantRunStatusCompleted,
-		Checkpoint: json.RawMessage(`{}`),
+		RequestID:  revision,
+		Checkpoint: raw,
 		CreatedAt:  now,
 		UpdatedAt:  now,
-	})
+	}, strings.TrimSpace(expectedRevision)); err != nil {
+		return "", err
+	}
+	return revision, nil
 }
 
 // mergeProjectAssistantApprovedPlans keeps the latest plan's narrative while
@@ -110,5 +257,6 @@ func mergeProjectAssistantApprovedPlans(existing, next projectAssistantApprovedP
 	merged.TargetPaths = normalizeProjectAssistantStringList(append(append([]string(nil), existing.TargetPaths...), next.TargetPaths...))
 	merged.Operations = normalizeProjectAssistantStringList(append(append([]string(nil), existing.Operations...), next.Operations...))
 	merged.AllowAllWrites = existing.AllowAllWrites || next.AllowAllWrites
+	merged.RunLocal = existing.RunLocal || next.RunLocal
 	return merged
 }

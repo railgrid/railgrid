@@ -22,18 +22,31 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/cloudwego/eino-examples/adk/common/tool/graphtool"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
-const projectAssistantWorkflowMaxResultBytes = 4096
+const (
+	projectAssistantWorkflowMaxResultBytes = 4096
+
+	// These composite read-only workflows collapse deterministic inspection
+	// phases into one model-selected tool call. They intentionally leave
+	// select_project_template as its existing guarded write tool.
+	projectToolInspectDevelopmentTemplates = "inspect_development_templates"
+	// Do not reuse verify_project_runtime: repository_flow_test reserves that
+	// name for a removed legacy runtime-command API.
+	projectToolVerifyDevelopmentRuntime = "verify_development_runtime"
+)
 
 type projectAssistantWorkflowInput struct {
 	Server         *Server
@@ -64,6 +77,44 @@ type projectAssistantWorkflowToolInput struct {
 }
 
 type projectAssistantRuntimeStatusToolInput struct{}
+
+type projectAssistantTemplateInspectionToolInput struct{}
+
+type projectAssistantTemplateCatalog struct {
+	Items              []unstructured.Unstructured
+	UnavailableSummary string
+}
+
+type projectAssistantTemplateCandidate struct {
+	Name        string            `json:"name"`
+	DisplayName string            `json:"displayName,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Category    string            `json:"category,omitempty"`
+	AgentUsage  string            `json:"agentUsage,omitempty"`
+	Components  map[string]string `json:"components"`
+}
+
+type projectAssistantTemplateInspectionResult struct {
+	Status    string                              `json:"status"`
+	Summary   string                              `json:"summary"`
+	Templates []projectAssistantTemplateCandidate `json:"templates,omitempty"`
+}
+
+type projectAssistantRuntimeVerificationToolInput struct {
+	IncludeFiles *bool `json:"includeFiles,omitempty" jsonschema_description:"Whether to include a bounded current workspace file list in the readiness result. Defaults to true."`
+	MaxFiles     int   `json:"maxFiles,omitempty" jsonschema_description:"Maximum workspace file paths to include when includeFiles is true."`
+	IncludeLogs  *bool `json:"includeLogs,omitempty" jsonschema_description:"Whether to include bounded runtime logs when a deployed runtime is not ready. Defaults to true."`
+	TailLines    int   `json:"tailLines,omitempty" jsonschema_description:"Maximum trailing runtime log lines when logs are needed (default 40, maximum 100)."`
+}
+
+type projectAssistantRuntimeVerificationResult struct {
+	Status     string                                   `json:"status"`
+	Summary    string                                   `json:"summary"`
+	Readiness  *projectAssistantReadinessWorkflowResult `json:"readiness,omitempty"`
+	Runtime    *projectAssistantRuntimeWorkflowResult   `json:"runtime,omitempty"`
+	PreviewURL string                                   `json:"previewURL,omitempty"`
+	Logs       *projectAssistantRuntimeLogsResult       `json:"logs,omitempty"`
+}
 
 type projectAssistantWorkflowContext struct {
 	Project        *aiv1alpha1.Project
@@ -174,14 +225,20 @@ func projectAssistantWorkflowToolSpecs() []projectAssistantToolSpec {
 			Risk:        projectAssistantToolRiskRead,
 		},
 		{
+			Name:        projectToolInspectDevelopmentTemplates,
+			Description: "Inspect every development-capable infrastructure template available to this project in one read. Use this before choosing a template for a project that has none; it does not bind or change a template.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+			Risk:        projectAssistantToolRiskRead,
+		},
+		{
 			Name:        projectToolGetRuntimeStatus,
-			Description: "Return the live development runtime status for this project: whether the sandbox is provisioning, starting, serving preview traffic, or not deployed.",
+			Description: "Return the live development runtime status for this project: whether the environment is provisioning, the preview edge is reachable, the status source is unavailable, or nothing is deployed.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			Risk:        projectAssistantToolRiskRead,
 		},
 		{
 			Name:        projectToolGetPreviewURL,
-			Description: "Return the live development preview URL for this project when the sandbox is serving traffic, or the reason it is not ready yet.",
+			Description: "Return the live development preview URL for this project when its public edge is reachable, or the reason it is not available yet.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			Risk:        projectAssistantToolRiskRead,
 		},
@@ -192,8 +249,14 @@ func projectAssistantWorkflowToolSpecs() []projectAssistantToolSpec {
 			Risk:        projectAssistantToolRiskRead,
 		},
 		{
+			Name:        projectToolVerifyDevelopmentRuntime,
+			Description: "Run post-edit verification in one read: project readiness, live runtime status, preview URL, and diagnostic logs only when the runtime state warrants them.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"includeFiles":{"type":"boolean","description":"Whether to include a bounded current workspace file list in readiness."},"maxFiles":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum workspace file paths to include."},"includeLogs":{"type":"boolean","description":"Whether to include bounded runtime logs when a deployed runtime is not ready."},"tailLines":{"type":"integer","minimum":1,"maximum":100,"description":"Maximum trailing runtime log lines when logs are needed."}}}`),
+			Risk:        projectAssistantToolRiskRead,
+		},
+		{
 			Name:        projectToolRestartRuntime,
-			Description: "Restart the development runtime's dev process so it picks up new files or configuration. Use this to recover a sandbox that is stuck or crash-looping.",
+			Description: "Restart the development runtime only when verification shows the latest process is still stuck or crash-looping. Workspace writes already synchronize and restart the process; do not use this for ordinary edits, provisioning, or stale pre-ready log errors.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			Risk:        projectAssistantToolRiskRuntime,
 		},
@@ -243,12 +306,16 @@ func newProjectAssistantGraphWorkflowTool(spec projectAssistantToolSpec, runCtx 
 		return newProjectAssistantReadinessGraphTool(runCtx)
 	case projectToolPrepareProjectDeployment:
 		return newProjectAssistantPrepareDeploymentGraphTool(runCtx)
+	case projectToolInspectDevelopmentTemplates:
+		return newProjectAssistantInspectDevelopmentTemplatesGraphTool(runCtx)
 	case projectToolGetRuntimeStatus:
 		return newProjectAssistantRuntimeStatusGraphTool(runCtx)
 	case projectToolGetPreviewURL:
 		return newProjectAssistantPreviewURLGraphTool(runCtx)
 	case projectToolGetRuntimeLogs:
 		return newProjectAssistantRuntimeLogsGraphTool(runCtx)
+	case projectToolVerifyDevelopmentRuntime:
+		return newProjectAssistantVerifyRuntimeGraphTool(runCtx)
 	case projectToolRestartRuntime:
 		return newProjectAssistantRestartRuntimeGraphTool(runCtx)
 	case projectToolSetRuntimeEnv:
@@ -320,6 +387,108 @@ func newProjectAssistantPrepareDeploymentGraphTool(runCtx projectAssistantWorkfl
 		"Prepare deterministic App Studio deployment handoff context from project memory, repository status, workspace files, build checks, and runtime handoff constraints.",
 		compose.WithGraphName("app-studio-prepare-project-deployment"),
 	)
+}
+
+func newProjectAssistantInspectDevelopmentTemplatesGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
+	workflow := compose.NewWorkflow[*projectAssistantTemplateInspectionToolInput, *projectAssistantTemplateInspectionResult]()
+	workflow.AddLambdaNode("list-development-templates", compose.InvokableLambda(listProjectAssistantDevelopmentTemplates(runCtx))).
+		AddInput(compose.START)
+	workflow.AddLambdaNode("filter-development-templates", compose.InvokableLambda(filterProjectAssistantDevelopmentTemplates)).
+		AddInput("list-development-templates")
+	workflow.End().AddInput("filter-development-templates")
+	return graphtool.NewInvokableGraphTool(
+		workflow,
+		projectToolInspectDevelopmentTemplates,
+		"Inspect every development-capable infrastructure template available to this project in one read. This does not bind or change a template.",
+		compose.WithGraphName("app-studio-inspect-development-templates"),
+	)
+}
+
+func listProjectAssistantDevelopmentTemplates(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantTemplateInspectionToolInput) (*projectAssistantTemplateCatalog, error) {
+	return func(ctx context.Context, _ *projectAssistantTemplateInspectionToolInput) (*projectAssistantTemplateCatalog, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if runCtx.Client == nil {
+			return &projectAssistantTemplateCatalog{
+				UnavailableSummary: "Development template catalog is unavailable because no project client is configured for this run.",
+			}, nil
+		}
+		list, err := runCtx.Client.Resource(templateResource, "").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return &projectAssistantTemplateCatalog{
+				UnavailableSummary: "Development template catalog is temporarily unavailable: " + truncateProjectToolInfo(err.Error()),
+			}, nil
+		}
+		return &projectAssistantTemplateCatalog{Items: list.Items}, nil
+	}
+}
+
+func filterProjectAssistantDevelopmentTemplates(ctx context.Context, catalog *projectAssistantTemplateCatalog) (*projectAssistantTemplateInspectionResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if catalog == nil {
+		return nil, errors.New("development template catalog result is required")
+	}
+	if catalog.UnavailableSummary != "" {
+		return &projectAssistantTemplateInspectionResult{
+			Status:  "unavailable",
+			Summary: catalog.UnavailableSummary,
+		}, nil
+	}
+	candidates := make([]projectAssistantTemplateCandidate, 0, len(catalog.Items))
+	for i := range catalog.Items {
+		obj := &catalog.Items[i]
+		info, err := projectTemplateInfoFromUnstructured(obj)
+		if err != nil || len(info.Components) == 0 {
+			continue
+		}
+		displayName, _, _ := unstructured.NestedString(obj.Object, "spec", "displayName")
+		description, _, _ := unstructured.NestedString(obj.Object, "spec", "description")
+		category, _, _ := unstructured.NestedString(obj.Object, "spec", "category")
+		usage, _, _ := unstructured.NestedString(obj.Object, "spec", "agent", "usage")
+		candidates = append(candidates, projectAssistantTemplateCandidate{
+			Name:        info.Name,
+			DisplayName: trimProjectAssistantWorkflowString(displayName, 80),
+			Description: trimProjectAssistantWorkflowString(description, 160),
+			Category:    trimProjectAssistantWorkflowString(category, 40),
+			AgentUsage:  trimProjectAssistantWorkflowString(usage, 160),
+			Components:  boundedProjectAssistantTemplateComponents(info.Components),
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Name < candidates[j].Name })
+	if len(candidates) == 0 {
+		return &projectAssistantTemplateInspectionResult{
+			Status:    "empty",
+			Summary:   "No development-capable infrastructure templates are available in this workspace.",
+			Templates: candidates,
+		}, nil
+	}
+	return &projectAssistantTemplateInspectionResult{
+		Status:    "ok",
+		Summary:   fmt.Sprintf("Found %d development-capable template(s). Choose one deliberately, then call select_project_template.", len(candidates)),
+		Templates: candidates,
+	}, nil
+}
+
+func boundedProjectAssistantTemplateComponents(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(src))
+	for name := range src {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) > 4 {
+		names = names[:4]
+	}
+	out := make(map[string]string, len(names))
+	for _, name := range names {
+		out[trimProjectAssistantWorkflowString(name, 48)] = trimProjectAssistantWorkflowString(src[name], 80)
+	}
+	return out
 }
 
 func newProjectAssistantRuntimeStatusGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
@@ -616,7 +785,6 @@ func formatProjectAssistantReadinessWorkflowResult(ctx context.Context, input pr
 	return result, nil
 }
 
-
 func formatProjectAssistantRuntimeStatusResult(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (*projectAssistantRuntimeWorkflowResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -629,9 +797,9 @@ func formatProjectAssistantRuntimeStatusResult(ctx context.Context, input projec
 	preview := input.RuntimePreview
 	if preview.Ready {
 		return &projectAssistantRuntimeWorkflowResult{
-			Status:     "ready",
-			Summary:    "Development runtime is running and serving preview traffic.",
-			Runtime:    &projectAssistantDeploymentRuntime{Status: "ready", URL: preview.PreviewURL},
+			Status:     "reachable",
+			Summary:    "The development preview edge is reachable. Application-level readiness is not independently reported by the current runtime contract.",
+			Runtime:    &projectAssistantDeploymentRuntime{Status: "reachable", URL: preview.PreviewURL},
 			PreviewURL: preview.PreviewURL,
 		}, nil
 	}
@@ -642,13 +810,22 @@ func formatProjectAssistantRuntimeStatusResult(ctx context.Context, input projec
 	if reason := strings.TrimSpace(preview.Reason); reason != "" {
 		message = fmt.Sprintf("%s (reason: %s)", message, reason)
 	}
+	if strings.TrimSpace(preview.Reason) == "runtime_unavailable" {
+		return &projectAssistantRuntimeWorkflowResult{
+			Status:  "unavailable",
+			Summary: message,
+			Runtime: &projectAssistantDeploymentRuntime{Status: "unavailable", Message: message},
+			NextSteps: []string{
+				"Retry verify_development_runtime after the runtime status source becomes available.",
+			},
+		}, nil
+	}
 	return &projectAssistantRuntimeWorkflowResult{
 		Status:  "provisioning",
 		Summary: message,
 		Runtime: &projectAssistantDeploymentRuntime{Status: "starting", Message: message},
 		NextSteps: []string{
-			"Use get_runtime_logs to inspect the dev process startup output and find why it is not serving traffic yet.",
-			"If the process is crash-looping (for example a missing required environment variable), fix the cause and use restart_runtime.",
+			"Re-run verify_development_runtime after the development environment finishes provisioning.",
 		},
 	}, nil
 }
@@ -663,9 +840,9 @@ func formatProjectAssistantPreviewURLResult(ctx context.Context, input projectAs
 		preview := input.RuntimePreview
 		if preview.Ready && strings.TrimSpace(preview.PreviewURL) != "" {
 			return &projectAssistantRuntimeWorkflowResult{
-				Status:     "ready",
+				Status:     "available",
 				Summary:    "Development preview URL is available.",
-				Runtime:    &projectAssistantDeploymentRuntime{Status: "ready", URL: preview.PreviewURL},
+				Runtime:    &projectAssistantDeploymentRuntime{Status: "reachable", URL: preview.PreviewURL},
 				PreviewURL: preview.PreviewURL,
 			}, nil
 		}

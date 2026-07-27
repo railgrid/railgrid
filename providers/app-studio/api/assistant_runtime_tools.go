@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -124,6 +125,163 @@ func newProjectAssistantRuntimeLogsGraphTool(runCtx projectAssistantWorkflowRunC
 	)
 }
 
+func newProjectAssistantVerifyRuntimeGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
+	workflow := compose.NewWorkflow[*projectAssistantRuntimeVerificationToolInput, *projectAssistantRuntimeVerificationResult]()
+	workflow.AddLambdaNode("collect-project-readiness", compose.InvokableLambda(collectProjectAssistantRuntimeReadiness(runCtx))).
+		AddInput(compose.START)
+	workflow.AddLambdaNode("resolve-development-runtime", compose.InvokableLambda(resolveProjectAssistantRuntimeVerification(runCtx))).
+		AddInput("collect-project-readiness")
+	workflow.AddLambdaNode("collect-diagnostic-logs", compose.InvokableLambda(collectProjectAssistantRuntimeVerificationLogs(runCtx))).
+		AddInput("resolve-development-runtime")
+	workflow.AddLambdaNode("format-runtime-verification", compose.InvokableLambda(formatProjectAssistantRuntimeVerification)).
+		AddInput("collect-diagnostic-logs")
+	workflow.End().AddInput("format-runtime-verification")
+	return graphtool.NewInvokableGraphTool(
+		workflow,
+		projectToolVerifyDevelopmentRuntime,
+		"Run post-edit verification in one read: project readiness, live runtime status, preview URL, and diagnostic logs only when the runtime state warrants them.",
+		compose.WithGraphName("app-studio-verify-project-runtime"),
+	)
+}
+
+type projectAssistantRuntimeVerificationContext struct {
+	Args         *projectAssistantRuntimeVerificationToolInput
+	Readiness    *projectAssistantReadinessWorkflowResult
+	RuntimeInput projectAssistantRuntimeWorkflowInput
+	Runtime      *projectAssistantRuntimeWorkflowResult
+	Logs         *projectAssistantRuntimeLogsResult
+}
+
+func collectProjectAssistantRuntimeReadiness(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationToolInput) (*projectAssistantRuntimeVerificationContext, error) {
+	return func(ctx context.Context, args *projectAssistantRuntimeVerificationToolInput) (*projectAssistantRuntimeVerificationContext, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		readinessInput, err := projectAssistantWorkflowInputFromTool(runCtx, true)(ctx, &projectAssistantWorkflowToolInput{
+			IncludeFiles: runtimeVerificationIncludeFiles(args),
+			MaxFiles:     runtimeVerificationMaxFiles(args),
+		})
+		if err != nil {
+			return nil, err
+		}
+		readinessContext, err := readProjectAssistantReadinessWorkflowContext(ctx, readinessInput)
+		if err != nil {
+			return nil, err
+		}
+		readiness, err := formatProjectAssistantReadinessWorkflowResult(ctx, readinessContext)
+		if err != nil {
+			return nil, err
+		}
+		return &projectAssistantRuntimeVerificationContext{Args: args, Readiness: readiness}, nil
+	}
+}
+
+func resolveProjectAssistantRuntimeVerification(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
+	return func(ctx context.Context, input *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
+		if input == nil {
+			return nil, errors.New("runtime verification context is required")
+		}
+		runtimeInput, err := projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx)(ctx, &projectAssistantRuntimeStatusToolInput{})
+		if err != nil {
+			return nil, err
+		}
+		runtime, err := formatProjectAssistantRuntimeStatusResult(ctx, runtimeInput)
+		if err != nil {
+			return nil, err
+		}
+		input.RuntimeInput = runtimeInput
+		input.Runtime = runtime
+		return input, nil
+	}
+}
+
+func collectProjectAssistantRuntimeVerificationLogs(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
+	return func(ctx context.Context, input *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
+		if input == nil || input.Runtime == nil {
+			return nil, errors.New("resolved runtime verification context is required")
+		}
+		if !runtimeVerificationShouldCollectLogs(input.Args, input.RuntimeInput) {
+			return input, nil
+		}
+		logs, err := fetchProjectAssistantRuntimeLogs(runCtx)(ctx, &projectAssistantRuntimeLogsToolInput{TailLines: runtimeVerificationTailLines(input.Args)})
+		if err != nil {
+			return nil, err
+		}
+		input.Logs = boundedProjectAssistantRuntimeLogs(logs)
+		return input, nil
+	}
+}
+
+func formatProjectAssistantRuntimeVerification(ctx context.Context, input *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if input == nil || input.Runtime == nil {
+		return nil, errors.New("resolved runtime verification context is required")
+	}
+	return &projectAssistantRuntimeVerificationResult{
+		Status:     input.Runtime.Status,
+		Summary:    input.Runtime.Summary,
+		Readiness:  input.Readiness,
+		Runtime:    input.Runtime,
+		PreviewURL: input.Runtime.PreviewURL,
+		Logs:       input.Logs,
+	}, nil
+}
+
+func runtimeVerificationShouldCollectLogs(args *projectAssistantRuntimeVerificationToolInput, input projectAssistantRuntimeWorkflowInput) bool {
+	if !runtimeVerificationIncludeLogs(args) || !input.RuntimeHasBinding {
+		return false
+	}
+	switch strings.TrimSpace(input.RuntimePreview.Reason) {
+	case "development_instance_not_found", "development_url_not_ready", previewReasonEdgeProvisioning, "runtime_unavailable":
+		return false
+	default:
+		return true
+	}
+}
+
+func runtimeVerificationIncludeFiles(args *projectAssistantRuntimeVerificationToolInput) *bool {
+	if args != nil && args.IncludeFiles != nil {
+		return args.IncludeFiles
+	}
+	include := true
+	return &include
+}
+
+func runtimeVerificationMaxFiles(args *projectAssistantRuntimeVerificationToolInput) int {
+	if args == nil || args.MaxFiles <= 0 {
+		return 20
+	}
+	return args.MaxFiles
+}
+
+func runtimeVerificationIncludeLogs(args *projectAssistantRuntimeVerificationToolInput) bool {
+	return args == nil || args.IncludeLogs == nil || *args.IncludeLogs
+}
+
+func runtimeVerificationTailLines(args *projectAssistantRuntimeVerificationToolInput) int {
+	if args == nil || args.TailLines <= 0 {
+		return 40
+	}
+	if args.TailLines > 100 {
+		return 100
+	}
+	return args.TailLines
+}
+
+func boundedProjectAssistantRuntimeLogs(logs *projectAssistantRuntimeLogsResult) *projectAssistantRuntimeLogsResult {
+	if logs == nil {
+		return nil
+	}
+	out := *logs
+	out.Summary = trimProjectAssistantWorkflowString(out.Summary, 240)
+	out.Blockers = boundedProjectAssistantWorkflowStrings(out.Blockers, 4, 160)
+	out.NextSteps = boundedProjectAssistantWorkflowStrings(out.NextSteps, 4, 160)
+	out.Lines = boundedProjectAssistantWorkflowStrings(out.Lines, 20, 120)
+	return &out
+}
+
 func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeLogsToolInput) (*projectAssistantRuntimeLogsResult, error) {
 	return func(ctx context.Context, args *projectAssistantRuntimeLogsToolInput) (*projectAssistantRuntimeLogsResult, error) {
 		if err := ctx.Err(); err != nil {
@@ -206,7 +364,7 @@ func newProjectAssistantRestartRuntimeGraphTool(runCtx projectAssistantWorkflowR
 	innerTool, err := graphtool.NewInvokableGraphTool(
 		workflow,
 		projectToolRestartRuntime,
-		"Restart the development runtime's dev process so it picks up new files or configuration. Use this to recover a sandbox that is stuck or crash-looping. Pass component to restart a single component of a multi-component app.",
+		"Restart the development runtime only when verification shows the latest process is still stuck or crash-looping. Workspace writes already synchronize and restart the process; do not use this for ordinary edits, provisioning, or stale pre-ready log errors. Pass component to restart one component of a multi-component app.",
 		compose.WithGraphName("app-studio-restart-runtime"),
 	)
 	if err != nil {

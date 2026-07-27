@@ -50,8 +50,9 @@ const (
 
 // previewEdgeReady reports whether url is actually served at the edge. The
 // probe function is injectable for tests (s.previewEdgeProbe); the default
-// performs a real HTTPS request with certificate verification ON — an
-// unprovisioned certificate MUST fail this check, that is the signal.
+// performs a real HTTPS request. Production keeps certificate verification
+// on. Local development can reuse the server's explicit insecure-TLS setting
+// because the local Gateway terminates with a self-signed certificate.
 func (s *Server) previewEdgeReady(ctx context.Context, url string) bool {
 	if _, ok := s.edgeReadyURLs.Load(url); ok {
 		return true
@@ -70,7 +71,20 @@ func (s *Server) previewEdgeProbeHook() func(context.Context, string) error {
 	if s.previewEdgeProbe != nil {
 		return s.previewEdgeProbe
 	}
+	if s.previewInsecureSkipTLSVerify {
+		return insecurePreviewEdgeProbe
+	}
 	return defaultPreviewEdgeProbe
+}
+
+// SetPreviewInsecureSkipTLSVerify allows an explicitly configured local
+// development environment to probe its self-signed preview Gateway. It is
+// intentionally separate from the internal hub/MCP TLS setting so production
+// preview hostnames retain certificate verification by default.
+func (s *Server) SetPreviewInsecureSkipTLSVerify(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.previewInsecureSkipTLSVerify = enabled
 }
 
 // SetPreviewEdgeProbe overrides the edge probe (tests).
@@ -89,6 +103,14 @@ func (s *Server) SetPreviewEdgeProbe(probe func(context.Context, string) error) 
 // server) all count as served: the dev-runtime data plane owns app
 // readiness, this probe owns the edge.
 func defaultPreviewEdgeProbe(ctx context.Context, url string) error {
+	return probePreviewEdge(ctx, url, false)
+}
+
+func insecurePreviewEdgeProbe(ctx context.Context, url string) error {
+	return probePreviewEdge(ctx, url, true)
+}
+
+func probePreviewEdge(ctx context.Context, url string, insecureSkipTLSVerify bool) error {
 	ctx, cancel := context.WithTimeout(ctx, previewEdgeProbeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -96,7 +118,8 @@ func defaultPreviewEdgeProbe(ctx context.Context, url string) error {
 		return err
 	}
 	client := &http.Client{
-		Timeout: previewEdgeProbeTimeout,
+		Timeout:   previewEdgeProbeTimeout,
+		Transport: projectMCPTransport(insecureSkipTLSVerify),
 		// Don't chase the app's redirects — the first edge answer decides.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}

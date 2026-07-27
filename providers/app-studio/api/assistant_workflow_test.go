@@ -24,8 +24,10 @@ import (
 	"testing"
 
 	einotool "github.com/cloudwego/eino/components/tool"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
@@ -48,14 +50,205 @@ func TestProjectAssistantWorkflowToolsAreEinoGraphTools(t *testing.T) {
 		projectToolPlanProjectChanges,
 		projectToolCheckProjectReadiness,
 		projectToolPrepareProjectDeployment,
+		projectToolInspectDevelopmentTemplates,
 		projectToolGetRuntimeStatus,
 		projectToolGetPreviewURL,
+		projectToolVerifyDevelopmentRuntime,
 	} {
 		tool := einoToolByNameForTest(t, tools, toolName)
 		toolType := reflect.TypeOf(tool).String()
 		if !strings.Contains(toolType, "graphtool.InvokableGraphTool") {
 			t.Fatalf("%s tool type = %s, want Eino graphtool.InvokableGraphTool", toolName, toolType)
 		}
+	}
+}
+
+func TestProjectAssistantInspectDevelopmentTemplatesGraphToolFiltersAndBoundsCatalog(t *testing.T) {
+	withDev := applicationTemplateObject()
+	_ = unstructured.SetNestedField(withDev.Object, "Simple application", "spec", "displayName")
+	_ = unstructured.SetNestedField(withDev.Object, "A development-capable application", "spec", "description")
+	_ = unstructured.SetNestedField(withDev.Object, "Use this for a simple app.", "spec", "agent", "usage")
+	prodOnly := applicationTemplateObject()
+	prodOnly.SetName("database")
+	unstructured.RemoveNestedField(prodOnly.Object, "spec", "development")
+	broken := applicationTemplateObject()
+	broken.SetName("broken")
+	unstructured.RemoveNestedField(broken.Object, "spec", "instanceCRD", "kind")
+
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	req := projectAssistantRunRequest{
+		Identity:       identity{orgUUID: "org-a", workspaceUUID: "ws-1"},
+		Client:         asclient.NewFromDynamic(templateCatalogDynamicClient{items: []unstructured.Unstructured{*broken, *prodOnly, *withDev}}),
+		Project:        project,
+		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: project.Name},
+		TurnProfile:    projectAssistantTurnProfileImplementation,
+		TurnPolicy:     projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
+	}
+	tools, err := newProjectEinoAssistantToolsFactory(server)(context.Background(), req, newProjectEinoAssistantRunState())
+	if err != nil {
+		t.Fatalf("new tools returned error: %v", err)
+	}
+	tool := einoToolByNameForTest(t, tools, projectToolInspectDevelopmentTemplates)
+	invokable, ok := tool.(einotool.InvokableTool)
+	if !ok {
+		t.Fatalf("%T does not implement InvokableTool", tool)
+	}
+	raw, err := invokable.InvokableRun(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("InvokableRun returned error: %v", err)
+	}
+	var result projectAssistantTemplateInspectionResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, raw)
+	}
+	if result.Status != "ok" || len(result.Templates) != 1 {
+		t.Fatalf("result = %#v, want one valid template", result)
+	}
+	candidate := result.Templates[0]
+	if candidate.Name != "application" || candidate.DisplayName != "Simple application" || candidate.AgentUsage != "Use this for a simple app." {
+		t.Fatalf("candidate = %#v, want surfaced catalog metadata", candidate)
+	}
+	if len(candidate.Components) != 2 || candidate.Components["frontend"] != "web" {
+		t.Fatalf("components = %#v, want development component map", candidate.Components)
+	}
+	if project.Spec.Template != nil {
+		t.Fatalf("inspection mutated project template = %#v", project.Spec.Template)
+	}
+}
+
+func TestProjectAssistantInspectDevelopmentTemplatesGraphToolReturnsEveryEligibleTemplate(t *testing.T) {
+	templates := make([]unstructured.Unstructured, 0, 4)
+	for _, name := range []string{"zeta", "alpha", "delta", "beta"} {
+		template := applicationTemplateObject()
+		template.SetName(name)
+		templates = append(templates, *template)
+	}
+
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	req := projectAssistantRunRequest{
+		Identity:       identity{orgUUID: "org-a", workspaceUUID: "ws-1"},
+		Client:         asclient.NewFromDynamic(templateCatalogDynamicClient{items: templates}),
+		Project:        project,
+		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: project.Name},
+		TurnProfile:    projectAssistantTurnProfileImplementation,
+		TurnPolicy:     projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
+	}
+	tools, err := newProjectEinoAssistantToolsFactory(server)(context.Background(), req, newProjectEinoAssistantRunState())
+	if err != nil {
+		t.Fatalf("new tools returned error: %v", err)
+	}
+	invokable := einoToolByNameForTest(t, tools, projectToolInspectDevelopmentTemplates).(einotool.InvokableTool)
+	raw, err := invokable.InvokableRun(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("InvokableRun returned error: %v", err)
+	}
+	var result projectAssistantTemplateInspectionResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, raw)
+	}
+	if len(result.Templates) != 4 {
+		t.Fatalf("templates = %#v, want every eligible template", result.Templates)
+	}
+	got := []string{result.Templates[0].Name, result.Templates[1].Name, result.Templates[2].Name, result.Templates[3].Name}
+	if want := []string{"alpha", "beta", "delta", "zeta"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("template names = %#v, want %#v", got, want)
+	}
+}
+
+func TestProjectAssistantRuntimeStatusRequiresApplicationResponse(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeStatusResult(context.Background(), projectAssistantRuntimeWorkflowInput{
+		Project:           &aiv1alpha1.Project{},
+		RuntimeResolved:   true,
+		RuntimeHasBinding: true,
+		RuntimePreview:    projectSandboxPreviewURLResponse{Ready: true, PreviewURL: "https://app.example.com"},
+	})
+	if err != nil {
+		t.Fatalf("formatProjectAssistantRuntimeStatusResult returned error: %v", err)
+	}
+	if result.Status == "ready" {
+		t.Fatalf("status = %q, edge reachability must not imply application readiness", result.Status)
+	}
+	for _, step := range result.NextSteps {
+		if strings.Contains(step, projectToolRestartRuntime) {
+			t.Fatalf("next steps recommend an unproven runtime restart: %#v", result.NextSteps)
+		}
+	}
+}
+
+func TestProjectAssistantRuntimeProvisioningDoesNotSuggestRestartOrFetchLogs(t *testing.T) {
+	reasons := []string{"development_instance_not_found", "development_url_not_ready", previewReasonEdgeProvisioning, "runtime_unavailable"}
+	for _, reason := range reasons {
+		t.Run(reason, func(t *testing.T) {
+			input := projectAssistantRuntimeWorkflowInput{
+				Project:           &aiv1alpha1.Project{},
+				RuntimeResolved:   true,
+				RuntimeHasBinding: true,
+				RuntimePreview: projectSandboxPreviewURLResponse{
+					Reason:  reason,
+					Message: "Development environment is still converging.",
+				},
+			}
+			result, err := formatProjectAssistantRuntimeStatusResult(context.Background(), input)
+			if err != nil {
+				t.Fatalf("formatProjectAssistantRuntimeStatusResult returned error: %v", err)
+			}
+			if reason == "runtime_unavailable" && result.Status != "unavailable" {
+				t.Fatalf("status = %q, want unavailable", result.Status)
+			}
+			if reason != "runtime_unavailable" && result.Status != "provisioning" {
+				t.Fatalf("status = %q, want provisioning", result.Status)
+			}
+			for _, step := range result.NextSteps {
+				if strings.Contains(step, projectToolRestartRuntime) {
+					t.Fatalf("next steps recommend an unproven runtime restart: %#v", result.NextSteps)
+				}
+			}
+			if runtimeVerificationShouldCollectLogs(nil, input) {
+				t.Fatal("known provisioning state should not fetch diagnostic logs")
+			}
+		})
+	}
+}
+
+func TestProjectAssistantRuntimeVerificationCollectsLogsWhenPreviewEdgeIsReachable(t *testing.T) {
+	input := projectAssistantRuntimeWorkflowInput{
+		Project:           &aiv1alpha1.Project{},
+		RuntimeResolved:   true,
+		RuntimeHasBinding: true,
+		RuntimePreview: projectSandboxPreviewURLResponse{
+			Ready:      true,
+			PreviewURL: "https://app.example.com",
+		},
+	}
+	if !runtimeVerificationShouldCollectLogs(nil, input) {
+		t.Fatal("reachable preview should collect runtime logs for application-level diagnostics")
+	}
+}
+
+func TestProjectAssistantVerifyRuntimeGraphToolReturnsReadinessAndNoLogsWithoutBinding(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	project.Spec.DisplayName = "Demo"
+	project.Spec.Memory.Requirements = []string{"Show a working page"}
+	repo := &ProjectRepositoryView{Ref: "demo", Name: "demo", Status: projectRepositoryStatusReady}
+	resultRaw := invokeProjectAssistantWorkflowGraphTool(t, server, identity{orgUUID: "org-a", workspaceUUID: "ws-1"}, projectToolVerifyDevelopmentRuntime, project, repo, workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: project.Name}, map[string]any{})
+	var result projectAssistantRuntimeVerificationResult
+	if err := json.Unmarshal([]byte(resultRaw), &result); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, resultRaw)
+	}
+	if result.Readiness == nil || result.Readiness.Status != "needs_workspace_context" {
+		t.Fatalf("readiness = %#v, want workspace context requirement", result.Readiness)
+	}
+	if result.Runtime == nil || result.Runtime.Status != "not_configured" {
+		t.Fatalf("runtime = %#v, want not_configured without runtime client/binding", result.Runtime)
+	}
+	if result.Logs != nil {
+		t.Fatalf("logs = %#v, want no data-plane log call without binding", result.Logs)
 	}
 }
 

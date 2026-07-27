@@ -365,6 +365,98 @@ func (s *PostgresStore) SaveAssistantRun(ctx context.Context, scope Scope, run A
 	return nil
 }
 
+func (s *PostgresStore) CompareAndSwapAssistantRun(
+	ctx context.Context,
+	scope Scope,
+	run AssistantRun,
+	expectedRequestID string,
+) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	if run.ID == "" {
+		return fmt.Errorf("assistant run id is required")
+	}
+	if run.Status == "" {
+		return fmt.Errorf("assistant run status is required")
+	}
+	if run.CreatedAt.IsZero() {
+		run.CreatedAt = time.Now().UTC()
+	}
+	if run.UpdatedAt.IsZero() {
+		run.UpdatedAt = run.CreatedAt
+	}
+	run.ProjectName = scope.ProjectName
+	checkpoint := run.Checkpoint
+	if len(checkpoint) == 0 {
+		checkpoint = json.RawMessage(`{}`)
+	}
+	normalizedCheckpoint, err := normalizePostgresJSONB(checkpoint)
+	if err != nil {
+		return fmt.Errorf("assistant run checkpoint is not valid json: %w", err)
+	}
+	audit := run.Audit
+	if len(audit) == 0 {
+		audit = json.RawMessage(`{}`)
+	}
+	normalizedAudit, err := normalizePostgresJSONB(audit)
+	if err != nil {
+		return fmt.Errorf("assistant run audit is not valid json: %w", err)
+	}
+
+	var result sql.Result
+	if expectedRequestID == "" {
+		result, err = s.db.ExecContext(ctx, `
+			INSERT INTO app_studio_assistant_runs (
+				org_uuid, workspace_uuid, project_name, run_id,
+				status, request_id, checkpoint, audit, created_at, updated_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			ON CONFLICT (org_uuid, workspace_uuid, project_name, run_id)
+			DO UPDATE SET
+				status = EXCLUDED.status,
+				request_id = EXCLUDED.request_id,
+				checkpoint = EXCLUDED.checkpoint,
+				audit = EXCLUDED.audit,
+				updated_at = EXCLUDED.updated_at
+			WHERE app_studio_assistant_runs.request_id = ''
+		`,
+			scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, run.ID,
+			run.Status, run.RequestID, string(normalizedCheckpoint), string(normalizedAudit), run.CreatedAt.UTC(), run.UpdatedAt.UTC(),
+		)
+	} else {
+		result, err = s.db.ExecContext(ctx, `
+			UPDATE app_studio_assistant_runs
+			SET status = $5,
+				request_id = $6,
+				checkpoint = $7,
+				audit = $8,
+				updated_at = $9
+			WHERE org_uuid = $1
+				AND workspace_uuid = $2
+				AND project_name = $3
+				AND run_id = $4
+				AND request_id = $10
+		`,
+			scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, run.ID,
+			run.Status, run.RequestID, string(normalizedCheckpoint), string(normalizedAudit), run.UpdatedAt.UTC(), expectedRequestID,
+		)
+	}
+	if err != nil {
+		return fmt.Errorf("compare and swap assistant run: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read compare and swap assistant run result: %w", err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("%w: assistant run %q", ErrAssistantRunConflict, run.ID)
+	}
+	return nil
+}
+
 func normalizePostgresJSONB(raw json.RawMessage) (json.RawMessage, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -461,7 +553,7 @@ func (s *PostgresStore) GetAssistantRun(ctx context.Context, scope Scope, id str
 	run, err := scanAssistantRun(row, scope.ProjectName)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return AssistantRun{}, fmt.Errorf("assistant run %q not found", id)
+			return AssistantRun{}, fmt.Errorf("%w: %q", ErrAssistantRunNotFound, id)
 		}
 		return AssistantRun{}, fmt.Errorf("get assistant run: %w", err)
 	}

@@ -299,6 +299,12 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				if err != nil {
 					return "", err
 				}
+				// Every Eino tool wrapper for this run shares req.Project, and
+				// the tool node executes calls sequentially. Preserve that
+				// pointer while replacing its stale pre-selection contents so
+				// this and subsequent workspace mutations sync to the selected
+				// development target.
+				refreshProjectToolSnapshot(req.Project, updated)
 				// Wire the CI build into the repository now that a template is
 				// bound (best-effort; a no-op without a repository).
 				_, _ = server.ensureProjectBuildConfig(ctx, req.Identity, updated, req.HTTPRequest)

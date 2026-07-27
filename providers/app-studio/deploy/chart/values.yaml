@@ -1,6 +1,9 @@
 nameOverride: ""
 fullnameOverride: ""
 
+# App Studio assistant project mutations use a single active writer. The chart
+# rejects other values and uses a Recreate deployment strategy to prevent
+# cross-pod overlap during upgrades.
 replicaCount: 1
 
 image:

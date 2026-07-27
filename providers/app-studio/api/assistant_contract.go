@@ -61,8 +61,13 @@ type projectAssistantRunRequest struct {
 	StreamCallbacks          projectAssistantStreamCallbacks
 	TurnProfile              projectAssistantTurnProfile
 	TurnPolicy               projectAssistantTurnPolicy
-	Continuation             *projectAssistantCheckpointState
-	AssistantRun             *store.AssistantRun
+	// InitialApprovedPlan is a run-local grant derived from the explicit
+	// prompt that created a fresh Project. It is never saved as a cross-turn
+	// plan grant; checkpoints retain it only while this initial run is active.
+	InitialApprovedPlan *projectAssistantApprovedPlan
+	Continuation        *projectAssistantCheckpointState
+	AssistantRun        *store.AssistantRun
+	auditRecorder       *projectAssistantRunAuditRecorder
 }
 
 type projectAssistantRunResult struct {

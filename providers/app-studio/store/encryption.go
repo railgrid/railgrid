@@ -203,6 +203,23 @@ func (s *encryptedStore) SaveAssistantRun(ctx context.Context, scope Scope, run 
 	return s.inner.SaveAssistantRun(ctx, scope, run)
 }
 
+func (s *encryptedStore) CompareAndSwapAssistantRun(ctx context.Context, scope Scope, run AssistantRun, expectedRequestID string) error {
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	checkpoint, err := s.encryptAssistantRunBlob(scope, run, "checkpoint", run.Checkpoint)
+	if err != nil {
+		return err
+	}
+	audit, err := s.encryptAssistantRunBlob(scope, run, "audit", run.Audit)
+	if err != nil {
+		return err
+	}
+	run.Checkpoint = checkpoint
+	run.Audit = audit
+	return s.inner.CompareAndSwapAssistantRun(ctx, scope, run, expectedRequestID)
+}
+
 func (s *encryptedStore) ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error) {
 	run, err := s.inner.ClaimAssistantRun(ctx, scope, id, requestID, now)
 	if err != nil {

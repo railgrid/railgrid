@@ -292,7 +292,7 @@ func (g *gqlResource) Patch(ctx context.Context, name string, _ types.PatchType,
 	if err := g.scope.ApplyStatus(ctx, obj); err != nil {
 		return nil, err
 	}
-	return obj, nil
+	return g.scope.Get(ctx, g.res, g.namespace, name)
 }
 
 func fromUnstructuredList[L any](u *unstructured.UnstructuredList) (*L, error) {

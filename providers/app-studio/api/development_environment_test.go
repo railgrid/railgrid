@@ -191,4 +191,3 @@ func (e *previewOverlayProbeEngine) ResumeProjectAssistant(context.Context, proj
 	return projectAssistantRunResult{}, fmt.Errorf("unexpected resume")
 }
 
-

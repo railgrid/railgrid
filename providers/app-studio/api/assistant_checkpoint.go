@@ -34,19 +34,20 @@ import (
 )
 
 type projectAssistantCheckpointState struct {
-	ToolCalls            []chatToolCall                       `json:"toolCalls"`
-	CurrentIndex         int                                  `json:"currentIndex"`
-	ProjectRepositoryRef string                               `json:"projectRepositoryRef,omitempty"`
-	TurnPolicy           projectAssistantCheckpointTurnPolicy `json:"turnPolicy"`
-	Messages             []chatMessage                        `json:"messages,omitempty"`
-	Turn                 int                                  `json:"turn,omitempty"`
-	SeenToolCalls        map[string]int                       `json:"seenToolCalls,omitempty"`
-	ForceTextAnswer      bool                                 `json:"forceTextAnswer,omitempty"`
-	RepeatedToolLoop     bool                                 `json:"repeatedToolLoop,omitempty"`
-	LastToolMessages     []chatMessage                        `json:"lastToolMessages,omitempty"`
-	ApprovedPlan         *projectAssistantApprovedPlan        `json:"approvedPlan,omitempty"`
-	SessionSnapshot      *projectEinoAssistantSessionSnapshot `json:"sessionSnapshot,omitempty"`
-	Eino                 *projectAssistantEinoCheckpointState `json:"eino,omitempty"`
+	ToolCalls                 []chatToolCall                       `json:"toolCalls"`
+	CurrentIndex              int                                  `json:"currentIndex"`
+	ProjectRepositoryRef      string                               `json:"projectRepositoryRef,omitempty"`
+	TurnPolicy                projectAssistantCheckpointTurnPolicy `json:"turnPolicy"`
+	Messages                  []chatMessage                        `json:"messages,omitempty"`
+	Turn                      int                                  `json:"turn,omitempty"`
+	SeenToolCalls             map[string]int                       `json:"seenToolCalls,omitempty"`
+	ForceTextAnswer           bool                                 `json:"forceTextAnswer,omitempty"`
+	RepeatedToolLoop          bool                                 `json:"repeatedToolLoop,omitempty"`
+	LastToolMessages          []chatMessage                        `json:"lastToolMessages,omitempty"`
+	ApprovedPlan              *projectAssistantApprovedPlan        `json:"approvedPlan,omitempty"`
+	ApprovedPlanGrantRevision string                               `json:"approvedPlanGrantRevision,omitempty"`
+	SessionSnapshot           *projectEinoAssistantSessionSnapshot `json:"sessionSnapshot,omitempty"`
+	Eino                      *projectAssistantEinoCheckpointState `json:"eino,omitempty"`
 }
 
 type projectAssistantCheckpointTurnPolicy struct {
@@ -87,7 +88,16 @@ type projectAssistantResumeResponse struct {
 }
 
 type projectAssistantRunAudit struct {
-	Decisions []projectAssistantPermissionAudit `json:"decisions,omitempty"`
+	Version          int                               `json:"version,omitempty"`
+	Provider         string                            `json:"provider,omitempty"`
+	Model            string                            `json:"model,omitempty"`
+	Profile          projectAssistantTurnProfile       `json:"profile,omitempty"`
+	StartedAt        time.Time                         `json:"startedAt,omitempty"`
+	PhaseTransitions []projectAssistantAuditPhase      `json:"phaseTransitions,omitempty"`
+	Tools            []projectAssistantAuditTool       `json:"tools,omitempty"`
+	Outcome          projectAssistantAuditOutcome      `json:"outcome,omitempty"`
+	DurationMS       int64                             `json:"durationMs,omitempty"`
+	Decisions        []projectAssistantPermissionAudit `json:"decisions,omitempty"`
 }
 
 type projectAssistantPermissionAudit struct {
@@ -96,9 +106,10 @@ type projectAssistantPermissionAudit struct {
 	Actor           string                             `json:"actor,omitempty"`
 	ToolCallID      string                             `json:"toolCallID,omitempty"`
 	ToolName        string                             `json:"toolName,omitempty"`
-	EditedArguments map[string]any                     `json:"editedArguments,omitempty"`
-	Result          string                             `json:"result,omitempty"`
-	Error           string                             `json:"error,omitempty"`
+	Reason          string                             `json:"reason,omitempty"`
+	EditedArguments map[string]any                     `json:"-"`
+	Result          string                             `json:"-"`
+	Error           string                             `json:"-"`
 	ResolvedAt      time.Time                          `json:"resolvedAt"`
 }
 
@@ -305,6 +316,49 @@ func projectAssistantFollowUpForEinoInterrupt(requestID string, info *projectEin
 }
 
 func projectAssistantPermissionReason(spec projectAssistantToolSpec) string {
+	return projectAssistantPermissionReasonForArguments(spec, nil)
+}
+
+func projectAssistantPermissionReasonForArguments(spec projectAssistantToolSpec, args map[string]any) string {
+	switch strings.TrimSpace(spec.Name) {
+	case projectToolSelectTemplate:
+		if template := projectToolString(args["template"]); template != "" {
+			return fmt.Sprintf("Bind this project to development template %q. Switching templates tears down and re-provisions the development environment; workspace files and Git history are preserved.", template)
+		}
+		return "Bind this project to the selected development template. Switching templates tears down and re-provisions the development environment; workspace files and Git history are preserved."
+	case projectToolRestartRuntime:
+		if component := projectToolString(args["component"]); component != "" {
+			return fmt.Sprintf("Restart development runtime component %q.", component)
+		}
+		return "Restart every component in this project's development runtime."
+	case projectToolSetRuntimeEnv:
+		count := 0
+		if env, ok := args["env"].(map[string]any); ok {
+			count = len(env)
+		}
+		if count > 0 {
+			return fmt.Sprintf("Set %d non-secret development runtime environment variable(s) and apply the requested restart behavior.", count)
+		}
+		return "Change non-secret development runtime environment variables and apply the requested restart behavior."
+	case projectToolRebuildProject:
+		if ref := projectToolString(args["ref"]); ref != "" {
+			return fmt.Sprintf("Re-run this project's build workflow for branch or ref %q without changing code.", ref)
+		}
+		return "Re-run this project's build workflow on the repository default branch without changing code."
+	case projectToolPromoteProject:
+		return "Deploy the current built project to its separate production environment."
+	case projectToolInfrastructureProvision:
+		template := projectToolString(args["template"])
+		name := projectToolString(args["name"])
+		switch {
+		case template != "" && name != "":
+			return fmt.Sprintf("Provision infrastructure instance %q from template %q.", name, template)
+		case template != "":
+			return fmt.Sprintf("Provision a new infrastructure instance from template %q.", template)
+		default:
+			return "Provision a new supporting infrastructure instance with the supplied configuration."
+		}
+	}
 	switch spec.Risk {
 	case projectAssistantToolRiskWrite:
 		return "This action will modify files in the App Studio workspace."
@@ -321,14 +375,17 @@ func projectAssistantPermissionReason(spec projectAssistantToolSpec) string {
 
 func projectAssistantPermissionForCall(requestID string, tc chatToolCall, spec projectAssistantToolSpec) projectAssistantPermission {
 	permissionInput := json.RawMessage(tc.Function.Arguments)
+	args := map[string]any{}
 	if !json.Valid(permissionInput) {
 		permissionInput = nil
+	} else {
+		_ = json.Unmarshal(permissionInput, &args)
 	}
 	return projectAssistantPermission{
 		ID:         requestID,
 		ToolCallID: tc.ID,
 		ToolName:   spec.Name,
-		Reason:     projectAssistantPermissionReason(spec),
+		Reason:     projectAssistantPermissionReasonForArguments(spec, args),
 		Input:      permissionInput,
 	}
 }
@@ -418,6 +475,10 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 		if err != nil {
 			return projectAssistantResumeResponse{}, err
 		}
+		run, err = finalizeProjectAssistantRunAudit(run, projectAssistantAuditOutcomeFailed, now)
+		if err != nil {
+			return projectAssistantResumeResponse{}, err
+		}
 		if saveErr := s.store.SaveAssistantRun(ctx, messageScope, run); saveErr != nil {
 			return projectAssistantResumeResponse{}, saveErr
 		}
@@ -491,6 +552,20 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	turn.AssistantMessageID = strings.TrimSpace(resumeReq.AssistantMessageID)
 	ctx, finishTurn := s.projectAssistantRunManager().Begin(ctx, turn)
 	defer finishTurn()
+	if cause := context.Cause(ctx); cause != nil {
+		return s.completeClaimedProjectAssistantRunAfterResumeError(
+			ctx,
+			messageScope,
+			run,
+			state,
+			resumeReq,
+			decision,
+			id.user,
+			out,
+			nil,
+			cause,
+		)
+	}
 	if r != nil {
 		r = r.WithContext(ctx)
 	}
@@ -615,6 +690,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	currentRequestID := run.RequestID
 	currentToolCallID := strings.TrimSpace(state.Eino.ToolCallID)
 	result, err := s.projectAssistantEngine().ResumeProjectAssistant(ctx, engineReq, resumeReq, state)
+	run.Audit = append([]byte(nil), resumeRun.Audit...)
 	currentToolCall := projectAssistantResumeToolCall(streamedToolCalls, currentToolCallID)
 	out.ToolCall = currentToolCall
 	out.Result = projectAssistantResumeToolResult(result.Content, currentToolCall)
@@ -857,7 +933,10 @@ func (s *Server) completeClaimedProjectAssistantRunAfterResumeError(
 	if auditErr != nil {
 		return projectAssistantResumeResponse{}, auditErr
 	}
-	run = updatedRun
+	run, auditErr = finalizeProjectAssistantRunAudit(updatedRun, projectAssistantAuditOutcomeFailed, now)
+	if auditErr != nil {
+		return projectAssistantResumeResponse{}, auditErr
+	}
 	if err := s.store.SaveAssistantRun(persistCtx, messageScope, run); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
@@ -900,6 +979,10 @@ func (s *Server) abortProjectAssistantRun(
 	}
 	run.Status = store.AssistantRunStatusAborted
 	run.UpdatedAt = now
+	run, err = finalizeProjectAssistantRunAudit(run, projectAssistantAuditOutcomeAborted, now)
+	if err != nil {
+		return projectAssistantResumeResponse{}, err
+	}
 	run, err = appendProjectAssistantRunAudit(run, projectAssistantPermissionAudit{
 		RequestID:  run.RequestID,
 		Decision:   projectAssistantPermissionDeny,
@@ -1082,6 +1165,18 @@ func appendProjectAssistantRunAudit(run store.AssistantRun, entry projectAssista
 		if err := json.Unmarshal(run.Audit, &audit); err != nil {
 			return store.AssistantRun{}, fmt.Errorf("decode assistant run audit: %w", err)
 		}
+	}
+	if audit.Version == 0 {
+		audit.Version = projectAssistantAuditVersion
+	}
+	if strings.TrimSpace(entry.Reason) == "" {
+		entry.Reason = projectAssistantAuditReason(entry.Error)
+	}
+	if len(audit.Decisions) >= projectAssistantAuditMaxDecisions {
+		audit.Decisions = append(
+			[]projectAssistantPermissionAudit(nil),
+			audit.Decisions[len(audit.Decisions)-projectAssistantAuditMaxDecisions+1:]...,
+		)
 	}
 	audit.Decisions = append(audit.Decisions, entry)
 	raw, err := json.Marshal(audit)

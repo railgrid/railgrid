@@ -1,4 +1,7 @@
 {{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
+{{- if ne (int .Values.replicaCount) 1 -}}
+{{- fail "app-studio replicaCount must be 1 because assistant project mutations require a single active writer" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,6 +10,8 @@ metadata:
     {{- include "appstudio.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "appstudio.selectorLabels" . | nindent 6 }}

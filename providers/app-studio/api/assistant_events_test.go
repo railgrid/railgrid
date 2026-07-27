@@ -83,6 +83,73 @@ func TestProjectAssistantStreamWriterStreamsAssistantDeltasWithoutReplayingConte
 	}
 }
 
+func TestProjectAssistantStreamWriterReplacesProvisionalContentAndCommitsOnce(t *testing.T) {
+	var got []projectMessageStreamEvent
+	writer := projectAssistantStreamWriter{
+		assistantID: "assistant-1",
+		write: func(event projectMessageStreamEvent) error {
+			got = append(got, event)
+			return nil
+		},
+	}
+
+	if err := writer.WriteProvisionalAssistantContent(context.Background(), "hel"); err != nil {
+		t.Fatalf("WriteProvisionalAssistantContent returned error: %v", err)
+	}
+	if err := writer.WriteProvisionalAssistantContent(context.Background(), "hello"); err != nil {
+		t.Fatalf("WriteProvisionalAssistantContent returned error: %v", err)
+	}
+	if err := writer.WriteAcceptedAssistantContent(context.Background(), "hello"); err != nil {
+		t.Fatalf("WriteAcceptedAssistantContent returned error: %v", err)
+	}
+
+	if len(got) != 4 {
+		t.Fatalf("events = %#v, want begin, shell, and two provisional replacements only", got)
+	}
+	for i, want := range []string{"hel", "hello"} {
+		content := got[i+2].DataModelUpdate.Contents[0]
+		if content.ValueString != want || content.Append {
+			t.Fatalf("event[%d] content = %#v, want replacement %q", i+2, content, want)
+		}
+	}
+	if writer.acceptedAssistantContent != "hello" || writer.provisionalAssistantContent != "" {
+		t.Fatalf("writer state = accepted %q provisional %q", writer.acceptedAssistantContent, writer.provisionalAssistantContent)
+	}
+}
+
+func TestProjectAssistantStreamWriterResetsRejectedProvisionalContent(t *testing.T) {
+	var got []projectMessageStreamEvent
+	writer := projectAssistantStreamWriter{
+		assistantID: "assistant-1",
+		write: func(event projectMessageStreamEvent) error {
+			got = append(got, event)
+			return nil
+		},
+	}
+
+	if err := writer.WriteAcceptedAssistantContent(context.Background(), "kept"); err != nil {
+		t.Fatalf("WriteAcceptedAssistantContent returned error: %v", err)
+	}
+	if err := writer.WriteProvisionalAssistantContent(context.Background(), " rejected"); err != nil {
+		t.Fatalf("WriteProvisionalAssistantContent returned error: %v", err)
+	}
+	if err := writer.ResetProvisionalAssistantContent(context.Background()); err != nil {
+		t.Fatalf("ResetProvisionalAssistantContent returned error: %v", err)
+	}
+
+	if len(got) != 5 {
+		t.Fatalf("events = %#v, want begin, shell, accepted append, provisional replacement, and reset", got)
+	}
+	provisional := got[3].DataModelUpdate.Contents[0]
+	if provisional.ValueString != "kept rejected" || provisional.Append {
+		t.Fatalf("provisional content = %#v, want full replacement", provisional)
+	}
+	reset := got[4].DataModelUpdate.Contents[0]
+	if reset.ValueString != "kept" || reset.Append {
+		t.Fatalf("reset content = %#v, want accepted replacement", reset)
+	}
+}
+
 func TestProjectAssistantStreamWriterEmitsCanonicalLifecycleSequence(t *testing.T) {
 	got, err := collectProjectAssistantStreamEvents(
 		projectAssistantEvent{
@@ -164,7 +231,7 @@ func TestProjectAssistantStreamWriterEmitsCanonicalLifecycleSequence(t *testing.
 	if got[0].BeginRendering == nil {
 		t.Fatalf("first event = %#v, want beginRendering ui event", got[0])
 	}
-	assertA2UICard(t, got[1], "tool call", "Editing files")
+	assertA2UICard(t, got[1], "tool call", "Updating src/App.tsx")
 	if got[2].DataModelUpdate == nil || !hasContent(got[2], "assistant.status") {
 		t.Fatalf("status event = %#v, want assistant.status update", got[2])
 	}
@@ -173,7 +240,7 @@ func TestProjectAssistantStreamWriterEmitsCanonicalLifecycleSequence(t *testing.
 		t.Fatalf("content event = %#v, want assistant content binding update", got[4])
 	}
 	assertA2UICard(t, got[5], "tool call", "Editing files")
-	assertA2UICard(t, got[6], "tool result", "Edited files")
+	assertA2UICard(t, got[6], "tool result", "Updated src/App.tsx")
 	firstToolCardID := assertSingleA2UICardID(t, got[1], "tool call")
 	runningToolCardID := assertSingleA2UICardID(t, got[5], "tool call")
 	finishedToolCardID := assertSingleA2UICardID(t, got[6], "tool result")
@@ -259,10 +326,110 @@ func TestProjectAssistantStreamWriterMapsToolCallToSafeDisclosure(t *testing.T) 
 	if event.Type != "" || event.SurfaceUpdate == nil {
 		t.Fatalf("event = %#v, want surfaceUpdate UI event", event)
 	}
-	assertA2UICard(t, event, "tool result", "Edited files")
+	assertA2UICard(t, event, "tool result", "Updated src/App.tsx")
 	assertA2UICard(t, event, "tool result", "write_file")
 	assertA2UICard(t, event, "tool result", "Wrote src/App.tsx")
 	assertNoRawAssistantTrace(t, got, "warning only")
+}
+
+func TestProjectAssistantUIActionUsesSpecificSafeLabels(t *testing.T) {
+	tests := []struct {
+		name      string
+		toolName  string
+		status    string
+		arguments string
+		summary   string
+		want      string
+	}{
+		{
+			name:      "read file",
+			toolName:  projectToolReadProjectFile,
+			status:    "succeeded",
+			arguments: `{"path":"src/App.vue"}`,
+			summary:   "file src/App.vue; 2048 bytes",
+			want:      "Read src/App.vue",
+		},
+		{
+			name:     "list files",
+			toolName: projectToolListProjectFiles,
+			status:   "succeeded",
+			summary:  "6 path(s); src/App.vue, src/style.css",
+			want:     "Read 6 project files",
+		},
+		{
+			name:      "write file",
+			toolName:  projectToolWriteFile,
+			status:    "succeeded",
+			arguments: `{"path":"src/App.vue","content":"secret source"}`,
+			summary:   "write_file; src/App.vue; 2048 bytes",
+			want:      "Updated src/App.vue",
+		},
+		{
+			name:      "apply patch",
+			toolName:  projectToolApplyPatch,
+			status:    "running",
+			arguments: "path src/style.css; replaceAll",
+			want:      "Updating src/style.css",
+		},
+		{
+			name:     "search files",
+			toolName: projectToolSearchProjectFiles,
+			status:   "succeeded",
+			summary:  "3 match(es); src/App.vue",
+			want:     "Found 3 project matches",
+		},
+		{
+			name:     "verify preview",
+			toolName: projectToolVerifyDevelopmentRuntime,
+			status:   "running",
+			want:     "Checking development preview",
+		},
+		{
+			name:     "commit files",
+			toolName: projectToolCommitProjectFiles,
+			status:   "succeeded",
+			summary:  "commit abc123; 2 file(s): src/App.vue, src/style.css",
+			want:     "Committed 2 files",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+				ID:        "tool-1",
+				Name:      tt.toolName,
+				Status:    tt.status,
+				Arguments: tt.arguments,
+				Summary:   tt.summary,
+			})
+			if action.Label != tt.want {
+				t.Fatalf("label = %q, want %q; action = %#v", action.Label, tt.want, action)
+			}
+			if strings.Contains(action.Label, "secret source") {
+				t.Fatalf("label exposed raw mutation content: %q", action.Label)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantUIActionSpecificLabelsRespectMinimalDisclosure(t *testing.T) {
+	prev := projectAssistantToolDisclosureMinimal
+	projectAssistantToolDisclosureMinimal = true
+	t.Cleanup(func() { projectAssistantToolDisclosureMinimal = prev })
+
+	action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+		ID:        "tool-1",
+		Name:      projectToolWriteFile,
+		Status:    "succeeded",
+		Arguments: `{"path":"src/App.vue","content":"secret source"}`,
+		Summary:   "write_file; src/App.vue; 2048 bytes",
+	})
+	if action.Label != "Edited files" {
+		t.Fatalf("minimal disclosure label = %q, want generic edit label", action.Label)
+	}
+	if action.Tool != "" || action.Arguments != "" || action.Detail != "" {
+		t.Fatalf("minimal disclosure action exposed details: %#v", action)
+	}
 }
 
 // Disclosure boundary: an unknown/MCP tool has no bespoke argument summary, so

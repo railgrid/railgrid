@@ -48,6 +48,7 @@ type Server struct {
 	workspaces                   *workspace.FileStore
 	hubBase                      string
 	mcpInsecureSkipTLSVerify     bool
+	previewInsecureSkipTLSVerify bool
 	autoApproveActions           bool
 	assistantEngine              projectAssistantEngine
 	assistantTurnRouter          projectAssistantTurnRouter

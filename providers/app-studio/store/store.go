@@ -19,10 +19,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
+
+var ErrAssistantRunNotFound = errors.New("assistant run not found")
+var ErrAssistantRunConflict = errors.New("assistant run version conflict")
 
 // Scope identifies a tenant/project boundary. Every query must include all
 // three fields to keep App Studio data isolated per org/workspace/project.
@@ -89,6 +93,7 @@ type Store interface {
 	ListMessages(ctx context.Context, scope Scope, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, limit int) ([]Message, error)
 	SaveAssistantRun(ctx context.Context, scope Scope, run AssistantRun) error
+	CompareAndSwapAssistantRun(ctx context.Context, scope Scope, run AssistantRun, expectedRequestID string) error
 	ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error)
 	GetAssistantRun(ctx context.Context, scope Scope, id string) (AssistantRun, error)
 	DeleteProjectMessages(ctx context.Context, scope Scope) error

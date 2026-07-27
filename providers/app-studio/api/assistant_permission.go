@@ -28,6 +28,10 @@ const (
 	projectAssistantPermissionAllow projectAssistantPermissionDecision = "allow"
 	projectAssistantPermissionAsk   projectAssistantPermissionDecision = "ask"
 	projectAssistantPermissionDeny  projectAssistantPermissionDecision = "deny"
+	// Replan is an internal headless-mode outcome. It rejects the attempted
+	// write, retires the stale plan envelope, and lets the next model
+	// iteration request a replacement plan. It is never a user decision.
+	projectAssistantPermissionReplan projectAssistantPermissionDecision = "replan"
 )
 
 func projectAssistantPermissionForTool(spec projectAssistantToolSpec) projectAssistantPermissionDecision {
@@ -51,8 +55,18 @@ func projectAssistantPermissionForToolWithRunState(spec projectAssistantToolSpec
 		}
 		return projectAssistantPermissionAsk
 	case projectAssistantToolRiskWrite:
-		if autoApprove || projectAssistantApprovedPlanAllowsWrite(runState.ApprovedPlan(), spec.Name, args) {
+		if projectAssistantApprovedPlanAllowsWrite(runState.ApprovedPlan(), spec.Name, args) {
 			return projectAssistantPermissionAllow
+		}
+		if autoApprove {
+			if strings.TrimSpace(spec.Name) == projectToolSelectTemplate {
+				return projectAssistantPermissionAllow
+			}
+			if projectAssistantApprovedPlanActive(runState.ApprovedPlan()) &&
+				projectAssistantPlanCanAuthorizeWriteTool(spec.Name) {
+				return projectAssistantPermissionReplan
+			}
+			return projectAssistantPermissionDeny
 		}
 		return projectAssistantPermissionAsk
 	case projectAssistantToolRiskCommit:
@@ -75,6 +89,8 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 	toolName = projectToolBaseName(toolName)
 	switch toolName {
 	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolSelectTemplate:
+		return projectAssistantApprovedPlanAllowsOperation(plan, toolName)
 	default:
 		return false
 	}
@@ -96,6 +112,24 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 		}
 	}
 	return false
+}
+
+func projectAssistantPlanCanAuthorizeWriteTool(toolName string) bool {
+	switch projectToolBaseName(toolName) {
+	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+		return true
+	default:
+		return false
+	}
+}
+
+func projectAssistantDirectApprovalGrantsWritePlan(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+		return true
+	default:
+		return false
+	}
 }
 
 func projectAssistantApprovedPlanAllowsOperation(plan *projectAssistantApprovedPlan, toolName string) bool {

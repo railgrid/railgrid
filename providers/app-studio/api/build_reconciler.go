@@ -337,4 +337,3 @@ func projectBuildYAMLQuote(v string) string {
 	return "\"" + strings.ReplaceAll(v, "\"", "\\\"") + "\""
 }
 
-

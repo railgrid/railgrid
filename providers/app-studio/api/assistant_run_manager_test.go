@@ -22,7 +22,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,8 +36,15 @@ func TestProjectAssistantRunManagerPreemptsActiveTurnForSameProject(t *testing.T
 	manager := newProjectAssistantRunManager()
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	firstCtx, firstDone := manager.Begin(context.Background(), newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo"))
-	secondCtx, secondDone := manager.Begin(context.Background(), newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo"))
-	t.Cleanup(secondDone)
+	type begunTurn struct {
+		ctx  context.Context
+		done func()
+	}
+	secondStarted := make(chan begunTurn, 1)
+	go func() {
+		secondCtx, secondDone := manager.Begin(context.Background(), newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo"))
+		secondStarted <- begunTurn{ctx: secondCtx, done: secondDone}
+	}()
 
 	select {
 	case <-firstCtx.Done():
@@ -48,16 +54,51 @@ func TestProjectAssistantRunManagerPreemptsActiveTurnForSameProject(t *testing.T
 	if !errors.Is(context.Cause(firstCtx), errProjectAssistantTurnPreempted) {
 		t.Fatalf("first context cause = %v, want preempted", context.Cause(firstCtx))
 	}
+	select {
+	case <-secondStarted:
+		t.Fatal("second turn started before the preempted turn finished")
+	default:
+	}
+	firstDone()
+	var second begunTurn
+	select {
+	case second = <-secondStarted:
+	case <-time.After(time.Second):
+		t.Fatal("second turn did not start after the first finished")
+	}
+	t.Cleanup(second.done)
+	secondCtx := second.ctx
 	if err := secondCtx.Err(); err != nil {
 		t.Fatalf("second turn context error = %v, want active", err)
 	}
-	firstDone()
 	if got := manager.activeCount(); got != 1 {
-		t.Fatalf("active count after stale finish = %d, want newer turn still active", got)
+		t.Fatalf("active count after handoff = %d, want newer turn active", got)
 	}
-	secondDone()
+	second.done()
 	if got := manager.activeCount(); got != 0 {
 		t.Fatalf("active count after second finish = %d, want no active turns", got)
+	}
+}
+
+func TestProjectAssistantRunManagerBoundsPreemptedTurnHandoff(t *testing.T) {
+	manager := newProjectAssistantRunManager()
+	manager.handoffTimeout = 10 * time.Millisecond
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	_, firstDone := manager.Begin(context.Background(), newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo"))
+	defer firstDone()
+
+	startedAt := time.Now()
+	secondCtx, secondDone := manager.Begin(context.Background(), newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo"))
+	defer secondDone()
+
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("handoff took %s, want bounded wait", elapsed)
+	}
+	if !errors.Is(context.Cause(secondCtx), errProjectAssistantTurnHandoffTimeout) {
+		t.Fatalf("second context cause = %v, want handoff timeout", context.Cause(secondCtx))
+	}
+	if got := manager.activeCount(); got != 1 {
+		t.Fatalf("active count = %d, want only the preempted turn retained", got)
 	}
 }
 
@@ -159,6 +200,60 @@ func TestGenerateProjectAssistantStreamPreemptsActiveProjectTurn(t *testing.T) {
 	}
 }
 
+func TestGenerateProjectAssistantStreamDoesNotStartAfterHandoffTimeout(t *testing.T) {
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "http://llm.example.test", Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	engine := &cancellationInsensitiveProjectAssistantEngine{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	server.assistantEngine = engine
+	server.assistantRunManager = newProjectAssistantRunManager()
+	server.assistantRunManager.handoffTimeout = 10 * time.Millisecond
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := server.generateProjectAssistantStream(
+			httptest.NewRequest(http.MethodPost, "/", nil),
+			id,
+			client,
+			project,
+			projectAssistantStreamCallbacks{},
+		)
+		firstErr <- err
+	}()
+	select {
+	case <-engine.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first assistant turn did not start")
+	}
+
+	_, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	if !errors.Is(err, errProjectAssistantTurnHandoffTimeout) {
+		t.Fatalf("second turn error = %v, want handoff timeout", err)
+	}
+	if got := engine.calls.Load(); got != 1 {
+		t.Fatalf("engine calls = %d, want replacement turn rejected before engine invocation", got)
+	}
+
+	close(engine.release)
+	select {
+	case <-firstErr:
+	case <-time.After(time.Second):
+		t.Fatal("first assistant turn did not finish after release")
+	}
+}
+
 func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "http://llm.example.test", Model: "test-model", APIKey: "test-key"}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
@@ -256,7 +351,7 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 		t.Fatalf("run status = %q, want completed after preempted resume cleanup", got.Status)
 	}
 	audit := decodeProjectAssistantRunAudit(t, got.Audit)
-	if len(audit.Decisions) != 1 || audit.Decisions[0].Actor != id.user || !strings.Contains(audit.Decisions[0].Error, "preempted") {
+	if len(audit.Decisions) != 1 || audit.Decisions[0].Actor != id.user || audit.Decisions[0].Reason != "preempted" {
 		t.Fatalf("audit = %#v, want preempted resume decision", audit)
 	}
 	select {
@@ -289,6 +384,31 @@ func (e *preemptProbeProjectAssistantEngine) StreamProjectAssistant(
 }
 
 func (e *preemptProbeProjectAssistantEngine) ResumeProjectAssistant(
+	context.Context,
+	projectAssistantRunRequest,
+	projectAssistantResumeRequest,
+	projectAssistantCheckpointState,
+) (projectAssistantRunResult, error) {
+	return projectAssistantRunResult{}, errors.New("unexpected resume")
+}
+
+type cancellationInsensitiveProjectAssistantEngine struct {
+	calls   atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (e *cancellationInsensitiveProjectAssistantEngine) StreamProjectAssistant(
+	context.Context,
+	projectAssistantRunRequest,
+) (projectAssistantRunResult, error) {
+	e.calls.Add(1)
+	close(e.entered)
+	<-e.release
+	return projectAssistantRunResult{Content: "first turn"}, nil
+}
+
+func (e *cancellationInsensitiveProjectAssistantEngine) ResumeProjectAssistant(
 	context.Context,
 	projectAssistantRunRequest,
 	projectAssistantResumeRequest,

@@ -58,3 +58,84 @@ func TestNewProjectEinoAssistantModelFactoryUsesNativeGeminiModel(t *testing.T) 
 		t.Fatalf("model type = %s, want native Eino Gemini chat model", got)
 	}
 }
+
+func TestParseProjectCreatePreflight(t *testing.T) {
+	got, err := parseProjectCreatePreflight("```json\n{\"displayName\":\"Task Desk\",\"repositoryName\":\"task-desk\",\"turn\":{\"profile\":\"implementation\",\"requires_current_state\":true,\"requires_runtime_state\":false,\"requests_mutation\":true,\"confidence\":\"high\"}}\n```")
+	if err != nil {
+		t.Fatalf("parseProjectCreatePreflight returned error: %v", err)
+	}
+	if got.Naming.DisplayName != "Task Desk" || got.Naming.RepositoryName != "task-desk" {
+		t.Fatalf("naming = %#v, want Task Desk/task-desk", got.Naming)
+	}
+	if got.TurnDecision.Profile != projectAssistantTurnProfileImplementation || !got.TurnDecision.RequestsMutation {
+		t.Fatalf("turn decision = %#v, want implementation mutation", got.TurnDecision)
+	}
+}
+
+func TestProjectCreatePreflightAlwaysStartsAsImplementation(t *testing.T) {
+	got, err := normalizeProjectCreatePreflight(projectCreatePreflight{
+		Naming: projectNamingResult{DisplayName: "Task Desk", RepositoryName: "task-desk"},
+		TurnDecision: projectAssistantTurnDecision{
+			Profile:    projectAssistantTurnProfileDiscussion,
+			Confidence: projectAssistantTurnConfidenceHigh,
+		},
+	}, "a todo list app")
+	if err != nil {
+		t.Fatalf("normalizeProjectCreatePreflight returned error: %v", err)
+	}
+	if got.TurnDecision.Profile != projectAssistantTurnProfileImplementation ||
+		!got.TurnDecision.RequiresCurrentState ||
+		!got.TurnDecision.RequestsMutation {
+		t.Fatalf("turn decision = %#v, want deterministic implementation mutation", got.TurnDecision)
+	}
+}
+
+func TestProjectCreatePreflightHonorsExplicitBlankProjectRequest(t *testing.T) {
+	for _, prompt := range []string{"Create a blank project.", "Create an empty project.", "Create a project, but do not write code yet."} {
+		t.Run(prompt, func(t *testing.T) {
+			got, err := normalizeProjectCreatePreflight(projectCreatePreflight{
+				Naming: projectNamingResult{DisplayName: "Blank Canvas", RepositoryName: "blank-canvas"},
+			}, prompt)
+			if err != nil {
+				t.Fatalf("normalizeProjectCreatePreflight returned error: %v", err)
+			}
+			if got.TurnDecision.RequestsMutation || projectAssistantTurnProfileAllowsMutation(got.TurnDecision.Profile) {
+				t.Fatalf("turn decision = %#v, want an explicit no-source-mutation start", got.TurnDecision)
+			}
+		})
+	}
+}
+
+func TestProjectCreatePreflightDoesNotTreatScopedConstraintAsBlankProject(t *testing.T) {
+	got, err := normalizeProjectCreatePreflight(projectCreatePreflight{
+		Naming: projectNamingResult{DisplayName: "Task Desk", RepositoryName: "task-desk"},
+	}, "Build a todo app, but don't build a backend.")
+	if err != nil {
+		t.Fatalf("normalizeProjectCreatePreflight returned error: %v", err)
+	}
+	if got.TurnDecision.Profile != projectAssistantTurnProfileImplementation || !got.TurnDecision.RequestsMutation {
+		t.Fatalf("turn decision = %#v, want implementation for a scoped constraint", got.TurnDecision)
+	}
+}
+
+func TestInitialCreationBuilderPromptSkipsPlanAndBatchesIndependentWrites(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	prompt := projectSystemPromptForInitialPlan(project, &ProjectRepositoryView{Ref: "demo-repo", Ready: true}, projectAssistantTurnProfileImplementation, true)
+	if strings.Contains(prompt, "Before source edits, call request_project_plan_approval") {
+		t.Fatalf("initial prompt retained normal plan instruction:\n%s", prompt)
+	}
+	for _, want := range []string{
+		"Do not call request_project_plan_approval before write_file, apply_patch, or mkdir",
+		"Prefer a single response containing all independent write_file, apply_patch, and mkdir calls for the current step",
+		"never wait for one result before another independent write",
+		"verify the live development workspace before any repository commit",
+		"Do not call commit_project_files in this initial run",
+		"Workspace writes automatically synchronize and restart the development process",
+		projectToolInspectDevelopmentTemplates,
+		projectToolVerifyDevelopmentRuntime,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("initial prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

@@ -241,6 +241,10 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Client, id identity, req CreateProjectRequest, onStatus projectCreationStatusFunc, httpReq *http.Request) (*aiv1alpha1.Project, error) {
+	return s.createProjectFromRequestWithPreflight(ctx, c, id, req, onStatus, httpReq, nil)
+}
+
+func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *asclient.Client, id identity, req CreateProjectRequest, onStatus projectCreationStatusFunc, httpReq *http.Request, preflight *projectCreatePreflight) (*aiv1alpha1.Project, error) {
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
 	req.Description = strings.TrimSpace(req.Description)
 	req.Prompt = strings.TrimSpace(req.Prompt)
@@ -262,7 +266,10 @@ func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Clien
 		}
 	}
 	repoBase := slugifyProjectName(req.DisplayName)
-	if req.Prompt != "" {
+	if preflight != nil {
+		req.DisplayName = preflight.Naming.DisplayName
+		repoBase = preflight.Naming.RepositoryName
+	} else if req.Prompt != "" {
 		if err := emitProjectCreationStatus(onStatus, "Naming project"); err != nil {
 			return nil, err
 		}
@@ -590,7 +597,15 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 	if err := writeStatus("Starting"); err != nil {
 		return
 	}
-	created, err := s.createProjectFromRequest(r.Context(), c, id, req, writeStatus, r)
+	if err := writeStatus("Naming project"); err != nil {
+		return
+	}
+	preflight, err := s.generateProjectCreatePreflight(r.Context(), c, req.Prompt)
+	if err != nil {
+		writeStreamError(err)
+		return
+	}
+	created, err := s.createProjectFromRequestWithPreflight(r.Context(), c, id, req, writeStatus, r, &preflight)
 	if err != nil {
 		writeStreamError(err)
 		return
@@ -610,7 +625,7 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 	if err := writeStatus("Working"); err != nil {
 		return
 	}
-	s.streamProjectAssistant(w, flusher, r, c, id, created, msgStore, assistantID)
+	s.streamProjectAssistantWithStart(w, flusher, r, c, id, created, msgStore, assistantID, projectAssistantStreamStartForCreatePreflight(preflight))
 }
 
 func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Request) {
@@ -716,6 +731,45 @@ func (s *Server) streamProjectAssistant(
 	msgStore store.Store,
 	assistantMessageID string,
 ) {
+	s.streamProjectAssistantWithStart(w, flusher, r, c, id, p, msgStore, assistantMessageID, nil)
+}
+
+type projectAssistantStreamStart struct {
+	TurnDecision        *projectAssistantTurnDecision
+	InitialApprovedPlan *projectAssistantApprovedPlan
+}
+
+func projectAssistantStreamStartForCreatePreflight(preflight projectCreatePreflight) *projectAssistantStreamStart {
+	decision := preflight.TurnDecision
+	start := &projectAssistantStreamStart{TurnDecision: &decision}
+	if decision.RequestsMutation && projectAssistantTurnProfileAllowsMutation(decision.Profile) {
+		start.InitialApprovedPlan = ptrProjectAssistantApprovedPlan(projectAssistantInitialCreationPlan())
+	}
+	return start
+}
+
+func ptrProjectAssistantApprovedPlan(plan projectAssistantApprovedPlan) *projectAssistantApprovedPlan {
+	return &plan
+}
+
+func projectAssistantTurnDecisionForStreamStart(ctx context.Context, router projectAssistantTurnRouter, req projectAssistantTurnRouteRequest, start *projectAssistantStreamStart) (projectAssistantTurnDecision, error) {
+	if start != nil && start.TurnDecision != nil {
+		return *start.TurnDecision, nil
+	}
+	return router(ctx, req)
+}
+
+func (s *Server) streamProjectAssistantWithStart(
+	w http.ResponseWriter,
+	flusher http.Flusher,
+	r *http.Request,
+	c *asclient.Client,
+	id identity,
+	p *aiv1alpha1.Project,
+	msgStore store.Store,
+	assistantMessageID string,
+	start *projectAssistantStreamStart,
+) {
 	assistantID := assistantMessageID
 	if assistantID == "" {
 		assistantID = newMessageID()
@@ -792,6 +846,18 @@ func (s *Server) streamProjectAssistant(
 			Delta: chunk,
 		})
 	}
+	streamProvisionalText := func(content string) {
+		if streamErr != nil || content == "" {
+			return
+		}
+		streamErr = streamWriter.WriteProvisionalAssistantContent(r.Context(), content)
+	}
+	resetProvisionalText := func() {
+		if streamErr != nil {
+			return
+		}
+		streamErr = streamWriter.ResetProvisionalAssistantContent(r.Context())
+	}
 	streamStatus := func(status string) {
 		if streamErr != nil {
 			return
@@ -834,12 +900,14 @@ func (s *Server) streamProjectAssistant(
 		return nil
 	}
 
-	reply, err := s.generateProjectAssistantStream(r, id, c, p, projectAssistantStreamCallbacks{
-		OnChunk:          streamChunk,
-		OnStatus:         streamStatus,
-		OnToolCall:       streamToolCall,
-		OnAssistantEvent: emitAssistantEvent,
-	})
+	reply, err := s.generateProjectAssistantStreamWithStart(r, id, c, p, projectAssistantStreamCallbacks{
+		OnChunk:            streamChunk,
+		OnProvisionalText:  streamProvisionalText,
+		OnProvisionalReset: resetProvisionalText,
+		OnStatus:           streamStatus,
+		OnToolCall:         streamToolCall,
+		OnAssistantEvent:   emitAssistantEvent,
+	}, start)
 	if err != nil {
 		var permissionErr *projectAssistantPermissionRequiredError
 		if errors.As(err, &permissionErr) {

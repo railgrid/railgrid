@@ -22,16 +22,18 @@ import (
 )
 
 type projectAssistantStreamWriter struct {
-	assistantID       string
-	began             bool
-	rootChildren      []string
-	msgIdx            int
-	assistantDataKey  string
-	assistantShellSet bool
-	toolCards         map[string]projectAssistantToolCardIDs
-	pendingPermission *projectAssistantPermission
-	pendingFollowUp   *projectAssistantFollowUp
-	write             func(projectMessageStreamEvent) error
+	assistantID                 string
+	began                       bool
+	rootChildren                []string
+	msgIdx                      int
+	assistantDataKey            string
+	assistantShellSet           bool
+	acceptedAssistantContent    string
+	provisionalAssistantContent string
+	toolCards                   map[string]projectAssistantToolCardIDs
+	pendingPermission           *projectAssistantPermission
+	pendingFollowUp             *projectAssistantFollowUp
+	write                       func(projectMessageStreamEvent) error
 }
 
 type projectAssistantToolCardIDs struct {
@@ -138,12 +140,69 @@ func (w *projectAssistantStreamWriter) writeAssistantUI(ctx context.Context, ui 
 }
 
 func (w *projectAssistantStreamWriter) writeAssistantContent(ctx context.Context, delta string) error {
+	return w.WriteAcceptedAssistantContent(ctx, delta)
+}
+
+func (w *projectAssistantStreamWriter) WriteAcceptedAssistantContent(ctx context.Context, delta string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if delta == "" {
 		return nil
 	}
+	if err := w.ensureAssistantContentShell(ctx); err != nil {
+		return err
+	}
+	w.acceptedAssistantContent += delta
+	if w.provisionalAssistantContent != "" {
+		rendered := w.acceptedAssistantContent[:len(w.acceptedAssistantContent)-len(delta)] + w.provisionalAssistantContent
+		w.provisionalAssistantContent = ""
+		if rendered == w.acceptedAssistantContent {
+			return nil
+		}
+		return w.write(projectMessageStreamEventFromUI(projectAssistantUIDataUpdateEvent(
+			w.assistantID,
+			w.assistantDataKey,
+			w.acceptedAssistantContent,
+		)))
+	}
+	return w.write(projectMessageStreamEventFromUI(projectAssistantUIDataAppendEvent(w.assistantID, w.assistantDataKey, delta)))
+}
+
+func (w *projectAssistantStreamWriter) WriteProvisionalAssistantContent(ctx context.Context, content string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if content == "" {
+		return w.ResetProvisionalAssistantContent(ctx)
+	}
+	if err := w.ensureAssistantContentShell(ctx); err != nil {
+		return err
+	}
+	w.provisionalAssistantContent = content
+	return w.write(projectMessageStreamEventFromUI(projectAssistantUIDataUpdateEvent(
+		w.assistantID,
+		w.assistantDataKey,
+		w.acceptedAssistantContent+content,
+	)))
+}
+
+func (w *projectAssistantStreamWriter) ResetProvisionalAssistantContent(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if w.provisionalAssistantContent == "" {
+		return nil
+	}
+	w.provisionalAssistantContent = ""
+	return w.write(projectMessageStreamEventFromUI(projectAssistantUIDataUpdateEvent(
+		w.assistantID,
+		w.assistantDataKey,
+		w.acceptedAssistantContent,
+	)))
+}
+
+func (w *projectAssistantStreamWriter) ensureAssistantContentShell(ctx context.Context) error {
 	if err := w.ensureBegin(ctx); err != nil {
 		return err
 	}
@@ -165,7 +224,7 @@ func (w *projectAssistantStreamWriter) writeAssistantContent(ctx context.Context
 		}
 		w.assistantShellSet = true
 	}
-	return w.write(projectMessageStreamEventFromUI(projectAssistantUIDataAppendEvent(w.assistantID, w.assistantDataKey, delta)))
+	return nil
 }
 
 func (w *projectAssistantStreamWriter) writeToolCard(ctx context.Context, stableKey, kind, text string) error {

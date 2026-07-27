@@ -300,7 +300,6 @@ func TestProjectAssistantModePromptsPutBuilderGuidanceOnlyOnWriteProfiles(t *tes
 				projectToolWriteFile,
 				projectToolApplyPatch,
 				projectToolCommitProjectFiles,
-				"tool_search",
 				"Do not give the user manual copy/paste file replacement instructions",
 			} {
 				if !strings.Contains(prompt, want) {
@@ -451,25 +450,25 @@ func TestProjectAssistantTurnPolicyAllowsExpectedToolBundles(t *testing.T) {
 		{
 			name:       "exploration",
 			profile:    projectAssistantTurnProfileExploration,
-			wantAllow:  []string{projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment, projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles, projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance},
-			wantReject: []string{projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolRestartRuntime, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
+			wantAllow:  []string{projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment, projectToolInspectDevelopmentTemplates, projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles, projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance},
+			wantReject: []string{projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolVerifyDevelopmentRuntime, projectToolRestartRuntime, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 		},
 		{
 			name:       "debugging",
 			profile:    projectAssistantTurnProfileDebugging,
-			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolSearchProjectFiles, projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance},
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolInspectDevelopmentTemplates, projectToolReadProjectFile, projectToolSearchProjectFiles, projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolVerifyDevelopmentRuntime, projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance},
 			wantReject: []string{projectToolRestartRuntime, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 		},
 		{
 			name:       "debug fix",
 			profile:    projectAssistantTurnProfileDebugFix,
-			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolRestartRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolInspectDevelopmentTemplates, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolVerifyDevelopmentRuntime, projectToolRestartRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 			wantReject: nil,
 		},
 		{
 			name:       "implementation",
 			profile:    projectAssistantTurnProfileImplementation,
-			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolRestartRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolInspectDevelopmentTemplates, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolVerifyDevelopmentRuntime, projectToolRestartRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 			wantReject: nil,
 		},
 	}
@@ -515,7 +514,7 @@ func TestProjectAssistantTurnPolicyAllowsRuntimeReadsForRuntimeStateExploration(
 		profile:              projectAssistantTurnProfileExploration,
 		requiresRuntimeState: true,
 	}
-	for _, name := range []string{projectToolGetRuntimeStatus, projectToolGetPreviewURL} {
+	for _, name := range []string{projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolVerifyDevelopmentRuntime} {
 		spec, ok := registry.Spec(name)
 		if !ok {
 			t.Fatalf("tool %s missing from registry", name)

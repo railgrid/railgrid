@@ -151,6 +151,7 @@ func runServe() {
 			os.Getenv("KEDGE_HUB_INSECURE") == "true",
 	)
 	apiServer.SetAutoApproveAssistantActions(os.Getenv("APP_STUDIO_AUTO_APPROVE_ACTIONS") == "true")
+	apiServer.SetPreviewInsecureSkipTLSVerify(os.Getenv("APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY") == "true")
 	// App Studio holds no runtime-cluster kubeconfig: the development data
 	// plane (logs/sync/restart) is served by the infrastructure provider as
 	// subresources on the template instance, reached through the hub as the
@@ -184,7 +185,6 @@ func runServe() {
 		log.Printf("shutdown error: %v", err)
 	}
 }
-
 
 // newHandler builds the combined backend-API + portal handler. apiServer may be
 // nil (the portal still serves), which keeps the asset tests independent of the

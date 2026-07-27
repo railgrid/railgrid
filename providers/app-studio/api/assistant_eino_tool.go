@@ -27,13 +27,15 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/eino-contrib/jsonschema"
-	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/store"
 )
 
-const projectEinoToolParametersExtraKey = "parametersJSON"
+const (
+	projectEinoToolParametersExtraKey = "parametersJSON"
+	projectEinoToolSearchableExtraKey = "appStudioSearchableMCP"
+)
 
 type projectEinoAssistantToolDiscovery struct {
 	IncludeCommitBridge bool
@@ -42,10 +44,11 @@ type projectEinoAssistantToolDiscovery struct {
 }
 
 type projectEinoAssistantTool struct {
-	server   *Server
-	tool     projectAssistantTool
-	req      projectAssistantRunRequest
-	runState *projectEinoAssistantRunState
+	server        *Server
+	tool          projectAssistantTool
+	req           projectAssistantRunRequest
+	runState      *projectEinoAssistantRunState
+	searchableMCP bool
 }
 
 func newProjectEinoAssistantToolsFactory(server *Server) projectEinoAssistantToolsFactory {
@@ -55,16 +58,19 @@ func newProjectEinoAssistantToolsFactory(server *Server) projectEinoAssistantToo
 		}
 		registry := server.projectAssistantToolRegistry()
 		discovery := projectEinoAssistantEnsureToolDiscovery(ctx, server, req, runState)
-		candidateTools := append(registry.Tools(discovery.IncludeCommitBridge), discovery.MCPTools...)
-		tools := projectAssistantToolsForTurnPolicy(candidateTools, req.TurnPolicy)
-		out := make([]einotool.BaseTool, 0, len(tools))
+		localTools := projectAssistantToolsForTurnPolicy(registry.Tools(discovery.IncludeCommitBridge), req.TurnPolicy)
+		mcpTools := projectAssistantToolsForTurnPolicy(discovery.MCPTools, req.TurnPolicy)
+		out := make([]einotool.BaseTool, 0, len(localTools)+len(mcpTools))
 		graphTools, err := newProjectAssistantGraphWorkflowTools(ctx, projectAssistantWorkflowRunContextForRequest(server, req, runState), req.TurnPolicy)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, graphTools...)
-		for _, tool := range tools {
+		for _, tool := range localTools {
 			out = append(out, newProjectEinoAssistantServerTool(server, tool, req, runState))
+		}
+		for _, tool := range mcpTools {
+			out = append(out, newProjectEinoAssistantSearchableMCPTool(server, tool, req, runState))
 		}
 		return out, nil
 	}
@@ -212,6 +218,16 @@ func newProjectEinoAssistantServerTool(server *Server, tool projectAssistantTool
 	}
 }
 
+func newProjectEinoAssistantSearchableMCPTool(server *Server, tool projectAssistantTool, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) einotool.BaseTool {
+	return projectEinoAssistantTool{
+		server:        server,
+		tool:          tool,
+		req:           req,
+		runState:      runState,
+		searchableMCP: true,
+	}
+}
+
 func (t projectEinoAssistantTool) Info(context.Context) (*schema.ToolInfo, error) {
 	if t.tool == nil {
 		return nil, errors.New("project assistant tool is not configured")
@@ -232,6 +248,9 @@ func (t projectEinoAssistantTool) Info(context.Context) (*schema.ToolInfo, error
 			return nil, fmt.Errorf("decode tool %q JSON schema: %w", spec.Name, err)
 		}
 		info.ParamsOneOf = schema.NewParamsOneOfByJSONSchema(&params)
+	}
+	if t.searchableMCP {
+		info.Extra[projectEinoToolSearchableExtraKey] = true
 	}
 	return info, nil
 }
@@ -273,6 +292,16 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 			return projectEinoPermissionBarrierToolResult(), nil
 		}
 		return "", t.requestPermission(ctx, callID, spec, args, argumentsInJSON)
+	case projectAssistantPermissionReplan:
+		if err := t.retireApprovedPlan(ctx); err != nil {
+			return "", fmt.Errorf("%w: retire stale App Studio plan grant: %v", errProjectAssistantPlanRetirement, err)
+		}
+		return t.finishFailedToolCall(
+			callID,
+			spec.Name,
+			argumentsInJSON,
+			"plan approval required: requested write is outside the active approved plan",
+		), nil
 	case projectAssistantPermissionDeny:
 		return t.finishFailedToolCall(callID, spec.Name, argumentsInJSON, "permission denied: unknown tool risk"), nil
 	default:
@@ -288,7 +317,12 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
 	})
 	if projectToolBaseName(spec.Name) == projectToolRequestProjectPlanApproval {
-		return t.invokeApprovedPlanTool(ctx, callID, spec, args), nil
+		return t.invokeApprovedPlanTool(ctx, callID, spec, args)
+	}
+	if spec.Risk == projectAssistantToolRiskCommit {
+		if err := t.retireApprovedPlan(ctx); err != nil {
+			return "", fmt.Errorf("%w: retire approved plan before commit: %v", errProjectAssistantPlanRetirement, err)
+		}
 	}
 	result, err := t.tool.Call(ctx, projectAssistantToolCallRequest{
 		Identity:             t.req.Identity,
@@ -302,6 +336,9 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 		Arguments:            args,
 	})
 	if err != nil {
+		if projectEinoAssistantPropagateToolError(err) {
+			return "", err
+		}
 		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), err.Error()), nil
 	}
 	if t.server != nil {
@@ -318,17 +355,25 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 	if spec.Risk == projectAssistantToolRiskWrite {
 		t.appendBuilderEvent(projectBuilderEventWorkspaceChanged)
 	}
-	if spec.Risk == projectAssistantToolRiskCommit {
-		// The grant ends at the commit it promised; retire it in-memory and in
-		// the store so the next edit cycle prompts for plan approval again.
-		t.runState.ClearApprovedPlan()
+	return result, nil
+}
+
+func (t projectEinoAssistantTool) retireApprovedPlan(ctx context.Context) error {
+	t.runState.ClearApprovedPlan()
+	if t.server != nil {
 		persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
 		defer cancelPersist()
-		if err := t.server.clearProjectAssistantApprovedPlan(persistCtx, t.req.MessageScope); err != nil {
-			klog.FromContext(ctx).Error(err, "clear App Studio plan grant", "project", t.req.MessageScope.ProjectName)
+		revision, err := t.server.retireProjectAssistantApprovedPlan(
+			persistCtx,
+			t.req.MessageScope,
+			t.runState.ApprovedPlanGrantRevision(),
+		)
+		if err != nil {
+			return err
 		}
+		t.runState.SetApprovedPlanGrantRevision(revision)
 	}
-	return result, nil
+	return nil
 }
 
 func (t projectEinoAssistantTool) requestFollowUp(ctx context.Context, callID string, spec projectAssistantToolSpec, args map[string]any) (string, error) {
@@ -385,10 +430,10 @@ func (t projectEinoAssistantTool) resumeFollowUp(ctx context.Context, callID str
 	return result, nil
 }
 
-func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, callID string, spec projectAssistantToolSpec, args map[string]any) string {
+func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, callID string, spec projectAssistantToolSpec, args map[string]any) (string, error) {
 	plan := projectAssistantApprovedPlanFromArguments(args)
 	if len(plan.Operations) == 0 {
-		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), "allowedOperations is required")
+		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), "allowedOperations is required"), nil
 	}
 	if existing := t.runState.ApprovedPlan(); existing != nil {
 		plan = mergeProjectAssistantApprovedPlans(*existing, plan)
@@ -399,8 +444,17 @@ func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, ca
 	if stored := t.runState.ApprovedPlan(); stored != nil {
 		persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
 		defer cancelPersist()
-		if err := t.server.saveProjectAssistantApprovedPlan(persistCtx, t.req.MessageScope, stored); err != nil {
-			klog.FromContext(ctx).Error(err, "persist App Studio plan grant", "project", t.req.MessageScope.ProjectName)
+		revision, err := t.server.persistProjectAssistantApprovedPlan(
+			persistCtx,
+			t.req.MessageScope,
+			stored,
+			t.runState.ApprovedPlanGrantRevision(),
+		)
+		if err != nil {
+			t.runState.ClearApprovedPlan()
+			return "", fmt.Errorf("%w: persist approved App Studio plan: %v", errProjectAssistantPlanGrantPersistence, err)
+		} else {
+			t.runState.SetApprovedPlanGrantRevision(revision)
 		}
 	}
 	resultPayload := map[string]any{
@@ -411,7 +465,7 @@ func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, ca
 	}
 	raw, err := json.Marshal(resultPayload)
 	if err != nil {
-		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), err.Error())
+		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), err.Error()), nil
 	}
 	result := string(raw)
 	t.emitToolCall(projectToolCallStreamEvent{
@@ -423,14 +477,14 @@ func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, ca
 	})
 	t.recordToolMessage(callID, spec.Name, result)
 	t.appendBuilderEvent(projectBuilderEventPlanApproved)
-	return result
+	return result, nil
 }
 
 // grantAllWritesUntilCommit records a blanket write grant after the user
 // approves a write prompt directly, so subsequent edits do not re-prompt until
 // the next commit retires the grant. It merges with any active plan envelope
-// and persists best effort: a failed write only means the user is re-prompted.
-func (t projectEinoAssistantTool) grantAllWritesUntilCommit(ctx context.Context) {
+// and fails closed if the durable grant cannot be persisted.
+func (t projectEinoAssistantTool) grantAllWritesUntilCommit(ctx context.Context) error {
 	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
 		Summary:        "User approved workspace writes until the next commit.",
 		Operations:     []string{projectToolWriteFile, projectToolApplyPatch, projectToolMkdir},
@@ -443,13 +497,23 @@ func (t projectEinoAssistantTool) grantAllWritesUntilCommit(ctx context.Context)
 	t.runState.ApprovePlan(plan)
 	stored := t.runState.ApprovedPlan()
 	if stored == nil {
-		return
+		return nil
 	}
 	persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
 	defer cancelPersist()
-	if err := t.server.saveProjectAssistantApprovedPlan(persistCtx, t.req.MessageScope, stored); err != nil {
-		klog.FromContext(ctx).Error(err, "persist App Studio write grant", "project", t.req.MessageScope.ProjectName)
+	revision, err := t.server.persistProjectAssistantApprovedPlan(
+		persistCtx,
+		t.req.MessageScope,
+		stored,
+		t.runState.ApprovedPlanGrantRevision(),
+	)
+	if err != nil {
+		t.runState.ClearApprovedPlan()
+		return fmt.Errorf("%w: persist direct App Studio write approval: %v", errProjectAssistantPlanGrantPersistence, err)
+	} else {
+		t.runState.SetApprovedPlanGrantRevision(revision)
 	}
+	return nil
 }
 
 func (t projectEinoAssistantTool) appendBuilderEvent(eventType string) {
@@ -460,18 +524,19 @@ func (t projectEinoAssistantTool) requestPermission(ctx context.Context, callID 
 	if spec.Risk == projectAssistantToolRiskCommit {
 		t.runState.ClearApprovedPlan()
 	}
+	reason := projectAssistantPermissionReasonForArguments(spec, args)
 	t.emitToolCall(projectToolCallStreamEvent{
 		ID:        callID,
 		Name:      spec.Name,
 		Status:    "permission_required",
 		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
-		Summary:   projectAssistantPermissionReason(spec),
+		Summary:   reason,
 	})
 	return einotool.StatefulInterrupt(ctx, &projectEinoPermissionInterruptInfo{
 		ToolCallID:      callID,
 		ToolName:        spec.Name,
 		ArgumentsInJSON: argumentsInJSON,
-		Reason:          projectAssistantPermissionReason(spec),
+		Reason:          reason,
 		Risk:            spec.Risk,
 	}, &projectEinoPermissionInterruptState{
 		ToolCallID:      callID,
@@ -510,10 +575,14 @@ func (t projectEinoAssistantTool) resumePermission(ctx context.Context, callID s
 		if data.EditedArguments != nil {
 			args = cloneProjectAssistantToolArguments(data.EditedArguments)
 		}
-		if spec.Risk == projectAssistantToolRiskWrite {
-			// The user approved a write directly. Remember it as a blanket write
-			// grant until the next commit so each later edit does not re-prompt.
-			t.grantAllWritesUntilCommit(ctx)
+		if spec.Risk == projectAssistantToolRiskWrite &&
+			projectAssistantDirectApprovalGrantsWritePlan(spec.Name) {
+			// The user approved a source write directly. Remember it as a
+			// blanket source-write grant until the next commit so each later
+			// edit does not re-prompt.
+			if err := t.grantAllWritesUntilCommit(ctx); err != nil {
+				return "", err
+			}
 		}
 		return t.invokeAllowedTool(ctx, callID, spec, args)
 	case projectAssistantPermissionDeny:
@@ -544,14 +613,15 @@ func (t projectEinoAssistantTool) finishFailedToolCall(callID, name, rawArgs, re
 	if reason == "" {
 		reason = "tool call failed"
 	}
+	safeReason := projectEinoAssistantSafeErrorText(errors.New(reason))
 	t.emitToolCall(projectToolCallStreamEvent{
 		ID:        callID,
 		Name:      name,
 		Status:    "failed",
 		Arguments: summarizeProjectToolArgumentsMap(name, args),
-		Error:     truncateProjectToolInfo(reason),
+		Error:     safeReason,
 	})
-	result := "Tool call failed: " + reason
+	result := truncateProjectToolInfo("Tool call failed: " + safeReason)
 	t.recordToolMessage(callID, name, result)
 	return result
 }

@@ -67,11 +67,19 @@ func (s projectAssistantToolSpec) chatTool() chatTool {
 }
 
 func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAssistantToolBundle {
+	switch spec.Name {
+	case projectToolInfrastructureListTemplates,
+		projectToolInfrastructureDescribeTemplate,
+		projectToolInfrastructureProvision,
+		projectToolInfrastructureListInstances,
+		projectToolInfrastructureGetInstance:
+		return projectAssistantToolBundleInfrastructure
+	}
 	switch projectToolBaseName(spec.Name) {
-	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment, projectToolCheckProjectBuild, projectToolGetBuildLogs:
+	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment, projectToolInspectDevelopmentTemplates, projectToolCheckProjectBuild, projectToolGetBuildLogs:
 		return projectAssistantToolBundleWorkflow
 	case projectToolGetRuntimeStatus, projectToolGetPreviewURL,
-		projectToolGetRuntimeLogs, projectToolRestartRuntime, projectToolSetRuntimeEnv, projectToolPromoteProject, projectToolRebuildProject:
+		projectToolGetRuntimeLogs, projectToolVerifyDevelopmentRuntime, projectToolRestartRuntime, projectToolSetRuntimeEnv, projectToolPromoteProject, projectToolRebuildProject:
 		return projectAssistantToolBundleRuntime
 	case projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles:
 		return projectAssistantToolBundleWorkspaceRead
@@ -87,8 +95,6 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 	// model narrates a choice it cannot make.
 	case projectToolSelectTemplate:
 		return projectAssistantToolBundleWorkflow
-	case projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureProvision, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance:
-		return projectAssistantToolBundleInfrastructure
 	}
 	switch spec.Risk {
 	case projectAssistantToolRiskPlan:
@@ -117,6 +123,13 @@ type projectAssistantToolCallRequest struct {
 	HTTPRequest          *http.Request
 	SessionSnapshot      *projectEinoAssistantSessionSnapshot
 	Arguments            map[string]any
+}
+
+func refreshProjectToolSnapshot(current, updated *aiv1alpha1.Project) {
+	if current == nil || updated == nil || current == updated {
+		return
+	}
+	updated.DeepCopyInto(current)
 }
 
 type projectAssistantTool interface {

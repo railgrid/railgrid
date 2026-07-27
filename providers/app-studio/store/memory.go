@@ -164,6 +164,40 @@ func (s *MemoryStore) SaveAssistantRun(_ context.Context, scope Scope, run Assis
 	return nil
 }
 
+func (s *MemoryStore) CompareAndSwapAssistantRun(_ context.Context, scope Scope, run AssistantRun, expectedRequestID string) error {
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	if run.ID == "" {
+		return fmt.Errorf("assistant run id is required")
+	}
+	if run.Status == "" {
+		return fmt.Errorf("assistant run status is required")
+	}
+	if run.CreatedAt.IsZero() {
+		run.CreatedAt = time.Now().UTC()
+	}
+	if run.UpdatedAt.IsZero() {
+		run.UpdatedAt = run.CreatedAt
+	}
+	run.ProjectName = scope.ProjectName
+	run.Checkpoint = cloneRawMessage(run.Checkpoint)
+	run.Audit = cloneRawMessage(run.Audit)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, exists := s.assistantRuns[scope][run.ID]
+	if (expectedRequestID == "" && exists && current.RequestID != "") ||
+		(expectedRequestID != "" && (!exists || current.RequestID != expectedRequestID)) {
+		return fmt.Errorf("%w: assistant run %q", ErrAssistantRunConflict, run.ID)
+	}
+	if s.assistantRuns[scope] == nil {
+		s.assistantRuns[scope] = map[string]AssistantRun{}
+	}
+	s.assistantRuns[scope][run.ID] = run
+	return nil
+}
+
 func (s *MemoryStore) ClaimAssistantRun(_ context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error) {
 	if err := scope.validate(); err != nil {
 		return AssistantRun{}, err
@@ -182,7 +216,7 @@ func (s *MemoryStore) ClaimAssistantRun(_ context.Context, scope Scope, id strin
 	defer s.mu.Unlock()
 	run, ok := s.assistantRuns[scope][id]
 	if !ok {
-		return AssistantRun{}, fmt.Errorf("assistant run %q not found", id)
+		return AssistantRun{}, fmt.Errorf("%w: %q", ErrAssistantRunNotFound, id)
 	}
 	if !assistantRunStatusWaitsForInput(run.Status) || run.RequestID != requestID {
 		return AssistantRun{}, fmt.Errorf("assistant run %q is not waiting for this request", id)
@@ -216,7 +250,7 @@ func (s *MemoryStore) GetAssistantRun(_ context.Context, scope Scope, id string)
 	defer s.mu.RUnlock()
 	run, ok := s.assistantRuns[scope][id]
 	if !ok {
-		return AssistantRun{}, fmt.Errorf("assistant run %q not found", id)
+		return AssistantRun{}, fmt.Errorf("%w: %q", ErrAssistantRunNotFound, id)
 	}
 	run.ProjectName = scope.ProjectName
 	run.Checkpoint = cloneRawMessage(run.Checkpoint)

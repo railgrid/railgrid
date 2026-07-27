@@ -91,3 +91,25 @@ func TestDefaultPreviewEdgeProbe(t *testing.T) {
 		t.Fatal("transport error must count as not provisioned")
 	}
 }
+
+func TestPreviewEdgeProbeUsesConfiguredLocalInsecureTLS(t *testing.T) {
+	preview := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer preview.Close()
+
+	secureServer := &Server{}
+	if secureServer.previewEdgeReady(context.Background(), preview.URL) {
+		t.Fatal("untrusted preview certificate must fail when insecure TLS is disabled")
+	}
+
+	hubInsecureServer := &Server{mcpInsecureSkipTLSVerify: true}
+	if hubInsecureServer.previewEdgeReady(context.Background(), preview.URL) {
+		t.Fatal("internal hub TLS setting must not weaken external preview verification")
+	}
+
+	localDevServer := &Server{previewInsecureSkipTLSVerify: true}
+	if !localDevServer.previewEdgeReady(context.Background(), preview.URL) {
+		t.Fatal("local insecure TLS setting should allow the self-signed preview edge")
+	}
+}
