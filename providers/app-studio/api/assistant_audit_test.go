@@ -71,10 +71,10 @@ func TestProjectAssistantRunAuditIsBoundedAndSanitized(t *testing.T) {
 	}, started.Add(2*time.Second))
 	recorder.recordToolAt(projectToolCallStreamEvent{
 		ID:        "call-search",
-		Name:      projectToolSearchProjectFiles,
+		Name:      projectToolGrep,
 		Status:    "succeeded",
-		Arguments: "query secret-search-term; maxResults 20",
-		Summary:   "secret-result",
+		Arguments: "pattern secret-search-term; path src; glob **/*.go; output_mode content; head_limit 20",
+		Summary:   "1 result line(s)",
 	}, started.Add(3*time.Second))
 	recorder.recordToolAt(projectToolCallStreamEvent{
 		ID:        "call-env",
@@ -136,6 +136,300 @@ func TestProjectAssistantRunAuditIsBoundedAndSanitized(t *testing.T) {
 	}
 	if writeEntries != 1 {
 		t.Fatalf("write audit entries = %d, want one upserted entry", writeEntries)
+	}
+}
+
+func TestProjectAssistantRunAuditCanonicalReadsAreSanitized(t *testing.T) {
+	started := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	run := &store.AssistantRun{ID: "run-canonical"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, started)
+	for i, event := range []projectToolCallStreamEvent{
+		{ID: "ls", Name: projectToolLS, Status: "succeeded", Arguments: "path src", Summary: "2 path(s)"},
+		{ID: "read", Name: projectToolReadFile, Status: "succeeded", Arguments: "path src/App.tsx; offset 1; limit 200", Summary: "file read"},
+		{ID: "glob", Name: projectToolGlob, Status: "succeeded", Arguments: "pattern **/*.tsx; path src", Summary: "2 path(s)"},
+		{ID: "grep", Name: projectToolGrep, Status: "succeeded", Arguments: "pattern privateNeedle; path src; glob **/*.tsx; output_mode content", Summary: "1 result line(s): matching source must not persist"},
+	} {
+		recorder.recordToolAt(event, started.Add(time.Duration(i+1)*time.Second))
+	}
+
+	raw := string(run.Audit)
+	for _, forbidden := range []string{"privateNeedle", "matching source must not persist", "**/*.tsx"} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("canonical read audit leaked %q: %s", forbidden, raw)
+		}
+	}
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if len(audit.Tools) != 4 {
+		t.Fatalf("audit tools = %#v, want four canonical reads", audit.Tools)
+	}
+	for _, tool := range audit.Tools {
+		if tool.Path != "src" && tool.Path != "src/App.tsx" {
+			t.Fatalf("canonical read audit path = %q for %q", tool.Path, tool.Name)
+		}
+	}
+}
+
+func TestProjectAssistantRunAuditCanonicalSearchArgumentsResistInjection(t *testing.T) {
+	started := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	run := &store.AssistantRun{ID: "run-canonical-injection"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, started)
+	longPattern := strings.Repeat("x", projectToolInfoLimit*2) + "; path attacker-long"
+	tests := []struct {
+		id      string
+		name    string
+		rawArgs string
+		want    string
+	}{
+		{
+			id:      "glob",
+			name:    projectToolGlob,
+			rawArgs: `{"path":"src/safe-glob","pattern":"needle; path attacker-delimiter\r\n\u0000"}`,
+			want:    "src/safe-glob",
+		},
+		{
+			id:      "grep",
+			name:    projectToolGrep,
+			rawArgs: `{"path":"src/safe-grep","pattern":` + strconv.Quote(longPattern) + `,"output_mode":"content"}`,
+			want:    "src/safe-grep",
+		},
+		{
+			id:      "grep-glob",
+			name:    projectToolGrep,
+			rawArgs: `{"path":"src/safe-grep-glob","pattern":"needle","glob":"**/*.ts; path attacker-glob\r\n\u0000"}`,
+			want:    "src/safe-grep-glob",
+		},
+	}
+	for i, tt := range tests {
+		arguments := summarizeProjectToolArguments(tt.name, tt.rawArgs)
+		if !strings.HasPrefix(arguments, "path "+tt.want+"; ") {
+			t.Fatalf("%s arguments = %q, want real path first", tt.name, arguments)
+		}
+		if strings.Contains(arguments, "; path attacker") {
+			t.Fatalf("%s arguments contain injected path segment: %q", tt.name, arguments)
+		}
+		if strings.ContainsAny(arguments, "\r\n\x00") {
+			t.Fatalf("%s arguments contain control characters: %q", tt.name, arguments)
+		}
+		recorder.recordToolAt(projectToolCallStreamEvent{
+			ID:        tt.id,
+			Name:      tt.name,
+			Status:    "succeeded",
+			Arguments: arguments,
+			Summary:   "1 result line(s): attacker-match-body",
+		}, started.Add(time.Duration(i+1)*time.Second))
+	}
+
+	raw := string(run.Audit)
+	for _, forbidden := range []string{
+		"attacker-delimiter",
+		"attacker-long",
+		"attacker-glob",
+		"attacker-match-body",
+		"needle",
+		strings.Repeat("x", 32),
+	} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("canonical search audit leaked %q: %s", forbidden, raw)
+		}
+	}
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if len(audit.Tools) != len(tests) {
+		t.Fatalf("audit tools = %#v, want %d", audit.Tools, len(tests))
+	}
+	for i, tool := range audit.Tools {
+		if tool.Path != tests[i].want {
+			t.Fatalf("audit path = %q for %q, want %q", tool.Path, tool.Name, tests[i].want)
+		}
+	}
+}
+
+func TestProjectAssistantCanonicalFilesystemPathsRoundTripToAuditAndUI(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		wantSummary string
+	}{
+		{name: "semicolon", path: "src/a;b.ts", wantSummary: "path src/a%3Bb.ts"},
+		{name: "repeated spaces", path: "src/My  File.tsx", wantSummary: "path src/My  File.tsx"},
+		{name: "percent", path: "src/100% done.ts", wantSummary: "path src/100%25 done.ts"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rawArgs, err := json.Marshal(map[string]any{"file_path": tt.path})
+			if err != nil {
+				t.Fatalf("marshal arguments: %v", err)
+			}
+			arguments := summarizeProjectToolArguments(projectToolReadFile, string(rawArgs))
+			if arguments != tt.wantSummary {
+				t.Fatalf("arguments = %q, want %q", arguments, tt.wantSummary)
+			}
+
+			started := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+			run := &store.AssistantRun{ID: "run-path-" + tt.name}
+			recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, started)
+			recorder.recordToolAt(projectToolCallStreamEvent{
+				ID:        "read",
+				Name:      projectToolReadFile,
+				Status:    "succeeded",
+				Arguments: arguments,
+				Summary:   "file read",
+			}, started.Add(time.Second))
+
+			var audit projectAssistantRunAudit
+			if err := json.Unmarshal(run.Audit, &audit); err != nil {
+				t.Fatalf("decode audit: %v", err)
+			}
+			if len(audit.Tools) != 1 || audit.Tools[0].Path != tt.path {
+				t.Fatalf("audit tools = %#v, want exact path %q", audit.Tools, tt.path)
+			}
+
+			action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+				ID:        "read",
+				Name:      projectToolReadFile,
+				Status:    "succeeded",
+				Arguments: arguments,
+				Summary:   "file read",
+			})
+			if action.Label != "Read "+tt.path {
+				t.Fatalf("label = %q, want exact path %q", action.Label, tt.path)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantCanonicalFilesystemControlPathsAreOmittedFromAuditAndUI(t *testing.T) {
+	for _, path := range []string{"src/bad\tname.tsx", "src/bad\nname.tsx"} {
+		t.Run(strconv.Quote(path), func(t *testing.T) {
+			rawArgs, err := json.Marshal(map[string]any{"file_path": path})
+			if err != nil {
+				t.Fatalf("marshal arguments: %v", err)
+			}
+			arguments := summarizeProjectToolArguments(projectToolReadFile, string(rawArgs))
+
+			started := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+			run := &store.AssistantRun{ID: "run-control-path"}
+			recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, started)
+			recorder.recordToolAt(projectToolCallStreamEvent{
+				ID:        "read",
+				Name:      projectToolReadFile,
+				Status:    "succeeded",
+				Arguments: arguments,
+				Summary:   "file read",
+			}, started.Add(time.Second))
+
+			var audit projectAssistantRunAudit
+			if err := json.Unmarshal(run.Audit, &audit); err != nil {
+				t.Fatalf("decode audit: %v", err)
+			}
+			if len(audit.Tools) != 1 || audit.Tools[0].Path != "" {
+				t.Fatalf("audit tools = %#v, want unsafe canonical path omitted", audit.Tools)
+			}
+
+			action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+				ID:        "read",
+				Name:      projectToolReadFile,
+				Status:    "succeeded",
+				Arguments: arguments,
+				Summary:   "file read",
+			})
+			if action.Label != "Inspected project" {
+				t.Fatalf("label = %q, want generic label with unsafe path omitted", action.Label)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantMutationPercentPathsAreNotCanonicalDecoded(t *testing.T) {
+	const path = "src/literal%3Bsegment.tsx"
+	const arguments = "path " + path
+
+	if got := projectAssistantAuditToolPath(projectToolWriteFile, arguments); got != path {
+		t.Fatalf("mutation audit path = %q, want literal %q", got, path)
+	}
+	action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+		ID:        "write",
+		Name:      projectToolWriteFile,
+		Status:    "succeeded",
+		Arguments: arguments,
+		Summary:   "write_file",
+	})
+	if action.Label != "Updated "+path {
+		t.Fatalf("mutation label = %q, want literal percent path", action.Label)
+	}
+}
+
+func TestProjectAssistantNamespacedReadFilePercentPathIsNotCanonicalDecoded(t *testing.T) {
+	const name = "provider__read_file"
+	const path = "src/literal%2Fsegment.tsx"
+	const arguments = "path " + path
+
+	if got := projectAssistantAuditToolPath(name, arguments); got != path {
+		t.Fatalf("namespaced audit path = %q, want literal %q", got, path)
+	}
+	action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+		ID:        "read",
+		Name:      name,
+		Status:    "succeeded",
+		Arguments: arguments,
+		Summary:   "file read",
+	})
+	if action.Label != "Read "+path {
+		t.Fatalf("namespaced label = %q, want literal percent path", action.Label)
+	}
+}
+
+func TestProjectAssistantCanonicalSummaryUnescapeFailsClosed(t *testing.T) {
+	for _, encoded := range []string{
+		"src/incomplete%",
+		"src/incomplete%2",
+		"src/bad%GGhex",
+		"src/invalid%FFutf8",
+		"src/control%00byte",
+		"src/control%C2%85rune",
+	} {
+		t.Run(encoded, func(t *testing.T) {
+			if decoded, ok := unescapeProjectCanonicalToolSummaryValue(encoded); ok {
+				t.Fatalf("unescape(%q) = %q, true; want fail closed", encoded, decoded)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantCanonicalSummaryUnicodeRoundTrip(t *testing.T) {
+	const path = "src/日本語;100%.tsx"
+	escaped := escapeProjectCanonicalToolSummaryValue(path)
+	decoded, ok := unescapeProjectCanonicalToolSummaryValue(escaped)
+	if !ok || decoded != path {
+		t.Fatalf("roundtrip %q -> %q -> %q, %t", path, escaped, decoded, ok)
+	}
+}
+
+func TestProjectAssistantEveryCanonicalReadPathRoundTripsToAudit(t *testing.T) {
+	const path = "src/日本語;a.ts"
+	for _, name := range []string{projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep} {
+		t.Run(name, func(t *testing.T) {
+			args := map[string]any{"path": path}
+			if name == projectToolReadFile {
+				args = map[string]any{"file_path": path}
+			}
+			if name == projectToolGlob || name == projectToolGrep {
+				args["pattern"] = "*.ts"
+			}
+			raw, err := json.Marshal(args)
+			if err != nil {
+				t.Fatalf("marshal arguments: %v", err)
+			}
+			summary := summarizeProjectToolArguments(name, string(raw))
+			if got := projectAssistantAuditToolPath(name, summary); got != path {
+				t.Fatalf("%s audit path = %q from %q, want %q", name, got, summary, path)
+			}
+		})
 	}
 }
 

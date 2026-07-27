@@ -96,11 +96,11 @@ func TestProjectEinoAssistantRewriteWorkspaceMutationsPreservesUnsafeGroups(t *t
 			name: "mixed read and write",
 			call: schema.AssistantMessage("", []schema.ToolCall{
 				{ID: "write", Type: "function", Function: schema.FunctionCall{Name: projectToolWriteFile, Arguments: `{"path":"src/App.jsx","content":"source"}`}},
-				{ID: "read", Type: "function", Function: schema.FunctionCall{Name: projectToolReadProjectFile, Arguments: `{"path":"src/App.jsx"}`}},
+				{ID: "read", Type: "function", Function: schema.FunctionCall{Name: projectToolReadFile, Arguments: `{"file_path":"src/App.jsx","offset":1,"limit":200}`}},
 			}),
 			responses: []*schema.Message{
 				schema.ToolMessage(`{"operation":"write_file","path":"src/App.jsx","size":6}`, "write", schema.WithToolName(projectToolWriteFile)),
-				schema.ToolMessage(`{"path":"src/App.jsx","content":"source"}`, "read", schema.WithToolName(projectToolReadProjectFile)),
+				schema.ToolMessage(`{"path":"src/App.jsx","content":"source"}`, "read", schema.WithToolName(projectToolReadFile)),
 			},
 		},
 		{
@@ -150,9 +150,9 @@ func TestProjectEinoAssistantReductionMiddlewareOnlyRewritesSuccessfulMutations(
 		schema.ToolMessage(`{"operation":"write_file","path":"src/App.jsx","size":63000}`, "write", schema.WithToolName(projectToolWriteFile)),
 		schema.AssistantMessage("", []schema.ToolCall{{
 			ID: "read", Type: "function",
-			Function: schema.FunctionCall{Name: projectToolReadProjectFile, Arguments: `{"path":"src/App.jsx"}`},
+			Function: schema.FunctionCall{Name: projectToolReadFile, Arguments: `{"file_path":"src/App.jsx","offset":1,"limit":200}`},
 		}}),
-		schema.ToolMessage(readResult, "read", schema.WithToolName(projectToolReadProjectFile)),
+		schema.ToolMessage(readResult, "read", schema.WithToolName(projectToolReadFile)),
 		schema.AssistantMessage("", []schema.ToolCall{{
 			ID: "latest", Type: "function",
 			Function: schema.FunctionCall{Name: projectToolGetRuntimeStatus, Arguments: `{}`},

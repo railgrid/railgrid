@@ -343,18 +343,27 @@ func TestProjectAssistantUIActionUsesSpecificSafeLabels(t *testing.T) {
 	}{
 		{
 			name:      "read file",
-			toolName:  projectToolReadProjectFile,
+			toolName:  projectToolReadFile,
 			status:    "succeeded",
-			arguments: `{"path":"src/App.vue"}`,
-			summary:   "file src/App.vue; 2048 bytes",
+			arguments: `{"file_path":"src/App.vue","offset":1,"limit":200}`,
+			summary:   "file read",
 			want:      "Read src/App.vue",
 		},
 		{
-			name:     "list files",
-			toolName: projectToolListProjectFiles,
-			status:   "succeeded",
-			summary:  "6 path(s); src/App.vue, src/style.css",
-			want:     "Read 6 project files",
+			name:      "list files",
+			toolName:  projectToolLS,
+			arguments: "path src",
+			status:    "succeeded",
+			summary:   "6 path(s); src/App.vue, src/style.css",
+			want:      "Read 6 project files",
+		},
+		{
+			name:      "glob files",
+			toolName:  projectToolGlob,
+			arguments: "pattern **/*.vue; path src",
+			status:    "succeeded",
+			summary:   "4 path(s)",
+			want:      "Read 4 project files",
 		},
 		{
 			name:      "write file",
@@ -373,10 +382,10 @@ func TestProjectAssistantUIActionUsesSpecificSafeLabels(t *testing.T) {
 		},
 		{
 			name:     "search files",
-			toolName: projectToolSearchProjectFiles,
+			toolName: projectToolGrep,
 			status:   "succeeded",
-			summary:  "3 match(es); src/App.vue",
-			want:     "Found 3 project matches",
+			summary:  "3 result line(s)",
+			want:     "Found 3 search results",
 		},
 		{
 			name:     "verify preview",
@@ -412,6 +421,16 @@ func TestProjectAssistantUIActionUsesSpecificSafeLabels(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantUICanonicalReadsAreInspectActions(t *testing.T) {
+	for _, name := range []string{projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep} {
+		t.Run(name, func(t *testing.T) {
+			if got := projectAssistantUIActionKind(name); got != projectAssistantUIActionInspect {
+				t.Fatalf("projectAssistantUIActionKind(%q) = %q, want %q", name, got, projectAssistantUIActionInspect)
+			}
+		})
+	}
+}
+
 func TestProjectAssistantUIActionSpecificLabelsRespectMinimalDisclosure(t *testing.T) {
 	prev := projectAssistantToolDisclosureMinimal
 	projectAssistantToolDisclosureMinimal = true
@@ -437,8 +456,8 @@ func TestProjectAssistantUIActionSpecificLabelsRespectMinimalDisclosure(t *testi
 // file contents or secrets. That raw-JSON fallback must be dropped, not shown.
 func TestProjectAssistantUIActionToolArgumentsDropsRawJSONFallback(t *testing.T) {
 	// A tool with a dedicated summarizer yields a safe, non-JSON summary.
-	if got := projectAssistantUIActionToolArguments(projectToolReadProjectFile, `{"path":"src/App.tsx"}`); !strings.Contains(got, "src/App.tsx") || looksLikeRawJSON(got) {
-		t.Errorf("read_project_file arguments = %q, want a non-JSON path summary", got)
+	if got := projectAssistantUIActionToolArguments(projectToolReadFile, `{"file_path":"src/App.tsx","offset":1,"limit":200}`); !strings.Contains(got, "src/App.tsx") || looksLikeRawJSON(got) {
+		t.Errorf("read_file arguments = %q, want a non-JSON path summary", got)
 	}
 	// An unknown tool falls through to json.Marshal(args); the guard must drop
 	// the raw payload rather than leak content/secrets.
@@ -456,7 +475,7 @@ func TestProjectAssistantStreamWriterSkipsLowValueFinishedInspectionProgress(t *
 		Type: projectAssistantEventToolCallFinished,
 		ToolCall: &projectAssistantToolCall{
 			ID:      "tool-1",
-			Name:    projectToolReadProjectFile,
+			Name:    projectToolReadFile,
 			Status:  "succeeded",
 			Summary: "Read src/App.tsx",
 		},
@@ -472,7 +491,7 @@ func TestProjectAssistantStreamWriterSkipsLowValueFinishedInspectionProgress(t *
 		t.Fatalf("event = %#v, want safe surfaceUpdate UI event", event)
 	}
 	assertA2UICard(t, event, "tool result", "Inspected project")
-	assertA2UICard(t, event, "tool result", "read_project_file")
+	assertA2UICard(t, event, "tool result", "read_file")
 	assertA2UICard(t, event, "tool result", "Read src/App.tsx")
 }
 

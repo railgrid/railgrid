@@ -29,8 +29,11 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	einoschema "github.com/cloudwego/eino/schema"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -67,9 +70,6 @@ const (
 )
 
 const (
-	projectToolListProjectFiles               = "list_project_files"
-	projectToolReadProjectFile                = "read_project_file"
-	projectToolSearchProjectFiles             = "search_project_files"
 	projectToolPlanProjectChanges             = "plan_project_changes"
 	projectToolCheckProjectReadiness          = "check_project_readiness"
 	projectToolPrepareProjectDeployment       = "prepare_project_deployment"
@@ -401,9 +401,9 @@ func projectToolLoopFallback(toolMessages []chatMessage, reason string) string {
 
 	var b strings.Builder
 	if len(summaries) > 0 {
-		if len(summaries) == 1 && strings.HasPrefix(summaries[0], projectToolReadProjectFile+": ") {
+		if len(summaries) == 1 && strings.HasPrefix(summaries[0], projectToolReadFile+": ") {
 			b.WriteString("I inspected ")
-			b.WriteString(strings.TrimPrefix(summaries[0], projectToolReadProjectFile+": "))
+			b.WriteString(strings.TrimPrefix(summaries[0], projectToolReadFile+": "))
 		} else if len(summaries) == 1 {
 			b.WriteString("I used the latest project tool result: ")
 			b.WriteString(summaries[0])
@@ -738,12 +738,21 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 			parts = append(parts, fmt.Sprintf("%d file(s): %s", len(paths), summarizeProjectToolList(paths, 5)))
 		}
 		return truncateProjectToolInfo(strings.Join(parts, "; "))
-	case projectToolListProjectFiles:
-		return summarizeProjectToolKeyValues(args, []string{"limit"})
-	case projectToolReadProjectFile:
-		return summarizeProjectToolKeyValues(args, []string{"path", "maxBytes"})
-	case projectToolSearchProjectFiles:
-		return summarizeProjectToolKeyValues(args, []string{"query", "maxResults"})
+	case projectToolLS:
+		return summarizeProjectCanonicalToolKeyValues(args, []string{"path"})
+	case projectToolReadFile:
+		return summarizeProjectCanonicalToolKeyValues(map[string]any{
+			"path":   args["file_path"],
+			"offset": args["offset"],
+			"limit":  args["limit"],
+		}, []string{"path", "offset", "limit"})
+	case projectToolGlob:
+		return summarizeProjectCanonicalToolKeyValues(args, []string{"path", "pattern"})
+	case projectToolGrep:
+		return summarizeProjectCanonicalToolKeyValues(args, []string{
+			"path", "pattern", "glob", "type", "output_mode",
+			"-C", "-B", "-A", "-n", "-i", "head_limit", "offset", "multiline",
+		})
 	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment:
 		return summarizeProjectPlanningWorkflowArgs(args)
 	case projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolRestartRuntime:
@@ -793,6 +802,14 @@ func summarizeProjectToolResult(name, result string) string {
 	if result == "" {
 		return ""
 	}
+	switch projectToolBaseName(name) {
+	case projectToolReadFile:
+		return "file read"
+	case projectToolLS, projectToolGlob:
+		return fmt.Sprintf("%d path(s)", projectAssistantNonEmptyLineCount(result))
+	case projectToolGrep:
+		return fmt.Sprintf("%d result line(s)", projectAssistantGrepResultLineCount(result))
+	}
 	decoded := map[string]any{}
 	if err := json.Unmarshal([]byte(result), &decoded); err == nil {
 		switch projectToolBaseName(name) {
@@ -818,12 +835,6 @@ func summarizeProjectToolResult(name, result string) string {
 			if len(parts) > 0 {
 				return truncateProjectToolInfo(strings.Join(parts, "; "))
 			}
-		case projectToolListProjectFiles:
-			return summarizeWorkspaceListResult(decoded)
-		case projectToolReadProjectFile:
-			return summarizeWorkspaceReadResult(decoded)
-		case projectToolSearchProjectFiles:
-			return summarizeWorkspaceSearchResult(decoded)
 		case projectToolPlanProjectChanges:
 			return summarizeProjectPlanningWorkflowResult(decoded)
 		case projectToolRequestProjectPlanApproval:
@@ -886,9 +897,13 @@ func summarizeProjectToolKeyValues(args map[string]any, keys []string) string {
 	parts := []string{}
 	for _, key := range keys {
 		switch key {
-		case "maxBytes", "maxResults", "limit":
+		case "maxBytes", "maxResults", "limit", "offset", "head_limit", "-C", "-B", "-A":
 			if n, ok := projectToolNumber(args[key]); ok {
 				parts = append(parts, fmt.Sprintf("%s %d", key, n))
+			}
+		case "-n", "-i", "multiline":
+			if value, ok := args[key].(bool); ok {
+				parts = append(parts, fmt.Sprintf("%s %t", key, value))
 			}
 		default:
 			if value := projectToolString(args[key]); value != "" {
@@ -897,6 +912,201 @@ func summarizeProjectToolKeyValues(args map[string]any, keys []string) string {
 		}
 	}
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectCanonicalToolKeyValues(args map[string]any, keys []string) string {
+	safeArgs := make(map[string]any, len(keys))
+	for _, key := range keys {
+		value, ok := args[key]
+		if !ok {
+			continue
+		}
+		if text, ok := value.(string); ok {
+			safeArgs[key] = escapeProjectCanonicalToolSummaryValue(text)
+			continue
+		}
+		safeArgs[key] = value
+	}
+	return summarizeProjectToolKeyValues(safeArgs, keys)
+}
+
+func escapeProjectCanonicalToolSummaryValue(value string) string {
+	const hex = "0123456789ABCDEF"
+	var escaped strings.Builder
+	for _, r := range value {
+		if r != ';' && r != '%' && !unicode.IsControl(r) {
+			escaped.WriteRune(r)
+			continue
+		}
+		var encoded [utf8.UTFMax]byte
+		n := utf8.EncodeRune(encoded[:], r)
+		for _, b := range encoded[:n] {
+			escaped.WriteByte('%')
+			escaped.WriteByte(hex[b>>4])
+			escaped.WriteByte(hex[b&0x0f])
+		}
+	}
+	return escaped.String()
+}
+
+func unescapeProjectCanonicalToolSummaryValue(value string) (string, bool) {
+	var unescaped strings.Builder
+	for i := 0; i < len(value); i++ {
+		if value[i] != '%' {
+			unescaped.WriteByte(value[i])
+			continue
+		}
+		if i+2 >= len(value) {
+			return "", false
+		}
+		high, ok := projectAssistantHexNibble(value[i+1])
+		if !ok {
+			return "", false
+		}
+		low, ok := projectAssistantHexNibble(value[i+2])
+		if !ok {
+			return "", false
+		}
+		unescaped.WriteByte(high<<4 | low)
+		i += 2
+	}
+	decoded := unescaped.String()
+	if !utf8.ValidString(decoded) || strings.IndexFunc(decoded, unicode.IsControl) >= 0 {
+		return "", false
+	}
+	return decoded, true
+}
+
+func projectAssistantHexNibble(value byte) (byte, bool) {
+	switch {
+	case value >= '0' && value <= '9':
+		return value - '0', true
+	case value >= 'a' && value <= 'f':
+		return value - 'a' + 10, true
+	case value >= 'A' && value <= 'F':
+		return value - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
+func projectAssistantCanonicalFilesystemReadTool(name string) bool {
+	switch strings.TrimSpace(name) {
+	case projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep:
+		return true
+	default:
+		return false
+	}
+}
+
+func projectAssistantNonEmptyLineCount(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "No files found" || value == "No matches found" {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(value, "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func projectAssistantGrepResultLineCount(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "No matches found" || value == "No files found" {
+		return 0
+	}
+	lines := strings.Split(value, "\n")
+	first := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			first = i
+			break
+		}
+	}
+	if first >= 0 {
+		if total, ok := projectAssistantGrepFilesHeader(strings.TrimSpace(lines[first])); ok {
+			return total
+		}
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if count, ok := projectAssistantGrepCountTrailer(line); ok {
+			return count
+		}
+		break
+	}
+	return projectAssistantNonEmptyLineCount(value)
+}
+
+func summarizeProjectEinoGrepResult(args map[string]any, result string) string {
+	mode, _ := args["output_mode"].(string)
+	count := 0
+	switch mode {
+	case "content":
+		count = projectAssistantNonEmptyLineCount(result)
+	case "count":
+		lines := strings.Split(strings.TrimSpace(result), "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			line := strings.TrimSpace(lines[i])
+			if line == "" {
+				continue
+			}
+			count, _ = projectAssistantGrepCountTrailer(line)
+			break
+		}
+	case "", "files_with_matches":
+		result = strings.TrimSpace(result)
+		if result != "" && result != "No files found" {
+			lines := strings.Split(result, "\n")
+			count, _ = projectAssistantGrepFilesHeader(strings.TrimSpace(lines[0]))
+		}
+	}
+	return fmt.Sprintf("%d result line(s)", count)
+}
+
+func projectAssistantGrepCountTrailer(line string) (int, bool) {
+	fields := strings.Fields(line)
+	if len(fields) != 7 ||
+		fields[0] != "Found" ||
+		fields[2] != "total" ||
+		(fields[3] != "occurrence" && fields[3] != "occurrences") ||
+		fields[4] != "across" ||
+		(fields[6] != "file." && fields[6] != "files.") {
+		return 0, false
+	}
+	count, err := strconv.Atoi(fields[1])
+	if err != nil || count < 0 {
+		return 0, false
+	}
+	files, err := strconv.Atoi(fields[5])
+	if err != nil || files < 0 {
+		return 0, false
+	}
+	if (count == 1) != (fields[3] == "occurrence") ||
+		(files == 1) != (fields[6] == "file.") {
+		return 0, false
+	}
+	return count, true
+}
+
+func projectAssistantGrepFilesHeader(line string) (int, bool) {
+	fields := strings.Fields(line)
+	if len(fields) != 3 ||
+		fields[0] != "Found" ||
+		(fields[2] != "file" && fields[2] != "files") {
+		return 0, false
+	}
+	count, err := strconv.Atoi(fields[1])
+	if err != nil || count < 0 {
+		return 0, false
+	}
+	return count, (count == 1) == (fields[2] == "file")
 }
 
 func summarizeProjectPlanningWorkflowArgs(args map[string]any) string {
@@ -1801,11 +2011,11 @@ func appendProjectAssistantModePromptForInitialPlan(b *strings.Builder, profile 
 	case projectAssistantTurnProfileGuidance:
 		b.WriteString("Give practical guidance, recommendations, and tradeoffs. Do not claim to know current file or runtime state unless tool evidence is available; ask the user for missing context in plain language when needed.\n")
 	case projectAssistantTurnProfileExploration:
-		b.WriteString("Use read-only App Studio workflow, workspace-read, and aggregate MCP infrastructure discovery tools when current project state or available infrastructure templates are needed. Prefer plan_project_changes, check_project_readiness, list_project_files, read_project_file, search_project_files, infrastructure__list_templates, infrastructure__describe_template, infrastructure__list_instances, and infrastructure__get_instance for bounded inspection. Treat infrastructure templates as capability evidence, not as a menu the user must operate. Before deciding whether a template fits, describe the template and consult the template's agent.usage guidance when that field is available. ")
+		b.WriteString("Use read-only App Studio workflow, workspace-read, and aggregate MCP infrastructure discovery tools when current project state or available infrastructure templates are needed. Prefer plan_project_changes, check_project_readiness, ls, read_file, glob, grep, infrastructure__list_templates, infrastructure__describe_template, infrastructure__list_instances, and infrastructure__get_instance for bounded inspection. Treat infrastructure templates as capability evidence, not as a menu the user must operate. Before deciding whether a template fits, describe the template and consult the template's agent.usage guidance when that field is available. ")
 		appendProjectAssistantTemplateFitPrompt(b)
 		b.WriteString("Do not edit, deploy, provision, or commit.\n")
 	case projectAssistantTurnProfileDebugging:
-		b.WriteString("Diagnose in read-only mode. Use check_project_readiness, list_project_files, read_project_file, search_project_files, get_runtime_status, and get_preview_url as needed. Do not mutate files, deploy runtime resources, or commit unless the user explicitly asks you to fix the issue.\n")
+		b.WriteString("Diagnose in read-only mode. Use check_project_readiness, ls, read_file, glob, grep, get_runtime_status, and get_preview_url as needed. Do not mutate files, deploy runtime resources, or commit unless the user explicitly asks you to fix the issue.\n")
 	case projectAssistantTurnProfileDebugFix:
 		b.WriteString("First diagnose the issue with read-only workflow, workspace, and runtime status tools. ")
 		appendProjectAssistantBuilderPromptForInitialPlan(b, repoRef, initialPlan)
@@ -1829,7 +2039,7 @@ func appendProjectAssistantBuilderPromptForInitialPlan(b *strings.Builder, repoR
 	appendProjectAssistantTemplateFitPrompt(b)
 	b.WriteString("When the user asks for a supporting capability such as persistent data, first decide whether the current sandbox app can satisfy the development need before provisioning infrastructure. ")
 	b.WriteString("Do not recommend a full application or runtime template just to satisfy a smaller need like persistent data, and do not duplicate App Studio's sandbox runtime unless the user is explicitly moving toward a production launch. ")
-	b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
+	b.WriteString("Use ls and glob to discover project-relative paths, read_file for bounded targeted reads, and grep to locate code. Inspect relevant existing files before editing. ")
 	b.WriteString("When requirements are unclear during implementation, call ask_follow_up with at most three concise questions instead of guessing. ")
 	if initialPlan {
 		b.WriteString("The user explicitly authorized this fresh project's initial source build. Do not call request_project_plan_approval before write_file, apply_patch, or mkdir in this run. This authorization does not cover template selection, runtime actions, infrastructure provisioning, repository changes, or commit_project_files; commit_project_files still requires explicit user approval. ")

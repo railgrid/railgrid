@@ -36,6 +36,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/faroshq/provider-app-studio/store"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 const (
@@ -319,10 +320,28 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		}
 		handlers = append(handlers, searchMiddleware)
 	}
+	var workspaceStore *workspace.FileStore
+	if e.server != nil {
+		workspaceStore = e.server.workspaces
+	}
+	filesystemMiddleware, err := projectEinoAssistantFilesystemMiddleware(ctx, workspaceStore, req)
+	if err != nil {
+		return nil, fmt.Errorf("create App Studio Eino filesystem middleware: %w", err)
+	}
+	if filesystemMiddleware != nil {
+		handlers = append(handlers, filesystemMiddleware)
+	}
+	// Eino makes the first registered tool wrapper outermost. Safe-error must
+	// therefore precede telemetry so telemetry observes backend errors before
+	// they are shaped for the model. Phase must also precede telemetry so a
+	// hidden or terminal-phase call is denied without emitting read progress.
 	handlers = append(handlers, &projectEinoAssistantSafeToolErrorMiddleware{
 		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
 	})
 	handlers = append(handlers, projectEinoAssistantPhaseMiddleware(req, runState))
+	if filesystemMiddleware != nil {
+		handlers = append(handlers, projectEinoAssistantFilesystemTelemetryMiddleware(req, runState))
+	}
 	toolsConfig := adk.ToolsConfig{
 		ToolsNodeConfig: compose.ToolsNodeConfig{
 			Tools:               staticTools,

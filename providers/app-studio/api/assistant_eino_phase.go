@@ -873,13 +873,18 @@ func projectEinoAssistantPhaseCanonicalEditTool(name string) bool {
 }
 
 func projectEinoAssistantPhaseToolMetadata(tool *schema.ToolInfo) (projectAssistantToolRisk, projectAssistantToolBundle, bool) {
-	if tool == nil || tool.Extra == nil {
+	if tool == nil {
 		return "", "", false
 	}
-	risk, riskOK := tool.Extra["risk"].(string)
-	bundle, bundleOK := tool.Extra["bundle"].(string)
-	if !riskOK || !bundleOK {
-		return "", "", false
+	if tool.Extra != nil {
+		risk, riskOK := tool.Extra["risk"].(string)
+		bundle, bundleOK := tool.Extra["bundle"].(string)
+		if riskOK && bundleOK {
+			return projectAssistantToolRisk(strings.TrimSpace(risk)), projectAssistantToolBundle(strings.TrimSpace(bundle)), true
+		}
 	}
-	return projectAssistantToolRisk(strings.TrimSpace(risk)), projectAssistantToolBundle(strings.TrimSpace(bundle)), true
+	if projectEinoAssistantFilesystemReadTool(tool.Name) {
+		return projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead, true
+	}
+	return "", "", false
 }

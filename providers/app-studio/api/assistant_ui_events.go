@@ -313,12 +313,19 @@ func projectAssistantUIActionSpecificLabel(action projectAssistantUIAction) stri
 	if path == "" {
 		path = projectAssistantUISummaryField(action.Detail, "file")
 	}
+	if path != "" && projectAssistantCanonicalFilesystemReadTool(action.Tool) {
+		var ok bool
+		path, ok = unescapeProjectCanonicalToolSummaryValue(path)
+		if !ok {
+			path = ""
+		}
+	}
 	switch base {
-	case projectToolReadProjectFile:
+	case projectToolReadFile:
 		if path != "" {
 			return projectAssistantUIActionLabel(active, false, "Reading "+path, "Read "+path, action.Label)
 		}
-	case projectToolListProjectFiles:
+	case projectToolLS, projectToolGlob:
 		if count, ok := projectAssistantUISummaryCount(action.Detail, "path(s)"); ok {
 			return projectAssistantUIActionLabel(
 				active,
@@ -328,13 +335,17 @@ func projectAssistantUIActionSpecificLabel(action projectAssistantUIAction) stri
 				action.Label,
 			)
 		}
-	case projectToolSearchProjectFiles:
-		if count, ok := projectAssistantUISummaryCount(action.Detail, "match(es)"); ok {
+	case projectToolGrep:
+		if count, ok := projectAssistantUISummaryCount(action.Detail, "result line(s)"); ok {
+			noun := "search results"
+			if count == 1 {
+				noun = "search result"
+			}
 			return projectAssistantUIActionLabel(
 				active,
 				false,
 				"Searching project",
-				fmt.Sprintf("Found %d project matches", count),
+				fmt.Sprintf("Found %d %s", count, noun),
 				action.Label,
 			)
 		}
@@ -386,6 +397,15 @@ func projectAssistantUISummaryField(summary, field string) string {
 }
 
 func projectAssistantUISummaryCount(summary, marker string) (int, bool) {
+	if index := strings.Index(summary, marker); index >= 0 {
+		prefixFields := strings.Fields(strings.TrimSpace(summary[:index]))
+		if len(prefixFields) > 0 {
+			count, err := strconv.Atoi(strings.Trim(prefixFields[len(prefixFields)-1], ";"))
+			if err == nil && count >= 0 {
+				return count, true
+			}
+		}
+	}
 	fields := strings.Fields(summary)
 	for i := 1; i < len(fields); i++ {
 		if strings.Trim(fields[i], ";") != marker {
@@ -516,7 +536,7 @@ func projectAssistantUIActionKind(name string) string {
 		return projectAssistantUIActionCommit
 	case base == projectToolWriteFile || base == projectToolApplyPatch || base == projectToolMkdir:
 		return projectAssistantUIActionEdit
-	case base == projectToolListProjectFiles || base == projectToolReadProjectFile || base == projectToolSearchProjectFiles:
+	case base == projectToolLS || base == projectToolReadFile || base == projectToolGlob || base == projectToolGrep:
 		return projectAssistantUIActionInspect
 	default:
 		return projectAssistantUIActionOther

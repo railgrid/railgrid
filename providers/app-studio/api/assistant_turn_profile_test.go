@@ -191,8 +191,8 @@ func TestProjectAssistantSemanticTurnClassifierRejectsToolCalls(t *testing.T) {
 			ID:   "call-1",
 			Type: "function",
 			Function: einoschema.FunctionCall{
-				Name:      projectToolReadProjectFile,
-				Arguments: `{"path":"src/App.tsx"}`,
+				Name:      projectToolReadFile,
+				Arguments: `{"file_path":"src/App.tsx","offset":1,"limit":200}`,
 			},
 		}}),
 	}}}
@@ -265,9 +265,9 @@ func TestProjectAssistantModePromptsKeepDiscussionAndGuidanceToolFree(t *testing
 				projectToolRestartRuntime,
 				projectToolGetRuntimeStatus,
 				projectToolGetPreviewURL,
-				projectToolListProjectFiles,
-				projectToolReadProjectFile,
-				projectToolSearchProjectFiles,
+				projectToolReadFile,
+				projectToolGlob,
+				projectToolGrep,
 				projectToolWriteFile,
 				projectToolApplyPatch,
 				projectToolMkdir,
@@ -440,35 +440,35 @@ func TestProjectAssistantTurnPolicyAllowsExpectedToolBundles(t *testing.T) {
 		{
 			name:       "discussion",
 			profile:    projectAssistantTurnProfileDiscussion,
-			wantReject: []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp},
+			wantReject: []string{projectToolCheckProjectReadiness, projectToolReadFile, projectToolGetRuntimeStatus, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp},
 		},
 		{
 			name:       "guidance",
 			profile:    projectAssistantTurnProfileGuidance,
-			wantReject: []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp},
+			wantReject: []string{projectToolCheckProjectReadiness, projectToolReadFile, projectToolGetRuntimeStatus, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp},
 		},
 		{
 			name:       "exploration",
 			profile:    projectAssistantTurnProfileExploration,
-			wantAllow:  []string{projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment, projectToolInspectDevelopmentTemplates, projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles, projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance},
+			wantAllow:  []string{projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment, projectToolInspectDevelopmentTemplates, projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep, projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance},
 			wantReject: []string{projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolVerifyDevelopmentRuntime, projectToolRestartRuntime, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 		},
 		{
 			name:       "debugging",
 			profile:    projectAssistantTurnProfileDebugging,
-			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolInspectDevelopmentTemplates, projectToolReadProjectFile, projectToolSearchProjectFiles, projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolVerifyDevelopmentRuntime, projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance},
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolInspectDevelopmentTemplates, projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep, projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolVerifyDevelopmentRuntime, projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance},
 			wantReject: []string{projectToolRestartRuntime, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 		},
 		{
 			name:       "debug fix",
 			profile:    projectAssistantTurnProfileDebugFix,
-			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolInspectDevelopmentTemplates, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolVerifyDevelopmentRuntime, projectToolRestartRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolInspectDevelopmentTemplates, projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep, projectToolGetRuntimeStatus, projectToolVerifyDevelopmentRuntime, projectToolRestartRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 			wantReject: nil,
 		},
 		{
 			name:       "implementation",
 			profile:    projectAssistantTurnProfileImplementation,
-			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolInspectDevelopmentTemplates, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolVerifyDevelopmentRuntime, projectToolRestartRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolInspectDevelopmentTemplates, projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep, projectToolGetRuntimeStatus, projectToolVerifyDevelopmentRuntime, projectToolRestartRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 			wantReject: nil,
 		},
 	}
@@ -487,7 +487,7 @@ func TestProjectAssistantTurnPolicyAllowsExpectedToolBundles(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			policy := projectAssistantTurnPolicyForProfile(tt.profile)
 			for _, name := range tt.wantAllow {
-				spec, ok := registry.Spec(name)
+				spec, ok := projectAssistantTurnPolicyTestSpec(registry, name)
 				if !ok {
 					t.Fatalf("tool %s missing from registry", name)
 				}
@@ -496,7 +496,7 @@ func TestProjectAssistantTurnPolicyAllowsExpectedToolBundles(t *testing.T) {
 				}
 			}
 			for _, name := range tt.wantReject {
-				spec, ok := registry.Spec(name)
+				spec, ok := projectAssistantTurnPolicyTestSpec(registry, name)
 				if !ok {
 					t.Fatalf("tool %s missing from registry", name)
 				}
@@ -564,17 +564,20 @@ func TestEscalateProjectAssistantTurnPolicy(t *testing.T) {
 	}
 	// The escalated policy actually grants tools a discussion policy denies.
 	escalated := escalateProjectAssistantTurnPolicy(discussion, implementation)
-	registry := projectAssistantLocalToolRegistry(nil)
-	spec, ok := registry.Spec(projectToolReadProjectFile)
-	if !ok {
-		t.Fatalf("tool %s missing from registry", projectToolReadProjectFile)
-	}
+	spec := projectAssistantToolSpec{Name: projectToolReadFile, Risk: projectAssistantToolRiskRead}
 	if discussion.AllowsTool(spec) {
 		t.Fatal("discussion policy unexpectedly allows workspace reads")
 	}
 	if !escalated.AllowsTool(spec) {
 		t.Fatal("escalated policy still denies workspace reads")
 	}
+}
+
+func projectAssistantTurnPolicyTestSpec(registry projectAssistantToolRegistry, name string) (projectAssistantToolSpec, bool) {
+	if projectEinoAssistantFilesystemReadTool(name) {
+		return projectAssistantToolSpec{Name: name, Risk: projectAssistantToolRiskRead}, true
+	}
+	return registry.Spec(name)
 }
 
 var _ einomodel.BaseChatModel = (*repositoryFlowEinoChatModel)(nil)

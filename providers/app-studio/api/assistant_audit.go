@@ -207,8 +207,11 @@ func projectAssistantAuditOffsetMS(started, at time.Time) int64 {
 }
 
 func projectAssistantAuditToolPath(name, arguments string) string {
-	switch projectToolBaseName(name) {
-	case projectToolReadProjectFile, projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	rawName := strings.TrimSpace(name)
+	base := projectToolBaseName(rawName)
+	switch base {
+	case projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep,
+		projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
 	default:
 		return ""
 	}
@@ -220,6 +223,13 @@ func projectAssistantAuditToolPath(name, arguments string) string {
 		path := strings.TrimSpace(strings.TrimPrefix(part, "path "))
 		if path == "" || strings.ContainsAny(path, "\r\n\x00") {
 			return ""
+		}
+		if projectAssistantCanonicalFilesystemReadTool(rawName) {
+			var ok bool
+			path, ok = unescapeProjectCanonicalToolSummaryValue(path)
+			if !ok {
+				return ""
+			}
 		}
 		return projectAssistantAuditString(path, projectAssistantAuditMaxPathBytes)
 	}

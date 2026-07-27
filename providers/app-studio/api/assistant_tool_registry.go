@@ -98,7 +98,6 @@ func projectAssistantAllToolSpecs(tools []projectAssistantTool) []projectAssista
 	workflowSpecs := projectAssistantWorkflowToolSpecs()
 	out := make([]projectAssistantToolSpec, 0, len(tools)+len(workflowSpecs))
 	seen := map[string]struct{}{}
-	workflowInserted := false
 	appendSpec := func(spec projectAssistantToolSpec) {
 		key := projectAssistantToolKey(spec.Name)
 		if key == "" {
@@ -110,26 +109,15 @@ func projectAssistantAllToolSpecs(tools []projectAssistantTool) []projectAssista
 		seen[key] = struct{}{}
 		out = append(out, spec)
 	}
-	appendWorkflowSpecs := func() {
-		if workflowInserted {
-			return
-		}
-		workflowInserted = true
-		for _, spec := range workflowSpecs {
-			appendSpec(spec)
-		}
-	}
 	for _, tool := range tools {
 		if tool == nil {
 			continue
 		}
-		spec := tool.Spec()
-		appendSpec(spec)
-		if projectToolBaseName(spec.Name) == projectToolSearchProjectFiles {
-			appendWorkflowSpecs()
-		}
+		appendSpec(tool.Spec())
 	}
-	appendWorkflowSpecs()
+	for _, spec := range workflowSpecs {
+		appendSpec(spec)
+	}
 	return out
 }
 
@@ -143,57 +131,6 @@ func (s *Server) projectAssistantToolRegistry() projectAssistantToolRegistry {
 
 func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegistry {
 	return newProjectAssistantToolRegistry(
-		projectAssistantToolFunc{
-			spec: projectAssistantToolSpec{
-				Name:        projectToolListProjectFiles,
-				Description: "List files in the App Studio project workspace. Use this before editing an existing project.",
-				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":%d,"description":"Maximum number of file paths to return."}}}`, workspace.MaxListLimit)),
-				Risk:        projectAssistantToolRiskRead,
-			},
-			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
-				s, err := projectAssistantToolServer(server)
-				if err != nil {
-					return "", err
-				}
-				return projectAssistantToolJSONResult(s.workspaces.ListFiles(ctx, req.WorkspaceScope, workspace.ListOptions{Limit: projectToolInt(req.Arguments["limit"])}))
-			},
-		},
-		projectAssistantToolFunc{
-			spec: projectAssistantToolSpec{
-				Name:        projectToolReadProjectFile,
-				Description: "Read a bounded UTF-8 text file from the App Studio project workspace.",
-				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative file path."},"maxBytes":{"type":"integer","minimum":1,"maximum":%d,"description":"Maximum bytes to return."}},"required":["path"]}`, workspace.MaxReadMaxBytes)),
-				Risk:        projectAssistantToolRiskRead,
-			},
-			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
-				s, err := projectAssistantToolServer(server)
-				if err != nil {
-					return "", err
-				}
-				return projectAssistantToolJSONResult(s.workspaces.ReadFile(ctx, req.WorkspaceScope, workspace.ReadOptions{
-					Path:     projectToolString(req.Arguments["path"]),
-					MaxBytes: projectToolInt(req.Arguments["maxBytes"]),
-				}))
-			},
-		},
-		projectAssistantToolFunc{
-			spec: projectAssistantToolSpec{
-				Name:        projectToolSearchProjectFiles,
-				Description: "Search text files in the App Studio project workspace and return bounded path/fragments results.",
-				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"query":{"type":"string","description":"Text to search for."},"maxResults":{"type":"integer","minimum":1,"maximum":%d,"description":"Maximum matching files to return."}},"required":["query"]}`, workspace.MaxSearchLimit)),
-				Risk:        projectAssistantToolRiskRead,
-			},
-			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
-				s, err := projectAssistantToolServer(server)
-				if err != nil {
-					return "", err
-				}
-				return projectAssistantToolJSONResult(s.workspaces.SearchFiles(ctx, req.WorkspaceScope, workspace.SearchOptions{
-					Query:      projectToolString(req.Arguments["query"]),
-					MaxResults: projectToolInt(req.Arguments["maxResults"]),
-				}))
-			},
-		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolAskFollowUp,

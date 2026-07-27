@@ -21,9 +21,6 @@ import (
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
-
-
-
 // New projects get a development environment with NO binding: nothing runs
 // until a template is bound (assistant interview, portal picker, or PUT
 // /template). The legacy always-on SandboxRunner default is gone.
@@ -40,8 +37,6 @@ func TestDefaultProjectDevelopmentEnvironmentHasNoBinding(t *testing.T) {
 		t.Fatalf("bindings = %d, want none until a template is selected", got)
 	}
 }
-
-
 
 func TestProjectAssistantRuntimePreviewURLPrefersDevelopment(t *testing.T) {
 	p := &aiv1alpha1.Project{
@@ -134,7 +129,6 @@ func TestApplyProjectPatchRequestPersistsSharing(t *testing.T) {
 	}
 }
 
-
 func TestProjectAssistantPreviewRefreshNeededUsesSuccessfulMutatingToolCalls(t *testing.T) {
 	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
 	if !server.projectAssistantPreviewRefreshNeeded(context.Background(), workspace.Scope{}, "", false, []projectToolCallStreamEvent{{
@@ -150,33 +144,12 @@ func TestProjectAssistantPreviewRefreshNeededUsesSuccessfulMutatingToolCalls(t *
 		t.Fatal("preview refresh = true, want false after failed workspace mutation")
 	}
 	if server.projectAssistantPreviewRefreshNeeded(context.Background(), workspace.Scope{}, "", false, []projectToolCallStreamEvent{{
-		Name:   projectToolReadProjectFile,
+		Name:   projectToolReadFile,
 		Status: "succeeded",
 	}}) {
 		t.Fatal("preview refresh = true, want false after read-only tool")
 	}
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 type previewOverlayProbeEngine struct {
 	previewURL string
@@ -190,4 +163,3 @@ func (e *previewOverlayProbeEngine) StreamProjectAssistant(_ context.Context, re
 func (e *previewOverlayProbeEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
 	return projectAssistantRunResult{}, fmt.Errorf("unexpected resume")
 }
-

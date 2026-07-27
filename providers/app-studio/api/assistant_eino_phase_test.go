@@ -351,8 +351,10 @@ func TestProjectEinoAssistantPhaseIgnoresUnsuccessfulToolResults(t *testing.T) {
 func TestProjectEinoAssistantPhaseMiddlewareFiltersTools(t *testing.T) {
 	allTools := []*schema.ToolInfo{
 		projectEinoAssistantPhaseToolInfo("read_workspace", projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
-		projectEinoAssistantPhaseToolInfo(projectToolListProjectFiles, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
-		projectEinoAssistantPhaseToolInfo(projectToolSearchProjectFiles, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
+		projectEinoAssistantPhaseToolInfo(projectToolLS, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
+		projectEinoAssistantPhaseToolInfo(projectToolReadFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
+		projectEinoAssistantPhaseToolInfo(projectToolGlob, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
+		projectEinoAssistantPhaseToolInfo(projectToolGrep, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
 		projectEinoAssistantPhaseToolInfo("ask_for_input", projectAssistantToolRiskInput, projectAssistantToolBundleCollaboration),
 		projectEinoAssistantPhaseToolInfo(projectToolAskFollowUp, projectAssistantToolRiskInput, projectAssistantToolBundleCollaboration),
 		projectEinoAssistantPhaseToolInfo(projectToolRequestProjectPlanApproval, projectAssistantToolRiskPlan, projectAssistantToolBundleCollaboration),
@@ -381,7 +383,7 @@ func TestProjectEinoAssistantPhaseMiddlewareFiltersTools(t *testing.T) {
 		{
 			name: "approval exposes reads plans and direct operational actions",
 			want: []string{
-				"read_workspace", projectToolListProjectFiles, projectToolSearchProjectFiles,
+				"read_workspace", projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep,
 				"ask_for_input", projectToolAskFollowUp, projectToolRequestProjectPlanApproval,
 				projectToolPlanProjectChanges, projectToolCheckProjectReadiness,
 				projectToolGetRuntimeStatus, projectToolRestartRuntime, projectToolSetRuntimeEnv,
@@ -392,7 +394,7 @@ func TestProjectEinoAssistantPhaseMiddlewareFiltersTools(t *testing.T) {
 			name:         "mutate exposes source and direct operational tools",
 			approvedPlan: &projectAssistantApprovedPlan{Steps: []string{"inspect", "edit"}},
 			want: []string{
-				"read_workspace", projectToolListProjectFiles, projectToolSearchProjectFiles,
+				"read_workspace", projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep,
 				projectToolAskFollowUp, projectToolWriteFile, projectToolApplyPatch,
 				projectToolGetRuntimeStatus, projectToolRestartRuntime, projectToolSetRuntimeEnv,
 				projectToolVerifyDevelopmentRuntime, projectEinoAssistantWriteTodosTool,
@@ -405,7 +407,7 @@ func TestProjectEinoAssistantPhaseMiddlewareFiltersTools(t *testing.T) {
 				projectEinoAssistantPhaseToolResult(projectToolWriteFile, `{"operation":"write_file"}`),
 			},
 			want: []string{
-				"read_workspace", projectToolListProjectFiles, projectToolSearchProjectFiles,
+				"read_workspace", projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep,
 				projectToolAskFollowUp, projectToolWriteFile, projectToolApplyPatch,
 				projectToolVerifyDevelopmentRuntime, projectEinoAssistantWriteTodosTool,
 			},
@@ -418,7 +420,7 @@ func TestProjectEinoAssistantPhaseMiddlewareFiltersTools(t *testing.T) {
 				projectEinoAssistantPhaseToolResult(projectToolVerifyDevelopmentRuntime, `{"status":"not_ready"}`),
 			},
 			want: []string{
-				"read_workspace", projectToolListProjectFiles, projectToolSearchProjectFiles,
+				"read_workspace", projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep,
 				projectToolAskFollowUp, projectToolWriteFile, projectToolApplyPatch,
 				projectToolGetRuntimeStatus, projectToolRestartRuntime, projectToolSetRuntimeEnv,
 				projectToolVerifyDevelopmentRuntime, projectEinoAssistantWriteTodosTool,
@@ -490,7 +492,7 @@ func TestProjectEinoAssistantPhaseRealFactoryInventoryAllowsCanonicalSourceAndOp
 		{
 			phase: projectEinoAssistantPhaseMutate,
 			want: []string{
-				projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles,
+				projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep,
 				projectToolAskFollowUp, projectToolWriteFile, projectToolApplyPatch, projectToolMkdir,
 				projectToolInspectDevelopmentTemplates, projectToolSelectTemplate,
 				projectToolGetCheckpoints, projectToolVerifyDevelopmentRuntime, projectToolCheckProjectBuild,
@@ -791,7 +793,7 @@ func TestProjectEinoAssistantPhaseRequiresCanonicalExclusiveToolMetadata(t *test
 		{
 			name:  "verify allows workspace reads before another edit",
 			phase: projectEinoAssistantPhaseVerify,
-			tool:  projectEinoAssistantPhaseToolInfo(projectToolReadProjectFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
+			tool:  projectEinoAssistantPhaseToolInfo(projectToolReadFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
 			want:  true,
 		},
 		{
@@ -847,7 +849,7 @@ func TestProjectEinoAssistantPhaseRequiresCanonicalExclusiveToolMetadata(t *test
 
 func TestProjectEinoAssistantPhaseFiltersTemplateToolsForReadOnlyProfiles(t *testing.T) {
 	tools := []*schema.ToolInfo{
-		projectEinoAssistantPhaseToolInfo(projectToolReadProjectFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
+		projectEinoAssistantPhaseToolInfo(projectToolReadFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
 		projectEinoAssistantPhaseToolInfo(projectToolGetRuntimeStatus, projectAssistantToolRiskRead, projectAssistantToolBundleRuntime),
 		projectEinoAssistantPhaseToolInfo(projectToolInspectDevelopmentTemplates, projectAssistantToolRiskRead, projectAssistantToolBundleWorkflow),
 		projectEinoAssistantPhaseToolInfo(projectToolInspectDevelopmentTemplates, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
@@ -868,14 +870,14 @@ func TestProjectEinoAssistantPhaseFiltersTemplateToolsForReadOnlyProfiles(t *tes
 		{
 			name:    "template-less exploration can inspect but not select",
 			project: &aiv1alpha1.Project{},
-			want:    []string{projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolInspectDevelopmentTemplates},
+			want:    []string{projectToolReadFile, projectToolGetRuntimeStatus, projectToolInspectDevelopmentTemplates},
 		},
 		{
 			name: "bound exploration hides template inspection and selection",
 			project: &aiv1alpha1.Project{
 				Spec: aiv1alpha1.ProjectSpec{Template: &aiv1alpha1.ProjectTemplateSpec{Name: "application"}},
 			},
-			want: []string{projectToolReadProjectFile, projectToolGetRuntimeStatus},
+			want: []string{projectToolReadFile, projectToolGetRuntimeStatus},
 		},
 	}
 
@@ -1055,7 +1057,7 @@ func TestProjectEinoAssistantPhaseMiddlewareGatesHiddenToolExecution(t *testing.
 			name:         "mutate executes workspace read",
 			phase:        projectEinoAssistantPhaseMutate,
 			approvedPlan: &projectAssistantApprovedPlan{Steps: []string{"inspect", "edit"}},
-			tool:         projectEinoAssistantPhaseToolInfo(projectToolReadProjectFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
+			tool:         projectEinoAssistantPhaseToolInfo(projectToolReadFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
 			wantCalls:    1,
 			wantResult:   "todo recorded",
 		},
@@ -1075,7 +1077,7 @@ func TestProjectEinoAssistantPhaseMiddlewareGatesHiddenToolExecution(t *testing.
 		{
 			name:       "verify executes workspace read",
 			phase:      projectEinoAssistantPhaseVerify,
-			tool:       projectEinoAssistantPhaseToolInfo(projectToolReadProjectFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
+			tool:       projectEinoAssistantPhaseToolInfo(projectToolReadFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
 			wantCalls:  1,
 			wantResult: "todo recorded",
 		},
@@ -1463,39 +1465,52 @@ func TestProjectEinoAssistantPhaseMiddlewareRestoresToolsAfterApproval(t *testin
 }
 
 func TestProjectEinoAssistantPhaseMiddlewareRestoresCanonicalToolsAfterResume(t *testing.T) {
+	ctx := context.Background()
 	runState := newProjectEinoAssistantRunState()
 	tools := []einotool.BaseTool{
 		projectEinoAssistantPhaseBaseTool(projectToolRequestProjectPlanApproval, projectAssistantToolRiskPlan, projectAssistantToolBundleCollaboration),
 		projectEinoAssistantPhaseBaseTool(projectToolWriteFile, projectAssistantToolRiskWrite, projectAssistantToolBundleEdit),
 	}
 	runCtx := &adk.ChatModelAgentContext{Tools: tools}
+	filesystemMiddleware, err := projectEinoAssistantFilesystemMiddleware(ctx, workspace.NewFileStore(t.TempDir()), projectAssistantRunRequest{
+		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"},
+		TurnPolicy:     projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
+	})
+	if err != nil {
+		t.Fatalf("projectEinoAssistantFilesystemMiddleware returned error: %v", err)
+	}
+	_, runCtx, err = filesystemMiddleware.BeforeAgent(ctx, runCtx)
+	if err != nil {
+		t.Fatalf("filesystem BeforeAgent returned error: %v", err)
+	}
 	persistedApprovalState := &adk.ChatModelAgentState{ToolInfos: []*schema.ToolInfo{
 		projectEinoAssistantPhaseToolInfo(projectToolRequestProjectPlanApproval, projectAssistantToolRiskPlan, projectAssistantToolBundleCollaboration),
 	}}
 
 	resumedMiddleware := projectEinoAssistantPhaseMiddleware(projectAssistantRunRequest{}, runState)
-	if _, _, err := resumedMiddleware.BeforeAgent(context.Background(), runCtx); err != nil {
+	if _, _, err := resumedMiddleware.BeforeAgent(ctx, runCtx); err != nil {
 		t.Fatalf("BeforeAgent returned error: %v", err)
 	}
 	runState.ApprovePlan(projectAssistantApprovedPlan{Steps: []string{"edit"}})
-	_, state, err := resumedMiddleware.BeforeModelRewriteState(context.Background(), persistedApprovalState, nil)
+	_, state, err := resumedMiddleware.BeforeModelRewriteState(ctx, persistedApprovalState, nil)
 	if err != nil {
 		t.Fatalf("mutate filtering returned error: %v", err)
 	}
-	if got := projectEinoAssistantPhaseToolNames(state.ToolInfos); !projectEinoAssistantPhaseStringSlicesEqual(got, []string{projectToolWriteFile}) {
-		t.Fatalf("resumed mutate tool infos = %#v, want recovered workspace write without plan tool", got)
+	want := []string{projectToolWriteFile, projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep}
+	if got := projectEinoAssistantPhaseToolNames(state.ToolInfos); !projectEinoAssistantPhaseStringSlicesEqual(got, want) {
+		t.Fatalf("resumed mutate tool infos = %#v, want recovered registry write and canonical Eino reads %#v", got, want)
 	}
 }
 
 func TestProjectEinoAssistantPhaseMiddlewareRestoresReadOnlyPolicyToolsFromLegacyCheckpoint(t *testing.T) {
 	tools := []einotool.BaseTool{
-		projectEinoAssistantPhaseBaseTool(projectToolReadProjectFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
+		projectEinoAssistantPhaseBaseTool(projectToolReadFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
 		projectEinoAssistantPhaseBaseTool(projectToolGetRuntimeStatus, projectAssistantToolRiskRead, projectAssistantToolBundleRuntime),
 		projectEinoAssistantPhaseBaseTool(projectToolGetPreviewURL, projectAssistantToolRiskRead, projectAssistantToolBundleRuntime),
 	}
 	runCtx := &adk.ChatModelAgentContext{Tools: tools}
 	persistedPrunedState := &adk.ChatModelAgentState{ToolInfos: []*schema.ToolInfo{
-		projectEinoAssistantPhaseToolInfo(projectToolReadProjectFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
+		projectEinoAssistantPhaseToolInfo(projectToolReadFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead),
 	}}
 	middleware := projectEinoAssistantPhaseMiddleware(projectAssistantRunRequest{
 		TurnPolicy: projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging),
@@ -1508,7 +1523,7 @@ func TestProjectEinoAssistantPhaseMiddlewareRestoresReadOnlyPolicyToolsFromLegac
 	if err != nil {
 		t.Fatalf("BeforeModelRewriteState returned error: %v", err)
 	}
-	want := []string{projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolGetPreviewURL}
+	want := []string{projectToolReadFile, projectToolGetRuntimeStatus, projectToolGetPreviewURL}
 	if got := projectEinoAssistantPhaseToolNames(state.ToolInfos); !projectEinoAssistantPhaseStringSlicesEqual(got, want) {
 		t.Fatalf("restored read-only tools = %#v, want legacy checkpoint restored to %#v", got, want)
 	}
@@ -1535,15 +1550,111 @@ func TestProjectEinoAssistantPhaseAllowsToolSearchOnlyWhileDiscoveryCanAdvanceWo
 	}
 }
 
+func TestProjectEinoAssistantPhaseFilesystemMetadataUsesCanonicalExactNames(t *testing.T) {
+	for _, name := range []string{
+		projectToolLS,
+		projectToolReadFile,
+		projectToolGlob,
+		projectToolGrep,
+		" " + projectToolReadFile + " ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			risk, bundle, ok := projectEinoAssistantPhaseToolMetadata(&schema.ToolInfo{Name: name})
+			if !ok || risk != projectAssistantToolRiskRead || bundle != projectAssistantToolBundleWorkspaceRead {
+				t.Fatalf("metadata for %q = (%q, %q, %t), want read/workspace_read/true", name, risk, bundle, ok)
+			}
+		})
+	}
+
+	for _, name := range []string{"provider__read_file", "edit_file", "execute", "metadata_free"} {
+		t.Run(name, func(t *testing.T) {
+			if risk, bundle, ok := projectEinoAssistantPhaseToolMetadata(&schema.ToolInfo{Name: name}); ok {
+				t.Fatalf("metadata for %q = (%q, %q, true), want unclassified", name, risk, bundle)
+			}
+		})
+	}
+
+	explicit := &schema.ToolInfo{
+		Name: projectToolReadFile,
+		Extra: map[string]any{
+			"risk":   string(projectAssistantToolRiskWrite),
+			"bundle": string(projectAssistantToolBundleEdit),
+		},
+	}
+	risk, bundle, ok := projectEinoAssistantPhaseToolMetadata(explicit)
+	if !ok || risk != projectAssistantToolRiskWrite || bundle != projectAssistantToolBundleEdit {
+		t.Fatalf("explicit metadata = (%q, %q, %t), want authoritative write/edit/true", risk, bundle, ok)
+	}
+}
+
+func TestProjectEinoAssistantPhaseCanonicalReadsSurviveMutationVerificationRepair(t *testing.T) {
+	tools := []*schema.ToolInfo{
+		{Name: projectToolLS},
+		{Name: projectToolReadFile},
+		{Name: projectToolGlob},
+		{Name: projectToolGrep},
+		{Name: "provider__read_file"},
+		{Name: "edit_file"},
+		{Name: "execute"},
+		{Name: "metadata_free"},
+	}
+	want := []string{projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep}
+	for _, phase := range []projectEinoAssistantPhase{
+		projectEinoAssistantPhaseMutate,
+		projectEinoAssistantPhaseVerify,
+		projectEinoAssistantPhaseRepair,
+	} {
+		t.Run(string(phase), func(t *testing.T) {
+			got := projectEinoAssistantPhaseToolNames(projectEinoAssistantPhaseFilterTools(
+				phase,
+				&projectAssistantApprovedPlan{Steps: []string{"inspect", "edit"}},
+				false,
+				tools,
+			))
+			if !projectEinoAssistantPhaseStringSlicesEqual(got, want) {
+				t.Fatalf("%s filesystem tools = %#v, want %#v", phase, got, want)
+			}
+		})
+	}
+}
+
+func TestProjectEinoAssistantPhaseHiddenToolInvocationDoesNotReachEndpoint(t *testing.T) {
+	middleware := &projectEinoAssistantPhaseFilterMiddleware{
+		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
+		phase:                        projectEinoAssistantPhaseMutate,
+		approvedPlan:                 &projectAssistantApprovedPlan{Steps: []string{"inspect", "edit"}},
+		toolInfos:                    []*schema.ToolInfo{{Name: "provider__read_file"}},
+	}
+	calls := 0
+	wrapped, err := middleware.WrapInvokableToolCall(
+		context.Background(),
+		func(context.Context, string, ...einotool.Option) (string, error) {
+			calls++
+			return "hidden content", nil
+		},
+		&adk.ToolContext{Name: "provider__read_file"},
+	)
+	if err != nil {
+		t.Fatalf("WrapInvokableToolCall returned error: %v", err)
+	}
+	result, err := wrapped(context.Background(), `{"file_path":"README.md"}`)
+	if err != nil {
+		t.Fatalf("wrapped invocation returned error: %v", err)
+	}
+	if calls != 0 || result != "Tool call denied: read_file is unavailable in the current assistant phase" {
+		t.Fatalf("hidden invocation result = %q calls = %d, want denied without endpoint call", result, calls)
+	}
+}
+
 func TestProjectEinoAssistantPhaseVisibleToolsKeepsOnlySelectedSearchableTools(t *testing.T) {
-	static := projectEinoAssistantPhaseToolInfo(projectToolReadProjectFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead)
+	static := projectEinoAssistantPhaseToolInfo(projectToolReadFile, projectAssistantToolRiskRead, projectAssistantToolBundleWorkspaceRead)
 	selected := projectEinoAssistantPhaseSearchableToolInfo("provider__selected")
 	unselected := projectEinoAssistantPhaseSearchableToolInfo("provider__unselected")
 	visible := projectEinoAssistantPhaseVisibleTools(
 		[]*schema.ToolInfo{static, selected, unselected},
 		[]*schema.ToolInfo{static, selected},
 	)
-	if got := projectEinoAssistantPhaseToolNames(visible); !projectEinoAssistantPhaseStringSlicesEqual(got, []string{projectToolReadProjectFile, "provider__selected"}) {
+	if got := projectEinoAssistantPhaseToolNames(visible); !projectEinoAssistantPhaseStringSlicesEqual(got, []string{projectToolReadFile, "provider__selected"}) {
 		t.Fatalf("visible tools = %#v, want static tools and the selected searchable tool", got)
 	}
 }
@@ -1579,15 +1690,24 @@ func projectEinoAssistantPhaseFactoryToolInfos(t *testing.T) []*schema.ToolInfo 
 	runState := newProjectEinoAssistantRunState()
 	runState.SetToolDiscovery(projectEinoAssistantToolDiscovery{IncludeCommitBridge: true})
 	req := projectAssistantRunRequest{
-		TurnProfile: projectAssistantTurnProfileImplementation,
-		TurnPolicy:  projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
+		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "project-a"},
+		TurnProfile:    projectAssistantTurnProfileImplementation,
+		TurnPolicy:     projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
 	}
 	tools, err := newProjectEinoAssistantToolsFactory(server)(context.Background(), req, runState)
 	if err != nil {
 		t.Fatalf("new factory tools returned error: %v", err)
 	}
-	infos := make([]*schema.ToolInfo, 0, len(tools))
-	for _, tool := range tools {
+	filesystemMiddleware, err := projectEinoAssistantFilesystemMiddleware(context.Background(), server.workspaces, req)
+	if err != nil {
+		t.Fatalf("filesystem middleware returned error: %v", err)
+	}
+	_, runCtx, err := filesystemMiddleware.BeforeAgent(context.Background(), &adk.ChatModelAgentContext{Tools: tools})
+	if err != nil {
+		t.Fatalf("filesystem BeforeAgent returned error: %v", err)
+	}
+	infos := make([]*schema.ToolInfo, 0, len(runCtx.Tools))
+	for _, tool := range runCtx.Tools {
 		info, err := tool.Info(context.Background())
 		if err != nil {
 			t.Fatalf("factory tool Info returned error: %v", err)
