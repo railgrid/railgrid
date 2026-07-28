@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -1181,11 +1182,15 @@ func TestProjectEinoAssistantPhaseMiddlewareGatesHiddenToolExecution(t *testing.
 
 func TestProjectEinoAssistantPhaseWriteTodosEmitsSanitizedProgressAfterSuccess(t *testing.T) {
 	var statuses []string
+	var plans []projectAssistantPlanSnapshot
 	middleware := &projectEinoAssistantPhaseFilterMiddleware{
 		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
 		req: projectAssistantRunRequest{StreamCallbacks: projectAssistantStreamCallbacks{
 			OnStatus: func(status string) {
 				statuses = append(statuses, status)
+			},
+			OnPlan: func(plan projectAssistantPlanSnapshot) {
+				plans = append(plans, plan)
 			},
 		}},
 		phase: projectEinoAssistantPhaseMutate,
@@ -1207,7 +1212,7 @@ func TestProjectEinoAssistantPhaseWriteTodosEmitsSanitizedProgressAfterSuccess(t
 
 	result, err := wrapped(context.Background(), `{"todos":[
 		{"content":"Inspect files","activeForm":"Inspecting files","status":"completed"},
-		{"content":"Update filters","activeForm":"Updating task filters\n token=secret-value","status":"in_progress"},
+		{"content":"Update filters\n token=secret-value","activeForm":"Updating filters\n token=secret-value","status":"in_progress"},
 		{"content":"Verify preview","activeForm":"Verifying preview","status":"pending"}
 	]}`)
 	if err != nil {
@@ -1219,8 +1224,16 @@ func TestProjectEinoAssistantPhaseWriteTodosEmitsSanitizedProgressAfterSuccess(t
 	if len(statuses) != 1 {
 		t.Fatalf("statuses = %#v, want one progress update", statuses)
 	}
-	if got, want := statuses[0], "Updating task filters token=[REDACTED] · 1 of 3 steps"; got != want {
+	if got, want := statuses[0], "Updating filters token=[REDACTED] · 1 of 3 steps"; got != want {
 		t.Fatalf("status = %q, want %q", got, want)
+	}
+	wantPlan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
+		{Content: "Inspect files", ActiveForm: "Inspecting files", Status: "completed"},
+		{Content: "Update filters token=[REDACTED]", ActiveForm: "Updating filters token=[REDACTED]", Status: "in_progress"},
+		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "pending"},
+	}}
+	if len(plans) != 1 || !reflect.DeepEqual(plans[0], wantPlan) {
+		t.Fatalf("plans = %#v, want %#v", plans, wantPlan)
 	}
 	if strings.Contains(statuses[0], "secret-value") || strings.Contains(statuses[0], `"todos"`) {
 		t.Fatalf("status exposed raw todo data: %q", statuses[0])
@@ -1233,11 +1246,15 @@ func TestProjectEinoAssistantPhaseWriteTodosProgressRespectsMinimalDisclosure(t 
 	t.Cleanup(func() { projectAssistantToolDisclosureMinimal = prev })
 
 	var statuses []string
+	var plans []projectAssistantPlanSnapshot
 	middleware := &projectEinoAssistantPhaseFilterMiddleware{
 		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
 		req: projectAssistantRunRequest{StreamCallbacks: projectAssistantStreamCallbacks{
 			OnStatus: func(status string) {
 				statuses = append(statuses, status)
+			},
+			OnPlan: func(plan projectAssistantPlanSnapshot) {
+				plans = append(plans, plan)
 			},
 		}},
 		phase: projectEinoAssistantPhaseMutate,
@@ -1270,6 +1287,9 @@ func TestProjectEinoAssistantPhaseWriteTodosProgressRespectsMinimalDisclosure(t 
 	if strings.Contains(statuses[0], "payroll") {
 		t.Fatalf("minimal-disclosure status exposed active todo: %q", statuses[0])
 	}
+	if len(plans) != 0 {
+		t.Fatalf("minimal-disclosure plans = %#v, want none", plans)
+	}
 }
 
 func TestProjectEinoAssistantPhaseWriteTodosProgressValidation(t *testing.T) {
@@ -1279,18 +1299,21 @@ func TestProjectEinoAssistantPhaseWriteTodosProgressValidation(t *testing.T) {
 		arguments   string
 		endpointErr error
 		wantStatus  string
+		wantPlan    bool
 	}{
 		{
 			name:       "completed list reports completion",
 			phase:      projectEinoAssistantPhaseMutate,
 			arguments:  `{"todos":[{"content":"Inspect","activeForm":"Inspecting","status":"completed"},{"content":"Edit","activeForm":"Editing","status":"completed"}]}`,
 			wantStatus: "2 of 2 steps complete",
+			wantPlan:   true,
 		},
 		{
 			name:       "no active item reports coarse count",
 			phase:      projectEinoAssistantPhaseVerify,
 			arguments:  `{"todos":[{"content":"Inspect","activeForm":"Inspecting","status":"completed"},{"content":"Verify","activeForm":"Verifying","status":"pending"}]}`,
 			wantStatus: "1 of 2 steps complete",
+			wantPlan:   true,
 		},
 		{
 			name:      "malformed JSON is ignored",
@@ -1313,6 +1336,16 @@ func TestProjectEinoAssistantPhaseWriteTodosProgressValidation(t *testing.T) {
 			arguments: `{"todos":[]}`,
 		},
 		{
+			name:      "empty sanitized required content is ignored",
+			phase:     projectEinoAssistantPhaseMutate,
+			arguments: `{"todos":[{"content":" \n ","activeForm":"Inspecting","status":"in_progress"},{"content":"Verify","activeForm":"Verifying","status":"pending"}]}`,
+		},
+		{
+			name:      "more than fifty todos emits no plan",
+			phase:     projectEinoAssistantPhaseMutate,
+			arguments: `{"todos":[` + strings.Repeat(`{"content":"Inspect","activeForm":"Inspecting","status":"pending"},`, projectEinoAssistantTodoProgressMaxItems) + `{"content":"Inspect","activeForm":"Inspecting","status":"pending"}]}`,
+		},
+		{
 			name:        "endpoint failure is ignored",
 			phase:       projectEinoAssistantPhaseMutate,
 			arguments:   `{"todos":[{"content":"Inspect","activeForm":"Inspecting","status":"in_progress"},{"content":"Edit","activeForm":"Editing","status":"pending"}]}`,
@@ -1328,11 +1361,15 @@ func TestProjectEinoAssistantPhaseWriteTodosProgressValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var statuses []string
+			var plans []projectAssistantPlanSnapshot
 			middleware := &projectEinoAssistantPhaseFilterMiddleware{
 				BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
 				req: projectAssistantRunRequest{StreamCallbacks: projectAssistantStreamCallbacks{
 					OnStatus: func(status string) {
 						statuses = append(statuses, status)
+					},
+					OnPlan: func(plan projectAssistantPlanSnapshot) {
+						plans = append(plans, plan)
 					},
 				}},
 				phase: tt.phase,
@@ -1357,10 +1394,14 @@ func TestProjectEinoAssistantPhaseWriteTodosProgressValidation(t *testing.T) {
 				if len(statuses) != 0 {
 					t.Fatalf("statuses = %#v, want none", statuses)
 				}
-				return
-			}
-			if len(statuses) != 1 || statuses[0] != tt.wantStatus {
+			} else if len(statuses) != 1 || statuses[0] != tt.wantStatus {
 				t.Fatalf("statuses = %#v, want %q", statuses, tt.wantStatus)
+			}
+			if tt.wantPlan && len(plans) != 1 {
+				t.Fatalf("plans = %#v, want one plan", plans)
+			}
+			if !tt.wantPlan && len(plans) != 0 {
+				t.Fatalf("plans = %#v, want none", plans)
 			}
 		})
 	}
@@ -1368,7 +1409,7 @@ func TestProjectEinoAssistantPhaseWriteTodosProgressValidation(t *testing.T) {
 
 func TestProjectEinoAssistantTodoProgressLabelBoundsUnicodeSafely(t *testing.T) {
 	active := strings.Repeat("🧭", projectEinoAssistantTodoProgressMaxLabelBytes)
-	status := projectEinoAssistantTodoProgressStatus(`{"todos":[
+	_, status := projectEinoAssistantTodoProgress(`{"todos":[
 		{"content":"Update","activeForm":"`+active+`","status":"in_progress"},
 		{"content":"Verify","activeForm":"Verifying","status":"pending"}
 	]}`, true)
@@ -1376,6 +1417,9 @@ func TestProjectEinoAssistantTodoProgressLabelBoundsUnicodeSafely(t *testing.T) 
 		t.Fatalf("status is not valid UTF-8: %q", status)
 	}
 	label := strings.Split(status, " · ")[0]
+	if len(label) > projectEinoAssistantTodoProgressMaxLabelBytes {
+		t.Fatalf("label bytes = %d, want at most %d", len(label), projectEinoAssistantTodoProgressMaxLabelBytes)
+	}
 	if got := utf8.RuneCountInString(label); got > projectEinoAssistantTodoProgressMaxLabelBytes {
 		t.Fatalf("label rune count = %d, want at most %d", got, projectEinoAssistantTodoProgressMaxLabelBytes)
 	}

@@ -231,49 +231,70 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) WrapInvokableToolCall(
 		if err != nil {
 			return result, err
 		}
-		if name == projectEinoAssistantWriteTodosTool && m.req.StreamCallbacks.OnStatus != nil {
-			if status := projectEinoAssistantTodoProgressStatus(
+		if name == projectEinoAssistantWriteTodosTool {
+			plan, status := projectEinoAssistantTodoProgress(
 				argumentsInJSON,
 				!projectAssistantToolDisclosureMinimal,
-			); status != "" {
+			)
+			if status != "" && m.req.StreamCallbacks.OnStatus != nil {
 				m.req.StreamCallbacks.OnStatus(status)
+			}
+			if len(plan.Steps) > 0 && m.req.StreamCallbacks.OnPlan != nil {
+				m.req.StreamCallbacks.OnPlan(plan)
 			}
 		}
 		return result, nil
 	}, nil
 }
 
-func projectEinoAssistantTodoProgressStatus(argumentsInJSON string, includeActiveLabel bool) string {
+func projectEinoAssistantTodoProgress(argumentsInJSON string, includeLabels bool) (projectAssistantPlanSnapshot, string) {
 	if len(argumentsInJSON) == 0 || len(argumentsInJSON) > projectEinoAssistantTodoProgressMaxInputBytes {
-		return ""
+		return projectAssistantPlanSnapshot{}, ""
 	}
 	var input projectEinoAssistantTodoProgressInput
 	if err := json.Unmarshal([]byte(argumentsInJSON), &input); err != nil ||
 		len(input.Todos) == 0 ||
 		len(input.Todos) > projectEinoAssistantTodoProgressMaxItems {
-		return ""
+		return projectAssistantPlanSnapshot{}, ""
 	}
 
 	completed := 0
 	active := ""
 	activeCount := 0
+	planValid := true
+	plan := projectAssistantPlanSnapshot{Steps: make([]projectAssistantPlanStep, 0, len(input.Todos))}
 	for _, todo := range input.Todos {
+		content := projectEinoAssistantTodoProgressLabel(todo.Content)
+		activeForm := projectEinoAssistantTodoProgressLabel(todo.ActiveForm)
+		if content == "" {
+			planValid = false
+		}
 		switch todo.Status {
 		case "pending":
 		case "in_progress":
 			activeCount++
 			if activeCount > 1 {
-				return ""
+				return projectAssistantPlanSnapshot{}, ""
 			}
-			active = todo.ActiveForm
-			if strings.TrimSpace(active) == "" {
-				active = todo.Content
+			active = activeForm
+			if active == "" {
+				active = content
 			}
 		case "completed":
 			completed++
 		default:
-			return ""
+			return projectAssistantPlanSnapshot{}, ""
 		}
+		if includeLabels {
+			plan.Steps = append(plan.Steps, projectAssistantPlanStep{
+				Content:    content,
+				ActiveForm: activeForm,
+				Status:     todo.Status,
+			})
+		}
+	}
+	if !planValid {
+		return projectAssistantPlanSnapshot{}, ""
 	}
 
 	total := len(input.Todos)
@@ -282,11 +303,13 @@ func projectEinoAssistantTodoProgressStatus(argumentsInJSON string, includeActiv
 		noun = "step"
 	}
 	count := fmt.Sprintf("%d of %d %s", completed, total, noun)
-	active = projectEinoAssistantTodoProgressLabel(active)
-	if includeActiveLabel && active != "" {
-		return active + " · " + count
+	if includeLabels && active != "" {
+		return plan, active + " · " + count
 	}
-	return count + " complete"
+	if includeLabels {
+		return plan, count + " complete"
+	}
+	return projectAssistantPlanSnapshot{}, count + " complete"
 }
 
 func projectEinoAssistantTodoProgressLabel(value string) string {

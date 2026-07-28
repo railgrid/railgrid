@@ -38,6 +38,8 @@ import {
   type ProjectCreateReadiness,
 } from './createReadiness'
 import { parseAssistantTraceHeader, summarizeAssistantTrace } from './assistantProgress'
+import { activeAssistantPlanMessage, parseAssistantPlan, type AssistantPlan } from './assistantPlan'
+import AssistantPlanDock from './AssistantPlanDock.vue'
 import {
   ConversationRunController,
   abortedConversationSnapshot,
@@ -147,6 +149,7 @@ interface AssistantTraceItem {
 }
 type ProjectMessageView = ProjectMessage & {
   viewStatus?: ProjectMessageViewStatus
+  plan?: AssistantPlan
   actions?: ProjectAssistantActionView[]
   surface?: ProjectAssistantSurface
   interrupt?: ProjectAssistantUIInterruptRequest
@@ -467,10 +470,19 @@ const settingsDescription = computed(() =>
     ? 'Update this project and configure the model credentials App Studio uses for project conversations.'
     : 'Configure the model credentials App Studio uses when creating and chatting in projects.',
 )
+const activePlanMessage = computed(() =>
+  activeAssistantPlanMessage(
+    messages.value,
+    activeAssistantRun?.activeMessageID,
+    messageStreaming.value,
+    Boolean(activeAssistantRun && assistantRunTerminal(activeAssistantRun.status)),
+  ),
+)
 const conversationWorkingLabel = computed(() => {
+  const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
+  if (activePlanMessage.value) return ''
   if (conversationStatus.value) return conversationStatus.value
   if (!messageStreaming.value) return ''
-  const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
   if (lastAssistant?.content.trim()) return 'Working'
   return 'Working'
 })
@@ -2481,15 +2493,21 @@ function projectMessagesForConversation(source: ProjectMessageView[]): ProjectMe
 
 function toProjectMessageView(message: ProjectMessage): ProjectMessageView {
   const viewStatus = projectMessageViewStatus(message)
+  const plan = projectMessagePlan(message)
   const actions = projectMessageActions(message)
   const interrupt = projectMessageInterrupt(message)
-  if (!viewStatus && actions.length === 0 && !interrupt) return message
+  if (!viewStatus && !plan && actions.length === 0 && !interrupt) return message
   return {
     ...message,
     ...(viewStatus ? { viewStatus } : {}),
+    ...(plan ? { plan } : {}),
     ...(actions.length > 0 ? { actions } : {}),
     ...(interrupt ? { interrupt } : {}),
   }
+}
+
+function projectMessagePlan(message: ProjectMessage): AssistantPlan | undefined {
+  return parseAssistantPlan(message.metadata?.assistantPlan)
 }
 
 function projectMessageViewStatus(message: ProjectMessage): ProjectMessageViewStatus | undefined {
@@ -3592,6 +3610,13 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             </div>
           </div>
         </div>
+
+        <AssistantPlanDock
+          v-if="activePlanMessage"
+          :key="activePlanMessage.id"
+          :message-id="activePlanMessage.id"
+          :plan="activePlanMessage.plan"
+        />
 
         <form class="shrink-0 border-t border-border-subtle p-3" @submit.prevent="sendMessage">
           <div

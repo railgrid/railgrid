@@ -172,8 +172,19 @@ type projectAssistantStreamCallbacks struct {
 	OnProvisionalText  func(string)
 	OnProvisionalReset func()
 	OnStatus           func(string)
+	OnPlan             func(projectAssistantPlanSnapshot)
 	OnToolCall         func(projectToolCallStreamEvent)
 	OnAssistantEvent   func(projectAssistantEvent)
+}
+
+type projectAssistantPlanStep struct {
+	Content    string `json:"content"`
+	ActiveForm string `json:"activeForm,omitempty"`
+	Status     string `json:"status"`
+}
+
+type projectAssistantPlanSnapshot struct {
+	Steps []projectAssistantPlanStep `json:"steps"`
 }
 
 type projectNamingResult struct {

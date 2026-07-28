@@ -15,6 +15,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -88,7 +90,7 @@ func (s *Server) startProjectAssistantRunDurably(ctx context.Context, scope stor
 	user := store.Message{ID: newMessageID(), Role: aiv1alpha1.ProjectMessageRoleUser, Content: content, CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: newMessageID(), Role: aiv1alpha1.ProjectMessageRoleAssistant, CreatedAt: now, UpdatedAt: now}
 	run := store.AssistantRun{ID: "run-" + uuid.NewString(), Status: store.AssistantRunStatusRunning, ClientRequestID: clientRequestID, UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
-	assistant.Metadata = projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil)
+	assistant.Metadata = projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil)
 	created, err := s.store.CreateAssistantRun(ctx, scope, user, assistant, run)
 	if err != nil {
 		return projectAssistantDurableStartResult{}, err
@@ -181,15 +183,19 @@ const (
 	projectAssistantMetadataWorkingStatus        = "assistantStatus"
 	projectAssistantMetadataProvisional          = "assistantProvisional"
 	projectAssistantMetadataPreviewRefreshNeeded = "previewRefreshNeeded"
+	projectAssistantMetadataPlan                 = "assistantPlan"
 )
 
-func projectAssistantDurableMetadataForTransition(run store.AssistantRun, status string, provisional, preview bool, toolCalls []projectToolCallStreamEvent) map[string]any {
+func projectAssistantDurableMetadataForTransition(run store.AssistantRun, status string, provisional, preview bool, toolCalls []projectToolCallStreamEvent, plan *projectAssistantPlanSnapshot) map[string]any {
 	metadata := projectAssistantMessageMetadata(status, sanitizeProjectToolCallStreamEventsForMetadata(toolCalls))
 	metadata[projectAssistantMetadataRunID] = run.ID
 	metadata[projectAssistantMetadataRevision] = run.Revision
 	metadata[projectAssistantMetadataWorkingStatus] = status
 	metadata[projectAssistantMetadataProvisional] = provisional
 	metadata[projectAssistantMetadataPreviewRefreshNeeded] = preview
+	if plan, ok := projectAssistantPlanSnapshotFromMetadata(plan); ok {
+		metadata[projectAssistantMetadataPlan] = *plan
+	}
 	return metadata
 }
 
@@ -201,6 +207,9 @@ func projectAssistantDurableMetadataFromExisting(run store.AssistantRun, status 
 	if interrupt := projectAssistantUIInterruptFromMetadata(existing[projectMessageMetadataAssistantInterrupt]); interrupt != nil {
 		metadata[projectMessageMetadataAssistantInterrupt] = interrupt
 	}
+	if plan, ok := projectAssistantPlanSnapshotFromMetadata(existing[projectAssistantMetadataPlan]); ok {
+		metadata[projectAssistantMetadataPlan] = *plan
+	}
 	preview, _ := existing[projectAssistantMetadataPreviewRefreshNeeded].(bool)
 	metadata[projectAssistantMetadataRunID] = run.ID
 	metadata[projectAssistantMetadataRevision] = run.Revision
@@ -210,10 +219,98 @@ func projectAssistantDurableMetadataFromExisting(run store.AssistantRun, status 
 	return metadata
 }
 
+// projectAssistantPlanSnapshotFromMetadata is the durable metadata boundary
+// for plans. Postgres rehydrates JSON values as generic maps, so decode them
+// back into the public snapshot shape and retain only values the write_todos
+// producer could have emitted. Validation deliberately does not sanitize or
+// redact labels again: a retained plan must preserve its already-sanitized
+// user-facing wording exactly.
+func projectAssistantPlanSnapshotFromMetadata(value any) (*projectAssistantPlanSnapshot, bool) {
+	if value == nil {
+		return nil, false
+	}
+	raw, err := json.Marshal(value)
+	if err != nil || !projectAssistantPlanMetadataKeysValid(raw) {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var plan projectAssistantPlanSnapshot
+	if err := decoder.Decode(&plan); err != nil || !projectAssistantPlanSnapshotValid(plan) {
+		return nil, false
+	}
+	return &plan, true
+}
+
+func projectAssistantPlanMetadataKeysValid(raw []byte) bool {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || len(object) != 1 {
+		return false
+	}
+	rawSteps, ok := object["steps"]
+	if !ok {
+		return false
+	}
+	var steps []map[string]json.RawMessage
+	if err := json.Unmarshal(rawSteps, &steps); err != nil {
+		return false
+	}
+	for _, step := range steps {
+		if _, ok := step["content"]; !ok {
+			return false
+		}
+		if _, ok := step["status"]; !ok {
+			return false
+		}
+		for key := range step {
+			switch key {
+			case "content", "activeForm", "status":
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func projectAssistantPlanSnapshotValid(plan projectAssistantPlanSnapshot) bool {
+	if len(plan.Steps) == 0 || len(plan.Steps) > projectEinoAssistantTodoProgressMaxItems {
+		return false
+	}
+	inProgress := 0
+	for _, step := range plan.Steps {
+		if !projectAssistantPlanLabelValid(step.Content, true) || !projectAssistantPlanLabelValid(step.ActiveForm, false) {
+			return false
+		}
+		switch step.Status {
+		case "pending", "completed":
+		case "in_progress":
+			inProgress++
+			if inProgress > 1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func projectAssistantPlanLabelValid(label string, required bool) bool {
+	if !utf8.ValidString(label) || len(label) > projectEinoAssistantTodoProgressMaxLabelBytes {
+		return false
+	}
+	if projectEinoAssistantTodoProgressLabel(label) != label {
+		return false
+	}
+	return !required || strings.TrimSpace(label) != ""
+}
+
 type projectAssistantDurableMetadataState struct {
 	status      string
 	provisional bool
 	toolCalls   []projectToolCallStreamEvent
+	plan        *projectAssistantPlanSnapshot
 }
 
 func projectAssistantRunDisplayStatus(status store.AssistantRunStatus, fallback string) string {
@@ -253,6 +350,7 @@ func (s *Server) persistProjectAssistantDurableMetadata(ctx context.Context, acc
 			state.provisional,
 			s.projectAssistantPreviewRefreshNeeded(ctx, workspaceScope, "", false, state.toolCalls),
 			state.toolCalls,
+			state.plan,
 		)
 		// Resumed segments begin with durable actions from the previous segment.
 		// Keep that history and only upsert new action updates.
@@ -265,6 +363,11 @@ func (s *Server) persistProjectAssistantDurableMetadata(ctx context.Context, acc
 		}
 		if preview, _ := message.Metadata[projectAssistantMetadataPreviewRefreshNeeded].(bool); preview {
 			metadata[projectAssistantMetadataPreviewRefreshNeeded] = true
+		}
+		if _, ok := metadata[projectAssistantMetadataPlan]; !ok {
+			if plan, ok := projectAssistantPlanSnapshotFromMetadata(message.Metadata[projectAssistantMetadataPlan]); ok {
+				metadata[projectAssistantMetadataPlan] = *plan
+			}
 		}
 		message.Metadata = metadata
 	})
@@ -345,6 +448,10 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 		OnProvisionalText:  func(_ string) { state.provisional = true; recordSnapshotErr(persistMetadata(ctx, nil)) },
 		OnProvisionalReset: func() { state.provisional = false; recordSnapshotErr(persistMetadata(ctx, nil)) },
 		OnStatus:           func(nextStatus string) { state.status = nextStatus; recordSnapshotErr(persistMetadata(ctx, nil)) },
+		OnPlan: func(plan projectAssistantPlanSnapshot) {
+			state.plan = &plan
+			recordSnapshotErr(persistMetadata(ctx, nil))
+		},
 		OnToolCall: func(event projectToolCallStreamEvent) {
 			state.toolCalls = upsertProjectToolCallStreamEvent(state.toolCalls, event)
 			recordSnapshotErr(persistMetadata(ctx, nil))

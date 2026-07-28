@@ -16,6 +16,8 @@ package api
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,9 +56,13 @@ func countProjectAssistantToolCards(events []projectMessageStreamEvent) int {
 func TestProjectAssistantDurableMetadataTracksEveryTransition(t *testing.T) {
 	now := time.Now().UTC()
 	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, Revision: 2, CreatedAt: now, UpdatedAt: now}
+	plan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
+		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "completed"},
+		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},
+	}}
 	metadata := projectAssistantDurableMetadataForTransition(run, "Writing files", true, false, []projectToolCallStreamEvent{{
 		ID: "tool-1", Name: projectToolWriteFile, Status: "running", Arguments: `{"path":"src/App.tsx"}`,
-	}})
+	}}, &plan)
 	if got := metadata[projectAssistantMetadataRevision]; got != int64(2) {
 		t.Fatalf("revision = %#v, want current run revision", got)
 	}
@@ -69,12 +75,15 @@ func TestProjectAssistantDurableMetadataTracksEveryTransition(t *testing.T) {
 	if _, ok := metadata[projectMessageMetadataAssistantActions]; !ok {
 		t.Fatalf("metadata = %#v, want sanitized assistant actions", metadata)
 	}
+	if got := metadata[projectAssistantMetadataPlan]; !reflect.DeepEqual(got, plan) {
+		t.Fatalf("assistant plan = %#v, want %#v", got, plan)
+	}
 
 	run.Status = store.AssistantRunStatusCompleted
 	run.Revision = 5
 	metadata = projectAssistantDurableMetadataForTransition(run, "Completed", false, true, []projectToolCallStreamEvent{{
 		ID: "tool-1", Name: projectToolWriteFile, Status: "succeeded", Arguments: `{"path":"src/App.tsx"}`,
-	}})
+	}}, &plan)
 	if got := metadata[projectAssistantMetadataRevision]; got != int64(5) {
 		t.Fatalf("terminal revision = %#v, want 5", got)
 	}
@@ -83,6 +92,84 @@ func TestProjectAssistantDurableMetadataTracksEveryTransition(t *testing.T) {
 	}
 	if got := metadata[projectAssistantMetadataPreviewRefreshNeeded]; got != true {
 		t.Fatalf("preview refresh = %#v, want true for successful mutation", got)
+	}
+}
+
+func TestProjectAssistantDurableMetadataFromExistingPreservesPlanAcrossTransitions(t *testing.T) {
+	plan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
+		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "completed"},
+		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},
+	}}
+	existing := map[string]any{projectAssistantMetadataPlan: plan}
+	for _, tt := range []struct {
+		name   string
+		status store.AssistantRunStatus
+	}{
+		{name: "running", status: store.AssistantRunStatusRunning},
+		{name: "interrupted", status: store.AssistantRunStatusInterrupted},
+		{name: "aborted", status: store.AssistantRunStatusAborted},
+		{name: "failed", status: store.AssistantRunStatusFailed},
+		{name: "claimed", status: store.AssistantRunStatusRunning},
+		{name: "completed", status: store.AssistantRunStatusCompleted},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			metadata := projectAssistantDurableMetadataFromExisting(store.AssistantRun{ID: "run-1", Status: tt.status, Revision: 3}, tt.name, false, existing)
+			if got := metadata[projectAssistantMetadataPlan]; !reflect.DeepEqual(got, plan) {
+				t.Fatalf("assistant plan = %#v, want %#v", got, plan)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantDurableMetadataFromExistingDecodesOnlyValidPlanSnapshots(t *testing.T) {
+	valid := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "in_progress"}}}
+	tooMany := projectAssistantPlanSnapshot{Steps: make([]projectAssistantPlanStep, projectEinoAssistantTodoProgressMaxItems+1)}
+	for i := range tooMany.Steps {
+		tooMany.Steps[i] = projectAssistantPlanStep{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "pending"}
+	}
+	for _, tt := range []struct {
+		name string
+		plan any
+		want *projectAssistantPlanSnapshot
+	}{
+		{
+			name: "generic postgres metadata map",
+			plan: map[string]any{"steps": []any{map[string]any{"content": "Inspect project", "activeForm": "Inspecting project", "status": "in_progress"}}},
+			want: &valid,
+		},
+		{name: "unknown value", plan: "not a plan"},
+		{name: "capitalized top level key", plan: map[string]any{"Steps": []any{map[string]any{"content": "Inspect project", "status": "pending"}}}},
+		{name: "misspelled top level key", plan: map[string]any{"stepz": []any{map[string]any{"content": "Inspect project", "status": "pending"}}}},
+		{name: "capitalized step content key", plan: map[string]any{"steps": []any{map[string]any{"Content": "Inspect project", "status": "pending"}}}},
+		{name: "capitalized step active form key", plan: map[string]any{"steps": []any{map[string]any{"content": "Inspect project", "ActiveForm": "Inspecting project", "status": "pending"}}}},
+		{name: "capitalized step status key", plan: map[string]any{"steps": []any{map[string]any{"content": "Inspect project", "Status": "pending"}}}},
+		{name: "noncanonical active form key", plan: map[string]any{"steps": []any{map[string]any{"content": "Inspect project", "active_form": "Inspecting project", "status": "pending"}}}},
+		{name: "misspelled step key", plan: map[string]any{"steps": []any{map[string]any{"content": "Inspect project", "stats": "pending"}}}},
+		{name: "empty plan", plan: projectAssistantPlanSnapshot{}},
+		{name: "too many steps", plan: tooMany},
+		{name: "long label", plan: projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{Content: strings.Repeat("x", projectEinoAssistantTodoProgressMaxLabelBytes+1), Status: "pending"}}}},
+		{name: "uncanonical whitespace", plan: projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{Content: "Inspect\nproject", Status: "pending"}}}},
+		{name: "unredacted secret", plan: projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{Content: "Inspect token=raw-secret", Status: "pending"}}}},
+		{name: "invalid status", plan: projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{Content: "Inspect project", Status: "running"}}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			metadata := projectAssistantDurableMetadataFromExisting(
+				store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, Revision: 3},
+				"Working",
+				false,
+				map[string]any{projectAssistantMetadataPlan: tt.plan},
+			)
+			got, found := metadata[projectAssistantMetadataPlan]
+			if tt.want == nil {
+				if found {
+					t.Fatalf("assistant plan = %#v, want dropped invalid plan", got)
+				}
+				return
+			}
+			if !found || !reflect.DeepEqual(got, *tt.want) {
+				t.Fatalf("assistant plan = %#v, want %#v", got, *tt.want)
+			}
+		})
 	}
 }
 
@@ -205,7 +292,7 @@ func TestProjectAssistantDurableMetadataSurvivesStatusToolProvisionalAndTerminal
 	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1"}
 	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", Content: "make it", CreatedAt: now, UpdatedAt: now}
-	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil), CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
 	msgStore := store.NewMemoryStore()
 	if _, err := msgStore.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
 		t.Fatalf("CreateAssistantRun: %v", err)
@@ -230,7 +317,7 @@ func TestProjectAssistantDurableMetadataSurvivesStatusToolProvisionalAndTerminal
 			}
 			next := *current
 			next.Revision++
-			message.Metadata = projectAssistantDurableMetadataForTransition(next, status, provisional, server.projectAssistantPreviewRefreshNeeded(ctx, projectWorkspaceScope(identity{}, scope.ProjectName), "", false, toolCalls), toolCalls)
+			message.Metadata = projectAssistantDurableMetadataForTransition(next, status, provisional, server.projectAssistantPreviewRefreshNeeded(ctx, projectWorkspaceScope(identity{}, scope.ProjectName), "", false, toolCalls), toolCalls, nil)
 		}); err != nil {
 			t.Fatalf("UpdateSnapshot: %v", err)
 		}
@@ -285,7 +372,7 @@ func TestReconcileOrphanedProjectAssistantRunPersistsInterruptedMessageMetadata(
 	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1"}
 	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
-	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil), CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
 	msgStore := store.NewMemoryStore()
 	if _, err := msgStore.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
 		t.Fatal(err)

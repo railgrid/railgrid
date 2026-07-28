@@ -208,6 +208,8 @@ func (s *projectAssistantSupervisor) Attach(scope store.Scope, run store.Assista
 	if !key.valid() || run.ID == "" {
 		return nil, errors.New("assistant supervisor scope and run id are required")
 	}
+	run.ProjectName = scope.ProjectName
+	message.ProjectName = scope.ProjectName
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing := s.runs[key]; existing != nil {

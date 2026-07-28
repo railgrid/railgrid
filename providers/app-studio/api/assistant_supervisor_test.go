@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -291,6 +292,38 @@ func TestProjectAssistantSupervisorReservationReleaseAllowsRetryAfterStartFailur
 		t.Fatalf("Reserve after failed start release: %v", err)
 	}
 	retryRelease()
+}
+
+func TestProjectAssistantSupervisorScopesLiveSnapshotMessages(t *testing.T) {
+	supervisor := newProjectAssistantSupervisor(context.Background(), store.NewMemoryStore())
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo"}
+	now := time.Now().UTC()
+	run := store.AssistantRun{
+		ID:              "run-1",
+		Status:          store.AssistantRunStatusRunning,
+		ActiveMessageID: "assistant-1",
+		Revision:        1,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	message := store.Message{
+		ID:        run.ActiveMessageID,
+		Role:      "assistant",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if _, err := supervisor.Attach(scope, run, message); err != nil {
+		t.Fatal(err)
+	}
+	updates, unsubscribe, err := supervisor.Subscribe(scope, run.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	snapshot := <-updates
+	if snapshot.Run.ProjectName != scope.ProjectName || snapshot.Message.ProjectName != scope.ProjectName {
+		t.Fatalf("snapshot scope = run %q message %q, want %q", snapshot.Run.ProjectName, snapshot.Message.ProjectName, scope.ProjectName)
+	}
 }
 
 func TestProjectAssistantSupervisorCoalescesSlowSubscriberSnapshots(t *testing.T) {
@@ -575,7 +608,7 @@ func TestProjectAssistantSupervisorShutdownLeavesPendingCheckpointResumable(t *t
 	now := time.Now().UTC()
 	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusPendingInput, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
-	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, projectMessageStatusPendingInput, false, false, nil), CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, projectMessageStatusPendingInput, false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
 	if _, err := msgStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
 		t.Fatal(err)
 	}
@@ -740,7 +773,7 @@ func TestProjectAssistantSupervisorClaimPublishesRunningRevision(t *testing.T) {
 	if err := accumulator.UpdateSnapshot(context.Background(), func(current *store.AssistantRun, message *store.Message) {
 		next := *current
 		next.Revision++
-		message.Metadata = projectAssistantDurableMetadataForTransition(next, "Writing files", false, true, []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolWriteFile, Status: "succeeded"}})
+		message.Metadata = projectAssistantDurableMetadataForTransition(next, "Writing files", false, true, []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolWriteFile, Status: "succeeded"}}, nil)
 	}); err != nil {
 		t.Fatalf("persist resumed tool metadata: %v", err)
 	}
@@ -783,7 +816,7 @@ func TestResumedAssistantSegmentPublishesTerminalMessageAndRunAtomically(t *test
 	now := time.Now().UTC()
 	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
-	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil), CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
 	if _, err := msgStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
 		t.Fatal(err)
 	}
@@ -1317,6 +1350,205 @@ func TestProjectAssistantRunRoutesStartLatestAbortAndIsolateTenantStreams(t *tes
 	}
 }
 
+func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case strings.Contains(request.Query, "ProjectYaml"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\nspec: {}\n"}}}})
+		case strings.Contains(request.Query, "SecretYaml"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
+		default:
+			t.Fatalf("unexpected GraphQL query: %s", request.Query)
+		}
+	}))
+	defer graphQL.Close()
+
+	memoryStore := store.NewMemoryStore()
+	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), memoryStore, nil, "", false)
+	firstPlan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
+		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "in_progress"},
+	}}
+	latestPlan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
+		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "completed"},
+		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},
+	}}
+	engine := &planStartRouteEngine{plans: []projectAssistantPlanSnapshot{firstPlan, latestPlan}, published: make(chan struct{}), release: make(chan struct{})}
+	server.assistantEngine = engine
+	router := mux.NewRouter()
+	server.Register(router)
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/messages", strings.NewReader(`{"content":"finish the plan","clientRequestID":"plan-request"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer caller-token")
+	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
+	request.Header.Set("X-Kedge-Cluster", "cluster-a")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d, want %d: %s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	select {
+	case <-engine.published:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not publish plan")
+	}
+	var started projectAssistantRunStartResponse
+	if err := json.NewDecoder(response.Body).Decode(&started); err != nil {
+		t.Fatal(err)
+	}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo"}
+	updates, unsubscribe, err := server.projectAssistantSupervisor().Subscribe(scope, started.Run.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	var live projectAssistantRunSnapshot
+	select {
+	case live = <-updates:
+	case <-time.After(time.Second):
+		t.Fatal("missing live plan snapshot")
+	}
+	if got := live.Message.Metadata[projectAssistantMetadataPlan]; !reflect.DeepEqual(got, latestPlan) {
+		t.Fatalf("live plan = %#v, want latest %#v", got, latestPlan)
+	}
+	if live.Run.Revision <= started.Run.Revision {
+		t.Fatalf("live revision = %d, want greater than start revision %d", live.Run.Revision, started.Run.Revision)
+	}
+
+	close(engine.release)
+	var terminal store.AssistantRun
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		terminal, err = memoryStore.GetAssistantRun(context.Background(), scope, started.Run.ID)
+		if err == nil && terminal.Status == store.AssistantRunStatusCompleted {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	message, err := server.findProjectMessage(context.Background(), scope, terminal.ActiveMessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Status != store.AssistantRunStatusCompleted || !reflect.DeepEqual(message.Metadata[projectAssistantMetadataPlan], latestPlan) {
+		t.Fatalf("terminal run = %#v, message = %#v, want completed latest plan", terminal, message)
+	}
+	if terminal.Revision <= live.Run.Revision {
+		t.Fatalf("terminal revision = %d, want greater than live revision %d", terminal.Revision, live.Run.Revision)
+	}
+}
+
+func TestProjectAssistantSupervisorResumeWorkerPersistsLatestPlanSnapshot(t *testing.T) {
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case strings.Contains(request.Query, "ProjectYaml"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\nspec: {}\n"}}}})
+		case strings.Contains(request.Query, "SecretYaml"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
+		default:
+			t.Fatalf("unexpected GraphQL query: %s", request.Query)
+		}
+	}))
+	defer graphQL.Close()
+
+	memoryStore := store.NewMemoryStore()
+	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), memoryStore, nil, "", false)
+	latestPlan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
+		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "completed"},
+		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},
+	}}
+	engine := &planResumeRouteEngine{plans: []projectAssistantPlanSnapshot{
+		{Steps: []projectAssistantPlanStep{{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "in_progress"}}},
+		latestPlan,
+	}, published: make(chan struct{}), release: make(chan struct{})}
+	server.assistantEngine = engine
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo"}
+	now := time.Now().UTC()
+	checkpoint, err := json.Marshal(projectAssistantCheckpointState{Eino: &projectAssistantEinoCheckpointState{
+		CheckpointID: "run-1", Checkpoint: []byte("checkpoint"), InterruptID: "interrupt-1", InterruptType: projectAssistantInterruptTypePermission, ToolCallID: "tool-1", ToolName: projectToolWriteFile,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", RequestID: "permission-1", Checkpoint: checkpoint, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", Content: "hello", CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}
+	if _, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
+		t.Fatal(err)
+	}
+	router := mux.NewRouter()
+	server.Register(router)
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/run-1/resume", strings.NewReader(`{"requestID":"permission-1","decision":"allow"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer caller-token")
+	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
+	request.Header.Set("X-Kedge-Cluster", "cluster-a")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("resume status = %d, want %d: %s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	select {
+	case <-engine.published:
+	case <-time.After(time.Second):
+		t.Fatal("resumed worker did not publish plans")
+	}
+	updates, unsubscribe, err := server.projectAssistantSupervisor().Subscribe(scope, run.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	var live projectAssistantRunSnapshot
+	select {
+	case live = <-updates:
+	case <-time.After(time.Second):
+		t.Fatal("missing resumed live plan snapshot")
+	}
+	if !reflect.DeepEqual(live.Message.Metadata[projectAssistantMetadataPlan], latestPlan) {
+		t.Fatalf("live plan = %#v, want latest %#v", live.Message.Metadata[projectAssistantMetadataPlan], latestPlan)
+	}
+	if live.Run.Revision <= run.Revision {
+		t.Fatalf("live revision = %d, want greater than initial revision %d", live.Run.Revision, run.Revision)
+	}
+
+	close(engine.release)
+	var terminal store.AssistantRun
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		terminal, err = memoryStore.GetAssistantRun(context.Background(), scope, run.ID)
+		if err == nil && terminal.Status == store.AssistantRunStatusCompleted {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	message, err := server.findProjectMessage(context.Background(), scope, terminal.ActiveMessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Status != store.AssistantRunStatusCompleted || !reflect.DeepEqual(message.Metadata[projectAssistantMetadataPlan], latestPlan) {
+		t.Fatalf("terminal run = %#v, message = %#v, want completed latest plan", terminal, message)
+	}
+	if terminal.Revision <= live.Run.Revision {
+		t.Fatalf("terminal revision = %d, want greater than live revision %d", terminal.Revision, live.Run.Revision)
+	}
+}
+
 func TestResumeProjectAssistantRouteDetachesRequestAndPublishesRunningSnapshot(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
@@ -1518,6 +1750,18 @@ type blockingStartRouteEngine struct {
 
 type replyStartRouteEngine struct{ chunk, reply string }
 
+type planStartRouteEngine struct {
+	plans     []projectAssistantPlanSnapshot
+	published chan struct{}
+	release   chan struct{}
+}
+
+type planResumeRouteEngine struct {
+	plans     []projectAssistantPlanSnapshot
+	published chan struct{}
+	release   chan struct{}
+}
+
 type initialProjectPromptCaptureEngine struct {
 	requests chan projectAssistantRunRequest
 }
@@ -1553,6 +1797,32 @@ func (e replyStartRouteEngine) StreamProjectAssistant(_ context.Context, req pro
 		req.StreamCallbacks.OnChunk(e.chunk)
 	}
 	return projectAssistantRunResult{Content: e.reply}, nil
+}
+
+func (e *planStartRouteEngine) StreamProjectAssistant(_ context.Context, req projectAssistantRunRequest) (projectAssistantRunResult, error) {
+	for _, plan := range e.plans {
+		req.StreamCallbacks.OnPlan(plan)
+	}
+	close(e.published)
+	<-e.release
+	return projectAssistantRunResult{Content: "plan complete"}, nil
+}
+
+func (*planStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
+	return projectAssistantRunResult{}, errors.New("unexpected resume")
+}
+
+func (*planResumeRouteEngine) StreamProjectAssistant(context.Context, projectAssistantRunRequest) (projectAssistantRunResult, error) {
+	return projectAssistantRunResult{}, errors.New("unexpected stream")
+}
+
+func (e *planResumeRouteEngine) ResumeProjectAssistant(_ context.Context, req projectAssistantRunRequest, _ projectAssistantResumeRequest, _ projectAssistantCheckpointState) (projectAssistantRunResult, error) {
+	for _, plan := range e.plans {
+		req.StreamCallbacks.OnPlan(plan)
+	}
+	close(e.published)
+	<-e.release
+	return projectAssistantRunResult{Content: "plan complete"}, nil
 }
 
 func (replyStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
