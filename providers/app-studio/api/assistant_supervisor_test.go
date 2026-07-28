@@ -725,7 +725,7 @@ func TestProjectAssistantSupervisorClaimPublishesRunningRevision(t *testing.T) {
 	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", RequestID: "permission-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", Metadata: map[string]any{
-		projectMessageMetadataAssistantActions:       []projectAssistantUIAction{{ID: "prior", Status: "succeeded", Label: "Wrote file"}},
+		projectMessageMetadataAssistantActionFeed:    []projectAssistantActionFeedItem{{ID: "prior", Status: "succeeded", Title: "Wrote file"}},
 		projectAssistantMetadataPreviewRefreshNeeded: true,
 		projectMessageMetadataAssistantInterrupt:     &projectAssistantUIInterruptRequest{InterruptID: "resolved"},
 	}, CreatedAt: now, UpdatedAt: now}
@@ -765,7 +765,7 @@ func TestProjectAssistantSupervisorClaimPublishesRunningRevision(t *testing.T) {
 		if _, found := message.Metadata[projectMessageMetadataAssistantInterrupt]; found {
 			t.Fatalf("claimed metadata retained resolved interrupt: %#v", message.Metadata)
 		}
-		if len(projectAssistantUIActionsFromMetadata(message.Metadata[projectMessageMetadataAssistantActions])) != 1 {
+		if len(projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed])) != 1 {
 			t.Fatalf("claimed metadata lost prior action: %#v", message.Metadata)
 		}
 		break
@@ -794,7 +794,7 @@ func TestProjectAssistantSupervisorClaimPublishesRunningRevision(t *testing.T) {
 		if message.Metadata[projectAssistantMetadataWorkingStatus] != "Completed" || message.Metadata[projectAssistantMetadataPreviewRefreshNeeded] != true {
 			t.Fatalf("resumed terminal metadata = %#v", message.Metadata)
 		}
-		if _, ok := message.Metadata[projectMessageMetadataAssistantActions]; !ok {
+		if _, ok := message.Metadata[projectMessageMetadataAssistantActionFeed]; !ok {
 			t.Fatalf("resumed terminal metadata lost actions: %#v", message.Metadata)
 		}
 		break
@@ -850,7 +850,7 @@ func TestResumedAssistantSegmentPublishesTerminalMessageAndRunAtomically(t *test
 	if terminal.Run.Status != store.AssistantRunStatusCompleted || terminal.Message.Content != "done" || terminal.Message.Metadata[projectAssistantMetadataPreviewRefreshNeeded] != true {
 		t.Fatalf("terminal snapshot = %#v", terminal)
 	}
-	if _, ok := terminal.Message.Metadata[projectMessageMetadataAssistantActions]; !ok {
+	if _, ok := terminal.Message.Metadata[projectMessageMetadataAssistantActionFeed]; !ok {
 		t.Fatalf("terminal metadata lost actions: %#v", terminal.Message.Metadata)
 	}
 }

@@ -289,15 +289,15 @@ func TestProjectAssistantCanonicalFilesystemPathsRoundTripToAuditAndUI(t *testin
 				t.Fatalf("audit tools = %#v, want exact path %q", audit.Tools, tt.path)
 			}
 
-			action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+			action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
 				ID:        "read",
 				Name:      projectToolReadFile,
 				Status:    "succeeded",
 				Arguments: arguments,
 				Summary:   "file read",
 			})
-			if action.Label != "Read "+tt.path {
-				t.Fatalf("label = %q, want exact path %q", action.Label, tt.path)
+			if action.Title != "Read file" || action.Target != tt.path {
+				t.Fatalf("action = %#v, want exact target %q", action, tt.path)
 			}
 		})
 	}
@@ -331,15 +331,15 @@ func TestProjectAssistantCanonicalFilesystemControlPathsAreOmittedFromAuditAndUI
 				t.Fatalf("audit tools = %#v, want unsafe canonical path omitted", audit.Tools)
 			}
 
-			action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+			action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
 				ID:        "read",
 				Name:      projectToolReadFile,
 				Status:    "succeeded",
 				Arguments: arguments,
 				Summary:   "file read",
 			})
-			if action.Label != "Inspected project" {
-				t.Fatalf("label = %q, want generic label with unsafe path omitted", action.Label)
+			if action.Title != "Read file" || action.Target != "" {
+				t.Fatalf("action = %#v, want unsafe target omitted", action)
 			}
 		})
 	}
@@ -352,15 +352,15 @@ func TestProjectAssistantMutationPercentPathsAreNotCanonicalDecoded(t *testing.T
 	if got := projectAssistantAuditToolPath(projectToolWriteFile, arguments); got != path {
 		t.Fatalf("mutation audit path = %q, want literal %q", got, path)
 	}
-	action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+	action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
 		ID:        "write",
 		Name:      projectToolWriteFile,
 		Status:    "succeeded",
 		Arguments: arguments,
 		Summary:   "write_file",
 	})
-	if action.Label != "Updated "+path {
-		t.Fatalf("mutation label = %q, want literal percent path", action.Label)
+	if action.Title != "Updated file" || action.Target != path {
+		t.Fatalf("mutation action = %#v, want literal percent target", action)
 	}
 }
 
@@ -372,15 +372,15 @@ func TestProjectAssistantNamespacedReadFilePercentPathIsNotCanonicalDecoded(t *t
 	if got := projectAssistantAuditToolPath(name, arguments); got != path {
 		t.Fatalf("namespaced audit path = %q, want literal %q", got, path)
 	}
-	action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+	action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
 		ID:        "read",
 		Name:      name,
 		Status:    "succeeded",
 		Arguments: arguments,
 		Summary:   "file read",
 	})
-	if action.Label != "Read "+path {
-		t.Fatalf("namespaced label = %q, want literal percent path", action.Label)
+	if action.Title != "Read file" || action.Target != path {
+		t.Fatalf("namespaced action = %#v, want literal percent target", action)
 	}
 }
 

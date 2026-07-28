@@ -155,7 +155,7 @@ type projectToolCallStreamEvent struct {
 
 const projectAPIInitializingMessage = "App Studio is still initializing for this workspace. Try again shortly."
 const projectMessageMetadataStatus = "status"
-const projectMessageMetadataAssistantActions = "assistantActions"
+const projectMessageMetadataAssistantActionFeed = "assistantActionFeed"
 const projectMessageMetadataAssistantInterrupt = "assistantInterrupt"
 const projectMessageStatusInterrupted = "interrupted"
 const projectMessageStatusPendingPermission = "pending_permission"
@@ -1189,19 +1189,19 @@ func (s *Server) updateProjectAssistantPermissionMessage(
 		return nil
 	}
 	metadata := cloneAnyMap(msg.Metadata)
-	actions := projectAssistantUIActionsFromMetadata(metadata[projectMessageMetadataAssistantActions])
+	actions := projectAssistantActionFeedFromMetadata(metadata[projectMessageMetadataAssistantActionFeed])
 	interrupt := projectAssistantUIInterruptFromMetadata(metadata[projectMessageMetadataAssistantInterrupt])
 	if !projectAssistantPermissionMessageMatchesResume(metadata, interrupt, response) {
 		return nil
 	}
 	if response.ToolCall != nil {
-		actions = upsertProjectAssistantUIAction(actions, projectAssistantUIActionFromToolCall(*response.ToolCall))
+		actions = applyProjectAssistantActionFeedUpdate(actions, projectAssistantActionFeedItemFromToolCall(*response.ToolCall))
 	}
 	if response.Permission != nil {
-		actions = upsertProjectAssistantUIAction(actions, projectAssistantUIActionFromPermission(*response.Permission))
+		actions = applyProjectAssistantActionFeedUpdate(actions, projectAssistantActionFeedItemFromPermission(*response.Permission))
 	}
 	if response.FollowUp != nil {
-		actions = upsertProjectAssistantUIAction(actions, projectAssistantUIActionFromFollowUp(*response.FollowUp))
+		actions = applyProjectAssistantActionFeedUpdate(actions, projectAssistantActionFeedItemFromFollowUp(*response.FollowUp))
 	}
 	if response.Checkpoint != nil && response.Permission != nil {
 		interrupt = projectAssistantUIInterruptRequestFromPermissionCheckpoint("", *response.Permission, *response.Checkpoint)
@@ -1228,9 +1228,9 @@ func (s *Server) updateProjectAssistantPermissionMessage(
 		content = response.AssistantContent
 	}
 	if len(actions) > 0 {
-		metadata[projectMessageMetadataAssistantActions] = actions
+		metadata[projectMessageMetadataAssistantActionFeed] = actions
 	} else {
-		delete(metadata, projectMessageMetadataAssistantActions)
+		delete(metadata, projectMessageMetadataAssistantActionFeed)
 	}
 	if accumulator := s.projectAssistantSupervisor().accumulatorForActiveMessage(scope, msg.ID); accumulator != nil {
 		return accumulator.UpdateMessage(ctx, content, metadata)
@@ -1288,8 +1288,8 @@ func projectAssistantMessageMetadata(status string, toolCalls []projectToolCallS
 	if status != "" {
 		metadata[projectMessageMetadataStatus] = status
 	}
-	if actions := projectAssistantUIActionsFromToolCalls(toolCalls); len(actions) > 0 {
-		metadata[projectMessageMetadataAssistantActions] = actions
+	if actions := projectAssistantActionFeedFromToolCalls(toolCalls); len(actions) > 0 {
+		metadata[projectMessageMetadataAssistantActionFeed] = actions
 	}
 	if interrupt := projectAssistantUIInterruptFromToolCalls(toolCalls); interrupt != nil {
 		metadata[projectMessageMetadataAssistantInterrupt] = interrupt
@@ -1300,16 +1300,20 @@ func projectAssistantMessageMetadata(status string, toolCalls []projectToolCallS
 	return metadata
 }
 
-func projectAssistantUIActionsFromToolCalls(events []projectToolCallStreamEvent) []projectAssistantUIAction {
+func projectAssistantActionFeedFromToolCalls(events []projectToolCallStreamEvent) []projectAssistantActionFeedItem {
+	return filterProjectAssistantActionFeedItems(projectAssistantActionFeedUpdatesFromToolCalls(events))
+}
+
+func projectAssistantActionFeedUpdatesFromToolCalls(events []projectToolCallStreamEvent) []projectAssistantActionFeedItem {
 	if len(events) == 0 {
 		return nil
 	}
-	actions := make([]projectAssistantUIAction, 0, len(events))
+	actions := make([]projectAssistantActionFeedItem, 0, len(events))
 	for _, event := range events {
-		if event.ID == "" || event.Status == "" {
+		if event.ID == "" || event.Status == "" || projectToolBaseName(event.Name) == projectEinoAssistantWriteTodosTool {
 			continue
 		}
-		actions = upsertProjectAssistantUIAction(actions, projectAssistantUIActionFromToolCall(event))
+		actions = upsertProjectAssistantActionFeedItem(actions, projectAssistantActionFeedItemFromToolCall(event))
 	}
 	if len(actions) == 0 {
 		return nil
@@ -1331,22 +1335,41 @@ func projectAssistantUIInterruptFromToolCalls(events []projectToolCallStreamEven
 	return nil
 }
 
-func projectAssistantUIActionsFromMetadata(raw any) []projectAssistantUIAction {
+func projectAssistantActionFeedFromMetadata(raw any) []projectAssistantActionFeedItem {
 	if raw == nil {
 		return nil
 	}
-	if typed, ok := raw.([]projectAssistantUIAction); ok {
-		return append([]projectAssistantUIAction(nil), typed...)
+	if typed, ok := raw.([]projectAssistantActionFeedItem); ok {
+		return filterProjectAssistantActionFeedItems(typed)
 	}
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return nil
 	}
-	var out []projectAssistantUIAction
+	var out []projectAssistantActionFeedItem
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil
 	}
-	return out
+	return filterProjectAssistantActionFeedItems(out)
+}
+
+func filterProjectAssistantActionFeedItems(items []projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
+	filtered := make([]projectAssistantActionFeedItem, 0, len(items))
+	for _, item := range items {
+		if projectAssistantActionFeedItemVisible(item) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func projectAssistantActionFeedItemVisible(item projectAssistantActionFeedItem) bool {
+	if item.Kind != projectAssistantActionFeedItemOther {
+		return true
+	}
+	return item.Status == projectAssistantActionFeedStatusWaiting ||
+		item.Status == projectAssistantActionFeedStatusFailed ||
+		item.Status == projectAssistantActionFeedStatusRejected
 }
 
 func projectAssistantUIInterruptFromMetadata(raw any) *projectAssistantUIInterruptRequest {
@@ -1377,45 +1400,62 @@ func projectAssistantUIInterruptFromMetadata(raw any) *projectAssistantUIInterru
 	return &out
 }
 
-func upsertProjectAssistantUIAction(actions []projectAssistantUIAction, action projectAssistantUIAction) []projectAssistantUIAction {
+func upsertProjectAssistantActionFeedItem(actions []projectAssistantActionFeedItem, action projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
 	if action.ID == "" {
 		return actions
 	}
 	for i := range actions {
 		if actions[i].ID == action.ID {
-			actions[i] = mergeProjectAssistantUIAction(actions[i], action)
+			actions[i] = mergeProjectAssistantActionFeedItem(actions[i], action)
 			return actions
 		}
 	}
 	return append(actions, action)
 }
 
-func mergeProjectAssistantUIAction(existing, next projectAssistantUIAction) projectAssistantUIAction {
+func applyProjectAssistantActionFeedUpdate(actions []projectAssistantActionFeedItem, action projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
+	if projectAssistantActionFeedItemVisible(action) {
+		return upsertProjectAssistantActionFeedItem(actions, action)
+	}
+	filtered := actions[:0]
+	for _, existing := range actions {
+		if existing.ID != action.ID {
+			filtered = append(filtered, existing)
+		}
+	}
+	return filtered
+}
+
+func mergeProjectAssistantActionFeedItem(existing, next projectAssistantActionFeedItem) projectAssistantActionFeedItem {
 	if next.Kind == "" {
 		next.Kind = existing.Kind
 	}
 	if next.Status == "" {
 		next.Status = existing.Status
 	}
-	if next.Label == "" {
-		next.Label = existing.Label
+	if next.Title == "" {
+		next.Title = existing.Title
 	}
-	if next.Summary == "" {
-		next.Summary = existing.Summary
+	if next.Target == "" {
+		next.Target = existing.Target
+	}
+	if next.Outcome == "" {
+		next.Outcome = existing.Outcome
 	}
 	if next.Count == 0 {
 		next.Count = existing.Count
 	}
-	// A tool call streams as started (name+arguments) then finished
-	// (result/error) — keep whichever side each event carried.
-	if next.Tool == "" {
-		next.Tool = existing.Tool
+	if next.Severity == "" {
+		next.Severity = existing.Severity
 	}
-	if next.Arguments == "" {
-		next.Arguments = existing.Arguments
+	if next.GroupKey == "" {
+		next.GroupKey = existing.GroupKey
 	}
-	if next.Detail == "" {
-		next.Detail = existing.Detail
+	if next.GroupTitle == "" {
+		next.GroupTitle = existing.GroupTitle
+	}
+	if next.Diagnostic == nil {
+		next.Diagnostic = existing.Diagnostic
 	}
 	return next
 }

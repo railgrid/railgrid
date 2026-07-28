@@ -120,7 +120,9 @@ cd portal \
   && npm run test:workbench \
   && npm run test:preview-state \
   && npm run test:create-readiness \
-  && npm run test:assistant-progress \
+  && npm run test:assistant-actions \
+  && npm run test:assistant-plan \
+  && npm run test:assistant-plan-popover \
   && npm run test:conversation-resilience \
   && npm run typecheck \
   && npm run build

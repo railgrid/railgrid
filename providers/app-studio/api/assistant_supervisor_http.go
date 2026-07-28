@@ -144,16 +144,6 @@ func (a *projectAssistantLegacyStreamAdapter) Events(snapshot projectAssistantRu
 	if status, _ := snapshot.Message.Metadata[projectAssistantMetadataWorkingStatus].(string); status != "" {
 		_ = a.writer.EmitProjectAssistantEvent(ctx, projectAssistantEvent{Type: projectAssistantEventStatus, Status: status})
 	}
-	for _, action := range projectAssistantUIActionsFromMetadata(snapshot.Message.Metadata[projectMessageMetadataAssistantActions]) {
-		if action.ID == "" {
-			continue
-		}
-		kind := "tool call"
-		if action.Status != "requested" && action.Status != "running" {
-			kind = "tool result"
-		}
-		_ = a.writer.writeToolCard(ctx, action.ID, kind, projectAssistantUIToolCardText(action))
-	}
 	if interrupt := projectAssistantUIInterruptFromMetadata(snapshot.Message.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt != nil {
 		_ = a.writer.writeAssistantUI(ctx, projectAssistantUIEvent{InterruptRequest: interrupt})
 	}
@@ -201,8 +191,8 @@ func projectAssistantDurableMetadataForTransition(run store.AssistantRun, status
 
 func projectAssistantDurableMetadataFromExisting(run store.AssistantRun, status string, provisional bool, existing map[string]any) map[string]any {
 	metadata := map[string]any{}
-	if actions := projectAssistantUIActionsFromMetadata(existing[projectMessageMetadataAssistantActions]); len(actions) > 0 {
-		metadata[projectMessageMetadataAssistantActions] = actions
+	if actions := projectAssistantActionFeedFromMetadata(existing[projectMessageMetadataAssistantActionFeed]); len(actions) > 0 {
+		metadata[projectMessageMetadataAssistantActionFeed] = actions
 	}
 	if interrupt := projectAssistantUIInterruptFromMetadata(existing[projectMessageMetadataAssistantInterrupt]); interrupt != nil {
 		metadata[projectMessageMetadataAssistantInterrupt] = interrupt
@@ -354,12 +344,12 @@ func (s *Server) persistProjectAssistantDurableMetadata(ctx context.Context, acc
 		)
 		// Resumed segments begin with durable actions from the previous segment.
 		// Keep that history and only upsert new action updates.
-		actions := projectAssistantUIActionsFromMetadata(message.Metadata[projectMessageMetadataAssistantActions])
-		for _, action := range projectAssistantUIActionsFromMetadata(metadata[projectMessageMetadataAssistantActions]) {
-			actions = upsertProjectAssistantUIAction(actions, action)
+		actions := projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed])
+		for _, action := range projectAssistantActionFeedUpdatesFromToolCalls(state.toolCalls) {
+			actions = applyProjectAssistantActionFeedUpdate(actions, action)
 		}
 		if len(actions) > 0 {
-			metadata[projectMessageMetadataAssistantActions] = actions
+			metadata[projectMessageMetadataAssistantActionFeed] = actions
 		}
 		if preview, _ := message.Metadata[projectAssistantMetadataPreviewRefreshNeeded].(bool); preview {
 			metadata[projectAssistantMetadataPreviewRefreshNeeded] = true

@@ -198,13 +198,10 @@ func TestProjectAssistantStreamWriterEmitsCanonicalLifecycleSequence(t *testing.
 	}
 
 	wantTypes := []string{
+		"dataModelUpdate",
 		"beginRendering",
 		"surfaceUpdate",
 		"dataModelUpdate",
-		"surfaceUpdate",
-		"dataModelUpdate",
-		"surfaceUpdate",
-		"surfaceUpdate",
 		"run_finished",
 	}
 	if len(got) != len(wantTypes) {
@@ -228,30 +225,18 @@ func TestProjectAssistantStreamWriterEmitsCanonicalLifecycleSequence(t *testing.
 		return false
 	}
 
-	if got[0].BeginRendering == nil {
-		t.Fatalf("first event = %#v, want beginRendering ui event", got[0])
+	if got[0].DataModelUpdate == nil || !hasContent(got[0], "assistant.status") {
+		t.Fatalf("status event = %#v, want assistant.status update", got[0])
 	}
-	assertA2UICard(t, got[1], "tool call", "Updating src/App.tsx")
-	if got[2].DataModelUpdate == nil || !hasContent(got[2], "assistant.status") {
-		t.Fatalf("status event = %#v, want assistant.status update", got[2])
+	if got[1].BeginRendering == nil {
+		t.Fatalf("second event = %#v, want beginRendering ui event", got[1])
 	}
-	assertA2UICard(t, got[3], "assistant", "")
-	if got[4].DataModelUpdate == nil || !hasContent(got[4], "assistant-1/msg-1-text") {
-		t.Fatalf("content event = %#v, want assistant content binding update", got[4])
+	assertA2UICard(t, got[2], "assistant", "")
+	if got[3].DataModelUpdate == nil || !hasContent(got[3], "assistant-1/msg-0-text") {
+		t.Fatalf("content event = %#v, want assistant content binding update", got[3])
 	}
-	assertA2UICard(t, got[5], "tool call", "Editing files")
-	assertA2UICard(t, got[6], "tool result", "Updated src/App.tsx")
-	firstToolCardID := assertSingleA2UICardID(t, got[1], "tool call")
-	runningToolCardID := assertSingleA2UICardID(t, got[5], "tool call")
-	finishedToolCardID := assertSingleA2UICardID(t, got[6], "tool result")
-	if runningToolCardID != firstToolCardID || finishedToolCardID != firstToolCardID {
-		t.Fatalf("tool card IDs = %q, %q, %q; want lifecycle updates to reuse one A2UI card", firstToolCardID, runningToolCardID, finishedToolCardID)
-	}
-	if children := assertA2UIRootChildren(t, got[6]); countString(children, firstToolCardID) != 1 {
-		t.Fatalf("root children = %#v, want tool card %q listed once", children, firstToolCardID)
-	}
-	if got[7].Type != string(projectAssistantEventRunFinished) || got[7].AssistantMessageID != "assistant-1" {
-		t.Fatalf("final event = %#v, want run_finished", got[7])
+	if got[4].Type != string(projectAssistantEventRunFinished) || got[4].AssistantMessageID != "assistant-1" {
+		t.Fatalf("final event = %#v, want run_finished", got[4])
 	}
 }
 
@@ -272,10 +257,7 @@ func TestProjectAssistantStreamWriterMapsStatusToUIDataModelUpdate(t *testing.T)
 	}
 }
 
-// Minimal disclosure mode (APP_STUDIO_TOOL_DISCLOSURE=minimal) restores the
-// fully opaque contract from #322: generic labels only — no tool names,
-// paths, or error text anywhere in the streamed UI.
-func TestProjectAssistantStreamWriterMinimalDisclosureHidesToolDetail(t *testing.T) {
+func TestProjectAssistantStreamWriterDoesNotEmitToolCardsInMinimalDisclosure(t *testing.T) {
 	prev := projectAssistantToolDisclosureMinimal
 	projectAssistantToolDisclosureMinimal = true
 	t.Cleanup(func() { projectAssistantToolDisclosureMinimal = prev })
@@ -294,17 +276,12 @@ func TestProjectAssistantStreamWriterMinimalDisclosureHidesToolDetail(t *testing
 	if err != nil {
 		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("events = %#v, want beginRendering and opaque tool result card", got)
+	if len(got) != 0 {
+		t.Fatalf("events = %#v, want tool activity omitted from A2UI", got)
 	}
-	assertA2UICard(t, got[1], "tool result", "Edited files")
-	assertNoRawAssistantTrace(t, got, "src/App.tsx", "write_file", "warning only")
 }
 
-// Tool disclosure contract: the chat shows WHICH tool ran and its summarized
-// arguments/result (summarizers emit paths/counts, never file contents or
-// secrets); raw error text stays hidden when a result summary exists.
-func TestProjectAssistantStreamWriterMapsToolCallToSafeDisclosure(t *testing.T) {
+func TestProjectAssistantStreamWriterDoesNotEmitToolCards(t *testing.T) {
 	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
 		Type: projectAssistantEventToolCallFinished,
 		ToolCall: &projectAssistantToolCall{
@@ -319,103 +296,110 @@ func TestProjectAssistantStreamWriterMapsToolCallToSafeDisclosure(t *testing.T) 
 	if err != nil {
 		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("events = %#v, want beginRendering and tool result card", got)
+	if len(got) != 0 {
+		t.Fatalf("events = %#v, want tool activity omitted from A2UI", got)
 	}
-	event := got[1]
-	if event.Type != "" || event.SurfaceUpdate == nil {
-		t.Fatalf("event = %#v, want surfaceUpdate UI event", event)
-	}
-	assertA2UICard(t, event, "tool result", "Updated src/App.tsx")
-	assertA2UICard(t, event, "tool result", "write_file")
-	assertA2UICard(t, event, "tool result", "Wrote src/App.tsx")
-	assertNoRawAssistantTrace(t, got, "warning only")
 }
 
-func TestProjectAssistantUIActionUsesSpecificSafeLabels(t *testing.T) {
+func TestProjectAssistantActionFeedUsesSpecificSafeLabels(t *testing.T) {
 	tests := []struct {
-		name      string
-		toolName  string
-		status    string
-		arguments string
-		summary   string
-		want      string
+		name        string
+		toolName    string
+		status      string
+		arguments   string
+		summary     string
+		wantTitle   string
+		wantTarget  string
+		wantOutcome string
+		wantCount   int
 	}{
 		{
-			name:      "read file",
-			toolName:  projectToolReadFile,
-			status:    "succeeded",
-			arguments: `{"file_path":"src/App.vue","offset":1,"limit":200}`,
-			summary:   "file read",
-			want:      "Read src/App.vue",
+			name:       "read file",
+			toolName:   projectToolReadFile,
+			status:     "succeeded",
+			arguments:  `{"file_path":"src/App.vue","offset":1,"limit":200}`,
+			summary:    "file read",
+			wantTitle:  "Read file",
+			wantTarget: "src/App.vue",
 		},
 		{
-			name:      "list files",
-			toolName:  projectToolLS,
-			arguments: "path src",
-			status:    "succeeded",
-			summary:   "6 path(s); src/App.vue, src/style.css",
-			want:      "Read 6 project files",
+			name:        "list files",
+			toolName:    projectToolLS,
+			arguments:   "path src",
+			status:      "succeeded",
+			summary:     "6 path(s); src/App.vue, src/style.css",
+			wantTitle:   "Read project files",
+			wantOutcome: "6 project files",
+			wantCount:   6,
 		},
 		{
-			name:      "glob files",
-			toolName:  projectToolGlob,
-			arguments: "pattern **/*.vue; path src",
-			status:    "succeeded",
-			summary:   "4 path(s)",
-			want:      "Read 4 project files",
+			name:        "glob files",
+			toolName:    projectToolGlob,
+			arguments:   "pattern **/*.vue; path src",
+			status:      "succeeded",
+			summary:     "4 path(s)",
+			wantTitle:   "Read project files",
+			wantOutcome: "4 project files",
+			wantCount:   4,
 		},
 		{
-			name:      "write file",
-			toolName:  projectToolWriteFile,
-			status:    "succeeded",
-			arguments: `{"path":"src/App.vue","content":"secret source"}`,
-			summary:   "write_file; src/App.vue; 2048 bytes",
-			want:      "Updated src/App.vue",
+			name:       "write file",
+			toolName:   projectToolWriteFile,
+			status:     "succeeded",
+			arguments:  `{"path":"src/App.vue","content":"secret source"}`,
+			summary:    "write_file; src/App.vue; 2048 bytes",
+			wantTitle:  "Updated file",
+			wantTarget: "src/App.vue",
 		},
 		{
-			name:      "apply patch",
-			toolName:  projectToolApplyPatch,
+			name:       "apply patch",
+			toolName:   projectToolApplyPatch,
+			status:     "running",
+			arguments:  "path src/style.css; replaceAll",
+			wantTitle:  "Updating file",
+			wantTarget: "src/style.css",
+		},
+		{
+			name:        "search files",
+			toolName:    projectToolGrep,
+			status:      "succeeded",
+			summary:     "3 result line(s)",
+			wantTitle:   "Searched project",
+			wantOutcome: "3 references",
+			wantCount:   3,
+		},
+		{
+			name:      "verify preview",
+			toolName:  projectToolVerifyDevelopmentRuntime,
 			status:    "running",
-			arguments: "path src/style.css; replaceAll",
-			want:      "Updating src/style.css",
+			wantTitle: "Checking development preview",
 		},
 		{
-			name:     "search files",
-			toolName: projectToolGrep,
-			status:   "succeeded",
-			summary:  "3 result line(s)",
-			want:     "Found 3 search results",
-		},
-		{
-			name:     "verify preview",
-			toolName: projectToolVerifyDevelopmentRuntime,
-			status:   "running",
-			want:     "Checking development preview",
-		},
-		{
-			name:     "commit files",
-			toolName: projectToolCommitProjectFiles,
-			status:   "succeeded",
-			summary:  "commit abc123; 2 file(s): src/App.vue, src/style.css",
-			want:     "Committed 2 files",
+			name:       "commit files",
+			toolName:   projectToolCommitProjectFiles,
+			status:     "succeeded",
+			summary:    "commit abc123; 2 file(s): src/App.vue, src/style.css",
+			wantTitle:  "Committed changes",
+			wantTarget: "abc123",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+			action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
 				ID:        "tool-1",
 				Name:      tt.toolName,
 				Status:    tt.status,
 				Arguments: tt.arguments,
 				Summary:   tt.summary,
 			})
-			if action.Label != tt.want {
-				t.Fatalf("label = %q, want %q; action = %#v", action.Label, tt.want, action)
+			if action.Title != tt.wantTitle || action.Target != tt.wantTarget ||
+				action.Outcome != tt.wantOutcome || action.Count != tt.wantCount {
+				t.Fatalf("action = %#v, want title=%q target=%q outcome=%q count=%d",
+					action, tt.wantTitle, tt.wantTarget, tt.wantOutcome, tt.wantCount)
 			}
-			if strings.Contains(action.Label, "secret source") {
-				t.Fatalf("label exposed raw mutation content: %q", action.Label)
+			if strings.Contains(action.Title, "secret source") {
+				t.Fatalf("label exposed raw mutation content: %q", action.Title)
 			}
 		})
 	}
@@ -424,49 +408,46 @@ func TestProjectAssistantUIActionUsesSpecificSafeLabels(t *testing.T) {
 func TestProjectAssistantUICanonicalReadsAreInspectActions(t *testing.T) {
 	for _, name := range []string{projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep} {
 		t.Run(name, func(t *testing.T) {
-			if got := projectAssistantUIActionKind(name); got != projectAssistantUIActionInspect {
-				t.Fatalf("projectAssistantUIActionKind(%q) = %q, want %q", name, got, projectAssistantUIActionInspect)
+			if got := projectAssistantActionFeedItemKind(name); got != projectAssistantActionFeedItemInspect {
+				t.Fatalf("projectAssistantActionFeedItemKind(%q) = %q, want %q", name, got, projectAssistantActionFeedItemInspect)
 			}
 		})
 	}
 }
 
-func TestProjectAssistantUIActionSpecificLabelsRespectMinimalDisclosure(t *testing.T) {
+func TestProjectAssistantActionFeedSpecificLabelsRespectMinimalDisclosure(t *testing.T) {
 	prev := projectAssistantToolDisclosureMinimal
 	projectAssistantToolDisclosureMinimal = true
 	t.Cleanup(func() { projectAssistantToolDisclosureMinimal = prev })
 
-	action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+	action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
 		ID:        "tool-1",
 		Name:      projectToolWriteFile,
 		Status:    "succeeded",
 		Arguments: `{"path":"src/App.vue","content":"secret source"}`,
 		Summary:   "write_file; src/App.vue; 2048 bytes",
 	})
-	if action.Label != "Edited files" {
-		t.Fatalf("minimal disclosure label = %q, want generic edit label", action.Label)
+	if action.Title != "Edited files" {
+		t.Fatalf("minimal disclosure label = %q, want generic edit label", action.Title)
 	}
-	if action.Tool != "" || action.Arguments != "" || action.Detail != "" {
+	if action.Target != "" || action.Outcome != "" || action.Diagnostic != nil {
 		t.Fatalf("minimal disclosure action exposed details: %#v", action)
 	}
 }
 
-// Disclosure boundary: an unknown/MCP tool has no bespoke argument summary, so
-// the summarizer falls back to marshaling the whole arg map — which could carry
-// file contents or secrets. That raw-JSON fallback must be dropped, not shown.
-func TestProjectAssistantUIActionToolArgumentsDropsRawJSONFallback(t *testing.T) {
-	// A tool with a dedicated summarizer yields a safe, non-JSON summary.
-	if got := projectAssistantUIActionToolArguments(projectToolReadFile, `{"file_path":"src/App.tsx","offset":1,"limit":200}`); !strings.Contains(got, "src/App.tsx") || looksLikeRawJSON(got) {
-		t.Errorf("read_file arguments = %q, want a non-JSON path summary", got)
+func TestProjectAssistantActionFeedFailsClosedForUnknownTools(t *testing.T) {
+	action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
+		ID:        "tool-1",
+		Name:      "some__mcp_tool",
+		Status:    "succeeded",
+		Arguments: `{"content":"secret file body","token":"abc123"}`,
+		Summary:   "secret tool result",
+	})
+	if action.Title != "Completed action" || action.Target != "" || action.Outcome != "" {
+		t.Fatalf("unknown action = %#v, want generic product presentation", action)
 	}
-	// An unknown tool falls through to json.Marshal(args); the guard must drop
-	// the raw payload rather than leak content/secrets.
-	if got := projectAssistantUIActionToolArguments("some__mcp_tool", `{"content":"secret file body","token":"abc123"}`); got != "" {
-		t.Errorf("unknown-tool arguments = %q, want empty (raw JSON fallback dropped)", got)
-	}
-	// Already-summarized (non-JSON) input passes through untouched.
-	if got := projectAssistantUIActionToolArguments("some__mcp_tool", "path api/server.js; 12 bytes"); got != "path api/server.js; 12 bytes" {
-		t.Errorf("pre-summarized arguments = %q, want passthrough", got)
+	if encoded, err := json.Marshal(action); err != nil || strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), "mcp_tool") {
+		t.Fatalf("unknown action JSON = %s, %v; want no raw tool detail", encoded, err)
 	}
 }
 
@@ -483,16 +464,9 @@ func TestProjectAssistantStreamWriterSkipsLowValueFinishedInspectionProgress(t *
 	if err != nil {
 		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("events = %#v, want beginRendering and safe surfaceUpdate", got)
+	if len(got) != 0 {
+		t.Fatalf("events = %#v, want inspection activity omitted from A2UI", got)
 	}
-	event := got[1]
-	if event.Type != "" || event.SurfaceUpdate == nil {
-		t.Fatalf("event = %#v, want safe surfaceUpdate UI event", event)
-	}
-	assertA2UICard(t, event, "tool result", "Inspected project")
-	assertA2UICard(t, event, "tool result", "read_file")
-	assertA2UICard(t, event, "tool result", "Read src/App.tsx")
 }
 
 func TestProjectAssistantStreamWriterMapsPermissionCheckpointToInterruptRequest(t *testing.T) {
@@ -512,13 +486,12 @@ func TestProjectAssistantStreamWriterMapsPermissionCheckpointToInterruptRequest(
 	if err != nil {
 		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
 	}
-	if len(got) != 3 {
-		t.Fatalf("events = %#v, want beginRendering, approval card, interruptRequest", got)
+	if len(got) != 2 {
+		t.Fatalf("events = %#v, want beginRendering and interruptRequest", got)
 	}
-	assertA2UICard(t, got[1], "approval needed", "will write files")
-	interrupt := got[2].InterruptRequest
-	if got[2].Type != "" || interrupt == nil {
-		t.Fatalf("event = %#v, want interruptRequest UI event", got[2])
+	interrupt := got[1].InterruptRequest
+	if got[1].Type != "" || interrupt == nil {
+		t.Fatalf("event = %#v, want interruptRequest UI event", got[1])
 	}
 	if interrupt.InterruptID != "perm-1" || interrupt.Description != "will write files" || interrupt.Status != "pending" {
 		t.Fatalf("interrupt = %#v, want pending permission request", interrupt)
@@ -549,8 +522,8 @@ func TestProjectAssistantMessageMetadataStoresSafeUIModel(t *testing.T) {
 	if _, ok := metadata["toolCalls"]; ok {
 		t.Fatalf("metadata = %#v, should not persist raw toolCalls", metadata)
 	}
-	if _, ok := metadata["assistantActions"]; !ok {
-		t.Fatalf("metadata = %#v, want safe assistantActions", metadata)
+	if _, ok := metadata["assistantActionFeed"]; !ok {
+		t.Fatalf("metadata = %#v, want safe assistantActionFeed", metadata)
 	}
 	if _, ok := metadata["assistantInterrupt"]; !ok {
 		t.Fatalf("metadata = %#v, want safe assistantInterrupt", metadata)
@@ -650,13 +623,10 @@ func TestStreamProjectAssistantEmitsCanonicalLifecycleSequence(t *testing.T) {
 
 	got := decodeProjectMessageStreamEvents(t, rr.Body.String())
 	wantTypes := []string{
+		"dataModelUpdate",
 		"beginRendering",
 		"surfaceUpdate",
 		"dataModelUpdate",
-		"surfaceUpdate",
-		"dataModelUpdate",
-		"surfaceUpdate",
-		"surfaceUpdate",
 		"dataModelUpdate",
 		"run_finished",
 	}
@@ -668,23 +638,14 @@ func TestStreamProjectAssistantEmitsCanonicalLifecycleSequence(t *testing.T) {
 			t.Fatalf("stream event[%d] type = %q, want %q; event = %#v", i, got[i].streamType(), want, got[i])
 		}
 	}
-	if got[0].BeginRendering == nil || got[0].BeginRendering.SurfaceID != "assistant-sequence" {
-		t.Fatalf("beginRendering = %#v, want assistant-sequence surface", got[0].BeginRendering)
+	if got[1].BeginRendering == nil || got[1].BeginRendering.SurfaceID != "assistant-sequence" {
+		t.Fatalf("beginRendering = %#v, want assistant-sequence surface", got[1].BeginRendering)
 	}
-	assertA2UICard(t, got[1], "tool call", "Editing files")
-	assertA2UICard(t, got[5], "tool call", "Editing files")
-	assertA2UICard(t, got[6], "tool result", "Edited files")
-	firstToolCardID := assertSingleA2UICardID(t, got[1], "tool call")
-	runningToolCardID := assertSingleA2UICardID(t, got[5], "tool call")
-	finishedToolCardID := assertSingleA2UICardID(t, got[6], "tool result")
-	if runningToolCardID != firstToolCardID || finishedToolCardID != firstToolCardID {
-		t.Fatalf("tool card IDs = %q, %q, %q; want lifecycle updates to reuse one A2UI card", firstToolCardID, runningToolCardID, finishedToolCardID)
+	if !projectMessageStreamEventsHaveContent([]projectMessageStreamEvent{got[4]}, projectAssistantUIDevelopmentPreviewRefreshKey) {
+		t.Fatalf("preview refresh event = %#v, want preview refresh signal", got[4])
 	}
-	if !projectMessageStreamEventsHaveContent([]projectMessageStreamEvent{got[7]}, projectAssistantUIDevelopmentPreviewRefreshKey) {
-		t.Fatalf("preview refresh event = %#v, want preview refresh signal", got[7])
-	}
-	if got[8].Type != string(projectAssistantEventRunFinished) || got[8].AssistantMessageID != "assistant-sequence" {
-		t.Fatalf("terminal event = %#v, want run_finished for assistant-sequence", got[8])
+	if got[5].Type != string(projectAssistantEventRunFinished) || got[5].AssistantMessageID != "assistant-sequence" {
+		t.Fatalf("terminal event = %#v, want run_finished for assistant-sequence", got[5])
 	}
 }
 

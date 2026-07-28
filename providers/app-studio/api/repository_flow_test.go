@@ -944,11 +944,11 @@ func TestProjectAssistantMessageMetadataSafeActions(t *testing.T) {
 	if _, ok := metadata["toolCalls"]; ok {
 		t.Fatalf("metadata = %#v, should not persist raw toolCalls", metadata)
 	}
-	actions := projectAssistantUIActionsFromMetadata(metadata[projectMessageMetadataAssistantActions])
+	actions := projectAssistantActionFeedFromMetadata(metadata[projectMessageMetadataAssistantActionFeed])
 	if len(actions) != 1 {
 		t.Fatalf("assistant actions length = %d, want 1", len(actions))
 	}
-	if actions[0].Kind != projectAssistantUIActionCommit || actions[0].Status != "succeeded" || actions[0].Label != "Committed changes" {
+	if actions[0].Kind != projectAssistantActionFeedItemCommit || actions[0].Status != "succeeded" || actions[0].Title != "Committed changes" {
 		t.Fatalf("unexpected assistant action metadata: %#v", actions[0])
 	}
 }
@@ -1120,23 +1120,23 @@ func TestSummarizeProjectToolResultEinoGrepFormats(t *testing.T) {
 					t.Fatalf("summary leaked Eino grep output %q: %q", forbidden, got)
 				}
 			}
-			action := projectAssistantUIActionFromAssistantToolCall(projectAssistantToolCall{
+			action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
 				ID:      "grep",
 				Name:    projectToolGrep,
 				Status:  "succeeded",
 				Summary: got,
 			})
-			count, ok := projectAssistantUISummaryCount(got, "result line(s)")
+			count, ok := projectAssistantSummaryCount(got, "result line(s)")
 			if !ok {
 				t.Fatalf("summary = %q, want result count", got)
 			}
-			noun := "search results"
+			noun := "references"
 			if count == 1 {
-				noun = "search result"
+				noun = "reference"
 			}
-			wantLabel := fmt.Sprintf("Found %d %s", count, noun)
-			if action.Label != wantLabel {
-				t.Fatalf("label = %q, want mode-neutral %q", action.Label, wantLabel)
+			wantOutcome := fmt.Sprintf("%d %s", count, noun)
+			if action.Title != "Searched project" || action.Outcome != wantOutcome {
+				t.Fatalf("action = %#v, want mode-neutral outcome %q", action, wantOutcome)
 			}
 		})
 	}
@@ -1376,14 +1376,12 @@ func TestStreamProjectAssistantPersistsPermissionTimelineMessage(t *testing.T) {
 	if _, ok := assistant.Metadata["toolCalls"]; ok {
 		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", assistant.Metadata)
 	}
-	actions := projectAssistantUIActionsFromMetadata(assistant.Metadata[projectMessageMetadataAssistantActions])
-	if len(actions) != 1 || actions[0].Status != "awaiting_approval" || actions[0].Kind != projectAssistantUIActionEdit {
+	actions := projectAssistantActionFeedFromMetadata(assistant.Metadata[projectMessageMetadataAssistantActionFeed])
+	if len(actions) != 1 || actions[0].Status != projectAssistantActionFeedStatusWaiting || actions[0].Kind != projectAssistantActionFeedItemEdit {
 		t.Fatalf("assistant actions = %#v, want pending edit disclosure", actions)
 	}
-	// Tool-level transparency: the action names the tool and its summarized
-	// arguments (path + byte count — never the file contents).
-	if actions[0].Tool != projectToolWriteFile || !strings.Contains(actions[0].Arguments, "src/App.tsx") {
-		t.Fatalf("assistant action disclosure = %#v, want tool name and summarized arguments", actions[0])
+	if actions[0].Target != "src/App.tsx" {
+		t.Fatalf("assistant action disclosure = %#v, want only the user-facing target", actions[0])
 	}
 	interrupt := projectAssistantUIInterruptFromMetadata(assistant.Metadata[projectMessageMetadataAssistantInterrupt])
 	if interrupt == nil || interrupt.Status != "pending" || interrupt.Action == nil || interrupt.Action.RunID == "" || interrupt.Action.RequestID == "" {
@@ -1449,9 +1447,9 @@ func TestStreamProjectAssistantPersistsPermissionTimelineAfterStreamWriteFailure
 	if _, ok := assistant.Metadata["toolCalls"]; ok {
 		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", assistant.Metadata)
 	}
-	actions := projectAssistantUIActionsFromMetadata(assistant.Metadata[projectMessageMetadataAssistantActions])
+	actions := projectAssistantActionFeedFromMetadata(assistant.Metadata[projectMessageMetadataAssistantActionFeed])
 	interrupt := projectAssistantUIInterruptFromMetadata(assistant.Metadata[projectMessageMetadataAssistantInterrupt])
-	if assistant.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission || len(actions) != 1 || actions[0].Status != "awaiting_approval" || interrupt == nil || interrupt.Action == nil {
+	if assistant.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission || len(actions) != 1 || actions[0].Status != projectAssistantActionFeedStatusWaiting || interrupt == nil || interrupt.Action == nil {
 		t.Fatalf("assistant metadata = %#v, want pending permission with checkpoint after stream write failure", assistant.Metadata)
 	}
 	assertProjectAssistantMetadataDoesNotContain(t, assistant.Metadata, "hello", "permission_required", "waiting_for_permission")
@@ -1882,10 +1880,10 @@ func TestResumeProjectAssistantRunApprovesPendingTool(t *testing.T) {
 	if _, ok := updatedMessage.Metadata["toolCalls"]; ok {
 		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", updatedMessage.Metadata)
 	}
-	updatedActions := projectAssistantUIActionsFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActions])
-	var writeAction *projectAssistantUIAction
+	updatedActions := projectAssistantActionFeedFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActionFeed])
+	var writeAction *projectAssistantActionFeedItem
 	for i := range updatedActions {
-		if updatedActions[i].ID == call.ID {
+		if updatedActions[i].ID == projectAssistantActionPublicID(call.ID) {
 			writeAction = &updatedActions[i]
 			break
 		}
@@ -1895,6 +1893,53 @@ func TestResumeProjectAssistantRunApprovesPendingTool(t *testing.T) {
 	}
 	if interrupt := projectAssistantUIInterruptFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt != nil {
 		t.Fatalf("assistant interrupt = %#v, want cleared after approval", interrupt)
+	}
+}
+
+func TestUpdateProjectAssistantPermissionMessageRemovesCompletedUnknownAction(t *testing.T) {
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	scope := projectMessageScope("org-a", "ws-1", "demo")
+	messageID := "msg-assistant"
+	runID := "run-1"
+	requestID := "request-1"
+	toolCallID := "unknown-1"
+	if err := appendProjectAssistantMessage(context.Background(), messages, scope, messageID, "", map[string]any{
+		projectMessageMetadataStatus: projectMessageStatusPendingPermission,
+		projectMessageMetadataAssistantActionFeed: []projectAssistantActionFeedItem{{
+			ID:       projectAssistantActionPublicID(toolCallID),
+			Kind:     projectAssistantActionFeedItemOther,
+			Status:   projectAssistantActionFeedStatusWaiting,
+			Title:    "Waiting for action",
+			Severity: projectAssistantActionFeedSeverityAttention,
+		}},
+		projectMessageMetadataAssistantInterrupt: projectAssistantUIInterruptRequest{
+			Action: &projectAssistantUIInterruptAction{RunID: runID, RequestID: requestID},
+		},
+	}); err != nil {
+		t.Fatalf("appendProjectAssistantMessage returned error: %v", err)
+	}
+
+	toolCall := projectToolCallStreamEvent{
+		ID:     toolCallID,
+		Name:   "provider__internal_tool",
+		Status: "succeeded",
+	}
+	if err := server.updateProjectAssistantPermissionMessage(context.Background(), scope, messageID, projectAssistantResumeResponse{
+		RunID:     runID,
+		RequestID: requestID,
+		Status:    store.AssistantRunStatusCompleted,
+		ToolCall:  &toolCall,
+	}); err != nil {
+		t.Fatalf("updateProjectAssistantPermissionMessage returned error: %v", err)
+	}
+
+	updated, err := server.findProjectMessage(context.Background(), scope, messageID)
+	if err != nil {
+		t.Fatalf("findProjectMessage returned error: %v", err)
+	}
+	if _, ok := updated.Metadata[projectMessageMetadataAssistantActionFeed]; ok {
+		t.Fatalf("assistant metadata = %#v, want completed unknown action removed", updated.Metadata)
 	}
 }
 
@@ -2100,8 +2145,8 @@ func TestResumeProjectAssistantRunIgnoresMismatchedAssistantMessageID(t *testing
 	if otherMessage.Metadata[projectMessageMetadataStatus] != projectMessageStatusPendingPermission {
 		t.Fatalf("other message metadata = %#v, want pending status unchanged", otherMessage.Metadata)
 	}
-	actions := projectAssistantUIActionsFromMetadata(otherMessage.Metadata[projectMessageMetadataAssistantActions])
-	if len(actions) != 1 || actions[0].ID != "call-other" || actions[0].Status != "awaiting_approval" {
+	actions := projectAssistantActionFeedFromMetadata(otherMessage.Metadata[projectMessageMetadataAssistantActionFeed])
+	if len(actions) != 1 || actions[0].ID != projectAssistantActionPublicID("call-other") || actions[0].Status != projectAssistantActionFeedStatusWaiting {
 		t.Fatalf("other message actions = %#v, want unrelated pending action unchanged", actions)
 	}
 	interrupt := projectAssistantUIInterruptFromMetadata(otherMessage.Metadata[projectMessageMetadataAssistantInterrupt])
@@ -2167,7 +2212,7 @@ func TestResumeProjectAssistantRunDeniesPendingToolAndUpdatesMessage(t *testing.
 	if _, ok := updatedMessage.Metadata["toolCalls"]; ok {
 		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", updatedMessage.Metadata)
 	}
-	updatedActions := projectAssistantUIActionsFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActions])
+	updatedActions := projectAssistantActionFeedFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActionFeed])
 	if len(updatedActions) != 1 || updatedActions[0].Status != "rejected" {
 		t.Fatalf("updated actions = %#v, want persisted rejected action", updatedActions)
 	}
@@ -3062,14 +3107,13 @@ func TestResumeProjectAssistantRunRejectsStaleRepositoryBinding(t *testing.T) {
 	if _, ok := updatedMessage.Metadata["toolCalls"]; ok {
 		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", updatedMessage.Metadata)
 	}
-	updatedActions := projectAssistantUIActionsFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActions])
+	updatedActions := projectAssistantActionFeedFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantActionFeed])
 	if len(updatedActions) != 1 || updatedActions[0].Status != "failed" {
 		t.Fatalf("updated actions = %#v, want failed stale binding action", updatedActions)
 	}
-	// Failed tools disclose their reason: the user sees WHY the commit did
-	// not happen instead of an opaque "Commit failed".
-	if !strings.Contains(updatedActions[0].Detail, "repository binding changed") {
-		t.Fatalf("updated action detail = %q, want the stale-binding reason disclosed", updatedActions[0].Detail)
+	if updatedActions[0].Diagnostic == nil || updatedActions[0].Diagnostic.Category != "validation" ||
+		strings.Contains(updatedActions[0].Diagnostic.Message, "repository binding changed") {
+		t.Fatalf("updated action diagnostic = %#v, want allowlisted validation detail", updatedActions[0].Diagnostic)
 	}
 }
 

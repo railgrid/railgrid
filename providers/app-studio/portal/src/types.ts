@@ -56,21 +56,29 @@ export interface ProjectAssistantAbortResponse {
   decision?: 'allow' | 'deny'
 }
 
-export type ProjectAssistantActionStatus = 'requested' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'succeeded' | 'failed' | 'rejected'
+export type ProjectAssistantActionKind = 'inspect' | 'clarify' | 'edit' | 'run' | 'commit' | 'plan' | 'other'
+export type ProjectAssistantActionStatus = 'running' | 'waiting' | 'succeeded' | 'failed' | 'rejected'
+export type ProjectAssistantActionSeverity = 'normal' | 'attention' | 'error'
+export type ProjectAssistantDiagnosticCategory = 'timeout' | 'permission' | 'validation' | 'runtime' | 'provider' | 'unknown'
 
-export interface ProjectAssistantUIAction {
+export interface ProjectAssistantActionDiagnostic {
+  category: ProjectAssistantDiagnosticCategory
+  message: string
+  referenceID: string
+}
+
+export interface ProjectAssistantActionFeedItem {
   id: string
-  kind: 'inspect' | 'clarify' | 'edit' | 'run' | 'commit' | 'plan' | 'other'
+  kind: ProjectAssistantActionKind
   status: ProjectAssistantActionStatus
-  label: string
-  summary?: string
+  title: string
+  target?: string
+  outcome?: string
   count?: number
-  /** Actual tool name (e.g. read_project_file) — shown so users can see what ran. */
-  tool?: string
-  /** Summarized tool arguments. */
-  arguments?: string
-  /** Summarized tool result (or error) — the expandable output. */
-  detail?: string
+  severity: ProjectAssistantActionSeverity
+  groupKey?: string
+  groupTitle?: string
+  diagnostic?: ProjectAssistantActionDiagnostic
 }
 
 export interface ProjectAssistantUIComponent {

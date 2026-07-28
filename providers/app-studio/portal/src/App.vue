@@ -37,9 +37,10 @@ import {
   gitConnectionReady,
   type ProjectCreateReadiness,
 } from './createReadiness'
-import { parseAssistantTraceHeader, summarizeAssistantTrace } from './assistantProgress'
-import { activeAssistantPlanMessage, parseAssistantPlan, type AssistantPlan } from './assistantPlan'
-import AssistantPlanDock from './AssistantPlanDock.vue'
+import { parseAssistantActionFeed } from './assistantActionFeed'
+import AssistantActionLog from './AssistantActionLog.vue'
+import { activeAssistantPlanMessage, assistantPlanProgress, parseAssistantPlan, type AssistantPlan } from './assistantPlan'
+import AssistantPlanPopover from './AssistantPlanPopover.vue'
 import {
   ConversationRunController,
   abortedConversationSnapshot,
@@ -81,7 +82,7 @@ import type {
   KedgeContext,
   Project,
   ProjectAssistantSnapshot,
-  ProjectAssistantUIAction,
+  ProjectAssistantActionFeedItem,
   ProjectAssistantUIComponent,
   ProjectAssistantUIInterruptRequest,
   ProjectProviderBinding,
@@ -123,7 +124,6 @@ interface WorkbenchLauncherItem {
 
 type LLMCredentialMode = 'api-key' | 'service-account-json'
 type ProjectMessageViewStatus = 'interrupted'
-type ProjectAssistantActionView = ProjectAssistantUIAction
 type ProjectAssistantComponentValue = ProjectAssistantUIComponent['component']
 interface ProjectAssistantSurface {
   rootId: string
@@ -134,23 +134,11 @@ interface ProjectAssistantSurfaceCard {
   id: string
   role: string
   body: string
-  tool?: string
-  output?: string
-}
-type AssistantTraceItemStatus = 'running' | 'complete' | 'waiting' | 'error'
-interface AssistantTraceItem {
-  id: string
-  role: string
-  label: string
-  detail: string
-  status: AssistantTraceItemStatus
-  tool?: string
-  output?: string
 }
 type ProjectMessageView = ProjectMessage & {
   viewStatus?: ProjectMessageViewStatus
   plan?: AssistantPlan
-  actions?: ProjectAssistantActionView[]
+  actionFeed?: ProjectAssistantActionFeedItem[]
   surface?: ProjectAssistantSurface
   interrupt?: ProjectAssistantUIInterruptRequest
 }
@@ -383,7 +371,7 @@ const llmSaving = ref(false)
 const llmStatus = ref<string | null>(null)
 const messagesRef = ref<HTMLDivElement | null>(null)
 const expandedMessageTimestampID = ref<string | null>(null)
-const expandedAssistantTraceMessageID = ref<string | null>(null)
+const assistantPlanAnnouncement = ref('')
 const promptRef = ref<HTMLTextAreaElement | null>(null)
 const workspaceRef = ref<HTMLDivElement | null>(null)
 const toolHostRef = ref<HTMLDivElement | null>(null)
@@ -478,6 +466,25 @@ const activePlanMessage = computed(() =>
     Boolean(activeAssistantRun && assistantRunTerminal(activeAssistantRun.status)),
   ),
 )
+let lastPlanAnnouncementKey = ''
+watch(activePlanMessage, (current, previous) => {
+  if (current) {
+    const progress = assistantPlanProgress(current.plan)
+    const key = `${current.id}:${progress.completed}:${progress.activeLabel}`
+    if (key === lastPlanAnnouncementKey) return
+    lastPlanAnnouncementKey = key
+    assistantPlanAnnouncement.value = progress.activeLabel
+      ? `${progress.completed} of ${progress.total} steps. In progress: ${progress.activeLabel}`
+      : `${progress.completed} of ${progress.total} steps.`
+    return
+  }
+  if (!previous || !lastPlanAnnouncementKey) return
+  const progress = assistantPlanProgress(previous.plan)
+  assistantPlanAnnouncement.value = progress.completed === progress.total
+    ? `Plan completed. ${progress.total} of ${progress.total} steps.`
+    : `Plan ended. ${progress.completed} of ${progress.total} steps completed.`
+  lastPlanAnnouncementKey = ''
+})
 const conversationWorkingLabel = computed(() => {
   const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
   if (activePlanMessage.value) return ''
@@ -2494,14 +2501,14 @@ function projectMessagesForConversation(source: ProjectMessageView[]): ProjectMe
 function toProjectMessageView(message: ProjectMessage): ProjectMessageView {
   const viewStatus = projectMessageViewStatus(message)
   const plan = projectMessagePlan(message)
-  const actions = projectMessageActions(message)
+  const actionFeed = projectMessageActionFeed(message)
   const interrupt = projectMessageInterrupt(message)
-  if (!viewStatus && !plan && actions.length === 0 && !interrupt) return message
+  if (!viewStatus && !plan && actionFeed.length === 0 && !interrupt) return message
   return {
     ...message,
     ...(viewStatus ? { viewStatus } : {}),
     ...(plan ? { plan } : {}),
-    ...(actions.length > 0 ? { actions } : {}),
+    ...(actionFeed.length > 0 ? { actionFeed } : {}),
     ...(interrupt ? { interrupt } : {}),
   }
 }
@@ -2510,26 +2517,24 @@ function projectMessagePlan(message: ProjectMessage): AssistantPlan | undefined 
   return parseAssistantPlan(message.metadata?.assistantPlan)
 }
 
+function assistantPlanCompletionLabel(plan?: AssistantPlan): string {
+  if (!plan || plan.steps.some((step) => step.status !== 'completed')) return ''
+  return `${plan.steps.length} of ${plan.steps.length} steps completed`
+}
+
 function projectMessageViewStatus(message: ProjectMessage): ProjectMessageViewStatus | undefined {
   return message.role === 'assistant' && message.metadata?.status === 'interrupted' ? 'interrupted' : undefined
 }
 
-function projectMessageActions(message: ProjectMessage): ProjectAssistantActionView[] {
+function projectMessageActionFeed(message: ProjectMessage): ProjectAssistantActionFeedItem[] {
   if (message.role !== 'assistant') return []
-  const raw = message.metadata?.assistantActions
-  return Array.isArray(raw) ? raw.filter(isProjectAssistantAction) : []
+  return parseAssistantActionFeed(message.metadata?.assistantActionFeed)
 }
 
 function projectMessageInterrupt(message: ProjectMessage): ProjectAssistantUIInterruptRequest | undefined {
   if (message.role !== 'assistant') return undefined
   const raw = message.metadata?.assistantInterrupt
   return isProjectAssistantInterrupt(raw) ? raw : undefined
-}
-
-function isProjectAssistantAction(value: unknown): value is ProjectAssistantActionView {
-  if (!value || typeof value !== 'object') return false
-  const item = value as Partial<ProjectAssistantActionView>
-  return typeof item.id === 'string' && typeof item.status === 'string' && typeof item.kind === 'string'
 }
 
 function isProjectAssistantInterrupt(value: unknown): value is ProjectAssistantUIInterruptRequest {
@@ -2691,10 +2696,6 @@ function toggleMessageTimestamp(messageID: string) {
   expandedMessageTimestampID.value = expandedMessageTimestampID.value === messageID ? null : messageID
 }
 
-function toggleAssistantTrace(messageID: string) {
-  expandedAssistantTraceMessageID.value = expandedAssistantTraceMessageID.value === messageID ? null : messageID
-}
-
 function formatRelativeTime(value?: string | null, numeric: Intl.RelativeTimeFormatNumeric = 'auto'): string {
   if (!value) return ''
   const date = new Date(value)
@@ -2813,121 +2814,6 @@ function assistantSurfaceTextNodes(surface: ProjectAssistantSurface, id: string)
   return []
 }
 
-function assistantActionCards(actions?: ProjectAssistantActionView[]): ProjectAssistantSurfaceCard[] {
-  return (actions ?? []).map((action) => ({
-    id: action.id,
-    role: assistantActionCardRole(action),
-    body: action.summary ? `${action.label}\n${action.summary}` : action.label,
-    tool: action.tool,
-    output: assistantActionOutput(action),
-  }))
-}
-
-// assistantActionOutput renders the expandable per-tool transcript: what the
-// tool was called with and what it returned (or the error).
-function assistantActionOutput(action: ProjectAssistantActionView): string {
-  const parts: string[] = []
-  if (action.arguments) parts.push(`args: ${action.arguments}`)
-  if (action.detail) parts.push(action.detail)
-  return parts.join('\n')
-}
-
-function assistantActionCardRole(action: ProjectAssistantActionView): string {
-  if (action.status === 'awaiting_approval' || action.status === 'awaiting_input') return 'approval needed'
-  if (action.status === 'requested' || action.status === 'running') return 'tool call'
-  return 'tool result'
-}
-
-function assistantTraceCards(message: ProjectMessageView): ProjectAssistantSurfaceCard[] {
-  return [...assistantSurfaceCards(message), ...assistantActionCards(message.actions)].filter(
-    (card) => card.role !== 'assistant' && card.body.trim(),
-  )
-}
-
-function assistantTraceItems(message: ProjectMessageView): AssistantTraceItem[] {
-  return assistantTraceCards(message).map((card) => {
-    const lines = card.body.split('\n').map((line) => line.trim()).filter(Boolean)
-    const header = card.role === 'tool call' || card.role === 'tool result' || card.tool
-      ? parseAssistantTraceHeader(lines[0] || card.role, card.tool)
-      : { label: lines[0] || card.role }
-    const label = assistantTraceLabel(header.label)
-    return {
-      id: card.id,
-      role: card.role,
-      label,
-      // Prefer the real tool output over the generic count text.
-      detail: card.output || lines.slice(1).join('\n') || lines[0] || card.role,
-      status: assistantTraceStatus(card.role),
-      tool: header.tool,
-      output: card.output,
-    }
-  })
-}
-
-function assistantTraceStatus(role: string): AssistantTraceItemStatus {
-  switch (role) {
-    case 'approval needed':
-      return 'waiting'
-    case 'error':
-      return 'error'
-    case 'tool call':
-      return 'running'
-    case 'tool result':
-      return 'complete'
-    default:
-      return 'complete'
-  }
-}
-
-function assistantTraceLabel(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed) return 'Working'
-  return trimmed
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .replace(/^./, (ch) => ch.toUpperCase())
-}
-
-function assistantTraceSummary(message: ProjectMessageView): string {
-  return summarizeAssistantTrace(assistantTraceItems(message))
-}
-
-function assistantTraceCountLabel(message: ProjectMessageView): string {
-  const count = assistantTraceItems(message).length
-  return `${count} action${count === 1 ? '' : 's'}`
-}
-
-function assistantTraceIconClasses(status: AssistantTraceItemStatus): string {
-  const base = 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border shadow-sm'
-  switch (status) {
-    case 'running':
-      return `${base} border-accent/20 bg-accent/10 text-accent`
-    case 'waiting':
-      return `${base} border-warning/30 bg-warning-subtle text-warning`
-    case 'error':
-      return `${base} border-danger/30 bg-danger-subtle text-danger`
-    default:
-      return `${base} border-border-subtle bg-surface-raised text-success`
-  }
-}
-
-function assistantTraceDetailClasses(status: AssistantTraceItemStatus): string {
-  switch (status) {
-    case 'running':
-      return 'border-accent/20 bg-accent/5'
-    case 'waiting':
-      return 'border-warning/30 bg-warning-subtle/40'
-    case 'error':
-      return 'border-danger/30 bg-danger-subtle/40'
-    default:
-      return 'border-border-subtle bg-surface-overlay/50'
-  }
-}
-
-function renderAssistantTraceDetail(item: AssistantTraceItem): string {
-  return escapeHtml(item.detail).replace(/\n/g, '<br />')
-}
-
 function permissionKey(interrupt: ProjectAssistantUIInterruptRequest): string {
   return interrupt.action?.requestId || interrupt.interruptId
 }
@@ -3026,6 +2912,8 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
 </script>
 
 <template>
+  <div class="sr-only" aria-live="polite" aria-atomic="true">{{ assistantPlanAnnouncement }}</div>
+
   <div v-if="initializing && !loading" class="flex h-full min-h-0 items-center justify-center bg-surface px-6 text-text-primary">
     <div class="flex max-w-md items-start gap-3 rounded-lg border border-border-subtle bg-surface-raised/70 p-4 text-[13px] text-text-muted">
       <Loader2 class="mt-0.5 h-4 w-4 shrink-0 animate-spin text-accent" :stroke-width="1.75" />
@@ -3373,7 +3261,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
     </div>
   </div>
 
-  <div v-else ref="workspaceRef" class="flex h-full min-h-0 w-full overflow-hidden bg-surface-raised/70 flex-col md:flex-row">
+  <div v-else ref="workspaceRef" data-app-studio-workspace class="flex h-full min-h-0 w-full overflow-hidden bg-surface-raised/70 flex-col md:flex-row">
     <section
       class="flex min-h-[360px] min-w-0 flex-col border-b border-border-subtle md:min-h-0 md:border-b-0 md:border-r"
       :style="chatPaneStyle"
@@ -3427,11 +3315,13 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
       </div>
 
       <template v-if="selected">
-        <div
-          ref="messagesRef"
-          class="min-h-0 flex-1 overflow-auto px-4 py-3"
-          :aria-busy="messageStreaming"
-        >
+        <div class="relative min-h-0 flex-1">
+          <div
+            ref="messagesRef"
+            class="h-full overflow-auto px-4 py-3"
+            :class="activePlanMessage ? 'md:pb-16' : ''"
+            :aria-busy="messageStreaming"
+          >
           <div v-if="messages.length === 0" class="flex min-h-full items-center justify-center py-6">
             <div class="w-full max-w-[720px] rounded-lg border border-border-subtle bg-surface-raised/70 p-4">
               <div class="flex items-start gap-3">
@@ -3520,62 +3410,17 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 v-else
                 class="w-full min-w-0 py-1 text-[13px] leading-6 text-text-secondary"
               >
+                <AssistantActionLog
+                  v-if="message.actionFeed?.length"
+                  :message-id="message.id"
+                  :items="message.actionFeed"
+                />
                 <div
-                  v-if="assistantTraceItems(message).length"
-                  class="mb-3"
-                  aria-live="polite"
+                  v-if="assistantPlanCompletionLabel(message.plan)"
+                  class="mb-2 inline-flex min-h-8 items-center gap-1.5 rounded-lg text-[11px] font-medium text-text-muted"
                 >
-	                  <button
-	                    type="button"
-	                    class="group inline-flex max-w-full items-center gap-2 rounded-md py-1 text-left text-[12px] text-text-secondary transition hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
-	                    :aria-expanded="expandedAssistantTraceMessageID === message.id"
-	                    @click="toggleAssistantTrace(message.id)"
-	                  >
-                    <span class="flex shrink-0 -space-x-1">
-                      <span
-                        v-for="item in assistantTraceItems(message).slice(0, 4)"
-                        :key="`${message.id}-${item.id}-icon`"
-                        :class="assistantTraceIconClasses(item.status)"
-                      >
-                        <Loader2 v-if="item.status === 'running'" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
-                        <Square v-else-if="item.status === 'waiting'" class="h-3 w-3 fill-current" :stroke-width="2" />
-                        <X v-else-if="item.status === 'error'" class="h-3.5 w-3.5" :stroke-width="2" />
-                        <Check v-else class="h-3.5 w-3.5" :stroke-width="2" />
-                      </span>
-                    </span>
-                    <span class="min-w-0 truncate">
-                      <span class="font-medium text-text-primary">{{ assistantTraceCountLabel(message) }}</span>
-                      <span v-if="assistantTraceSummary(message)" class="text-text-muted"> · {{ assistantTraceSummary(message) }}</span>
-                    </span>
-                  </button>
-                  <div
-                    v-if="expandedAssistantTraceMessageID === message.id"
-                    class="mt-2 grid gap-1.5 rounded-lg border border-border-subtle bg-surface/80 p-2"
-                  >
-                    <div
-                      v-for="item in assistantTraceItems(message)"
-                      :key="`${message.id}-${item.id}-detail`"
-                      class="grid gap-1 rounded-md border px-2.5 py-2 text-[12px] leading-5 text-text-secondary"
-                      :class="assistantTraceDetailClasses(item.status)"
-                    >
-                      <div class="flex min-w-0 items-center gap-2">
-                        <span :class="assistantTraceIconClasses(item.status)">
-                          <Loader2 v-if="item.status === 'running'" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
-                          <Square v-else-if="item.status === 'waiting'" class="h-3 w-3 fill-current" :stroke-width="2" />
-                          <X v-else-if="item.status === 'error'" class="h-3.5 w-3.5" :stroke-width="2" />
-                          <Check v-else class="h-3.5 w-3.5" :stroke-width="2" />
-                        </span>
-                        <span class="min-w-0 truncate font-medium text-text-primary">{{ item.label }}</span>
-                        <span v-if="item.tool" class="shrink-0 rounded bg-surface-overlay px-1.5 py-0.5 font-mono text-[10px] text-text-muted">{{ item.tool }}</span>
-                        <span class="ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">{{ item.role }}</span>
-                      </div>
-                      <div
-                        v-if="item.detail && item.detail !== item.label"
-                        class="whitespace-pre-wrap pl-9 font-mono text-[11px] leading-5 text-text-muted"
-                        v-html="renderAssistantTraceDetail(item)"
-                      />
-                    </div>
-                  </div>
+                  <Check class="h-3.5 w-3.5 text-success" :stroke-width="2" />
+                  {{ assistantPlanCompletionLabel(message.plan) }}
                 </div>
                 <div
                   v-if="hasAssistantResponseContent(message)"
@@ -3608,15 +3453,16 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 </span>
               </div>
             </div>
+            </div>
           </div>
-        </div>
 
-        <AssistantPlanDock
-          v-if="activePlanMessage"
-          :key="activePlanMessage.id"
-          :message-id="activePlanMessage.id"
-          :plan="activePlanMessage.plan"
-        />
+          <AssistantPlanPopover
+            v-if="activePlanMessage"
+            :key="activePlanMessage.id"
+            :message-id="activePlanMessage.id"
+            :plan="activePlanMessage.plan"
+          />
+        </div>
 
         <form class="shrink-0 border-t border-border-subtle p-3" @submit.prevent="sendMessage">
           <div
@@ -3714,6 +3560,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               </div>
             </div>
           </div>
+          <div id="assistant-plan-mobile-anchor" class="mb-2 flex justify-end empty:hidden md:hidden" />
           <div class="relative min-h-[58px] rounded-md border border-border-subtle bg-surface shadow-sm transition focus-within:border-accent/50">
             <textarea
               ref="promptRef"

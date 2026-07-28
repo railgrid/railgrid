@@ -1,0 +1,274 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { Check, ChevronUp, ClipboardList, Loader2, Square, X } from 'lucide-vue-next'
+import {
+  assistantPlanProgress,
+  assistantPlanStepStatusLabel,
+  assistantPlanSummary,
+  type AssistantPlan,
+} from './assistantPlan'
+
+const props = defineProps<{ messageId: string; plan: AssistantPlan }>()
+const rootRef = ref<HTMLElement | null>(null)
+const desktopTriggerRef = ref<HTMLButtonElement | null>(null)
+const mobileTriggerRef = ref<HTMLButtonElement | null>(null)
+const mobileCloseRef = ref<HTMLButtonElement | null>(null)
+const mobileSheetRef = ref<HTMLElement | null>(null)
+const hovered = ref(false)
+const focused = ref(false)
+const pinned = ref(false)
+const dismissed = ref(false)
+const mobileOpen = ref(false)
+const mounted = ref(false)
+let openTimer: ReturnType<typeof window.setTimeout> | undefined
+let closeTimer: ReturnType<typeof window.setTimeout> | undefined
+let previousBodyOverflow = ''
+let inertRoot: HTMLElement | null = null
+let desktopMedia: MediaQueryList | null = null
+
+const desktopOpen = computed(() => !dismissed.value && (hovered.value || focused.value || pinned.value))
+const progress = computed(() => assistantPlanProgress(props.plan))
+const panelID = `app-studio-assistant-plan-${props.messageId.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+const mobilePanelID = `${panelID}-mobile`
+const titleID = `${panelID}-title`
+
+function clearTimers() {
+  if (openTimer !== undefined) window.clearTimeout(openTimer)
+  if (closeTimer !== undefined) window.clearTimeout(closeTimer)
+  openTimer = undefined
+  closeTimer = undefined
+}
+
+function supportsHover(): boolean {
+  return window.matchMedia('(hover: hover) and (pointer: fine)').matches
+}
+
+function scheduleHoverOpen() {
+  if (!supportsHover()) return
+  if (closeTimer !== undefined) window.clearTimeout(closeTimer)
+  openTimer = window.setTimeout(() => {
+    dismissed.value = false
+    hovered.value = true
+  }, 150)
+}
+
+function scheduleHoverClose() {
+  if (!supportsHover()) return
+  if (openTimer !== undefined) window.clearTimeout(openTimer)
+  closeTimer = window.setTimeout(() => {
+    hovered.value = false
+  }, 250)
+}
+
+function onFocusIn() {
+  dismissed.value = false
+  focused.value = true
+}
+
+function onFocusOut(event: FocusEvent) {
+  if (!rootRef.value?.contains(event.relatedTarget as Node | null)) focused.value = false
+}
+
+function togglePinned() {
+  if (pinned.value) {
+    dismissed.value = true
+    pinned.value = false
+    hovered.value = false
+    return
+  }
+  dismissed.value = false
+  pinned.value = true
+}
+
+function closeDesktop(restoreFocus = false) {
+  clearTimers()
+  hovered.value = false
+  focused.value = false
+  pinned.value = false
+  dismissed.value = true
+  if (restoreFocus) void nextTick(() => desktopTriggerRef.value?.focus())
+}
+
+function setWorkspaceInert(inert: boolean) {
+  if (inert) {
+    inertRoot = document.querySelector<HTMLElement>('[data-app-studio-workspace]')
+    if (inertRoot) inertRoot.inert = true
+    previousBodyOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return
+  }
+  if (inertRoot) inertRoot.inert = false
+  inertRoot = null
+  document.body.style.overflow = previousBodyOverflow
+}
+
+function openMobile() {
+  mobileOpen.value = true
+  setWorkspaceInert(true)
+  void nextTick(() => mobileCloseRef.value?.focus())
+}
+
+function closeMobile(restoreFocus = true) {
+  if (!mobileOpen.value) return
+  mobileOpen.value = false
+  setWorkspaceInert(false)
+  if (restoreFocus) void nextTick(() => mobileTriggerRef.value?.focus())
+}
+
+function onDesktopBreakpoint(event: MediaQueryListEvent) {
+  if (event.matches) closeMobile(false)
+}
+
+function onDocumentPointerDown(event: PointerEvent) {
+  if (pinned.value && !rootRef.value?.contains(event.target as Node)) closeDesktop()
+}
+
+function onDocumentKeyDown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    if (mobileOpen.value) {
+      event.preventDefault()
+      closeMobile()
+    } else if (desktopOpen.value) {
+      event.preventDefault()
+      closeDesktop(true)
+    }
+    return
+  }
+  if (!mobileOpen.value || event.key !== 'Tab') return
+  const focusable = Array.from(
+    mobileSheetRef.value?.querySelectorAll<HTMLElement>('button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])') ?? [],
+  )
+  if (focusable.length === 0) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+onMounted(() => {
+  mounted.value = true
+  desktopMedia = window.matchMedia('(min-width: 768px)')
+  desktopMedia.addEventListener('change', onDesktopBreakpoint)
+  document.addEventListener('pointerdown', onDocumentPointerDown)
+  document.addEventListener('keydown', onDocumentKeyDown)
+})
+
+onBeforeUnmount(() => {
+  clearTimers()
+  document.removeEventListener('pointerdown', onDocumentPointerDown)
+  document.removeEventListener('keydown', onDocumentKeyDown)
+  desktopMedia?.removeEventListener('change', onDesktopBreakpoint)
+  desktopMedia = null
+  if (mobileOpen.value) setWorkspaceInert(false)
+})
+</script>
+
+<template>
+  <div
+    ref="rootRef"
+    class="absolute bottom-3 right-4 z-30 hidden md:block"
+    @pointerenter="scheduleHoverOpen"
+    @pointerleave="scheduleHoverClose"
+    @focusin="onFocusIn"
+    @focusout="onFocusOut"
+  >
+    <div
+      v-show="desktopOpen"
+      :id="panelID"
+      class="absolute bottom-full right-0 mb-2 w-[min(320px,calc(100vw-2rem))] max-h-[min(50vh,360px)] overflow-auto rounded-2xl border border-border-subtle bg-surface-raised p-2 shadow-2xl"
+      role="region"
+      :aria-labelledby="titleID"
+    >
+      <div :id="titleID" class="px-2 pb-1.5 pt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+        {{ progress.completed }} of {{ progress.total }} steps
+      </div>
+      <ol class="grid gap-0.5">
+        <li
+          v-for="(step, index) in plan.steps"
+          :key="`${messageId}-desktop-step-${index}`"
+          class="flex min-h-8 min-w-0 items-center gap-2 rounded-lg px-2 text-[12px] leading-5"
+          :class="step.status === 'in_progress' ? 'bg-accent-subtle text-text-primary' : 'text-text-secondary'"
+        >
+          <Check v-if="step.status === 'completed'" class="h-3.5 w-3.5 shrink-0 text-success" :stroke-width="2" />
+          <Loader2 v-else-if="step.status === 'in_progress'" class="h-3.5 w-3.5 shrink-0 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
+          <Square v-else class="h-3 w-3 shrink-0 text-text-muted" :stroke-width="1.75" />
+          <span class="sr-only">{{ assistantPlanStepStatusLabel(step.status) }}:</span>
+          <span class="min-w-0">{{ step.content }}</span>
+        </li>
+      </ol>
+    </div>
+    <button
+      ref="desktopTriggerRef"
+      type="button"
+      class="inline-flex min-h-11 max-w-[min(360px,calc(100vw-2rem))] items-center gap-2 rounded-full border border-border-subtle bg-surface-raised/95 px-3 text-[12px] text-text-secondary shadow-lg backdrop-blur transition hover:border-accent/30 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 motion-reduce:transition-none"
+      :aria-expanded="desktopOpen"
+      :aria-controls="panelID"
+      @click="togglePinned"
+    >
+      <ClipboardList class="h-3.5 w-3.5 shrink-0 text-accent" :stroke-width="1.75" />
+      <span class="min-w-0 truncate font-medium text-text-primary">{{ assistantPlanSummary(plan) }}</span>
+      <ChevronUp class="h-3.5 w-3.5 shrink-0 transition-transform motion-reduce:transition-none" :class="desktopOpen ? 'rotate-180' : ''" :stroke-width="1.75" />
+    </button>
+  </div>
+
+  <Teleport v-if="mounted" to="#assistant-plan-mobile-anchor">
+    <button
+      ref="mobileTriggerRef"
+      type="button"
+      class="inline-flex min-h-11 max-w-full items-center gap-2 rounded-full border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-secondary shadow-sm md:hidden"
+      :aria-expanded="mobileOpen"
+      :aria-controls="mobilePanelID"
+      @click="openMobile"
+    >
+      <ClipboardList class="h-3.5 w-3.5 shrink-0 text-accent" :stroke-width="1.75" />
+      <span class="min-w-0 truncate font-medium text-text-primary">{{ assistantPlanSummary(plan) }}</span>
+    </button>
+  </Teleport>
+
+  <Teleport v-if="mounted && mobileOpen" to="body">
+    <div class="fixed inset-0 z-[100] flex items-end bg-surface/70 backdrop-blur-sm md:hidden" @pointerdown.self="closeMobile()">
+      <section
+        :id="mobilePanelID"
+        ref="mobileSheetRef"
+        class="flex max-h-[75vh] w-full flex-col rounded-t-2xl border border-border-subtle bg-surface-raised shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        :aria-labelledby="`${mobilePanelID}-title`"
+      >
+        <header class="flex min-h-14 items-center justify-between gap-3 border-b border-border-subtle px-4">
+          <div :id="`${mobilePanelID}-title`" class="text-[13px] font-semibold text-text-primary">
+            {{ progress.completed }} of {{ progress.total }} steps
+          </div>
+          <button
+            ref="mobileCloseRef"
+            type="button"
+            class="flex h-11 w-11 items-center justify-center rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            aria-label="Close plan"
+            @click="closeMobile()"
+          >
+            <X class="h-4 w-4" :stroke-width="1.75" />
+          </button>
+        </header>
+        <ol class="min-h-0 overflow-auto p-3">
+          <li
+            v-for="(step, index) in plan.steps"
+            :key="`${messageId}-mobile-step-${index}`"
+            class="flex min-h-11 min-w-0 items-center gap-3 rounded-xl px-3 text-[13px] leading-5"
+            :class="step.status === 'in_progress' ? 'bg-accent-subtle text-text-primary' : 'text-text-secondary'"
+          >
+            <Check v-if="step.status === 'completed'" class="h-4 w-4 shrink-0 text-success" :stroke-width="2" />
+            <Loader2 v-else-if="step.status === 'in_progress'" class="h-4 w-4 shrink-0 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
+            <Square v-else class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
+            <span class="sr-only">{{ assistantPlanStepStatusLabel(step.status) }}:</span>
+            <span>{{ step.content }}</span>
+          </li>
+        </ol>
+      </section>
+    </div>
+  </Teleport>
+</template>

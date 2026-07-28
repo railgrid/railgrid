@@ -30,17 +30,9 @@ type projectAssistantStreamWriter struct {
 	assistantShellSet           bool
 	acceptedAssistantContent    string
 	provisionalAssistantContent string
-	toolCards                   map[string]projectAssistantToolCardIDs
 	pendingPermission           *projectAssistantPermission
 	pendingFollowUp             *projectAssistantFollowUp
 	write                       func(projectMessageStreamEvent) error
-}
-
-type projectAssistantToolCardIDs struct {
-	cardID  string
-	colID   string
-	labelID string
-	textID  string
 }
 
 func (w *projectAssistantStreamWriter) EmitProjectAssistantEvent(
@@ -62,15 +54,10 @@ func (w *projectAssistantStreamWriter) EmitProjectAssistantEvent(
 		}
 		return w.writeUI(ctx, w.assistantID, projectAssistantUIStatusEvent(event.Status), false)
 	case projectAssistantEventToolCallStarted, projectAssistantEventToolCallFinished:
-		if event.ToolCall == nil || event.ToolCall.ID == "" || event.ToolCall.Status == "" {
-			return nil
-		}
-		action := projectAssistantUIActionFromAssistantToolCall(*event.ToolCall)
-		kind := "tool call"
-		if event.Type == projectAssistantEventToolCallFinished {
-			kind = "tool result"
-		}
-		return w.writeToolCard(ctx, event.ToolCall.ID, kind, projectAssistantUIToolCardText(action))
+		// Tool lifecycle is carried only by assistantActionFeed in durable
+		// message snapshots. A2UI remains reserved for assistant content and
+		// interrupt surfaces.
+		return nil
 	case projectAssistantEventPermissionNeeded:
 		if event.Permission == nil || event.Permission.ID == "" {
 			return nil
@@ -78,24 +65,14 @@ func (w *projectAssistantStreamWriter) EmitProjectAssistantEvent(
 		permission := *event.Permission
 		permission.Input = nil
 		w.pendingPermission = &permission
-		action := projectAssistantUIActionFromPermission(permission)
-		text := permission.Reason
-		if text == "" {
-			text = projectAssistantUIToolCardText(action)
-		}
-		return w.writeToolCard(ctx, "", "approval needed", text)
+		return nil
 	case projectAssistantEventInputNeeded:
 		if event.FollowUp == nil || event.FollowUp.ID == "" {
 			return nil
 		}
 		followUp := *event.FollowUp
 		w.pendingFollowUp = &followUp
-		action := projectAssistantUIActionFromFollowUp(followUp)
-		text := followUp.Prompt
-		if text == "" {
-			text = projectAssistantUIToolCardText(action)
-		}
-		return w.writeToolCard(ctx, "", "approval needed", text)
+		return nil
 	case projectAssistantEventCheckpointSaved:
 		if event.Checkpoint == nil || event.Checkpoint.ID == "" {
 			return nil
@@ -250,44 +227,6 @@ func (w *projectAssistantStreamWriter) ensureAssistantContentShell(ctx context.C
 	return nil
 }
 
-func (w *projectAssistantStreamWriter) writeToolCard(ctx context.Context, stableKey, kind, text string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := w.ensureBegin(ctx); err != nil {
-		return err
-	}
-	ids, ok := w.toolCardIDs(stableKey)
-	if !ok {
-		ids.cardID, ids.colID, ids.labelID, ids.textID = w.nextMessageComponentIDs()
-		w.rootChildren = append(w.rootChildren, ids.cardID)
-		if stableKey != "" {
-			if w.toolCards == nil {
-				w.toolCards = map[string]projectAssistantToolCardIDs{}
-			}
-			w.toolCards[stableKey] = ids
-		}
-	}
-	return w.write(projectMessageStreamEventFromUI(projectAssistantUIToolCardEvent(
-		w.assistantID,
-		w.rootChildren,
-		ids.cardID,
-		ids.colID,
-		ids.labelID,
-		ids.textID,
-		kind,
-		text,
-	)))
-}
-
-func (w *projectAssistantStreamWriter) toolCardIDs(stableKey string) (projectAssistantToolCardIDs, bool) {
-	if stableKey == "" || w.toolCards == nil {
-		return projectAssistantToolCardIDs{}, false
-	}
-	ids, ok := w.toolCards[stableKey]
-	return ids, ok
-}
-
 func (w *projectAssistantStreamWriter) writeUI(ctx context.Context, assistantID string, ui projectAssistantUIEvent, begin bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -326,21 +265,6 @@ func (w *projectAssistantStreamWriter) nextMessageComponentIDs() (string, string
 	labelID := "msg-" + id + "-label"
 	textID := "msg-" + id + "-text"
 	return cardID, colID, labelID, textID
-}
-
-func projectAssistantUIToolCardText(action projectAssistantUIAction) string {
-	header := action.Label
-	if action.Tool != "" {
-		header += " · " + action.Tool
-	}
-	body := action.Detail
-	if body == "" {
-		body = action.Summary
-	}
-	if body != "" {
-		return header + "\n" + body
-	}
-	return header
 }
 
 func projectAssistantUIEventIsEmpty(ui projectAssistantUIEvent) bool {

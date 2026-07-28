@@ -72,7 +72,7 @@ func TestProjectAssistantDurableMetadataTracksEveryTransition(t *testing.T) {
 	if got := metadata[projectAssistantMetadataProvisional]; got != true {
 		t.Fatalf("provisional = %#v, want true", got)
 	}
-	if _, ok := metadata[projectMessageMetadataAssistantActions]; !ok {
+	if _, ok := metadata[projectMessageMetadataAssistantActionFeed]; !ok {
 		t.Fatalf("metadata = %#v, want sanitized assistant actions", metadata)
 	}
 	if got := metadata[projectAssistantMetadataPlan]; !reflect.DeepEqual(got, plan) {
@@ -194,21 +194,21 @@ func TestLegacyAssistantStreamEventsTranslateDurableTerminalSnapshots(t *testing
 	}
 }
 
-func TestLegacyAssistantStreamAdapterReplacesDurableRevisionsWithoutDuplicatingContentOrActions(t *testing.T) {
+func TestLegacyAssistantStreamAdapterReplacesDurableRevisionsWithoutDuplicatingContent(t *testing.T) {
 	adapter := newProjectAssistantLegacyStreamAdapter()
-	action := projectAssistantUIAction{ID: "tool-1", Kind: projectAssistantUIActionEdit, Status: "running", Label: "Editing", Tool: projectToolWriteFile}
+	action := projectAssistantActionFeedItem{ID: "tool-1", Kind: projectAssistantActionFeedItemEdit, Status: "running", Title: "Editing", Severity: projectAssistantActionFeedSeverityNormal}
 	first := projectAssistantRunSnapshot{
 		Run: store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, Revision: 1},
 		Message: store.Message{ID: "assistant-1", Role: "assistant", Content: "one", Metadata: map[string]any{
-			projectAssistantMetadataWorkingStatus:  "Writing files",
-			projectMessageMetadataAssistantActions: []projectAssistantUIAction{action},
+			projectAssistantMetadataWorkingStatus:     "Writing files",
+			projectMessageMetadataAssistantActionFeed: []projectAssistantActionFeedItem{action},
 		}},
 	}
 	second := first
 	second.Run.Revision = 2
 	second.Message.Content = "one two"
 	second.Message.Metadata = cloneAnyMap(first.Message.Metadata)
-	second.Message.Metadata[projectMessageMetadataAssistantActions] = []projectAssistantUIAction{{ID: action.ID, Kind: action.Kind, Status: "succeeded", Label: action.Label, Tool: action.Tool}}
+	second.Message.Metadata[projectMessageMetadataAssistantActionFeed] = []projectAssistantActionFeedItem{{ID: action.ID, Kind: action.Kind, Status: "succeeded", Title: "Edited files", Severity: projectAssistantActionFeedSeverityNormal}}
 
 	firstEvents := adapter.Events(first)
 	secondEvents := adapter.Events(second)
@@ -218,8 +218,8 @@ func TestLegacyAssistantStreamAdapterReplacesDurableRevisionsWithoutDuplicatingC
 	if projectMessageStreamEventsHaveAppendedContent(secondEvents) {
 		t.Fatalf("second durable revision appended content instead of replacing it: %#v", secondEvents)
 	}
-	if got := countProjectAssistantToolCards(secondEvents); got != 1 {
-		t.Fatalf("second durable revision tool cards = %d, want one stable replacement", got)
+	if got := countProjectAssistantToolCards(secondEvents); got != 0 {
+		t.Fatalf("second durable revision tool cards = %d, want action feed omitted from A2UI", got)
 	}
 	if replay := adapter.Events(second); len(replay) != 0 {
 		t.Fatalf("same durable revision replayed legacy events: %#v", replay)
@@ -361,7 +361,7 @@ func TestProjectAssistantDurableMetadataSurvivesStatusToolProvisionalAndTerminal
 	if got := message.Metadata[projectAssistantMetadataPreviewRefreshNeeded]; got != true {
 		t.Fatalf("preview refresh = %#v, want true after successful mutation", got)
 	}
-	if _, ok := message.Metadata[projectMessageMetadataAssistantActions]; !ok {
+	if _, ok := message.Metadata[projectMessageMetadataAssistantActionFeed]; !ok {
 		t.Fatalf("metadata = %#v, tool update discarded actions", message.Metadata)
 	}
 }

@@ -106,9 +106,9 @@ spec:
               value: "true"
             {{- end }}
             {{- with .Values.assistant.toolDisclosure }}
-            # "minimal" hides tool names and summarized input/output from the
-            # chat (opaque business-user mode); default "summary" shows tool
-            # names + sanitized summaries (never raw file contents).
+            # "minimal" hides action targets and outcomes from the chat.
+            # Default "summary" shows product-level action details only;
+            # raw tool names, arguments, and output are never exposed.
             - name: APP_STUDIO_TOOL_DISCLOSURE
               value: {{ . | quote }}
             {{- end }}
