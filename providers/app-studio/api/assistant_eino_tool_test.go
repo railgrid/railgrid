@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -202,7 +203,7 @@ func TestEinoApprovePlanToolDerivesWorkspaceMutationCapability(t *testing.T) {
 	tool := projectEinoAssistantTool{
 		server: server,
 		req: projectAssistantRunRequest{
-			MessageScope: store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"},
+			MessageScope: store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"},
 		},
 		runState: runState,
 	}
@@ -240,9 +241,92 @@ func TestEinoApprovePlanToolDerivesWorkspaceMutationCapability(t *testing.T) {
 	}
 }
 
+func TestEinoAdaptivePlanRequestPromotesBeforePermissionInterrupt(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	scope := testProjectMessageScope("org-a", "workspace-a", "demo")
+	started, err := server.startProjectAssistantAdaptiveRunDurably(
+		ctx,
+		scope,
+		"alice",
+		"I just tried to use the queue custom toast but it didnt work",
+		"auto-plan-promotion-1",
+		func(store.AssistantRun, store.Message, bool) error { return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := started.Run
+	if _, err := server.projectAssistantSupervisor().Attach(scope, run, started.Assistant); err != nil {
+		t.Fatal(err)
+	}
+	toolCalls := 0
+	adapter := projectEinoAssistantTool{
+		server: server,
+		tool: projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:       projectToolRequestProjectPlanApproval,
+				Risk:       projectAssistantToolRiskPlan,
+				Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+			call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
+				toolCalls++
+				return "", nil
+			},
+		},
+		req: projectAssistantRunRequest{
+			Identity: identity{user: "alice"}, MessageScope: scope, AssistantRun: &run, AutoApproveActions: true,
+		},
+		runState: newProjectEinoAssistantRunState(),
+	}
+
+	result, err := adapter.InvokableRun(ctx, `{
+		"summary":"Repair the toast queue",
+		"steps":["inspect and repair the toast integration"],
+		"targetPaths":["src/"],
+		"acceptanceCriteria":["the custom toast appears"]
+	}`)
+	if err == nil {
+		t.Fatal("InvokableRun error = nil, want permission interrupt")
+	}
+	if result != "" || toolCalls != 0 {
+		t.Fatalf("result/tool calls = %q/%d, want promotion before invocation", result, toolCalls)
+	}
+	if run.WorkItemID == "" || run.Mode != store.AssistantRunModeNew {
+		t.Fatalf("in-memory promoted run = %#v", run)
+	}
+	persisted, err := messages.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.WorkItemID != run.WorkItemID || persisted.Mode != store.AssistantRunModeNew {
+		t.Fatalf("persisted promoted run = %#v", persisted)
+	}
+	item, err := messages.GetAssistantWorkItem(ctx, scope, run.WorkItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.RootMessageID != run.UserMessageID || item.ActiveRunID != run.ID {
+		t.Fatalf("promoted item = %#v", item)
+	}
+}
+
+func TestEinoDurableMutationWithoutWorkItemFailsClosed(t *testing.T) {
+	run := store.AssistantRun{ID: "run-without-item", Mode: store.AssistantRunModeAdaptive, Status: store.AssistantRunStatusRunning}
+	adapter := projectEinoAssistantTool{req: projectAssistantRunRequest{AssistantRun: &run}}
+	err := adapter.admitMutation(context.Background(), projectAssistantToolSpec{
+		Name: projectToolWriteFile,
+		Risk: projectAssistantToolRiskWrite,
+	})
+	if !errors.Is(err, store.ErrAssistantWorkItemConflict) {
+		t.Fatalf("admitMutation error = %v, want work item conflict", err)
+	}
+}
+
 func TestEinoApprovePlanReplacesExpandedScopeInsteadOfUnioning(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	runState := newProjectEinoAssistantRunState()
 	runState.ApprovePlan(projectAssistantApprovedPlan{
 		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
@@ -282,7 +366,7 @@ func TestEinoApprovePlanReplacesExpandedScopeInsteadOfUnioning(t *testing.T) {
 
 func TestEinoApprovePlanToolFailsClosedOnGrantRevisionConflict(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	if err := server.clearProjectAssistantApprovedPlan(context.Background(), scope); err != nil {
 		t.Fatalf("clearProjectAssistantApprovedPlan returned error: %v", err)
 	}
@@ -308,6 +392,35 @@ func TestEinoApprovePlanToolFailsClosedOnGrantRevisionConflict(t *testing.T) {
 	}
 	if plan := runState.ApprovedPlan(); plan != nil {
 		t.Fatalf("in-memory plan after persistence conflict = %#v, want nil", plan)
+	}
+}
+
+func TestEinoInlineAdaptiveMCPDiscoveryFailureKeepsActivePolicyPrompt(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	run := store.AssistantRun{
+		ID:           "run-inline-auto",
+		Mode:         store.AssistantRunModeAdaptive,
+		ApprovalMode: store.AssistantApprovalModeAutoApprove,
+	}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
+	req := projectAssistantRunRequest{
+		HTTPRequest:  httptest.NewRequest(http.MethodPost, "/", nil),
+		Identity:     identity{orgUUID: "org-a", workspaceUUID: "ws-a", tenantPath: "root:org-a:ws-a", user: "alice"},
+		Project:      project,
+		MessageScope: testProjectMessageScope("org-a", "ws-a", project.Name),
+		TurnProfile:  projectAssistantTurnProfileAdaptive,
+		TurnPolicy:   projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileAdaptive),
+		ApprovalMode: store.AssistantApprovalModeAutoApprove,
+		AssistantRun: &run,
+	}
+	discovery := projectEinoAssistantDiscoverTools(context.Background(), server, req)
+	if strings.Contains(discovery.Prompt, "git-source tools are unavailable") {
+		t.Fatalf("adaptive discovery prompt advertised hidden mutation failure: %q", discovery.Prompt)
+	}
+	if strings.Contains(discovery.Prompt, projectToolCommitProjectFiles) {
+		t.Fatalf("adaptive discovery prompt = %q, must hide commit bridge", discovery.Prompt)
 	}
 }
 
@@ -339,7 +452,7 @@ func TestEinoPendingLegacyPlanApprovalCannotBecomeCapabilityGrant(t *testing.T) 
 
 func TestEinoDirectWriteGrantFailsClosedOnGrantRevisionConflict(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	if err := server.clearProjectAssistantApprovedPlan(context.Background(), scope); err != nil {
 		t.Fatalf("clearProjectAssistantApprovedPlan returned error: %v", err)
 	}
@@ -361,7 +474,7 @@ func TestEinoDirectWriteGrantFailsClosedOnGrantRevisionConflict(t *testing.T) {
 
 func TestEinoDirectWriteGrantAuthorizesCanonicalEditsOnlyOnApprovedPath(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	runState := newProjectEinoAssistantRunState()
 	tool := projectEinoAssistantTool{
 		server:   server,
@@ -389,7 +502,7 @@ func TestEinoDirectWriteGrantAuthorizesCanonicalEditsOnlyOnApprovedPath(t *testi
 
 func TestEinoDirectMkdirGrantAuthorizesChildEdits(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	runState := newProjectEinoAssistantRunState()
 	tool := projectEinoAssistantTool{
 		server:   server,
@@ -414,7 +527,7 @@ func TestEinoDirectMkdirGrantAuthorizesChildEdits(t *testing.T) {
 
 func TestEinoDirectWriteGrantDoesNotMergeObsoleteAuthority(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	runState := newProjectEinoAssistantRunState()
 	runState.ApprovePlan(projectAssistantApprovedPlan{
 		TargetPaths:    []string{"secrets/"},
@@ -444,10 +557,11 @@ func TestEinoToolReplansWhenPersistedGrantDoesNotCoverAutoApprovedWrite(t *testi
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	req := projectAssistantRunRequest{
 		Identity:           id,
 		Project:            project,
-		MessageScope:       projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
+		MessageScope:       testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
 		AutoApproveActions: true,
 	}
 	stalePlan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
@@ -583,10 +697,11 @@ func TestEinoToolFailsClosedWhenPersistedGrantCannotBeRetired(t *testing.T) {
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	req := projectAssistantRunRequest{
 		Identity:           id,
 		Project:            project,
-		MessageScope:       projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
+		MessageScope:       testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
 		AutoApproveActions: true,
 	}
 	stalePlan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
@@ -646,10 +761,11 @@ func TestEinoCommitRetiresPersistedGrantBeforeRepositoryMutation(t *testing.T) {
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	req := projectAssistantRunRequest{
 		Identity:     id,
 		Project:      project,
-		MessageScope: projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
+		MessageScope: testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
 	}
 	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
 		Summary:      "Update the application.",
@@ -701,11 +817,359 @@ func TestEinoCommitRetiresPersistedGrantBeforeRepositoryMutation(t *testing.T) {
 	if commitCalls != 0 {
 		t.Fatalf("repository commit calls = %d, want 0", commitCalls)
 	}
-	if runState.ApprovedPlan() != nil {
-		t.Fatal("run-local plan remained active after retirement failure")
+	if runState.ApprovedPlan() == nil {
+		t.Fatal("run-local plan was cleared after retirement failure")
 	}
 	if persisted := server.loadProjectAssistantApprovedPlan(context.Background(), req.MessageScope); persisted == nil {
 		t.Fatal("persisted plan unexpectedly cleared by failing store")
+	}
+}
+
+func TestEinoToolWorkItemCommitPermissionRetiresGrantWithoutSyntheticRun(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1", user: "alice"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
+	scope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	started, err := server.startProjectAssistantBuildRunDurably(ctx, scope, id.user, "Update the application", "build-commit-1", func(store.AssistantRun, store.Message, bool) error { return nil })
+	if err != nil {
+		t.Fatalf("start durable build: %v", err)
+	}
+	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
+		Summary:      "Update the application.",
+		Steps:        []string{"update src/App.tsx"},
+		TargetPaths:  []string{"src/App.tsx"},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+	})
+	grantRevision, err := server.persistProjectAssistantWorkItemApprovedPlan(ctx, scope, id.user, started.Run, &plan, "")
+	if err != nil {
+		t.Fatalf("persist WorkItem plan: %v", err)
+	}
+	approvedItem, err := messages.GetAssistantWorkItem(ctx, scope, started.Run.WorkItemID)
+	if err != nil {
+		t.Fatalf("GetAssistantWorkItem after approval: %v", err)
+	}
+	run, err := messages.GetAssistantRun(ctx, scope, started.Run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun: %v", err)
+	}
+	if _, err := server.projectAssistantSupervisor().Attach(scope, run, started.Assistant); err != nil {
+		t.Fatalf("attach durable run: %v", err)
+	}
+	if run.ExpectedGrantRevision != grantRevision {
+		t.Fatalf("run grant revision = %q, want %q", run.ExpectedGrantRevision, grantRevision)
+	}
+	runState := newProjectEinoAssistantRunState()
+	runState.ApprovePlan(plan)
+	runState.SetApprovedPlanGrantRevision(grantRevision)
+
+	commitCalls := 0
+	var events []projectToolCallStreamEvent
+	commit := projectAssistantToolFunc{
+		spec: projectAssistantToolSpec{Name: projectToolCommitProjectFiles, Risk: projectAssistantToolRiskCommit, Parameters: json.RawMessage(`{"type":"object"}`)},
+		call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
+			commitCalls++
+			return `{"status":"committed"}`, nil
+		},
+	}
+	adapter := projectEinoAssistantTool{
+		server: server,
+		tool:   commit,
+		req: projectAssistantRunRequest{
+			Identity: id, Project: project, MessageScope: scope, AssistantRun: &run,
+			StreamCallbacks: projectAssistantStreamCallbacks{OnToolCall: func(event projectToolCallStreamEvent) {
+				events = append(events, event)
+			}},
+		},
+		runState: runState,
+	}
+	if err := adapter.requestPermission(ctx, "call-commit", commit.Spec(), map[string]any{"message": "Update application"}, `{"message":"Update application"}`); err == nil {
+		t.Fatal("requestPermission returned nil, want permission interrupt")
+	}
+	if commitCalls != 0 {
+		t.Fatalf("commit calls = %d, want 0 before approval", commitCalls)
+	}
+	if len(events) != 1 || events[0].Status != "permission_required" {
+		t.Fatalf("tool events = %#v, want one permission_required event", events)
+	}
+	if runState.ApprovedPlan() != nil {
+		t.Fatalf("run-local plan = %#v, want cleared after durable retirement", runState.ApprovedPlan())
+	}
+
+	item, err := messages.GetAssistantWorkItem(ctx, scope, started.Run.WorkItemID)
+	if err != nil {
+		t.Fatalf("GetAssistantWorkItem: %v", err)
+	}
+	if len(item.PlanGrant) != 0 || item.GrantRevision == "" || item.GrantRevision == grantRevision || item.Revision != approvedItem.Revision+1 {
+		t.Fatalf("retired WorkItem = %#v, want cleared plan and fresh tombstone", item)
+	}
+	persistedRun, err := messages.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun after retirement: %v", err)
+	}
+	if persistedRun.Status != store.AssistantRunStatusRunning || persistedRun.ExpectedGrantRevision != item.GrantRevision || runState.ApprovedPlanGrantRevision() != item.GrantRevision {
+		t.Fatalf("retired run state = %#v/%q, want running shared tombstone %q", persistedRun, runState.ApprovedPlanGrantRevision(), item.GrantRevision)
+	}
+	if _, err := messages.GetAssistantRun(ctx, scope, projectAssistantApprovedPlanGrantRunID); !errors.Is(err, store.ErrAssistantRunNotFound) {
+		t.Fatalf("synthetic plan-grant run = %v, want not found", err)
+	}
+}
+
+func TestEinoToolWorkItemCommitPermissionFailsClosedWhenRetirementFails(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1", user: "alice"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
+	scope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	started, err := server.startProjectAssistantBuildRunDurably(ctx, scope, id.user, "Update the application", "build-commit-failure-1", func(store.AssistantRun, store.Message, bool) error { return nil })
+	if err != nil {
+		t.Fatalf("start durable build: %v", err)
+	}
+	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
+		Summary:      "Update the application.",
+		TargetPaths:  []string{"src/App.tsx"},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+	})
+	grantRevision, err := server.persistProjectAssistantWorkItemApprovedPlan(ctx, scope, id.user, started.Run, &plan, "")
+	if err != nil {
+		t.Fatalf("persist WorkItem plan: %v", err)
+	}
+	run, err := messages.GetAssistantRun(ctx, scope, started.Run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun: %v", err)
+	}
+	if _, err := server.projectAssistantSupervisor().Attach(scope, run, started.Assistant); err != nil {
+		t.Fatalf("attach durable run: %v", err)
+	}
+	failingStore := failProjectAssistantWorkItemPlanRetirementStore{Store: messages}
+	server.store = failingStore
+	server.assistantSupervisor = newProjectAssistantSupervisor(context.Background(), failingStore)
+	if _, err := server.projectAssistantSupervisor().Attach(scope, run, started.Assistant); err != nil {
+		t.Fatalf("attach durable run: %v", err)
+	}
+	runState := newProjectEinoAssistantRunState()
+	runState.ApprovePlan(plan)
+	runState.SetApprovedPlanGrantRevision(grantRevision)
+	commitCalls := 0
+	var events []projectToolCallStreamEvent
+	commit := projectAssistantToolFunc{
+		spec: projectAssistantToolSpec{Name: projectToolCommitProjectFiles, Risk: projectAssistantToolRiskCommit, Parameters: json.RawMessage(`{"type":"object"}`)},
+		call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
+			commitCalls++
+			return `{"status":"committed"}`, nil
+		},
+	}
+	adapter := projectEinoAssistantTool{
+		server: server,
+		tool:   commit,
+		req: projectAssistantRunRequest{
+			Identity: id, Project: project, MessageScope: scope, AssistantRun: &run,
+			StreamCallbacks: projectAssistantStreamCallbacks{OnToolCall: func(event projectToolCallStreamEvent) {
+				events = append(events, event)
+			}},
+		},
+		runState: runState,
+	}
+	err = adapter.requestPermission(ctx, "call-commit", commit.Spec(), map[string]any{"message": "Update application"}, `{"message":"Update application"}`)
+	if err == nil || !errors.Is(err, errProjectAssistantPlanRetirement) {
+		t.Fatalf("requestPermission error = %v, want plan retirement failure", err)
+	}
+	if commitCalls != 0 || len(events) != 0 {
+		t.Fatalf("commit calls/events = %d/%#v, want neither mutation nor permission interrupt", commitCalls, events)
+	}
+	if runState.ApprovedPlan() == nil || runState.ApprovedPlanGrantRevision() != grantRevision {
+		t.Fatalf("run state = %#v/%q, want unchanged authority after failed retirement", runState.ApprovedPlan(), runState.ApprovedPlanGrantRevision())
+	}
+	item, err := messages.GetAssistantWorkItem(ctx, scope, started.Run.WorkItemID)
+	if err != nil {
+		t.Fatalf("GetAssistantWorkItem: %v", err)
+	}
+	if len(item.PlanGrant) == 0 || item.GrantRevision != grantRevision {
+		t.Fatalf("WorkItem after failed retirement = %#v, want original grant", item)
+	}
+}
+
+func TestEinoToolWorkItemCommitRetirementYieldsToStopWithoutPermissionPrompt(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1", user: "alice"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
+	scope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	started, err := server.startProjectAssistantBuildRunDurably(ctx, scope, id.user, "Update the application", "build-stop-race-1", func(store.AssistantRun, store.Message, bool) error { return nil })
+	if err != nil {
+		t.Fatalf("start durable build: %v", err)
+	}
+	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
+		Summary:      "Update the application.",
+		TargetPaths:  []string{"src/App.tsx"},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+	})
+	grantRevision, err := server.persistProjectAssistantWorkItemApprovedPlan(ctx, scope, id.user, started.Run, &plan, "")
+	if err != nil {
+		t.Fatalf("persist WorkItem plan: %v", err)
+	}
+	run, err := messages.GetAssistantRun(ctx, scope, started.Run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun: %v", err)
+	}
+
+	stopEntered := make(chan struct{})
+	allowStop := make(chan struct{})
+	blockingStore := blockProjectAssistantStopStore{Store: messages, entered: stopEntered, release: allowStop}
+	server.store = blockingStore
+	server.assistantSupervisor = newProjectAssistantSupervisor(context.Background(), blockingStore)
+	supervisor := server.projectAssistantSupervisor()
+	if _, err := supervisor.Attach(scope, run, started.Assistant); err != nil {
+		t.Fatalf("attach durable run: %v", err)
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		_, _, stopErr := supervisor.Stop(scope, run.ID)
+		stopDone <- stopErr
+	}()
+	<-stopEntered // Stop owns transitionMu before retirement starts.
+
+	runState := newProjectEinoAssistantRunState()
+	runState.ApprovePlan(plan)
+	runState.SetApprovedPlanGrantRevision(grantRevision)
+	var events []projectToolCallStreamEvent
+	commit := projectAssistantToolFunc{spec: projectAssistantToolSpec{
+		Name: projectToolCommitProjectFiles, Risk: projectAssistantToolRiskCommit, Parameters: json.RawMessage(`{"type":"object"}`),
+	}}
+	adapter := projectEinoAssistantTool{
+		server: server,
+		tool:   commit,
+		req: projectAssistantRunRequest{
+			Identity: id, Project: project, MessageScope: scope, AssistantRun: &run,
+			StreamCallbacks: projectAssistantStreamCallbacks{OnToolCall: func(event projectToolCallStreamEvent) {
+				events = append(events, event)
+			}},
+		},
+		runState: runState,
+	}
+	retirementDone := make(chan error, 1)
+	go func() {
+		retirementDone <- adapter.requestPermission(ctx, "call-commit", commit.Spec(), map[string]any{"message": "Update application"}, `{"message":"Update application"}`)
+	}()
+	close(allowStop)
+	if err := <-stopDone; err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
+	err = <-retirementDone
+	if err == nil || !errors.Is(err, errProjectAssistantPlanRetirement) {
+		t.Fatalf("retirement error = %v, want plan-retirement conflict after Stop", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("permission events = %#v, want no prompt after Stop won", events)
+	}
+	if runState.ApprovedPlan() == nil || runState.ApprovedPlanGrantRevision() != grantRevision {
+		t.Fatalf("run state = %#v/%q, want original local authority after failed retirement", runState.ApprovedPlan(), runState.ApprovedPlanGrantRevision())
+	}
+	item, err := messages.GetAssistantWorkItem(ctx, scope, started.Run.WorkItemID)
+	if err != nil {
+		t.Fatalf("GetAssistantWorkItem: %v", err)
+	}
+	if len(item.PlanGrant) != 0 || item.GrantRevision != "" {
+		t.Fatalf("WorkItem after Stop = %#v, want revoked authority", item)
+	}
+	persistedRun, err := messages.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun after Stop: %v", err)
+	}
+	if persistedRun.Status != store.AssistantRunStatusStopping {
+		t.Fatalf("run after Stop = %#v, want stopping without pending-permission resurrection", persistedRun)
+	}
+}
+
+func TestEinoToolInitialExecutionPlanYieldsToStop(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	stopEntered := make(chan struct{})
+	allowStop := make(chan struct{})
+	blockingStore := blockProjectAssistantStopStore{Store: messages, entered: stopEntered, release: allowStop}
+	server := NewWithWorkspace(nil, blockingStore, workspace.NewFileStore(t.TempDir()), "", false)
+	server.assistantSupervisor = newProjectAssistantSupervisor(context.Background(), blockingStore)
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1", user: "alice"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
+	scope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	started, err := server.startProjectAssistantBuildRunDurably(
+		ctx,
+		scope,
+		id.user,
+		"Build the application",
+		"initial-plan-stop-race-1",
+		func(store.AssistantRun, store.Message, bool) error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("start durable build: %v", err)
+	}
+	accumulator, err := server.projectAssistantSupervisor().Attach(scope, started.Run, started.Assistant)
+	if err != nil {
+		t.Fatalf("attach durable run: %v", err)
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		_, _, stopErr := server.projectAssistantSupervisor().Stop(scope, started.Run.ID)
+		stopDone <- stopErr
+	}()
+	<-stopEntered // Stop owns transitionMu before execution-plan persistence starts.
+
+	adapter := projectEinoAssistantTool{
+		server: server,
+		req: projectAssistantRunRequest{
+			Identity:            id,
+			Project:             project,
+			MessageScope:        scope,
+			AssistantRun:        &started.Run,
+			snapshotAccumulator: accumulator,
+		},
+	}
+	planDone := make(chan error, 1)
+	go func() {
+		_, planErr := adapter.persistInitialExecutionPlan(ctx, &projectAssistantApprovedPlan{
+			Goal:         "Build the application",
+			Summary:      "Build the application.",
+			TargetPaths:  []string{"src/App.jsx"},
+			Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+			RunLocal:     true,
+		})
+		planDone <- planErr
+	}()
+
+	select {
+	case err := <-planDone:
+		t.Fatalf("execution-plan persistence completed before Stop released transition lock: %v", err)
+	default:
+	}
+	close(allowStop)
+	if err := <-stopDone; err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
+	if err := <-planDone; !errors.Is(err, store.ErrAssistantRunConflict) {
+		t.Fatalf("execution-plan persistence error = %v, want run conflict after Stop", err)
+	}
+	item, err := messages.GetAssistantWorkItem(ctx, scope, started.Run.WorkItemID)
+	if err != nil {
+		t.Fatalf("GetAssistantWorkItem: %v", err)
+	}
+	if len(item.ExecutionPlan) != 0 || item.ExecutionPlanRevision != "" {
+		t.Fatalf("WorkItem execution plan persisted after Stop: %#v", item)
 	}
 }
 
@@ -749,6 +1213,48 @@ func TestEinoToolPassesSessionSnapshotToLocalTool(t *testing.T) {
 
 type failProjectAssistantPlanGrantClearStore struct {
 	store.Store
+}
+
+type failProjectAssistantWorkItemPlanRetirementStore struct {
+	store.Store
+}
+
+type blockProjectAssistantStopStore struct {
+	store.Store
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (s blockProjectAssistantStopStore) RequestAssistantRunStop(
+	ctx context.Context,
+	scope store.Scope,
+	workItemID string,
+	runID string,
+	expectedWorkItemRevision int64,
+	expectedRunRevision int64,
+	now time.Time,
+) (store.AssistantRun, error) {
+	s.entered <- struct{}{}
+	select {
+	case <-s.release:
+		return s.Store.RequestAssistantRunStop(ctx, scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, now)
+	case <-ctx.Done():
+		return store.AssistantRun{}, ctx.Err()
+	}
+}
+
+func (failProjectAssistantWorkItemPlanRetirementStore) RetireWorkItemPlan(
+	context.Context,
+	store.Scope,
+	string,
+	string,
+	string,
+	int64,
+	string,
+	string,
+	time.Time,
+) (store.AssistantWorkItem, error) {
+	return store.AssistantWorkItem{}, errors.New("injected WorkItem plan retirement failure")
 }
 
 func projectAssistantGrantRevisionForTest(t *testing.T, server *Server, scope store.Scope) string {
@@ -807,6 +1313,7 @@ func TestEinoToolSchedulesDevelopmentSyncAfterMutatingTool(t *testing.T) {
 	}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	tool := projectEinoAssistantTool{
 		server: server,
 		tool:   localTool,
@@ -930,6 +1437,37 @@ func TestEinoSelectTemplateRefreshesProjectUsedBySubsequentWorkspaceSync(t *test
 		if sync.project.Spec.Template == nil || sync.project.Spec.Template.Name != "application" {
 			t.Fatalf("%s sync project template = %#v, want application", sync.name, sync.project.Spec.Template)
 		}
+	}
+}
+
+func TestProjectAssistantInitialExecutionPlanRequiresAcceptanceCriteriaAndBoundsWrites(t *testing.T) {
+	_, err := projectAssistantInitialExecutionPlanFromArguments("Build Whisker Swipe.", map[string]any{
+		"summary":     "Build the app",
+		"steps":       []any{"Create the UI"},
+		"targetPaths": []any{"src/"},
+	})
+	if err == nil {
+		t.Fatal("initial execution plan without acceptance criteria succeeded")
+	}
+
+	plan, err := projectAssistantInitialExecutionPlanFromArguments("Build Whisker Swipe.", map[string]any{
+		"summary":            "Build the app",
+		"steps":              []any{"Create the UI", "Verify the preview"},
+		"targetPaths":        []any{"src/", "package.json"},
+		"acceptanceCriteria": []any{"The preview is ready"},
+	})
+	if err != nil {
+		t.Fatalf("projectAssistantInitialExecutionPlanFromArguments: %v", err)
+	}
+	if plan.Goal != "Build Whisker Swipe." || !plan.RunLocal || plan.AllowAllWrites ||
+		plan.ApprovalTool != projectToolDefineInitialProjectPlan {
+		t.Fatalf("initial execution plan = %#v", plan)
+	}
+	if !projectAssistantApprovedPlanAllowsWrite(&plan, projectToolWriteFile, map[string]any{"path": "src/App.tsx"}) {
+		t.Fatal("defined target path was not authorized")
+	}
+	if projectAssistantApprovedPlanAllowsWrite(&plan, projectToolWriteFile, map[string]any{"path": "api/index.js"}) {
+		t.Fatal("out-of-plan path was authorized")
 	}
 }
 

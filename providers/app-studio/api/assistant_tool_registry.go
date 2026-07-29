@@ -133,6 +133,17 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 	return newProjectAssistantToolRegistry(
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
+				Name:        projectToolDefineInitialProjectPlan,
+				Description: "Define or revise the auto-authorized execution plan for a new project's initial build. Call this before source mutations and again only when a verification-driven repair requires additional target paths.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string","minLength":1,"description":"Short summary of the initial build."},"steps":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Concrete implementation and verification steps."},"targetPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":50,"description":"Project-relative files or directories the initial build may create or modify. Directories must end with /."},"acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Observable outcomes required before the initial build can complete."}},"required":["summary","steps","targetPaths","acceptanceCriteria"]}`),
+				Risk:        projectAssistantToolRiskPlan,
+			},
+			call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
+				return "", errors.New("initial project planning is handled by the Eino assistant run state")
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
 				Name:        projectToolAskFollowUp,
 				Description: "Ask the user concise follow-up questions when App Studio needs missing product or implementation details before continuing.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":3,"description":"Concise questions the user should answer before the assistant continues."}},"required":["questions"]}`),
@@ -277,7 +288,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolGetCheckpoints,
-				Description: "Report the project's four lifecycle checkpoints — Template bound, Git established, CI committed, Production running — each with a state (done/pending/blocked/error), a human-readable reason, and remediation. Use this at the start of a session, or whenever the user asks \"where is this project\"/\"what's left\", to decide what to do next: for a pending checkpoint whose remediation.kind is \"auto\", call the named remediation.tool to advance it; for \"manual\", tell the user the exact action to take (e.g. promotion is a button the user clicks). Prefer advancing checkpoints in order (template → git → ci → production).",
+				Description: "Report the project's four lifecycle checkpoints — Template bound, Git established, CI committed, Production running — each with a state (done/pending/blocked/error), a human-readable reason, and remediation. Use this when the user explicitly asks \"where is this project\"/\"what's left\", or after a lifecycle-changing operation; do not poll it when the supplied current project snapshot already answers the question. For a pending checkpoint whose remediation.kind is \"auto\", call the named remediation.tool to advance it; for \"manual\", tell the user the exact action to take. Prefer advancing checkpoints in order (template → git → ci → production).",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 				Risk:        projectAssistantToolRiskRead,
 			},

@@ -21,11 +21,48 @@ test('mergeConversationSnapshot keeps the stable assistant message ID and reject
   assert.strictEqual(duplicate, current)
 })
 
+test('an adaptive run can gain a work item mid-run and later suspend without duplicating its message', () => {
+  const adaptive = {
+    ...snapshot(1, 'Inspecting safely'),
+    run: { ...snapshot(1, 'Inspecting safely').run, mode: 'adaptive' },
+  }
+  const promoted = {
+    ...snapshot(2, 'Action proposed'),
+    run: { ...snapshot(2, 'Action proposed').run, mode: 'new', workItemID: 'work-item-1' },
+  }
+  const suspended = {
+    ...snapshot(3, 'Continue when ready', 'interrupted'),
+    run: { ...snapshot(3, 'Continue when ready', 'interrupted').run, mode: 'new', workItemID: 'work-item-1' },
+  }
+
+  const started = state.mergeConversationSnapshot({ messages: [], runs: {} }, adaptive)
+  const withWorkItem = state.mergeConversationSnapshot(started, promoted)
+  const terminal = state.mergeConversationSnapshot(withWorkItem, suspended)
+
+  assert.equal(withWorkItem.runs['run-1'].workItemID, 'work-item-1')
+  assert.equal(withWorkItem.runs['run-1'].mode, 'new')
+  assert.equal(terminal.runs['run-1'].status, 'interrupted')
+  assert.equal(terminal.runs['run-1'].workItemID, 'work-item-1')
+  assert.equal(terminal.messages.filter((item) => item.id === 'a-1').length, 1)
+  assert.equal(terminal.messages[0].content, 'Continue when ready')
+})
+
 test('first-project durable start replaces its optimistic user message without duplicating it', () => {
   const optimistic = message('optimistic-client-1', 'ship it')
   const persisted = { ...optimistic, id: 'user-1' }
   const result = state.replaceOptimisticUserMessage([message('prior', 'earlier'), optimistic], optimistic.id, persisted)
   assert.deepEqual(result.map((item) => item.id), ['prior', 'user-1'])
+})
+
+test('reload ordering keeps a tied user message before its assistant response', () => {
+  const tiedAt = '2026-07-28T19:42:00Z'
+  const assistant = { ...message('msg-0000', 'done'), createdAt: tiedAt }
+  const user = { ...message('msg-ffff', 'build it'), role: 'user', createdAt: tiedAt }
+  const later = { ...message('msg-later', 'next'), role: 'user', createdAt: '2026-07-28T19:50:00Z' }
+
+  const result = state.orderConversationMessages([assistant, user, later])
+
+  assert.deepEqual(result.map((item) => item.id), ['msg-ffff', 'msg-0000', 'msg-later'])
 })
 
 test('first-project retry reuses the created project and durable request identity', () => {
@@ -35,11 +72,15 @@ test('first-project retry reuses the created project and durable request identit
   const firstRun = state.firstProjectStartPlan(created)
   assert.deepEqual(
     state.assistantRunStartPayload(firstRun.content, firstRun.clientRequestID, firstRun.initialProjectPrompt),
-    { content: 'ship it', clientRequestID: 'request-1', initialProjectPrompt: true },
+    { content: 'ship it', clientRequestID: 'request-1', assistantAction: 'build', initialProjectPrompt: true },
   )
   assert.deepEqual(
     state.assistantRunStartPayload('continue', 'request-2'),
-    { content: 'continue', clientRequestID: 'request-2' },
+    { content: 'continue', clientRequestID: 'request-2', assistantAction: 'auto' },
+  )
+  assert.deepEqual(
+    state.assistantRunStartPayload('change the theme', 'request-3', false, 'build'),
+    { content: 'change the theme', clientRequestID: 'request-3', assistantAction: 'build' },
   )
   assert.equal(state.firstProjectSubmissionAccepted(created, { id: 'user-1', content: 'ship it' }), true)
   assert.equal(state.firstProjectSubmissionAccepted(created, { id: 'user-2', content: 'different' }), false)
@@ -50,6 +91,24 @@ test('first-project pending submission matches the project/message handoff into 
   assert.equal(state.firstProjectSubmissionMatches(pending, 'demo', 'ship it'), true)
   assert.equal(state.firstProjectSubmissionMatches(pending, 'other', 'ship it'), false)
   assert.equal(state.firstProjectSubmissionMatches(pending, 'demo', 'different'), false)
+})
+
+test('message retry identity is bound to the requested operation', () => {
+  const build = { content: 'ship it', assistantAction: 'build' }
+  const ask = { content: 'ship it', assistantAction: 'ask' }
+  const continuation = { content: 'ship it', assistantAction: 'continue', workItemID: 'work-1', workItemRevision: 3 }
+  assert.notEqual(state.assistantRunStartFingerprint('demo', build), state.assistantRunStartFingerprint('demo', ask))
+  assert.notEqual(state.assistantRunStartFingerprint('demo', build), state.assistantRunStartFingerprint('other', build))
+  assert.notEqual(state.assistantRunStartFingerprint('demo', continuation), state.assistantRunStartFingerprint('demo', { ...continuation, workItemRevision: 4 }))
+})
+
+test('conflict recovery only accepts the run created for the exact retry identity and operation', () => {
+  const request = { content: 'continue', clientRequestID: 'request-1', assistantAction: 'continue', workItemID: 'work-1', workItemRevision: 3 }
+  const run = { id: 'run-1', status: 'running', mode: 'continue', workItemID: 'work-1', revision: 1, activeMessageID: 'a-1', clientRequestID: 'request-1' }
+  assert.equal(state.assistantRunMatchesStartRequest(run, request), true)
+  assert.equal(state.assistantRunMatchesStartRequest({ ...run, clientRequestID: 'request-2' }, request), false)
+  assert.equal(state.assistantRunMatchesStartRequest({ ...run, mode: 'new' }, request), false)
+  assert.equal(state.assistantRunMatchesStartRequest({ ...run, workItemID: 'work-2' }, request), false)
 })
 
 test('first-project generation rejects late replies after navigation and a new attempt has a fresh key', () => {

@@ -28,7 +28,7 @@ import (
 
 func TestProjectAssistantInitialCreationPlanCannotPersistAcrossTurns(t *testing.T) {
 	server := &Server{store: store.NewMemoryStore()}
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	initial := projectAssistantInitialCreationPlan()
 	if projectAssistantApprovedPlanAllowsWrite(&initial, projectToolSelectTemplate, map[string]any{"template": "simple-webapp"}) {
 		t.Fatal("initial creation plan authorized template selection")
@@ -49,7 +49,7 @@ func TestProjectAssistantInitialCreationPlanCannotPersistAcrossTurns(t *testing.
 
 func TestProjectAssistantRetiredGrantCannotBeRestoredFromPendingCheckpoints(t *testing.T) {
 	server := &Server{store: store.NewMemoryStore()}
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
 		Summary:        "Edit the application.",
 		Version:        projectAssistantApprovedPlanVersionWorkspaceMutation,
@@ -87,7 +87,7 @@ func TestProjectAssistantRetiredGrantCannotBeRestoredFromPendingCheckpoints(t *t
 
 func TestProjectAssistantOldCheckpointCannotInheritReplacementGrant(t *testing.T) {
 	server := &Server{store: store.NewMemoryStore()}
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	first := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
 		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
 		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
@@ -127,7 +127,7 @@ func TestProjectAssistantOldCheckpointCannotInheritReplacementGrant(t *testing.T
 
 func TestProjectAssistantStaleWriterCannotOverwriteRetirementTombstone(t *testing.T) {
 	server := &Server{store: store.NewMemoryStore()}
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	plan := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
 		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
 		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
@@ -168,7 +168,7 @@ func TestProjectAssistantStaleWriterCannotOverwriteRetirementTombstone(t *testin
 func TestProjectAssistantOperationOnlyGrantBecomesRetiredTombstone(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := &Server{store: messages}
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	raw := json.RawMessage(`{"operations":["write_file"],"targetPaths":["src/"]}`)
 	if err := messages.SaveAssistantRun(context.Background(), scope, store.AssistantRun{
 		ID:         projectAssistantApprovedPlanGrantRunID,
@@ -211,7 +211,7 @@ func TestProjectAssistantCheckpointGrantValidationFailsClosedOnStoreError(t *tes
 		Store: store.NewMemoryStore(),
 		err:   errors.New("database unavailable"),
 	}}
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 
 	if got, _, err := server.projectAssistantApprovedPlanForCheckpointResume(context.Background(), scope, &plan, "revision-a"); err == nil || got != nil {
 		t.Fatalf("checkpoint grant = %#v, error = %v; want nil and store error", got, err)

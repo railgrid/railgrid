@@ -31,11 +31,17 @@ import (
 	"github.com/faroshq/provider-app-studio/store"
 )
 
-func projectMessageScope(orgUUID, workspaceUUID, projectName string) store.Scope {
+// projectMessageScope binds persistence to the immutable Kubernetes Project
+// UID. Project names are human-facing labels and can be reused after deletion.
+func projectMessageScope(orgUUID, workspaceUUID string, project *aiv1alpha1.Project) store.Scope {
+	if project == nil {
+		return store.Scope{OrgUUID: orgUUID, WorkspaceUUID: workspaceUUID}
+	}
 	return store.Scope{
 		OrgUUID:       orgUUID,
 		WorkspaceUUID: workspaceUUID,
-		ProjectName:   projectName,
+		ProjectName:   project.Name,
+		ProjectUID:    string(project.UID),
 	}
 }
 

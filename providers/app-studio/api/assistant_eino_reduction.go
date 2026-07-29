@@ -35,10 +35,10 @@ const projectEinoAssistantReductionContextTokens int64 = 12000
 func projectEinoAssistantReductionMiddleware(ctx context.Context) (adk.ChatModelAgentMiddleware, error) {
 	return reduction.New(ctx, &reduction.Config{
 		SkipTruncation: true,
-		// ClearMessageRewriter is the only reduction policy App Studio wants.
-		// Disable Eino's default clear handler so read results, failures, and
-		// mixed tool groups returned unchanged by the rewriter stay intact.
-		SkipClear:                 true,
+		// Preserve the latest tool group while clearing older read payloads.
+		// Successful workspace mutations use the compact App Studio rewrite
+		// below; ordinary stale reads use Eino's default bounded placeholder.
+		SkipClear:                 false,
 		MaxTokensForClear:         projectEinoAssistantReductionContextTokens,
 		ClearRetentionSuffixLimit: 1,
 		ClearAtLeastTokens:        1,
@@ -66,6 +66,7 @@ func projectEinoAssistantRewriteWorkspaceMutations(
 		summaries = append(summaries, summary)
 		compactedCall := toolCall
 		compactedCall.Function.Arguments = `{}`
+		compactedCall.Extra = nil
 		compactedCalls = append(compactedCalls, compactedCall)
 		compactedResult, err := json.Marshal(struct {
 			Operation string `json:"operation"`
@@ -85,7 +86,7 @@ func projectEinoAssistantRewriteWorkspaceMutations(
 	messages = append(messages, schema.AssistantMessage("", compactedCalls))
 	messages = append(messages, compactedResponses...)
 	messages = append(messages, schema.UserMessage(
-		"<system-reminder>Workspace mutations succeeded: "+strings.Join(summaries, "; ")+". Inspect the current workspace before relying on prior file contents.</system-reminder>",
+		"<system-reminder>Workspace mutations succeeded: "+strings.Join(summaries, "; ")+". Treat successful whole-file writes as authoritative and proceed to development verification; reread only after a conflict, failed patch, or later mutation.</system-reminder>",
 	))
 	return messages, nil
 }

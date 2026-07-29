@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	einotool "github.com/cloudwego/eino/components/tool"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -78,6 +79,7 @@ func TestProjectAssistantInspectDevelopmentTemplatesGraphToolFiltersAndBoundsCat
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	req := projectAssistantRunRequest{
 		Identity:       identity{orgUUID: "org-a", workspaceUUID: "ws-1"},
 		Client:         asclient.NewFromDynamic(templateCatalogDynamicClient{items: []unstructured.Unstructured{*broken, *prodOnly, *withDev}}),
@@ -129,6 +131,7 @@ func TestProjectAssistantInspectDevelopmentTemplatesGraphToolReturnsEveryEligibl
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	req := projectAssistantRunRequest{
 		Identity:       identity{orgUUID: "org-a", workspaceUUID: "ws-1"},
 		Client:         asclient.NewFromDynamic(templateCatalogDynamicClient{items: templates}),
@@ -229,10 +232,117 @@ func TestProjectAssistantRuntimeVerificationCollectsLogsWhenPreviewEdgeIsReachab
 	}
 }
 
+func TestPollProjectAssistantRuntimeVerificationWaitsForReady(t *testing.T) {
+	calls := 0
+	input, result, err := pollProjectAssistantRuntimeVerification(
+		context.Background(),
+		time.Millisecond,
+		50*time.Millisecond,
+		func(context.Context) (projectAssistantRuntimeWorkflowInput, *projectAssistantRuntimeWorkflowResult, error) {
+			calls++
+			status := "provisioning"
+			if calls == 3 {
+				status = "ready"
+			}
+			return projectAssistantRuntimeWorkflowInput{}, &projectAssistantRuntimeWorkflowResult{Status: status}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("poll runtime verification returned error: %v", err)
+	}
+	if result == nil || result.Status != "ready" {
+		t.Fatalf("result = %#v, want ready", result)
+	}
+	if calls != 3 {
+		t.Fatalf("resolver calls = %d, want 3", calls)
+	}
+	if !reflect.DeepEqual(input, projectAssistantRuntimeWorkflowInput{}) {
+		t.Fatalf("input = %#v, want zero test input", input)
+	}
+}
+
+func TestPollProjectAssistantRuntimeVerificationReturnsProvisioningAtDeadline(t *testing.T) {
+	calls := 0
+	_, result, err := pollProjectAssistantRuntimeVerification(
+		context.Background(),
+		time.Millisecond,
+		4*time.Millisecond,
+		func(context.Context) (projectAssistantRuntimeWorkflowInput, *projectAssistantRuntimeWorkflowResult, error) {
+			calls++
+			return projectAssistantRuntimeWorkflowInput{}, &projectAssistantRuntimeWorkflowResult{Status: "provisioning"}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("poll runtime verification returned error: %v", err)
+	}
+	if result == nil || result.Status != "provisioning" {
+		t.Fatalf("result = %#v, want provisioning", result)
+	}
+	if calls < 2 {
+		t.Fatalf("resolver calls = %d, want at least 2", calls)
+	}
+}
+
+func TestFormatProjectAssistantRuntimeVerificationRejectsBrokenProcessLogs(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			Summary:    "The preview edge is reachable.",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{
+			Status:   "failed",
+			Blockers: []string{"[api] npm error Missing script: start"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "not_ready" {
+		t.Fatalf("status = %q, want not_ready", result.Status)
+	}
+	if len(result.Blockers) != 1 {
+		t.Fatalf("blockers = %#v, want process failure", result.Blockers)
+	}
+}
+
+func TestFormatInitialProjectRuntimeVerificationRequiresProcessEvidence(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		RequireProcessEvidence: true,
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			Summary:    "The preview edge is reachable.",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{Status: "unavailable"},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "not_ready" || len(result.Blockers) != 1 {
+		t.Fatalf("result = %#v, want unavailable process evidence blocker", result)
+	}
+}
+
+func TestProjectAssistantRuntimeLogBlockersDetectSyntaxAndMissingScript(t *testing.T) {
+	for _, line := range []string{
+		"SyntaxError: Unexpected token",
+		"npm error Missing script: start",
+	} {
+		if blockers := projectAssistantRuntimeLogBlockers([]string{line}); len(blockers) != 1 {
+			t.Fatalf("blockers for %q = %#v, want one", line, blockers)
+		}
+	}
+	if blockers := projectAssistantRuntimeLogBlockers([]string{"server listening on port 3000"}); len(blockers) != 0 {
+		t.Fatalf("healthy blockers = %#v, want none", blockers)
+	}
+}
+
 func TestProjectAssistantVerifyRuntimeGraphToolReturnsReadinessAndNoLogsWithoutBinding(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	project.Spec.DisplayName = "Demo"
 	project.Spec.Memory.Requirements = []string{"Show a working page"}
 	repo := &ProjectRepositoryView{Ref: "demo", Name: "demo", Status: projectRepositoryStatusReady}
@@ -360,6 +470,7 @@ func TestProjectAssistantWorkflowPlansFromMemoryRepositoryAndWorkspace(t *testin
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	project.Spec.DisplayName = "Demo App"
 	project.Spec.Memory = aiv1alpha1.ProjectMemory{
 		Goals:        []string{"ship a task tracker"},
@@ -405,6 +516,7 @@ func TestProjectAssistantReadinessWorkflowReportsContextWithoutTrace(t *testing.
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	project.Spec.DisplayName = "Demo App"
 	project.Spec.Memory.Requirements = []string{"ship a tested build"}
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
@@ -446,6 +558,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowReportsBuildAndRuntimeReadines
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	project.Spec.DisplayName = "Demo App"
 	project.Spec.Memory.Requirements = []string{"ship a tested build"}
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
@@ -491,6 +604,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowReportsBlockers(t *testing.T) 
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
 	raw := invokeProjectAssistantWorkflowGraphTool(t, server, id, projectToolPrepareProjectDeployment, project, nil, projectWorkspaceScope(id, project.Name), map[string]any{"includeFiles": false})
 	var prepared projectAssistantDeploymentPreparationResult
@@ -510,6 +624,7 @@ func TestProjectAssistantWorkflowDoesNotMutateWorkspace(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
 	scope := projectWorkspaceScope(id, project.Name)
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "README.md", Content: "# Demo\n"}); err != nil {
@@ -534,6 +649,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowDoesNotMutateWorkspace(t *test
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
 	scope := projectWorkspaceScope(id, project.Name)
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "README.md", Content: "# Demo\n"}); err != nil {
@@ -580,6 +696,7 @@ func TestProjectAssistantRuntimeStatusAndPreviewWorkflowsReportNotConfiguredWith
 func TestProjectAssistantPreviewURLWorkflowIgnoresInternalAppStudioPreviewPath(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	project.Status.Environments = []aiv1alpha1.ProjectEnvironmentStatus{{
 		Name: "development",
 		Bindings: []aiv1alpha1.ProjectProviderBindingStatus{{
@@ -618,6 +735,7 @@ func TestProjectAssistantPreviewURLWorkflowIgnoresInternalAppStudioPreviewPath(t
 func TestProjectAssistantPreviewURLWorkflowReturnsExternalPreviewURL(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	project.Status.Environments = []aiv1alpha1.ProjectEnvironmentStatus{{
 		Name: "development",
 		Bindings: []aiv1alpha1.ProjectProviderBindingStatus{{
@@ -642,6 +760,7 @@ func TestProjectAssistantWorkflowBoundsLargeResultAsJSON(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	project.Spec.DisplayName = strings.Repeat("Demo App ", 80)
 	for i := 0; i < 80; i++ {
 		project.Spec.Memory.Goals = append(project.Spec.Memory.Goals, strings.Repeat("goal ", 80))

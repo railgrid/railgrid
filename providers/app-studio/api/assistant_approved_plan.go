@@ -30,12 +30,10 @@ import (
 	"github.com/faroshq/provider-app-studio/store"
 )
 
-// projectAssistantApprovedPlanGrantRunID is a reserved AssistantRun id that
-// holds the active plan-approval grant for a project. Real assistant runs use
-// "run-<uuid>" ids, so this fixed id never collides. Reusing the AssistantRun
-// blob keeps the grant encrypted at rest and persisted per project without a
-// new store method or schema migration. The grant is retired by the next commit
-// request, run cancellation, or an explicitly approved replacement scope.
+// projectAssistantApprovedPlanGrantRunID is retained only for non-durable
+// engine/tool harnesses. Production mutation runs own their plan grant on the
+// WorkItem, so a commit request can atomically retire that grant and publish a
+// tombstone revision without creating this synthetic AssistantRun.
 const projectAssistantApprovedPlanGrantRunID = store.AssistantRunIDApprovedPlanGrant
 
 var errProjectAssistantCheckpointGrantStale = errors.New("assistant checkpoint plan grant is stale")
@@ -50,8 +48,13 @@ type projectAssistantApprovedPlanGrantRecord struct {
 // Eino run/checkpoint only; unlike a user-approved plan it is never written to
 // the cross-turn grant store. Permission policy limits it to source edits and
 // always requires separate template-selection and commit approval.
-func projectAssistantInitialCreationPlan() projectAssistantApprovedPlan {
+func projectAssistantInitialCreationPlan(goal ...string) projectAssistantApprovedPlan {
+	initialGoal := ""
+	if len(goal) > 0 {
+		initialGoal = strings.TrimSpace(goal[0])
+	}
 	return normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
+		Goal:         initialGoal,
 		Summary:      "Initial project creation prompt authorizes source edits for this run.",
 		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
 		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
@@ -77,6 +80,113 @@ func (s *Server) loadProjectAssistantApprovedPlan(ctx context.Context, scope sto
 		return nil
 	}
 	return plan
+}
+
+// loadProjectAssistantWorkItemApprovedPlan is the mutation-run authority
+// boundary. A run may only recover the grant owned by its exact WorkItem,
+// creator, and expected grant revision.
+func (s *Server) loadProjectAssistantWorkItemApprovedPlan(
+	ctx context.Context,
+	scope store.Scope,
+	actor string,
+	run store.AssistantRun,
+) (*projectAssistantApprovedPlan, string, error) {
+	if s == nil || s.store == nil || strings.TrimSpace(run.WorkItemID) == "" {
+		return nil, "", nil
+	}
+	item, err := s.store.GetAssistantWorkItem(ctx, scope, run.WorkItemID)
+	if err != nil {
+		return nil, "", err
+	}
+	if strings.TrimSpace(actor) == "" || item.CreatedBy != actor || item.ActiveRunID != run.ID ||
+		item.Status != store.AssistantWorkItemStatusActive {
+		return nil, "", store.ErrAssistantWorkItemConflict
+	}
+	if run.ExpectedGrantRevision != item.GrantRevision {
+		return nil, item.GrantRevision, errProjectAssistantCheckpointGrantStale
+	}
+	if len(item.PlanGrant) == 0 {
+		return nil, item.GrantRevision, nil
+	}
+	var plan projectAssistantApprovedPlan
+	if err := json.Unmarshal(item.PlanGrant, &plan); err != nil {
+		return nil, item.GrantRevision, fmt.Errorf("decode WorkItem plan grant: %w", err)
+	}
+	normalized := normalizeProjectAssistantApprovedPlan(plan)
+	if !projectAssistantApprovedPlanActive(&normalized) {
+		return nil, item.GrantRevision, nil
+	}
+	return &normalized, item.GrantRevision, nil
+}
+
+func (s *Server) persistProjectAssistantWorkItemApprovedPlan(
+	ctx context.Context,
+	scope store.Scope,
+	actor string,
+	run store.AssistantRun,
+	plan *projectAssistantApprovedPlan,
+	expectedRevision string,
+) (string, error) {
+	if s == nil || s.store == nil || plan == nil || plan.RunLocal || run.WorkItemID == "" {
+		return "", nil
+	}
+	raw, err := json.Marshal(normalizeProjectAssistantApprovedPlan(*plan))
+	if err != nil {
+		return "", err
+	}
+	revision := uuid.NewString()
+	if accumulator := s.projectAssistantSupervisor().accumulatorFor(scope, run.ID); accumulator != nil {
+		if err := accumulator.ApproveWorkItemPlan(ctx, actor, expectedRevision, revision, raw); err != nil {
+			return "", err
+		}
+		return revision, nil
+	}
+	item, err := s.store.GetAssistantWorkItem(ctx, scope, run.WorkItemID)
+	if err != nil {
+		return "", err
+	}
+	if actor == "" || item.CreatedBy != actor || item.ActiveRunID != run.ID ||
+		item.Status != store.AssistantWorkItemStatusActive || item.GrantRevision != strings.TrimSpace(expectedRevision) {
+		return "", store.ErrAssistantWorkItemConflict
+	}
+	if _, err := s.store.ApproveWorkItemPlan(ctx, scope, item.ID, run.ID, item.Revision, revision, raw, time.Now().UTC()); err != nil {
+		return "", err
+	}
+	return revision, nil
+}
+
+// retireProjectAssistantWorkItemApprovedPlan consumes the WorkItem-owned plan
+// grant before a commit permission checkpoint. The store updates the WorkItem
+// and active run atomically, retaining their lifecycle/checkpoint while writing
+// the shared tombstone revision. A resumed checkpoint can therefore not revive
+// the grant after the commit request.
+func (s *Server) retireProjectAssistantWorkItemApprovedPlan(
+	ctx context.Context,
+	scope store.Scope,
+	actor string,
+	run store.AssistantRun,
+	expectedGrantRevision string,
+) (string, error) {
+	if s == nil || s.store == nil || strings.TrimSpace(run.WorkItemID) == "" {
+		return "", store.ErrAssistantWorkItemConflict
+	}
+	if strings.TrimSpace(actor) == "" || strings.TrimSpace(expectedGrantRevision) == "" {
+		return "", store.ErrAssistantWorkItemConflict
+	}
+	accumulator := s.projectAssistantSupervisor().accumulatorFor(scope, run.ID)
+	if accumulator == nil {
+		return "", store.ErrAssistantRunConflict
+	}
+	tombstoneRevision := uuid.NewString()
+	if err := accumulator.RetireWorkItemPlan(
+		ctx,
+		actor,
+		strings.TrimSpace(expectedGrantRevision),
+		tombstoneRevision,
+	); err != nil {
+		return "", err
+	}
+	return tombstoneRevision, nil
 }
 
 func (s *Server) loadProjectAssistantApprovedPlanGrant(

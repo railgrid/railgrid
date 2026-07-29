@@ -139,6 +139,31 @@ func TestProjectAssistantRunAuditIsBoundedAndSanitized(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantRunAuditRecordsAdaptiveRoutingAndPromotion(t *testing.T) {
+	run := &store.AssistantRun{ID: "run-adaptive"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{
+		TurnProfile:              projectAssistantTurnProfileAdaptive,
+		RequestedAction:          string(projectAssistantActionAuto),
+		ResolvedAction:           string(projectAssistantTurnProfileAdaptive),
+		ClassificationReason:     "adaptive_auto_policy",
+		ClassificationConfidence: projectAssistantTurnConfidenceMedium,
+	}, run, time.Now().UTC())
+	recorder.recordPromotion("work-item-1")
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatal(err)
+	}
+	if audit.RequestedAction != "auto" ||
+		audit.ResolvedAction != "build" ||
+		audit.ClassificationReason != "adaptive_auto_policy" ||
+		audit.ClassificationConfidence != projectAssistantTurnConfidenceMedium ||
+		audit.ResolutionReason != "plan_approval_requested" ||
+		audit.PromotedWorkItemID != "work-item-1" {
+		t.Fatalf("adaptive routing audit = %#v", audit)
+	}
+}
+
 func TestProjectAssistantRunAuditCanonicalReadsAreSanitized(t *testing.T) {
 	started := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	run := &store.AssistantRun{ID: "run-canonical"}
@@ -498,7 +523,7 @@ func TestProjectAssistantPermissionAuditKeepsOnlyRecentDecisions(t *testing.T) {
 func TestCompleteClaimedProjectAssistantRunAfterResumeErrorFinalizesAudit(t *testing.T) {
 	messages := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo"}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	started := time.Now().UTC().Add(-2 * time.Second)
 	run := store.AssistantRun{
 		ID:          "run-1",
@@ -571,11 +596,10 @@ func TestEinoAssistantEnginePersistsCompletedAndFailedRunAudits(t *testing.T) {
 			wantOutcome: projectAssistantAuditOutcomeSucceeded,
 		},
 		{
-			name:        "failed incomplete implementation",
+			name:        "implementation report is accepted",
 			profile:     projectAssistantTurnProfileImplementation,
 			content:     "I reviewed the request.",
-			wantOutcome: projectAssistantAuditOutcomeFailed,
-			wantErr:     true,
+			wantOutcome: projectAssistantAuditOutcomeSucceeded,
 		},
 	}
 

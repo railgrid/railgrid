@@ -41,11 +41,15 @@ import { parseAssistantActionFeed } from './assistantActionFeed'
 import AssistantActionLog from './AssistantActionLog.vue'
 import { activeAssistantPlanMessage, assistantPlanProgress, parseAssistantPlan, type AssistantPlan } from './assistantPlan'
 import AssistantPlanPopover from './AssistantPlanPopover.vue'
+import ApprovalModePicker from './ApprovalModePicker.vue'
+import ResponseModePicker, { type AssistantResponseMode, type SuspendedTaskOption } from './ResponseModePicker.vue'
 import {
   ConversationRunController,
   abortedConversationSnapshot,
   acceptScopedConversationSnapshot,
   assistantRunStartPayload,
+  assistantRunStartFingerprint,
+  assistantRunMatchesStartRequest,
   assistantRunTerminal,
   firstProjectStartPlan,
   firstProjectSubmissionAccepted,
@@ -55,6 +59,7 @@ import {
   mergeConversationSnapshot,
   newFirstProjectSubmission,
   normalizeSnapshotMessage,
+  orderConversationMessages,
   replaceOptimisticUserMessage,
   type AssistantRun,
 } from './conversationResilience'
@@ -82,6 +87,8 @@ import type {
   KedgeContext,
   Project,
   ProjectAssistantSnapshot,
+  ProjectAssistantApprovalMode,
+  ProjectAssistantWorkItem,
   ProjectAssistantActionFeedItem,
   ProjectAssistantUIComponent,
   ProjectAssistantUIInterruptRequest,
@@ -315,6 +322,13 @@ const projectSettingsError = ref<string | null>(null)
 const deleteProjectTarget = ref<Project | null>(null)
 const deletingProject = ref(false)
 const prompt = ref('')
+const assistantIntent = ref<AssistantResponseMode>('auto')
+const approvalMode = ref<ProjectAssistantApprovalMode>('always_ask')
+const approvalModeLoading = ref(false)
+const approvalModeSaving = ref(false)
+const approvalModeError = ref<string | null>(null)
+const assistantWorkItems = ref<ProjectAssistantWorkItem[]>([])
+const selectedAssistantWorkItem = ref<ProjectAssistantWorkItem | null>(null)
 const projectQuery = ref('')
 const providerQuery = ref('')
 const workbenchLauncherQuery = ref('')
@@ -388,9 +402,13 @@ let developmentPreviewAuthorizationRenewalTimer: number | undefined
 let activeAssistantSubscription: AbortController | null = null
 let activeAssistantRun: AssistantRun | null = null
 let activeAssistantProject = ''
-let pendingMessageSubmission: { projectName: string; content: string; clientRequestID: string } | null = null
+let pendingMessageSubmission: { fingerprint: string; clientRequestID: string } | null = null
+const pendingAssistantStopRequestIDs: Record<string, string> = {}
+const pendingWorkItemCancelRequestIDs: Record<string, string> = {}
 let pendingFirstProjectSubmission: ReturnType<typeof newFirstProjectSubmission> | null = null
 let projectCreateGeneration = 0
+let approvalModeLoadSerial = 0
+let approvalModeSaveSerial = 0
 
 function clearPendingFirstProjectSubmission() {
   projectCreateGeneration++
@@ -412,7 +430,14 @@ const assistantRunController = new ConversationRunController({
   abort: async (runID) => {
     const projectName = selected.value?.name
     if (!projectName) return
-    const response = await api.abortAssistantRun(props.ctx, projectName, runID)
+    const clientRequestID = pendingAssistantStopRequestIDs[runID] ?? crypto.randomUUID()
+    pendingAssistantStopRequestIDs[runID] = clientRequestID
+    const response = await api.stopAssistantRun(props.ctx, projectName, runID, clientRequestID)
+    if (response.status === 'stopping' && activeAssistantRun?.id === runID) {
+      activeAssistantRun = { ...activeAssistantRun, status: 'stopping' }
+      messageStreaming.value = true
+      return
+    }
     if (response.status === 'aborted' && activeAssistantRun?.id === runID) {
       const message = messages.value.find((item) => item.id === activeAssistantRun?.activeMessageID)
       if (message) applyAssistantSnapshot(abortedConversationSnapshot({ run: activeAssistantRun, message }), projectName)
@@ -450,7 +475,27 @@ const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
 const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).length > 0 || Object.keys(followUpBusy.value).length > 0)
 const llmConfigured = computed(() => llmSettings.value?.configured ?? false)
 const canStartProjectFromPrompt = computed(() => canSubmitCreatePrompt(prompt.value, createReadiness.value) && llmConfigured.value)
-const canSendPrompt = computed(() => (llmSettings.value?.configured ?? false) && prompt.value.trim().length > 0 && !messageStreaming.value && !assistantResumeBusy.value)
+const canSendPrompt = computed(() =>
+  (llmSettings.value?.configured ?? false) &&
+  prompt.value.trim().length > 0 &&
+  !messageStreaming.value &&
+  !assistantResumeBusy.value &&
+  !approvalModeLoading.value &&
+  !approvalModeSaving.value,
+)
+const suspendedAssistantTasks = computed<SuspendedTaskOption[]>(() =>
+  assistantWorkItems.value
+    .filter((item) => item.status === 'suspended')
+    .map((item) => {
+      const rootMessage = messages.value.find((message) => message.id === item.rootMessageID)
+      const label = rootMessage?.content.replace(/\s+/g, ' ').trim() || 'Previous implementation task'
+      let reason = 'Stopped before completion'
+      if (item.statusReason === 'provider restarted') reason = 'Interrupted when App Studio restarted'
+      else if (item.statusReason === 'no_progress') reason = 'Needs another attempt'
+      else if (item.statusReason === 'failed') reason = 'The previous attempt failed'
+      return { id: item.id, label, reason }
+    }),
+)
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
 const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'LLM settings'))
 const settingsDescription = computed(() =>
@@ -487,6 +532,7 @@ watch(activePlanMessage, (current, previous) => {
 })
 const conversationWorkingLabel = computed(() => {
   const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
+  if (activeAssistantRun?.status === 'stopping') return 'Stopping'
   if (activePlanMessage.value) return ''
   if (conversationStatus.value) return conversationStatus.value
   if (!messageStreaming.value) return ''
@@ -1807,6 +1853,11 @@ async function saveProjectSettings() {
 
 async function openProject(name: string, updateURL = true) {
   if (!name) return
+  const approvalRequestSerial = ++approvalModeLoadSerial
+  approvalModeSaveSerial += 1
+  approvalModeLoading.value = true
+  approvalModeSaving.value = false
+  approvalModeError.value = null
   if (selected.value?.name !== name) {
     assistantRunController.disconnect()
     activeAssistantSubscription?.abort()
@@ -1816,13 +1867,48 @@ async function openProject(name: string, updateURL = true) {
   }
   error.value = null
   try {
-    selected.value = await api.getProject(props.ctx, name)
-    messages.value = (await api.listAllMessages(props.ctx, name)).map(toProjectMessageView)
+    const [project, loadedMessages, workItems, preference] = await Promise.all([
+      api.getProject(props.ctx, name),
+      api.listAllMessages(props.ctx, name),
+      api.listAssistantWorkItems(props.ctx, name),
+      api.getAssistantApprovalMode(props.ctx, name).catch((preferenceError: unknown) => {
+        if (approvalRequestSerial === approvalModeLoadSerial) {
+          approvalModeError.value = preferenceError instanceof Error ? preferenceError.message : String(preferenceError)
+        }
+        return null
+      }),
+    ])
+    if (approvalRequestSerial !== approvalModeLoadSerial) return
+    selected.value = project
+    messages.value = loadedMessages.map(toProjectMessageView)
+    assistantWorkItems.value = workItems
+    approvalMode.value = preference?.mode ?? 'always_ask'
+    selectedAssistantWorkItem.value = null
     await recoverAssistantConversation(name)
     if (updateURL) props.navigate(encodeURIComponent(name))
   } catch (e) {
     if (handleProjectAPIInitializing(e)) return
     error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (approvalRequestSerial === approvalModeLoadSerial) approvalModeLoading.value = false
+  }
+}
+
+async function selectApprovalMode(mode: ProjectAssistantApprovalMode) {
+  const projectName = selected.value?.name
+  if (!projectName || mode === approvalMode.value || messageStreaming.value || approvalModeSaving.value) return
+  const saveSerial = ++approvalModeSaveSerial
+  approvalModeSaving.value = true
+  approvalModeError.value = null
+  try {
+    const preference = await api.patchAssistantApprovalMode(props.ctx, projectName, mode)
+    if (saveSerial === approvalModeSaveSerial && selected.value?.name === projectName) approvalMode.value = preference.mode
+  } catch (e) {
+    if (saveSerial === approvalModeSaveSerial && selected.value?.name === projectName) {
+      approvalModeError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    if (saveSerial === approvalModeSaveSerial) approvalModeSaving.value = false
   }
 }
 
@@ -1840,6 +1926,52 @@ async function refreshSelectedProjectConversation(projectName: string) {
   await recoverAssistantConversation(projectName)
 }
 
+async function refreshAssistantWorkItems(projectName: string) {
+  const items = await api.listAssistantWorkItems(props.ctx, projectName)
+  if (selected.value?.name !== projectName) return
+  assistantWorkItems.value = items
+  if (selectedAssistantWorkItem.value) {
+    selectedAssistantWorkItem.value = items.find((item) => item.id === selectedAssistantWorkItem.value?.id && item.status === 'suspended') ?? null
+  }
+}
+
+async function discardAssistantWorkItem(item: ProjectAssistantWorkItem) {
+  const projectName = selected.value?.name
+  if (!projectName) return
+  const confirmed = await confirmDialog({
+    title: 'Discard suspended task?',
+    message: 'This removes its continuation authority. The conversation remains visible.',
+    confirmLabel: 'Discard task',
+    danger: true,
+  })
+  if (!confirmed) return
+  try {
+    const key = `${item.id}:${item.revision}`
+    const clientRequestID = pendingWorkItemCancelRequestIDs[key] ?? crypto.randomUUID()
+    pendingWorkItemCancelRequestIDs[key] = clientRequestID
+    await api.cancelAssistantWorkItem(props.ctx, projectName, item.id, item.revision, clientRequestID)
+    delete pendingWorkItemCancelRequestIDs[key]
+    if (selectedAssistantWorkItem.value?.id === item.id) selectedAssistantWorkItem.value = null
+    await refreshAssistantWorkItems(projectName)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function selectAssistantResponseMode(mode: AssistantResponseMode) {
+  selectedAssistantWorkItem.value = null
+  assistantIntent.value = mode
+}
+
+function selectSuspendedAssistantTask(id: string) {
+  selectedAssistantWorkItem.value = assistantWorkItems.value.find((item) => item.id === id && item.status === 'suspended') ?? null
+}
+
+function discardSuspendedAssistantTask(id: string) {
+  const item = assistantWorkItems.value.find((candidate) => candidate.id === id && candidate.status === 'suspended')
+  if (item) void discardAssistantWorkItem(item)
+}
+
 function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName = selected.value?.name ?? '', source: 'stream' | 'start' | 'latest' = 'stream', expectedRunID = ''): { accepted: boolean; current: AssistantRun | undefined } {
   const selectedProject = selected.value?.name ?? ''
   const normalized = { ...snapshot, message: normalizeSnapshotMessage(snapshot.message) }
@@ -1854,6 +1986,9 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
   Object.assign(assistantRunRevisions, current.runs)
   const acceptedTerminal = assistantRunTerminal(normalized.run.status) && (!previousRun || !assistantRunTerminal(previousRun.status) || normalized.run.revision > previousRun.revision)
   activeAssistantRun = normalized.run
+  if (!assistantRunTerminal(normalized.run.status) && normalized.run.approvalMode) {
+    approvalMode.value = normalized.run.approvalMode
+  }
   activeAssistantProject = projectName
   assistantRunController.markHealthySnapshot(normalized.run.revision)
   messageStreaming.value = !assistantRunTerminal(normalized.run.status)
@@ -1861,6 +1996,7 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
     conversationStatus.value = ''
     assistantRunController.disconnect()
     void loadCheckpoints()
+    void refreshAssistantWorkItems(projectName)
     if (normalized.message.metadata?.previewRefreshNeeded === true) void refreshDevelopmentPreviewFrame('Preview refreshed')
   } else if (!assistantRunTerminal(normalized.run.status)) {
     const status = normalized.message.metadata?.assistantStatus
@@ -2276,7 +2412,7 @@ async function confirmDeleteProject() {
 
 async function sendMessage() {
   const content = prompt.value.trim()
-  if (!content || !selected.value || !llmSettings.value?.configured || messageStreaming.value || assistantResumeBusy.value) return
+  if (!content || !selected.value || !llmSettings.value?.configured || messageStreaming.value || assistantResumeBusy.value || approvalModeLoading.value || approvalModeSaving.value) return
   const projectName = selected.value.name
   prompt.value = ''
   busy.value = true
@@ -2285,12 +2421,26 @@ async function sendMessage() {
   const firstProjectPending = firstProjectSubmissionMatches(pendingFirstProjectSubmission, projectName, content)
     ? pendingFirstProjectSubmission
     : null
+  const startOperation = selectedAssistantWorkItem.value
+    ? {
+        content,
+        assistantAction: 'continue' as const,
+        workItemID: selectedAssistantWorkItem.value.id,
+        workItemRevision: selectedAssistantWorkItem.value.revision,
+      }
+    : {
+        content,
+        assistantAction: (firstProjectPending ? 'build' : assistantIntent.value) as 'auto' | 'ask' | 'build',
+        ...(firstProjectPending ? { initialProjectPrompt: true } : {}),
+      }
+  const submissionFingerprint = assistantRunStartFingerprint(projectName, startOperation)
   const clientRequestID = firstProjectPending
     ? firstProjectPending.clientRequestID
-    : pendingMessageSubmission?.projectName === projectName && pendingMessageSubmission.content === content
+    : pendingMessageSubmission?.fingerprint === submissionFingerprint
     ? pendingMessageSubmission.clientRequestID
     : crypto.randomUUID()
-  pendingMessageSubmission = { projectName, content, clientRequestID }
+  const payload = { ...startOperation, clientRequestID }
+  pendingMessageSubmission = { fingerprint: submissionFingerprint, clientRequestID }
   const optimisticID = firstProjectPending
     ? messages.value.find((message) => message.projectID === projectName && message.role === 'user' && message.content === content)?.id ?? `optimistic-${clientRequestID}`
     : `optimistic-${clientRequestID}`
@@ -2303,12 +2453,13 @@ async function sendMessage() {
   }
   if (!messages.value.some((message) => message.id === optimisticID)) messages.value = [...messages.value, optimisticUserMessage]
   try {
-    const started = await api.startAssistantRun(props.ctx, projectName, assistantRunStartPayload(content, clientRequestID, Boolean(firstProjectPending)))
+    const started = await api.startAssistantRun(props.ctx, projectName, payload)
     const applied = applyAssistantSnapshot({ run: started.run, message: started.assistant }, projectName, 'start')
     if (applied.accepted && applied.current) {
       messages.value = replaceOptimisticUserMessage(messages.value, optimisticID, started.user ?? optimisticUserMessage).map(toProjectMessageView)
       if (!assistantRunTerminal(applied.current.status)) assistantRunController.start(applied.current.id, applied.current.revision)
       pendingMessageSubmission = null
+      selectedAssistantWorkItem.value = null
       if (firstProjectPending && firstProjectSubmissionAccepted(firstProjectPending, started.user)) pendingFirstProjectSubmission = null
     }
   } catch (e) {
@@ -2320,10 +2471,11 @@ async function sendMessage() {
         const persistedPrompt = persistedUserID
           ? messages.value.find((message) => message.id === persistedUserID && message.role === 'user')
           : undefined
-        if (persistedPrompt?.content === content) {
+        if (persistedPrompt?.content === content && assistantRunMatchesStartRequest(recovered?.current, payload)) {
           pendingMessageSubmission = null
           if (firstProjectPending && firstProjectSubmissionAccepted(firstProjectPending, persistedPrompt)) pendingFirstProjectSubmission = null
         } else {
+          pendingMessageSubmission = null
           prompt.value = content
         }
         if (!recovered?.current) messageStreaming.value = false
@@ -2495,7 +2647,7 @@ function applyPermissionResponse(projectName: string, interrupt: ProjectAssistan
 }
 
 function projectMessagesForConversation(source: ProjectMessageView[]): ProjectMessageView[] {
-  return source
+  return orderConversationMessages(source)
 }
 
 function toProjectMessageView(message: ProjectMessage): ProjectMessageView {
@@ -3560,19 +3712,39 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               </div>
             </div>
           </div>
+          <div v-if="approvalModeError" class="mb-2 text-[11px] leading-4 text-danger" role="alert">
+            {{ approvalModeError }}
+          </div>
           <div id="assistant-plan-mobile-anchor" class="mb-2 flex justify-end empty:hidden md:hidden" />
-          <div class="relative min-h-[58px] rounded-md border border-border-subtle bg-surface shadow-sm transition focus-within:border-accent/50">
+          <div class="relative min-h-[72px] rounded-md border border-border-subtle bg-surface shadow-sm transition focus-within:border-accent/50">
             <textarea
               ref="promptRef"
               v-model="prompt"
               rows="2"
-              class="min-h-[58px] w-full resize-none rounded-md border-0 bg-transparent px-3 py-2.5 pb-12 pr-14 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-muted"
-              placeholder="Message this project"
+              class="min-h-[72px] w-full resize-none rounded-md border-0 bg-transparent px-3 py-2.5 pb-12 pr-14 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-muted"
+              :placeholder="selectedAssistantWorkItem ? 'Tell App Studio how to continue this task' : 'Message this project'"
               :disabled="busy || assistantResumeBusy"
               @keydown.enter.exact.prevent="sendMessage"
             />
+            <div class="absolute bottom-2 left-1.5 right-12 flex min-w-0 items-center gap-0.5">
+              <ResponseModePicker
+                :mode="assistantIntent"
+                :suspended-tasks="suspendedAssistantTasks"
+                :selected-task-id="selectedAssistantWorkItem?.id"
+                :disabled="messageStreaming || loading"
+                @select-mode="selectAssistantResponseMode"
+                @select-task="selectSuspendedAssistantTask"
+                @discard-task="discardSuspendedAssistantTask"
+              />
+              <ApprovalModePicker
+                :mode="approvalMode"
+                :busy="approvalModeLoading || approvalModeSaving"
+                :disabled="messageStreaming || loading || approvalModeLoading || approvalModeSaving"
+                @select="selectApprovalMode"
+              />
+            </div>
             <button
-              v-if="messageStreaming"
+              v-if="messageStreaming && activeAssistantRun?.status !== 'stopping'"
               type="button"
               class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-danger/30 bg-danger-subtle text-danger transition hover:bg-danger-subtle/80"
               title="Stop generating"
@@ -3580,6 +3752,16 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               @click="cancelMessageStream"
             >
               <Square class="h-4 w-4 fill-current" :stroke-width="2" />
+            </button>
+            <button
+              v-else-if="activeAssistantRun?.status === 'stopping'"
+              type="button"
+              disabled
+              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-hover text-text-muted"
+              title="Stopping"
+              aria-label="Stopping"
+            >
+              <Loader2 class="h-4 w-4 animate-spin" :stroke-width="2" />
             </button>
             <button
               v-else

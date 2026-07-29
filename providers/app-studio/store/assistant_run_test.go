@@ -24,7 +24,7 @@ import (
 
 func TestMemoryStoreAssistantRunRoundTrip(t *testing.T) {
 	s := NewMemoryStore()
-	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-1"}
 	run := AssistantRun{
 		ID:         "run-1",
 		Status:     AssistantRunStatusPendingPermission,
@@ -76,7 +76,7 @@ func TestMemoryStoreAssistantRunRoundTrip(t *testing.T) {
 
 func TestMemoryStoreCompareAndSwapAssistantRun(t *testing.T) {
 	s := NewMemoryStore()
-	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-1"}
 	first := AssistantRun{
 		ID:         "approved-plan-grant",
 		Status:     AssistantRunStatusCompleted,

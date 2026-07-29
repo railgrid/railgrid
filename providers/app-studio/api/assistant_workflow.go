@@ -114,6 +114,7 @@ type projectAssistantRuntimeVerificationResult struct {
 	Runtime    *projectAssistantRuntimeWorkflowResult   `json:"runtime,omitempty"`
 	PreviewURL string                                   `json:"previewURL,omitempty"`
 	Logs       *projectAssistantRuntimeLogsResult       `json:"logs,omitempty"`
+	Blockers   []string                                 `json:"blockers,omitempty"`
 }
 
 type projectAssistantWorkflowContext struct {

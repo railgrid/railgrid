@@ -87,7 +87,7 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 		return projectAssistantToolBundleEdit
 	case projectToolCommitProjectFiles, projectToolCommitFiles:
 		return projectAssistantToolBundleRepo
-	case projectToolAskFollowUp, projectToolRequestProjectPlanApproval:
+	case projectToolAskFollowUp, projectToolRequestProjectPlanApproval, projectToolDefineInitialProjectPlan:
 		return projectAssistantToolBundleCollaboration
 	// Template selection shapes the development ENVIRONMENT, not workspace
 	// files — it must be callable from the requirements-interview turns

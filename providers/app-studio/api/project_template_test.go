@@ -116,6 +116,7 @@ func TestProjectTemplateInstanceNameBoundsLongNames(t *testing.T) {
 func TestProjectTemplateDevBinding(t *testing.T) {
 	p := &aiv1alpha1.Project{}
 	p.Name = "shop"
+	p.UID = "test-project-uid-shop"
 	info, err := projectTemplateInfoFromUnstructured(applicationTemplateObject())
 	if err != nil {
 		t.Fatalf("template info: %v", err)

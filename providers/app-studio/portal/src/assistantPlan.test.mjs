@@ -113,7 +113,7 @@ test('summarizes progress with the active form', () => {
         { content: 'Verify the preview', status: 'pending' },
       ],
     }),
-    '1 of 3 steps · Updating the quote form',
+    'Building · 1 of 3 steps · Updating the quote form',
   )
 })
 

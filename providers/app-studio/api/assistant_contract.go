@@ -57,10 +57,15 @@ type projectAssistantRunRequest struct {
 	History                  []store.Message
 	MCPBaseURL               string
 	MCPInsecureSkipTLSVerify bool
+	ApprovalMode             store.AssistantApprovalMode
 	AutoApproveActions       bool
 	StreamCallbacks          projectAssistantStreamCallbacks
 	TurnProfile              projectAssistantTurnProfile
 	TurnPolicy               projectAssistantTurnPolicy
+	RequestedAction          string
+	ResolvedAction           string
+	ClassificationReason     string
+	ClassificationConfidence projectAssistantTurnConfidence
 	// InitialApprovedPlan is a run-local grant derived from the explicit
 	// prompt that created a fresh Project. It is never saved as a cross-turn
 	// plan grant; checkpoints retain it only while this initial run is active.
@@ -72,7 +77,18 @@ type projectAssistantRunRequest struct {
 }
 
 type projectAssistantRunResult struct {
-	Content string
+	Content            string
+	InitialPlan        *projectAssistantApprovedPlan
+	InitialBuild       bool
+	CompletionEvidence projectAssistantCompletionEvidence
+}
+
+type projectAssistantCompletionEvidence struct {
+	PlanDefined            bool     `json:"planDefined"`
+	PlanComplete           bool     `json:"planComplete"`
+	LatestMutationVerified bool     `json:"latestMutationVerified"`
+	VerificationOutcome    string   `json:"verificationOutcome,omitempty"`
+	Blockers               []string `json:"blockers,omitempty"`
 }
 
 type projectAssistantEvent struct {

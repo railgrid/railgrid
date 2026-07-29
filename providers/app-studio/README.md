@@ -98,9 +98,32 @@ subscriber; it never cancels the worker. The portal uses this contract for the
 first project turn as well as later messages, so a refresh during generation
 reconnects without adding another prompt.
 
+Every request carries an assistant action. Omitted actions are `auto`: the run
+starts in an adaptive mode with bounded project reads but no WorkItem or
+mutation authority. It may answer directly, inspect the project, or request
+plan approval. A plan request atomically promotes that same run and its root
+messages into a durable, actor-bound WorkItem before the permission checkpoint
+is saved. Explicit Ask remains read-only; explicit Build creates the WorkItem
+at start; `continue` requires a selected suspended WorkItem ID and exact
+revision. Mutation history, plan grants, runs, and messages are scoped by the
+immutable Kubernetes Project UID and WorkItem rather than by the reusable
+project name.
+
+Mutation-capable Eino runs expose a phase-specific tool catalog for
+`approval -> mutate -> verify -> repair/commit -> report`, while every tool
+invocation still validates the durable lifecycle and grant. A phase-local
+no-progress bound warns the model before stopping a run that keeps reasoning
+without plan approval or an approved source mutation. The WorkItem is suspended
+with reason `no_progress` and can be retried with Continue. After a source
+mutation, the strict verification catalog and global iteration ceiling apply so
+a run-local mutation marker is never discarded by this handoff. This does not
+apply to read-only Ask turns.
+
 This remains a single-replica design: execution cannot continue across a
 provider restart. On the next read, an orphaned running run is surfaced as
-`interrupted`; permission and input checkpoints stay resumable. The legacy
+`interrupted`; its WorkItem becomes suspended, while permission and input
+checkpoints stay resumable. Stop first persists `stopping`, then asks Eino to
+cancel gracefully without retaining a terminal checkpoint. The legacy
 `POST /messages/stream` and `POST /projects/stream` endpoints are retained for
 older portals as compatibility adapters: after their historical project setup
 events, they start the same durable run and subscribe to it. New clients must

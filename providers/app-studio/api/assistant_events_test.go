@@ -596,7 +596,7 @@ func TestStreamProjectAssistantEmitsCanonicalLifecycleSequence(t *testing.T) {
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
 	messages := store.NewMemoryStore()
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, "demo")
+	messageScope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, "demo")
 	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "write a file"); err != nil {
 		t.Fatalf("appendProjectUserMessage returned error: %v", err)
 	}
@@ -604,6 +604,7 @@ func TestStreamProjectAssistantEmitsCanonicalLifecycleSequence(t *testing.T) {
 	server.assistantEngine = projectAssistantSequenceEngine{}
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	rr := httptest.NewRecorder()
 	flusher, ok := startProjectMessageStream(rr)
 	if !ok {
@@ -660,7 +661,7 @@ func TestStreamProjectAssistantEmitsPreviewRefreshAfterMutatingToolCall(t *testi
 	messages := store.NewMemoryStore()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, "demo")
+	messageScope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, "demo")
 	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "change the app"); err != nil {
 		t.Fatalf("appendProjectUserMessage returned error: %v", err)
 	}
@@ -668,6 +669,7 @@ func TestStreamProjectAssistantEmitsPreviewRefreshAfterMutatingToolCall(t *testi
 	server.assistantEngine = projectAssistantWorkspaceMutationEngine{}
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 	rr := httptest.NewRecorder()
 	flusher, ok := startProjectMessageStream(rr)
 	if !ok {

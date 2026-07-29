@@ -23,11 +23,17 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
 	"github.com/cloudwego/eino-examples/adk/common/tool/graphtool"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
+)
+
+const (
+	projectAssistantRuntimeProvisioningPollInterval = 5 * time.Second
+	projectAssistantRuntimeProvisioningPollTimeout  = 2 * time.Minute
 )
 
 // Runtime data-plane assistant tools. These wire the development data-plane
@@ -145,11 +151,12 @@ func newProjectAssistantVerifyRuntimeGraphTool(runCtx projectAssistantWorkflowRu
 }
 
 type projectAssistantRuntimeVerificationContext struct {
-	Args         *projectAssistantRuntimeVerificationToolInput
-	Readiness    *projectAssistantReadinessWorkflowResult
-	RuntimeInput projectAssistantRuntimeWorkflowInput
-	Runtime      *projectAssistantRuntimeWorkflowResult
-	Logs         *projectAssistantRuntimeLogsResult
+	Args                   *projectAssistantRuntimeVerificationToolInput
+	Readiness              *projectAssistantReadinessWorkflowResult
+	RuntimeInput           projectAssistantRuntimeWorkflowInput
+	Runtime                *projectAssistantRuntimeWorkflowResult
+	Logs                   *projectAssistantRuntimeLogsResult
+	RequireProcessEvidence bool
 }
 
 func collectProjectAssistantRuntimeReadiness(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationToolInput) (*projectAssistantRuntimeVerificationContext, error) {
@@ -172,7 +179,16 @@ func collectProjectAssistantRuntimeReadiness(runCtx projectAssistantWorkflowRunC
 		if err != nil {
 			return nil, err
 		}
-		return &projectAssistantRuntimeVerificationContext{Args: args, Readiness: readiness}, nil
+		requireProcessEvidence := false
+		if runCtx.RunState != nil {
+			executionPlan, _ := runCtx.RunState.ExecutionPlan()
+			requireProcessEvidence = executionPlan != nil
+		}
+		return &projectAssistantRuntimeVerificationContext{
+			Args:                   args,
+			Readiness:              readiness,
+			RequireProcessEvidence: requireProcessEvidence,
+		}, nil
 	}
 }
 
@@ -181,11 +197,19 @@ func resolveProjectAssistantRuntimeVerification(runCtx projectAssistantWorkflowR
 		if input == nil {
 			return nil, errors.New("runtime verification context is required")
 		}
-		runtimeInput, err := projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx)(ctx, &projectAssistantRuntimeStatusToolInput{})
-		if err != nil {
-			return nil, err
-		}
-		runtime, err := formatProjectAssistantRuntimeStatusResult(ctx, runtimeInput)
+		runtimeInput, runtime, err := pollProjectAssistantRuntimeVerification(
+			ctx,
+			projectAssistantRuntimeProvisioningPollInterval,
+			projectAssistantRuntimeProvisioningPollTimeout,
+			func(ctx context.Context) (projectAssistantRuntimeWorkflowInput, *projectAssistantRuntimeWorkflowResult, error) {
+				currentInput, err := projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx)(ctx, &projectAssistantRuntimeStatusToolInput{})
+				if err != nil {
+					return projectAssistantRuntimeWorkflowInput{}, nil, err
+				}
+				currentRuntime, err := formatProjectAssistantRuntimeStatusResult(ctx, currentInput)
+				return currentInput, currentRuntime, err
+			},
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -195,12 +219,52 @@ func resolveProjectAssistantRuntimeVerification(runCtx projectAssistantWorkflowR
 	}
 }
 
+func pollProjectAssistantRuntimeVerification(
+	ctx context.Context,
+	interval time.Duration,
+	timeout time.Duration,
+	resolve func(context.Context) (projectAssistantRuntimeWorkflowInput, *projectAssistantRuntimeWorkflowResult, error),
+) (projectAssistantRuntimeWorkflowInput, *projectAssistantRuntimeWorkflowResult, error) {
+	if resolve == nil {
+		return projectAssistantRuntimeWorkflowInput{}, nil, errors.New("runtime verification resolver is required")
+	}
+	currentInput, currentRuntime, err := resolve(ctx)
+	if err != nil || currentRuntime == nil || currentRuntime.Status != "provisioning" {
+		return currentInput, currentRuntime, err
+	}
+	if interval <= 0 || timeout <= 0 {
+		return currentInput, currentRuntime, nil
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return projectAssistantRuntimeWorkflowInput{}, nil, ctx.Err()
+		case <-timer.C:
+			return currentInput, currentRuntime, nil
+		case <-ticker.C:
+			currentInput, currentRuntime, err = resolve(ctx)
+			if err != nil || currentRuntime == nil || currentRuntime.Status != "provisioning" {
+				return currentInput, currentRuntime, err
+			}
+		}
+	}
+}
+
 func collectProjectAssistantRuntimeVerificationLogs(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
 	return func(ctx context.Context, input *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
 		if input == nil || input.Runtime == nil {
 			return nil, errors.New("resolved runtime verification context is required")
 		}
-		if !runtimeVerificationShouldCollectLogs(input.Args, input.RuntimeInput) {
+		shouldCollectLogs := runtimeVerificationShouldCollectLogs(input.Args, input.RuntimeInput)
+		if input.RequireProcessEvidence {
+			shouldCollectLogs = runtimeVerificationShouldCollectLogs(nil, input.RuntimeInput)
+		}
+		if !shouldCollectLogs {
 			return input, nil
 		}
 		logs, err := fetchProjectAssistantRuntimeLogs(runCtx)(ctx, &projectAssistantRuntimeLogsToolInput{TailLines: runtimeVerificationTailLines(input.Args)})
@@ -219,14 +283,26 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 	if input == nil || input.Runtime == nil {
 		return nil, errors.New("resolved runtime verification context is required")
 	}
-	return &projectAssistantRuntimeVerificationResult{
+	result := &projectAssistantRuntimeVerificationResult{
 		Status:     input.Runtime.Status,
 		Summary:    input.Runtime.Summary,
 		Readiness:  input.Readiness,
 		Runtime:    input.Runtime,
 		PreviewURL: input.Runtime.PreviewURL,
 		Logs:       input.Logs,
-	}, nil
+	}
+	if input.Logs != nil && len(input.Logs.Blockers) > 0 {
+		result.Status = "not_ready"
+		result.Summary = "The preview edge is reachable, but the latest development process logs contain a startup or compilation failure."
+		result.Blockers = append([]string(nil), input.Logs.Blockers...)
+	} else if input.RequireProcessEvidence &&
+		input.Runtime.Status == "reachable" &&
+		(input.Logs == nil || input.Logs.Status == "unavailable") {
+		result.Status = "not_ready"
+		result.Summary = "The preview edge is reachable, but development process evidence is unavailable."
+		result.Blockers = []string{"development process logs are unavailable"}
+	}
+	return result, nil
 }
 
 func runtimeVerificationShouldCollectLogs(args *projectAssistantRuntimeVerificationToolInput, input projectAssistantRuntimeWorkflowInput) bool {
@@ -303,39 +379,82 @@ func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext)
 				NextSteps: blocked.NextSteps,
 			}, nil
 		}
-		// Template-backed targets: read the first component's logs (a
-		// component-aware tool input is a follow-up; the model can also use
-		// the HTTP surface's ?component=).
-		component := ""
-		if len(target.Components) > 0 {
-			component = target.sortedComponents()[0]
+		components := target.sortedComponents()
+		if len(components) == 0 {
+			components = []string{""}
 		}
-		body, status, err := server.dataPlaneGet(ctx, id, target.dataPlaneRefFor(component), dataPlaneVerbLog, projectAssistantRuntimeLogsMaxBytes)
-		if err != nil {
-			return &projectAssistantRuntimeLogsResult{
-				Status:  "unavailable",
-				Summary: "Runtime logs are temporarily unavailable: " + err.Error(),
-			}, nil
+		lines := make([]string, 0, tail)
+		var blockers []string
+		for _, component := range components {
+			body, status, err := server.dataPlaneGet(ctx, id, target.dataPlaneRefFor(component), dataPlaneVerbLog, projectAssistantRuntimeLogsMaxBytes)
+			if err != nil {
+				return &projectAssistantRuntimeLogsResult{
+					Status:  "unavailable",
+					Summary: "Runtime logs are temporarily unavailable: " + err.Error(),
+				}, nil
+			}
+			if status < 200 || status >= 300 {
+				return &projectAssistantRuntimeLogsResult{
+					Status:  "unavailable",
+					Summary: fmt.Sprintf("Runtime logs are unavailable (status %d).", status),
+				}, nil
+			}
+			componentLines := boundedRuntimeLogLines(string(body), tail)
+			for _, line := range componentLines {
+				if component != "" {
+					line = "[" + component + "] " + line
+				}
+				lines = append(lines, line)
+			}
+			if len(blockers) == 0 {
+				blockers = projectAssistantRuntimeLogBlockers(componentLines)
+				if len(blockers) > 0 && component != "" {
+					blockers[0] = "[" + component + "] " + blockers[0]
+				}
+			}
 		}
-		if status < 200 || status >= 300 {
-			return &projectAssistantRuntimeLogsResult{
-				Status:  "unavailable",
-				Summary: fmt.Sprintf("Runtime logs are unavailable (status %d).", status),
-			}, nil
+		if len(lines) > tail {
+			lines = lines[len(lines)-tail:]
 		}
-		lines := boundedRuntimeLogLines(string(body), tail)
 		if len(lines) == 0 {
 			return &projectAssistantRuntimeLogsResult{
 				Status:  "ok",
 				Summary: "The runtime has not produced any logs yet; the dev process may still be starting.",
 			}, nil
 		}
+		status := "ok"
+		summary := fmt.Sprintf("Returned the last %d line(s) of development runtime logs.", len(lines))
+		if len(blockers) > 0 {
+			status = "failed"
+			summary = "The latest development runtime logs contain a startup or compilation failure."
+		}
 		return &projectAssistantRuntimeLogsResult{
-			Status:  "ok",
-			Summary: fmt.Sprintf("Returned the last %d line(s) of development runtime logs.", len(lines)),
-			Lines:   lines,
+			Status:   status,
+			Summary:  summary,
+			Lines:    lines,
+			Blockers: blockers,
 		}, nil
 	}
+}
+
+func projectAssistantRuntimeLogBlockers(lines []string) []string {
+	patterns := []string{
+		"syntaxerror",
+		"missing script:",
+		"cannot find module",
+		"module not found",
+		"failed to compile",
+		"npm error missing script",
+	}
+	for _, line := range lines {
+		normalized := strings.ToLower(strings.TrimSpace(line))
+		for _, pattern := range patterns {
+			if strings.Contains(normalized, pattern) {
+				return []string{trimProjectAssistantWorkflowString(strings.TrimSpace(line), 240)}
+			}
+		}
+	}
+	return nil
 }
 
 // boundedRuntimeLogLines keeps the last tail non-empty-trailing lines of a raw

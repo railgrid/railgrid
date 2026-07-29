@@ -47,6 +47,7 @@ type projectAssistantTurnItem struct {
 	OrgUUID            string                   `json:"orgUUID"`
 	WorkspaceUUID      string                   `json:"workspaceUUID"`
 	ProjectName        string                   `json:"projectName"`
+	ProjectUID         string                   `json:"projectUID,omitempty"`
 	User               string                   `json:"user,omitempty"`
 	RunID              string                   `json:"runID,omitempty"`
 	RequestID          string                   `json:"requestID,omitempty"`
@@ -73,6 +74,7 @@ func (i projectAssistantTurnItem) key() projectAssistantRunKey {
 		OrgUUID:       strings.TrimSpace(i.OrgUUID),
 		WorkspaceUUID: strings.TrimSpace(i.WorkspaceUUID),
 		ProjectName:   strings.TrimSpace(i.ProjectName),
+		ProjectUID:    strings.TrimSpace(i.ProjectUID),
 	}
 }
 
@@ -80,6 +82,7 @@ type projectAssistantRunKey struct {
 	OrgUUID       string
 	WorkspaceUUID string
 	ProjectName   string
+	ProjectUID    string
 }
 
 func (k projectAssistantRunKey) valid() bool {

@@ -154,6 +154,10 @@ func (m *projectEinoAssistantFilesystemTelemetry) WrapInvokableToolCall(
 			args = nil
 		}
 		arguments := projectEinoAssistantFilesystemArgumentSummary(name, args)
+		canonicalArguments := argumentsInJSON
+		if args != nil {
+			canonicalArguments = projectEinoToolArgumentsString(args)
+		}
 		m.emitToolCall(projectToolCallStreamEvent{
 			ID:        callID,
 			Name:      name,
@@ -166,6 +170,18 @@ func (m *projectEinoAssistantFilesystemTelemetry) WrapInvokableToolCall(
 			Status:    "running",
 			Arguments: arguments,
 		})
+		if m.runState != nil && m.runState.RepeatedCompletedRead(name, canonicalArguments) {
+			result := "Tool call skipped: this identical read already completed after the latest workspace mutation; use the prior result or inspect different evidence."
+			m.emitToolCall(projectToolCallStreamEvent{
+				ID:        callID,
+				Name:      name,
+				Status:    "succeeded",
+				Arguments: arguments,
+				Summary:   "Skipped an unchanged duplicate read.",
+			})
+			m.recordToolMessage(callID, name, result)
+			return result, nil
+		}
 
 		result, endpointErr := endpoint(ctx, argumentsInJSON, opts...)
 		if endpointErr != nil {
@@ -179,6 +195,9 @@ func (m *projectEinoAssistantFilesystemTelemetry) WrapInvokableToolCall(
 			})
 			m.recordToolMessage(callID, name, truncateProjectToolInfo("Tool call failed: "+safeError))
 			return result, endpointErr
+		}
+		if m.runState != nil {
+			m.runState.RecordCompletedRead(name, canonicalArguments)
 		}
 
 		m.emitToolCall(projectToolCallStreamEvent{
@@ -197,7 +216,7 @@ func (m *projectEinoAssistantFilesystemTelemetry) emitToolCall(event projectTool
 	if m == nil || m.req.StreamCallbacks.OnToolCall == nil {
 		return
 	}
-	m.req.StreamCallbacks.OnToolCall(event)
+	m.runState.EmitToolCall(m.req.StreamCallbacks.OnToolCall, event)
 }
 
 func (m *projectEinoAssistantFilesystemTelemetry) recordToolMessage(callID, name, content string) {

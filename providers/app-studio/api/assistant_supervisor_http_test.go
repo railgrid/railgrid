@@ -16,6 +16,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,6 +25,67 @@ import (
 
 	"github.com/faroshq/provider-app-studio/store"
 )
+
+func TestProjectAssistantPublicRunSnapshotsOmitInternalExecutionState(t *testing.T) {
+	now := time.Now().UTC()
+	snapshot := projectAssistantRunSnapshot{
+		Run: store.AssistantRun{
+			ID:                    "run-1",
+			ProjectName:           "internal-project",
+			ProjectUID:            "internal-project-uid",
+			WorkItemID:            "work-item-1",
+			Mode:                  store.AssistantRunModeContinue,
+			ApprovalMode:          store.AssistantApprovalModeAlwaysAsk,
+			ExpectedGrantRevision: "secret-grant-revision",
+			Status:                store.AssistantRunStatusRunning,
+			ClientRequestID:       "request-1",
+			UserMessageID:         "user-1",
+			ActiveMessageID:       "assistant-1",
+			Revision:              7,
+			RequestID:             "permission-1",
+			Checkpoint:            json.RawMessage(`{"prompt":"secret prompt"}`),
+			Audit:                 json.RawMessage(`{"result":"secret result"}`),
+			CreatedAt:             now,
+			UpdatedAt:             now,
+		},
+		Message: store.Message{
+			ID:        "assistant-1",
+			ActorID:   "internal-actor",
+			Role:      "assistant",
+			Content:   "Working",
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	raw, err := json.Marshal(projectAssistantRunSnapshotToAPI(snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"checkpoint", "audit", "expectedGrantRevision",
+		"projectName", "projectUID", "internal-actor",
+		"secret prompt", "secret result", "secret-grant-revision",
+	} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("public snapshot contains internal value %q: %s", forbidden, raw)
+		}
+	}
+	for _, required := range []string{`"id":"run-1"`, `"workItemID":"work-item-1"`, `"revision":7`, `"activeMessageID":"assistant-1"`} {
+		if !strings.Contains(string(raw), required) {
+			t.Fatalf("public snapshot is missing %s: %s", required, raw)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	if err := writeProjectAssistantSnapshotSSE(recorder, recorder, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"checkpoint", "audit", "expectedGrantRevision", "secret prompt", "secret result"} {
+		if strings.Contains(recorder.Body.String(), forbidden) {
+			t.Fatalf("SSE snapshot contains internal value %q: %s", forbidden, recorder.Body.String())
+		}
+	}
+}
 
 func projectMessageStreamEventsHaveAppendedContent(events []projectMessageStreamEvent) bool {
 	for _, event := range events {
@@ -92,6 +155,53 @@ func TestProjectAssistantDurableMetadataTracksEveryTransition(t *testing.T) {
 	}
 	if got := metadata[projectAssistantMetadataPreviewRefreshNeeded]; got != true {
 		t.Fatalf("preview refresh = %#v, want true for successful mutation", got)
+	}
+}
+
+func TestProjectAssistantInitialCompletionSuspensionReason(t *testing.T) {
+	tests := []struct {
+		name     string
+		evidence projectAssistantCompletionEvidence
+		want     string
+	}{
+		{name: "legacy result is unchanged"},
+		{
+			name: "complete initial build",
+			evidence: projectAssistantCompletionEvidence{
+				PlanDefined:            true,
+				PlanComplete:           true,
+				LatestMutationVerified: true,
+				VerificationOutcome:    "ready",
+			},
+		},
+		{
+			name: "early prose suspends",
+			evidence: projectAssistantCompletionEvidence{
+				PlanDefined:         true,
+				VerificationOutcome: "not_run",
+			},
+			want: "objective incomplete",
+		},
+		{
+			name: "provisioning suspends distinctly",
+			evidence: projectAssistantCompletionEvidence{
+				PlanDefined:         true,
+				PlanComplete:        true,
+				VerificationOutcome: "provisioning",
+			},
+			want: "runtime provisioning",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := projectAssistantRunResult{CompletionEvidence: tt.evidence}
+			if got := projectAssistantInitialCompletionSuspensionReason(result, false); got != tt.want {
+				t.Fatalf("reason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	if got := projectAssistantInitialCompletionSuspensionReason(projectAssistantRunResult{}, true); got != "objective incomplete" {
+		t.Fatalf("fresh initial prose reason = %q, want objective incomplete", got)
 	}
 }
 
@@ -289,7 +399,7 @@ func projectMessageStreamEventsHaveInterrupt(events []projectMessageStreamEvent)
 func TestProjectAssistantDurableMetadataSurvivesStatusToolProvisionalAndTerminalTransitions(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
-	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1"}
+	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "test-project-uid-project-1"}
 	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", Content: "make it", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
@@ -369,7 +479,7 @@ func TestProjectAssistantDurableMetadataSurvivesStatusToolProvisionalAndTerminal
 func TestReconcileOrphanedProjectAssistantRunPersistsInterruptedMessageMetadata(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
-	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1"}
+	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "test-project-uid-project-1"}
 	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}

@@ -48,6 +48,13 @@ type projectAssistantCheckpointState struct {
 	LastToolMessages          []chatMessage                        `json:"lastToolMessages,omitempty"`
 	ApprovedPlan              *projectAssistantApprovedPlan        `json:"approvedPlan,omitempty"`
 	ApprovedPlanGrantRevision string                               `json:"approvedPlanGrantRevision,omitempty"`
+	ExecutionPlan             *projectAssistantApprovedPlan        `json:"executionPlan,omitempty"`
+	ExecutionPlanRevision     string                               `json:"executionPlanRevision,omitempty"`
+	PlanProgress              projectAssistantPlanSnapshot         `json:"planProgress,omitempty"`
+	SourceMutationRevision    uint64                               `json:"sourceMutationRevision,omitempty"`
+	VerifiedMutationRevision  uint64                               `json:"verifiedMutationRevision,omitempty"`
+	VerificationAttempted     bool                                 `json:"verificationAttempted,omitempty"`
+	VerificationOutcome       string                               `json:"verificationOutcome,omitempty"`
 	SessionSnapshot           *projectEinoAssistantSessionSnapshot `json:"sessionSnapshot,omitempty"`
 	Eino                      *projectAssistantEinoCheckpointState `json:"eino,omitempty"`
 }
@@ -210,16 +217,26 @@ func (s *Server) saveProjectAssistantRun(ctx context.Context, scope store.Scope,
 }
 
 type projectAssistantRunAudit struct {
-	Version          int                               `json:"version,omitempty"`
-	Provider         string                            `json:"provider,omitempty"`
-	Model            string                            `json:"model,omitempty"`
-	Profile          projectAssistantTurnProfile       `json:"profile,omitempty"`
-	StartedAt        time.Time                         `json:"startedAt,omitempty"`
-	PhaseTransitions []projectAssistantAuditPhase      `json:"phaseTransitions,omitempty"`
-	Tools            []projectAssistantAuditTool       `json:"tools,omitempty"`
-	Outcome          projectAssistantAuditOutcome      `json:"outcome,omitempty"`
-	DurationMS       int64                             `json:"durationMs,omitempty"`
-	Decisions        []projectAssistantPermissionAudit `json:"decisions,omitempty"`
+	Version                  int                               `json:"version,omitempty"`
+	StartRequestDigest       string                            `json:"startRequestDigest,omitempty"`
+	StopRequestID            string                            `json:"stopRequestID,omitempty"`
+	StopRequestDigest        string                            `json:"stopRequestDigest,omitempty"`
+	Provider                 string                            `json:"provider,omitempty"`
+	Model                    string                            `json:"model,omitempty"`
+	ApprovalMode             store.AssistantApprovalMode       `json:"approvalMode,omitempty"`
+	Profile                  projectAssistantTurnProfile       `json:"profile,omitempty"`
+	RequestedAction          string                            `json:"requestedAction,omitempty"`
+	ResolvedAction           string                            `json:"resolvedAction,omitempty"`
+	ClassificationReason     string                            `json:"classificationReason,omitempty"`
+	ClassificationConfidence projectAssistantTurnConfidence    `json:"classificationConfidence,omitempty"`
+	ResolutionReason         string                            `json:"resolutionReason,omitempty"`
+	PromotedWorkItemID       string                            `json:"promotedWorkItemID,omitempty"`
+	StartedAt                time.Time                         `json:"startedAt,omitempty"`
+	PhaseTransitions         []projectAssistantAuditPhase      `json:"phaseTransitions,omitempty"`
+	Tools                    []projectAssistantAuditTool       `json:"tools,omitempty"`
+	Outcome                  projectAssistantAuditOutcome      `json:"outcome,omitempty"`
+	DurationMS               int64                             `json:"durationMs,omitempty"`
+	Decisions                []projectAssistantPermissionAudit `json:"decisions,omitempty"`
 }
 
 type projectAssistantPermissionAudit struct {
@@ -229,6 +246,8 @@ type projectAssistantPermissionAudit struct {
 	ToolCallID      string                             `json:"toolCallID,omitempty"`
 	ToolName        string                             `json:"toolName,omitempty"`
 	Reason          string                             `json:"reason,omitempty"`
+	Source          string                             `json:"source,omitempty"`
+	ApprovalMode    store.AssistantApprovalMode        `json:"approvalMode,omitempty"`
 	EditedArguments map[string]any                     `json:"-"`
 	Result          string                             `json:"-"`
 	Error           string                             `json:"-"`
@@ -338,6 +357,7 @@ func (s *Server) saveProjectAssistantEinoPermissionCheckpoint(
 	if req.snapshotAccumulator != nil {
 		if err := req.snapshotAccumulator.UpdateRun(ctx, func(current *store.AssistantRun) {
 			current.Status, current.RequestID, current.Checkpoint = run.Status, run.RequestID, run.Checkpoint
+			current.Audit = run.Audit
 		}); err != nil {
 			return nil, projectAssistantPermission{}, projectAssistantCheckpoint{}, err
 		}
@@ -412,6 +432,7 @@ func (s *Server) saveProjectAssistantEinoFollowUpCheckpoint(
 	if req.snapshotAccumulator != nil {
 		if err := req.snapshotAccumulator.UpdateRun(ctx, func(current *store.AssistantRun) {
 			current.Status, current.RequestID, current.Checkpoint = run.Status, run.RequestID, run.Checkpoint
+			current.Audit = run.Audit
 		}); err != nil {
 			return nil, projectAssistantFollowUp{}, projectAssistantCheckpoint{}, err
 		}
@@ -584,7 +605,7 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 	if p == nil || strings.TrimSpace(p.Name) == "" {
 		return projectAssistantResumeResponse{}, fmt.Errorf("project is required")
 	}
-	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
 	preflightRun, err := s.store.GetAssistantRun(ctx, messageScope, runID)
 	if err != nil {
 		return projectAssistantResumeResponse{}, err
@@ -669,7 +690,7 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 		if err != nil {
 			return projectAssistantResumeResponse{}, err
 		}
-		if saveErr := s.saveProjectAssistantRun(ctx, messageScope, run); saveErr != nil {
+		if saveErr := s.saveProjectAssistantResumeTerminalPreparation(ctx, messageScope, run); saveErr != nil {
 			return projectAssistantResumeResponse{}, saveErr
 		}
 		out.Status = run.Status
@@ -735,8 +756,9 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	decision projectAssistantPermissionDecision,
 	out projectAssistantResumeResponse,
 ) (projectAssistantResumeResponse, error) {
-	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
 	turn := newProjectAssistantTurnItem(projectAssistantTurnResume, id, p.Name)
+	turn.ProjectUID = messageScope.ProjectUID
 	turn.RunID = run.ID
 	turn.RequestID = run.RequestID
 	turn.AssistantMessageID = strings.TrimSpace(resumeReq.AssistantMessageID)
@@ -870,6 +892,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		LLM:                      settings,
 		MCPBaseURL:               s.hubBase,
 		MCPInsecureSkipTLSVerify: s.mcpInsecureSkipTLSVerify,
+		ApprovalMode:             projectAssistantApprovalModeFromRun(resumeRun),
 		AutoApproveActions:       s.autoApproveAssistantActions(),
 		Continuation:             &state,
 		AssistantRun:             &resumeRun,
@@ -1181,7 +1204,7 @@ func (s *Server) completeClaimedProjectAssistantRunAfterResumeError(
 	if auditErr != nil {
 		return projectAssistantResumeResponse{}, auditErr
 	}
-	if err := s.saveProjectAssistantRun(persistCtx, messageScope, run); err != nil {
+	if err := s.saveProjectAssistantResumeTerminalPreparation(persistCtx, messageScope, run); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
 	out.Status = run.Status
@@ -1189,6 +1212,23 @@ func (s *Server) completeClaimedProjectAssistantRunAfterResumeError(
 		return projectAssistantResumeResponse{}, err
 	}
 	return out, cause
+}
+
+// saveProjectAssistantResumeTerminalPreparation persists the audit and
+// checkpoint bookkeeping produced while unwinding a resumed segment without
+// publishing a WorkItem-backed run as terminal ahead of its atomic WorkItem
+// transition. The supervising worker owns that terminal transition after this
+// helper returns. Legacy and non-WorkItem callers retain the direct save path.
+func (s *Server) saveProjectAssistantResumeTerminalPreparation(ctx context.Context, scope store.Scope, run store.AssistantRun) error {
+	accumulator := s.projectAssistantSupervisor().accumulatorFor(scope, run.ID)
+	if accumulator == nil || run.WorkItemID == "" || !assistantRunTerminal(run.Status) {
+		return s.saveProjectAssistantRun(ctx, scope, run)
+	}
+	return accumulator.UpdateRun(ctx, func(current *store.AssistantRun) {
+		current.RequestID = run.RequestID
+		current.Checkpoint = append([]byte(nil), run.Checkpoint...)
+		current.Audit = append([]byte(nil), run.Audit...)
+	})
 }
 
 func (s *Server) abortProjectAssistantRun(
@@ -1203,7 +1243,7 @@ func (s *Server) abortProjectAssistantRun(
 	if p == nil || strings.TrimSpace(p.Name) == "" {
 		return projectAssistantResumeResponse{}, fmt.Errorf("project is required")
 	}
-	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
 	run, err := s.store.GetAssistantRun(ctx, messageScope, runID)
 	if err != nil {
 		return projectAssistantResumeResponse{}, err

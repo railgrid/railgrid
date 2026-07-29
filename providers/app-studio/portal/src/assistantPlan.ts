@@ -83,7 +83,9 @@ export function assistantPlanProgress(plan: AssistantPlan): AssistantPlanProgres
 export function assistantPlanSummary(plan: AssistantPlan): string {
   const { completed, total, activeLabel } = assistantPlanProgress(plan)
   const progress = `${completed} of ${total} steps`
-  return activeLabel ? `${progress} · ${activeLabel}` : progress
+  if (completed === total) return progress
+  const building = `Building · ${progress}`
+  return activeLabel ? `${building} · ${activeLabel}` : building
 }
 
 export function assistantPlanStepStatusLabel(status: AssistantPlanStepStatus): string {

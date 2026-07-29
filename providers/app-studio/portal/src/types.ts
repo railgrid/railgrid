@@ -24,10 +24,33 @@ export interface ProjectMessage {
   createdAt: string
 }
 
-export type ProjectAssistantRunStatus = 'pending_permission' | 'pending_input' | 'running' | 'completed' | 'aborted' | 'failed' | 'interrupted'
+export type ProjectAssistantRunStatus = 'pending_permission' | 'pending_input' | 'running' | 'stopping' | 'completed' | 'aborted' | 'failed' | 'interrupted'
+export type ProjectAssistantRunMode = 'adaptive' | 'discussion' | 'new' | 'continue'
+export type ProjectAssistantWorkItemStatus = 'active' | 'suspended' | 'completed' | 'cancelled'
+export type ProjectAssistantApprovalMode = 'always_ask' | 'auto_approve'
+
+export interface ProjectAssistantApprovalPreference {
+  mode: ProjectAssistantApprovalMode
+  updatedAt?: string
+}
+
+export interface ProjectAssistantWorkItem {
+  id: string
+  rootMessageID: string
+  createdBy: string
+  status: ProjectAssistantWorkItemStatus
+  statusReason?: string
+  revision: number
+  activeRunID?: string
+  createdAt: string
+  updatedAt: string
+}
 
 export interface ProjectAssistantRun {
   id: string
+  workItemID?: string
+  mode?: ProjectAssistantRunMode
+  approvalMode?: ProjectAssistantApprovalMode
   status: ProjectAssistantRunStatus
   revision: number
   activeMessageID: string

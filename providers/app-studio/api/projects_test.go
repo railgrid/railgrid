@@ -20,6 +20,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -58,7 +59,8 @@ func TestGenerateProjectAssistantStreamWithStartBypassesRouter(t *testing.T) {
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
-	if err := appendProjectUserMessage(context.Background(), messages, projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name), "Build a todo app"); err != nil {
+	project.UID = "test-project-uid-demo"
+	if err := appendProjectUserMessage(context.Background(), messages, testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name), "Build a todo app"); err != nil {
 		t.Fatalf("append user message: %v", err)
 	}
 	server.assistantTurnRouter = func(context.Context, projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
@@ -94,4 +96,15 @@ func (e *capturingProjectAssistantEngine) StreamProjectAssistant(_ context.Conte
 
 func (*capturingProjectAssistantEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
 	return projectAssistantRunResult{}, nil
+}
+
+func TestAppendUniqueProjectMemoryEntries(t *testing.T) {
+	got := appendUniqueProjectMemoryEntries(
+		[]string{"Keep the existing goal", "  Preserve spacing after trim  ", "Keep the existing goal"},
+		[]string{"Preserve spacing after trim", "Add a verified preview", "", " Add a verified preview "},
+	)
+	want := []string{"Keep the existing goal", "Preserve spacing after trim", "Add a verified preview"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("appendUniqueProjectMemoryEntries() = %#v, want %#v", got, want)
+	}
 }

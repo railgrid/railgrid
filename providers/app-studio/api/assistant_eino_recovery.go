@@ -24,12 +24,10 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
-	"time"
 
 	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/patchtoolcalls"
-	einomodel "github.com/cloudwego/eino/components/model"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
@@ -113,8 +111,8 @@ func projectEinoAssistantRetryableHTTPStatus(status int) bool {
 }
 
 func projectEinoAssistantModelRetryConfig(
-	req projectAssistantRunRequest,
-	runState *projectEinoAssistantRunState,
+	_ projectAssistantRunRequest,
+	_ *projectEinoAssistantRunState,
 ) *adk.ModelRetryConfig {
 	return &adk.ModelRetryConfig{
 		MaxRetries: 2,
@@ -134,50 +132,9 @@ func projectEinoAssistantModelRetryConfig(
 					RejectReason: "transient model provider failure",
 				}
 			}
-			if retryCtx.Err != nil ||
-				len(retryCtx.OutputMessage.ToolCalls) > 0 ||
-				!projectEinoAssistantPhaseLifecycleApplies(req) {
-				return &adk.RetryDecision{}
-			}
-			phase := projectEinoAssistantPhaseForState(req, runState, &adk.ChatModelAgentState{
-				Messages: retryCtx.InputMessages,
-			})
-			if phase == projectEinoAssistantPhaseReport {
-				return &adk.RetryDecision{}
-			}
-			messages := append([]*schema.Message{}, retryCtx.InputMessages...)
-			messages = append(messages, schema.SystemMessage(projectEinoAssistantPhaseProgressReminder(phase)))
-			return &adk.RetryDecision{
-				Retry:                 true,
-				RejectReason:          "incomplete phase progress: " + string(phase),
-				ModifiedInputMessages: messages,
-				AdditionalOptions: []einomodel.Option{
-					einomodel.WithToolChoice(schema.ToolChoiceForced),
-				},
-				Backoff: -time.Nanosecond,
-			}
+			return &adk.RetryDecision{}
 		},
 	}
-}
-
-func projectEinoAssistantPhaseProgressReminder(phase projectEinoAssistantPhase) string {
-	var nextAction string
-	switch phase {
-	case projectEinoAssistantPhaseApproval:
-		nextAction = "for source edits call " + projectToolRequestProjectPlanApproval +
-			"; for a direct runtime or infrastructure action call its exact tool and complete tool-level approval"
-	case projectEinoAssistantPhaseMutate:
-		nextAction = "call an available source mutation tool, or call the exact tool for a direct runtime or infrastructure action"
-	case projectEinoAssistantPhaseVerify:
-		nextAction = "call " + projectToolVerifyDevelopmentRuntime + " to verify the change"
-	case projectEinoAssistantPhaseRepair:
-		nextAction = "call an available repair tool to correct the failed verification"
-	case projectEinoAssistantPhaseCommit:
-		nextAction = "call " + projectToolCommitProjectFiles + " to commit the verified change"
-	default:
-		nextAction = "call an available tool that advances the work"
-	}
-	return "The current " + string(phase) + " phase requires progress: " + nextAction + " before responding with prose."
 }
 
 func projectEinoAssistantWillRetry(err error) bool {

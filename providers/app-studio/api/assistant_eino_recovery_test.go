@@ -22,11 +22,9 @@ import (
 	"io"
 	"strings"
 	"testing"
-	"time"
 
 	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
-	einomodel "github.com/cloudwego/eino/components/model"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
@@ -218,18 +216,6 @@ func TestProjectEinoAssistantSafeErrorTextRedactsMultipleSerializedCookies(t *te
 	}
 }
 
-func TestProjectEinoAssistantPhaseProgressReminderAllowsDirectOperationalAction(t *testing.T) {
-	for _, phase := range []projectEinoAssistantPhase{
-		projectEinoAssistantPhaseApproval,
-		projectEinoAssistantPhaseMutate,
-	} {
-		reminder := projectEinoAssistantPhaseProgressReminder(phase)
-		if !strings.Contains(reminder, "direct runtime or infrastructure action") {
-			t.Fatalf("%s reminder = %q, want direct operational-action guidance", phase, reminder)
-		}
-	}
-}
-
 func TestProjectEinoAssistantSafeToolErrorMiddleware(t *testing.T) {
 	middleware := &projectEinoAssistantSafeToolErrorMiddleware{
 		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
@@ -398,26 +384,20 @@ func TestProjectEinoAssistantModelRetryConfig(t *testing.T) {
 
 	input := []*schema.Message{schema.UserMessage("Build the app")}
 	tests := []struct {
-		name         string
-		req          projectAssistantRunRequest
-		retryCtx     *adk.RetryContext
-		wantRetry    bool
-		wantReason   any
-		wantReminder bool
-		wantBackoff  time.Duration
-		canceled     bool
+		name       string
+		req        projectAssistantRunRequest
+		retryCtx   *adk.RetryContext
+		wantRetry  bool
+		wantReason any
+		canceled   bool
 	}{
 		{
-			name: "approval prose retries for required phase progress",
+			name: "implementation prose is accepted",
 			retryCtx: &adk.RetryContext{
 				RetryAttempt:  1,
 				InputMessages: input,
 				OutputMessage: schema.AssistantMessage("I have reviewed the requested work.", nil),
 			},
-			wantRetry:    true,
-			wantReason:   "incomplete phase progress: approval",
-			wantReminder: true,
-			wantBackoff:  -time.Nanosecond,
 		},
 		{
 			name: "tool call output is accepted",
@@ -454,18 +434,6 @@ func TestProjectEinoAssistantModelRetryConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "second semantic retry attempt is rejected until eino exhausts retries",
-			retryCtx: &adk.RetryContext{
-				RetryAttempt:  2,
-				InputMessages: input,
-				OutputMessage: schema.AssistantMessage("I have reviewed the requested work.", nil),
-			},
-			wantRetry:    true,
-			wantReason:   "incomplete phase progress: approval",
-			wantReminder: true,
-			wantBackoff:  -time.Nanosecond,
-		},
-		{
 			name: "transient provider error remains retryable",
 			retryCtx: &adk.RetryContext{
 				RetryAttempt: 1,
@@ -473,8 +441,6 @@ func TestProjectEinoAssistantModelRetryConfig(t *testing.T) {
 			},
 			wantRetry:  true,
 			wantReason: "transient model provider failure",
-			// Zero preserves Eino's configured/default transient-error delay.
-			wantBackoff: 0,
 		},
 		{
 			name: "permanent provider error is accepted",
@@ -513,34 +479,8 @@ func TestProjectEinoAssistantModelRetryConfig(t *testing.T) {
 			if decision.RejectReason != tt.wantReason {
 				t.Fatalf("RejectReason = %#v, want %#v", decision.RejectReason, tt.wantReason)
 			}
-			if decision.Backoff != tt.wantBackoff {
-				t.Fatalf("Backoff = %s, want %s", decision.Backoff, tt.wantBackoff)
-			}
-			if !tt.wantReminder {
-				if decision.ModifiedInputMessages != nil || decision.PersistModifiedInputMessages || len(decision.AdditionalOptions) != 0 {
-					t.Fatalf("non-semantic decision = %#v, want no modified input or options", decision)
-				}
-				return
-			}
-
-			if len(decision.ModifiedInputMessages) != len(input)+1 {
-				t.Fatalf("ModifiedInputMessages = %#v, want original input plus reminder", decision.ModifiedInputMessages)
-			}
-			for i := range input {
-				if decision.ModifiedInputMessages[i] != input[i] {
-					t.Fatalf("ModifiedInputMessages[%d] = %#v, want original input %#v", i, decision.ModifiedInputMessages[i], input[i])
-				}
-			}
-			reminder := decision.ModifiedInputMessages[len(input)]
-			if reminder.Role != schema.System || !strings.Contains(reminder.Content, "approval") || !strings.Contains(reminder.Content, projectToolRequestProjectPlanApproval) {
-				t.Fatalf("reminder = %#v, want phase-specific approval action", reminder)
-			}
-			if decision.PersistModifiedInputMessages {
-				t.Fatalf("PersistModifiedInputMessages = true, want false")
-			}
-			options := einomodel.GetCommonOptions(nil, decision.AdditionalOptions...)
-			if options.ToolChoice == nil || *options.ToolChoice != schema.ToolChoiceForced {
-				t.Fatalf("AdditionalOptions = %#v, want forced tool choice", decision.AdditionalOptions)
+			if decision.ModifiedInputMessages != nil || decision.PersistModifiedInputMessages || len(decision.AdditionalOptions) != 0 {
+				t.Fatalf("decision = %#v, want no semantic retry mutation", decision)
 			}
 		})
 	}

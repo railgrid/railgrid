@@ -73,7 +73,7 @@ func projectEinoAssistantSessionContextMessage(ctx context.Context, req projectA
 	}
 	return chatMessage{
 		Role:    "system",
-		Content: "Current project snapshot:\n" + string(raw),
+		Content: "Current project snapshot (authoritative for the start of this turn; LastFileSnapshot replaces an initial ls unless it contains +more or ContextIssue is non-empty):\n" + string(raw),
 	}, true
 }
 

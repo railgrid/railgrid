@@ -25,7 +25,7 @@ import (
 
 func TestMemoryStorePaginationAndCleanup(t *testing.T) {
 	s := NewMemoryStore()
-	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal"}
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal", ProjectUID: "project-1"}
 	base := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
 
 	for i := 0; i < 3; i++ {
@@ -131,7 +131,7 @@ func TestEncryptedStoreEncryptsAtRestAndDecryptsOnRead(t *testing.T) {
 		t.Fatalf("NewEncryptedStore: %v", err)
 	}
 
-	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal"}
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal", ProjectUID: "project-1"}
 	msg := Message{
 		ID:        "msg-1",
 		Role:      "user",
@@ -178,7 +178,7 @@ func TestEncryptedStoreEncryptsAssistantRunCheckpointAtRest(t *testing.T) {
 		t.Fatalf("NewEncryptedStore: %v", err)
 	}
 
-	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal"}
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal", ProjectUID: "project-1"}
 	run := AssistantRun{
 		ID:         "run-1",
 		Status:     AssistantRunStatusPendingPermission,

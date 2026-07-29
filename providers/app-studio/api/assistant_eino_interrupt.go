@@ -128,3 +128,15 @@ func (s *projectEinoAssistantCheckpointStore) Set(_ context.Context, checkPointI
 	s.checkpoints[checkPointID] = append([]byte(nil), checkPoint...)
 	return nil
 }
+
+// Delete implements adk.CheckPointDeleter so terminal TurnLoop exits cannot
+// leave a resumable Eino checkpoint in the in-memory adapter.
+func (s *projectEinoAssistantCheckpointStore) Delete(_ context.Context, checkPointID string) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.checkpoints, checkPointID)
+	return nil
+}

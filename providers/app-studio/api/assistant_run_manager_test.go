@@ -151,6 +151,7 @@ func TestGenerateProjectAssistantStreamPreemptsActiveProjectTurn(t *testing.T) {
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 
 	firstErr := make(chan error, 1)
 	go func() {
@@ -214,6 +215,7 @@ func TestGenerateProjectAssistantStreamDoesNotStartAfterHandoffTimeout(t *testin
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
 
 	firstErr := make(chan error, 1)
 	go func() {
@@ -268,7 +270,8 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
-	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	project.UID = "test-project-uid-demo"
+	messageScope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
 	state := projectAssistantCheckpointState{
 		ToolCalls: []chatToolCall{{
 			ID:   "call-write",

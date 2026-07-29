@@ -88,8 +88,23 @@ func newProjectAssistantRunAuditRecorder(
 	if strings.TrimSpace(audit.Model) == "" {
 		audit.Model = projectAssistantAuditString(req.LLM.Model, projectAssistantAuditMaxSummaryLen)
 	}
+	if audit.ApprovalMode == "" {
+		audit.ApprovalMode = req.ApprovalMode
+	}
 	if audit.Profile == "" {
 		audit.Profile = req.TurnProfile
+	}
+	if audit.RequestedAction == "" {
+		audit.RequestedAction = projectAssistantAuditString(req.RequestedAction, projectAssistantAuditMaxSummaryLen)
+	}
+	if audit.ResolvedAction == "" {
+		audit.ResolvedAction = projectAssistantAuditString(req.ResolvedAction, projectAssistantAuditMaxSummaryLen)
+	}
+	if audit.ClassificationReason == "" {
+		audit.ClassificationReason = projectAssistantAuditString(req.ClassificationReason, projectAssistantAuditMaxSummaryLen)
+	}
+	if audit.ClassificationConfidence == "" {
+		audit.ClassificationConfidence = req.ClassificationConfidence
 	}
 	recorder := &projectAssistantRunAuditRecorder{
 		run:     run,
@@ -98,6 +113,18 @@ func newProjectAssistantRunAuditRecorder(
 	}
 	recorder.updateRunLocked()
 	return recorder
+}
+
+func (r *projectAssistantRunAuditRecorder) recordPromotion(workItemID string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.audit.ResolvedAction = string(projectAssistantActionBuild)
+	r.audit.ResolutionReason = "plan_approval_requested"
+	r.audit.PromotedWorkItemID = projectAssistantAuditString(workItemID, projectAssistantAuditMaxSummaryLen)
+	r.updateRunLocked()
 }
 
 func (r *projectAssistantRunAuditRecorder) recordPhase(phase projectEinoAssistantPhase) {
@@ -171,6 +198,31 @@ func (r *projectAssistantRunAuditRecorder) recordToolAt(event projectToolCallStr
 		return
 	}
 	r.audit.Tools = append(r.audit.Tools, entry)
+	r.updateRunLocked()
+}
+
+func (r *projectAssistantRunAuditRecorder) recordAutomaticApproval(callID, toolName, actor string, mode store.AssistantApprovalMode) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.audit.Decisions) >= projectAssistantAuditMaxDecisions {
+		r.audit.Decisions = append(
+			[]projectAssistantPermissionAudit(nil),
+			r.audit.Decisions[len(r.audit.Decisions)-projectAssistantAuditMaxDecisions+1:]...,
+		)
+	}
+	r.audit.Decisions = append(r.audit.Decisions, projectAssistantPermissionAudit{
+		Decision:     projectAssistantPermissionAllow,
+		Actor:        projectAssistantAuditString(actor, projectAssistantAuditMaxSummaryLen),
+		ToolCallID:   projectAssistantAuditString(callID, projectAssistantAuditMaxSummaryLen),
+		ToolName:     projectAssistantAuditString(projectToolBaseName(toolName), projectAssistantAuditMaxSummaryLen),
+		Reason:       "approved by user-selected auto-approve mode",
+		Source:       "approval_mode",
+		ApprovalMode: mode,
+		ResolvedAt:   time.Now().UTC(),
+	})
 	r.updateRunLocked()
 }
 

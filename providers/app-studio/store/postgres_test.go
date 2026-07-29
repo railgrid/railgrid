@@ -21,6 +21,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +56,7 @@ func TestPostgresStoreExternalDSN(t *testing.T) {
 	}
 	defer s.Close()
 
-	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal"}
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal", ProjectUID: "project-1"}
 	msg := Message{
 		ID:        "msg-1",
 		Role:      "user",
@@ -75,13 +76,14 @@ func TestPostgresStoreExternalDSN(t *testing.T) {
 	}
 
 	run := AssistantRun{
-		ID:         "run-1",
-		Status:     AssistantRunStatusPendingPermission,
-		RequestID:  "perm-1",
-		Checkpoint: json.RawMessage(`{"tool":"write_file"}`),
-		Audit:      json.RawMessage(`{"decisions":[{"decision":"allow"}]}`),
-		CreatedAt:  time.Date(2026, 6, 14, 12, 1, 0, 0, time.UTC),
-		UpdatedAt:  time.Date(2026, 6, 14, 12, 1, 0, 0, time.UTC),
+		ID:           "run-1",
+		ApprovalMode: AssistantApprovalModeAutoApprove,
+		Status:       AssistantRunStatusPendingPermission,
+		RequestID:    "perm-1",
+		Checkpoint:   json.RawMessage(`{"tool":"write_file"}`),
+		Audit:        json.RawMessage(`{"decisions":[{"decision":"allow"}]}`),
+		CreatedAt:    time.Date(2026, 6, 14, 12, 1, 0, 0, time.UTC),
+		UpdatedAt:    time.Date(2026, 6, 14, 12, 1, 0, 0, time.UTC),
 	}
 	if err := s.SaveAssistantRun(ctx, scope, run); err != nil {
 		t.Fatalf("SaveAssistantRun: %v", err)
@@ -90,14 +92,14 @@ func TestPostgresStoreExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAssistantRun: %v", err)
 	}
-	if gotRun.ID != run.ID || gotRun.Status != run.Status || gotRun.RequestID != run.RequestID || string(gotRun.Checkpoint) != string(run.Checkpoint) || string(gotRun.Audit) != string(run.Audit) {
+	if gotRun.ID != run.ID || gotRun.ApprovalMode != run.ApprovalMode || gotRun.Status != run.Status || gotRun.RequestID != run.RequestID || !jsonSemanticallyEqual(gotRun.Checkpoint, run.Checkpoint) || !jsonSemanticallyEqual(gotRun.Audit, run.Audit) {
 		t.Fatalf("assistant run = %#v, want %#v", gotRun, run)
 	}
 	claimed, err := s.ClaimAssistantRun(ctx, scope, run.ID, run.RequestID, run.UpdatedAt.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("ClaimAssistantRun: %v", err)
 	}
-	if claimed.Status != AssistantRunStatusRunning || claimed.RequestID != run.RequestID {
+	if claimed.Status != AssistantRunStatusRunning || claimed.RequestID != run.RequestID || claimed.ApprovalMode != AssistantApprovalModeAutoApprove {
 		t.Fatalf("claimed assistant run = %#v, want running request", claimed)
 	}
 	if _, err := s.ClaimAssistantRun(ctx, scope, run.ID, run.RequestID, run.UpdatedAt.Add(2*time.Minute)); err == nil {
@@ -113,7 +115,7 @@ func TestPostgresStoreExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAssistantRun completed: %v", err)
 	}
-	if completed.Status != AssistantRunStatusCompleted || string(completed.Audit) != string(claimed.Audit) {
+	if completed.Status != AssistantRunStatusCompleted || !jsonSemanticallyEqual(completed.Audit, claimed.Audit) {
 		t.Fatalf("completed assistant run = %#v, want completed audit", completed)
 	}
 	deleted, err := s.DeleteMessagesOlderThan(ctx, run.UpdatedAt.Add(4*time.Minute))
@@ -126,6 +128,208 @@ func TestPostgresStoreExternalDSN(t *testing.T) {
 	if _, err := s.GetAssistantRun(ctx, scope, run.ID); err == nil {
 		t.Fatal("GetAssistantRun after retention returned nil error")
 	}
+}
+
+func TestPostgresStoreWorkItemContractExternalDSN(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer db.Close()
+	schemaName := "app_studio_work_items_" + time.Now().UTC().Format("20060102150405")
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
+	})
+	s, err := OpenPostgres(ctx, postgresDSNWithSearchPath(t, dsn, schemaName))
+	if err != nil {
+		t.Fatalf("OpenPostgres: %v", err)
+	}
+	defer s.Close()
+
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-1"}
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	item := testWorkItem("item-1", "user-1")
+	run := testWorkItemRun("run-1", item.ID, "user-1", "assistant-1")
+	run.CreatedAt, run.UpdatedAt = now, now
+	created, err := s.CreateWorkItemAndAssistantRun(ctx, scope, item, testWorkItemUser("user-1"), testWorkItemAssistant("assistant-1"), run)
+	if err != nil {
+		t.Fatalf("CreateWorkItemAndAssistantRun: %v", err)
+	}
+	cleared := created
+	cleared.PlanGrant = nil
+	cleared.Revision++
+	cleared.UpdatedAt = now.Add(30 * time.Second)
+	if err := s.CompareAndSwapAssistantWorkItem(ctx, scope, cleared, created.Revision); err != nil {
+		t.Fatalf("CompareAndSwapAssistantWorkItem with nil plan grant: %v", err)
+	}
+	persistedCleared, err := s.GetAssistantWorkItem(ctx, scope, item.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantWorkItem after cleared plan grant: %v", err)
+	}
+	if !jsonSemanticallyEqual(persistedCleared.PlanGrant, json.RawMessage(`{}`)) {
+		t.Fatalf("cleared plan grant = %s, want empty JSON object", persistedCleared.PlanGrant)
+	}
+	created = cleared
+	executionPlan := json.RawMessage(`{"summary":"Build it","steps":[{"id":"one"}]}`)
+	planned, err := s.SaveWorkItemExecutionPlan(ctx, scope, item.ID, run.ID, created.Revision, "execution-plan-1", executionPlan, now.Add(45*time.Second))
+	if err != nil {
+		t.Fatalf("SaveWorkItemExecutionPlan: %v", err)
+	}
+	var rawExecutionPlan []byte
+	var rawExecutionPlanRevision string
+	if err := s.db.QueryRowContext(ctx, `SELECT execution_plan, execution_plan_revision
+		FROM app_studio_assistant_work_items
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND work_item_id=$5`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, item.ID,
+	).Scan(&rawExecutionPlan, &rawExecutionPlanRevision); err != nil {
+		t.Fatalf("read raw execution plan columns: %v", err)
+	}
+	if rawExecutionPlanRevision != "execution-plan-1" || !jsonSemanticallyEqual(rawExecutionPlan, executionPlan) {
+		t.Fatalf("raw execution plan = %s revision=%q", rawExecutionPlan, rawExecutionPlanRevision)
+	}
+	created = planned
+	approved, err := s.ApproveWorkItemPlan(ctx, scope, item.ID, run.ID, created.Revision, "grant-1", json.RawMessage(`{"capabilities":["workspace_mutate"]}`), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ApproveWorkItemPlan: %v", err)
+	}
+	persistedRun, err := s.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun: %v", err)
+	}
+	if persistedRun.ExpectedGrantRevision != "grant-1" {
+		t.Fatalf("expected grant revision = %q, want grant-1", persistedRun.ExpectedGrantRevision)
+	}
+	persistedRun.Status = AssistantRunStatusCompleted
+	persistedRun.Revision++
+	persistedRun.Checkpoint = json.RawMessage(`{"must":"clear"}`)
+	if err := s.TransitionWorkItemAndRun(ctx, scope, item.ID, approved.Revision, persistedRun, AssistantWorkItemStatusCompleted, "completed", now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("TransitionWorkItemAndRun: %v", err)
+	}
+	terminal, err := s.GetAssistantWorkItem(ctx, scope, item.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantWorkItem: %v", err)
+	}
+	if terminal.Status != AssistantWorkItemStatusCompleted || terminal.ActiveRunID != "" || terminal.GrantRevision != "" || !jsonSemanticallyEqual(terminal.PlanGrant, json.RawMessage(`{}`)) {
+		t.Fatalf("terminal work item = %#v", terminal)
+	}
+	persistedRun, err = s.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun terminal: %v", err)
+	}
+	if !jsonSemanticallyEqual(persistedRun.Checkpoint, json.RawMessage(`{}`)) {
+		t.Fatalf("terminal checkpoint = %s, want empty object", persistedRun.Checkpoint)
+	}
+	duplicate := persistedRun
+	duplicate.ID = "run-duplicate-request"
+	duplicate.Revision = 1
+	duplicate.CreatedAt = now.Add(3 * time.Minute)
+	duplicate.UpdatedAt = duplicate.CreatedAt
+	if err := s.SaveAssistantRun(ctx, scope, duplicate); !errors.Is(err, ErrAssistantRunConflict) {
+		t.Fatalf("duplicate scoped client request ID error = %v, want %v", err, ErrAssistantRunConflict)
+	}
+	for i := 0; i < 30; i++ {
+		messageTime := now.Add(time.Duration(10+i) * time.Minute)
+		if err := s.AppendMessage(ctx, scope, Message{
+			ID:         "history-" + time.Unix(int64(i), 0).UTC().Format("150405"),
+			WorkItemID: item.ID,
+			Role:       "assistant",
+			Content:    "history",
+			CreatedAt:  messageTime,
+			UpdatedAt:  messageTime,
+		}); err != nil {
+			t.Fatalf("AppendMessage history %d: %v", i, err)
+		}
+	}
+	recent, err := s.LoadMessagesForWorkItem(ctx, scope, item.ID, 5)
+	if err != nil {
+		t.Fatalf("LoadMessagesForWorkItem newest messages: %v", err)
+	}
+	wantRecent := []string{"history-000025", "history-000026", "history-000027", "history-000028", "history-000029"}
+	if len(recent) != len(wantRecent) {
+		t.Fatalf("recent messages = %#v, want %d", recent, len(wantRecent))
+	}
+	for i := range wantRecent {
+		if recent[i].ID != wantRecent[i] {
+			t.Fatalf("recent message %d = %q, want %q", i, recent[i].ID, wantRecent[i])
+		}
+	}
+	testRetireWorkItemPlanContract(t, s)
+}
+
+func TestPostgresStoreResetsLegacySchemaAtWorkItemBoundaryExternalDSN(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	admin, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer admin.Close()
+	schemaName := "app_studio_legacy_reset_" + time.Now().UTC().Format("20060102150405")
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
+	})
+	scopedDSN := postgresDSNWithSearchPath(t, dsn, schemaName)
+	legacy, err := sql.Open("postgres", scopedDSN)
+	if err != nil {
+		t.Fatalf("open legacy schema: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, createMessageSchemaMigrationsTable); err != nil {
+		t.Fatalf("create legacy migration table: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `INSERT INTO app_studio_message_schema_migrations(version) VALUES ('v3')`); err != nil {
+		t.Fatalf("insert legacy version: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `CREATE TABLE app_studio_messages (
+		org_uuid text NOT NULL, workspace_uuid text NOT NULL, project_name text NOT NULL,
+		message_id text NOT NULL, role text NOT NULL, content text NOT NULL,
+		created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+	)`); err != nil {
+		t.Fatalf("create legacy messages: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `CREATE TABLE app_studio_assistant_runs (
+		org_uuid text NOT NULL, workspace_uuid text NOT NULL, project_name text NOT NULL,
+		run_id text NOT NULL, status text NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+	)`); err != nil {
+		t.Fatalf("create legacy runs: %v", err)
+	}
+	_ = legacy.Close()
+
+	s, err := OpenPostgres(ctx, scopedDSN)
+	if err != nil {
+		t.Fatalf("OpenPostgres reset legacy schema: %v", err)
+	}
+	defer s.Close()
+	var projectUIDColumns int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name IN ('app_studio_messages', 'app_studio_assistant_runs')
+			AND column_name = 'project_uid'`, schemaName).Scan(&projectUIDColumns); err != nil {
+		t.Fatalf("query reset schema: %v", err)
+	}
+	if projectUIDColumns != 2 {
+		t.Fatalf("project_uid columns = %d, want 2 after destructive net-new reset", projectUIDColumns)
+	}
+}
+
+func jsonSemanticallyEqual(left, right json.RawMessage) bool {
+	var leftValue, rightValue any
+	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
+		return false
+	}
+	return reflect.DeepEqual(leftValue, rightValue)
 }
 
 func TestNormalizePostgresJSONBSanitizesNullCodePoint(t *testing.T) {
@@ -162,6 +366,67 @@ func TestNormalizePostgresJSONBSanitizesNullCodePoint(t *testing.T) {
 	if nested["bad\ufffdkey"] != "value\ufffd" {
 		t.Fatalf("nested sanitized value = %#v, want replacement in key and value", nested)
 	}
+}
+
+func TestWorkItemSchemaResetPrecedesFinalSchemaStatements(t *testing.T) {
+	reset := workItemSchemaResetStatements()
+	final := workItemSchemaStatements()
+	if len(reset) != 3 || len(final) == 0 {
+		t.Fatalf("schema statements reset=%#v final=%#v", reset, final)
+	}
+	for _, stmt := range reset {
+		if !strings.HasPrefix(strings.TrimSpace(stmt), "DROP TABLE IF EXISTS") {
+			t.Fatalf("reset statement %q is not a table drop", stmt)
+		}
+	}
+	for _, stmt := range final {
+		if strings.HasPrefix(strings.TrimSpace(stmt), "DROP ") {
+			t.Fatalf("final schema statement %q must not drop tables", stmt)
+		}
+	}
+	if messageSchemaVersion != "work-item-v2" {
+		t.Fatalf("message schema version = %q, want rebuilt work-item-v2 boundary", messageSchemaVersion)
+	}
+	if !schemaStatementsContain(final, "CREATE UNIQUE INDEX IF NOT EXISTS app_studio_assistant_runs_scope_client_request_idx") {
+		t.Fatal("work item schema does not enforce scoped client request ID uniqueness")
+	}
+	if clientRequestUniqueSchemaVersion == messageSchemaVersion ||
+		!schemaStatementsContain(clientRequestUniqueSchemaStatements(), "CREATE UNIQUE INDEX IF NOT EXISTS app_studio_assistant_runs_scope_client_request_idx") {
+		t.Fatal("client request uniqueness must also have an independently applied migration for existing schemas")
+	}
+	if executionPlanSchemaVersion == messageSchemaVersion ||
+		!schemaStatementsContain(executionPlanSchemaStatements(), "ADD COLUMN IF NOT EXISTS execution_plan jsonb") ||
+		!schemaStatementsContain(executionPlanSchemaStatements(), "ADD COLUMN IF NOT EXISTS execution_plan_revision text") {
+		t.Fatal("execution-plan columns must have an independently applied additive migration")
+	}
+	steps := append(append([]string(nil), reset...), final...)
+	for i, stmt := range steps {
+		if i < len(reset) && !strings.HasPrefix(strings.TrimSpace(stmt), "DROP TABLE IF EXISTS") {
+			t.Fatalf("schema step %d = %q, want reset before final DDL", i, stmt)
+		}
+	}
+}
+
+func TestNormalizeAssistantWorkItemPlanGrant(t *testing.T) {
+	normalized, err := normalizeAssistantWorkItemPlanGrant(nil)
+	if err != nil {
+		t.Fatalf("normalize nil plan grant: %v", err)
+	}
+	if string(normalized) != `{}` {
+		t.Fatalf("normalized nil plan grant = %q, want valid empty JSON object", normalized)
+	}
+	if _, err := normalizeAssistantWorkItemPlanGrant(json.RawMessage(`not-json`)); err == nil {
+		t.Fatal("invalid plan grant returned nil error")
+	}
+}
+
+func schemaStatementsContain(statements []string, fragment string) bool {
+	for _, statement := range statements {
+		if strings.Contains(statement, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPostgresStoreDurableAssistantRunContractExternalDSN(t *testing.T) {
@@ -267,44 +532,6 @@ func TestPostgresStoreDurableAssistantRunContractExternalDSN(t *testing.T) {
 	if latest.ID != run.ID {
 		t.Fatalf("latest run = %q, want %q", latest.ID, run.ID)
 	}
-	grant := AssistantRun{
-		ID:              AssistantRunIDApprovedPlanGrant,
-		Status:          AssistantRunStatusCompleted,
-		ClientRequestID: "internal-grant-request",
-		RequestID:       "grant-revision",
-		Checkpoint:      json.RawMessage(`{"revision":"grant-revision"}`),
-		CreatedAt:       createdAt.Add(4 * time.Minute),
-		UpdatedAt:       createdAt.Add(4 * time.Minute),
-	}
-	if err := store.CompareAndSwapAssistantRun(ctx, scope, grant, ""); err != nil {
-		t.Fatalf("persist grant: %v", err)
-	}
-	latest, err = durable.LatestAssistantRun(ctx, scope)
-	if err != nil {
-		t.Fatalf("LatestAssistantRun after grant: %v", err)
-	}
-	if latest.ID != run.ID {
-		t.Fatalf("latest run after grant = %q, want conversation run %q", latest.ID, run.ID)
-	}
-	if _, err := durable.FindAssistantRunByClientRequestID(ctx, scope, grant.ClientRequestID); !errors.Is(err, ErrAssistantRunNotFound) {
-		t.Fatalf("FindAssistantRunByClientRequestID grant error = %v, want not found", err)
-	}
-	if _, err := durable.GetAssistantRun(ctx, scope, grant.ID); err != nil {
-		t.Fatalf("GetAssistantRun grant: %v", err)
-	}
-
-	for _, indexName := range []string{
-		"app_studio_assistant_runs_scope_client_request_idx",
-		"app_studio_assistant_runs_scope_active_idx",
-	} {
-		var indexDef string
-		if err := store.db.QueryRowContext(ctx, `SELECT indexdef FROM pg_indexes WHERE schemaname = $1 AND indexname = $2`, schemaName, indexName).Scan(&indexDef); err != nil {
-			t.Fatalf("check %s: %v", indexName, err)
-		}
-		if !strings.Contains(indexDef, AssistantRunIDApprovedPlanGrant) {
-			t.Fatalf("durable assistant-run index %q = %q, want reserved grant predicate", indexName, indexDef)
-		}
-	}
 	if err := store.DeleteProjectMessages(ctx, scope); err != nil {
 		t.Fatalf("DeleteProjectMessages: %v", err)
 	}
@@ -320,7 +547,59 @@ func TestPostgresStoreDurableAssistantRunContractExternalDSN(t *testing.T) {
 	}
 }
 
+func TestPostgresStoreStopAndGrantRevocationAreAtomicExternalDSN(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	schemaName := "app_studio_stop_" + time.Now().UTC().Format("20060102150405")
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
+	})
+	s, err := OpenPostgres(ctx, postgresDSNWithSearchPath(t, dsn, schemaName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "project-1"}
+	item := testWorkItem("item-1", "user-1")
+	run := testWorkItemRun("run-1", item.ID, "user-1", "assistant-1")
+	created, err := s.CreateWorkItemAndAssistantRun(ctx, scope, item, testWorkItemUser("user-1"), testWorkItemAssistant("assistant-1"), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := s.ApproveWorkItemPlan(ctx, scope, item.ID, run.ID, created.Revision, "grant-1", json.RawMessage(`{"capabilities":["workspace_mutate"]}`), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = s.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopping, err := s.RequestAssistantRunStop(ctx, scope, item.ID, run.ID, approved.Revision, run.Revision, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := s.GetAssistantWorkItem(ctx, scope, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopping.Status != AssistantRunStatusStopping || revoked.GrantRevision != "" || !jsonSemanticallyEqual(revoked.PlanGrant, json.RawMessage(`{}`)) {
+		t.Fatalf("stop = %#v, WorkItem = %#v", stopping, revoked)
+	}
+}
+
 func TestPostgresStoreMigratesOnlyLegacyRunningRunsExternalDSN(t *testing.T) {
+	t.Skip("work-item persistence is a net-new deployment and does not migrate legacy run schemas")
 	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
 	if dsn == "" {
 		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")

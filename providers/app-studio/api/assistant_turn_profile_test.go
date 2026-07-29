@@ -39,6 +39,7 @@ func TestProjectAssistantTurnProfileClassifier(t *testing.T) {
 		{name: "guidance", message: "How should I design authentication for this app?", want: projectAssistantTurnProfileGuidance},
 		{name: "exploration", message: "What files are in my current app?", want: projectAssistantTurnProfileExploration},
 		{name: "debugging", message: "Why is the preview not working and showing Failed to fetch? Diagnose it only.", want: projectAssistantTurnProfileDebugging},
+		{name: "exact declarative breakage report", message: "I just tried to use the queue custom toast but it didnt work", want: projectAssistantTurnProfileDebugFix},
 		{name: "implicit debug fix", message: "I click the button to make it dark mode but it didnt do anything", want: projectAssistantTurnProfileDebugFix},
 		{name: "debug fix", message: "Fix the failed fetch error and make it work", want: projectAssistantTurnProfileDebugFix},
 		{name: "fix only fallback", message: "Please fix the login form", want: projectAssistantTurnProfileDebugFix},
@@ -209,31 +210,26 @@ func TestProjectAssistantSemanticTurnClassifierRejectsToolCalls(t *testing.T) {
 	}
 }
 
-// The fallback merges the recent user messages escalate-only: once the user
-// has instructed work ("Add a dashboard"), a follow-up that reads as guidance
-// or a terse continuation must not downgrade the turn to a toolless profile —
-// that stranded instructed tasks ("go for it" → "I need access to the
-// files"). Mutations stay behind plan approval regardless of profile.
-func TestProjectAssistantTurnProfileClassifierKeepsStandingIntent(t *testing.T) {
+// A new message is routed from its own intent. Durable Continue and resume
+// preserve an in-flight execution policy separately.
+func TestProjectAssistantTurnProfileClassifierUsesCurrentTurnIntent(t *testing.T) {
 	got := classifyProjectAssistantTurnProfile([]store.Message{
 		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "Add a dashboard"},
 		{Role: aiv1alpha1.ProjectMessageRoleAssistant, Content: "I can do that."},
 		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "Actually, how should I think about the design?"},
 	})
-	if got != projectAssistantTurnProfileImplementation {
-		t.Fatalf("profile = %q, want implementation kept from the standing instruction", got)
+	if got != projectAssistantTurnProfileGuidance {
+		t.Fatalf("profile = %q, want guidance from the latest user turn", got)
 	}
 
-	// Terse continuations inherit the instruction even when they carry no
-	// keyword of their own ("just check in your workspace" reads as
-	// exploration in isolation).
+	// A terse inspection request is classified from that request alone.
 	got = classifyProjectAssistantTurnProfile([]store.Message{
 		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "wire the /api proxy in the web component"},
 		{Role: aiv1alpha1.ProjectMessageRoleAssistant, Content: "I need to inspect the files first."},
 		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "just check in your workspace."},
 	})
-	if got != projectAssistantTurnProfileImplementation {
-		t.Fatalf("profile = %q, want implementation kept across terse continuation", got)
+	if got != projectAssistantTurnProfileExploration {
+		t.Fatalf("profile = %q, want exploration from the latest user turn", got)
 	}
 
 	// A conversation with no instruction anywhere stays advisory/toolless.
@@ -250,6 +246,7 @@ func TestProjectAssistantTurnProfileClassifierKeepsStandingIntent(t *testing.T) 
 func TestProjectAssistantModePromptsKeepDiscussionAndGuidanceToolFree(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo-project"
+	project.UID = "test-project-uid-demo-project"
 	project.Spec.DisplayName = "Demo Project"
 	repository := &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true}
 
@@ -285,6 +282,7 @@ func TestProjectAssistantModePromptsKeepDiscussionAndGuidanceToolFree(t *testing
 func TestProjectAssistantModePromptsPutBuilderGuidanceOnlyOnWriteProfiles(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo-project"
+	project.UID = "test-project-uid-demo-project"
 	project.Spec.DisplayName = "Demo Project"
 	repository := &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true}
 
@@ -332,6 +330,7 @@ func TestProjectAssistantModePromptsPutBuilderGuidanceOnlyOnWriteProfiles(t *tes
 func TestProjectAssistantPromptTreatsBoundTemplateAsEnvironmentContract(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo-project"
+	project.UID = "test-project-uid-demo-project"
 	project.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "application"}
 	repository := &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true}
 
@@ -352,6 +351,7 @@ func TestProjectAssistantPromptTreatsBoundTemplateAsEnvironmentContract(t *testi
 func TestProjectAssistantPromptRequiresEvidenceForProductCapabilities(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo-project"
+	project.UID = "test-project-uid-demo-project"
 	project.Spec.DisplayName = "Demo Project"
 	repository := &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true}
 
@@ -383,6 +383,7 @@ func TestProjectAssistantPromptRequiresEvidenceForProductCapabilities(t *testing
 func TestProjectAssistantPromptFramesAppStudioAsBusinessUserEasyButton(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo-project"
+	project.UID = "test-project-uid-demo-project"
 	project.Spec.DisplayName = "Demo Project"
 	repository := &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true}
 
@@ -409,6 +410,7 @@ func TestProjectAssistantPromptFramesAppStudioAsBusinessUserEasyButton(t *testin
 func TestProjectAssistantPromptExplainsTemplateAgentUsageFitDecision(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo-project"
+	project.UID = "test-project-uid-demo-project"
 	project.Spec.DisplayName = "Demo Project"
 	repository := &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true}
 
@@ -446,6 +448,12 @@ func TestProjectAssistantTurnPolicyAllowsExpectedToolBundles(t *testing.T) {
 			name:       "guidance",
 			profile:    projectAssistantTurnProfileGuidance,
 			wantReject: []string{projectToolCheckProjectReadiness, projectToolReadFile, projectToolGetRuntimeStatus, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp},
+		},
+		{
+			name:       "adaptive",
+			profile:    projectAssistantTurnProfileAdaptive,
+			wantAllow:  []string{projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep, projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolVerifyDevelopmentRuntime, projectToolRequestProjectPlanApproval, projectToolAskFollowUp},
+			wantReject: []string{projectToolRestartRuntime, projectToolWriteFile, projectToolCommitProjectFiles, projectToolInfrastructureListTemplates, projectToolInfrastructureProvision},
 		},
 		{
 			name:       "exploration",

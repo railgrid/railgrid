@@ -2,7 +2,9 @@ import type { ProjectMessage } from './types'
 
 export interface AssistantRun {
   id: string
-  status: 'pending_permission' | 'pending_input' | 'running' | 'completed' | 'aborted' | 'failed' | 'interrupted'
+  status: 'pending_permission' | 'pending_input' | 'running' | 'stopping' | 'completed' | 'aborted' | 'failed' | 'interrupted'
+  mode?: 'adaptive' | 'discussion' | 'new' | 'continue'
+  workItemID?: string
   revision: number
   activeMessageID: string
   clientRequestID?: string
@@ -12,6 +14,15 @@ export interface AssistantRun {
 export interface AssistantSnapshot {
   run: AssistantRun
   message: ProjectMessage
+}
+
+export interface AssistantRunStartRequest {
+  content: string
+  clientRequestID: string
+  assistantAction: 'auto' | 'ask' | 'build' | 'continue'
+  initialProjectPrompt?: boolean
+  workItemID?: string
+  workItemRevision?: number
 }
 
 export interface ConversationState<TMessage extends ProjectMessage = ProjectMessage> {
@@ -43,10 +54,35 @@ export function firstProjectStartPlan(submission: PendingFirstProjectSubmission)
   }
 }
 
-export function assistantRunStartPayload(content: string, clientRequestID: string, initialProjectPrompt = false) {
+export function assistantRunStartPayload(content: string, clientRequestID: string, initialProjectPrompt = false, assistantAction: 'auto' | 'ask' | 'build' = 'auto') {
+  const action = initialProjectPrompt ? 'build' : assistantAction
   return initialProjectPrompt
-    ? { content, clientRequestID, initialProjectPrompt: true }
-    : { content, clientRequestID }
+    ? { content, clientRequestID, assistantAction: action, initialProjectPrompt: true }
+    : { content, clientRequestID, assistantAction: action }
+}
+
+export function assistantRunStartFingerprint(projectName: string, request: Omit<AssistantRunStartRequest, 'clientRequestID'>): string {
+  return JSON.stringify([
+    projectName,
+    request.content,
+    request.assistantAction,
+    Boolean(request.initialProjectPrompt),
+    request.workItemID ?? '',
+    request.workItemRevision ?? 0,
+  ])
+}
+
+export function assistantRunMatchesStartRequest(run: AssistantRun | undefined, request: AssistantRunStartRequest): boolean {
+  if (!run || run.clientRequestID !== request.clientRequestID) return false
+  if ((run.workItemID ?? '') !== (request.workItemID ?? '')) return false
+  const expectedMode = request.assistantAction === 'continue'
+    ? 'continue'
+    : request.assistantAction === 'build' || request.initialProjectPrompt
+    ? 'new'
+    : request.assistantAction === 'ask'
+    ? 'discussion'
+    : 'adaptive'
+  return run.mode === expectedMode
 }
 
 export function firstProjectSubmissionAccepted(submission: PendingFirstProjectSubmission, user: Pick<ProjectMessage, 'id' | 'content'> | undefined): boolean {
@@ -136,6 +172,21 @@ export function replaceOptimisticUserMessage<TMessage extends ProjectMessage>(
   const next = [...withoutPersisted]
   next[index] = persisted as TMessage
   return next
+}
+
+// Durable turns historically persisted the user message and assistant
+// placeholder with the same timestamp. The store's random-ID tie-break can
+// therefore return either role first after a reload. Keep chronological order,
+// but restore the turn order for those exact timestamp ties.
+export function orderConversationMessages<TMessage extends ProjectMessage>(messages: TMessage[]): TMessage[] {
+  return [...messages].sort((left, right) => {
+    const leftAt = Date.parse(left.createdAt)
+    const rightAt = Date.parse(right.createdAt)
+    if (Number.isFinite(leftAt) && Number.isFinite(rightAt) && leftAt !== rightAt) return leftAt - rightAt
+    if (left.createdAt !== right.createdAt) return 0
+    if (left.role === right.role) return 0
+    return left.role === 'user' ? -1 : 1
+  })
 }
 
 interface ConversationRunTransport {

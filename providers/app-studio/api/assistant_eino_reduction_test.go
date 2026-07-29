@@ -174,8 +174,8 @@ func TestProjectEinoAssistantReductionMiddlewareOnlyRewritesSuccessfulMutations(
 	if !strings.Contains(joined, "Workspace mutations succeeded") {
 		t.Fatalf("messages = %#v, want compact mutation reminder", got.Messages)
 	}
-	if !strings.Contains(joined, readResult) {
-		t.Fatalf("read result was altered by default Eino clearing: %q", joined)
+	if strings.Contains(joined, readResult) {
+		t.Fatalf("stale read result was retained after compaction: %q", joined)
 	}
 	if !strings.Contains(joined, latestResult) {
 		t.Fatalf("latest tool group was not retained: %q", joined)

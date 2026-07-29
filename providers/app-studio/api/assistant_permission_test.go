@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/faroshq/provider-app-studio/store"
 )
 
 func TestProjectAssistantPermissionPolicy(t *testing.T) {
@@ -354,6 +356,29 @@ func TestProjectAssistantInitialCreationGrantAllowsSourceEditsButNotTemplateSele
 	}
 }
 
+func TestProjectAssistantInitialExecutionPlanRevisesOutOfScopeWritesWithoutUserPrompt(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.ApprovePlan(normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
+		Goal:         "Build the app",
+		Steps:        []string{"Build"},
+		TargetPaths:  []string{"src/"},
+		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,
+		Capabilities: []string{projectAssistantCapabilityWorkspaceMutate},
+		ApprovalTool: projectToolDefineInitialProjectPlan,
+		RunLocal:     true,
+	}))
+	decision := projectAssistantPermissionForApprovalMode(
+		projectAssistantToolSpec{Name: projectToolWriteFile, Risk: projectAssistantToolRiskWrite},
+		store.AssistantApprovalModeAlwaysAsk,
+		false,
+		state,
+		map[string]any{"path": "package.json"},
+	)
+	if decision != projectAssistantPermissionReplan {
+		t.Fatalf("out-of-scope initial write permission = %q, want internal replan", decision)
+	}
+}
+
 func TestProjectAssistantDirectApprovalGrantsWritePlanOnlyForSourceEdits(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -475,6 +500,86 @@ func TestProjectAssistantPermissionDeniedToolMessageIsVisibleToModel(t *testing.
 	}
 	if !strings.Contains(msg.Content, "permission denied") || !strings.Contains(msg.Content, "unknown tool risk") {
 		t.Fatalf("tool content = %q, want permission denial reason", msg.Content)
+	}
+}
+
+func TestProjectAssistantPermissionForApprovalModeAutoApproveNeverAsks(t *testing.T) {
+	tests := []struct {
+		name string
+		spec projectAssistantToolSpec
+		args map[string]any
+		want projectAssistantPermissionDecision
+	}{
+		{
+			name: "valid plan",
+			spec: projectAssistantToolSpec{Name: projectToolRequestProjectPlanApproval, Risk: projectAssistantToolRiskPlan},
+			args: map[string]any{
+				"summary":     "Update the app",
+				"targetPaths": []any{"src"},
+			},
+			want: projectAssistantPermissionAllow,
+		},
+		{
+			name: "commit",
+			spec: projectAssistantToolSpec{Name: projectToolCommitProjectFiles, Risk: projectAssistantToolRiskCommit},
+			want: projectAssistantPermissionAllow,
+		},
+		{
+			name: "runtime",
+			spec: projectAssistantToolSpec{Name: projectToolRestartRuntime, Risk: projectAssistantToolRiskRuntime},
+			want: projectAssistantPermissionAllow,
+		},
+		{
+			name: "template selection",
+			spec: projectAssistantToolSpec{Name: projectToolSelectTemplate, Risk: projectAssistantToolRiskWrite},
+			want: projectAssistantPermissionAllow,
+		},
+		{
+			name: "workspace hydration",
+			spec: projectAssistantToolSpec{Name: projectToolHydrateWorkspace, Risk: projectAssistantToolRiskWrite},
+			want: projectAssistantPermissionAllow,
+		},
+		{
+			name: "unplanned source write denied without interrupt",
+			spec: projectAssistantToolSpec{Name: projectToolWriteFile, Risk: projectAssistantToolRiskWrite},
+			args: map[string]any{"path": "src/App.tsx"},
+			want: projectAssistantPermissionDeny,
+		},
+		{
+			name: "unknown risk denied",
+			spec: projectAssistantToolSpec{Name: "unknown"},
+			want: projectAssistantPermissionDeny,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := projectAssistantPermissionForApprovalMode(
+				tt.spec,
+				store.AssistantApprovalModeAutoApprove,
+				false,
+				newProjectEinoAssistantRunState(),
+				tt.args,
+			)
+			if got != tt.want {
+				t.Fatalf("permission = %q, want %q", got, tt.want)
+			}
+			if got == projectAssistantPermissionAsk {
+				t.Fatal("auto-approve returned an approval interrupt")
+			}
+		})
+	}
+}
+
+func TestProjectAssistantAlwaysAskOverridesLegacyAutoApproveFlag(t *testing.T) {
+	got := projectAssistantPermissionForApprovalMode(
+		projectAssistantToolSpec{Name: projectToolRequestProjectPlanApproval, Risk: projectAssistantToolRiskPlan},
+		store.AssistantApprovalModeAlwaysAsk,
+		true,
+		newProjectEinoAssistantRunState(),
+		map[string]any{"summary": "Update the app", "targetPaths": []any{"src"}},
+	)
+	if got != projectAssistantPermissionAsk {
+		t.Fatalf("permission = %q, want explicit user preference to ask", got)
 	}
 }
 
