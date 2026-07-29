@@ -87,6 +87,11 @@ hub:
   internalURL: ""
   listenAddr: ":9443"
   devMode: false
+  # Bootstrap contrib-metering into root:railgrid:system:metering (CRDs,
+  # APIExports, the "billing" WorkspaceType) and make the railgrid-organization
+  # type a billing boundary. Off by default; opt-in integration with
+  # kcp-dev/contrib-metering.
+  enableMetering: false
   # Static bearer tokens for access (each token creates its own user/workspace. Example: openssl rand -base64 32)
   staticAuthTokens: []
   # Disable the interactive static-token login (endpoint + portal form) so

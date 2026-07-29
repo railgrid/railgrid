@@ -117,6 +117,17 @@ type WorkspaceProvisioner interface {
 	// User.spec.DefaultCluster with the hash form (which kubectl /
 	// /clusters/{hash} address by) rather than the full path.
 	GetChildWorkspaceClusterName(ctx context.Context, orgUUID, wsUUID string) (string, error)
+
+	// EnsureOrgCensusBinding materializes a read-only APIBinding to
+	// census.kedge.faros.sh inside the ORG workspace, accepting the
+	// tenancy.kcp.io/workspaces claim so the least-privileged metering
+	// census can enumerate the org's child workspaces. Metering-only;
+	// gate on MeteringEnabled. Idempotent.
+	EnsureOrgCensusBinding(ctx context.Context, orgUUID string) error
+
+	// MeteringEnabled reports whether the hub runs with --enable-metering.
+	// The census binding step is a no-op when false.
+	MeteringEnabled() bool
 }
 
 // Reconciler requests personal organizations and maintains User references.
@@ -409,6 +420,37 @@ func (r *Reconciler) reconcileBootstrap(ctx context.Context, user *tenancyv1alph
 			return fmt.Errorf("publishing initial organization access: %w", err)
 		}
 		changed = false
+	}
+
+	// Step G2: metering census APIBinding in the ORG workspace (only when
+	// --enable-metering is set, and only after B — the org workspace exists).
+	// This is org-level and independent of the default child Workspace: it
+	// makes the org's child Workspace objects visible to the least-privileged
+	// census controller via the census.railgrid.ai virtual workspace. When
+	// metering is off it is a no-op and no condition is emitted.
+	if r.provisioner != nil && r.provisioner.MeteringEnabled() && workspaceOK {
+		if err := r.provisioner.EnsureOrgCensusBinding(ctx, org.Name); err != nil {
+			logger.Error(err, "Writing census APIBinding failed; will retry")
+			censusCond := metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionCensusBound,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonCensusBindingFailed,
+				Message: err.Error(),
+			}
+			if setCondition(&org.Status.Conditions, censusCond, org.Generation) {
+				changed = true
+			}
+		} else {
+			censusCond := metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionCensusBound,
+				Status:  metav1.ConditionTrue,
+				Reason:  reasonCensusBindingReady,
+				Message: "Census APIBinding (census.railgrid.ai) written to " + desiredPath + ".",
+			}
+			if setCondition(&org.Status.Conditions, censusCond, org.Generation) {
+				changed = true
+			}
+		}
 	}
 
 	// Step E: default child Workspace (only attempt after B succeeded
@@ -731,6 +773,10 @@ const (
 	// railgrid APIBinding reasons (Step G).
 	reasonRailgridBindingReady  = "RailgridBindingWritten"
 	reasonRailgridBindingFailed = "RailgridBindingWriteFailed"
+
+	// Census APIBinding reasons (Step G2, metering-only).
+	reasonCensusBindingReady  = "CensusBindingWritten"
+	reasonCensusBindingFailed = "CensusBindingWriteFailed"
 
 	// Workspace-admin RBAC reasons (Step H).
 	reasonWorkspaceAdminReady  = "WorkspaceAdminGranted"

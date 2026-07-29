@@ -1,0 +1,12 @@
+# APIExportEndpointSlice for census.railgrid.ai. Its status.endpoints carry the
+# per-shard virtual-workspace URLs the census controller lists workspaces against
+# (clusters/*). spec.export.path must name where the export lives (immutable);
+# __METERING_PATH__ is substituted with root:railgrid:system:metering at apply time.
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIExportEndpointSlice
+metadata:
+  name: census.railgrid.ai
+spec:
+  export:
+    name: census.railgrid.ai
+    path: __METERING_PATH__
