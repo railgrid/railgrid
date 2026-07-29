@@ -89,6 +89,13 @@ type ScheduleSpec struct {
 	// +kubebuilder:validation:MaxLength=32768
 	Task string `json:"task,omitempty"`
 
+	// ChannelRef names the agent channel this schedule's output is delivered to
+	// (a Name in the agent's spec.channels). Empty means the agent's primary
+	// channel. Lets, e.g., a "daily-news" cron post to a dedicated news channel.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	ChannelRef string `json:"channelRef,omitempty"`
+
 	// Checklist is the standing markdown the agent reviews on each heartbeat
 	// pulse. Only used for heartbeat schedules.
 	// +optional

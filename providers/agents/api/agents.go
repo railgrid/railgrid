@@ -21,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/engine"
 	"github.com/faroshq/provider-agents/llm"
 )
@@ -81,9 +82,84 @@ type createAgentRequest struct {
 	BudgetTokens int64 `json:"budgetTokens,omitempty"`
 	// BudgetUSD caps spend per month as a decimal string (empty = unlimited).
 	BudgetUSD string `json:"budgetUSD,omitempty"`
-	// NotifyConnection names the messaging Connection background runs deliver
-	// output/alerts to.
+	// NotifyConnection is DEPRECATED — names a single messaging Connection
+	// background runs deliver output/alerts to. Prefer Channels. Used only when
+	// Channels is empty (mapped to a "primary" channel).
 	NotifyConnection string `json:"notifyConnection,omitempty"`
+	// Channels binds named messaging channels to the agent (primary + secondary
+	// + …). When set, it supersedes NotifyConnection.
+	Channels []channelInput `json:"channels,omitempty"`
+}
+
+// channelInput is the REST shape of an agent channel binding.
+type channelInput struct {
+	Name          string `json:"name"`
+	ConnectionRef string `json:"connectionRef"`
+	Primary       bool   `json:"primary,omitempty"`
+}
+
+// normalizeChannels cleans user-supplied channel rows: trims, drops incomplete
+// rows, rejects duplicate names, and guarantees exactly one primary (the first
+// entry when none is marked, the first-marked when several are).
+func normalizeChannels(in []channelInput) ([]agentsv1alpha1.AgentChannel, error) {
+	seen := map[string]bool{}
+	out := []agentsv1alpha1.AgentChannel{}
+	for _, ci := range in {
+		name := strings.TrimSpace(ci.Name)
+		conn := strings.TrimSpace(ci.ConnectionRef)
+		if name == "" || conn == "" {
+			continue
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate channel name %q", name)
+		}
+		seen[name] = true
+		out = append(out, agentsv1alpha1.AgentChannel{Name: name, ConnectionRef: conn, Primary: ci.Primary})
+	}
+	if len(out) > 0 {
+		havePrimary := false
+		for i := range out {
+			if out[i].Primary && !havePrimary {
+				havePrimary = true
+			} else {
+				out[i].Primary = false
+			}
+		}
+		if !havePrimary {
+			out[0].Primary = true
+		}
+	}
+	return out, nil
+}
+
+// validateChannelUniqueness rejects binding a Connection that another agent
+// already lists as a channel. Inbound routing maps a Connection to exactly one
+// agent, so a Connection may back at most one agent's channels (the connection
+// config["agent"] override remains the escape hatch for shared cases).
+func (s *Server) validateChannelUniqueness(ctx context.Context, c *agentsclient.Client, selfName string, channels []agentsv1alpha1.AgentChannel) error {
+	mine := map[string]bool{}
+	for _, ch := range channels {
+		mine[ch.ConnectionRef] = true
+	}
+	if len(mine) == 0 {
+		return nil
+	}
+	list, err := c.Agents().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	for i := range list.Items {
+		other := &list.Items[i]
+		if other.Name == selfName {
+			continue
+		}
+		for _, och := range other.Spec.EffectiveChannels() {
+			if mine[och.ConnectionRef] {
+				return fmt.Errorf("connection %q is already a channel of agent %q", och.ConnectionRef, other.Name)
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +198,20 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	if req.BudgetTokens > 0 || strings.TrimSpace(req.BudgetUSD) != "" {
 		a.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "month", TokenLimit: req.BudgetTokens, USDLimit: strings.TrimSpace(req.BudgetUSD)}
 	}
-	a.Spec.DefaultNotifyConnection = strings.TrimSpace(req.NotifyConnection)
+	if len(req.Channels) > 0 {
+		chans, err := normalizeChannels(req.Channels)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.validateChannelUniqueness(r.Context(), c, req.Name, chans); err != nil {
+			writeStatus(w, http.StatusConflict, "Conflict", err.Error())
+			return
+		}
+		a.Spec.Channels = chans
+	} else {
+		a.Spec.DefaultNotifyConnection = strings.TrimSpace(req.NotifyConnection)
+	}
 	out, err := c.Agents().Create(r.Context(), a, metav1.CreateOptions{})
 	if err != nil {
 		writeResourceError(w, err)
@@ -173,8 +262,11 @@ type updateAgentRequest struct {
 	BudgetTokens     *int64    `json:"budgetTokens,omitempty"`
 	BudgetUSD        *string   `json:"budgetUSD,omitempty"`
 	NotifyConnection *string   `json:"notifyConnection,omitempty"`
-	Delegates        *[]string `json:"delegates,omitempty"`
-	DisplayName      *string   `json:"displayName,omitempty"`
+	// Channels replaces the agent's whole channel list when present. Supersedes
+	// NotifyConnection.
+	Channels    *[]channelInput `json:"channels,omitempty"`
+	Delegates   *[]string       `json:"delegates,omitempty"`
+	DisplayName *string         `json:"displayName,omitempty"`
 	// Tool grants per run class. When present, they replace the agent's current
 	// families for that class (core is always implied server-side).
 	InteractiveFamilies *[]string `json:"interactiveFamilies,omitempty"`
@@ -226,7 +318,21 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.Autonomy != nil {
 		agent.Spec.Autonomy = *req.Autonomy
 	}
-	if req.NotifyConnection != nil {
+	if req.Channels != nil {
+		chans, err := normalizeChannels(*req.Channels)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.validateChannelUniqueness(r.Context(), c, name, chans); err != nil {
+			writeStatus(w, http.StatusConflict, "Conflict", err.Error())
+			return
+		}
+		agent.Spec.Channels = chans
+		// Channels supersede the legacy scalar; clear it to avoid a stale
+		// default lingering in the spec.
+		agent.Spec.DefaultNotifyConnection = ""
+	} else if req.NotifyConnection != nil {
 		agent.Spec.DefaultNotifyConnection = strings.TrimSpace(*req.NotifyConnection)
 	}
 	if req.Delegates != nil {

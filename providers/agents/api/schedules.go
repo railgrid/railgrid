@@ -42,6 +42,9 @@ type createScheduleRequest struct {
 	Task      string `json:"task,omitempty"`
 	Checklist string `json:"checklist,omitempty"`
 	Suspend   bool   `json:"suspend,omitempty"`
+	// ChannelRef routes this schedule's output to a named agent channel; empty
+	// means the agent's primary channel.
+	ChannelRef string `json:"channelRef,omitempty"`
 }
 
 func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
@@ -80,13 +83,14 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
 	sched := &agentsv1alpha1.Schedule{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
 		Spec: agentsv1alpha1.ScheduleSpec{
-			AgentRef:  req.AgentRef,
-			Type:      req.Type,
-			Schedule:  req.Schedule,
-			TimeZone:  req.TimeZone,
-			Task:      req.Task,
-			Checklist: req.Checklist,
-			Suspend:   req.Suspend,
+			AgentRef:   req.AgentRef,
+			Type:       req.Type,
+			Schedule:   req.Schedule,
+			TimeZone:   req.TimeZone,
+			Task:       req.Task,
+			Checklist:  req.Checklist,
+			Suspend:    req.Suspend,
+			ChannelRef: strings.TrimSpace(req.ChannelRef),
 		},
 	}
 	if req.RunAt != "" {
@@ -109,12 +113,13 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
 // updateScheduleRequest patches an existing schedule. Pointer fields let the
 // caller change only what they send (retime the cron, edit the task, pause).
 type updateScheduleRequest struct {
-	Schedule  *string `json:"schedule,omitempty"`
-	TimeZone  *string `json:"timeZone,omitempty"`
-	RunAt     *string `json:"runAt,omitempty"`
-	Task      *string `json:"task,omitempty"`
-	Checklist *string `json:"checklist,omitempty"`
-	Suspend   *bool   `json:"suspend,omitempty"`
+	Schedule   *string `json:"schedule,omitempty"`
+	TimeZone   *string `json:"timeZone,omitempty"`
+	RunAt      *string `json:"runAt,omitempty"`
+	Task       *string `json:"task,omitempty"`
+	Checklist  *string `json:"checklist,omitempty"`
+	Suspend    *bool   `json:"suspend,omitempty"`
+	ChannelRef *string `json:"channelRef,omitempty"`
 }
 
 func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +152,9 @@ func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Suspend != nil {
 		sched.Spec.Suspend = *req.Suspend
+	}
+	if req.ChannelRef != nil {
+		sched.Spec.ChannelRef = strings.TrimSpace(*req.ChannelRef)
 	}
 	if req.RunAt != nil {
 		if v := strings.TrimSpace(*req.RunAt); v != "" {
@@ -224,7 +232,7 @@ func (s *Server) runScheduleNow(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadGateway, "RunFailed", err.Error())
 		return
 	}
-	// Deliver to the agent's notify channel so "Run now" fires like a real run.
-	s.deliverToNotifyChannel(r, c, agent, name, res.Content)
+	// Deliver to the schedule's channel so "Run now" fires like a real run.
+	s.deliverToNotifyChannel(r, c, agent, sched.Spec.ChannelRef, name, res.Content)
 	writeJSON(w, http.StatusOK, res)
 }

@@ -319,14 +319,15 @@ func (b *background) process(ctx context.Context, u *unstructured.Unstructured, 
 	}
 
 	return b.exec.Submit(ctx, executor.Job{
-		ID:         fmt.Sprintf("%s/%s/%d", clusterID, sched.Name, now.Unix()),
-		Kind:       executor.KindSchedule,
-		ClusterID:  clusterID,
-		SourceName: sched.Name,
-		AgentRef:   sched.Spec.AgentRef,
-		Task:       task,
-		Trigger:    trigger,
-		SessionID:  "schedule:" + sched.Name,
+		ID:            fmt.Sprintf("%s/%s/%d", clusterID, sched.Name, now.Unix()),
+		Kind:          executor.KindSchedule,
+		ClusterID:     clusterID,
+		SourceName:    sched.Name,
+		AgentRef:      sched.Spec.AgentRef,
+		Task:          task,
+		Trigger:       trigger,
+		SessionID:     "schedule:" + sched.Name,
+		NotifyChannel: sched.Spec.ChannelRef,
 	})
 }
 
@@ -440,8 +441,10 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	}
 
 	// Notify: schedule/wakeup output always; heartbeat only when actionable.
+	// The destination is the schedule/trigger's channel (job.NotifyChannel),
+	// else the agent's primary channel.
 	if runErr != nil {
-		b.notify(ctx, dyn, agent, fmt.Sprintf("⚠️ %s %q failed: %v", job.Kind, job.SourceName, runErr))
+		b.notify(ctx, dyn, agent, job.NotifyChannel, fmt.Sprintf("⚠️ %s %q failed: %v", job.Kind, job.SourceName, runErr))
 		return runErr
 	}
 	out := strings.TrimSpace(res.Content)
@@ -449,7 +452,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		return nil
 	}
 	if out != "" {
-		b.notify(ctx, dyn, agent, fmt.Sprintf("[%s] %s", job.SourceName, truncate(out, 3500)))
+		b.notify(ctx, dyn, agent, job.NotifyChannel, fmt.Sprintf("[%s] %s", job.SourceName, truncate(out, 3500)))
 	}
 	return nil
 }
@@ -506,10 +509,12 @@ func (b *background) recordOutcome(ctx context.Context, job executor.Job, runID 
 	_, _ = dyn.Resource(gvr).UpdateStatus(ctx, u, metav1.UpdateOptions{})
 }
 
-// notify delivers text to the agent's default notify connection, if set.
-func (b *background) notify(ctx context.Context, dyn dynamic.Interface, agent *agentsv1alpha1.Agent, text string) {
-	connName := strings.TrimSpace(agent.Spec.DefaultNotifyConnection)
-	if connName == "" {
+// notify delivers text to one of the agent's channels: the named role
+// (a schedule/trigger's ChannelRef) if given, else the agent's primary channel.
+// No-op when the agent has no channel configured for that role.
+func (b *background) notify(ctx context.Context, dyn dynamic.Interface, agent *agentsv1alpha1.Agent, role, text string) {
+	connName, ok := agent.Spec.ResolveChannelConnection(role)
+	if !ok {
 		return
 	}
 	b.replyToChannel(ctx, dyn, connName, text)
@@ -600,14 +605,15 @@ func (s *Server) webhookTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.bg.exec.Submit(r.Context(), executor.Job{
-		ID:         fmt.Sprintf("%s/%s/%d", cluster, name, time.Now().UnixNano()),
-		Kind:       executor.KindTrigger,
-		ClusterID:  cluster,
-		SourceName: name,
-		AgentRef:   trig.Spec.AgentRef,
-		Task:       task,
-		Trigger:    agentsv1alpha1.RunTriggerEvent,
-		SessionID:  "trigger:" + name,
+		ID:            fmt.Sprintf("%s/%s/%d", cluster, name, time.Now().UnixNano()),
+		Kind:          executor.KindTrigger,
+		ClusterID:     cluster,
+		SourceName:    name,
+		AgentRef:      trig.Spec.AgentRef,
+		Task:          task,
+		Trigger:       agentsv1alpha1.RunTriggerEvent,
+		SessionID:     "trigger:" + name,
+		NotifyChannel: trig.Spec.ChannelRef,
 	}); err != nil {
 		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", err.Error())
 		return

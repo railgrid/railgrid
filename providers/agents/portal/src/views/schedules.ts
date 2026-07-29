@@ -7,7 +7,7 @@ import { confirmModal } from '../portalkit/modal'
 import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
 import type { Schedule } from '../types'
-import { escapeHTML, fmtTime } from '../types'
+import { escapeHTML, fmtTime, channelRefOptions } from '../types'
 import { createSchedule, updateSchedule, deleteSchedule, runSchedule } from '../actions'
 
 let editName: string | null = null // null = no form open; '' = create; name = edit
@@ -25,6 +25,11 @@ function formHTML(vc: ViewCtx, editing: Schedule | undefined, agentRef?: string)
   const nameRow = agentRef
     ? `<label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="daily-digest" /></label>`
     : `<div class="agents-grid2"><label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="daily-digest" /></label><label>Agent<select name="agentRef" required>${agentOptions(vc, '')}</select></label></div>`
+  // Channel dropdown: the agent's named channels (empty = primary). Populated
+  // for the resolved agent; in unscoped create mode it refreshes when the Agent
+  // select changes (see wire()).
+  const forAgent = agentRef || s?.agentRef || ''
+  const chanSelect = `<label>Channel<select name="channelRef" data-chan-select>${channelRefOptions(vc.store.agent(forAgent), s?.channelRef || '')}</select><span class="agents-hint">Where output is delivered</span></label>`
   return `<form class="agents-obj-form" ${editing ? `data-edit="${escapeHTML(editing.metadata.name)}"` : ''}>
       <h4>${editing ? `Edit schedule <code>${escapeHTML(editing.metadata.name)}</code>` : 'New schedule'}</h4>
       ${editing ? '' : nameRow}
@@ -35,6 +40,7 @@ function formHTML(vc: ViewCtx, editing: Schedule | undefined, agentRef?: string)
       <label class="agents-when-cron">Cron<input name="schedule" class="mono" value="${escapeHTML(s?.schedule || '')}" placeholder="0 9 * * *" /><span class="agents-hint">5-field cron · crontab.guru</span></label>
       <label class="agents-when-wakeup">Run at (RFC3339)<input name="runAt" class="mono" value="${escapeHTML(s?.runAt || '')}" placeholder="2026-01-01T09:00:00Z" /></label>
       <label>Task<textarea name="task" rows="3" placeholder="Summarise today's open PRs and post to my channel.">${escapeHTML(s?.task || s?.checklist || '')}</textarea></label>
+      ${chanSelect}
       <label class="agents-check"><input type="checkbox" name="suspend" ${s?.suspend ? 'checked' : ''} /> Paused</label>
       <div class="agents-form-actions"><button>${editing ? 'Save' : 'Create schedule'}</button><button type="button" class="secondary" data-objcancel>Cancel</button></div>
     </form>`
@@ -45,10 +51,9 @@ export function render(vc: ViewCtx, agentRef?: string): string {
   const list = scoped ? vc.store.schedules.filter((s) => s.spec.agentRef === agentRef) : vc.store.schedules
   const editing = editName ? list.find((s) => s.metadata.name === editName) : undefined
   const showForm = creating || !!editing
-  const cols = scoped ? 4 : 5
   const rows =
     list.length === 0
-      ? `<tr class="agents-empty-row"><td colspan="${cols}"><span class="agents-empty">${ic('clock')} No schedules yet — add one below.</span></td></tr>`
+      ? ''
       : list
           .map((s) => {
             const when = s.spec.type === 'wakeup' ? s.spec.runAt || '' : s.spec.schedule || ''
@@ -72,10 +77,14 @@ export function render(vc: ViewCtx, agentRef?: string): string {
     <div class="agents-panel">
       <div class="agents-panel-head"><h3>Schedules</h3>${showForm ? '' : `<button data-newobj ${vc.store.agents.length ? '' : 'disabled title="Create an agent first"'}>${ic('plus')} New schedule</button>`}</div>
       <p class="muted">Recurring or one-shot tasks${scoped ? ' that run as this agent' : '. Each runs as a specific agent'}. ${vc.store.agents.length ? '' : 'Create an agent first.'}</p>
-      <table class="agents-table">
+      ${
+        list.length === 0
+          ? `<p class="agents-hint">${ic('clock')} No schedules yet${showForm ? '.' : ' — add one below.'}</p>`
+          : `<table class="agents-table">
         <thead><tr><th>Name</th>${scoped ? '' : '<th>Agent</th>'}<th>When</th><th>Status</th><th class="agents-th-actions">Actions</th></tr></thead>
         <tbody>${rows}</tbody>
-      </table>
+      </table>`
+      }
       ${showForm ? formHTML(vc, editing, agentRef) : ''}
     </div>`
 }
@@ -123,13 +132,20 @@ export function wire(vc: ViewCtx, root: HTMLElement, agentRef?: string): void {
     }
     typeSel?.addEventListener('change', applyType)
     applyType()
+    // Unscoped create: repopulate the channel dropdown when the agent changes,
+    // so channel options always match the picked agent's channels.
+    const agentSel = form.querySelector<HTMLSelectElement>('select[name=agentRef]')
+    const chanSel = form.querySelector<HTMLSelectElement>('select[name=channelRef]')
+    agentSel?.addEventListener('change', () => {
+      if (chanSel) chanSel.innerHTML = channelRefOptions(vc.store.agent(agentSel.value), '')
+    })
   }
   form?.addEventListener('submit', (e) => {
     e.preventDefault()
     const g = (n: string) => (form.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name=${n}]`)?.value || '').trim()
     const suspend = !!form.querySelector<HTMLInputElement>('input[name=suspend]')?.checked
     const type = g('type') || 'cron'
-    const patch: Record<string, unknown> = { type, timeZone: g('timeZone'), task: g('task'), suspend }
+    const patch: Record<string, unknown> = { type, timeZone: g('timeZone'), task: g('task'), suspend, channelRef: g('channelRef') }
     if (type === 'wakeup') patch.runAt = g('runAt')
     else patch.schedule = g('schedule')
     const edit = form.dataset.edit

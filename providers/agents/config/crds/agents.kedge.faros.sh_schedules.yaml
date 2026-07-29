@@ -65,6 +65,13 @@ spec:
                 maxLength: 253
                 minLength: 1
                 type: string
+              channelRef:
+                description: |-
+                  ChannelRef names the agent channel this schedule's output is delivered to
+                  (a Name in the agent's spec.channels). Empty means the agent's primary
+                  channel. Lets, e.g., a "daily-news" cron post to a dedicated news channel.
+                maxLength: 63
+                type: string
               checklist:
                 description: |-
                   Checklist is the standing markdown the agent reviews on each heartbeat

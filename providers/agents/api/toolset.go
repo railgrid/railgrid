@@ -287,7 +287,7 @@ func (s *Server) consumeApproval(ctx context.Context, deps tools.Deps, toolName 
 	})
 	// Push the request to the user's channel so it can be answered where they
 	// live: reply /inbox to list, /approve N to allow.
-	if connName := strings.TrimSpace(deps.Agent.Spec.DefaultNotifyConnection); connName != "" {
+	if connName, ok := deps.Agent.Spec.ResolveChannelConnection(""); ok {
 		if conn, err := deps.CR.GetConnection(ctx, connName); err == nil {
 			token := ""
 			if sec, serr := deps.Secrets.GetSecret(ctx, llm.SecretNamespace, connectionSecretName(connName)); serr == nil {

@@ -3,6 +3,7 @@
 // the flow view call these so the reference-patch semantics live in one place.
 
 import type { ViewCtx } from './view'
+import { effectiveChannels, type AgentChannel } from './types'
 
 // ---- agents ----------------------------------------------------------------
 
@@ -36,6 +37,37 @@ export async function updateAgent(vc: ViewCtx, name: string, patch: Record<strin
   } catch (e) {
     vc.notify('Save failed: ' + (e as Error).message)
   }
+}
+
+// uniqueChannelName derives a role name for a newly-added channel from its
+// connection name, suffixing on collision so names stay unique.
+function uniqueChannelName(base: string, taken: Set<string>): string {
+  let n = base || 'channel'
+  let i = 2
+  while (taken.has(n)) n = `${base}-${i++}`
+  return n
+}
+
+// addAgentChannel appends a messaging Connection as a new agent channel,
+// preserving existing channels. The first channel added becomes primary. Used
+// by the Flow canvas drag-to-link so linking a second channel augments rather
+// than replaces the first.
+export async function addAgentChannel(vc: ViewCtx, agent: string, connName: string, note = 'Channel linked.'): Promise<void> {
+  const cur = effectiveChannels(vc.store.agent(agent))
+  if (cur.some((ch) => ch.connectionRef === connName)) return // already linked
+  const taken = new Set(cur.map((ch) => ch.name))
+  const next: AgentChannel[] = [...cur, { name: uniqueChannelName(connName, taken), connectionRef: connName, primary: cur.length === 0 }]
+  await updateAgent(vc, agent, { channels: next }, note)
+}
+
+// removeAgentChannel drops the channel backed by a Connection. If it was the
+// primary, the first remaining channel is promoted.
+export async function removeAgentChannel(vc: ViewCtx, agent: string, connName: string, note = 'Channel unlinked.'): Promise<void> {
+  const cur = effectiveChannels(vc.store.agent(agent))
+  const next = cur.filter((ch) => ch.connectionRef !== connName)
+  if (next.length === cur.length) return // nothing to remove
+  if (next.length && !next.some((ch) => ch.primary)) next[0].primary = true
+  await updateAgent(vc, agent, { channels: next }, note)
 }
 
 // ---- credentials -----------------------------------------------------------

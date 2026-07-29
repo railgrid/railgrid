@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260714-c1f41b8.agents.agents.kedge.faros.sh
+  name: v260724-50c73a4.agents.agents.kedge.faros.sh
 spec:
   group: agents.kedge.faros.sh
   names:
@@ -88,11 +88,49 @@ spec:
                   - month
                   type: string
               type: object
+            channels:
+              description: |-
+                Channels binds named messaging channels to the agent. The channel marked
+                Primary (or, failing that, the first entry) is the default notify target
+                for output that does not name a channel — the notify/ask tools, approval
+                requests, and schedules/triggers with no ChannelRef. Schedules and
+                Triggers may deliver to any channel by referencing its Name. An agent also
+                receives inbound messages on every channel's Connection, so a user can
+                talk to it from more than one place (e.g. Telegram and Discord).
+              items:
+                description: AgentChannel binds one logical channel role to a messaging
+                  Connection.
+                properties:
+                  connectionRef:
+                    description: |-
+                      ConnectionRef names the messaging Connection (telegram/slack/discord/smtp)
+                      that backs this channel.
+                    maxLength: 253
+                    type: string
+                  name:
+                    description: |-
+                      Name is the logical channel role referenced by schedules and triggers,
+                      e.g. "primary", "incidents", "news". Unique within the agent.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  primary:
+                    description: |-
+                      Primary marks this channel as the agent's default notify target. Exactly
+                      one channel should be primary; when none is marked the first entry is
+                      treated as primary.
+                    type: boolean
+                required:
+                - connectionRef
+                - name
+                type: object
+              type: array
             defaultNotifyConnection:
               description: |-
-                DefaultNotifyConnection names the Connection used to deliver proactive
-                messages (schedule/heartbeat output, budget and error alerts). Empty
-                means output lands only in run history.
+                DefaultNotifyConnection is DEPRECATED in favor of Channels. It names a
+                single Connection used to deliver proactive messages. When Channels is
+                non-empty this field is ignored; when Channels is empty it is treated as
+                an implicit "primary" channel so existing agents keep working unchanged.
               maxLength: 253
               type: string
             delegates:

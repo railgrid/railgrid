@@ -244,6 +244,14 @@ kedge-provider-agents .agents-inbound-line { display: flex; align-items: center;
 kedge-provider-agents .agents-inbound-actions { margin-left: auto; display: flex; gap: 8px; }
 kedge-provider-agents .agents-wire-fs { border: 1px solid var(--color-border-default, #d9e0ec); border-radius: 10px; padding: 11px 13px; display: flex; flex-direction: column; gap: 7px; }
 kedge-provider-agents .agents-wire-fs legend { font-weight: 600; padding: 0 6px; display: inline-flex; align-items: center; gap: 5px; }
+/* Multi-channel editor: one row per bound channel (role name, connection,
+ * primary radio, remove), then a save/add action bar and inbound status list. */
+kedge-provider-agents .agents-chan-editor { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+kedge-provider-agents .agents-chan-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+kedge-provider-agents .agents-chan-row .agents-chan-name { flex: 0 0 140px; }
+kedge-provider-agents .agents-chan-row .agents-chan-conn { flex: 1 1 200px; min-width: 160px; }
+kedge-provider-agents .agents-chan-primary { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 13px; }
+kedge-provider-agents .agents-chan-inbound { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--color-border-default, #d9e0ec); }
 
 /* --- chat --- */
 /* Bound the chat to the viewport so the log scrolls internally instead of the

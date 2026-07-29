@@ -318,7 +318,7 @@ export function render(vc: ViewCtx): string {
   const creds = vc.store.credentials
   const cards = creds.length
     ? creds.map((c) => credentialCard(vc, c)).join('')
-    : `<div class="agents-empty-row"><span class="agents-empty">${ic('settings')} No models yet — add one below.</span></div>`
+    : `<p class="agents-hint">${ic('settings')} No models yet${creating ? '.' : ' — add one below.'}</p>`
   const createForm = creating
     ? `<form class="agents-cred-form agents-model-create">
         <h4>New model credential</h4>

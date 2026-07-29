@@ -48,6 +48,11 @@ type Job struct {
 	// typed in (not the connection's configured channel). Empty → the
 	// connection's default channel/target.
 	ReplyTarget string `json:"replyTarget,omitempty"`
+	// NotifyChannel is the logical agent-channel role (a Name in the agent's
+	// spec.channels) that schedule/trigger output is delivered to. Empty → the
+	// agent's primary channel. Resolved to a Connection at delivery time so a
+	// re-pointed channel takes effect without re-enqueuing.
+	NotifyChannel string `json:"notifyChannel,omitempty"`
 	// AgentRef is the Agent to run.
 	AgentRef string `json:"agentRef"`
 	// Task is the prompt to execute.

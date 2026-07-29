@@ -6,7 +6,7 @@ spec:
   resources:
   - group: agents.kedge.faros.sh
     name: agents
-    schema: v260714-c1f41b8.agents.agents.kedge.faros.sh
+    schema: v260724-50c73a4.agents.agents.kedge.faros.sh
     storage:
       crd: {}
   - group: agents.kedge.faros.sh
@@ -21,7 +21,7 @@ spec:
       crd: {}
   - group: agents.kedge.faros.sh
     name: schedules
-    schema: v260714-9965166.schedules.agents.kedge.faros.sh
+    schema: v260724-50c73a4.schedules.agents.kedge.faros.sh
     storage:
       crd: {}
   - group: agents.kedge.faros.sh
@@ -31,7 +31,7 @@ spec:
       crd: {}
   - group: agents.kedge.faros.sh
     name: triggers
-    schema: v260714-d427180.triggers.agents.kedge.faros.sh
+    schema: v260724-50c73a4.triggers.agents.kedge.faros.sh
     storage:
       crd: {}
 status: {}

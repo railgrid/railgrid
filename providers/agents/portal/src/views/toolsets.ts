@@ -17,7 +17,7 @@ export function render(vc: ViewCtx): string {
     vc.store.agents.filter((a) => [...(a.spec?.tools?.interactive?.toolsets || []), ...(a.spec?.tools?.background?.toolsets || [])].includes(name)).length
   const rows =
     vc.store.toolsets.length === 0
-      ? `<tr class="agents-empty-row"><td colspan="4"><span class="agents-empty">${ic('package')} No toolsets yet — create one below or in an agent's Flow view.</span></td></tr>`
+      ? ''
       : vc.store.toolsets
           .map((t) => {
             const conns = t.spec.connections || []
@@ -62,10 +62,14 @@ export function render(vc: ViewCtx): string {
     <div class="agents-panel agents-form-panel">
       <h3>Toolsets</h3>
       <p class="muted">Shared bundles of Tools that agents link. Define once, attach to many agents (in each agent's Flow, drag the toolset onto the agent).</p>
-      <table class="agents-table">
+      ${
+        vc.store.toolsets.length === 0
+          ? `<p class="agents-hint">${ic('package')} No toolsets yet — create one below.</p>`
+          : `<table class="agents-table">
         <thead><tr><th>Name</th><th>Tools</th><th>Used by</th><th class="agents-th-actions">Actions</th></tr></thead>
         <tbody>${rows}</tbody>
-      </table>
+      </table>`
+      }
       ${form}
     </div>`
 }

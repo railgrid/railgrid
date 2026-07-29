@@ -22,13 +22,14 @@ import (
 )
 
 // deliverToNotifyChannel best-effort delivers a synchronous run's output to the
-// agent's configured notify channel, mirroring what the background executor
-// does for real events ([background.handle]). Without this, "Fire"/"Run now"
-// only returned output to the UI and never pinged the channel, so a test never
-// looked like a real event. No-op when the agent has no notify connection.
-func (s *Server) deliverToNotifyChannel(r *http.Request, c *agentsclient.Client, agent *agentsv1alpha1.Agent, prefix, text string) {
-	connName := strings.TrimSpace(agent.Spec.DefaultNotifyConnection)
-	if connName == "" || strings.TrimSpace(text) == "" {
+// agent channel named by role (a schedule/trigger's ChannelRef), else the
+// agent's primary channel — mirroring what the background executor does for
+// real events ([background.handle]). Without this, "Fire"/"Run now" only
+// returned output to the UI and never pinged the channel, so a test never
+// looked like a real event. No-op when the agent has no channel for that role.
+func (s *Server) deliverToNotifyChannel(r *http.Request, c *agentsclient.Client, agent *agentsv1alpha1.Agent, role, prefix, text string) {
+	connName, ok := agent.Spec.ResolveChannelConnection(role)
+	if !ok || strings.TrimSpace(text) == "" {
 		return
 	}
 	conn, err := c.Connections().Get(r.Context(), connName, metav1.GetOptions{})
@@ -69,6 +70,9 @@ type createTriggerRequest struct {
 	Filter        map[string]string `json:"filter,omitempty"`
 	Task          string            `json:"task,omitempty"`
 	Suspend       bool              `json:"suspend,omitempty"`
+	// ChannelRef routes this trigger's output to a named agent channel; empty
+	// means the agent's primary channel.
+	ChannelRef string `json:"channelRef,omitempty"`
 }
 
 func (s *Server) createTrigger(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +107,7 @@ func (s *Server) createTrigger(w http.ResponseWriter, r *http.Request) {
 			Filter:        req.Filter,
 			Task:          req.Task,
 			Suspend:       req.Suspend,
+			ChannelRef:    strings.TrimSpace(req.ChannelRef),
 		},
 	}
 	out, err := c.Triggers().Create(r.Context(), trig, metav1.CreateOptions{})
@@ -144,6 +149,7 @@ type updateTriggerRequest struct {
 	ConnectionRef *string            `json:"connectionRef,omitempty"`
 	Filter        *map[string]string `json:"filter,omitempty"`
 	Suspend       *bool              `json:"suspend,omitempty"`
+	ChannelRef    *string            `json:"channelRef,omitempty"`
 }
 
 func (s *Server) updateTrigger(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +179,9 @@ func (s *Server) updateTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Suspend != nil {
 		trig.Spec.Suspend = *req.Suspend
+	}
+	if req.ChannelRef != nil {
+		trig.Spec.ChannelRef = strings.TrimSpace(*req.ChannelRef)
 	}
 	if req.Source != nil {
 		src := strings.TrimSpace(*req.Source)
@@ -268,7 +277,7 @@ func (s *Server) runTriggerNow(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadGateway, "RunFailed", err.Error())
 		return
 	}
-	// Deliver to the agent's notify channel so a test fires like a real event.
-	s.deliverToNotifyChannel(r, c, agent, name, res.Content)
+	// Deliver to the trigger's channel so a test fires like a real event.
+	s.deliverToNotifyChannel(r, c, agent, trig.Spec.ChannelRef, name, res.Content)
 	writeJSON(w, http.StatusOK, res)
 }

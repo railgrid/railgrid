@@ -210,9 +210,9 @@ func coreTools(d Deps) []engine.Tool {
 				if msg == "" {
 					return "", fmt.Errorf("message is required")
 				}
-				connName := strings.TrimSpace(d.Agent.Spec.DefaultNotifyConnection)
-				if connName == "" {
-					return "", fmt.Errorf("no notify connection configured on this agent")
+				connName, hasChannel := d.Agent.Spec.ResolveChannelConnection("")
+				if !hasChannel {
+					return "", fmt.Errorf("no notify channel configured on this agent")
 				}
 				conn, err := d.CR.GetConnection(ctx, connName)
 				if err != nil {
@@ -252,7 +252,7 @@ func coreTools(d Deps) []engine.Tool {
 				}
 				// Best-effort channel delivery so the question reaches the user
 				// where they live, not only the portal inbox.
-				if connName := strings.TrimSpace(d.Agent.Spec.DefaultNotifyConnection); connName != "" {
+				if connName, ok := d.Agent.Spec.ResolveChannelConnection(""); ok {
 					if conn, err := d.CR.GetConnection(ctx, connName); err == nil {
 						_ = channels.Send(ctx, channels.Message{
 							Type: conn.Spec.Type, Token: d.connToken(ctx, connName),

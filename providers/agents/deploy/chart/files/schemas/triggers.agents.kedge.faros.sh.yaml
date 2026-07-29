@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260714-d427180.triggers.agents.kedge.faros.sh
+  name: v260724-50c73a4.triggers.agents.kedge.faros.sh
 spec:
   group: agents.kedge.faros.sh
   names:
@@ -58,6 +58,13 @@ spec:
               description: AgentRef names the Agent this trigger drives.
               maxLength: 253
               minLength: 1
+              type: string
+            channelRef:
+              description: |-
+                ChannelRef names the agent channel this trigger's output is delivered to
+                (a Name in the agent's spec.channels). Empty means the agent's primary
+                channel. Lets, e.g., an "incidents" trigger post to a dedicated channel.
+              maxLength: 63
               type: string
             connectionRef:
               description: |-

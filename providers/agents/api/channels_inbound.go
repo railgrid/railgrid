@@ -235,8 +235,11 @@ func (s *Server) channelCommand(r *http.Request, scope store.Scope, dyn dynamic.
 }
 
 // routeChannelAgent picks the agent for a channel message: explicit
-// config["agent"] override first, else the agent whose defaultNotifyConnection
-// is this connection.
+// config["agent"] override first, else the agent that lists this connection as
+// one of its channels (spec.channels[].connectionRef, or the deprecated
+// spec.defaultNotifyConnection). An agent may own several channels, so it can
+// receive on more than one connection; inbound uniqueness (at most one agent
+// per connection) is enforced when an agent's channels are saved.
 func (s *Server) routeChannelAgent(ctx context.Context, dyn dynamic.Interface, conn *agentsv1alpha1.Connection) (*agentsv1alpha1.Agent, error) {
 	if override := strings.TrimSpace(conn.Spec.Config["agent"]); override != "" {
 		au, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, override, metav1.GetOptions{})
@@ -254,7 +257,7 @@ func (s *Server) routeChannelAgent(ctx context.Context, dyn dynamic.Interface, c
 		if err != nil {
 			continue
 		}
-		if agent.Spec.DefaultNotifyConnection == conn.Name {
+		if agent.Spec.AgentClaimsConnection(conn.Name) {
 			return agent, nil
 		}
 	}

@@ -11,9 +11,10 @@ import { FlowCanvas } from '../flow'
 import type { FlowModel, FNode, FWire, FlowCallbacks, DraftSpec, PaletteGroup, PaletteEntry } from '../flow'
 import type { ViewCtx } from '../view'
 import type { Agent } from '../types'
-import { escapeHTML, fmtTime } from '../types'
+import { escapeHTML, fmtTime, effectiveChannels } from '../types'
 import { CONN_CATEGORY, connCategory } from '../conn-defs'
 import {
+  addAgentChannel,
   updateAgent,
   updateSchedule,
   updateTrigger,
@@ -74,11 +75,11 @@ function flowModel(vc: ViewCtx, name: string): FlowModel {
   const trigs = vc.store.triggers.filter((t) => t.spec.agentRef === name)
   const model = a.spec?.models?.chat
   const fallbacks = a.spec?.modelFallbacks || []
-  const notify = a.spec?.defaultNotifyConnection
+  const boundChans = new Set(effectiveChannels(a).map((ch) => ch.connectionRef))
   const agentTools = new Set([...(a.spec?.tools?.interactive?.connections || []), ...(a.spec?.tools?.background?.connections || [])])
   const usedConns = new Set<string>()
   trigs.forEach((t) => t.spec.connectionRef && usedConns.add(t.spec.connectionRef))
-  if (notify) usedConns.add(notify)
+  boundChans.forEach((c) => usedConns.add(c))
 
   // agent core
   nodes.push({
@@ -223,7 +224,7 @@ function flowModel(vc: ViewCtx, name: string): FlowModel {
   // toolsets' tools, trigger sources, and its notify channel.
   const showConn = new Set<string>([...agentTools, ...linkedToolsetConns])
   trigs.forEach((t) => t.spec.connectionRef && showConn.add(t.spec.connectionRef))
-  if (notify) showConn.add(notify)
+  boundChans.forEach((c) => showConn.add(c))
 
   for (const c of vc.store.connections) {
     const cn = c.metadata.name
@@ -239,7 +240,7 @@ function flowModel(vc: ViewCtx, name: string): FlowModel {
     const isDiscordWebhook = c.spec.type === 'discord' && (c.spec.channel || '').startsWith('https://')
     const isDiscordBot = c.spec.type === 'discord' && !isDiscordWebhook
     const canReceive = c.spec.type === 'telegram' || c.spec.type === 'slack' || isDiscordBot
-    const isNotify = notify === cn
+    const isNotify = boundChans.has(cn)
     const inboundActive = isNotify && canReceive && (isDiscordBot || !!c.status?.webhookPath)
     const inbound = isChannel
       ? !canReceive
@@ -303,7 +304,7 @@ function buildPalette(vc: ViewCtx, a: Agent): PaletteGroup[] {
   const toolsetConns = new Set<string>()
   for (const ts of vc.store.toolsets) if (agentToolsets.has(ts.metadata.name)) (ts.spec.connections || []).forEach((c) => toolsetConns.add(c))
   const model = a.spec?.models?.chat
-  const notify = a.spec?.defaultNotifyConnection
+  const boundChans = new Set(effectiveChannels(a).map((ch) => ch.connectionRef))
   const delegates = new Set(a.spec?.delegates || [])
 
   const newEntry = (key: string, label: string, icon: PaletteEntry['icon']): PaletteEntry => ({ id: 'new:' + key, label, icon })
@@ -356,7 +357,7 @@ function buildPalette(vc: ViewCtx, a: Agent): PaletteGroup[] {
       id: 'conn:' + c.metadata.name,
       label: c.spec.displayName || c.metadata.name,
       icon: 'connection',
-      linked: notify === c.metadata.name,
+      linked: boundChans.has(c.metadata.name),
       sub: c.spec.type,
     }))
   groups.push({ label: 'Channels', entries: [...chanEntries, newEntry('connection', 'New', 'connection')] })
@@ -423,7 +424,7 @@ async function flowAddExisting(id: string): Promise<string | null> {
       const cn = id.slice(5)
       const c = vc.store.connections.find((x) => x.metadata.name === cn)
       const cat = c ? connCategory(c.spec.type) : 'connection'
-      if (cat === 'channel') await updateAgent(vc, agent, { notifyConnection: cn }, 'Notify channel set.')
+      if (cat === 'channel') await addAgentChannel(vc, agent, cn)
       else await wireToolTo(vc, agent, 'agent', cn)
       return id
     }
@@ -650,14 +651,15 @@ async function flowLink(from: [string, string], to: [string, string]): Promise<v
   if (fromNode.startsWith('model:') && toNode === 'agent' && toPort === 'model') {
     return void updateAgent(vc, agent, { modelCredential: fromNode.slice(6) }, 'Model reassigned.')
   }
-  // agent.result → connection.notify : set the default notify channel
+  // agent.result → connection.notify : bind this channel to the agent (added
+  // to its channel list; first one becomes primary).
   if (fromNode === 'agent' && toNode.startsWith('conn:') && toPort === 'notify') {
-    return void updateAgent(vc, agent, { notifyConnection: toNode.slice(5) }, 'Notify channel set.')
+    return void addAgentChannel(vc, agent, toNode.slice(5), 'Channel linked.')
   }
-  // connection.listen → agent.input : link a channel inbound. The notify link is
-  // symmetric — it also routes messages FROM the channel to the agent.
+  // connection.listen → agent.input : link a channel inbound. A channel is
+  // symmetric — binding it also routes messages FROM the channel to the agent.
   if (fromNode.startsWith('conn:') && toNode === 'agent' && toPort === 'input') {
-    return void updateAgent(vc, agent, { notifyConnection: fromNode.slice(5) }, 'Channel linked — it can message the agent both ways.')
+    return void addAgentChannel(vc, agent, fromNode.slice(5), 'Channel linked — it can message the agent both ways.')
   }
   // toolset.use → agent.tools : link the shared toolset to this agent
   if (fromNode.startsWith('toolset:') && toNode === 'agent' && toPort === 'tools') {

@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"strings"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -126,12 +128,108 @@ type AgentSpec struct {
 	// +optional
 	Budget *AgentBudget `json:"budget,omitempty"`
 
-	// DefaultNotifyConnection names the Connection used to deliver proactive
-	// messages (schedule/heartbeat output, budget and error alerts). Empty
-	// means output lands only in run history.
+	// DefaultNotifyConnection is DEPRECATED in favor of Channels. It names a
+	// single Connection used to deliver proactive messages. When Channels is
+	// non-empty this field is ignored; when Channels is empty it is treated as
+	// an implicit "primary" channel so existing agents keep working unchanged.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	DefaultNotifyConnection string `json:"defaultNotifyConnection,omitempty"`
+
+	// Channels binds named messaging channels to the agent. The channel marked
+	// Primary (or, failing that, the first entry) is the default notify target
+	// for output that does not name a channel — the notify/ask tools, approval
+	// requests, and schedules/triggers with no ChannelRef. Schedules and
+	// Triggers may deliver to any channel by referencing its Name. An agent also
+	// receives inbound messages on every channel's Connection, so a user can
+	// talk to it from more than one place (e.g. Telegram and Discord).
+	// +optional
+	Channels []AgentChannel `json:"channels,omitempty"`
+}
+
+// AgentChannel binds one logical channel role to a messaging Connection.
+type AgentChannel struct {
+	// Name is the logical channel role referenced by schedules and triggers,
+	// e.g. "primary", "incidents", "news". Unique within the agent.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
+
+	// ConnectionRef names the messaging Connection (telegram/slack/discord/smtp)
+	// that backs this channel.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=253
+	ConnectionRef string `json:"connectionRef"`
+
+	// Primary marks this channel as the agent's default notify target. Exactly
+	// one channel should be primary; when none is marked the first entry is
+	// treated as primary.
+	// +optional
+	Primary bool `json:"primary,omitempty"`
+}
+
+// EffectiveChannels returns the agent's channels, synthesizing a single
+// "primary" channel from the deprecated DefaultNotifyConnection when the
+// Channels list is empty. This is the one place the legacy field is bridged, so
+// every consumer can treat an agent as a list of named channels.
+func (s *AgentSpec) EffectiveChannels() []AgentChannel {
+	if len(s.Channels) > 0 {
+		return s.Channels
+	}
+	if conn := strings.TrimSpace(s.DefaultNotifyConnection); conn != "" {
+		return []AgentChannel{{Name: "primary", ConnectionRef: conn, Primary: true}}
+	}
+	return nil
+}
+
+// PrimaryChannel returns the agent's default notify channel: the one marked
+// Primary, else the first entry. ok is false when the agent has no channel
+// configured at all.
+func (s *AgentSpec) PrimaryChannel() (AgentChannel, bool) {
+	chans := s.EffectiveChannels()
+	if len(chans) == 0 {
+		return AgentChannel{}, false
+	}
+	for _, ch := range chans {
+		if ch.Primary {
+			return ch, true
+		}
+	}
+	return chans[0], true
+}
+
+// ResolveChannelConnection returns the messaging Connection name for a logical
+// channel role. role=="" resolves to the primary channel; an unknown role falls
+// back to primary (so a mis-typed ChannelRef degrades to a delivered message
+// rather than a dropped one). ok is false when the agent has no channel at all.
+func (s *AgentSpec) ResolveChannelConnection(role string) (connName string, ok bool) {
+	role = strings.TrimSpace(role)
+	if role != "" {
+		for _, ch := range s.EffectiveChannels() {
+			if ch.Name == role {
+				return strings.TrimSpace(ch.ConnectionRef), strings.TrimSpace(ch.ConnectionRef) != ""
+			}
+		}
+	}
+	ch, found := s.PrimaryChannel()
+	if !found {
+		return "", false
+	}
+	return strings.TrimSpace(ch.ConnectionRef), strings.TrimSpace(ch.ConnectionRef) != ""
+}
+
+// AgentClaimsConnection reports whether any of the agent's channels are backed
+// by the named Connection — used by inbound routing to find the agent a
+// channel message belongs to.
+func (s *AgentSpec) AgentClaimsConnection(connName string) bool {
+	connName = strings.TrimSpace(connName)
+	for _, ch := range s.EffectiveChannels() {
+		if strings.TrimSpace(ch.ConnectionRef) == connName {
+			return true
+		}
+	}
+	return false
 }
 
 // AgentToolPolicy grants tool access split by trigger class so unattended runs

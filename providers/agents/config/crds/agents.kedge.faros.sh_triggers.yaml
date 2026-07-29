@@ -63,6 +63,13 @@ spec:
                 maxLength: 253
                 minLength: 1
                 type: string
+              channelRef:
+                description: |-
+                  ChannelRef names the agent channel this trigger's output is delivered to
+                  (a Name in the agent's spec.channels). Empty means the agent's primary
+                  channel. Lets, e.g., an "incidents" trigger post to a dedicated channel.
+                maxLength: 63
+                type: string
               connectionRef:
                 description: |-
                   ConnectionRef names the Connection backing non-webhook sources (channel,

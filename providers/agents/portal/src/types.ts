@@ -11,6 +11,14 @@ export interface KedgeContext {
   basePath?: string
 }
 
+// AgentChannel binds a logical channel role (primary/incidents/news) to a
+// messaging Connection. Mirrors the backend spec.channels[] entries.
+export interface AgentChannel {
+  name: string
+  connectionRef: string
+  primary?: boolean
+}
+
 export interface Agent {
   metadata: { name: string }
   spec: {
@@ -21,6 +29,7 @@ export interface Agent {
     models?: Record<string, string>
     modelFallbacks?: string[]
     defaultNotifyConnection?: string
+    channels?: AgentChannel[]
     delegates?: string[]
     budget?: { window?: string; usdLimit?: string; tokenLimit?: number }
     tools?: {
@@ -40,7 +49,7 @@ export interface Credential {
 
 export interface Schedule {
   metadata: { name: string }
-  spec: { agentRef: string; type: string; schedule?: string; runAt?: string; timeZone?: string; task?: string; checklist?: string; suspend?: boolean }
+  spec: { agentRef: string; type: string; schedule?: string; runAt?: string; timeZone?: string; task?: string; checklist?: string; suspend?: boolean; channelRef?: string }
   status?: { nextRun?: string; lastRun?: string; disabledReason?: string }
 }
 
@@ -52,8 +61,28 @@ export interface Connection {
 
 export interface Trigger {
   metadata: { name: string }
-  spec: { agentRef: string; source: string; connectionRef?: string; task?: string; suspend?: boolean }
+  spec: { agentRef: string; source: string; connectionRef?: string; task?: string; suspend?: boolean; channelRef?: string }
   status?: { lastFired?: string; webhookPath?: string }
+}
+
+// effectiveChannels returns an agent's channels, synthesizing a single
+// "primary" channel from the deprecated defaultNotifyConnection when the list
+// is empty — mirrors the backend AgentSpec.EffectiveChannels so the UI shows
+// the same set the server routes on.
+export function effectiveChannels(a: Agent | undefined): AgentChannel[] {
+  const chans = a?.spec?.channels || []
+  if (chans.length) return chans
+  const legacy = (a?.spec?.defaultNotifyConnection || '').trim()
+  return legacy ? [{ name: 'primary', connectionRef: legacy, primary: true }] : []
+}
+
+// channelRefOptions builds <option>s for an agent's named channels; the empty
+// first option means "primary channel" (no explicit channelRef).
+export function channelRefOptions(a: Agent | undefined, selected: string): string {
+  const opts = effectiveChannels(a)
+    .map((ch) => `<option value="${escapeHTML(ch.name)}" ${ch.name === selected ? 'selected' : ''}>${escapeHTML(ch.name)}${ch.primary ? ' (primary)' : ''}</option>`)
+    .join('')
+  return `<option value="" ${selected ? '' : 'selected'}>— primary channel —</option>` + opts
 }
 
 export interface Toolset {

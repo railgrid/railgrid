@@ -5,7 +5,7 @@
 import { confirmModal } from '../portalkit/modal'
 import { ic } from '../portalkit/icons'
 import type { ViewCtx } from '../view'
-import { escapeHTML } from '../types'
+import { escapeHTML, effectiveChannels } from '../types'
 import { createAgent, deleteAgent } from '../actions'
 
 export function render(vc: ViewCtx): string {
@@ -15,7 +15,9 @@ export function render(vc: ViewCtx): string {
       const model = a.spec?.models?.chat
       const nsched = count(a.metadata.name, vc.store.schedules)
       const ntrig = count(a.metadata.name, vc.store.triggers)
-      const chan = a.spec?.defaultNotifyConnection
+      const chans = effectiveChannels(a)
+      const primary = chans.find((ch) => ch.primary) || chans[0]
+      const chan = primary ? primary.connectionRef + (chans.length > 1 ? ` +${chans.length - 1}` : '') : ''
       return `
         <article class="agents-card" data-agent="${escapeHTML(a.metadata.name)}">
           <div class="agents-card-glyph">${ic('bot')}</div>

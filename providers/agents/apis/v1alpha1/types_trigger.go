@@ -85,6 +85,13 @@ type TriggerSpec struct {
 	// +kubebuilder:validation:MaxLength=32768
 	Task string `json:"task,omitempty"`
 
+	// ChannelRef names the agent channel this trigger's output is delivered to
+	// (a Name in the agent's spec.channels). Empty means the agent's primary
+	// channel. Lets, e.g., an "incidents" trigger post to a dedicated channel.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	ChannelRef string `json:"channelRef,omitempty"`
+
 	// Suspend halts firing without deleting the trigger.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
