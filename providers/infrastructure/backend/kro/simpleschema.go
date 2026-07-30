@@ -31,6 +31,10 @@ type openAPISchema struct {
 	Maximum     *float64                 `json:"maximum"`
 	Pattern     string                   `json:"pattern"`
 	Items       *openAPISchema           `json:"items"`
+	// AdditionalProperties turns an object without fixed properties into a
+	// kro map type: {type: object, additionalProperties: {type: string}} →
+	// "map[string]string". Used for free-form inputs like env.
+	AdditionalProperties *openAPISchema `json:"additionalProperties"`
 }
 
 // openAPIToSimpleSchema converts a Template's spec.schema (OpenAPI JSON
@@ -98,7 +102,18 @@ func leafToSimpleSchema(p openAPISchema, required bool) string {
 		markers = append(markers, "enum="+quote(strings.Join(vals, ",")))
 	}
 	if p.Default != nil {
-		markers = append(markers, "default="+formatScalar(p.Default))
+		if m, isMap := p.Default.(map[string]any); isMap {
+			// Map defaults: only the empty map is expressible — kro's marker
+			// tokenizer treats a bare double quote as a delimiter with no
+			// escaping, so non-empty JSON object defaults cannot survive it.
+			// Template authors default maps to {} and set real values per
+			// instance.
+			if len(m) == 0 {
+				markers = append(markers, "default={}")
+			}
+		} else {
+			markers = append(markers, "default="+formatScalar(p.Default))
+		}
 	}
 	if p.Minimum != nil {
 		markers = append(markers, fmt.Sprintf("minimum=%v", *p.Minimum))
@@ -137,6 +152,13 @@ func openAPIToKROType(p openAPISchema) string {
 		}
 		return "[]" + elem
 	case "object":
+		if p.AdditionalProperties != nil {
+			elem := "string"
+			if p.AdditionalProperties.Type != "" {
+				elem = openAPIToKROType(*p.AdditionalProperties)
+			}
+			return "map[string]" + elem
+		}
 		return "object"
 	case "string":
 		return "string"

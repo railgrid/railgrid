@@ -39,7 +39,9 @@ spec:
       elsewhere, then provision it here. No network exposure; durable state
       belongs in a database template instance.
 
-      INPUTS you set when provisioning: name, image (both required); schedule.
+      INPUTS you set when provisioning: name, image (both required);
+      schedule, env (env-var map; not for secrets). All except name can be
+      changed later with update_instance.
     outputs:
       - "status.schedule — the active cron schedule."
   # ── Portal presentation ───────────────────────────────────────────────
@@ -75,6 +77,12 @@ spec:
         type: string
         default: "0 * * * *"
         description: "Standard 5-field cron expression, evaluated in UTC. Default: hourly."
+      env:
+        type: object
+        additionalProperties:
+          type: string
+        default: {}
+        description: "Environment variables for the container, injected via a ConfigMap + envFrom (updatable in place). Values are stored world-readable — not for secrets."
     required:
       - name
       - image
@@ -84,6 +92,16 @@ spec:
   # cluster — same convention as every seed template.
   backendConfig:
     resources:
+      # Tenant env vars ride a ConfigMap consumed via envFrom so the map input
+      # needs no CEL list synthesis.
+      - id: jobEnv
+        template:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ${schema.spec.name}-env
+            namespace: default
+          data: ${schema.spec.env}
       - id: cronJob
         template:
           apiVersion: batch/v1
@@ -110,6 +128,9 @@ spec:
                     containers:
                       - name: job
                         image: ${schema.spec.image}
+                        envFrom:
+                          - configMapRef:
+                              name: ${jobEnv.metadata.name}
     # Echoed from the materialized CronJob (this kro fork forbids ${schema.*}
     # in status — status may reference resources only).
     status:

@@ -42,7 +42,9 @@ spec:
       dev_logs, and restart with dev_restart.
 
       INPUTS you set when provisioning: name (required); image (required in
-      production, ignored in development), replicas.
+      production, ignored in development), replicas, env (env-var map; not for
+      secrets). All except name and kedgeMode can be changed later with
+      update_instance.
     outputs:
       - "status.ready — ready replica count for the worker Deployment."
   # ── Portal presentation ───────────────────────────────────────────────
@@ -71,6 +73,12 @@ spec:
         default: 1
         minimum: 1
         maximum: 5
+      env:
+        type: object
+        additionalProperties:
+          type: string
+        default: {}
+        description: "Environment variables for the container, injected via a ConfigMap + envFrom (updatable in place). Values are stored world-readable — not for secrets."
     required:
       - name
     # The image is only required when the instance actually runs it: production
@@ -138,6 +146,16 @@ spec:
   # the dev-overlay convention: component "worker" → id "workerDeployment".
   backendConfig:
     resources:
+      # Tenant env vars ride a ConfigMap consumed via envFrom so the map input
+      # needs no CEL list synthesis.
+      - id: workerEnv
+        template:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ${schema.spec.name}-env
+            namespace: default
+          data: ${schema.spec.env}
       - id: workerDeployment
         template:
           apiVersion: apps/v1
@@ -158,5 +176,8 @@ spec:
                 containers:
                   - name: worker
                     image: ${schema.spec.image}
+                    envFrom:
+                      - configMapRef:
+                          name: ${workerEnv.metadata.name}
     status:
       ready: ${workerDeployment.status.readyReplicas}

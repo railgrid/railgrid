@@ -78,8 +78,11 @@ func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 			"(image inputs may be omitted), push source with dev_sync " +
 			"(hot reload), read dev server logs with dev_logs, and " +
 			"preview at the instance's status.url; ship for real by " +
-			"re-provisioning with kedgeMode \"production\" and built " +
-			"images. Cloud credentials are read from " +
+			"provisioning a production instance with built images. " +
+			"To change a live instance (roll a new image tag, scale, " +
+			"env, ports, schedule), use update_instance — a merge " +
+			"patch reconciled in place, managed state kept — instead " +
+			"of delete+provision. Cloud credentials are read from " +
 			"a `cloud-credentials` Secret in your workspace's default " +
 			"namespace; if it's missing, ask the user to create it (see " +
 			"the kedge-bound cloud-credentials docs). Tenant identity " +

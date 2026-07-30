@@ -85,6 +85,13 @@ type Template struct {
 	// dev_sync tool routed by each component's workspacePath. nil means the
 	// template has no development mode.
 	Development *TemplateDevelopment `json:"development,omitempty"`
+	// ImmutableInputs are value dot-paths this template declares as not
+	// updatable on a live instance (e.g. "database.version" — a Postgres
+	// major upgrade is not an in-place operation), read from the
+	// kedge.faros.sh/immutable-inputs annotation (comma-separated). The
+	// platform's own always-immutable set (name, kedgeMode, platform-stamped
+	// fields) applies on top and is not listed here.
+	ImmutableInputs []string `json:"immutableInputs,omitempty"`
 	// View is optional presentation metadata that drives how the portal
 	// renders this template's instances (extra list columns + grouped
 	// detail fields). Read from the kedge.faros.sh/view annotation on the

@@ -2,6 +2,10 @@ apiVersion: infrastructure.kedge.faros.sh/v1alpha1
 kind: Template
 metadata:
   name: application
+  annotations:
+    # database.version: a Postgres major upgrade is not an in-place operation;
+    # update_instance rejects it (recreate — and migrate — instead).
+    kedge.faros.sh/immutable-inputs: "database.version"
 spec:
   displayName: "Web application"
   description: "A 3-tier app — frontend + backend + Postgres — exposed on a URL guarded by OIDC (oauth2-proxy). Authenticated users only; the backend and database are never exposed."
@@ -88,9 +92,11 @@ spec:
 
       INPUTS you set when provisioning: frontendImage, backendImage (required
       in production mode; omit in development mode); name, frontendPort,
-      backendPort, frontendReplicas, backendReplicas, database.version,
-      oidc.*. The platform stamps spec.expose.fqdn and
-      spec.credentialsSecretName — do not set those.
+      backendPort, frontendReplicas, backendReplicas, frontendEnv, backendEnv
+      (per-tier env-var maps; not for secrets), database.version, oidc.*. The
+      platform stamps spec.expose.fqdn and spec.credentialsSecretName — do not
+      set those. All except name, kedgeMode, and database.version can be
+      changed later with update_instance.
     prerequisites:
       - "oidc.mode=byo only: a Secret named 'cloud-credentials' in the tenant's default namespace, key 'oidc_client_secret' = the OAuth2 client secret for your oidc.clientID."
     outputs:
@@ -181,6 +187,12 @@ spec:
         default: 1
         minimum: 1
         maximum: 10
+      frontendEnv:
+        type: object
+        additionalProperties:
+          type: string
+        default: {}
+        description: "Environment variables for the frontend container, injected via a ConfigMap + envFrom (updatable in place). Platform-set vars (PORT) win on name conflicts. Values are stored world-readable — not for secrets."
 
       # ── Backend tier (internal; reachable only via cluster DNS) ──
       backendImage:
@@ -194,6 +206,12 @@ spec:
         default: 1
         minimum: 1
         maximum: 10
+      backendEnv:
+        type: object
+        additionalProperties:
+          type: string
+        default: {}
+        description: "Environment variables for the backend container, injected via a ConfigMap + envFrom (updatable in place). Platform-set vars (PORT, DATABASE_URL) win on name conflicts. Values are stored world-readable — not for secrets."
 
       # ── Database tier (Postgres; always provisioned in v1) ──
       # default: {} so an omitted database object is instantiated and its nested
@@ -543,6 +561,18 @@ spec:
                 targetPort: 5432
 
       # ───────────────────── Backend tier ─────────────────────
+      # Tenant env vars ride ConfigMaps consumed via envFrom so the map inputs
+      # need no CEL list synthesis; explicit container env (PORT, DATABASE_URL)
+      # wins over envFrom on name conflicts, so platform vars can't be
+      # clobbered.
+      - id: backendEnvMap
+        template:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ${schema.spec.name}-backend-env
+            namespace: default
+          data: ${schema.spec.backendEnv}
       - id: backendDeployment
         template:
           apiVersion: apps/v1
@@ -577,6 +607,9 @@ spec:
                           secretKeyRef:
                             name: ${dbCredentials.metadata.name}
                             key: uri
+                    envFrom:
+                      - configMapRef:
+                          name: ${backendEnvMap.metadata.name}
                     ports:
                       - containerPort: ${schema.spec.backendPort}
       - id: backendService
@@ -595,6 +628,14 @@ spec:
                 targetPort: ${schema.spec.backendPort}
 
       # ───────────────────── Frontend tier ─────────────────────
+      - id: frontendEnvMap
+        template:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ${schema.spec.name}-frontend-env
+            namespace: default
+          data: ${schema.spec.frontendEnv}
       - id: frontendDeployment
         template:
           apiVersion: apps/v1
@@ -624,6 +665,9 @@ spec:
                     env:
                       - name: PORT
                         value: ${string(schema.spec.frontendPort)}
+                    envFrom:
+                      - configMapRef:
+                          name: ${frontendEnvMap.metadata.name}
                     ports:
                       - containerPort: ${schema.spec.frontendPort}
       - id: frontendService

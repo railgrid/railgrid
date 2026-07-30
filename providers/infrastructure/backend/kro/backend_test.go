@@ -75,6 +75,32 @@ func TestOpenAPIToSimpleSchemaNested(t *testing.T) {
 	}
 }
 
+func TestOpenAPIToSimpleSchemaMap(t *testing.T) {
+	raw := []byte(`{
+		"type": "object",
+		"properties": {
+			"env":    {"type": "object", "additionalProperties": {"type": "string"}, "default": {}, "description": "env vars"},
+			"limits": {"type": "object", "additionalProperties": {"type": "integer"}},
+			"full":   {"type": "object", "additionalProperties": {"type": "string"}, "default": {"A": "b"}}
+		}
+	}`)
+	got, err := openAPIToSimpleSchema(raw)
+	if err != nil {
+		t.Fatalf("openAPIToSimpleSchema: %v", err)
+	}
+	if got["env"] != `map[string]string | default={} description="env vars"` {
+		t.Errorf("env: got %v", got["env"])
+	}
+	if got["limits"] != `map[string]integer` {
+		t.Errorf("limits: got %v", got["limits"])
+	}
+	// Non-empty map defaults are inexpressible in kro's marker syntax (no
+	// quote escaping) — the default must be dropped, never emitted corrupt.
+	if got["full"] != `map[string]string` {
+		t.Errorf("full: non-empty map default must be dropped, got %v", got["full"])
+	}
+}
+
 func TestBuildRGD(t *testing.T) {
 	tmpl := &infrav1alpha1.Template{}
 	tmpl.Name = "redis-cache"

@@ -18,6 +18,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -104,11 +105,31 @@ func templateFromUnstructured(u *unstructured.Unstructured) kro.Template {
 		Backend:      "kro",
 		InstanceKind: kind,
 		InstanceGVR:  schema.GroupVersionResource{Group: group, Version: crdVersion, Resource: resource},
-		InputsSchema: inputs,
-		SampleValues: sample,
-		Agent:        agent,
-		Development:  templateDevelopmentFromSpec(u),
+		InputsSchema:    inputs,
+		SampleValues:    sample,
+		Agent:           agent,
+		Development:     templateDevelopmentFromSpec(u),
+		ImmutableInputs: immutableInputsFromAnnotation(u),
 	}
+}
+
+// immutableInputsAnnotation lets a Template declare value dot-paths that
+// update_instance must reject (comma-separated). Rides on an annotation
+// rather than a spec field so the Template CRD schema stays untouched.
+const immutableInputsAnnotation = "kedge.faros.sh/immutable-inputs"
+
+func immutableInputsFromAnnotation(u *unstructured.Unstructured) []string {
+	raw := strings.TrimSpace(u.GetAnnotations()[immutableInputsAnnotation])
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // templateDevelopmentFromSpec projects spec.development into the MCP DTO:

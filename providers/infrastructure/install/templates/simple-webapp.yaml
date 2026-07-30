@@ -46,8 +46,10 @@ spec:
       is auto-detected, otherwise vite is bootstrapped directly.
 
       INPUTS you set when provisioning: name (required); image (required in
-      production, ignored in development), port, replicas, expose.hostnamePrefix.
-      The platform stamps spec.expose.fqdn — do not set it.
+      production, ignored in development), port, replicas, env (env-var map;
+      not for secrets), expose.hostnamePrefix. The platform stamps
+      spec.expose.fqdn — do not set it. All except name and kedgeMode can be
+      changed later with update_instance.
     outputs:
       - "status.url — the public HTTPS URL the app is served on (status.host = bare hostname)."
       - "status.ready — ready replica count for the app Deployment."
@@ -98,6 +100,12 @@ spec:
         default: 1
         minimum: 1
         maximum: 10
+      env:
+        type: object
+        additionalProperties:
+          type: string
+        default: {}
+        description: "Environment variables for the container, injected via a ConfigMap + envFrom (updatable in place). Platform-set vars (PORT) win on name conflicts. Values are stored world-readable — not for secrets."
       # default: {} so nested defaults apply and the controller can stamp fqdn
       # onto an instance that omitted the expose object.
       expose:
@@ -186,6 +194,17 @@ spec:
   # for the platform's configured Gateway API parent before the RGD is authored.
   backendConfig:
     resources:
+      # Tenant env vars ride a ConfigMap consumed via envFrom so the map input
+      # needs no CEL list synthesis; explicit container env (PORT) wins over
+      # envFrom on name conflicts, so platform vars can't be clobbered.
+      - id: appEnv
+        template:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ${schema.spec.name}-env
+            namespace: default
+          data: ${schema.spec.env}
       # The graph id follows the dev-overlay convention: component "app" →
       # workload id "appDeployment".
       - id: appDeployment
@@ -217,6 +236,9 @@ spec:
                     env:
                       - name: PORT
                         value: ${string(schema.spec.port)}
+                    envFrom:
+                      - configMapRef:
+                          name: ${appEnv.metadata.name}
                     ports:
                       - containerPort: ${schema.spec.port}
       - id: appService
