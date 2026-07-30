@@ -22,6 +22,9 @@ import (
 	"testing"
 	"time"
 
+	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
+	einotool "github.com/cloudwego/eino/components/tool"
+
 	"github.com/faroshq/provider-app-studio/store"
 )
 
@@ -370,7 +373,6 @@ func TestProjectAssistantInitialExecutionPlanRevisesOutOfScopeWritesWithoutUserP
 	decision := projectAssistantPermissionForApprovalMode(
 		projectAssistantToolSpec{Name: projectToolWriteFile, Risk: projectAssistantToolRiskWrite},
 		store.AssistantApprovalModeAlwaysAsk,
-		false,
 		state,
 		map[string]any{"path": "package.json"},
 	)
@@ -556,7 +558,6 @@ func TestProjectAssistantPermissionForApprovalModeAutoApproveNeverAsks(t *testin
 			got := projectAssistantPermissionForApprovalMode(
 				tt.spec,
 				store.AssistantApprovalModeAutoApprove,
-				false,
 				newProjectEinoAssistantRunState(),
 				tt.args,
 			)
@@ -570,16 +571,63 @@ func TestProjectAssistantPermissionForApprovalModeAutoApproveNeverAsks(t *testin
 	}
 }
 
-func TestProjectAssistantAlwaysAskOverridesLegacyAutoApproveFlag(t *testing.T) {
-	got := projectAssistantPermissionForApprovalMode(
-		projectAssistantToolSpec{Name: projectToolRequestProjectPlanApproval, Risk: projectAssistantToolRiskPlan},
-		store.AssistantApprovalModeAlwaysAsk,
-		true,
-		newProjectEinoAssistantRunState(),
-		map[string]any{"summary": "Update the app", "targetPaths": []any{"src"}},
-	)
-	if got != projectAssistantPermissionAsk {
-		t.Fatalf("permission = %q, want explicit user preference to ask", got)
+func TestProjectAssistantAlwaysAskRequiresApproval(t *testing.T) {
+	tests := []struct {
+		name string
+		spec projectAssistantToolSpec
+		args map[string]any
+	}{
+		{
+			name: "plan",
+			spec: projectAssistantToolSpec{Name: projectToolRequestProjectPlanApproval, Risk: projectAssistantToolRiskPlan},
+			args: map[string]any{"summary": "Update the app", "targetPaths": []any{"src"}},
+		},
+		{
+			name: "runtime",
+			spec: projectAssistantToolSpec{Name: projectToolRestartRuntime, Risk: projectAssistantToolRiskRuntime},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := projectAssistantPermissionForApprovalMode(
+				tt.spec,
+				store.AssistantApprovalModeAlwaysAsk,
+				newProjectEinoAssistantRunState(),
+				tt.args,
+			)
+			if got != projectAssistantPermissionAsk {
+				t.Fatalf("permission = %q, want explicit user preference to ask", got)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantRuntimeGraphToolsRespectApprovalMode(t *testing.T) {
+	tests := []struct {
+		name string
+		new  func(projectAssistantWorkflowRunContext) (einotool.BaseTool, error)
+	}{
+		{name: "restart", new: newProjectAssistantRestartRuntimeGraphTool},
+		{name: "set runtime env", new: newProjectAssistantSetRuntimeEnvGraphTool},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			autoTool, err := tt.new(projectAssistantWorkflowRunContext{ApprovalMode: store.AssistantApprovalModeAutoApprove})
+			if err != nil {
+				t.Fatalf("create auto-approve tool: %v", err)
+			}
+			if _, wrapped := autoTool.(approvaltool.InvokableApprovableTool); wrapped {
+				t.Fatal("auto-approve runtime tool retained an unconditional approval wrapper")
+			}
+
+			askTool, err := tt.new(projectAssistantWorkflowRunContext{ApprovalMode: store.AssistantApprovalModeAlwaysAsk})
+			if err != nil {
+				t.Fatalf("create always-ask tool: %v", err)
+			}
+			if _, wrapped := askTool.(approvaltool.InvokableApprovableTool); !wrapped {
+				t.Fatal("always-ask runtime tool is missing its approval wrapper")
+			}
+		})
 	}
 }
 

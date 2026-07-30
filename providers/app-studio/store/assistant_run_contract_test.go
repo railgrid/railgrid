@@ -60,7 +60,7 @@ func TestMemoryStoreCreateAssistantRunIsAtomicAndIdempotent(t *testing.T) {
 
 	created, err := store.CreateAssistantRun(
 		context.Background(), scope,
-		Message{ID: "user-1", Role: "user", Content: "Build a dashboard", CreatedAt: createdAt, UpdatedAt: createdAt},
+		Message{ID: "user-1", Role: "user", ActorID: "actor-1", Content: "Build a dashboard", CreatedAt: createdAt, UpdatedAt: createdAt},
 		Message{ID: "assistant-1", Role: "assistant", Content: "", CreatedAt: createdAt.Add(time.Microsecond), UpdatedAt: createdAt.Add(time.Microsecond)},
 		first,
 	)
@@ -81,7 +81,7 @@ func TestMemoryStoreCreateAssistantRunIsAtomicAndIdempotent(t *testing.T) {
 
 	recovered, err := store.CreateAssistantRun(
 		context.Background(), scope,
-		Message{ID: "user-retry", Role: "user", Content: "different retry payload", CreatedAt: createdAt.Add(time.Minute), UpdatedAt: createdAt.Add(time.Minute)},
+		Message{ID: "user-retry", Role: "user", ActorID: "actor-1", Content: "different retry payload", CreatedAt: createdAt.Add(time.Minute), UpdatedAt: createdAt.Add(time.Minute)},
 		Message{ID: "assistant-retry", Role: "assistant", Content: "different retry payload", CreatedAt: createdAt.Add(time.Minute), UpdatedAt: createdAt.Add(time.Minute)},
 		testAssistantRun(t, "run-retry", "request-1", "assistant-retry", createdAt.Add(time.Minute)),
 	)
@@ -120,14 +120,14 @@ func TestMemoryAndEncryptedAssistantRunPreserveOriginatingUserMessageIDOnRetry(t
 			now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 			run := testAssistantRun(t, "run-1", "request-1", "assistant-1", now)
 			created, err := durable.CreateAssistantRun(context.Background(), scope,
-				Message{ID: "user-1", Role: "user", Content: "origin", CreatedAt: now, UpdatedAt: now},
+				Message{ID: "user-1", Role: "user", ActorID: "actor-1", Content: "origin", CreatedAt: now, UpdatedAt: now},
 				Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}, run)
 			if err != nil {
 				t.Fatalf("CreateAssistantRun: %v", err)
 			}
 			retry := testAssistantRun(t, "run-retry", "request-1", "assistant-retry", now.Add(time.Minute))
 			recovered, err := durable.CreateAssistantRun(context.Background(), scope,
-				Message{ID: "user-retry", Role: "user", Content: "retry", CreatedAt: now, UpdatedAt: now},
+				Message{ID: "user-retry", Role: "user", ActorID: "actor-1", Content: "retry", CreatedAt: now, UpdatedAt: now},
 				Message{ID: "assistant-retry", Role: "assistant", CreatedAt: now, UpdatedAt: now}, retry)
 			if err != nil {
 				t.Fatalf("retry CreateAssistantRun: %v", err)
@@ -144,7 +144,7 @@ func TestMemoryStoreRejectsSecondNonterminalAssistantRun(t *testing.T) {
 	scope := testAssistantRunScope()
 	createdAt := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	if _, err := store.CreateAssistantRun(context.Background(), scope,
-		Message{ID: "user-1", Role: "user", Content: "first", CreatedAt: createdAt, UpdatedAt: createdAt},
+		Message{ID: "user-1", Role: "user", ActorID: "actor-1", Content: "first", CreatedAt: createdAt, UpdatedAt: createdAt},
 		Message{ID: "assistant-1", Role: "assistant", CreatedAt: createdAt, UpdatedAt: createdAt},
 		testAssistantRun(t, "run-1", "request-1", "assistant-1", createdAt),
 	); err != nil {
@@ -152,7 +152,7 @@ func TestMemoryStoreRejectsSecondNonterminalAssistantRun(t *testing.T) {
 	}
 
 	_, err := store.CreateAssistantRun(context.Background(), scope,
-		Message{ID: "user-2", Role: "user", Content: "second", CreatedAt: createdAt.Add(time.Minute), UpdatedAt: createdAt.Add(time.Minute)},
+		Message{ID: "user-2", Role: "user", ActorID: "actor-1", Content: "second", CreatedAt: createdAt.Add(time.Minute), UpdatedAt: createdAt.Add(time.Minute)},
 		Message{ID: "assistant-2", Role: "assistant", CreatedAt: createdAt.Add(time.Minute), UpdatedAt: createdAt.Add(time.Minute)},
 		testAssistantRun(t, "run-2", "request-2", "assistant-2", createdAt.Add(time.Minute)),
 	)
@@ -172,7 +172,7 @@ func TestMemoryStoreConcurrentCreateAllowsOneNonterminalRun(t *testing.T) {
 		go func() {
 			<-start
 			_, err := store.CreateAssistantRun(context.Background(), scope,
-				Message{ID: "user-" + string(rune('0'+i)), Role: "user", Content: "request", CreatedAt: createdAt, UpdatedAt: createdAt},
+				Message{ID: "user-" + string(rune('0'+i)), Role: "user", ActorID: "actor-1", Content: "request", CreatedAt: createdAt, UpdatedAt: createdAt},
 				Message{ID: "assistant-" + string(rune('0'+i)), Role: "assistant", CreatedAt: createdAt, UpdatedAt: createdAt},
 				testAssistantRun(t, "run-"+string(rune('0'+i)), "request-"+string(rune('0'+i)), "assistant-"+string(rune('0'+i)), createdAt),
 			)
@@ -354,7 +354,7 @@ func TestMemoryStoreFindsLatestRunAndClientRequest(t *testing.T) {
 	}
 	second := testAssistantRun(t, "run-2", "request-2", "assistant-2", createdAt.Add(2*time.Minute))
 	if _, err := store.CreateAssistantRun(context.Background(), scope,
-		Message{ID: "user-2", Role: "user", Content: "second", CreatedAt: second.CreatedAt, UpdatedAt: second.CreatedAt},
+		Message{ID: "user-2", Role: "user", ActorID: "actor-1", Content: "second", CreatedAt: second.CreatedAt, UpdatedAt: second.CreatedAt},
 		Message{ID: assistantRunString(t, second, "ActiveMessageID"), Role: "assistant", CreatedAt: second.CreatedAt, UpdatedAt: second.CreatedAt},
 		second,
 	); err != nil {
@@ -374,65 +374,6 @@ func TestMemoryStoreFindsLatestRunAndClientRequest(t *testing.T) {
 	}
 	if latest.ID != second.ID {
 		t.Fatalf("latest run = %q, want %q", latest.ID, second.ID)
-	}
-}
-
-func TestMemoryAndEncryptedStoresDoNotReserveAssistantRunIDs(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		new  func(*testing.T) Store
-	}{
-		{name: "memory", new: func(*testing.T) Store { return NewMemoryStore() }},
-		{name: "encrypted", new: func(t *testing.T) Store {
-			wrapped, err := NewEncryptedStore(NewMemoryStore(), testEncryptionKeys(t))
-			if err != nil {
-				t.Fatal(err)
-			}
-			return wrapped
-		}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			store := mustDurableAssistantRunStore(t, tt.new(t))
-			scope := testAssistantRunScope()
-			createdAt := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
-			active := createTestAssistantRun(t, store, scope, createdAt)
-
-			grant := AssistantRun{
-				ID:              AssistantRunIDApprovedPlanGrant,
-				Status:          AssistantRunStatusCompleted,
-				ClientRequestID: "internal-grant-request",
-				RequestID:       "grant-revision",
-				Checkpoint:      json.RawMessage(`{"revision":"grant-revision"}`),
-				CreatedAt:       createdAt.Add(time.Minute),
-				UpdatedAt:       createdAt.Add(time.Minute),
-			}
-			if err := store.CompareAndSwapAssistantRun(ctx, scope, grant, ""); err != nil {
-				t.Fatalf("persist ordinary run: %v", err)
-			}
-
-			latest, err := store.LatestAssistantRun(ctx, scope)
-			if err != nil {
-				t.Fatalf("LatestAssistantRun: %v", err)
-			}
-			if latest.ID != grant.ID {
-				t.Fatalf("latest run = %q, want ordinary run %q", latest.ID, grant.ID)
-			}
-			if found, err := store.FindAssistantRunByClientRequestID(ctx, scope, grant.ClientRequestID); err != nil || found.ID != grant.ID {
-				t.Fatalf("ordinary run lookup = %#v, %v", found, err)
-			}
-
-			deleted, err := store.DeleteMessagesOlderThan(ctx, createdAt.Add(2*time.Minute))
-			if err != nil {
-				t.Fatalf("DeleteMessagesOlderThan: %v", err)
-			}
-			if deleted != 3 { // user, assistant, and the old terminal ordinary run
-				t.Fatalf("deleted = %d, want 3 records", deleted)
-			}
-			if latest, err := store.LatestAssistantRun(ctx, scope); err != nil || latest.ID != active.ID {
-				t.Fatalf("LatestAssistantRun after retention = %#v, %v; want active run %q", latest, err, active.ID)
-			}
-		})
 	}
 }
 
@@ -490,7 +431,7 @@ func TestMemoryStoreRecoversCompletedRequestWhileAnotherRunIsActive(t *testing.T
 	}
 	active := testAssistantRun(t, "run-2", "request-2", "assistant-2", createdAt.Add(2*time.Minute))
 	if _, err := store.CreateAssistantRun(context.Background(), scope,
-		Message{ID: "user-2", Role: "user", Content: "second", CreatedAt: active.CreatedAt, UpdatedAt: active.CreatedAt},
+		Message{ID: "user-2", Role: "user", ActorID: "actor-1", Content: "second", CreatedAt: active.CreatedAt, UpdatedAt: active.CreatedAt},
 		Message{ID: active.ActiveMessageID, Role: "assistant", CreatedAt: active.CreatedAt, UpdatedAt: active.CreatedAt},
 		active,
 	); err != nil {
@@ -498,7 +439,7 @@ func TestMemoryStoreRecoversCompletedRequestWhileAnotherRunIsActive(t *testing.T
 	}
 	for attempt := 0; attempt < 100; attempt++ {
 		recovered, err := store.CreateAssistantRun(context.Background(), scope,
-			Message{ID: "user-retry", Role: "user", Content: "retry", CreatedAt: createdAt.Add(3 * time.Minute), UpdatedAt: createdAt.Add(3 * time.Minute)},
+			Message{ID: "user-retry", Role: "user", ActorID: "actor-1", Content: "retry", CreatedAt: createdAt.Add(3 * time.Minute), UpdatedAt: createdAt.Add(3 * time.Minute)},
 			Message{ID: "assistant-retry", Role: "assistant", CreatedAt: createdAt.Add(3 * time.Minute), UpdatedAt: createdAt.Add(3 * time.Minute)},
 			testAssistantRun(t, "run-retry", completed.ClientRequestID, "assistant-retry", createdAt.Add(3*time.Minute)),
 		)
@@ -532,7 +473,7 @@ func TestMemoryAndEncryptedStoresDeleteDurableRunAndMessages(t *testing.T) {
 			createdAt := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 			run := testAssistantRun(t, "run-1", "request-1", "assistant-1", createdAt)
 			if _, err := store.CreateAssistantRun(context.Background(), scope,
-				Message{ID: "user-1", Role: "user", Content: "delete me", CreatedAt: createdAt, UpdatedAt: createdAt},
+				Message{ID: "user-1", Role: "user", ActorID: "actor-1", Content: "delete me", CreatedAt: createdAt, UpdatedAt: createdAt},
 				Message{ID: run.ActiveMessageID, Role: "assistant", Content: "delete me too", CreatedAt: createdAt, UpdatedAt: createdAt},
 				run,
 			); err != nil {
@@ -568,7 +509,7 @@ func TestEncryptedStoreEncryptsDurableAssistantRunSnapshots(t *testing.T) {
 	run.Checkpoint = json.RawMessage(`{"tool":"write_file","content":"secret"}`)
 	run.Audit = json.RawMessage(`{"result":"secret"}`)
 	if _, err := durable.CreateAssistantRun(context.Background(), scope,
-		Message{ID: "user-1", Role: "user", Content: "secret prompt", CreatedAt: createdAt, UpdatedAt: createdAt},
+		Message{ID: "user-1", Role: "user", ActorID: "actor-1", Content: "secret prompt", CreatedAt: createdAt, UpdatedAt: createdAt},
 		Message{ID: assistantRunString(t, run, "ActiveMessageID"), Role: "assistant", Content: "", CreatedAt: createdAt, UpdatedAt: createdAt},
 		run,
 	); err != nil {
@@ -652,7 +593,7 @@ func createTestAssistantRun(t *testing.T, store durableAssistantRunStore, scope 
 	t.Helper()
 	run := testAssistantRun(t, "run-1", "request-1", "assistant-1", createdAt)
 	created, err := store.CreateAssistantRun(context.Background(), scope,
-		Message{ID: "user-1", Role: "user", Content: "first", CreatedAt: createdAt, UpdatedAt: createdAt},
+		Message{ID: "user-1", Role: "user", ActorID: "actor-1", Content: "first", CreatedAt: createdAt, UpdatedAt: createdAt},
 		Message{ID: assistantRunString(t, run, "ActiveMessageID"), Role: "assistant", CreatedAt: createdAt, UpdatedAt: createdAt},
 		run,
 	)
@@ -666,6 +607,7 @@ func testAssistantRun(t *testing.T, id, clientRequestID, activeMessageID string,
 	t.Helper()
 	return withAssistantRunFields(t, AssistantRun{
 		ID:        id,
+		Mode:      AssistantRunModeDiscussion,
 		Status:    AssistantRunStatusRunning,
 		CreatedAt: createdAt,
 		UpdatedAt: createdAt,
@@ -675,6 +617,55 @@ func testAssistantRun(t *testing.T, id, clientRequestID, activeMessageID string,
 		"UserMessageID":   strings.Replace(activeMessageID, "assistant", "user", 1),
 		"Revision":        int64(1),
 	})
+}
+
+func TestValidateNewAssistantRunRequiresOriginAndConsistentMode(t *testing.T) {
+	user := Message{ID: "user", Role: "user", ActorID: "actor-1"}
+	assistant := Message{ID: "assistant", Role: "assistant"}
+	base := AssistantRun{ID: "run", Mode: AssistantRunModeDiscussion, Status: AssistantRunStatusRunning, ClientRequestID: "request", UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 1}
+	if err := validateNewAssistantRun(user, assistant, base); err != nil {
+		t.Fatalf("valid discussion run: %v", err)
+	}
+	for name, run := range map[string]AssistantRun{
+		"missing origin":        func() AssistantRun { r := base; r.UserMessageID = ""; return r }(),
+		"mismatched origin":     func() AssistantRun { r := base; r.UserMessageID = "other"; return r }(),
+		"missing mode":          func() AssistantRun { r := base; r.Mode = ""; return r }(),
+		"discussion work item":  func() AssistantRun { r := base; r.WorkItemID = "item"; return r }(),
+		"new without work item": func() AssistantRun { r := base; r.Mode = AssistantRunModeNew; return r }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateNewAssistantRun(user, assistant, run); err == nil {
+				t.Fatal("accepted invalid run")
+			}
+		})
+	}
+	for name, messages := range map[string]struct{ user, assistant Message }{
+		"user role":        {user: Message{ID: user.ID, Role: "assistant", ActorID: user.ActorID}, assistant: assistant},
+		"blank user actor": {user: Message{ID: user.ID, Role: "user", ActorID: "  "}, assistant: assistant},
+		"assistant role":   {user: user, assistant: Message{ID: assistant.ID, Role: "user"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateNewAssistantRun(messages.user, messages.assistant, base); err == nil {
+				t.Fatal("accepted invalid messages")
+			}
+		})
+	}
+	mutation := base
+	mutation.Mode, mutation.WorkItemID = AssistantRunModeNew, "item"
+	user.WorkItemID, assistant.WorkItemID = mutation.WorkItemID, mutation.WorkItemID
+	if err := validateNewAssistantRun(user, assistant, mutation); err != nil {
+		t.Fatalf("valid mutation run: %v", err)
+	}
+	for name, messages := range map[string]struct{ user, assistant Message }{
+		"user work item":      {user: Message{ID: user.ID, Role: "user", ActorID: user.ActorID}, assistant: assistant},
+		"assistant work item": {user: user, assistant: Message{ID: assistant.ID, Role: "assistant"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateNewAssistantRun(messages.user, messages.assistant, mutation); err == nil {
+				t.Fatal("accepted mutation messages with mismatched work item")
+			}
+		})
+	}
 }
 
 func withAssistantRunRevision(t *testing.T, run AssistantRun, revision int64) AssistantRun {

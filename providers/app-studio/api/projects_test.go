@@ -52,6 +52,13 @@ func TestProjectAssistantTurnDecisionForStreamStartUsesPrecomputedDecision(t *te
 	}
 }
 
+func TestProjectInitialBootstrapPromptDigestDoesNotExposePrompt(t *testing.T) {
+	digest := projectInitialBootstrapPromptDigest("Build a todo app")
+	if digest == projectInitialBootstrapPromptDigest("Build an unbounded platform") || digest == "Build a todo app" {
+		t.Fatalf("prompt digest did not distinguish or conceal the creation prompt: %q", digest)
+	}
+}
+
 func TestGenerateProjectAssistantStreamWithStartBypassesRouter(t *testing.T) {
 	messages := store.NewMemoryStore()
 	workspaces := workspace.NewFileStore(t.TempDir())

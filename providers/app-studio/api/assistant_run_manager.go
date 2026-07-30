@@ -29,7 +29,6 @@ type projectAssistantTurnKind string
 const (
 	projectAssistantTurnMessage projectAssistantTurnKind = "message"
 	projectAssistantTurnResume  projectAssistantTurnKind = "resume"
-	projectAssistantTurnAbort   projectAssistantTurnKind = "abort"
 )
 
 const projectAssistantRunHandoffTimeout = 10 * time.Second
@@ -86,11 +85,13 @@ type projectAssistantRunKey struct {
 }
 
 func (k projectAssistantRunKey) valid() bool {
-	return strings.TrimSpace(k.OrgUUID) != "" && strings.TrimSpace(k.WorkspaceUUID) != "" && strings.TrimSpace(k.ProjectName) != ""
+	return strings.TrimSpace(k.OrgUUID) != "" &&
+		strings.TrimSpace(k.WorkspaceUUID) != "" &&
+		strings.TrimSpace(k.ProjectName) != "" &&
+		strings.TrimSpace(k.ProjectUID) != ""
 }
 
 type projectAssistantActiveTurn struct {
-	item   projectAssistantTurnItem
 	cancel context.CancelCauseFunc
 	done   chan struct{}
 }
@@ -118,7 +119,6 @@ func (m *projectAssistantRunManager) Begin(ctx context.Context, item projectAssi
 	}
 	runCtx, cancel := context.WithCancelCause(ctx)
 	active := &projectAssistantActiveTurn{
-		item:   item,
 		cancel: cancel,
 		done:   make(chan struct{}),
 	}

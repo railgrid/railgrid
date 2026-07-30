@@ -23,6 +23,29 @@ import (
 	"testing"
 )
 
+func TestProjectAssistantDeepIterationsConfiguration(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	tests := []struct {
+		value string
+		want  int
+	}{
+		{value: "", want: maxAssistantDeepIterations},
+		{value: "48", want: 48},
+		{value: " unlimited ", want: maxInt},
+		{value: "UNLIMITED", want: maxInt},
+		{value: "0", want: maxAssistantDeepIterations},
+		{value: "-1", want: maxAssistantDeepIterations},
+		{value: "invalid", want: maxAssistantDeepIterations},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			if got := projectAssistantDeepIterationsForValue(tt.value); got != tt.want {
+				t.Fatalf("iterations for %q = %d, want %d", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNewProjectEinoAssistantModelFactoryUsesNativeOpenAIModel(t *testing.T) {
 	factory := newProjectEinoAssistantModelFactory(&Server{})
 	model, err := factory(context.Background(), projectAssistantRunRequest{

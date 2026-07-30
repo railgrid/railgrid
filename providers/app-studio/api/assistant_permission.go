@@ -119,7 +119,6 @@ func projectAssistantPermissionForToolWithRunState(spec projectAssistantToolSpec
 func projectAssistantPermissionForApprovalMode(
 	spec projectAssistantToolSpec,
 	mode store.AssistantApprovalMode,
-	legacyAutoApprove bool,
 	runState *projectEinoAssistantRunState,
 	args map[string]any,
 ) projectAssistantPermissionDecision {
@@ -127,7 +126,7 @@ func projectAssistantPermissionForApprovalMode(
 		return projectAssistantPermissionForToolWithRunState(spec, false, runState, args)
 	}
 	if mode != store.AssistantApprovalModeAutoApprove {
-		return projectAssistantPermissionForToolWithRunState(spec, legacyAutoApprove, runState, args)
+		return projectAssistantPermissionForToolWithRunState(spec, false, runState, args)
 	}
 	switch spec.Risk {
 	case projectAssistantToolRiskRead, projectAssistantToolRiskInput:

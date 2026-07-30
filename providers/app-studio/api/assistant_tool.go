@@ -114,15 +114,19 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 }
 
 type projectAssistantToolCallRequest struct {
-	Identity             identity
-	Project              *aiv1alpha1.Project
-	Repository           *ProjectRepositoryView
-	WorkspaceScope       workspace.Scope
-	ProjectRepositoryRef string
-	MCPEndpoint          string
-	HTTPRequest          *http.Request
-	SessionSnapshot      *projectEinoAssistantSessionSnapshot
-	Arguments            map[string]any
+	Identity              identity
+	Project               *aiv1alpha1.Project
+	Repository            *ProjectRepositoryView
+	WorkspaceScope        workspace.Scope
+	ProjectRepositoryRef  string
+	MCPEndpoint           string
+	HTTPRequest           *http.Request
+	SessionSnapshot       *projectEinoAssistantSessionSnapshot
+	AssistantRunID        string
+	InitialBuild          bool
+	EnforceMutationSafety bool
+	ObservedReadFiles     []string
+	Arguments             map[string]any
 }
 
 func refreshProjectToolSnapshot(current, updated *aiv1alpha1.Project) {

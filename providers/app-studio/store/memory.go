@@ -27,20 +27,68 @@ import (
 // MemoryStore is an in-memory implementation used for tests and explicit
 // local development. It must not be used as a silent production fallback.
 type MemoryStore struct {
-	mu            sync.RWMutex
-	messages      map[Scope]map[string]Message
-	assistantRuns map[Scope]map[string]AssistantRun
-	workItems     map[Scope]map[string]AssistantWorkItem
-	approvalModes map[Scope]map[string]AssistantApprovalPreference
+	mu               sync.RWMutex
+	messages         map[Scope]map[string]Message
+	assistantRuns    map[Scope]map[string]AssistantRun
+	workItems        map[Scope]map[string]AssistantWorkItem
+	approvalModes    map[Scope]map[string]AssistantApprovalPreference
+	bootstrapPermits map[Scope]projectBootstrapPermit
+}
+
+type projectBootstrapPermit struct {
+	actor, promptDigest, clientRequestID string
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		messages:      map[Scope]map[string]Message{},
-		assistantRuns: map[Scope]map[string]AssistantRun{},
-		workItems:     map[Scope]map[string]AssistantWorkItem{},
-		approvalModes: map[Scope]map[string]AssistantApprovalPreference{},
+		messages:         map[Scope]map[string]Message{},
+		assistantRuns:    map[Scope]map[string]AssistantRun{},
+		workItems:        map[Scope]map[string]AssistantWorkItem{},
+		approvalModes:    map[Scope]map[string]AssistantApprovalPreference{},
+		bootstrapPermits: map[Scope]projectBootstrapPermit{},
 	}
+}
+
+func (s *MemoryStore) CreateProjectBootstrapPermit(_ context.Context, scope Scope, actor, promptDigest string) error {
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	actor, promptDigest = strings.TrimSpace(actor), strings.TrimSpace(promptDigest)
+	if actor == "" || promptDigest == "" {
+		return fmt.Errorf("bootstrap permit actor and prompt digest are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.bootstrapPermits[scope]; ok {
+		if existing.actor != actor || existing.promptDigest != promptDigest {
+			return ErrProjectBootstrapPermitConflict
+		}
+		return nil
+	}
+	s.bootstrapPermits[scope] = projectBootstrapPermit{actor: actor, promptDigest: promptDigest}
+	return nil
+}
+
+func (s *MemoryStore) ConsumeProjectBootstrapPermit(_ context.Context, scope Scope, actor, promptDigest, clientRequestID string, _ time.Time) (bool, error) {
+	if err := scope.validate(); err != nil {
+		return false, err
+	}
+	actor, promptDigest, clientRequestID = strings.TrimSpace(actor), strings.TrimSpace(promptDigest), strings.TrimSpace(clientRequestID)
+	if actor == "" || promptDigest == "" || clientRequestID == "" {
+		return false, fmt.Errorf("bootstrap permit actor, prompt digest, and client request ID are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	permit, ok := s.bootstrapPermits[scope]
+	if !ok || permit.actor != actor || permit.promptDigest != promptDigest {
+		return false, nil
+	}
+	if permit.clientRequestID != "" && permit.clientRequestID != clientRequestID {
+		return false, ErrProjectBootstrapPermitConflict
+	}
+	permit.clientRequestID = clientRequestID
+	s.bootstrapPermits[scope] = permit
+	return true, nil
 }
 
 func (s *MemoryStore) EnsureSchema(context.Context) error { return nil }
@@ -58,7 +106,7 @@ func (s *MemoryStore) GetAssistantApprovalPreference(_ context.Context, scope Sc
 	if preference, ok := s.approvalModes[scope][actor]; ok {
 		return preference, nil
 	}
-	return AssistantApprovalPreference{ActorID: actor, Mode: AssistantApprovalModeAlwaysAsk}, nil
+	return AssistantApprovalPreference{ActorID: actor, Mode: AssistantApprovalModeAutoApprove}, nil
 }
 
 func (s *MemoryStore) SetAssistantApprovalPreference(_ context.Context, scope Scope, preference AssistantApprovalPreference) (AssistantApprovalPreference, error) {
@@ -164,6 +212,14 @@ func (s *MemoryStore) ListMessages(_ context.Context, scope Scope, limit int, cu
 }
 
 func (s *MemoryStore) LoadRecentMessages(_ context.Context, scope Scope, limit int) ([]Message, error) {
+	return s.loadRecentMessages(scope, limit, false)
+}
+
+func (s *MemoryStore) LoadRecentDiscussionMessages(_ context.Context, scope Scope, limit int) ([]Message, error) {
+	return s.loadRecentMessages(scope, limit, true)
+}
+
+func (s *MemoryStore) loadRecentMessages(scope Scope, limit int, discussionOnly bool) ([]Message, error) {
 	if err := scope.validate(); err != nil {
 		return nil, err
 	}
@@ -173,6 +229,9 @@ func (s *MemoryStore) LoadRecentMessages(_ context.Context, scope Scope, limit i
 
 	var all []Message
 	for _, msg := range s.messages[scope] {
+		if discussionOnly && msg.WorkItemID != "" {
+			continue
+		}
 		msg.ProjectName = scope.ProjectName
 		all = append(all, cloneMessage(msg))
 	}
@@ -229,16 +288,16 @@ func (s *MemoryStore) SaveAssistantRun(_ context.Context, scope Scope, run Assis
 		run.ApprovalMode = existing.ApprovalMode
 		run.ExpectedGrantRevision = existing.ExpectedGrantRevision
 	}
-	if AssistantRunIsConversation(run) && run.ClientRequestID != "" {
+	if run.ClientRequestID != "" {
 		for id, existing := range s.assistantRuns[scope] {
-			if id != run.ID && AssistantRunIsConversation(existing) && existing.ClientRequestID == run.ClientRequestID {
+			if id != run.ID && existing.ClientRequestID == run.ClientRequestID {
 				return fmt.Errorf("%w: client request %q", ErrAssistantRunConflict, run.ClientRequestID)
 			}
 		}
 	}
-	if AssistantRunIsConversation(run) && !assistantRunStatusTerminal(run.Status) {
+	if !assistantRunStatusTerminal(run.Status) {
 		for id, existing := range s.assistantRuns[scope] {
-			if id != run.ID && AssistantRunIsConversation(existing) && !assistantRunStatusTerminal(existing.Status) {
+			if id != run.ID && !assistantRunStatusTerminal(existing.Status) {
 				return fmt.Errorf("%w: project already has active assistant run %q", ErrAssistantRunConflict, existing.ID)
 			}
 		}
@@ -608,6 +667,14 @@ func (s *MemoryStore) RetireWorkItemPlan(_ context.Context, scope Scope, workIte
 }
 
 func (s *MemoryStore) TransitionWorkItemAndRun(_ context.Context, scope Scope, workItemID string, expectedWorkItemRevision int64, run AssistantRun, status AssistantWorkItemStatus, reason string, now time.Time) error {
+	return s.transitionWorkItemAndRun(scope, workItemID, expectedWorkItemRevision, run, status, reason, Message{}, now)
+}
+
+func (s *MemoryStore) TransitionWorkItemAndRunWithAssistantMessage(_ context.Context, scope Scope, workItemID string, expectedWorkItemRevision int64, run AssistantRun, status AssistantWorkItemStatus, reason string, assistant Message, now time.Time) error {
+	return s.transitionWorkItemAndRun(scope, workItemID, expectedWorkItemRevision, run, status, reason, assistant, now)
+}
+
+func (s *MemoryStore) transitionWorkItemAndRun(scope Scope, workItemID string, expectedWorkItemRevision int64, run AssistantRun, status AssistantWorkItemStatus, reason string, assistant Message, now time.Time) error {
 	if err := scope.validate(); err != nil {
 		return err
 	}
@@ -649,12 +716,35 @@ func (s *MemoryStore) TransitionWorkItemAndRun(_ context.Context, scope Scope, w
 	item.Revision++
 	item.UpdatedAt = now.UTC()
 	run.UpdatedAt = now.UTC()
+	if err := validateAssistantLifecycleMessage(assistant, run, workItemID); err != nil {
+		return err
+	}
+	if assistant.ID != "" {
+		assistant = prepareMessage(scope, assistant)
+		if existing, ok := s.messages[scope][assistant.ID]; ok && (existing.WorkItemID != assistant.WorkItemID || existing.ActorID != assistant.ActorID) {
+			return fmt.Errorf("%w: message %q actor and work item are immutable", ErrAssistantWorkItemConflict, assistant.ID)
+		}
+	}
 	s.workItems[scope][workItemID] = item
 	s.assistantRuns[scope][run.ID] = run
+	if assistant.ID != "" {
+		if s.messages[scope] == nil {
+			s.messages[scope] = map[string]Message{}
+		}
+		s.messages[scope][assistant.ID] = assistant
+	}
 	return nil
 }
 
 func (s *MemoryStore) RequestAssistantRunStop(_ context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, now time.Time) (AssistantRun, error) {
+	return s.requestAssistantRunStop(scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, Message{}, now)
+}
+
+func (s *MemoryStore) RequestAssistantRunStopWithAssistantMessage(_ context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error) {
+	return s.requestAssistantRunStop(scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, assistant, now)
+}
+
+func (s *MemoryStore) requestAssistantRunStop(scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error) {
 	if err := scope.validate(); err != nil {
 		return AssistantRun{}, err
 	}
@@ -675,15 +765,33 @@ func (s *MemoryStore) RequestAssistantRunStop(_ context.Context, scope Scope, wo
 		if !ok || item.Revision != expectedWorkItemRevision || item.Status != AssistantWorkItemStatusActive || item.ActiveRunID != runID {
 			return AssistantRun{}, fmt.Errorf("%w: work item %q", ErrAssistantWorkItemConflict, workItemID)
 		}
+	}
+	run.Status = AssistantRunStatusStopping
+	run.Revision++
+	run.UpdatedAt = now.UTC()
+	if err := validateAssistantLifecycleMessage(assistant, run, workItemID); err != nil {
+		return AssistantRun{}, err
+	}
+	if assistant.ID != "" {
+		assistant = prepareMessage(scope, assistant)
+		if existing, ok := s.messages[scope][assistant.ID]; ok && (existing.WorkItemID != assistant.WorkItemID || existing.ActorID != assistant.ActorID) {
+			return AssistantRun{}, fmt.Errorf("%w: message %q actor and work item are immutable", ErrAssistantWorkItemConflict, assistant.ID)
+		}
+	}
+	if workItemID != "" {
+		item := s.workItems[scope][workItemID]
 		item.PlanGrant = nil
 		item.GrantRevision = ""
 		item.Revision++
 		item.UpdatedAt = now.UTC()
 		s.workItems[scope][workItemID] = item
 	}
-	run.Status = AssistantRunStatusStopping
-	run.Revision++
-	run.UpdatedAt = now.UTC()
+	if assistant.ID != "" {
+		if s.messages[scope] == nil {
+			s.messages[scope] = map[string]Message{}
+		}
+		s.messages[scope][assistant.ID] = assistant
+	}
 	s.assistantRuns[scope][runID] = run
 	return cloneAssistantRun(run), nil
 }
@@ -741,13 +849,13 @@ func (s *MemoryStore) CreateAssistantRun(_ context.Context, scope Scope, user Me
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.assistantRuns[scope] {
-		if AssistantRunIsConversation(existing) && existing.ClientRequestID == run.ClientRequestID {
+		if existing.ClientRequestID == run.ClientRequestID {
 			return cloneAssistantRun(existing), nil
 		}
 	}
-	if AssistantRunIsConversation(run) && !assistantRunStatusTerminal(run.Status) {
+	if !assistantRunStatusTerminal(run.Status) {
 		for _, existing := range s.assistantRuns[scope] {
-			if AssistantRunIsConversation(existing) && !assistantRunStatusTerminal(existing.Status) {
+			if !assistantRunStatusTerminal(existing.Status) {
 				return AssistantRun{}, fmt.Errorf("%w: project already has active assistant run %q", ErrAssistantRunConflict, existing.ID)
 			}
 		}
@@ -783,9 +891,9 @@ func (s *MemoryStore) SaveAssistantRunSnapshot(_ context.Context, scope Scope, r
 	if !ok || current.Revision != expectedRevision {
 		return fmt.Errorf("%w: assistant run %q", ErrAssistantRunConflict, run.ID)
 	}
-	if AssistantRunIsConversation(run) && !assistantRunStatusTerminal(run.Status) {
+	if !assistantRunStatusTerminal(run.Status) {
 		for id, existing := range s.assistantRuns[scope] {
-			if id != run.ID && AssistantRunIsConversation(existing) && !assistantRunStatusTerminal(existing.Status) {
+			if id != run.ID && !assistantRunStatusTerminal(existing.Status) {
 				return fmt.Errorf("%w: project already has active assistant run %q", ErrAssistantRunConflict, existing.ID)
 			}
 		}
@@ -805,60 +913,6 @@ func (s *MemoryStore) SaveAssistantRunSnapshot(_ context.Context, scope Scope, r
 			return fmt.Errorf("%w: message %q actor and work item are immutable", ErrAssistantWorkItemConflict, message.ID)
 		}
 		s.messages[scope][message.ID] = message
-	}
-	s.assistantRuns[scope][run.ID] = run
-	return nil
-}
-
-func (s *MemoryStore) CompareAndSwapAssistantRun(_ context.Context, scope Scope, run AssistantRun, expectedRequestID string) error {
-	if err := scope.validate(); err != nil {
-		return err
-	}
-	if run.ID == "" {
-		return fmt.Errorf("assistant run id is required")
-	}
-	if run.Status == "" {
-		return fmt.Errorf("assistant run status is required")
-	}
-	approvalMode, err := NormalizeAssistantApprovalMode(run.ApprovalMode)
-	if err != nil {
-		return err
-	}
-	run.ApprovalMode = approvalMode
-	if run.CreatedAt.IsZero() {
-		run.CreatedAt = time.Now().UTC()
-	}
-	if run.UpdatedAt.IsZero() {
-		run.UpdatedAt = run.CreatedAt
-	}
-	run = prepareAssistantRun(scope, run)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, exists := s.assistantRuns[scope][run.ID]
-	if (expectedRequestID == "" && exists && current.RequestID != "") ||
-		(expectedRequestID != "" && (!exists || current.RequestID != expectedRequestID)) {
-		return fmt.Errorf("%w: assistant run %q", ErrAssistantRunConflict, run.ID)
-	}
-	if s.assistantRuns[scope] == nil {
-		s.assistantRuns[scope] = map[string]AssistantRun{}
-	}
-	if exists {
-		run.CreatedAt = current.CreatedAt
-		run.ClientRequestID = current.ClientRequestID
-		run.UserMessageID = current.UserMessageID
-		run.Revision = current.Revision
-		if run.WorkItemID != current.WorkItemID || run.Mode != current.Mode || run.ApprovalMode != current.ApprovalMode {
-			return fmt.Errorf("%w: immutable assistant run work item, mode, or approval mode", ErrAssistantRunConflict)
-		}
-		run.ExpectedGrantRevision = current.ExpectedGrantRevision
-	}
-	if AssistantRunIsConversation(run) && !assistantRunStatusTerminal(run.Status) {
-		for id, existing := range s.assistantRuns[scope] {
-			if id != run.ID && AssistantRunIsConversation(existing) && !assistantRunStatusTerminal(existing.Status) {
-				return fmt.Errorf("%w: project already has active assistant run %q", ErrAssistantRunConflict, existing.ID)
-			}
-		}
 	}
 	s.assistantRuns[scope][run.ID] = run
 	return nil
@@ -931,7 +985,7 @@ func (s *MemoryStore) FindAssistantRunByClientRequestID(_ context.Context, scope
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, run := range s.assistantRuns[scope] {
-		if AssistantRunIsConversation(run) && run.ClientRequestID == clientRequestID {
+		if run.ClientRequestID == clientRequestID {
 			return cloneAssistantRun(run), nil
 		}
 	}
@@ -947,7 +1001,7 @@ func (s *MemoryStore) LatestAssistantRun(_ context.Context, scope Scope) (Assist
 	var latest AssistantRun
 	found := false
 	for _, run := range s.assistantRuns[scope] {
-		if AssistantRunIsConversation(run) && (!found || run.UpdatedAt.After(latest.UpdatedAt) || (run.UpdatedAt.Equal(latest.UpdatedAt) && run.ID > latest.ID)) {
+		if !found || run.UpdatedAt.After(latest.UpdatedAt) || (run.UpdatedAt.Equal(latest.UpdatedAt) && run.ID > latest.ID) {
 			latest = run
 			found = true
 		}
@@ -967,6 +1021,8 @@ func (s *MemoryStore) DeleteProjectMessages(_ context.Context, scope Scope) erro
 	delete(s.messages, scope)
 	delete(s.assistantRuns, scope)
 	delete(s.workItems, scope)
+	delete(s.bootstrapPermits, scope)
+	delete(s.approvalModes, scope)
 	return nil
 }
 
@@ -1033,6 +1089,7 @@ func cloneAssistantRun(run AssistantRun) AssistantRun {
 func cloneAssistantWorkItem(item AssistantWorkItem) AssistantWorkItem {
 	item.PlanGrant = cloneRawMessage(item.PlanGrant)
 	item.ExecutionPlan = cloneRawMessage(item.ExecutionPlan)
+	item.CancellationReceipt = cloneRawMessage(item.CancellationReceipt)
 	return item
 }
 
@@ -1078,6 +1135,7 @@ func prepareAssistantWorkItem(scope Scope, item AssistantWorkItem) AssistantWork
 	item.ProjectUID = scope.ProjectUID
 	item.PlanGrant = cloneRawMessage(item.PlanGrant)
 	item.ExecutionPlan = cloneRawMessage(item.ExecutionPlan)
+	item.CancellationReceipt = cloneRawMessage(item.CancellationReceipt)
 	return item
 }
 
@@ -1085,7 +1143,7 @@ func validateWorkItemCreate(item AssistantWorkItem, user Message, assistant Mess
 	if item.ID == "" || item.RootMessageID == "" || item.CreatedBy == "" || item.Status != AssistantWorkItemStatusActive {
 		return fmt.Errorf("active work item id, root message, and creator are required")
 	}
-	if len(item.PlanGrant) != 0 || item.GrantRevision != "" || run.ExpectedGrantRevision != "" || len(item.ExecutionPlan) != 0 || item.ExecutionPlanRevision != "" {
+	if len(item.PlanGrant) != 0 || item.GrantRevision != "" || run.ExpectedGrantRevision != "" || len(item.ExecutionPlan) != 0 || item.ExecutionPlanRevision != "" || len(item.CancellationReceipt) != 0 {
 		return fmt.Errorf("new work item cannot contain a plan grant or execution plan")
 	}
 	if user.ID != item.RootMessageID || user.Role != "user" || user.ActorID != item.CreatedBy {
@@ -1095,6 +1153,16 @@ func validateWorkItemCreate(item AssistantWorkItem, user Message, assistant Mess
 		return fmt.Errorf("mutation run must be linked to its work item")
 	}
 	return validateNewAssistantRun(user, assistant, run)
+}
+
+func validateAssistantLifecycleMessage(msg Message, run AssistantRun, workItemID string) error {
+	if msg.ID == "" {
+		return nil
+	}
+	if msg.Role != "assistant" || msg.WorkItemID != workItemID || msg.ID != run.ActiveMessageID {
+		return fmt.Errorf("%w: assistant lifecycle message must be the active work item message", ErrAssistantWorkItemConflict)
+	}
+	return nil
 }
 
 func validateNewAssistantRun(user Message, assistant Message, run AssistantRun) error {
@@ -1107,16 +1175,32 @@ func validateNewAssistantRun(user Message, assistant Message, run AssistantRun) 
 	if user.ID == assistant.ID {
 		return fmt.Errorf("user and assistant message ids must differ")
 	}
+	if user.Role != "user" || strings.TrimSpace(user.ActorID) == "" {
+		return fmt.Errorf("user message role and actor are required")
+	}
+	if assistant.Role != "assistant" {
+		return fmt.Errorf("assistant message role is required")
+	}
 	if run.ID == "" || run.Status == "" || run.ClientRequestID == "" || run.ActiveMessageID == "" {
 		return fmt.Errorf("assistant run id, status, client request id, and active message id are required")
 	}
-	// Empty is accepted for pre-durable-run callers and rows created before the
-	// originating-message field existed. New HTTP starts always set it.
-	if run.UserMessageID != "" && run.UserMessageID != user.ID {
+	if run.UserMessageID != user.ID {
 		return fmt.Errorf("assistant run user message id must match user message")
 	}
 	if run.ActiveMessageID != assistant.ID {
 		return fmt.Errorf("assistant run active message id must match assistant message")
+	}
+	switch run.Mode {
+	case AssistantRunModeDiscussion, AssistantRunModeAdaptive:
+		if run.WorkItemID != "" || user.WorkItemID != "" || assistant.WorkItemID != "" {
+			return fmt.Errorf("discussion and adaptive runs cannot have a work item")
+		}
+	case AssistantRunModeNew, AssistantRunModeContinue:
+		if run.WorkItemID == "" || user.WorkItemID != run.WorkItemID || assistant.WorkItemID != run.WorkItemID {
+			return fmt.Errorf("mutation runs require a work item")
+		}
+	default:
+		return fmt.Errorf("assistant run mode is required and invalid")
 	}
 	if run.Revision != 1 {
 		return fmt.Errorf("new assistant run revision must be 1")

@@ -100,6 +100,28 @@ func logProjectAssistantLifecycle(event string, scope store.Scope, run store.Ass
 		"run", run.ID, "revision", run.Revision, "status", run.Status)
 }
 
+func logProjectAssistantFailure(ctx context.Context, event string, scope store.Scope, run store.AssistantRun, cause error) {
+	failure := projectAssistantAuditFailureForError(cause, "")
+	if failure == nil {
+		return
+	}
+	klog.FromContext(ctx).Info("app studio assistant failure",
+		"event", event,
+		"org", scope.OrgUUID,
+		"workspace", scope.WorkspaceUUID,
+		"project", scope.ProjectName,
+		"run", run.ID,
+		"workItem", run.WorkItemID,
+		"revision", run.Revision,
+		"status", run.Status,
+		"failureKind", failure.Kind,
+		"failurePhase", failure.Phase,
+		"failureSummary", failure.Summary,
+		"modelCalls", failure.Calls,
+		"modelCallLimit", failure.Limit,
+	)
+}
+
 func newProjectAssistantSupervisor(parent context.Context, msgStore store.Store) *projectAssistantSupervisor {
 	if parent == nil {
 		parent = context.Background()
@@ -477,9 +499,23 @@ func (s *projectAssistantSupervisor) Stop(scope store.Scope, runID string) (stor
 		itemRevision = item.Revision
 	}
 	now := time.Now().UTC()
+	s.mu.Lock()
+	if current := s.runs[key]; current != active || active.run.ID != runID {
+		s.mu.Unlock()
+		return store.AssistantRun{}, false, store.ErrAssistantRunNotFound
+	}
+	stoppingCandidate := currentRun
+	stoppingCandidate.Status = store.AssistantRunStatusStopping
+	stoppingCandidate.Revision++
+	stoppingCandidate.UpdatedAt = now
+	message := active.message
+	message.UpdatedAt = now
+	provisional, _ := message.Metadata[projectAssistantMetadataProvisional].(bool)
+	message.Metadata = projectAssistantDurableMetadataFromExisting(stoppingCandidate, projectAssistantRunDisplayStatus(store.AssistantRunStatusStopping, "Working"), provisional, message.Metadata)
+	s.mu.Unlock()
 	persistCtx, cancelPersist := context.WithTimeout(context.Background(), projectMessagePersistTimeout)
-	stoppingRun, err := s.store.RequestAssistantRunStop(
-		persistCtx, scope, currentRun.WorkItemID, runID, itemRevision, currentRun.Revision, now,
+	stoppingRun, err := s.store.RequestAssistantRunStopWithAssistantMessage(
+		persistCtx, scope, currentRun.WorkItemID, runID, itemRevision, currentRun.Revision, message, now,
 	)
 	cancelPersist()
 	if err != nil {
@@ -492,22 +528,13 @@ func (s *projectAssistantSupervisor) Stop(scope store.Scope, runID string) (stor
 		return store.AssistantRun{}, false, store.ErrAssistantRunNotFound
 	}
 	active.run = stoppingRun
-	active.message.UpdatedAt = now
-	provisional, _ := active.message.Metadata[projectAssistantMetadataProvisional].(bool)
-	active.message.Metadata = projectAssistantDurableMetadataFromExisting(stoppingRun, projectAssistantRunDisplayStatus(stoppingRun.Status, "Working"), provisional, active.message.Metadata)
-	message := active.message
+	active.message = message
 	active.committedRun, active.committedMessage = stoppingRun, message
 	active.cancel(errProjectAssistantUserStop)
 	for _, subscriber := range active.subscribers {
 		s.sendCoalesced(subscriber, projectAssistantRunSnapshot{Run: stoppingRun, Message: message})
 	}
 	s.mu.Unlock()
-	messageCtx, cancelMessage := context.WithTimeout(context.Background(), projectMessagePersistTimeout)
-	messageErr := s.store.AppendMessage(messageCtx, scope, message)
-	cancelMessage()
-	if messageErr != nil {
-		s.log("stopping_message_persistence_failure", scope, stoppingRun)
-	}
 	s.log("stopping", scope, stoppingRun)
 	return stoppingRun, true, nil
 }
@@ -1035,6 +1062,7 @@ func (a *projectAssistantSnapshotAccumulator) TransitionWorkItemTerminal(
 	defer cancel()
 	item, err := s.store.GetAssistantWorkItem(persistCtx, scope, workItemID)
 	if err != nil {
+		s.recordPersistenceFailure(a.key, a.runID, err)
 		return err
 	}
 	// A repeated terminal call after the atomic transition is an idempotent
@@ -1050,26 +1078,24 @@ func (a *projectAssistantSnapshotAccumulator) TransitionWorkItemTerminal(
 		s.mu.Unlock()
 		return store.ErrAssistantRunNotFound
 	}
-	active.run.Status = runStatus
-	active.run.Revision++
-	active.run.UpdatedAt = time.Now().UTC()
-	active.message.UpdatedAt = active.run.UpdatedAt
-	if mutateMessage != nil {
-		mutateMessage(&active.run, &active.message)
-	}
 	run, message := active.run, active.message
+	run.Status = runStatus
+	run.Revision++
+	run.UpdatedAt = time.Now().UTC()
+	message.UpdatedAt = run.UpdatedAt
+	if mutateMessage != nil {
+		mutateMessage(&run, &message)
+	}
 	s.mu.Unlock()
 
-	err = s.store.TransitionWorkItemAndRun(persistCtx, scope, workItemID, item.Revision, run, itemStatus, reason, run.UpdatedAt)
-	if err == nil {
-		err = s.store.AppendMessage(persistCtx, scope, message)
-	}
+	err = s.store.TransitionWorkItemAndRunWithAssistantMessage(persistCtx, scope, workItemID, item.Revision, run, itemStatus, reason, message, run.UpdatedAt)
 	if err != nil {
 		s.recordPersistenceFailure(a.key, a.runID, err)
 		return fmt.Errorf("persist terminal WorkItem snapshot: %w", err)
 	}
 	s.mu.Lock()
-	if current := s.runs[a.key]; current != nil && current.run.ID == a.runID && current.run.Revision == run.Revision {
+	if current := s.runs[a.key]; current == active && current.run.ID == a.runID && current.run.Revision == run.Revision-1 {
+		current.run, current.message = run, message
 		current.committedRun, current.committedMessage = run, message
 		for _, subscriber := range current.subscribers {
 			s.sendCoalesced(subscriber, projectAssistantRunSnapshot{Run: run, Message: message})
@@ -1243,7 +1269,7 @@ func (a *projectAssistantSnapshotAccumulator) flushText() {
 // state. The failing save may be transient (for example a dropped database
 // connection); a second detached save is therefore useful, but never permits
 // orchestration to continue as though a snapshot had been durable.
-func (s *projectAssistantSupervisor) recordPersistenceFailure(key projectAssistantRunKey, runID string, _ error) {
+func (s *projectAssistantSupervisor) recordPersistenceFailure(key projectAssistantRunKey, runID string, cause error) {
 	s.mu.Lock()
 	active := s.runs[key]
 	if active == nil || active.run.ID != runID {
@@ -1260,6 +1286,7 @@ func (s *projectAssistantSupervisor) recordPersistenceFailure(key projectAssista
 	active.cancel(errors.New("assistant snapshot persistence failed"))
 	s.mu.Unlock()
 	s.log("persistence_failure", scope, run)
+	logProjectAssistantFailure(context.Background(), "persistence_failure", scope, run, cause)
 	ctx, cancel := context.WithTimeout(context.Background(), projectMessagePersistTimeout)
 	defer cancel()
 	if workItemID != "" {
@@ -1267,7 +1294,7 @@ func (s *projectAssistantSupervisor) recordPersistenceFailure(key projectAssista
 		if err != nil {
 			return
 		}
-		if err := s.store.TransitionWorkItemAndRun(
+		if err := s.store.TransitionWorkItemAndRunWithAssistantMessage(
 			ctx,
 			scope,
 			workItemID,
@@ -1275,11 +1302,9 @@ func (s *projectAssistantSupervisor) recordPersistenceFailure(key projectAssista
 			run,
 			store.AssistantWorkItemStatusSuspended,
 			"snapshot_persistence_failed",
+			message,
 			run.UpdatedAt,
 		); err != nil {
-			return
-		}
-		if err := s.store.AppendMessage(ctx, scope, message); err != nil {
 			return
 		}
 	} else if s.store.SaveAssistantRunSnapshot(ctx, scope, run, []store.Message{message}, run.Revision-1) != nil {

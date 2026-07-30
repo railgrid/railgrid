@@ -56,7 +56,7 @@ func TestEinoAssistantEngineWorkItemCommitRequestRetiresGrant(t *testing.T) {
 			Parameters:  json.RawMessage(`{"type":"object"}`),
 			Risk:        projectAssistantToolRiskRead,
 		},
-		result: `{"status":"reachable"}`,
+		result: `{"status":"ready"}`,
 	}
 	commitTool := &recordingProjectAssistantTool{
 		spec: projectAssistantToolSpec{
@@ -131,10 +131,6 @@ func TestEinoAssistantEngineWorkItemCommitRequestRetiresGrant(t *testing.T) {
 	if item.GrantRevision == "" || item.GrantRevision != commitRun.run.ExpectedGrantRevision {
 		t.Fatalf("work item/run tombstone revisions = %q/%q, want shared non-empty revision", item.GrantRevision, commitRun.run.ExpectedGrantRevision)
 	}
-	if _, err := messages.GetAssistantRun(ctx, scope, projectAssistantApprovedPlanGrantRunID); !errors.Is(err, store.ErrAssistantRunNotFound) {
-		t.Fatalf("legacy synthetic grant run = %v, want not found", err)
-	}
-
 	commitRun.run = claimProjectAssistantRunForWorkItemCommitTest(t, server, messages, scope, commitRun.run, commitPermission.RequestID)
 	err = runProjectAssistantWorkItemCommitEngineForTest(t, server, engine, scope, commitRun.run, started.Assistant, projectAssistantRunRequest{
 		Identity: id, Project: project, WorkspaceScope: req.WorkspaceScope, Workspace: workspaces, MessageScope: scope, AssistantRun: &commitRun.run,
@@ -177,11 +173,13 @@ func runProjectAssistantWorkItemCommitEngineForTest(
 ) error {
 	t.Helper()
 	done := make(chan error, 1)
+	if req.ToolPort == nil {
+		req.ToolPort = projectAssistantDirectToolPort{}
+	}
 	if err := server.projectAssistantSupervisor().Start(context.Background(), scope, run, message, func(ctx context.Context, accumulator *projectAssistantSnapshotAccumulator) {
 		workerReq := req
 		workerRun := run
 		workerReq.AssistantRun = &workerRun
-		workerReq.snapshotAccumulator = accumulator
 		if resume == nil {
 			_, err := engine.StreamProjectAssistant(ctx, workerReq)
 			done <- err

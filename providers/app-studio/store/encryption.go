@@ -195,12 +195,33 @@ func (s *encryptedStore) LoadRecentMessages(ctx context.Context, scope Scope, li
 	return items, nil
 }
 
+func (s *encryptedStore) LoadRecentDiscussionMessages(ctx context.Context, scope Scope, limit int) ([]Message, error) {
+	items, err := s.inner.LoadRecentDiscussionMessages(ctx, scope, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		if err := s.decryptMessage(scope, &items[i]); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
 func (s *encryptedStore) GetAssistantApprovalPreference(ctx context.Context, scope Scope, actor string) (AssistantApprovalPreference, error) {
 	return s.inner.GetAssistantApprovalPreference(ctx, scope, actor)
 }
 
 func (s *encryptedStore) SetAssistantApprovalPreference(ctx context.Context, scope Scope, preference AssistantApprovalPreference) (AssistantApprovalPreference, error) {
 	return s.inner.SetAssistantApprovalPreference(ctx, scope, preference)
+}
+
+func (s *encryptedStore) CreateProjectBootstrapPermit(ctx context.Context, scope Scope, actor, promptDigest string) error {
+	return s.inner.CreateProjectBootstrapPermit(ctx, scope, actor, promptDigest)
+}
+
+func (s *encryptedStore) ConsumeProjectBootstrapPermit(ctx context.Context, scope Scope, actor, promptDigest, clientRequestID string, now time.Time) (bool, error) {
+	return s.inner.ConsumeProjectBootstrapPermit(ctx, scope, actor, promptDigest, clientRequestID, now)
 }
 
 func (s *encryptedStore) SaveAssistantRun(ctx context.Context, scope Scope, run AssistantRun) error {
@@ -501,8 +522,43 @@ func (s *encryptedStore) TransitionWorkItemAndRun(ctx context.Context, scope Sco
 	return s.inner.TransitionWorkItemAndRun(ctx, scope, workItemID, expectedWorkItemRevision, run, status, reason, now)
 }
 
+func (s *encryptedStore) TransitionWorkItemAndRunWithAssistantMessage(ctx context.Context, scope Scope, workItemID string, expectedWorkItemRevision int64, run AssistantRun, status AssistantWorkItemStatus, reason string, assistant Message, now time.Time) error {
+	var err error
+	assistant, err = s.encryptMessage(scope, assistant)
+	if err != nil {
+		return err
+	}
+	run.Checkpoint = nil
+	checkpoint, err := s.encryptAssistantRunBlob(scope, run, "checkpoint", run.Checkpoint)
+	if err != nil {
+		return err
+	}
+	audit, err := s.encryptAssistantRunBlob(scope, run, "audit", run.Audit)
+	if err != nil {
+		return err
+	}
+	run.Checkpoint, run.Audit = checkpoint, audit
+	return s.inner.TransitionWorkItemAndRunWithAssistantMessage(ctx, scope, workItemID, expectedWorkItemRevision, run, status, reason, assistant, now)
+}
+
 func (s *encryptedStore) RequestAssistantRunStop(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, now time.Time) (AssistantRun, error) {
 	run, err := s.inner.RequestAssistantRunStop(ctx, scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, now)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
+		return AssistantRun{}, err
+	}
+	return run, nil
+}
+
+func (s *encryptedStore) RequestAssistantRunStopWithAssistantMessage(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error) {
+	var err error
+	assistant, err = s.encryptMessage(scope, assistant)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	run, err := s.inner.RequestAssistantRunStopWithAssistantMessage(ctx, scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, assistant, now)
 	if err != nil {
 		return AssistantRun{}, err
 	}
@@ -558,23 +614,6 @@ func (s *encryptedStore) SaveAssistantRunSnapshot(ctx context.Context, scope Sco
 		}
 	}
 	return s.inner.SaveAssistantRunSnapshot(ctx, scope, run, encryptedMessages, expectedRevision)
-}
-
-func (s *encryptedStore) CompareAndSwapAssistantRun(ctx context.Context, scope Scope, run AssistantRun, expectedRequestID string) error {
-	if err := scope.validate(); err != nil {
-		return err
-	}
-	checkpoint, err := s.encryptAssistantRunBlob(scope, run, "checkpoint", run.Checkpoint)
-	if err != nil {
-		return err
-	}
-	audit, err := s.encryptAssistantRunBlob(scope, run, "audit", run.Audit)
-	if err != nil {
-		return err
-	}
-	run.Checkpoint = checkpoint
-	run.Audit = audit
-	return s.inner.CompareAndSwapAssistantRun(ctx, scope, run, expectedRequestID)
 }
 
 func (s *encryptedStore) ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error) {

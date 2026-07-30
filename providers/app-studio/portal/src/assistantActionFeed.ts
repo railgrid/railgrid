@@ -12,7 +12,7 @@ export interface AssistantActionLogItem extends ProjectAssistantActionFeedItem {
 }
 
 const kinds = new Set<ProjectAssistantActionKind>(['inspect', 'clarify', 'edit', 'run', 'commit', 'plan', 'other'])
-const statuses = new Set<ProjectAssistantActionStatus>(['running', 'waiting', 'succeeded', 'failed', 'rejected'])
+const statuses = new Set<ProjectAssistantActionStatus>(['running', 'waiting', 'succeeded', 'skipped', 'failed', 'rejected'])
 const severities = new Set<ProjectAssistantActionSeverity>(['normal', 'attention', 'error'])
 const diagnosticCategories = new Set<ProjectAssistantDiagnosticCategory>(['timeout', 'permission', 'validation', 'runtime', 'provider', 'unknown'])
 const itemKeys = new Set(['id', 'kind', 'status', 'title', 'target', 'outcome', 'count', 'severity', 'groupKey', 'groupTitle', 'diagnostic'])
@@ -152,6 +152,8 @@ export function assistantActionStatusLabel(status: ProjectAssistantActionStatus)
       return 'Waiting'
     case 'succeeded':
       return 'Completed'
+    case 'skipped':
+      return 'Skipped'
     case 'rejected':
       return 'Rejected'
     default:

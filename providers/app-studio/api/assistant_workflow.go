@@ -33,6 +33,7 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -108,13 +109,46 @@ type projectAssistantRuntimeVerificationToolInput struct {
 }
 
 type projectAssistantRuntimeVerificationResult struct {
-	Status     string                                   `json:"status"`
-	Summary    string                                   `json:"summary"`
-	Readiness  *projectAssistantReadinessWorkflowResult `json:"readiness,omitempty"`
-	Runtime    *projectAssistantRuntimeWorkflowResult   `json:"runtime,omitempty"`
-	PreviewURL string                                   `json:"previewURL,omitempty"`
-	Logs       *projectAssistantRuntimeLogsResult       `json:"logs,omitempty"`
-	Blockers   []string                                 `json:"blockers,omitempty"`
+	CheckedMutationRevision uint64                                   `json:"checkedMutationRevision,omitempty"`
+	Status                  string                                   `json:"status"`
+	Summary                 string                                   `json:"summary"`
+	Readiness               *projectAssistantReadinessWorkflowResult `json:"readiness,omitempty"`
+	Runtime                 *projectAssistantRuntimeWorkflowResult   `json:"runtime,omitempty"`
+	PreviewURL              string                                   `json:"previewURL,omitempty"`
+	Logs                    *projectAssistantRuntimeLogsResult       `json:"logs,omitempty"`
+	Warnings                []string                                 `json:"warnings,omitempty"`
+	Blockers                []string                                 `json:"blockers,omitempty"`
+}
+
+type projectEinoAssistantVerificationDisposition string
+
+const (
+	projectEinoAssistantVerificationOperational      projectEinoAssistantVerificationDisposition = "operational"
+	projectEinoAssistantVerificationRepair           projectEinoAssistantVerificationDisposition = "repair"
+	projectEinoAssistantVerificationReadyDisposition projectEinoAssistantVerificationDisposition = "ready"
+	projectEinoAssistantVerificationBlocked          projectEinoAssistantVerificationDisposition = "blocked"
+)
+
+func projectEinoAssistantRuntimeVerificationDisposition(
+	result projectAssistantRuntimeVerificationResult,
+) projectEinoAssistantVerificationDisposition {
+	if strings.TrimSpace(result.Status) == "ready" {
+		return projectEinoAssistantVerificationReadyDisposition
+	}
+	if strings.TrimSpace(result.Status) == "not_ready" &&
+		result.Logs != nil &&
+		len(result.Logs.Blockers) > 0 {
+		return projectEinoAssistantVerificationRepair
+	}
+	switch strings.TrimSpace(result.Status) {
+	case "provisioning", "unavailable":
+		return projectEinoAssistantVerificationOperational
+	case "not_ready":
+		if result.Runtime != nil && strings.TrimSpace(result.PreviewURL) == "" {
+			return projectEinoAssistantVerificationOperational
+		}
+	}
+	return projectEinoAssistantVerificationBlocked
 }
 
 type projectAssistantWorkflowContext struct {
@@ -186,6 +220,7 @@ type projectAssistantWorkflowRunContext struct {
 	Repository     *ProjectRepositoryView
 	WorkspaceScope workspace.Scope
 	RunState       *projectEinoAssistantRunState
+	ApprovalMode   store.AssistantApprovalMode
 	// Identity and Client carry the caller's tenant identity and project
 	// client so runtime/preview tools can query the live development
 	// runtime instead of returning a placeholder status.
@@ -200,6 +235,7 @@ func projectAssistantWorkflowRunContextForRequest(server *Server, req projectAss
 		Repository:     req.Repository,
 		WorkspaceScope: req.WorkspaceScope,
 		RunState:       runState,
+		ApprovalMode:   req.ApprovalMode,
 		Identity:       req.Identity,
 		Client:         req.Client,
 	}
@@ -773,7 +809,20 @@ func formatProjectAssistantReadinessWorkflowResult(ctx context.Context, input pr
 		status = "needs_workspace_context"
 	}
 	result.Status = status
-	result.Summary = fmt.Sprintf("Project %s is %s.", displayName, strings.ReplaceAll(status, "_", " "))
+	switch status {
+	case "ready_to_verify":
+		result.Summary = fmt.Sprintf("Project %s has the context needed for runtime verification.", displayName)
+	case "needs_requirements":
+		result.Summary = fmt.Sprintf("Project %s needs requirements before runtime verification.", displayName)
+	case "needs_repository":
+		if input.Repository != nil && input.Repository.Status == projectRepositoryStatusProvisioning {
+			result.Summary = fmt.Sprintf("Project %s is waiting for its Git repository to become ready.", displayName)
+		} else {
+			result.Summary = fmt.Sprintf("Project %s needs a ready Git repository before handoff can finish.", displayName)
+		}
+	case "needs_workspace_context":
+		result.Summary = fmt.Sprintf("Project %s needs workspace files before runtime verification.", displayName)
+	}
 	result.RecommendedChecks = projectAssistantRecommendedRuntimeChecks(input.WorkspaceFiles)
 	result.Files = append([]string(nil), input.WorkspaceFiles...)
 	if input.Repository != nil {

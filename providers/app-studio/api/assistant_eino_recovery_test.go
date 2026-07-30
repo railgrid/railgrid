@@ -282,6 +282,69 @@ func TestProjectEinoAssistantSafeToolErrorMiddleware(t *testing.T) {
 	})
 }
 
+func TestProjectEinoAssistantSafeToolErrorMiddlewarePrescribesEditRecovery(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		err      error
+		want     []string
+	}{
+		{
+			name:     "existing file write",
+			toolName: projectToolWriteFile,
+			err:      errors.New(`write_file is create-only for existing projects; use apply_patch for "src/App.jsx"`),
+			want:     []string{"do not retry write_file", "Use apply_patch", "small exact replacement"},
+		},
+		{
+			name:     "missing patch anchor",
+			toolName: projectToolApplyPatch,
+			err:      errors.New(`oldText was not found in "src/App.jsx"`),
+			want:     []string{"reread the relevant target section", "small unique exact oldText", "Do not fall back to write_file"},
+		},
+		{
+			name:     "ambiguous patch anchor",
+			toolName: projectToolApplyPatch,
+			err:      errors.New(`oldText matched 3 times in "src/App.jsx"; set replaceAll to true or provide a more specific oldText`),
+			want:     []string{"add surrounding context", "Use replaceAll only when every match should change", "do not fall back to write_file"},
+		},
+		{
+			name:     "no-op patch",
+			toolName: projectToolApplyPatch,
+			err:      errors.New(`patch made no changes in "src/App.jsx"; newText must differ from the matched oldText`),
+			want:     []string{"newText that implements the requested behavior", "differs from oldText", "Do not verify an unchanged workspace"},
+		},
+	}
+	middleware := &projectEinoAssistantSafeToolErrorMiddleware{
+		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			endpoint, err := middleware.WrapInvokableToolCall(
+				context.Background(),
+				func(context.Context, string, ...einotool.Option) (string, error) {
+					return "", tt.err
+				},
+				&adk.ToolContext{Name: tt.toolName},
+			)
+			if err != nil {
+				t.Fatalf("WrapInvokableToolCall returned error: %v", err)
+			}
+			result, err := endpoint(context.Background(), `{}`)
+			if err != nil {
+				t.Fatalf("wrapped endpoint returned error: %v", err)
+			}
+			if !strings.HasPrefix(result, "Tool call failed:") {
+				t.Fatalf("result = %q, want canonical failed prefix", result)
+			}
+			for _, expected := range tt.want {
+				if !strings.Contains(result, expected) {
+					t.Fatalf("result = %q, want %q", result, expected)
+				}
+			}
+		})
+	}
+}
+
 func TestProjectEinoAssistantSafeToolErrorMiddlewarePropagatesControlFlow(t *testing.T) {
 	interruptErr := einotool.StatefulInterrupt(
 		context.Background(),

@@ -31,7 +31,7 @@ import (
 )
 
 func projectEinoAssistantRunOptions(req projectAssistantRunRequest, runState *projectEinoAssistantRunState) []adk.AgentRunOption {
-	handler := newProjectEinoAssistantModelCallbackHandler(req.StreamCallbacks, runState)
+	handler := newProjectEinoAssistantModelCallbackHandler(req.StreamCallbacks, runState, req.auditRecorder)
 	opts := []adk.AgentRunOption{}
 	if handler != nil {
 		opts = append(opts, adk.WithCallbacks(handler))
@@ -44,10 +44,15 @@ func projectEinoAssistantRunOptions(req projectAssistantRunRequest, runState *pr
 	return opts
 }
 
-func newProjectEinoAssistantModelCallbackHandler(streamCallbacks projectAssistantStreamCallbacks, runState *projectEinoAssistantRunState) callbacks.Handler {
+func newProjectEinoAssistantModelCallbackHandler(
+	streamCallbacks projectAssistantStreamCallbacks,
+	runState *projectEinoAssistantRunState,
+	auditRecorder *projectAssistantRunAuditRecorder,
+) callbacks.Handler {
 	recorder := &projectEinoAssistantModelCallbackRecorder{
 		streamCallbacks: streamCallbacks,
 		runState:        runState,
+		auditRecorder:   auditRecorder,
 	}
 	return callbacks.NewHandlerBuilder().
 		OnStartFn(func(ctx context.Context, _ *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
@@ -55,11 +60,15 @@ func newProjectEinoAssistantModelCallbackHandler(streamCallbacks projectAssistan
 			return ctx
 		}).
 		OnEndFn(func(ctx context.Context, _ *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
-			recorder.recordModelOutput(output)
+			recorder.recordModelOutput(ctx, output)
 			return ctx
 		}).
 		OnEndWithStreamOutputFn(func(ctx context.Context, _ *callbacks.RunInfo, output *schema.StreamReader[callbacks.CallbackOutput]) context.Context {
-			recorder.recordModelStream(output)
+			recorder.recordModelStream(ctx, output)
+			return ctx
+		}).
+		OnErrorFn(func(ctx context.Context, _ *callbacks.RunInfo, err error) context.Context {
+			recorder.recordModelError(ctx, err)
 			return ctx
 		}).
 		Build()
@@ -68,6 +77,7 @@ func newProjectEinoAssistantModelCallbackHandler(streamCallbacks projectAssistan
 type projectEinoAssistantModelCallbackRecorder struct {
 	streamCallbacks projectAssistantStreamCallbacks
 	runState        *projectEinoAssistantRunState
+	auditRecorder   *projectAssistantRunAuditRecorder
 
 	mu                      sync.Mutex
 	reportedToolPreparation bool
@@ -81,10 +91,13 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelInput(input callb
 	r.runState.RecordModelInput(projectEinoMessagesToChat(modelInput.Messages))
 }
 
-func (r *projectEinoAssistantModelCallbackRecorder) recordModelOutput(output callbacks.CallbackOutput) {
+func (r *projectEinoAssistantModelCallbackRecorder) recordModelOutput(ctx context.Context, output callbacks.CallbackOutput) {
 	modelOutput := einomodel.ConvCallbackOutput(output)
 	if modelOutput == nil || modelOutput.Message == nil {
 		return
+	}
+	if r.auditRecorder != nil && projectEinoAssistantMeaningfulModelChunk(modelOutput.Message) {
+		r.auditRecorder.recordModelResponseChunk(ctx, len(modelOutput.Message.ToolCalls) > 0)
 	}
 	reply := projectEinoAssistantReplyFromMessage(modelOutput.Message)
 	if strings.TrimSpace(reply.Content) == "" && len(reply.ToolCalls) == 0 {
@@ -93,7 +106,10 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelOutput(output cal
 	r.runState.RecordAssistantReply(reply)
 }
 
-func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(output *schema.StreamReader[callbacks.CallbackOutput]) {
+func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(
+	ctx context.Context,
+	output *schema.StreamReader[callbacks.CallbackOutput],
+) {
 	if output == nil {
 		return
 	}
@@ -107,6 +123,9 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(output *sc
 			break
 		}
 		if err != nil {
+			if r.auditRecorder != nil {
+				r.auditRecorder.recordModelTransportError(ctx, err)
+			}
 			return
 		}
 		modelOutput := einomodel.ConvCallbackOutput(chunk)
@@ -114,6 +133,9 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(output *sc
 			continue
 		}
 		msg := modelOutput.Message
+		if r.auditRecorder != nil && projectEinoAssistantMeaningfulModelChunk(msg) {
+			r.auditRecorder.recordModelResponseChunk(ctx, len(msg.ToolCalls) > 0)
+		}
 		if msg.Content != "" {
 			content.WriteString(msg.Content)
 		}
@@ -130,6 +152,20 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(output *sc
 		return
 	}
 	r.runState.RecordAssistantReply(reply)
+}
+
+func projectEinoAssistantMeaningfulModelChunk(msg *schema.Message) bool {
+	return msg != nil &&
+		(strings.TrimSpace(msg.Content) != "" ||
+			strings.TrimSpace(msg.ReasoningContent) != "" ||
+			len(msg.ToolCalls) > 0 ||
+			len(msg.AssistantGenMultiContent) > 0)
+}
+
+func (r *projectEinoAssistantModelCallbackRecorder) recordModelError(ctx context.Context, modelErr error) {
+	if r.auditRecorder != nil {
+		r.auditRecorder.recordModelTransportError(ctx, modelErr)
+	}
 }
 
 func (r *projectEinoAssistantModelCallbackRecorder) reportToolPreparation() {

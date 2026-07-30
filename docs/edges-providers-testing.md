@@ -45,7 +45,7 @@ writes `data/kcp/admin.kubeconfig`.
 make install-provider-edges   # admin: apply Provider + CatalogEntry
 # wait for the hub Provider controller to provision the workspace + SA token
 make init-provider-edges      # bootstrap APIExport/schemas/slice/grant
-make run-provider-edges       # serve (SINGLE process) on :8084
+make run-provider-edges       # serve (SINGLE process) on :8088
 
 # in another terminal, register + connect a Kubernetes edge
 kedge edge create my-cluster --type kubernetes

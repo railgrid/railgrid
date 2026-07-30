@@ -29,6 +29,9 @@ import (
 	"github.com/cloudwego/eino-examples/adk/common/tool/graphtool"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/faroshq/provider-app-studio/store"
 )
 
 const (
@@ -40,8 +43,8 @@ const (
 // verbs (log, restart, env) to the project assistant so it can
 // diagnose and drive the live development sandbox instead of only guessing at
 // its state. They mirror the runtime status/preview graph tools: read-only
-// tools (logs) run unwrapped, runtime-mutating tools (restart, env) are wrapped
-// in the approval tool so the user is prompted before they run.
+// tools (logs) run directly, while runtime-mutating tools (restart, env) are
+// admitted by the run-scoped approval policy in assistant_permission.go.
 
 const (
 	// projectAssistantRuntimeLogsDefaultTail bounds how many trailing log lines
@@ -133,14 +136,16 @@ func newProjectAssistantRuntimeLogsGraphTool(runCtx projectAssistantWorkflowRunC
 
 func newProjectAssistantVerifyRuntimeGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
 	workflow := compose.NewWorkflow[*projectAssistantRuntimeVerificationToolInput, *projectAssistantRuntimeVerificationResult]()
-	workflow.AddLambdaNode("collect-project-readiness", compose.InvokableLambda(collectProjectAssistantRuntimeReadiness(runCtx))).
+	workflow.AddLambdaNode("initialize-verification", compose.InvokableLambda(initializeProjectAssistantRuntimeVerification(runCtx))).
 		AddInput(compose.START)
 	workflow.AddLambdaNode("resolve-development-runtime", compose.InvokableLambda(resolveProjectAssistantRuntimeVerification(runCtx))).
-		AddInput("collect-project-readiness")
+		AddInput("initialize-verification")
 	workflow.AddLambdaNode("collect-diagnostic-logs", compose.InvokableLambda(collectProjectAssistantRuntimeVerificationLogs(runCtx))).
 		AddInput("resolve-development-runtime")
-	workflow.AddLambdaNode("format-runtime-verification", compose.InvokableLambda(formatProjectAssistantRuntimeVerification)).
+	workflow.AddLambdaNode("collect-project-readiness", compose.InvokableLambda(collectProjectAssistantRuntimeReadiness(runCtx))).
 		AddInput("collect-diagnostic-logs")
+	workflow.AddLambdaNode("format-runtime-verification", compose.InvokableLambda(formatProjectAssistantRuntimeVerification)).
+		AddInput("collect-project-readiness")
 	workflow.End().AddInput("format-runtime-verification")
 	return graphtool.NewInvokableGraphTool(
 		workflow,
@@ -151,22 +156,53 @@ func newProjectAssistantVerifyRuntimeGraphTool(runCtx projectAssistantWorkflowRu
 }
 
 type projectAssistantRuntimeVerificationContext struct {
-	Args                   *projectAssistantRuntimeVerificationToolInput
-	Readiness              *projectAssistantReadinessWorkflowResult
-	RuntimeInput           projectAssistantRuntimeWorkflowInput
-	Runtime                *projectAssistantRuntimeWorkflowResult
-	Logs                   *projectAssistantRuntimeLogsResult
-	RequireProcessEvidence bool
+	Args                    *projectAssistantRuntimeVerificationToolInput
+	CheckedMutationRevision uint64
+	Readiness               *projectAssistantReadinessWorkflowResult
+	RunContext              projectAssistantWorkflowRunContext
+	RuntimeInput            projectAssistantRuntimeWorkflowInput
+	Runtime                 *projectAssistantRuntimeWorkflowResult
+	Logs                    *projectAssistantRuntimeLogsResult
+	RequireProcessEvidence  bool
 }
 
-func collectProjectAssistantRuntimeReadiness(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationToolInput) (*projectAssistantRuntimeVerificationContext, error) {
+func initializeProjectAssistantRuntimeVerification(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationToolInput) (*projectAssistantRuntimeVerificationContext, error) {
 	return func(ctx context.Context, args *projectAssistantRuntimeVerificationToolInput) (*projectAssistantRuntimeVerificationContext, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		readinessInput, err := projectAssistantWorkflowInputFromTool(runCtx, true)(ctx, &projectAssistantWorkflowToolInput{
-			IncludeFiles: runtimeVerificationIncludeFiles(args),
-			MaxFiles:     runtimeVerificationMaxFiles(args),
+		checkedMutationRevision := uint64(0)
+		requireProcessEvidence := false
+		if runCtx.RunState != nil {
+			checkedMutationRevision, _ = runCtx.RunState.SourceMutationRevisions()
+			requireProcessEvidence = checkedMutationRevision > 0
+		}
+		return &projectAssistantRuntimeVerificationContext{
+			Args:                    args,
+			CheckedMutationRevision: checkedMutationRevision,
+			RunContext:              runCtx,
+			RequireProcessEvidence:  requireProcessEvidence,
+		}, nil
+	}
+}
+
+func collectProjectAssistantRuntimeReadiness(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
+	return func(ctx context.Context, input *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
+		if input == nil {
+			return nil, errors.New("runtime verification context is required")
+		}
+		currentRunCtx := input.RunContext
+		if currentRunCtx.Project == nil {
+			currentRunCtx = runCtx
+		}
+		currentRunCtx, err := refreshProjectAssistantWorkflowRunContext(ctx, currentRunCtx)
+		if err != nil {
+			return nil, err
+		}
+		input.RunContext = currentRunCtx
+		readinessInput, err := projectAssistantWorkflowInputFromTool(currentRunCtx, true)(ctx, &projectAssistantWorkflowToolInput{
+			IncludeFiles: runtimeVerificationIncludeFiles(input.Args),
+			MaxFiles:     runtimeVerificationMaxFiles(input.Args),
 		})
 		if err != nil {
 			return nil, err
@@ -175,21 +211,22 @@ func collectProjectAssistantRuntimeReadiness(runCtx projectAssistantWorkflowRunC
 		if err != nil {
 			return nil, err
 		}
-		readiness, err := formatProjectAssistantReadinessWorkflowResult(ctx, readinessContext)
-		if err != nil {
-			return nil, err
-		}
-		requireProcessEvidence := false
-		if runCtx.RunState != nil {
-			executionPlan, _ := runCtx.RunState.ExecutionPlan()
-			requireProcessEvidence = executionPlan != nil
-		}
-		return &projectAssistantRuntimeVerificationContext{
-			Args:                   args,
-			Readiness:              readiness,
-			RequireProcessEvidence: requireProcessEvidence,
-		}, nil
+		input.Readiness, err = formatProjectAssistantReadinessWorkflowResult(ctx, readinessContext)
+		return input, err
 	}
+}
+
+func refreshProjectAssistantWorkflowRunContext(ctx context.Context, runCtx projectAssistantWorkflowRunContext) (projectAssistantWorkflowRunContext, error) {
+	if runCtx.Client == nil || runCtx.Project == nil || strings.TrimSpace(runCtx.Project.Name) == "" {
+		return runCtx, nil
+	}
+	current, err := runCtx.Client.Projects().Get(ctx, runCtx.Project.Name, metav1.GetOptions{})
+	if err != nil {
+		return projectAssistantWorkflowRunContext{}, fmt.Errorf("refresh project readiness: %w", err)
+	}
+	runCtx.Project = current
+	runCtx.Repository = projectRepositoryView(ctx, runCtx.Client, current)
+	return runCtx, nil
 }
 
 func resolveProjectAssistantRuntimeVerification(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
@@ -197,12 +234,21 @@ func resolveProjectAssistantRuntimeVerification(runCtx projectAssistantWorkflowR
 		if input == nil {
 			return nil, errors.New("runtime verification context is required")
 		}
+		currentRunCtx := input.RunContext
+		if currentRunCtx.Project == nil {
+			currentRunCtx = runCtx
+		}
 		runtimeInput, runtime, err := pollProjectAssistantRuntimeVerification(
 			ctx,
 			projectAssistantRuntimeProvisioningPollInterval,
 			projectAssistantRuntimeProvisioningPollTimeout,
 			func(ctx context.Context) (projectAssistantRuntimeWorkflowInput, *projectAssistantRuntimeWorkflowResult, error) {
-				currentInput, err := projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx)(ctx, &projectAssistantRuntimeStatusToolInput{})
+				refreshedRunCtx, err := refreshProjectAssistantWorkflowRunContext(ctx, currentRunCtx)
+				if err != nil {
+					return projectAssistantRuntimeWorkflowInput{}, nil, err
+				}
+				currentRunCtx = refreshedRunCtx
+				currentInput, err := projectAssistantRuntimeWorkflowInputFromStatusTool(currentRunCtx)(ctx, &projectAssistantRuntimeStatusToolInput{})
 				if err != nil {
 					return projectAssistantRuntimeWorkflowInput{}, nil, err
 				}
@@ -213,6 +259,7 @@ func resolveProjectAssistantRuntimeVerification(runCtx projectAssistantWorkflowR
 		if err != nil {
 			return nil, err
 		}
+		input.RunContext = currentRunCtx
 		input.RuntimeInput = runtimeInput
 		input.Runtime = runtime
 		return input, nil
@@ -267,7 +314,16 @@ func collectProjectAssistantRuntimeVerificationLogs(runCtx projectAssistantWorkf
 		if !shouldCollectLogs {
 			return input, nil
 		}
-		logs, err := fetchProjectAssistantRuntimeLogs(runCtx)(ctx, &projectAssistantRuntimeLogsToolInput{TailLines: runtimeVerificationTailLines(input.Args)})
+		currentRunCtx := input.RunContext
+		if currentRunCtx.Project == nil {
+			currentRunCtx = runCtx
+		}
+		currentRunCtx, err := refreshProjectAssistantWorkflowRunContext(ctx, currentRunCtx)
+		if err != nil {
+			return nil, err
+		}
+		input.RunContext = currentRunCtx
+		logs, err := fetchProjectAssistantRuntimeLogs(currentRunCtx)(ctx, &projectAssistantRuntimeLogsToolInput{TailLines: runtimeVerificationTailLines(input.Args)})
 		if err != nil {
 			return nil, err
 		}
@@ -284,25 +340,80 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 		return nil, errors.New("resolved runtime verification context is required")
 	}
 	result := &projectAssistantRuntimeVerificationResult{
-		Status:     input.Runtime.Status,
-		Summary:    input.Runtime.Summary,
-		Readiness:  input.Readiness,
-		Runtime:    input.Runtime,
-		PreviewURL: input.Runtime.PreviewURL,
-		Logs:       input.Logs,
+		CheckedMutationRevision: input.CheckedMutationRevision,
+		Status:                  strings.ToLower(strings.TrimSpace(input.Runtime.Status)),
+		Summary:                 input.Runtime.Summary,
+		Readiness:               input.Readiness,
+		Runtime:                 input.Runtime,
+		PreviewURL:              input.Runtime.PreviewURL,
+		Logs:                    input.Logs,
+	}
+	switch result.Status {
+	case "not_configured":
+		result.Blockers = append([]string(nil), input.Runtime.Blockers...)
+		if len(result.Blockers) == 0 {
+			result.Blockers = []string{"development runtime is not configured"}
+		}
+		return result, nil
+	case "provisioning":
+		result.Blockers = []string{"development runtime is still provisioning"}
+		return result, nil
+	case "unavailable":
+		result.Blockers = append([]string(nil), input.Runtime.Blockers...)
+		if len(result.Blockers) == 0 {
+			result.Blockers = []string{"development runtime evidence is unavailable"}
+		}
+		return result, nil
+	case "reachable", "ready":
+	default:
+		result.Status = "unavailable"
+		result.Summary = "Required development runtime evidence is unavailable."
+		result.Blockers = []string{"development runtime returned an unsupported verification status"}
+		return result, nil
 	}
 	if input.Logs != nil && len(input.Logs.Blockers) > 0 {
 		result.Status = "not_ready"
 		result.Summary = "The preview edge is reachable, but the latest development process logs contain a startup or compilation failure."
 		result.Blockers = append([]string(nil), input.Logs.Blockers...)
 	} else if input.RequireProcessEvidence &&
-		input.Runtime.Status == "reachable" &&
-		(input.Logs == nil || input.Logs.Status == "unavailable") {
+		(input.Logs == nil ||
+			input.Logs.Status == "unavailable" ||
+			input.Logs.Status == "error" ||
+			input.Logs.Status == "failed" ||
+			len(input.Logs.Lines) == 0) {
+		result.Status = "unavailable"
+		result.Summary = "Development process evidence is unavailable."
+		result.Blockers = []string{"development process logs contain no positive runtime evidence"}
+	} else if strings.TrimSpace(input.Runtime.PreviewURL) == "" {
 		result.Status = "not_ready"
-		result.Summary = "The preview edge is reachable, but development process evidence is unavailable."
-		result.Blockers = []string{"development process logs are unavailable"}
+		result.Summary = "The development runtime has no reachable preview URL."
+		result.Blockers = []string{"development preview URL is unavailable"}
+	} else if input.Readiness == nil || input.Readiness.Status != "ready_to_verify" {
+		if projectAssistantRepositoryHandoffProvisioning(input.Readiness) {
+			result.Status = "ready"
+			result.Summary = "The development runtime is ready. The Git repository is still becoming ready, so commit and CI handoff are pending."
+			result.Warnings = []string{"The repository handoff is still in progress; this does not mean the development preview failed."}
+		} else {
+			result.Status = "not_ready"
+			result.Summary = "The project is missing context required to finish verification."
+			if input.Readiness != nil && strings.TrimSpace(input.Readiness.Summary) != "" {
+				result.Blockers = []string{strings.TrimSpace(input.Readiness.Summary)}
+			} else {
+				result.Blockers = []string{"project readiness evidence is unavailable"}
+			}
+		}
+	} else {
+		result.Status = "ready"
+		result.Summary = "The development runtime is ready."
 	}
 	return result, nil
+}
+
+func projectAssistantRepositoryHandoffProvisioning(readiness *projectAssistantReadinessWorkflowResult) bool {
+	return readiness != nil &&
+		readiness.Status == "needs_repository" &&
+		readiness.Repository != nil &&
+		readiness.Repository.Status == projectRepositoryStatusProvisioning
 }
 
 func runtimeVerificationShouldCollectLogs(args *projectAssistantRuntimeVerificationToolInput, input projectAssistantRuntimeWorkflowInput) bool {
@@ -489,6 +600,9 @@ func newProjectAssistantRestartRuntimeGraphTool(runCtx projectAssistantWorkflowR
 	if err != nil {
 		return nil, err
 	}
+	if runCtx.ApprovalMode == store.AssistantApprovalModeAutoApprove {
+		return innerTool, nil
+	}
 	return approvaltool.InvokableApprovableTool{InvokableTool: innerTool}, nil
 }
 
@@ -575,6 +689,9 @@ func newProjectAssistantSetRuntimeEnvGraphTool(runCtx projectAssistantWorkflowRu
 	)
 	if err != nil {
 		return nil, err
+	}
+	if runCtx.ApprovalMode == store.AssistantApprovalModeAutoApprove {
+		return innerTool, nil
 	}
 	return approvaltool.InvokableApprovableTool{InvokableTool: innerTool}, nil
 }

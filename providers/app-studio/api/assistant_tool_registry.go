@@ -167,7 +167,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolWriteFile,
-				Description: "Write a complete UTF-8 text file into the App Studio project workspace.",
+				Description: "Create a complete UTF-8 project file in the App Studio workspace. Initial project builds may replace generated files; for later changes, write_file is create-only and existing files must be changed with apply_patch. Use write_todos, not todo.md or todos.md, for execution tracking.",
 				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative file path."},"content":{"type":"string","description":"Complete UTF-8 text content to write. Maximum %d bytes."}},"required":["path","content"]}`, workspace.MaxWriteBytes)),
 				Risk:        projectAssistantToolRiskWrite,
 			},
@@ -178,15 +178,16 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}
 				content, _ := projectToolRawString(req.Arguments["content"])
 				return projectAssistantToolJSONResult(s.workspaces.WriteFile(ctx, req.WorkspaceScope, workspace.WriteOptions{
-					Path:    projectToolString(req.Arguments["path"]),
-					Content: content,
+					Path:       projectToolString(req.Arguments["path"]),
+					Content:    content,
+					CreateOnly: req.EnforceMutationSafety && !req.InitialBuild,
 				}))
 			},
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolApplyPatch,
-				Description: "Apply an exact text replacement to one App Studio workspace file. oldText must match exactly once unless replaceAll is true.",
+				Description: "Apply an exact text replacement to one App Studio workspace file after reading that file in this assistant turn. oldText must match exactly once unless replaceAll is true, and the edit fails if the file changes before the write. For large files, patch one small stable unique anchor at a time. If oldText is not found, reread the relevant section and retry with exact current text; never fall back to write_file for an existing file.",
 				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative file path."},"oldText":{"type":"string","description":"Exact text to replace. Maximum patch payload %d bytes with newText."},"newText":{"type":"string","description":"Replacement text."},"replaceAll":{"type":"boolean","description":"Replace every exact match instead of requiring one match."}},"required":["path","oldText","newText"]}`, workspace.MaxPatchBytes)),
 				Risk:        projectAssistantToolRiskWrite,
 			},
@@ -203,9 +204,12 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 					NewText:    newText,
 					ReplaceAll: projectToolBool(req.Arguments["replaceAll"]),
 				}
-				_, _, err = previewProjectWorkspacePatch(ctx, s.workspaces, req.WorkspaceScope, opts)
+				clean, err := workspace.CleanProjectPath(opts.Path)
 				if err != nil {
 					return "", err
+				}
+				if req.EnforceMutationSafety && !projectAssistantPathWasObserved(clean, req.ObservedReadFiles) {
+					return "", fmt.Errorf("read_file must successfully read %q in this assistant turn before apply_patch can edit it", clean)
 				}
 				return projectAssistantToolJSONResult(s.workspaces.ApplyPatch(ctx, req.WorkspaceScope, opts))
 			},
@@ -415,6 +419,16 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 			},
 		},
 	)
+}
+
+func projectAssistantPathWasObserved(target string, observed []string) bool {
+	for _, raw := range observed {
+		clean, err := workspace.CleanProjectPath(raw)
+		if err == nil && clean == target {
+			return true
+		}
+	}
+	return false
 }
 
 func projectAssistantToolServer(server *Server) (*Server, error) {

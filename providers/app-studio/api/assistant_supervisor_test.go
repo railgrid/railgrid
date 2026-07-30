@@ -23,7 +23,6 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -35,8 +34,8 @@ import (
 func TestProjectAssistantSupervisorOwnsExecutionAfterStarterCancellation(t *testing.T) {
 	supervisor := newProjectAssistantSupervisor(context.Background(), store.NewMemoryStore())
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
-	user := store.Message{ID: "user-1", Role: "user", Content: "hello", CreatedAt: run.CreatedAt, UpdatedAt: run.CreatedAt}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: run.CreatedAt, UpdatedAt: run.CreatedAt}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: run.CreatedAt, UpdatedAt: run.CreatedAt}
 	created, err := supervisor.store.CreateAssistantRun(context.Background(), scope, user, assistant, run)
 	if err != nil {
@@ -213,8 +212,8 @@ func TestProjectAssistantSupervisorShutdownLogsOneInterruptedTerminalTransition(
 	supervisor := newProjectAssistantSupervisor(context.Background(), memoryStore)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	if _, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
 		t.Fatal(err)
@@ -254,8 +253,8 @@ func TestProjectAssistantSupervisorReservationProtectsFreshDurableRunUntilAttach
 	}
 	defer release()
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", Content: "hello", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	if _, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
 		t.Fatalf("CreateAssistantRun: %v", err)
@@ -280,9 +279,9 @@ func TestProjectAssistantReconcilesOrphanedConversationRun(t *testing.T) {
 	server := NewWithWorkspace(nil, messages, nil, "", false)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
-	stale := store.AssistantRun{ID: "run-stale", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-stale", UserMessageID: "user-stale", ActiveMessageID: "assistant-stale", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	stale := store.AssistantRun{ID: "run-stale", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-stale", UserMessageID: "user-stale", ActiveMessageID: "assistant-stale", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	if _, err := messages.CreateAssistantRun(context.Background(), scope,
-		store.Message{ID: stale.UserMessageID, Role: "user", Content: "stale", CreatedAt: now, UpdatedAt: now},
+		store.Message{ID: stale.UserMessageID, Role: "user", ActorID: "test-user", Content: "stale", CreatedAt: now, UpdatedAt: now},
 		store.Message{ID: stale.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}, stale,
 	); err != nil {
 		t.Fatalf("CreateAssistantRun stale: %v", err)
@@ -304,105 +303,6 @@ func TestProjectAssistantReconcilesOrphanedConversationRun(t *testing.T) {
 	}
 	if !started.Started || started.Run.ClientRequestID != "request-new" {
 		t.Fatalf("started run = %#v, want a new started conversation", started)
-	}
-}
-
-func TestProjectAssistantNormalizesPausedLegacyRunFromCheckpointBeforeClaim(t *testing.T) {
-	messages := store.NewMemoryStore()
-	server := NewWithWorkspace(nil, messages, nil, "", false)
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
-	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
-	checkpoint, err := json.Marshal(projectAssistantCheckpointState{AssistantMessageID: "assistant-legacy"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := store.AssistantRun{
-		ID:         "run-legacy",
-		Status:     store.AssistantRunStatusPendingPermission,
-		RequestID:  "permission-legacy",
-		Checkpoint: checkpoint,
-		CreatedAt:  now,
-		UpdatedAt:  now,
-	}
-	if err := messages.SaveAssistantRun(context.Background(), scope, run); err != nil {
-		t.Fatalf("SaveAssistantRun: %v", err)
-	}
-	if err := messages.AppendMessage(context.Background(), scope, store.Message{
-		ID:        "assistant-legacy",
-		Role:      "assistant",
-		Metadata:  map[string]any{projectAssistantMetadataRunID: run.ID},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("AppendMessage: %v", err)
-	}
-
-	normalized, err := server.normalizeProjectAssistantPausedRun(context.Background(), scope, run, "")
-	if err != nil {
-		t.Fatalf("normalizeProjectAssistantPausedRun: %v", err)
-	}
-	if normalized.ActiveMessageID != "assistant-legacy" {
-		t.Fatalf("active message id = %q, want checkpoint message", normalized.ActiveMessageID)
-	}
-	claimed, err := messages.ClaimAssistantRun(context.Background(), scope, run.ID, run.RequestID, now.Add(time.Minute))
-	if err != nil {
-		t.Fatalf("ClaimAssistantRun after normalization: %v", err)
-	}
-	if claimed.ActiveMessageID != "assistant-legacy" || claimed.Status != store.AssistantRunStatusRunning {
-		t.Fatalf("claimed run = %#v, want running run with normalized active message", claimed)
-	}
-}
-
-func TestAbortProjectAssistantRunRepairsPrePatchMessageIdentityFromInterrupt(t *testing.T) {
-	messages := store.NewMemoryStore()
-	server := NewWithWorkspace(nil, messages, nil, "", false)
-	id := identity{orgUUID: "org-a", workspaceUUID: "workspace-a"}
-	project := projectWithRepository("demo-repo", "demo", "github")
-	project.Name = "demo"
-	project.UID = "test-project-uid-demo"
-	scope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
-	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
-	run := store.AssistantRun{
-		ID:              "run-pre-patch",
-		ClientRequestID: "client-pre-patch",
-		Status:          store.AssistantRunStatusPendingPermission,
-		RequestID:       "permission-pre-patch",
-		Checkpoint:      json.RawMessage(`{}`),
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-	if err := messages.SaveAssistantRun(context.Background(), scope, run); err != nil {
-		t.Fatalf("SaveAssistantRun: %v", err)
-	}
-	if err := messages.AppendMessage(context.Background(), scope, store.Message{
-		ID:   "assistant-pre-patch",
-		Role: "assistant",
-		Metadata: map[string]any{
-			projectMessageMetadataStatus: projectMessageStatusPendingPermission,
-			projectMessageMetadataAssistantInterrupt: projectAssistantUIInterruptRequest{
-				Status: "pending",
-				Action: &projectAssistantUIInterruptAction{RunID: run.ID, RequestID: run.RequestID},
-			},
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("AppendMessage: %v", err)
-	}
-
-	resp, err := server.abortProjectAssistantRun(context.Background(), id, project, run.ID)
-	if err != nil {
-		t.Fatalf("abortProjectAssistantRun: %v", err)
-	}
-	if resp.Status != store.AssistantRunStatusAborted {
-		t.Fatalf("abort status = %q, want aborted", resp.Status)
-	}
-	persisted, err := messages.GetAssistantRun(context.Background(), scope, run.ID)
-	if err != nil {
-		t.Fatalf("GetAssistantRun: %v", err)
-	}
-	if persisted.ActiveMessageID != "assistant-pre-patch" {
-		t.Fatalf("ActiveMessageID = %q, want interrupt-bound assistant message", persisted.ActiveMessageID)
 	}
 }
 
@@ -459,8 +359,8 @@ func TestProjectAssistantSupervisorScopesLiveSnapshotMessages(t *testing.T) {
 func TestProjectAssistantSupervisorCoalescesSlowSubscriberSnapshots(t *testing.T) {
 	supervisor := newProjectAssistantSupervisor(context.Background(), store.NewMemoryStore())
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
-	user := store.Message{ID: "user-1", Role: "user", Content: "hello", CreatedAt: run.CreatedAt, UpdatedAt: run.CreatedAt}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: run.CreatedAt, UpdatedAt: run.CreatedAt}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: run.CreatedAt, UpdatedAt: run.CreatedAt}
 	created, err := supervisor.store.CreateAssistantRun(context.Background(), scope, user, assistant, run)
 	if err != nil {
@@ -497,7 +397,7 @@ func TestProjectAssistantSupervisorTrailingFlushKeepsNewerText(t *testing.T) {
 	supervisor := newProjectAssistantSupervisor(context.Background(), memoryStore)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", ActorID: "test-user", Role: "user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	created, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run)
@@ -542,7 +442,7 @@ func TestProjectAssistantSupervisorCursorAtTerminalRevisionCloses(t *testing.T) 
 	supervisor := newProjectAssistantSupervisor(context.Background(), store.NewMemoryStore())
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", ActorID: "test-user", Role: "user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	created, err := supervisor.store.CreateAssistantRun(context.Background(), scope, user, assistant, run)
@@ -579,8 +479,8 @@ func TestProjectAssistantSupervisorStartsOneWorkerForRun(t *testing.T) {
 	supervisor := newProjectAssistantSupervisor(context.Background(), store.NewMemoryStore())
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", Content: "hello", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	created, err := supervisor.store.CreateAssistantRun(context.Background(), scope, user, assistant, run)
 	if err != nil {
@@ -602,8 +502,8 @@ func TestProjectAssistantSupervisorAbortCannotBeOverwrittenByLateCompletion(t *t
 	supervisor := newProjectAssistantSupervisor(context.Background(), store.NewMemoryStore())
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", Content: "hello", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	created, err := supervisor.store.CreateAssistantRun(context.Background(), scope, user, assistant, run)
 	if err != nil {
@@ -633,8 +533,8 @@ func TestProjectAssistantSupervisorAbortPersistsAuditAndClearsPendingInterrupt(t
 	supervisor := newProjectAssistantSupervisor(context.Background(), memoryStore)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", RequestID: "permission-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", Content: "hello", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", RequestID: "permission-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", Metadata: map[string]any{
 		projectMessageMetadataStatus:             projectMessageStatusPendingPermission,
 		projectMessageMetadataAssistantInterrupt: projectAssistantUIInterruptRequest{Action: &projectAssistantUIInterruptAction{RunID: run.ID, RequestID: run.RequestID}},
@@ -689,8 +589,8 @@ func TestProjectAssistantSupervisorShutdownInterruptsWorker(t *testing.T) {
 	supervisor := newProjectAssistantSupervisor(context.Background(), store.NewMemoryStore())
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	created, err := supervisor.store.CreateAssistantRun(context.Background(), scope, user, assistant, run)
 	if err != nil {
@@ -841,8 +741,8 @@ func TestProjectAssistantSupervisorShutdownLeavesPendingCheckpointResumable(t *t
 	supervisor := newProjectAssistantSupervisor(context.Background(), msgStore)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusPendingInput, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusPendingInput, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, projectMessageStatusPendingInput, false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
 	if _, err := msgStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
 		t.Fatal(err)
@@ -865,8 +765,8 @@ func TestProjectAssistantSupervisorParentCancellationPersistsInterrupted(t *test
 	supervisor := newProjectAssistantSupervisor(parent, store.NewMemoryStore())
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	created, err := supervisor.store.CreateAssistantRun(context.Background(), scope, user, assistant, run)
 	if err != nil {
@@ -903,8 +803,8 @@ func TestProjectAssistantSupervisorReleasesPendingWorkerOwnership(t *testing.T) 
 	supervisor := newProjectAssistantSupervisor(context.Background(), store.NewMemoryStore())
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	created, err := supervisor.store.CreateAssistantRun(context.Background(), scope, user, assistant, run)
 	if err != nil {
@@ -932,8 +832,8 @@ func TestProjectAssistantSupervisorRestartAttachesPendingRunWithoutMutation(t *t
 	memoryStore := store.NewMemoryStore()
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusPendingInput, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusPendingInput, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	created, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run)
 	if err != nil {
@@ -957,8 +857,8 @@ func TestProjectAssistantSupervisorClaimPublishesRunningRevision(t *testing.T) {
 	supervisor := newProjectAssistantSupervisor(context.Background(), memoryStore)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", RequestID: "permission-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", Content: "hello", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", RequestID: "permission-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", Metadata: map[string]any{
 		projectMessageMetadataAssistantActionFeed:    []projectAssistantActionFeedItem{{ID: "prior", Status: "succeeded", Title: "Wrote file"}},
 		projectAssistantMetadataPreviewRefreshNeeded: true,
@@ -1049,8 +949,8 @@ func TestResumedAssistantSegmentPublishesTerminalMessageAndRunAtomically(t *test
 	supervisor := newProjectAssistantSupervisor(context.Background(), msgStore)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
 	if _, err := msgStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
 		t.Fatal(err)
@@ -1095,7 +995,29 @@ type failingResumeSnapshotStore struct {
 	err error
 }
 
+type failOnceGetAssistantWorkItemStore struct {
+	store.Store
+	failNext bool
+}
+
+type failingTerminalAssistantMessageStore struct {
+	store.Store
+	err error
+}
+
 func (s failingResumeSnapshotStore) SaveAssistantRunSnapshot(context.Context, store.Scope, store.AssistantRun, []store.Message, int64) error {
+	return s.err
+}
+
+func (s *failOnceGetAssistantWorkItemStore) GetAssistantWorkItem(ctx context.Context, scope store.Scope, id string) (store.AssistantWorkItem, error) {
+	if s.failNext {
+		s.failNext = false
+		return store.AssistantWorkItem{}, errors.New("injected WorkItem lookup failure")
+	}
+	return s.Store.GetAssistantWorkItem(ctx, scope, id)
+}
+
+func (s failingTerminalAssistantMessageStore) TransitionWorkItemAndRunWithAssistantMessage(context.Context, store.Scope, string, int64, store.AssistantRun, store.AssistantWorkItemStatus, string, store.Message, time.Time) error {
 	return s.err
 }
 
@@ -1105,8 +1027,8 @@ func TestResumeSnapshotPersistenceFailurePreventsSuccessfulTerminalTransition(t 
 	supervisor := newProjectAssistantSupervisor(context.Background(), failing)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	if _, err := inner.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
 		t.Fatal(err)
@@ -1250,6 +1172,135 @@ func TestResumeFailureLeavesWorkItemRunningUntilAtomicTerminalTransition(t *test
 	if run.Status != store.AssistantRunStatusFailed || item.Status != store.AssistantWorkItemStatusSuspended || item.ActiveRunID != "" {
 		t.Fatalf("terminal WorkItem state = %#v/%#v, want failed suspended pair", run, item)
 	}
+	committed, ok := accumulator.CommittedRun()
+	if !ok || committed.Status != store.AssistantRunStatusFailed || committed.Revision != run.Revision {
+		t.Fatalf("committed terminal run = %#v/%v, want durable run %#v", committed, ok, run)
+	}
+}
+
+func TestWorkItemTerminalLookupFailureFallsBackToPersistenceFailure(t *testing.T) {
+	ctx := context.Background()
+	memoryStore := store.NewMemoryStore()
+	failingStore := &failOnceGetAssistantWorkItemStore{Store: memoryStore}
+	supervisor := newProjectAssistantSupervisor(ctx, failingStore)
+	server := NewWithWorkspace(nil, failingStore, nil, "", false)
+	server.assistantSupervisor = supervisor
+	scope := testProjectMessageScope("org-a", "workspace-a", "demo")
+	var accumulator *projectAssistantSnapshotAccumulator
+	started, err := server.startProjectAssistantBuildRunDurably(
+		ctx,
+		scope,
+		"alice",
+		"Implement dark mode",
+		"terminal-lookup-failure-work-item-1",
+		func(run store.AssistantRun, assistant store.Message, _ bool) error {
+			var attachErr error
+			accumulator, attachErr = supervisor.Attach(scope, run, assistant)
+			return attachErr
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failingStore.failNext = true
+	if err := accumulator.TransitionWorkItemTerminal(
+		ctx,
+		store.AssistantRunStatusFailed,
+		store.AssistantWorkItemStatusSuspended,
+		"no_progress",
+		nil,
+	); err == nil {
+		t.Fatal("TransitionWorkItemTerminal error = nil, want injected lookup failure")
+	}
+
+	run, err := memoryStore.GetAssistantRun(ctx, scope, started.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := memoryStore.GetAssistantWorkItem(ctx, scope, started.Run.WorkItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.AssistantRunStatusFailed ||
+		item.Status != store.AssistantWorkItemStatusSuspended ||
+		item.StatusReason != "snapshot_persistence_failed" ||
+		item.ActiveRunID != "" {
+		t.Fatalf("fallback terminal state = %#v/%#v, want failed suspended persistence failure", run, item)
+	}
+}
+
+func TestWorkItemTerminalMessagePersistenceFailureLeavesDurableSnapshotUnchanged(t *testing.T) {
+	ctx := context.Background()
+	inner := store.NewMemoryStore()
+	failing := failingTerminalAssistantMessageStore{Store: inner, err: errors.New("injected terminal message persistence failure")}
+	supervisor := newProjectAssistantSupervisor(ctx, failing)
+	server := NewWithWorkspace(nil, failing, nil, "", false)
+	server.assistantSupervisor = supervisor
+	scope := testProjectMessageScope("org-a", "workspace-a", "demo")
+	var accumulator *projectAssistantSnapshotAccumulator
+	started, err := server.startProjectAssistantBuildRunDurably(
+		ctx,
+		scope,
+		"alice",
+		"Implement dark mode",
+		"terminal-message-failure-work-item-1",
+		func(run store.AssistantRun, assistant store.Message, _ bool) error {
+			var attachErr error
+			accumulator, attachErr = supervisor.Attach(scope, run, assistant)
+			return attachErr
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := accumulator.UpdateText(ctx, "before terminal", true); err != nil {
+		t.Fatal(err)
+	}
+	beforeRun, err := inner.GetAssistantRun(ctx, scope, started.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeMessages, err := inner.ListMessages(ctx, scope, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := accumulator.TransitionWorkItemTerminal(
+		ctx,
+		store.AssistantRunStatusFailed,
+		store.AssistantWorkItemStatusSuspended,
+		"failed",
+		func(_ *store.AssistantRun, message *store.Message) { message.Content = "terminal failure" },
+	); !errors.Is(err, failing.err) {
+		t.Fatalf("TransitionWorkItemTerminal error = %v, want injected failure", err)
+	}
+	afterRun, err := inner.GetAssistantRun(ctx, scope, started.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := inner.GetAssistantWorkItem(ctx, scope, started.Run.WorkItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterMessages, err := inner.ListMessages(ctx, scope, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRun.Status != beforeRun.Status || afterRun.Revision != beforeRun.Revision || afterRun.UpdatedAt != beforeRun.UpdatedAt || item.Status != store.AssistantWorkItemStatusActive || item.ActiveRunID != started.Run.ID {
+		t.Fatalf("terminal failure persisted partial lifecycle state: run=%#v item=%#v", afterRun, item)
+	}
+	assistantUnchanged := false
+	for _, message := range afterMessages.Items {
+		if message.ID == started.Assistant.ID {
+			assistantUnchanged = message.Content == "before terminal"
+		}
+	}
+	if len(afterMessages.Items) != len(beforeMessages.Items) || !assistantUnchanged {
+		t.Fatalf("terminal failure persisted partial assistant message: %#v", afterMessages.Items)
+	}
+	committed, ok := accumulator.CommittedRun()
+	if !ok || committed.Status != beforeRun.Status || committed.Revision != beforeRun.Revision || committed.UpdatedAt != beforeRun.UpdatedAt {
+		t.Fatalf("committed run = %#v/%v, want unchanged %#v", committed, ok, beforeRun)
+	}
 }
 
 func TestWorkItemTerminalTransitionRepairsRunOnlyTerminalState(t *testing.T) {
@@ -1307,14 +1358,14 @@ func TestWriteProjectAssistantRunStartReturnsRunUserMessage(t *testing.T) {
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	user := store.Message{ID: "user-z", Role: "user", Content: "build a todo app", CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-z", Role: "user", ActorID: "test-user", Content: "build a todo app", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	created, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := memoryStore.AppendMessage(context.Background(), scope, store.Message{ID: "user-a", Role: "user", Content: "an unrelated earlier-looking message", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if err := memoryStore.AppendMessage(context.Background(), scope, store.Message{ID: "user-a", Role: "user", ActorID: "test-user", Content: "an unrelated earlier-looking message", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	recorder := httptest.NewRecorder()
@@ -1336,9 +1387,9 @@ func TestWriteProjectAssistantRunStartFindsOriginatingUserBeyondFirstFiveHundred
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	user := store.Message{ID: "user-target", Role: "user", Content: "the intended prompt", CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-target", Role: "user", ActorID: "test-user", Content: "the intended prompt", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-target", Role: "assistant", CreatedAt: now, UpdatedAt: now}
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusCompleted, ClientRequestID: "request-1", UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 2, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusCompleted, ClientRequestID: "request-1", UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 2, CreatedAt: now, UpdatedAt: now}
 	if err := memoryStore.SaveAssistantRun(context.Background(), scope, run); err != nil {
 		t.Fatal(err)
 	}
@@ -1349,7 +1400,7 @@ func TestWriteProjectAssistantRunStartFindsOriginatingUserBeyondFirstFiveHundred
 		t.Fatal(err)
 	}
 	for i := 0; i < 550; i++ {
-		if err := memoryStore.AppendMessage(context.Background(), scope, store.Message{ID: fmt.Sprintf("noise-%03d", i), Role: "user", Content: "unrelated", CreatedAt: now, UpdatedAt: now}); err != nil {
+		if err := memoryStore.AppendMessage(context.Background(), scope, store.Message{ID: fmt.Sprintf("noise-%03d", i), Role: "user", ActorID: "test-user", Content: "unrelated", CreatedAt: now, UpdatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1399,12 +1450,13 @@ func TestProjectAssistantRunStartRejectsLegacyUnboundIdempotencyKey(t *testing.T
 	}
 }
 
-func TestProjectAssistantRunStartInitialProjectPromptGrantsOnlyEmptyTranscript(t *testing.T) {
+func TestProjectAssistantRunStartConsumesServerOwnedInitialBootstrap(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
 	if err != nil {
 		t.Fatal(err)
 	}
+	projectYAML := "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
 	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Query string `json:"query"`
@@ -1414,7 +1466,9 @@ func TestProjectAssistantRunStartInitialProjectPromptGrantsOnlyEmptyTranscript(t
 		}
 		switch {
 		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}}}})
+		case strings.Contains(request.Query, "applyYaml"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"applyYaml": projectYAML}})
 		case strings.Contains(request.Query, "SecretYaml"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
 		default:
@@ -1423,8 +1477,13 @@ func TestProjectAssistantRunStartInitialProjectPromptGrantsOnlyEmptyTranscript(t
 	}))
 	defer graphQL.Close()
 
-	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), store.NewMemoryStore(), nil, "", false)
-	engine := &initialProjectPromptCaptureEngine{requests: make(chan projectAssistantRunRequest, 2)}
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), messages, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
+	if err := messages.CreateProjectBootstrapPermit(context.Background(), scope, "test-user", projectInitialBootstrapPromptDigest("build a todo app")); err != nil {
+		t.Fatal(err)
+	}
+	engine := &initialProjectBootstrapCaptureEngine{requests: make(chan projectAssistantRunRequest, 2)}
 	server.assistantEngine = engine
 	router := mux.NewRouter()
 	server.Register(router)
@@ -1443,7 +1502,7 @@ func TestProjectAssistantRunStartInitialProjectPromptGrantsOnlyEmptyTranscript(t
 		}
 	}
 
-	post(`{"content":"build a todo app","clientRequestID":"request-1","initialProjectPrompt":true}`)
+	post(`{"content":"build a todo app","clientRequestID":"request-1"}`)
 	select {
 	case request := <-engine.requests:
 		if request.InitialApprovedPlan == nil {
@@ -1456,7 +1515,7 @@ func TestProjectAssistantRunStartInitialProjectPromptGrantsOnlyEmptyTranscript(t
 		t.Fatal("first durable run did not reach assistant engine")
 	}
 
-	post(`{"content":"continue","clientRequestID":"request-2","initialProjectPrompt":true}`)
+	post(`{"content":"continue","clientRequestID":"request-2"}`)
 	select {
 	case request := <-engine.requests:
 		if request.InitialApprovedPlan != nil {
@@ -1467,14 +1526,14 @@ func TestProjectAssistantRunStartInitialProjectPromptGrantsOnlyEmptyTranscript(t
 	}
 }
 
-func TestProjectAssistantRunStartInitialProjectPromptSeesTranscriptAfterReservation(t *testing.T) {
+func TestProjectAssistantRunStartInitialBootstrapSeesTranscriptAfterReservation(t *testing.T) {
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	messages := store.NewMemoryStore()
 	observingStore := &reservationObservingStore{Store: messages, scope: scope}
 	server := NewWithWorkspace(nil, observingStore, nil, "", false)
 	observingStore.supervisor = server.projectAssistantSupervisor()
 	now := time.Now().UTC()
-	if err := messages.AppendMessage(context.Background(), scope, store.Message{ID: "prior-user", Role: "user", Content: "already started", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if err := messages.AppendMessage(context.Background(), scope, store.Message{ID: "prior-user", Role: "user", ActorID: "test-user", Content: "already started", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	var transcriptEmpty bool
@@ -1513,7 +1572,7 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), memoryStore, nil, "", false)
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", ActorID: "test-user", Role: "user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", Content: "working", CreatedAt: now, UpdatedAt: now}
 	if _, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
@@ -1541,232 +1600,6 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 	}
 	if snapshot.Run.Status != store.AssistantRunStatusInterrupted {
 		t.Fatalf("streamed status = %q, want interrupted", snapshot.Run.Status)
-	}
-}
-
-func TestProjectAssistantRunRoutesStartLatestAbortAndIsolateTenantStreams(t *testing.T) {
-	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
-	if err != nil {
-		t.Fatal(err)
-	}
-	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatal(err)
-		}
-		var response map[string]any
-		switch {
-		case strings.Contains(request.Query, "ProjectYaml"):
-			response = map[string]any{"data": map[string]any{"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}}
-		case strings.Contains(request.Query, "SecretYaml"):
-			response = map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}}
-		default:
-			t.Fatalf("unexpected GraphQL query: %s", request.Query)
-		}
-		_ = json.NewEncoder(w).Encode(response)
-	}))
-	defer graphQL.Close()
-	memoryStore := store.NewMemoryStore()
-	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), memoryStore, nil, "", false)
-	var terminalLogsMu sync.Mutex
-	var terminalLogs []store.AssistantRun
-	server.projectAssistantSupervisor().lifecycleLog = func(event string, _ store.Scope, run store.AssistantRun) {
-		if event == "completed" || event == "failed" || event == "aborted" {
-			terminalLogsMu.Lock()
-			terminalLogs = append(terminalLogs, run)
-			terminalLogsMu.Unlock()
-		}
-	}
-	engine := &blockingStartRouteEngine{entered: make(chan struct{}), finished: make(chan struct{})}
-	server.assistantEngine = engine
-	router := mux.NewRouter()
-	server.Register(router)
-	starter, cancelStarter := context.WithCancel(context.Background())
-	defer cancelStarter()
-	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/messages/stream", strings.NewReader(`{"content":"build a todo app","clientRequestID":"request-1"}`)).WithContext(starter)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-User", "test-user")
-	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-	request.Header.Set("X-Kedge-Cluster", "cluster-a")
-	started := httptest.NewRecorder()
-	streamDone := make(chan struct{})
-	go func() {
-		router.ServeHTTP(started, request)
-		close(streamDone)
-	}()
-	select {
-	case <-engine.entered:
-	case <-time.After(time.Second):
-		t.Fatal("legacy start worker did not enter")
-	}
-	cancelStarter()
-	select {
-	case <-streamDone:
-	case <-time.After(time.Second):
-		t.Fatal("legacy stream did not detach after request cancellation")
-	}
-	if started.Code != http.StatusOK {
-		t.Fatalf("legacy start status = %d, want %d: %s", started.Code, http.StatusOK, started.Body.String())
-	}
-	run, err := memoryStore.LatestAssistantRun(context.Background(), store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	page, err := memoryStore.ListMessages(context.Background(), store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}, 10, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page.Items) != 2 || run.UserMessageID == "" || run.ActiveMessageID == "" {
-		t.Fatalf("legacy start persisted %#v with run %#v, want exactly one user and one assistant", page.Items, run)
-	}
-	latest := httptest.NewRecorder()
-	latestRequest := httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/runs/latest", nil)
-	latestRequest.Header = request.Header.Clone()
-	router.ServeHTTP(latest, latestRequest)
-	if latest.Code != http.StatusOK {
-		t.Fatalf("latest status = %d, want %d: %s", latest.Code, http.StatusOK, latest.Body.String())
-	}
-	var latestSnapshot projectAssistantRunSnapshot
-	if err := json.NewDecoder(latest.Body).Decode(&latestSnapshot); err != nil {
-		t.Fatal(err)
-	}
-	if latestSnapshot.Run.ID != run.ID || latestSnapshot.Run.Status != run.Status || latestSnapshot.Run.Revision != run.Revision || latestSnapshot.Message.ID != run.ActiveMessageID {
-		t.Fatalf("latest snapshot = %#v, want started run and active assistant message", latestSnapshot)
-	}
-	otherActorLatest := httptest.NewRecorder()
-	otherActorLatestRequest := httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/runs/latest", nil)
-	otherActorLatestRequest.Header = request.Header.Clone()
-	otherActorLatestRequest.Header.Set("X-Kedge-User", "other-user")
-	router.ServeHTTP(otherActorLatest, otherActorLatestRequest)
-	if otherActorLatest.Code != http.StatusNoContent || otherActorLatest.Body.Len() != 0 {
-		t.Fatalf("cross-actor latest = %d %q, want non-disclosing no content", otherActorLatest.Code, otherActorLatest.Body.String())
-	}
-	otherActorStream := httptest.NewRecorder()
-	otherActorStreamRequest := httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/"+run.ID+"/stream", nil)
-	otherActorStreamRequest.Header = request.Header.Clone()
-	otherActorStreamRequest.Header.Set("X-Kedge-User", "other-user")
-	router.ServeHTTP(otherActorStream, otherActorStreamRequest)
-	if otherActorStream.Code != http.StatusNotFound || strings.Contains(otherActorStream.Body.String(), run.ID) {
-		t.Fatalf("cross-actor stream = %d %q, want non-disclosing not found", otherActorStream.Code, otherActorStream.Body.String())
-	}
-	otherWorkspace := httptest.NewRecorder()
-	otherWorkspaceRequest := httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/"+run.ID+"/stream", nil)
-	otherWorkspaceRequest.Header = request.Header.Clone()
-	otherWorkspaceRequest.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-b")
-	otherWorkspaceRequest.Header.Set("X-Kedge-Cluster", "cluster-a")
-	router.ServeHTTP(otherWorkspace, otherWorkspaceRequest)
-	if otherWorkspace.Code == http.StatusOK {
-		t.Fatalf("cross-workspace stream unexpectedly succeeded: %s", otherWorkspace.Body.String())
-	}
-	abort := httptest.NewRecorder()
-	abortRequest := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/"+run.ID+"/abort", nil)
-	abortRequest.Header = request.Header.Clone()
-	router.ServeHTTP(abort, abortRequest)
-	if abort.Code != http.StatusAccepted {
-		t.Fatalf("abort status = %d, want %d: %s", abort.Code, http.StatusAccepted, abort.Body.String())
-	}
-	select {
-	case <-engine.finished:
-	case <-time.After(time.Second):
-		t.Fatal("explicit abort did not stop started worker")
-	}
-	terminal, err := memoryStore.GetAssistantRun(context.Background(), store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}, run.ID)
-	if err != nil || terminal.Status != store.AssistantRunStatusAborted {
-		t.Fatalf("latest durable run after legacy disconnect/abort = %#v, %v; want recoverable aborted run", terminal, err)
-	}
-
-	// The modern POST response is short-lived too: canceling its request after
-	// the durable start must not cancel the server-owned worker.
-	normalEngine := &blockingStartRouteEngine{entered: make(chan struct{}), finished: make(chan struct{})}
-	server.assistantEngine = normalEngine
-	normalContext, cancelNormal := context.WithCancel(context.Background())
-	normalRequest := httptest.NewRequest(http.MethodPost, "/api/projects/demo/messages", strings.NewReader(`{"content":"continue building","clientRequestID":"request-2"}`)).WithContext(normalContext)
-	normalRequest.Header = request.Header.Clone()
-	normal := httptest.NewRecorder()
-	router.ServeHTTP(normal, normalRequest)
-	if normal.Code != http.StatusAccepted {
-		t.Fatalf("normal start status = %d, want %d: %s", normal.Code, http.StatusAccepted, normal.Body.String())
-	}
-	select {
-	case <-normalEngine.entered:
-	case <-time.After(time.Second):
-		t.Fatal("normal start worker did not enter")
-	}
-	cancelNormal()
-	select {
-	case <-normalEngine.finished:
-		t.Fatal("canceling normal start request canceled worker")
-	case <-time.After(25 * time.Millisecond):
-	}
-	normalRun, err := memoryStore.LatestAssistantRun(context.Background(), store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"})
-	if err != nil || normalRun.ClientRequestID != "request-2" {
-		t.Fatalf("latest normal durable run = %#v, %v", normalRun, err)
-	}
-	if !server.projectAssistantSupervisor().Abort(store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}, normalRun.ID) {
-		t.Fatal("Abort did not find normal worker")
-	}
-	select {
-	case <-normalEngine.finished:
-	case <-time.After(time.Second):
-		t.Fatal("abort did not stop normal worker")
-	}
-	for _, tt := range []struct{ requestID, chunk, reply string }{
-		{requestID: "request-3", reply: "returned only"},
-		{requestID: "request-4", chunk: "partial", reply: "partial returned final"},
-	} {
-		server.assistantEngine = replyStartRouteEngine{chunk: tt.chunk, reply: tt.reply}
-		response := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/projects/demo/messages", strings.NewReader(`{"content":"finish","clientRequestID":"`+tt.requestID+`"}`))
-		req.Header = request.Header.Clone()
-		router.ServeHTTP(response, req)
-		if response.Code != http.StatusAccepted {
-			t.Fatalf("reply start status = %d: %s", response.Code, response.Body.String())
-		}
-		var durable store.AssistantRun
-		deadline := time.Now().Add(time.Second)
-		for time.Now().Before(deadline) {
-			durable, err = memoryStore.LatestAssistantRun(context.Background(), store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"})
-			if err == nil && durable.ClientRequestID == tt.requestID && durable.Status == store.AssistantRunStatusCompleted {
-				break
-			}
-			time.Sleep(time.Millisecond)
-		}
-		message, messageErr := server.findProjectMessage(context.Background(), store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}, durable.ActiveMessageID)
-		if durable.Status != store.AssistantRunStatusCompleted || messageErr != nil || message.Content != tt.reply {
-			t.Fatalf("durable reply %#v message %#v err %v, want completed %q", durable, message, messageErr, tt.reply)
-		}
-	}
-	server.assistantEngine = failingStartRouteEngine{}
-	failing := httptest.NewRecorder()
-	failingRequest := httptest.NewRequest(http.MethodPost, "/api/projects/demo/messages", strings.NewReader(`{"content":"fail","clientRequestID":"request-5"}`))
-	failingRequest.Header = request.Header.Clone()
-	router.ServeHTTP(failing, failingRequest)
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		failed, getErr := memoryStore.LatestAssistantRun(context.Background(), store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"})
-		if getErr == nil && failed.ClientRequestID == "request-5" && failed.Status == store.AssistantRunStatusFailed {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	terminalLogsMu.Lock()
-	logs := append([]store.AssistantRun(nil), terminalLogs...)
-	terminalLogsMu.Unlock()
-	seen := map[store.AssistantRunStatus]bool{}
-	for _, logged := range logs {
-		if logged.Revision < 2 || !assistantRunTerminal(logged.Status) {
-			t.Fatalf("terminal lifecycle log = %#v, want committed terminal revision", logged)
-		}
-		seen[logged.Status] = true
-	}
-	for _, status := range []store.AssistantRunStatus{store.AssistantRunStatusCompleted, store.AssistantRunStatusFailed, store.AssistantRunStatusAborted} {
-		if !seen[status] {
-			t.Fatalf("terminal lifecycle logs = %#v, missing %q", logs, status)
-		}
 	}
 }
 
@@ -1907,7 +1740,7 @@ func TestProjectAssistantSupervisorResumeWorkerPersistsLatestPlanSnapshot(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", RequestID: "permission-1", Checkpoint: checkpoint, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", RequestID: "permission-1", Checkpoint: checkpoint, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	if _, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
@@ -1971,6 +1804,123 @@ func TestProjectAssistantSupervisorResumeWorkerPersistsLatestPlanSnapshot(t *tes
 	}
 }
 
+func TestProjectAssistantSupervisorResumeFailurePreservesNoProgressReasonAndMessage(t *testing.T) {
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case strings.Contains(request.Query, "ProjectYaml"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}})
+		case strings.Contains(request.Query, "SecretYaml"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
+		default:
+			t.Fatalf("unexpected GraphQL query: %s", request.Query)
+		}
+	}))
+	defer graphQL.Close()
+
+	memoryStore := store.NewMemoryStore()
+	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), memoryStore, nil, "", false)
+	server.assistantEngine = failingResumeRouteEngine{cause: &projectEinoAssistantNoProgressError{
+		Phase:    projectEinoAssistantPhaseMutate,
+		ToolName: projectToolReadFile,
+		Calls:    projectEinoAssistantRepeatedActionLimit,
+		Limit:    projectEinoAssistantRepeatedActionLimit,
+	}}
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
+	now := time.Now().UTC()
+	checkpoint, err := json.Marshal(projectAssistantCheckpointState{Eino: &projectAssistantEinoCheckpointState{
+		CheckpointID: "run-1", Checkpoint: []byte("checkpoint"), InterruptID: "interrupt-1", InterruptType: projectAssistantInterruptTypePermission, ToolCallID: "tool-1", ToolName: projectToolWriteFile,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := store.AssistantWorkItem{
+		ID: "work-1", RootMessageID: "user-1", CreatedBy: "test-user", Status: store.AssistantWorkItemStatusActive, Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	run := store.AssistantRun{
+		ID: "run-1", WorkItemID: item.ID, Mode: store.AssistantRunModeNew, ApprovalMode: store.AssistantApprovalModeAlwaysAsk,
+		Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1",
+		RequestID: "permission-1", Checkpoint: checkpoint, Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	user := store.Message{ID: "user-1", WorkItemID: item.ID, Role: "user", ActorID: "test-user", Content: "Update the app", CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{
+		ID: "assistant-1", WorkItemID: item.ID, Role: "assistant", CreatedAt: now, UpdatedAt: now,
+		Metadata: map[string]any{
+			projectMessageMetadataStatus: projectMessageStatusPendingPermission,
+			projectMessageMetadataAssistantInterrupt: projectAssistantUIInterruptRequest{
+				Status: "pending",
+				Action: &projectAssistantUIInterruptAction{
+					RunID: "run-1", RequestID: "permission-1", AssistantMessageID: "assistant-1",
+				},
+			},
+		},
+	}
+	if _, err := memoryStore.CreateWorkItemAndAssistantRun(context.Background(), scope, item, user, assistant, run); err != nil {
+		t.Fatal(err)
+	}
+
+	router := mux.NewRouter()
+	server.Register(router)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/demo/assistant/run-1/resume",
+		strings.NewReader(`{"requestID":"permission-1","decision":"allow","assistantMessageID":"assistant-1"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer caller-token")
+	request.Header.Set("X-Kedge-User", "test-user")
+	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
+	request.Header.Set("X-Kedge-Cluster", "cluster-a")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("resume status = %d, want %d: %s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+
+	var terminal store.AssistantRun
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		terminal, err = memoryStore.GetAssistantRun(context.Background(), scope, run.ID)
+		if err == nil && terminal.Status == store.AssistantRunStatusFailed {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if terminal.Status != store.AssistantRunStatusFailed {
+		t.Fatalf("terminal run = %#v, want failed", terminal)
+	}
+	updatedItem, err := memoryStore.GetAssistantWorkItem(context.Background(), scope, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedItem.Status != store.AssistantWorkItemStatusSuspended || updatedItem.StatusReason != "no_progress" {
+		t.Fatalf("terminal WorkItem = %#v, want suspended no_progress", updatedItem)
+	}
+	message, err := server.findProjectMessage(context.Background(), scope, run.ActiveMessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !projectEinoAssistantBoundedClosingAnswerValid(message.Content) || !strings.Contains(message.Content, "Continue") {
+		t.Fatalf("terminal message = %q, want non-empty resumable explanation", message.Content)
+	}
+	audit := decodeProjectAssistantRunAudit(t, terminal.Audit)
+	if audit.Failure == nil ||
+		audit.Failure.Kind != "no_progress" ||
+		audit.Failure.Phase != projectEinoAssistantPhaseMutate ||
+		audit.Failure.ToolName != projectToolReadFile ||
+		audit.Failure.Calls != projectEinoAssistantRepeatedActionLimit {
+		t.Fatalf("terminal audit failure = %#v, want typed mutate no-progress", audit.Failure)
+	}
+}
+
 func TestResumeProjectAssistantRouteDetachesRequestAndPublishesRunningSnapshot(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
@@ -2010,7 +1960,7 @@ func TestResumeProjectAssistantRouteDetachesRequestAndPublishesRunningSnapshot(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", RequestID: "permission-1", Checkpoint: checkpoint, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", RequestID: "permission-1", Checkpoint: checkpoint, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	if _, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
@@ -2066,106 +2016,6 @@ func TestResumeProjectAssistantRouteDetachesRequestAndPublishesRunningSnapshot(t
 	}
 }
 
-func TestResumeProjectAssistantRouteRepairsPrePatchMessageIdentity(t *testing.T) {
-	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	secret, err := json.Marshal(projectLLMSettingsSecret(settings).Object)
-	if err != nil {
-		t.Fatal(err)
-	}
-	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatal(err)
-		}
-		var response map[string]any
-		switch {
-		case strings.Contains(request.Query, "ProjectYaml"):
-			response = map[string]any{"data": map[string]any{
-				"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}},
-			}}
-		case strings.Contains(request.Query, "SecretYaml"):
-			response = map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}}
-		default:
-			t.Fatalf("unexpected GraphQL query: %s", request.Query)
-		}
-		_ = json.NewEncoder(w).Encode(response)
-	}))
-	defer graphQL.Close()
-
-	memoryStore := store.NewMemoryStore()
-	server := NewWithWorkspace(tenant.NewGraphQLClient(graphQL.URL, false), memoryStore, nil, "", false)
-	engine := &blockingResumeRouteEngine{entered: make(chan struct{}), finished: make(chan struct{})}
-	server.assistantEngine = engine
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
-	now := time.Now().UTC()
-	checkpoint, err := json.Marshal(projectAssistantCheckpointState{Eino: &projectAssistantEinoCheckpointState{
-		CheckpointID: "run-legacy", Checkpoint: []byte("checkpoint"), InterruptID: "interrupt-legacy", InterruptType: projectAssistantInterruptTypePermission, ToolCallID: "tool-legacy", ToolName: projectToolWriteFile,
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := store.AssistantRun{ID: "run-legacy", Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-legacy", UserMessageID: "user-legacy", RequestID: "permission-legacy", Checkpoint: checkpoint, Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: run.UserMessageID, Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: now, UpdatedAt: now}
-	assistant := store.Message{
-		ID:   "assistant-legacy",
-		Role: "assistant",
-		Metadata: map[string]any{
-			projectMessageMetadataStatus: projectMessageStatusPendingPermission,
-			projectMessageMetadataAssistantInterrupt: projectAssistantUIInterruptRequest{
-				Status: "pending",
-				Action: &projectAssistantUIInterruptAction{RunID: run.ID, RequestID: run.RequestID, AssistantMessageID: "assistant-legacy"},
-			},
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := memoryStore.SaveAssistantRun(context.Background(), scope, run); err != nil {
-		t.Fatal(err)
-	}
-	if err := memoryStore.AppendMessage(context.Background(), scope, user); err != nil {
-		t.Fatal(err)
-	}
-	if err := memoryStore.AppendMessage(context.Background(), scope, assistant); err != nil {
-		t.Fatal(err)
-	}
-
-	router := mux.NewRouter()
-	server.Register(router)
-	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/run-legacy/resume", strings.NewReader(`{"requestID":"permission-legacy","decision":"allow","assistantMessageID":"assistant-legacy"}`))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-User", "test-user")
-	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-	request.Header.Set("X-Kedge-Cluster", "cluster-a")
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusAccepted {
-		t.Fatalf("resume status = %d, want %d: %s", recorder.Code, http.StatusAccepted, recorder.Body.String())
-	}
-	var snapshot projectAssistantRunSnapshot
-	if err := json.NewDecoder(recorder.Body).Decode(&snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Run.ActiveMessageID != assistant.ID || snapshot.Message.ID != assistant.ID {
-		t.Fatalf("resume snapshot = %#v, want recovered active message %q", snapshot, assistant.ID)
-	}
-	select {
-	case <-engine.entered:
-	case <-time.After(time.Second):
-		t.Fatal("resume engine did not start")
-	}
-	if !server.projectAssistantSupervisor().Abort(scope, run.ID) {
-		t.Fatal("Abort did not find resumed worker")
-	}
-	select {
-	case <-engine.finished:
-	case <-time.After(time.Second):
-		t.Fatal("Abort did not cancel resumed worker")
-	}
-}
-
 type blockingResumeRouteEngine struct {
 	entered  chan struct{}
 	finished chan struct{}
@@ -2190,7 +2040,7 @@ type planResumeRouteEngine struct {
 	release   chan struct{}
 }
 
-type initialProjectPromptCaptureEngine struct {
+type initialProjectBootstrapCaptureEngine struct {
 	requests chan projectAssistantRunRequest
 }
 
@@ -2199,6 +2049,10 @@ type reservationObservingStore struct {
 	supervisor          *projectAssistantSupervisor
 	scope               store.Scope
 	observedReservation bool
+}
+
+type failingResumeRouteEngine struct {
+	cause error
 }
 
 func (s *reservationObservingStore) ListMessages(ctx context.Context, scope store.Scope, limit int, cursor string) (store.Page, error) {
@@ -2211,12 +2065,12 @@ func (s *reservationObservingStore) ListMessages(ctx context.Context, scope stor
 	return s.Store.ListMessages(ctx, scope, limit, cursor)
 }
 
-func (e *initialProjectPromptCaptureEngine) StreamProjectAssistant(_ context.Context, request projectAssistantRunRequest) (projectAssistantRunResult, error) {
+func (e *initialProjectBootstrapCaptureEngine) StreamProjectAssistant(_ context.Context, request projectAssistantRunRequest) (projectAssistantRunResult, error) {
 	e.requests <- request
 	return projectAssistantRunResult{}, nil
 }
 
-func (*initialProjectPromptCaptureEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
+func (*initialProjectBootstrapCaptureEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
 	return projectAssistantRunResult{}, errors.New("unexpected resume")
 }
 
@@ -2251,6 +2105,14 @@ func (e *planResumeRouteEngine) ResumeProjectAssistant(_ context.Context, req pr
 	close(e.published)
 	<-e.release
 	return projectAssistantRunResult{Content: "plan complete"}, nil
+}
+
+func (failingResumeRouteEngine) StreamProjectAssistant(context.Context, projectAssistantRunRequest) (projectAssistantRunResult, error) {
+	return projectAssistantRunResult{}, errors.New("unexpected stream")
+}
+
+func (e failingResumeRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
+	return projectAssistantRunResult{}, e.cause
 }
 
 func (replyStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {

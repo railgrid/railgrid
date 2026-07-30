@@ -44,6 +44,21 @@ func TestProjectAssistantActionFeedReadHidesExecutionMechanics(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantActionFeedPreservesSkippedRead(t *testing.T) {
+	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID:        "read-skipped",
+		Name:      projectToolReadFile,
+		Status:    "skipped",
+		Arguments: "path src/App.vue",
+		Summary:   "Skipped an unchanged duplicate read.",
+	})
+	if item.Status != projectAssistantActionFeedStatusSkipped ||
+		item.Title != "Skipped duplicate read" ||
+		item.Severity != projectAssistantActionFeedSeverityNormal {
+		t.Fatalf("skipped read item = %#v", item)
+	}
+}
+
 func TestProjectAssistantActionFeedSuppressesTodosAndFailsClosed(t *testing.T) {
 	feed := projectAssistantActionFeedFromToolCalls([]projectToolCallStreamEvent{
 		{ID: "todo-1", Name: projectEinoAssistantWriteTodosTool, Status: "succeeded", Arguments: `{"todos":[{"content":"secret"}]}`},
@@ -101,6 +116,17 @@ func TestProjectAssistantActionFeedUsesAllowlistedDiagnostics(t *testing.T) {
 		strings.Contains(item.ID, "secret") || strings.Contains(item.Diagnostic.ReferenceID, "secret") ||
 		strings.Contains(string(data), "tool-with-secret-id-token") {
 		t.Fatalf("diagnostic leaked raw failure data: %s", data)
+	}
+}
+
+func TestProjectAssistantActionDiagnosticClassifiesReplanAsPermission(t *testing.T) {
+	for _, failure := range []string{
+		"plan approval required: requested write is outside the active approved plan",
+		"initial execution plan revision required: requested write is outside the active target paths",
+	} {
+		if got := projectAssistantActionDiagnosticCategory(failure); got != "permission" {
+			t.Fatalf("diagnostic category for %q = %q, want permission", failure, got)
+		}
 	}
 }
 

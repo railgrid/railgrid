@@ -58,14 +58,18 @@ func TestProjectEinoAssistantFilesystemMiddlewareInventory(t *testing.T) {
 	requiredGuidance := map[string][]string{
 		projectToolLS: {
 			"exploring",
-			"before using read_file",
+			"path is not already known",
+			"read that file directly",
 		},
 		projectToolReadFile: {
 			"up to 2000 lines",
 			"pagination",
 			"offset",
 			"limit",
+			"limit=2000",
+			"generated, minified, or unusually dense files",
 			"always specify a positive limit",
+			"many adjacent short ranges",
 			"line numbers starting at 1",
 			"multiple tools in a single response",
 			"batch",
@@ -78,6 +82,15 @@ func TestProjectEinoAssistantFilesystemMiddlewareInventory(t *testing.T) {
 			"batch",
 		},
 		projectToolGrep: {
+			"concrete unresolved question",
+			"open-ended exploration",
+			"successive rounds",
+			"most relevant project-relative path",
+			"batch independent targeted searches",
+			"current question and relevant edit locations are resolved",
+			"next allowed task action",
+			"different concrete unresolved question",
+			"prior tool results",
 			"regex",
 			"glob parameter",
 			"files_with_matches",
@@ -130,6 +143,35 @@ func TestProjectEinoAssistantFilesystemMiddlewareInventory(t *testing.T) {
 			if info.Name == forbidden {
 				t.Errorf("unexpected filesystem tool %q", forbidden)
 			}
+		}
+	}
+
+	instruction := strings.ToLower(runCtx.Instruction)
+	for _, phrase := range []string{
+		"read known relevant files directly",
+		"use glob only when the filename is unknown",
+		"use grep only when the location of specific content is unknown",
+		"batch independent workspace reads and targeted searches",
+		"treat a successful search as evidence to act on",
+		"advance to the next action allowed by the current turn policy",
+		"instead of launching more searches",
+		"if no further action is allowed",
+		"do not search again for evidence already available",
+		"generated, minified, or unusually dense files",
+		"read existing files before proposing or applying edits",
+	} {
+		if !strings.Contains(instruction, phrase) {
+			t.Errorf("filesystem instruction = %q, want guidance %q", runCtx.Instruction, phrase)
+		}
+	}
+	for _, forbidden := range []string{
+		"search with grep or glob before broadly reading files",
+		"almost always use this tool before using read_file",
+		"plan approval, mutation",
+		"use task tool",
+	} {
+		if strings.Contains(instruction, forbidden) {
+			t.Errorf("filesystem instruction = %q, must not contain %q", runCtx.Instruction, forbidden)
 		}
 	}
 }
@@ -197,6 +239,7 @@ func TestProjectEinoAssistantFilesystemTelemetryRecordsSuccessfulRead(t *testing
 		},
 	}
 	runState := newProjectEinoAssistantRunState()
+	runState.NextModelCallOrdinal()
 	middleware := projectEinoAssistantFilesystemTelemetryMiddleware(req, runState)
 	wrapped, err := middleware.WrapInvokableToolCall(
 		context.Background(),
@@ -385,6 +428,9 @@ func TestProjectEinoAssistantFilesystemTelemetryRecordsSafeFailure(t *testing.T)
 	if strings.Contains(events[2].Error, "filesystem-super-secret") {
 		t.Fatalf("failure event leaked secret: %q", events[2].Error)
 	}
+	if _, count := runState.ConsecutiveNoProgressModelCalls(); count != 1 {
+		t.Fatalf("failed filesystem model batch count = %d, want 1", count)
+	}
 
 	checkpoint := runState.CheckpointState()
 	if len(checkpoint.LastToolMessages) != 1 {
@@ -395,6 +441,145 @@ func TestProjectEinoAssistantFilesystemTelemetryRecordsSafeFailure(t *testing.T)
 		strings.Contains(recorded.Content, "filesystem-super-secret") ||
 		recorded.Content != truncateProjectToolInfo(recorded.Content) {
 		t.Fatalf("recorded failure = %q, want bounded safe failure", recorded.Content)
+	}
+}
+
+func TestProjectEinoAssistantFilesystemTelemetryMarksDuplicateCycleAsNoProgress(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	var events []projectToolCallStreamEvent
+	middleware := projectEinoAssistantFilesystemTelemetryMiddleware(projectAssistantRunRequest{
+		StreamCallbacks: projectAssistantStreamCallbacks{
+			OnToolCall: func(event projectToolCallStreamEvent) {
+				events = append(events, event)
+			},
+		},
+	}, runState)
+	endpointCalls := 0
+	runState.NextModelCallOrdinal()
+	for index, toolCall := range []struct {
+		name string
+		args string
+	}{
+		{name: projectToolReadFile, args: `{"file_path":"src/App.tsx","limit":2000}`},
+		{name: projectToolGrep, args: `{"pattern":"App"}`},
+		{name: projectToolLS, args: `{"path":"src"}`},
+	} {
+		wrapped, err := middleware.WrapInvokableToolCall(
+			context.Background(),
+			func(context.Context, string, ...einotool.Option) (string, error) {
+				endpointCalls++
+				return "result", nil
+			},
+			&adk.ToolContext{Name: toolCall.name},
+		)
+		if err != nil {
+			t.Fatalf("wrap %s: %v", toolCall.name, err)
+		}
+		if _, err := wrapped(context.Background(), toolCall.args); err != nil {
+			t.Fatalf("first %s call: %v", toolCall.name, err)
+		}
+		if got := endpointCalls; got != index+1 {
+			t.Fatalf("endpoint calls after first %s = %d, want %d", toolCall.name, got, index+1)
+		}
+	}
+	runState.NextModelCallOrdinal()
+	for _, toolCall := range []struct {
+		name string
+		args string
+	}{
+		{name: projectToolReadFile, args: `{"file_path":"src/App.tsx","limit":2000}`},
+		{name: projectToolGrep, args: `{"pattern":"App"}`},
+		{name: projectToolLS, args: `{"path":"src"}`},
+	} {
+		wrapped, err := middleware.WrapInvokableToolCall(
+			context.Background(),
+			func(context.Context, string, ...einotool.Option) (string, error) {
+				endpointCalls++
+				return "unexpected", nil
+			},
+			&adk.ToolContext{Name: toolCall.name},
+		)
+		if err != nil {
+			t.Fatalf("wrap duplicate %s: %v", toolCall.name, err)
+		}
+		result, err := wrapped(context.Background(), toolCall.args)
+		if err != nil || !strings.Contains(result, "read already completed") {
+			t.Fatalf("duplicate %s result = (%q, %v)", toolCall.name, result, err)
+		}
+	}
+	if endpointCalls != 3 {
+		t.Fatalf("endpoint calls = %d, want only three novel reads", endpointCalls)
+	}
+	if name, count := runState.ConsecutiveNoProgressModelCalls(); name != "" || count != 1 {
+		t.Fatalf("no-progress model calls = (%q, %d), want one duplicate batch", name, count)
+	}
+	skipped := 0
+	for _, event := range events {
+		if event.Status == "skipped" {
+			skipped++
+		}
+	}
+	if skipped != 3 {
+		t.Fatalf("skipped events = %d, want 3", skipped)
+	}
+}
+
+func TestProjectEinoAssistantFilesystemTelemetrySkipsCoveredAdjacentReadRanges(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	middleware := projectEinoAssistantFilesystemTelemetryMiddleware(projectAssistantRunRequest{}, runState)
+	endpointCalls := 0
+	wrapped, err := middleware.WrapInvokableToolCall(
+		context.Background(),
+		func(_ context.Context, arguments string, _ ...einotool.Option) (string, error) {
+			endpointCalls++
+			switch arguments {
+			case `{"file_path":"app.js","offset":1,"limit":200}`:
+				return "     1\tone\n     2\ttwo\n", nil
+			default:
+				return "unexpected", nil
+			}
+		},
+		&adk.ToolContext{Name: projectToolReadFile},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrapped(context.Background(), `{"file_path":"app.js","offset":1,"limit":200}`); err != nil {
+		t.Fatal(err)
+	}
+	result, err := wrapped(context.Background(), `{"file_path":".\\app.js","offset":101,"limit":200}`)
+	if err != nil || !strings.Contains(result, "read already completed") {
+		t.Fatalf("covered adjacent read = (%q, %v), want skipped", result, err)
+	}
+	if endpointCalls != 1 {
+		t.Fatalf("endpoint calls = %d, want one read through EOF", endpointCalls)
+	}
+}
+
+func TestProjectEinoAssistantFilesystemReadCoverageHandlesLongLinesAndPathAliases(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	middleware := projectEinoAssistantFilesystemTelemetryMiddleware(projectAssistantRunRequest{}, runState)
+	endpointCalls := 0
+	wrapped, err := middleware.WrapInvokableToolCall(
+		context.Background(),
+		func(context.Context, string, ...einotool.Option) (string, error) {
+			endpointCalls++
+			return "     1\t" + strings.Repeat("x", 70*1024) + "\n     2\ttwo\n", nil
+		},
+		&adk.ToolContext{Name: projectToolReadFile},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrapped(context.Background(), `{"file_path":"./app.js","offset":1,"limit":200}`); err != nil {
+		t.Fatal(err)
+	}
+	result, err := wrapped(context.Background(), `{"file_path":"app.js","offset":101,"limit":200}`)
+	if err != nil || !strings.Contains(result, "read already completed") {
+		t.Fatalf("aliased covered read = (%q, %v), want skipped", result, err)
+	}
+	if endpointCalls != 1 {
+		t.Fatalf("endpoint calls = %d, want one long-line read", endpointCalls)
 	}
 }
 

@@ -92,6 +92,13 @@ func TestAskContextExcludesEarlierWorkItemTodos(t *testing.T) {
 	server := NewWithWorkspace(nil, messages, nil, "", false)
 	scope := testProjectMessageScope("org-a", "workspace-a", "demo")
 
+	priorDiscussion, err := server.startProjectAssistantRunDurably(
+		context.Background(), scope, "alice", "Remember the accessible blue theme", "ask-prior",
+		func(store.AssistantRun, store.Message, bool) error { return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	quote, err := server.startProjectAssistantBuildRunDurably(
 		context.Background(), scope, "alice", "Add quote submission", "build-quote",
 		func(store.AssistantRun, store.Message, bool) error { return nil },
@@ -120,8 +127,13 @@ func TestAskContextExcludesEarlierWorkItemTodos(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 1 || history[0].ID != ask.User.ID || history[0].Content != "What theme is active?" {
-		t.Fatalf("Ask history = %#v, want only current question", history)
+	if len(history) != 4 || history[0].ID != priorDiscussion.User.ID || history[2].ID != ask.User.ID {
+		t.Fatalf("Ask history = %#v, want prior discussion plus current question", history)
+	}
+	for _, message := range history {
+		if message.WorkItemID != "" {
+			t.Fatalf("Ask history leaked WorkItem message: %#v", message)
+		}
 	}
 }
 

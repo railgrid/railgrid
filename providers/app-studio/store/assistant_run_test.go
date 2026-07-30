@@ -17,7 +17,6 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 )
@@ -71,38 +70,5 @@ func TestMemoryStoreAssistantRunRoundTrip(t *testing.T) {
 	}
 	if updated.Status != AssistantRunStatusCompleted {
 		t.Fatalf("status = %q, want %q", updated.Status, AssistantRunStatusCompleted)
-	}
-}
-
-func TestMemoryStoreCompareAndSwapAssistantRun(t *testing.T) {
-	s := NewMemoryStore()
-	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-1"}
-	first := AssistantRun{
-		ID:         "approved-plan-grant",
-		Status:     AssistantRunStatusCompleted,
-		RequestID:  "revision-a",
-		Checkpoint: json.RawMessage(`{"revision":"revision-a"}`),
-	}
-	if err := s.CompareAndSwapAssistantRun(context.Background(), scope, first, ""); err != nil {
-		t.Fatalf("initial CompareAndSwapAssistantRun returned error: %v", err)
-	}
-	stale := first
-	stale.RequestID = "revision-stale"
-	stale.Checkpoint = json.RawMessage(`{"revision":"revision-stale"}`)
-	if err := s.CompareAndSwapAssistantRun(context.Background(), scope, stale, "missing-revision"); !errors.Is(err, ErrAssistantRunConflict) {
-		t.Fatalf("stale CompareAndSwapAssistantRun error = %v, want conflict", err)
-	}
-	got, err := s.GetAssistantRun(context.Background(), scope, first.ID)
-	if err != nil {
-		t.Fatalf("GetAssistantRun returned error: %v", err)
-	}
-	if got.RequestID != first.RequestID {
-		t.Fatalf("revision after stale swap = %q, want %q", got.RequestID, first.RequestID)
-	}
-	second := first
-	second.RequestID = "revision-b"
-	second.Checkpoint = json.RawMessage(`{"revision":"revision-b"}`)
-	if err := s.CompareAndSwapAssistantRun(context.Background(), scope, second, first.RequestID); err != nil {
-		t.Fatalf("matching CompareAndSwapAssistantRun returned error: %v", err)
 	}
 }

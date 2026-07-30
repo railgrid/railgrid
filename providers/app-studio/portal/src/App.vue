@@ -19,6 +19,7 @@ import {
   PanelRight,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Send,
   Settings2,
@@ -157,6 +158,12 @@ interface PendingApprovalView {
 interface PendingFollowUpView {
   message: ProjectMessageView
   interrupt: ProjectAssistantUIInterruptRequest
+}
+
+interface ProjectAssistantUndoMetadata {
+  runID: string
+  status: 'workspace_restored'
+  fileCount?: number
 }
 
 interface ProjectDevelopmentPreviewAuthorization {
@@ -323,7 +330,7 @@ const deleteProjectTarget = ref<Project | null>(null)
 const deletingProject = ref(false)
 const prompt = ref('')
 const assistantIntent = ref<AssistantResponseMode>('auto')
-const approvalMode = ref<ProjectAssistantApprovalMode>('always_ask')
+const approvalMode = ref<ProjectAssistantApprovalMode>('auto_approve')
 const approvalModeLoading = ref(false)
 const approvalModeSaving = ref(false)
 const approvalModeError = ref<string | null>(null)
@@ -1754,7 +1761,6 @@ async function createProjectAndStartConversation(content: string) {
     const started = await api.startAssistantRun(props.ctx, projectName, assistantRunStartPayload(
       startPlan.content,
       startPlan.clientRequestID,
-      startPlan.initialProjectPrompt,
     ))
     if (!current()) return
     const applied = applyAssistantSnapshot({ run: started.run, message: started.assistant }, projectName, 'start')
@@ -1882,7 +1888,7 @@ async function openProject(name: string, updateURL = true) {
     selected.value = project
     messages.value = loadedMessages.map(toProjectMessageView)
     assistantWorkItems.value = workItems
-    approvalMode.value = preference?.mode ?? 'always_ask'
+    approvalMode.value = preference?.mode ?? 'auto_approve'
     selectedAssistantWorkItem.value = null
     await recoverAssistantConversation(name)
     if (updateURL) props.navigate(encodeURIComponent(name))
@@ -2430,8 +2436,7 @@ async function sendMessage() {
       }
     : {
         content,
-        assistantAction: (firstProjectPending ? 'build' : assistantIntent.value) as 'auto' | 'ask' | 'build',
-        ...(firstProjectPending ? { initialProjectPrompt: true } : {}),
+        assistantAction: (firstProjectPending ? 'auto' : assistantIntent.value) as 'auto' | 'ask' | 'build',
       }
   const submissionFingerprint = assistantRunStartFingerprint(projectName, startOperation)
   const clientRequestID = firstProjectPending
@@ -2687,6 +2692,14 @@ function projectMessageInterrupt(message: ProjectMessage): ProjectAssistantUIInt
   if (message.role !== 'assistant') return undefined
   const raw = message.metadata?.assistantInterrupt
   return isProjectAssistantInterrupt(raw) ? raw : undefined
+}
+
+function projectMessageUndo(message: ProjectMessage): ProjectAssistantUndoMetadata | undefined {
+  const raw = message.metadata?.assistantUndo
+  if (!raw || typeof raw !== 'object') return undefined
+  const item = raw as Partial<ProjectAssistantUndoMetadata>
+  if (item.status !== 'workspace_restored' || typeof item.runID !== 'string') return undefined
+  return { runID: item.runID, status: item.status, ...(typeof item.fileCount === 'number' ? { fileCount: item.fileCount } : {}) }
 }
 
 function isProjectAssistantInterrupt(value: unknown): value is ProjectAssistantUIInterruptRequest {
@@ -3585,6 +3598,10 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 >
                   <Square class="h-3 w-3 fill-current" :stroke-width="2" />
                   Interrupted
+                </div>
+                <div v-if="projectMessageUndo(message)" class="mt-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-text-muted">
+                  <RotateCcw class="h-3.5 w-3.5 text-success" :stroke-width="1.75" />
+                  Restored {{ projectMessageUndo(message)?.fileCount ?? 0 }} workspace file{{ projectMessageUndo(message)?.fileCount === 1 ? '' : 's' }}; Git history unchanged
                 </div>
               </div>
             </div>

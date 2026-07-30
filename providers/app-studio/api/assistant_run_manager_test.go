@@ -35,14 +35,18 @@ import (
 func TestProjectAssistantRunManagerPreemptsActiveTurnForSameProject(t *testing.T) {
 	manager := newProjectAssistantRunManager()
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
-	firstCtx, firstDone := manager.Begin(context.Background(), newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo"))
+	first := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo")
+	first.ProjectUID = "project-uid"
+	firstCtx, firstDone := manager.Begin(context.Background(), first)
 	type begunTurn struct {
 		ctx  context.Context
 		done func()
 	}
 	secondStarted := make(chan begunTurn, 1)
 	go func() {
-		secondCtx, secondDone := manager.Begin(context.Background(), newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo"))
+		second := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo")
+		second.ProjectUID = "project-uid"
+		secondCtx, secondDone := manager.Begin(context.Background(), second)
 		secondStarted <- begunTurn{ctx: secondCtx, done: secondDone}
 	}()
 
@@ -84,11 +88,15 @@ func TestProjectAssistantRunManagerBoundsPreemptedTurnHandoff(t *testing.T) {
 	manager := newProjectAssistantRunManager()
 	manager.handoffTimeout = 10 * time.Millisecond
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
-	_, firstDone := manager.Begin(context.Background(), newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo"))
+	first := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo")
+	first.ProjectUID = "project-uid"
+	_, firstDone := manager.Begin(context.Background(), first)
 	defer firstDone()
 
 	startedAt := time.Now()
-	secondCtx, secondDone := manager.Begin(context.Background(), newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo"))
+	second := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo")
+	second.ProjectUID = "project-uid"
+	secondCtx, secondDone := manager.Begin(context.Background(), second)
 	defer secondDone()
 
 	if elapsed := time.Since(startedAt); elapsed > time.Second {
@@ -104,15 +112,19 @@ func TestProjectAssistantRunManagerBoundsPreemptedTurnHandoff(t *testing.T) {
 
 func TestProjectAssistantRunManagerScopesActiveTurnsByTenantProject(t *testing.T) {
 	manager := newProjectAssistantRunManager()
-	firstCtx, firstDone := manager.Begin(context.Background(), newProjectAssistantTurnItem(projectAssistantTurnMessage, identity{
+	first := newProjectAssistantTurnItem(projectAssistantTurnMessage, identity{
 		orgUUID:       "org-a",
 		workspaceUUID: "ws-1",
-	}, "demo"))
+	}, "demo")
+	first.ProjectUID = "project-uid-a"
+	firstCtx, firstDone := manager.Begin(context.Background(), first)
 	defer firstDone()
-	secondCtx, secondDone := manager.Begin(context.Background(), newProjectAssistantTurnItem(projectAssistantTurnMessage, identity{
+	second := newProjectAssistantTurnItem(projectAssistantTurnMessage, identity{
 		orgUUID:       "org-b",
 		workspaceUUID: "ws-1",
-	}, "demo"))
+	}, "demo")
+	second.ProjectUID = "project-uid-b"
+	secondCtx, secondDone := manager.Begin(context.Background(), second)
 	defer secondDone()
 
 	if err := firstCtx.Err(); err != nil {
@@ -295,14 +307,39 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 	if err != nil {
 		t.Fatalf("encode checkpoint returned error: %v", err)
 	}
-	run := store.AssistantRun{
-		ID:         "run-resume",
-		Status:     store.AssistantRunStatusPendingPermission,
-		RequestID:  "perm-resume",
-		Checkpoint: rawCheckpoint,
+	now := time.Now().UTC()
+	userMessage := store.Message{
+		ID:        "msg-user-resume",
+		Role:      aiv1alpha1.ProjectMessageRoleUser,
+		ActorID:   id.user,
+		Content:   "update the app",
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
-	if err := messages.SaveAssistantRun(context.Background(), messageScope, run); err != nil {
-		t.Fatalf("SaveAssistantRun returned error: %v", err)
+	activeMessage := store.Message{
+		ID:        "msg-assistant-resume",
+		Role:      aiv1alpha1.ProjectMessageRoleAssistant,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	run, err := messages.CreateAssistantRun(context.Background(), messageScope, userMessage, activeMessage, store.AssistantRun{
+		ID:              "run-resume",
+		Mode:            store.AssistantRunModeDiscussion,
+		Status:          store.AssistantRunStatusPendingPermission,
+		ClientRequestID: "request-resume",
+		UserMessageID:   userMessage.ID,
+		ActiveMessageID: activeMessage.ID,
+		Revision:        1,
+		RequestID:       "perm-resume",
+		Checkpoint:      rawCheckpoint,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	})
+	if err != nil {
+		t.Fatalf("CreateAssistantRun returned error: %v", err)
+	}
+	if _, err := server.projectAssistantSupervisor().Attach(messageScope, run, activeMessage); err != nil {
+		t.Fatalf("Attach returned error: %v", err)
 	}
 
 	resumeErr := make(chan error, 1)

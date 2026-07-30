@@ -33,3 +33,9 @@ test('provides the Codex-style choices and responsive popover placement', async 
   assert.match(source, /fixed inset-x-3 bottom-3/)
   assert.match(source, /md:absolute/)
 })
+
+test('defaults the App Studio composer to auto-approve', async () => {
+  const source = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  assert.match(source, /ref<ProjectAssistantApprovalMode>\('auto_approve'\)/)
+  assert.match(source, /preference\?\.mode \?\? 'auto_approve'/)
+})

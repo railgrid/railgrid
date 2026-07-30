@@ -110,7 +110,7 @@ immutable Kubernetes Project UID and WorkItem rather than by the reusable
 project name.
 
 Mutation-capable Eino runs expose a phase-specific tool catalog for
-`approval -> mutate -> verify -> repair/commit -> report`, while every tool
+`approval -> mutate -> verify -> repair/warmup/commit -> report`, while every tool
 invocation still validates the durable lifecycle and grant. A phase-local
 no-progress bound warns the model before stopping a run that keeps reasoning
 without plan approval or an approved source mutation. The WorkItem is suspended
@@ -119,15 +119,20 @@ mutation, the strict verification catalog and global iteration ceiling apply so
 a run-local mutation marker is never discarded by this handoff. This does not
 apply to read-only Ask turns.
 
+Patch conflicts enter a persisted two-step recovery lane: reread only the failed
+target, then retry only `apply_patch` for that target. Transient runtime
+provisioning and missing process evidence enter a bounded operational lane with
+only status, preview, logs, and verification reads. Source repair reopens only
+when verification reports concrete build or application log blockers.
+
 This remains a single-replica design: execution cannot continue across a
 provider restart. On the next read, an orphaned running run is surfaced as
 `interrupted`; its WorkItem becomes suspended, while permission and input
 checkpoints stay resumable. Stop first persists `stopping`, then asks Eino to
-cancel gracefully without retaining a terminal checkpoint. The legacy
-`POST /messages/stream` and `POST /projects/stream` endpoints are retained for
-older portals as compatibility adapters: after their historical project setup
-events, they start the same durable run and subscribe to it. New clients must
-not depend on token replay: streams provide complete revisioned snapshots and a
+cancel gracefully without retaining a terminal checkpoint. Assistant starts
+use the durable `POST /messages` boundary; the legacy POST-SSE project and
+message endpoints have been removed. Clients must not depend on token replay:
+the remaining GET stream provides complete revisioned snapshots, and a
 reconnect receives the latest one.
 
 Lifecycle logs contain only organization, workspace, project, run, revision,

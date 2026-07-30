@@ -48,6 +48,7 @@ const (
 	projectAssistantActionFeedStatusRunning   = "running"
 	projectAssistantActionFeedStatusWaiting   = "waiting"
 	projectAssistantActionFeedStatusSucceeded = "succeeded"
+	projectAssistantActionFeedStatusSkipped   = "skipped"
 	projectAssistantActionFeedStatusFailed    = "failed"
 	projectAssistantActionFeedStatusRejected  = "rejected"
 )
@@ -168,6 +169,9 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 	case projectToolWriteFile, projectToolApplyPatch:
 		item.Target = projectAssistantActionSafeTarget(projectAssistantActionArgumentField(args, arguments, "path", "path"))
 		item.Title = projectAssistantActionLifecycleTitle(status, "Updating file", "Updated file", "File update failed")
+		if status == projectAssistantActionFeedStatusSucceeded {
+			item.Outcome = projectAssistantMutationOutcome(summary)
+		}
 	case projectToolMkdir:
 		item.Target = projectAssistantActionSafeTarget(projectAssistantActionArgumentField(args, arguments, "path", "path"))
 		item.Title = projectAssistantActionLifecycleTitle(status, "Creating folder", "Created folder", "Folder creation failed")
@@ -219,6 +223,18 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 	return item
 }
 
+func projectAssistantMutationOutcome(summary string) string {
+	parts := strings.Split(summary, ";")
+	counts := make([]string, 0, 2)
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "+") || strings.HasPrefix(part, "-") {
+			counts = append(counts, part)
+		}
+	}
+	return strings.Join(counts, " ")
+}
+
 func projectAssistantActionPublicID(id string) string {
 	if strings.TrimSpace(id) == "" {
 		return ""
@@ -259,6 +275,8 @@ func projectAssistantActionFeedItemStatus(status string) string {
 		return projectAssistantActionFeedStatusFailed
 	case "rejected":
 		return projectAssistantActionFeedStatusRejected
+	case "skipped":
+		return projectAssistantActionFeedStatusSkipped
 	default:
 		return projectAssistantActionFeedStatusSucceeded
 	}
@@ -300,6 +318,8 @@ func projectAssistantActionLifecycleTitle(status, active, succeeded, failed stri
 		return active
 	case projectAssistantActionFeedStatusFailed, projectAssistantActionFeedStatusRejected:
 		return failed
+	case projectAssistantActionFeedStatusSkipped:
+		return "Skipped duplicate read"
 	default:
 		return succeeded
 	}
@@ -414,7 +434,8 @@ func projectAssistantActionDiagnosticCategory(raw string) string {
 	switch {
 	case strings.Contains(value, "timeout"), strings.Contains(value, "timed out"), strings.Contains(value, "deadline exceeded"):
 		return "timeout"
-	case strings.Contains(value, "permission"), strings.Contains(value, "forbidden"), strings.Contains(value, "unauthorized"), strings.Contains(value, "access denied"):
+	case strings.Contains(value, "permission"), strings.Contains(value, "forbidden"), strings.Contains(value, "unauthorized"), strings.Contains(value, "access denied"),
+		strings.Contains(value, "plan approval required"), strings.Contains(value, "execution plan revision required"):
 		return "permission"
 	case strings.Contains(value, "validation"), strings.Contains(value, "invalid"), strings.Contains(value, "malformed"),
 		strings.Contains(value, "required"), strings.Contains(value, "repository binding"):

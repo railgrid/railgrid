@@ -56,16 +56,16 @@ func TestProjectAssistantStartRequestBinding(t *testing.T) {
 	}
 }
 
-func TestProjectAssistantInitialPromptIsPartOfStartIdentity(t *testing.T) {
+func TestProjectAssistantInitialBootstrapIsPartOfStartIdentity(t *testing.T) {
 	run := store.AssistantRun{Mode: store.AssistantRunModeNew}
 	if err := bindProjectAssistantStartRequest(&run, "actor-1", "build it", "", 0, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateProjectAssistantStartReplay(run, "actor-1", "build it", store.AssistantRunModeNew, "", 0, true); err != nil {
-		t.Fatalf("identical initial prompt replay: %v", err)
+		t.Fatalf("identical initial bootstrap replay: %v", err)
 	}
 	if err := validateProjectAssistantStartReplay(run, "actor-1", "build it", store.AssistantRunModeNew, "", 0, false); !errors.Is(err, store.ErrAssistantRunConflict) {
-		t.Fatalf("toggled initial prompt error = %v, want %v", err, store.ErrAssistantRunConflict)
+		t.Fatalf("toggled initial bootstrap error = %v, want %v", err, store.ErrAssistantRunConflict)
 	}
 }
 
@@ -87,7 +87,7 @@ func TestProjectAssistantCancelRequestReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := store.AssistantWorkItem{ID: "work-1", PlanGrant: receipt}
+	item := store.AssistantWorkItem{ID: "work-1", CancellationReceipt: receipt}
 	if err := validateProjectAssistantCancelReplay(item, "actor-1", "cancel-1", 3); err != nil {
 		t.Fatalf("identical replay: %v", err)
 	}

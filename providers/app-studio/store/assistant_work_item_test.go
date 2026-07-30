@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -134,6 +135,97 @@ func TestMemoryStoreStopAndGrantRevocationAreAtomic(t *testing.T) {
 	}
 	if revoked.GrantRevision != "" || len(revoked.PlanGrant) != 0 || revoked.Revision != approved.Revision+1 {
 		t.Fatalf("stopped WorkItem = %#v, want atomically revoked grant", revoked)
+	}
+}
+
+func TestMemoryStoreLifecycleMessageTransitionsAreAtomic(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-1"}
+	item := testWorkItem("item-atomic", "user-atomic")
+	run := testWorkItemRun("run-atomic", item.ID, item.RootMessageID, "assistant-atomic")
+	created, err := s.CreateWorkItemAndAssistantRun(ctx, scope, item, testWorkItemUser(item.RootMessageID), testWorkItemAssistant(run.ActiveMessageID), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := s.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted.Status = AssistantRunStatusCompleted
+	persisted.Revision++
+	message := Message{ID: run.ActiveMessageID, WorkItemID: item.ID, Role: "assistant", Content: "done"}
+	if err := s.TransitionWorkItemAndRunWithAssistantMessage(ctx, scope, item.ID, created.Revision, persisted, AssistantWorkItemStatusCompleted, "completed", message, time.Now().UTC()); err != nil {
+		t.Fatalf("TransitionWorkItemAndRunWithAssistantMessage: %v", err)
+	}
+	page, err := s.ListMessages(ctx, scope, 10, "")
+	if err != nil || len(page.Items) != 2 || page.Items[1].Content != "done" {
+		t.Fatalf("terminal message was not persisted with lifecycle: page=%#v err=%v", page, err)
+	}
+
+	// A mismatched assistant message must leave the terminal state untouched.
+	item = testWorkItem("item-rejected", "user-rejected")
+	run = testWorkItemRun("run-rejected", item.ID, item.RootMessageID, "assistant-rejected")
+	created, err = s.CreateWorkItemAndAssistantRun(ctx, scope, item, testWorkItemUser(item.RootMessageID), testWorkItemAssistant(run.ActiveMessageID), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, _ = s.GetAssistantRun(ctx, scope, run.ID)
+	persisted.Status = AssistantRunStatusCompleted
+	persisted.Revision++
+	err = s.TransitionWorkItemAndRunWithAssistantMessage(ctx, scope, item.ID, created.Revision, persisted, AssistantWorkItemStatusCompleted, "completed", Message{ID: "wrong", WorkItemID: item.ID, Role: "assistant"}, time.Now().UTC())
+	if err == nil {
+		t.Fatal("terminal lifecycle accepted a mismatched message")
+	}
+	unchanged, _ := s.GetAssistantWorkItem(ctx, scope, item.ID)
+	if unchanged.Status != AssistantWorkItemStatusActive {
+		t.Fatalf("failed atomic transition changed work item: %#v", unchanged)
+	}
+}
+
+func TestMemoryStoreLoadRecentDiscussionMessages(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-1"}
+	now := time.Now().UTC()
+	for _, message := range []Message{
+		{ID: "discussion-1", Role: "user", Content: "hello", CreatedAt: now},
+		{ID: "work-item", WorkItemID: "item-1", Role: "assistant", Content: "mutating", CreatedAt: now.Add(time.Second)},
+		{ID: "discussion-2", Role: "assistant", Content: "reply", CreatedAt: now.Add(2 * time.Second)},
+	} {
+		if err := s.AppendMessage(ctx, scope, message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := s.LoadRecentDiscussionMessages(ctx, scope, 10)
+	if err != nil || len(items) != 2 || items[0].ID != "discussion-1" || items[1].ID != "discussion-2" {
+		t.Fatalf("discussion history = %#v err=%v", items, err)
+	}
+}
+
+func TestMemoryStoreCancellationReceiptIsSeparateFromPlanGrant(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-1"}
+	item := testWorkItem("item-cancel", "user-cancel")
+	run := testWorkItemRun("run-cancel", item.ID, item.RootMessageID, "assistant-cancel")
+	created, err := s.CreateWorkItemAndAssistantRun(ctx, scope, item, testWorkItemUser(item.RootMessageID), testWorkItemAssistant(run.ActiveMessageID), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Status = AssistantWorkItemStatusCancelled
+	created.StatusReason = "cancelled by user"
+	created.ActiveRunID = ""
+	created.PlanGrant = nil
+	created.GrantRevision = ""
+	created.CancellationReceipt = json.RawMessage(`{"kind":"cancel_receipt","clientRequestID":"cancel-1"}`)
+	created.Revision++
+	if err := s.CompareAndSwapAssistantWorkItem(ctx, scope, created, created.Revision-1); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := s.GetAssistantWorkItem(ctx, scope, item.ID)
+	if err != nil || len(persisted.PlanGrant) != 0 || !jsonSemanticallyEqual(persisted.CancellationReceipt, created.CancellationReceipt) {
+		t.Fatalf("cancel receipt was not stored independently: %#v err=%v", persisted, err)
 	}
 }
 
@@ -428,7 +520,9 @@ func TestMemoryStoreWorkItemAttachesMatchingUnassignedRootMessageOnce(t *testing
 	ctx := context.Background()
 	s := NewMemoryStore()
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-1"}
-	if err := s.AppendMessage(ctx, scope, testWorkItemUser("user-1")); err != nil {
+	root := testWorkItemUser("user-1")
+	root.WorkItemID = ""
+	if err := s.AppendMessage(ctx, scope, root); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 	item := testWorkItem("item-1", "user-1")
@@ -439,15 +533,18 @@ func TestMemoryStoreWorkItemAttachesMatchingUnassignedRootMessageOnce(t *testing
 	if err != nil || len(messages) != 2 || messages[0].ID != "user-1" {
 		t.Fatalf("attached messages = %#v, err=%v", messages, err)
 	}
-	if _, err := s.CreateWorkItemAndAssistantRun(ctx, scope, testWorkItem("item-2", "user-1"), testWorkItemUser("user-1"), testWorkItemAssistant("assistant-2"), testWorkItemRun("run-2", "item-2", "user-1", "assistant-2")); !errors.Is(err, ErrAssistantWorkItemConflict) {
+	secondUser := testWorkItemUser("user-1")
+	secondUser.WorkItemID = "item-2"
+	if _, err := s.CreateWorkItemAndAssistantRun(ctx, scope, testWorkItem("item-2", "user-1"), secondUser, testWorkItemAssistant("assistant-2"), testWorkItemRun("run-2", "item-2", "user-1", "assistant-2")); !errors.Is(err, ErrAssistantWorkItemConflict) {
 		t.Fatalf("second root attachment error = %v, want conflict", err)
 	}
 	otherStore := NewMemoryStore()
-	if err := otherStore.AppendMessage(ctx, scope, testWorkItemUser("user-1")); err != nil {
+	if err := otherStore.AppendMessage(ctx, scope, root); err != nil {
 		t.Fatalf("AppendMessage other store: %v", err)
 	}
 	otherActor := testWorkItemUser("user-1")
 	otherActor.ActorID = "actor-2"
+	otherActor.WorkItemID = "item-3"
 	if _, err := otherStore.CreateWorkItemAndAssistantRun(ctx, scope, testWorkItem("item-3", "user-1"), otherActor, testWorkItemAssistant("assistant-3"), testWorkItemRun("run-3", "item-3", "user-1", "assistant-3")); err == nil {
 		t.Fatal("cross-actor root attachment unexpectedly succeeded")
 	}
@@ -563,11 +660,11 @@ func testWorkItem(id, rootMessageID string) AssistantWorkItem {
 }
 
 func testWorkItemUser(id string) Message {
-	return Message{ID: id, Role: "user", Content: "Build it", ActorID: "actor-1"}
+	return Message{ID: id, Role: "user", Content: "Build it", ActorID: "actor-1", WorkItemID: strings.Replace(id, "user", "item", 1)}
 }
 
 func testWorkItemAssistant(id string) Message {
-	return Message{ID: id, Role: "assistant", Content: ""}
+	return Message{ID: id, Role: "assistant", Content: "", WorkItemID: strings.Replace(id, "assistant", "item", 1)}
 }
 
 func testWorkItemRun(id, workItemID, userID, assistantID string) AssistantRun {

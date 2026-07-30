@@ -33,6 +33,10 @@ func TestApprovalModeSchemaMigrationIsAdditive(t *testing.T) {
 	if !strings.Contains(statements[1], "ADD COLUMN IF NOT EXISTS approval_mode") {
 		t.Fatalf("assistant run migration statement = %q", statements[1])
 	}
+	defaultStatements := approvalModeDefaultSchemaStatements()
+	if len(defaultStatements) != 1 || !strings.Contains(defaultStatements[0], "SET DEFAULT 'auto_approve'") {
+		t.Fatalf("approval mode default migration statements = %#v", defaultStatements)
+	}
 }
 
 func TestMemoryStoreAssistantApprovalPreferenceIsActorAndProjectScoped(t *testing.T) {
@@ -44,18 +48,18 @@ func TestMemoryStoreAssistantApprovalPreferenceIsActorAndProjectScoped(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if defaultPreference.Mode != AssistantApprovalModeAlwaysAsk {
-		t.Fatalf("default mode = %q, want %q", defaultPreference.Mode, AssistantApprovalModeAlwaysAsk)
+	if defaultPreference.Mode != AssistantApprovalModeAutoApprove {
+		t.Fatalf("default mode = %q, want %q", defaultPreference.Mode, AssistantApprovalModeAutoApprove)
 	}
 
 	saved, err := s.SetAssistantApprovalPreference(ctx, scope, AssistantApprovalPreference{
 		ActorID: "alice",
-		Mode:    AssistantApprovalModeAutoApprove,
+		Mode:    AssistantApprovalModeAlwaysAsk,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Mode != AssistantApprovalModeAutoApprove || saved.UpdatedAt.IsZero() {
+	if saved.Mode != AssistantApprovalModeAlwaysAsk || saved.UpdatedAt.IsZero() {
 		t.Fatalf("saved preference = %#v", saved)
 	}
 
@@ -71,7 +75,7 @@ func TestMemoryStoreAssistantApprovalPreferenceIsActorAndProjectScoped(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Mode != AssistantApprovalModeAlwaysAsk {
+			if got.Mode != AssistantApprovalModeAutoApprove {
 				t.Fatalf("mode = %q, want isolated default", got.Mode)
 			}
 		})

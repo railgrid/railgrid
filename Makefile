@@ -732,7 +732,7 @@ EDGES_KCP_SERVER ?= https://localhost:6443
 EDGES_HUB_URL ?= https://localhost:9443
 EDGES_HUB_EXTERNAL_URL ?= $(EDGES_HUB_URL)
 EDGES_TOKEN ?= $(STATIC_AUTH_TOKEN)
-EDGES_PORT ?= 8084
+EDGES_PORT ?= 8088
 EDGES_MANIFEST ?= providers/edges/manifest.yaml
 EDGES_PROVIDER_MANIFEST ?= providers/edges/provider.yaml
 EDGES_WORKSPACE_PATH ?= root:kedge:providers:edges
@@ -1103,7 +1103,6 @@ APP_STUDIO_MANIFEST ?= providers/app-studio/manifest.yaml
 APP_STUDIO_PROVIDER_MANIFEST ?= providers/app-studio/provider.yaml
 APP_STUDIO_DATABASE_URL ?=
 APP_STUDIO_IN_MEMORY_MESSAGE_STORE ?=
-APP_STUDIO_AUTO_APPROVE_ACTIONS ?= true
 APP_STUDIO_DEV_DATABASE_URL ?= postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable
 APP_STUDIO_POSTGRES_CONTAINER ?= kedge-app-studio-postgres
 APP_STUDIO_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
@@ -1278,10 +1277,8 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
 	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
 	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
-	APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS:-$(APP_STUDIO_AUTO_APPROVE_ACTIONS)}"; \
 	if [ "$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-}" = "true" ]; then \
 		echo "  store: in-memory (non-durable)"; \
-		echo "  auto-approve actions: $${APP_STUDIO_AUTO_APPROVE_ACTIONS}"; \
 		APP_STUDIO_DATABASE_URL= \
 		PORT=$(APP_STUDIO_PORT) \
 		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
@@ -1290,13 +1287,11 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 		KEDGE_PROVIDER_NAME=app-studio \
 		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_PROVIDER_KUBECONFIG)" "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
-		APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
 			$(BINDIR)/app-studio-provider; \
 	else \
 		echo "  store: $${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}"; \
-		echo "  auto-approve actions: $${APP_STUDIO_AUTO_APPROVE_ACTIONS}"; \
 		PORT=$(APP_STUDIO_PORT) \
 		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
 		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
@@ -1304,7 +1299,6 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 		KEDGE_PROVIDER_NAME=app-studio \
 		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_PROVIDER_KUBECONFIG)" "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
-		APP_STUDIO_AUTO_APPROVE_ACTIONS="$${APP_STUDIO_AUTO_APPROVE_ACTIONS}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
 			$(BINDIR)/app-studio-provider; \
@@ -1380,7 +1374,7 @@ agents-db-up:
 	docker run -d --name $(AGENTS_POSTGRES_CONTAINER) \
 		-e POSTGRES_USER=agents -e POSTGRES_PASSWORD=agents -e POSTGRES_DB=agents \
 		-p $(AGENTS_POSTGRES_PORT):5432 \
-		-v $(AGENTS_POSTGRES_DATA_DIR):/var/lib/postgresql/data \
+		-v "$(abspath $(AGENTS_POSTGRES_DATA_DIR)):/var/lib/postgresql/data" \
 		$(AGENTS_POSTGRES_IMAGE)
 
 agents-db-down: ## Stop and remove the agents dev Postgres container

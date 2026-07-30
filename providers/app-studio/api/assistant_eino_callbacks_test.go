@@ -18,12 +18,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/callbacks"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/faroshq/provider-app-studio/store"
 )
 
 func TestProjectEinoSortedToolCallsHandlesSparseIndexes(t *testing.T) {
@@ -41,12 +45,26 @@ func TestProjectEinoSortedToolCallsHandlesSparseIndexes(t *testing.T) {
 
 func TestProjectEinoAssistantModelCallbackRecordsStreamedToolCalls(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()
+	run := &store.AssistantRun{ID: "run-stream-callback"}
+	auditRecorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
+	if err := auditRecorder.recordModelCall(
+		context.Background(),
+		projectEinoAssistantPhaseApproval,
+		1,
+		0,
+		0,
+		false,
+		nil,
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
 	var chunks []string
 	var statuses []string
 	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{
 		OnChunk:  func(chunk string) { chunks = append(chunks, chunk) },
 		OnStatus: func(status string) { statuses = append(statuses, status) },
-	}, runState)
+	}, runState, auditRecorder)
 
 	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{
 		Messages: []*schema.Message{schema.UserMessage("write src/App.tsx")},
@@ -89,6 +107,19 @@ func TestProjectEinoAssistantModelCallbackRecordsStreamedToolCalls(t *testing.T)
 	if call.ID != "call-write" || call.Function.Name != projectToolWriteFile || call.Function.Arguments != `{"path":"src/App.tsx","content":"hi"}` {
 		t.Fatalf("tool call = %#v, want merged streamed function call", call)
 	}
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatal(err)
+	}
+	modelCall := audit.ModelCalls[0]
+	if modelCall.FirstResponseAtOffsetMS == nil ||
+		modelCall.ToolCallStartedAtOffsetMS == nil ||
+		modelCall.CompletedAtOffsetMS != nil {
+		t.Fatalf("stream callback milestones = %#v", modelCall)
+	}
+	if strings.Contains(string(run.Audit), "src/App.tsx") || strings.Contains(string(run.Audit), `"content":"hi"`) {
+		t.Fatalf("stream callback audit leaked tool arguments: %s", run.Audit)
+	}
 }
 
 func TestProjectEinoAssistantModelCallbackDoesNotPublishPublicContentChunks(t *testing.T) {
@@ -96,7 +127,7 @@ func TestProjectEinoAssistantModelCallbackDoesNotPublishPublicContentChunks(t *t
 	var chunks []string
 	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{
 		OnChunk: func(chunk string) { chunks = append(chunks, chunk) },
-	}, runState)
+	}, runState, nil)
 
 	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{
 		Messages: []*schema.Message{schema.UserMessage("say thanks")},

@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -208,5 +209,39 @@ func TestEncryptedStoreEncryptsAssistantRunCheckpointAtRest(t *testing.T) {
 	}
 	if string(got.Audit) != string(run.Audit) {
 		t.Fatalf("audit = %s, want %s", got.Audit, run.Audit)
+	}
+}
+
+func TestMemoryStoreProjectBootstrapPermitIsSingleUseAndBound(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	if err := s.CreateProjectBootstrapPermit(ctx, scope, "actor-a", "digest-a"); err != nil {
+		t.Fatal(err)
+	}
+	if authorized, err := s.ConsumeProjectBootstrapPermit(ctx, scope, "actor-b", "digest-a", "request-a", time.Now()); err != nil || authorized {
+		t.Fatalf("wrong actor authorized=%t err=%v", authorized, err)
+	}
+	if authorized, err := s.ConsumeProjectBootstrapPermit(ctx, scope, "actor-a", "digest-a", "request-a", time.Now()); err != nil || !authorized {
+		t.Fatalf("first consume authorized=%t err=%v", authorized, err)
+	}
+	if authorized, err := s.ConsumeProjectBootstrapPermit(ctx, scope, "actor-a", "digest-a", "request-a", time.Now()); err != nil || !authorized {
+		t.Fatalf("replay authorized=%t err=%v", authorized, err)
+	}
+	if authorized, err := s.ConsumeProjectBootstrapPermit(ctx, scope, "actor-a", "digest-a", "request-b", time.Now()); authorized || !errors.Is(err, ErrProjectBootstrapPermitConflict) {
+		t.Fatalf("competing consume authorized=%t err=%v", authorized, err)
+	}
+	if _, err := s.SetAssistantApprovalPreference(ctx, scope, AssistantApprovalPreference{ActorID: "actor-a", Mode: AssistantApprovalModeAlwaysAsk}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteProjectMessages(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	if authorized, err := s.ConsumeProjectBootstrapPermit(ctx, scope, "actor-a", "digest-a", "request-a", time.Now()); err != nil || authorized {
+		t.Fatalf("deleted permit authorized=%t err=%v", authorized, err)
+	}
+	preference, err := s.GetAssistantApprovalPreference(ctx, scope, "actor-a")
+	if err != nil || preference.Mode != AssistantApprovalModeAutoApprove {
+		t.Fatalf("deleted preference=%#v err=%v", preference, err)
 	}
 }

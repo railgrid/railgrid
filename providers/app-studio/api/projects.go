@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,13 +67,34 @@ type PatchProjectMemoryRequest struct {
 }
 
 type CreateProjectMessageRequest struct {
-	Role                 string `json:"role,omitempty"`
-	Content              string `json:"content"`
-	ClientRequestID      string `json:"clientRequestID,omitempty"`
-	InitialProjectPrompt bool   `json:"initialProjectPrompt,omitempty"`
-	AssistantAction      string `json:"assistantAction,omitempty"`
-	WorkItemID           string `json:"workItemID,omitempty"`
-	WorkItemRevision     int64  `json:"workItemRevision,omitempty"`
+	Role             string `json:"role,omitempty"`
+	Content          string `json:"content"`
+	ClientRequestID  string `json:"clientRequestID,omitempty"`
+	AssistantAction  string `json:"assistantAction,omitempty"`
+	WorkItemID       string `json:"workItemID,omitempty"`
+	WorkItemRevision int64  `json:"workItemRevision,omitempty"`
+}
+
+func projectInitialBootstrapPromptDigest(content string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(content)))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+// consumeProjectInitialBootstrap reserves the server-owned creation permit for
+// one client request. The store scopes it to the immutable Project UID and
+// binds it to the authenticated actor and original creation prompt.
+func (s *Server) consumeProjectInitialBootstrap(ctx context.Context, scope store.Scope, actor, content, clientRequestID string) (bool, error) {
+	if s == nil || s.store == nil || strings.TrimSpace(content) == "" {
+		return false, nil
+	}
+	return s.store.ConsumeProjectBootstrapPermit(
+		ctx,
+		scope,
+		strings.TrimSpace(actor),
+		projectInitialBootstrapPromptDigest(content),
+		strings.TrimSpace(clientRequestID),
+		time.Now().UTC(),
+	)
 }
 
 type projectAssistantAction string
@@ -173,17 +195,6 @@ type ProjectMessagesResponse struct {
 	NextCursor string                      `json:"nextCursor,omitempty"`
 }
 
-type projectMessageStreamEvent struct {
-	Type               string                              `json:"type,omitempty"`
-	AssistantMessageID string                              `json:"assistantMessageID,omitempty"`
-	Error              string                              `json:"error,omitempty"`
-	Project            *ProjectView                        `json:"project,omitempty"`
-	BeginRendering     *projectAssistantUIBeginRendering   `json:"beginRendering,omitempty"`
-	SurfaceUpdate      *projectAssistantUISurfaceUpdate    `json:"surfaceUpdate,omitempty"`
-	DataModelUpdate    *projectAssistantUIDataModelUpdate  `json:"dataModelUpdate,omitempty"`
-	InterruptRequest   *projectAssistantUIInterruptRequest `json:"interruptRequest,omitempty"`
-}
-
 type projectToolCallStreamEvent struct {
 	ID         string                      `json:"id"`
 	Name       string                      `json:"name,omitempty"`
@@ -194,6 +205,16 @@ type projectToolCallStreamEvent struct {
 	Permission *projectAssistantPermission `json:"permission,omitempty"`
 	FollowUp   *projectAssistantFollowUp   `json:"followUp,omitempty"`
 	Checkpoint *projectAssistantCheckpoint `json:"checkpoint,omitempty"`
+	Mutation   *projectAssistantMutation   `json:"mutation,omitempty"`
+}
+
+type projectAssistantMutation struct {
+	Path           string `json:"path,omitempty"`
+	Additions      int    `json:"additions,omitempty"`
+	Deletions      int    `json:"deletions,omitempty"`
+	Replacements   int    `json:"replacements,omitempty"`
+	Patch          string `json:"patch,omitempty"`
+	PatchTruncated bool   `json:"patchTruncated,omitempty"`
 }
 
 const projectAPIInitializingMessage = "App Studio is still initializing for this workspace. Try again shortly."
@@ -365,6 +386,16 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 	if err != nil {
 		return nil, err
 	}
+	if req.Prompt != "" {
+		if s.store == nil {
+			s.cleanupCreatedProjectSetup(ctx, c, id, created)
+			return nil, fmt.Errorf("project message store not configured")
+		}
+		if err := s.store.CreateProjectBootstrapPermit(ctx, projectMessageScope(id.orgUUID, id.workspaceUUID, created), id.user, projectInitialBootstrapPromptDigest(req.Prompt)); err != nil {
+			s.cleanupCreatedProjectSetup(ctx, c, id, created)
+			return nil, err
+		}
+	}
 	if repoPlan.Adopted {
 		if err := emitProjectCreationStatus(onStatus, "Importing repository"); err != nil {
 			s.cleanupCreatedProjectSetup(ctx, c, id, created)
@@ -419,6 +450,9 @@ func emitProjectCreationStatus(onStatus projectCreationStatusFunc, status string
 func (s *Server) cleanupCreatedProjectSetup(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project) {
 	if c == nil || p == nil {
 		return
+	}
+	if s.store != nil && strings.TrimSpace(string(p.UID)) != "" {
+		_ = s.store.DeleteProjectMessages(ctx, projectMessageScope(id.orgUUID, id.workspaceUUID, p))
 	}
 	_ = s.deleteProjectProviderResources(ctx, c, p, id)
 	if p.Spec.Repository != nil {
@@ -575,9 +609,18 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.store != nil {
-		if err := s.store.DeleteProjectMessages(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, p)); err != nil {
+		cleanupCtx, cancelCleanup := detachedProjectPersistenceContext(r.Context())
+		if err := s.store.DeleteProjectMessages(cleanupCtx, projectMessageScope(id.orgUUID, id.workspaceUUID, p)); err != nil {
 			klog.FromContext(r.Context()).Error(err, "delete project messages", "project", name)
 		}
+		cancelCleanup()
+	}
+	if s.workspaces != nil {
+		cleanupCtx, cancelCleanup := detachedProjectPersistenceContext(r.Context())
+		if err := s.workspaces.DeleteSnapshots(cleanupCtx, projectWorkspaceScope(id, p.Name)); err != nil {
+			klog.FromContext(r.Context()).Error(err, "delete project workspace snapshots", "project", name)
+		}
+		cancelCleanup()
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -604,98 +647,6 @@ func (s *Server) listProjectMessages(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request) {
-	c, id, ok := s.requireProjectClient(w, r)
-	if !ok {
-		return
-	}
-	var req CreateProjectRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	req.Prompt = strings.TrimSpace(req.Prompt)
-	if req.Prompt == "" {
-		writeProjectError(w, newValidationError("prompt is required"))
-		return
-	}
-	flusher, ok := startProjectMessageStream(w)
-	if !ok {
-		return
-	}
-	assistantID := newMessageID()
-	writeStreamError := func(err error) {
-		_ = writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-			Type:               string(projectAssistantEventRunFailed),
-			AssistantMessageID: assistantID,
-			Error:              err.Error(),
-		})
-	}
-	writeStatus := func(status string) error {
-		ui := projectAssistantUIStatusEvent(status)
-		return writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEventFromUI(ui))
-	}
-
-	if err := writeStatus("Starting"); err != nil {
-		return
-	}
-	if err := writeStatus("Naming project"); err != nil {
-		return
-	}
-	preflight, err := s.generateProjectCreatePreflight(r.Context(), c, req.Prompt)
-	if err != nil {
-		writeStreamError(err)
-		return
-	}
-	created, err := s.createProjectFromRequestWithPreflight(r.Context(), c, id, req, writeStatus, r, &preflight)
-	if err != nil {
-		writeStreamError(err)
-		return
-	}
-	view := projectView(r.Context(), c, created, id)
-	if err := writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
-		Type:    "project",
-		Project: &view,
-	}); err != nil {
-		return
-	}
-	// The initial project event is legacy wire compatibility only. Once the
-	// Project exists, its first prompt enters the same durable start boundary as
-	// every later turn, so closing this SSE cannot cancel execution or create a
-	// second user message.
-	s.startAndStreamLegacyProjectAssistant(w, r, c, id, created, req.Prompt, "legacy-create-"+uuid.NewString(), projectAssistantStreamStartForCreatePreflight(preflight, req.Prompt))
-}
-
-func (s *Server) createProjectMessageStream(w http.ResponseWriter, r *http.Request) {
-	c, id, p, ok := s.requireProjectWithClient(w, r)
-	if !ok {
-		return
-	}
-	var req CreateProjectMessageRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	req.Role = strings.TrimSpace(req.Role)
-	if req.Role == "" {
-		req.Role = aiv1alpha1.ProjectMessageRoleUser
-	}
-	if req.Role != aiv1alpha1.ProjectMessageRoleUser {
-		writeProjectError(w, newValidationError("role must be user"))
-		return
-	}
-	req.Content = strings.TrimSpace(req.Content)
-	if req.Content == "" {
-		writeProjectError(w, newValidationError("content is required"))
-		return
-	}
-
-	if strings.TrimSpace(req.ClientRequestID) == "" {
-		// Older embedded portals did not send an idempotency key. Give their
-		// one POST a durable identity without changing their wire contract.
-		req.ClientRequestID = "legacy-" + uuid.NewString()
-	}
-	s.startAndStreamLegacyProjectAssistant(w, r, c, id, p, req.Content, req.ClientRequestID, nil)
-}
-
 func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
@@ -720,8 +671,11 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 		writeStatus(w, http.StatusNotFound, "NotFound", "assistant run not found")
 		return
 	}
-	run, err = s.normalizeProjectAssistantPausedRun(r.Context(), scope, run, req.AssistantMessageID)
-	if err != nil {
+	if strings.TrimSpace(run.ActiveMessageID) == "" {
+		writeStatus(w, http.StatusNotFound, "NotFound", "assistant run not found")
+		return
+	}
+	if _, _, err := preflightProjectAssistantResume(run, req); err != nil {
 		writeProjectError(w, err)
 		return
 	}
@@ -732,30 +686,49 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 	}
 	supervisor := s.projectAssistantSupervisor()
 	if err := supervisor.Start(r.Context(), scope, run, message, func(ctx context.Context, accumulator *projectAssistantSnapshotAccumulator) {
-		transitionTerminal := func(status store.AssistantRunStatus) {
+		transitionTerminal := func(status store.AssistantRunStatus, reason string, cause error) {
+			var transitionErr error
 			if run.WorkItemID == "" {
-				_ = accumulator.SetStatus(context.Background(), status)
-				return
+				transitionErr = accumulator.SetStatus(context.Background(), status)
+			} else {
+				itemStatus := store.AssistantWorkItemStatusSuspended
+				if status == store.AssistantRunStatusCompleted {
+					itemStatus = store.AssistantWorkItemStatusCompleted
+				}
+				transitionErr = accumulator.TransitionWorkItemTerminal(context.Background(), status, itemStatus, reason, func(committed *store.AssistantRun, current *store.Message) {
+					current.Metadata = projectAssistantDurableMetadataFromExisting(*committed, projectAssistantRunDisplayStatus(status, "Working"), false, current.Metadata)
+				})
 			}
-			itemStatus := store.AssistantWorkItemStatusSuspended
-			if status == store.AssistantRunStatusCompleted {
-				itemStatus = store.AssistantWorkItemStatusCompleted
+			committed := run
+			if current, ok := accumulator.CommittedRun(); ok {
+				committed = current
 			}
-			_ = accumulator.TransitionWorkItemTerminal(context.Background(), status, itemStatus, string(status), func(committed *store.AssistantRun, current *store.Message) {
-				current.Metadata = projectAssistantDurableMetadataFromExisting(*committed, projectAssistantRunDisplayStatus(status, "Working"), false, current.Metadata)
-			})
+			if cause != nil {
+				logProjectAssistantFailure(ctx, "resume_failed", scope, committed, cause)
+			}
+			if transitionErr != nil {
+				logProjectAssistantFailure(ctx, "resume_terminal_transition_failed", scope, committed, transitionErr)
+			}
 		}
 		resp, resumeErr := s.resumeProjectAssistantRunWithRepositoryAndClient(ctx, r.Clone(ctx), id, c, p, projectRepositoryView(ctx, c, p), runID, req)
 		if resumeErr == nil && resp.Status == store.AssistantRunStatusCompleted {
-			transitionTerminal(store.AssistantRunStatusCompleted)
+			transitionTerminal(store.AssistantRunStatusCompleted, string(store.AssistantRunStatusCompleted), nil)
+			return
+		}
+		if resumeErr == nil && resp.Status == store.AssistantRunStatusInterrupted {
+			reason := strings.TrimSpace(resp.SuspensionReason)
+			if reason == "" {
+				reason = "objective incomplete"
+			}
+			transitionTerminal(store.AssistantRunStatusInterrupted, reason, nil)
 			return
 		}
 		if errors.Is(resumeErr, context.Canceled) || errors.Is(context.Cause(ctx), context.Canceled) {
-			transitionTerminal(store.AssistantRunStatusAborted)
+			transitionTerminal(store.AssistantRunStatusAborted, "aborted", resumeErr)
 			return
 		}
 		if resumeErr != nil {
-			transitionTerminal(store.AssistantRunStatusFailed)
+			transitionTerminal(store.AssistantRunStatusFailed, projectAssistantWorkItemFailureReason(resumeErr), resumeErr)
 			return
 		}
 		_ = accumulator.SetStatus(context.Background(), resp.Status)
@@ -765,77 +738,6 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 	}
 	s.projectAssistantSupervisor().log("resume", scope, run)
 	writeJSON(w, http.StatusAccepted, projectAssistantRunSnapshotToAPI(projectAssistantRunSnapshot{Run: run, Message: message}))
-}
-
-func (s *Server) abortProjectAssistant(w http.ResponseWriter, r *http.Request) {
-	_, id, p, ok := s.requireProjectWithClient(w, r)
-	if !ok {
-		return
-	}
-	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
-	runID := mux.Vars(r)["run"]
-	existingRun, getErr := s.store.GetAssistantRun(r.Context(), scope, runID)
-	if getErr != nil {
-		writeProjectError(w, getErr)
-		return
-	}
-	if s.authorizeProjectAssistantRunActor(r.Context(), scope, existingRun, id.user, false) != nil {
-		writeStatus(w, http.StatusNotFound, "NotFound", "assistant run not found")
-		return
-	}
-	if existingRun.WorkItemID != "" {
-		stopped, found, stopErr := s.projectAssistantSupervisor().Stop(scope, runID)
-		if stopErr != nil {
-			writeProjectError(w, stopErr)
-			return
-		}
-		if !found {
-			writeStatus(w, http.StatusConflict, "Conflict", "assistant run is not active on this provider")
-			return
-		}
-		writeJSON(w, http.StatusAccepted, projectAssistantResumeResponse{RunID: stopped.ID, RequestID: stopped.RequestID, Status: stopped.Status, Decision: projectAssistantPermissionDeny})
-		return
-	}
-	if aborted, err := s.projectAssistantSupervisor().AbortWith(scope, mux.Vars(r)["run"], func(run *store.AssistantRun, message *store.Message) error {
-		if err := s.clearProjectAssistantApprovedPlan(r.Context(), scope); err != nil {
-			return fmt.Errorf("revoke App Studio workspace grant before abort: %w", err)
-		}
-		now := time.Now().UTC()
-		updated, auditErr := finalizeProjectAssistantRunAudit(*run, projectAssistantAuditOutcomeAborted, now)
-		if auditErr != nil {
-			return auditErr
-		}
-		updated, auditErr = appendProjectAssistantRunAudit(updated, projectAssistantPermissionAudit{
-			RequestID:  updated.RequestID,
-			Decision:   projectAssistantPermissionDeny,
-			Actor:      id.user,
-			Error:      "aborted by user",
-			ResolvedAt: now,
-		})
-		if auditErr != nil {
-			return auditErr
-		}
-		*run = updated
-		projectAssistantClearPendingInterruptMetadata(message, run.ID)
-		return nil
-	}); err != nil {
-		writeProjectError(w, err)
-		return
-	} else if aborted {
-		run, err := s.store.GetAssistantRun(r.Context(), scope, mux.Vars(r)["run"])
-		if err != nil {
-			writeProjectError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusAccepted, projectAssistantResumeResponse{RunID: run.ID, RequestID: run.RequestID, Status: run.Status, Decision: projectAssistantPermissionDeny})
-		return
-	}
-	resp, err := s.abortProjectAssistantRun(r.Context(), id, p, mux.Vars(r)["run"])
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) stopProjectAssistant(w http.ResponseWriter, r *http.Request) {
@@ -860,6 +762,12 @@ func (s *Server) stopProjectAssistant(w http.ResponseWriter, r *http.Request) {
 	if err != nil || s.authorizeProjectAssistantRunActor(r.Context(), scope, existingRun, id.user, false) != nil {
 		writeStatus(w, http.StatusNotFound, "NotFound", "assistant run not found")
 		return
+	}
+	if existingRun.Status == store.AssistantRunStatusPendingPermission || existingRun.Status == store.AssistantRunStatusPendingInput {
+		if err := s.reattachProjectAssistantPendingRun(r.Context(), scope, existingRun); err != nil {
+			writeProjectError(w, err)
+			return
+		}
 	}
 	if found, bindErr := s.projectAssistantSupervisor().BindStopRequest(r.Context(), scope, runID, id.user, request.ClientRequestID); found {
 		if bindErr != nil {
@@ -898,6 +806,24 @@ func (s *Server) stopProjectAssistant(w http.ResponseWriter, r *http.Request) {
 		RequestID: run.RequestID,
 		Status:    run.Status,
 	})
+}
+
+// reattachProjectAssistantPendingRun restores the in-memory lifecycle owner for
+// a durable checkpoint after a provider restart. Stop can then use the same
+// atomic run, WorkItem, and assistant-message transition as an in-process run.
+func (s *Server) reattachProjectAssistantPendingRun(ctx context.Context, scope store.Scope, run store.AssistantRun) error {
+	if run.Status != store.AssistantRunStatusPendingPermission && run.Status != store.AssistantRunStatusPendingInput {
+		return newValidationError("assistant run is not waiting for input")
+	}
+	if strings.TrimSpace(run.ActiveMessageID) == "" {
+		return store.ErrAssistantRunNotFound
+	}
+	message, err := s.findProjectMessage(ctx, scope, run.ActiveMessageID)
+	if err != nil {
+		return err
+	}
+	_, err = s.projectAssistantSupervisor().Attach(scope, run, message)
+	return err
 }
 
 func (s *Server) authorizeProjectAssistantRunActor(ctx context.Context, scope store.Scope, run store.AssistantRun, actor string, requireActiveGrant bool) error {
@@ -1000,7 +926,8 @@ func (s *Server) cancelProjectAssistantWorkItem(w http.ResponseWriter, r *http.R
 		writeProjectError(w, err)
 		return
 	}
-	item.PlanGrant = receipt
+	item.CancellationReceipt = receipt
+	item.PlanGrant = nil
 	item.GrantRevision = ""
 	item.Revision = request.Revision + 1
 	item.UpdatedAt = time.Now().UTC()
@@ -1064,19 +991,6 @@ func projectAssistantClearPendingInterruptMetadata(message *store.Message, runID
 	message.Metadata = metadata
 }
 
-func startProjectMessageStream(w http.ResponseWriter) (http.Flusher, bool) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", "streaming unsupported")
-		return nil, false
-	}
-	return flusher, true
-}
-
 func appendProjectUserMessage(ctx context.Context, msgStore store.Store, scope store.Scope, content string) error {
 	now := time.Now().UTC()
 	return msgStore.AppendMessage(ctx, scope, store.Message{
@@ -1088,31 +1002,9 @@ func appendProjectUserMessage(ctx context.Context, msgStore store.Store, scope s
 	})
 }
 
-func (s *Server) streamProjectAssistant(
-	w http.ResponseWriter,
-	flusher http.Flusher,
-	r *http.Request,
-	c *asclient.Client,
-	id identity,
-	p *aiv1alpha1.Project,
-	msgStore store.Store,
-	assistantMessageID string,
-) {
-	s.streamProjectAssistantWithStart(w, flusher, r, c, id, p, msgStore, assistantMessageID, nil)
-}
-
 type projectAssistantStreamStart struct {
 	TurnDecision        *projectAssistantTurnDecision
 	InitialApprovedPlan *projectAssistantApprovedPlan
-}
-
-func projectAssistantStreamStartForCreatePreflight(preflight projectCreatePreflight, goal string) *projectAssistantStreamStart {
-	decision := preflight.TurnDecision
-	start := &projectAssistantStreamStart{TurnDecision: &decision}
-	if decision.RequestsMutation && projectAssistantTurnProfileAllowsMutation(decision.Profile) {
-		start.InitialApprovedPlan = ptrProjectAssistantApprovedPlan(projectAssistantInitialCreationPlan(goal))
-	}
-	return start
 }
 
 func ptrProjectAssistantApprovedPlan(plan projectAssistantApprovedPlan) *projectAssistantApprovedPlan {
@@ -1126,269 +1018,11 @@ func projectAssistantTurnDecisionForStreamStart(ctx context.Context, router proj
 	return router(ctx, req)
 }
 
-func (s *Server) streamProjectAssistantWithStart(
-	w http.ResponseWriter,
-	flusher http.Flusher,
-	r *http.Request,
-	c *asclient.Client,
-	id identity,
-	p *aiv1alpha1.Project,
-	msgStore store.Store,
-	assistantMessageID string,
-	start *projectAssistantStreamStart,
-) {
-	assistantID := assistantMessageID
-	if assistantID == "" {
-		assistantID = newMessageID()
-	}
-	assistantContent := &strings.Builder{}
-	var streamErr error
-	var streamedToolCalls []projectToolCallStreamEvent
-	var pendingPermissionToolCallID string
-	var pendingFollowUpToolCallID string
-	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
-	workspaceScope := projectWorkspaceScope(id, p.Name)
-	streamWriter := projectAssistantStreamWriter{
-		assistantID: assistantID,
-		write: func(event projectMessageStreamEvent) error {
-			return writeProjectMessageStreamEvent(w, flusher, event)
-		},
-	}
-	emitAssistantEvent := func(event projectAssistantEvent) {
-		switch event.Type {
-		case projectAssistantEventPermissionNeeded:
-			if event.Permission != nil && event.Permission.ToolCallID != "" {
-				pendingPermissionToolCallID = event.Permission.ToolCallID
-				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
-					ID:         event.Permission.ToolCallID,
-					Name:       event.Permission.ToolName,
-					Status:     "permission_required",
-					Summary:    event.Permission.Reason,
-					Permission: event.Permission,
-				})
-			}
-		case projectAssistantEventCheckpointSaved:
-			if event.Checkpoint != nil && pendingPermissionToolCallID != "" {
-				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
-					ID:         pendingPermissionToolCallID,
-					Status:     "permission_required",
-					Checkpoint: event.Checkpoint,
-				})
-			}
-			if event.Checkpoint != nil && pendingFollowUpToolCallID != "" {
-				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
-					ID:         pendingFollowUpToolCallID,
-					Status:     "input_required",
-					Checkpoint: event.Checkpoint,
-				})
-			}
-		case projectAssistantEventInputNeeded:
-			if event.FollowUp != nil && event.FollowUp.ToolCallID != "" {
-				pendingFollowUpToolCallID = event.FollowUp.ToolCallID
-				streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, projectToolCallStreamEvent{
-					ID:       event.FollowUp.ToolCallID,
-					Name:     projectToolAskFollowUp,
-					Status:   "input_required",
-					Summary:  event.FollowUp.Prompt,
-					FollowUp: event.FollowUp,
-				})
-			}
-		}
-		if streamErr != nil {
-			return
-		}
-		streamErr = streamWriter.EmitProjectAssistantEvent(r.Context(), event)
-	}
-
-	streamChunk := func(chunk string) {
-		if streamErr != nil {
-			return
-		}
-		if chunk == "" {
-			return
-		}
-		assistantContent.WriteString(chunk)
-		emitAssistantEvent(projectAssistantEvent{
-			Type:  projectAssistantEventMessageDelta,
-			Delta: chunk,
-		})
-	}
-	streamProvisionalText := func(content string) {
-		if streamErr != nil || content == "" {
-			return
-		}
-		streamErr = streamWriter.WriteProvisionalAssistantContent(r.Context(), content)
-	}
-	resetProvisionalText := func() {
-		if streamErr != nil {
-			return
-		}
-		streamErr = streamWriter.ResetProvisionalAssistantContent(r.Context())
-	}
-	streamStatus := func(status string) {
-		if streamErr != nil {
-			return
-		}
-		if status == "" {
-			return
-		}
-		emitAssistantEvent(projectAssistantEvent{
-			Type:   projectAssistantEventStatus,
-			Status: status,
-		})
-	}
-	streamToolCall := func(toolCall projectToolCallStreamEvent) {
-		if toolCall.ID == "" || toolCall.Status == "" {
-			return
-		}
-		streamedToolCalls = upsertProjectToolCallStreamEvent(streamedToolCalls, toolCall)
-		if streamErr != nil {
-			return
-		}
-		emitAssistantEvent(projectAssistantEvent{
-			Type: projectAssistantEventTypeForToolCallStatus(toolCall.Status),
-			ToolCall: &projectAssistantToolCall{
-				ID:        toolCall.ID,
-				Name:      toolCall.Name,
-				Status:    toolCall.Status,
-				Arguments: toolCall.Arguments,
-				Summary:   toolCall.Summary,
-				Error:     toolCall.Error,
-			},
-		})
-	}
-	emitDevelopmentPreviewRefreshIfNeeded := func() error {
-		if streamErr != nil || !s.projectAssistantPreviewRefreshNeeded(r.Context(), workspaceScope, "", false, streamedToolCalls) {
-			return nil
-		}
-		if err := streamWriter.write(projectMessageStreamEventFromUI(projectAssistantUIDevelopmentPreviewRefreshEvent())); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	reply, err := s.generateProjectAssistantStreamWithStart(r, id, c, p, projectAssistantStreamCallbacks{
-		OnChunk:            streamChunk,
-		OnProvisionalText:  streamProvisionalText,
-		OnProvisionalReset: resetProvisionalText,
-		OnStatus:           streamStatus,
-		OnToolCall:         streamToolCall,
-		OnAssistantEvent:   emitAssistantEvent,
-	}, start)
-	if err != nil {
-		var permissionErr *projectAssistantPermissionRequiredError
-		if errors.As(err, &permissionErr) {
-			persistCtx, cancel := detachedProjectPersistenceContext(r.Context())
-			defer cancel()
-			if err := appendProjectAssistantMessage(persistCtx, msgStore, scope, assistantID, assistantContent.String(), projectAssistantMessageMetadata(projectMessageStatusPendingPermission, streamedToolCalls)); err != nil {
-				if streamErr == nil {
-					_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
-						Type:  projectAssistantEventRunFailed,
-						Error: "assistant persistence failed: " + err.Error(),
-					})
-				}
-			}
-			_ = emitDevelopmentPreviewRefreshIfNeeded()
-			return
-		}
-		var inputErr *projectAssistantInputRequiredError
-		if errors.As(err, &inputErr) {
-			persistCtx, cancel := detachedProjectPersistenceContext(r.Context())
-			defer cancel()
-			if err := appendProjectAssistantMessage(persistCtx, msgStore, scope, assistantID, assistantContent.String(), projectAssistantMessageMetadata(projectMessageStatusPendingInput, streamedToolCalls)); err != nil {
-				if streamErr == nil {
-					_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
-						Type:  projectAssistantEventRunFailed,
-						Error: "assistant persistence failed: " + err.Error(),
-					})
-				}
-			}
-			_ = inputErr
-			_ = emitDevelopmentPreviewRefreshIfNeeded()
-			return
-		}
-		if shouldPersistInterruptedProjectAssistant(r.Context(), err, streamErr, assistantContent.String()) {
-			persistErr := appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
-			if persistErr != nil && streamErr == nil {
-				_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
-					Type:  projectAssistantEventRunFailed,
-					Error: "assistant persistence failed: " + persistErr.Error(),
-				})
-			}
-			return
-		}
-		if streamErr != nil {
-			_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
-			return
-		}
-		if errors.Is(err, errProjectLLMNotConfigured) {
-			_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
-				Type:  projectAssistantEventRunFailed,
-				Error: err.Error(),
-			})
-			return
-		}
-		_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
-			Type:  projectAssistantEventRunFailed,
-			Error: projectAssistantGenerationFailureMessage(err),
-		})
-		return
-	}
-	if streamErr != nil {
-		_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
-		return
-	}
-	assistantReply := projectAssistantStoredContent(reply, assistantContent.String())
-	if strings.TrimSpace(assistantReply) == "" {
-		_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
-			Type:  projectAssistantEventRunFailed,
-			Error: "assistant generation returned an empty response",
-		})
-		return
-	}
-	if pending := projectAssistantUnstreamedContent(assistantReply, assistantContent.String()); pending != "" {
-		streamChunk(pending)
-		if streamErr != nil {
-			_ = appendInterruptedProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantContent.String())
-			return
-		}
-	}
-
-	if err := appendProjectAssistantMessage(r.Context(), msgStore, scope, assistantID, assistantReply, projectAssistantMessageMetadata("", streamedToolCalls)); err != nil {
-		_ = streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{
-			Type:  projectAssistantEventRunFailed,
-			Error: "assistant persistence failed: " + err.Error(),
-		})
-		return
-	}
-	if err := emitDevelopmentPreviewRefreshIfNeeded(); err != nil {
-		return
-	}
-	if err := streamWriter.EmitProjectAssistantEvent(r.Context(), projectAssistantEvent{Type: projectAssistantEventRunFinished}); err != nil {
-		return
-	}
-}
-
 func projectAssistantStoredContent(reply, streamed string) string {
 	if strings.TrimSpace(reply) != "" {
 		return reply
 	}
 	return streamed
-}
-
-func projectAssistantUnstreamedContent(reply, streamed string) string {
-	reply = strings.TrimSpace(reply)
-	if reply == "" {
-		return ""
-	}
-	streamed = strings.TrimSpace(streamed)
-	if streamed == "" {
-		return reply
-	}
-	if strings.Contains(streamed, reply) {
-		return ""
-	}
-	return "\n\n" + reply
 }
 
 func projectAssistantToolCallsRequireDevelopmentSync(toolCalls []projectToolCallStreamEvent) bool {
@@ -1821,6 +1455,9 @@ func mergeProjectToolCallStreamEvent(existing, next projectToolCallStreamEvent) 
 	if next.Checkpoint == nil {
 		next.Checkpoint = existing.Checkpoint
 	}
+	if next.Mutation == nil {
+		next.Mutation = existing.Mutation
+	}
 	return next
 }
 
@@ -2038,6 +1675,21 @@ func emptyProjectMemory() aiv1alpha1.ProjectMemory {
 	}
 }
 
+var invalidProjectNameChars = regexp.MustCompile(`[^a-z0-9-]+`)
+
+func slugifyProjectName(str string) string {
+	str = strings.ToLower(strings.TrimSpace(str))
+	str = invalidProjectNameChars.ReplaceAllString(str, "-")
+	str = strings.Trim(str, "-")
+	for strings.Contains(str, "--") {
+		str = strings.ReplaceAll(str, "--", "-")
+	}
+	if len(str) > 63 {
+		str = strings.Trim(str[:63], "-")
+	}
+	return str
+}
+
 const initialProjectMemoryUpdateAttempts = 3
 
 // persistInitialProjectMemory records the user's original creation goal and the
@@ -2117,61 +1769,4 @@ func normalizeProjectMemoryEntries(entries []string) []string {
 
 func newMessageID() string {
 	return "msg-" + uuid.NewString()
-}
-
-func projectMessageStreamEventFromUI(ui projectAssistantUIEvent) projectMessageStreamEvent {
-	return projectMessageStreamEvent{
-		BeginRendering:   ui.BeginRendering,
-		SurfaceUpdate:    ui.SurfaceUpdate,
-		DataModelUpdate:  ui.DataModelUpdate,
-		InterruptRequest: ui.InterruptRequest,
-	}
-}
-
-func writeProjectMessageStreamEvent(w http.ResponseWriter, flusher http.Flusher, event projectMessageStreamEvent) error {
-	data, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	if _, err = fmt.Fprint(w, "event: ", event.streamType(), "\n"); err != nil {
-		return err
-	}
-	if _, err = fmt.Fprint(w, "data: ", string(data), "\n\n"); err != nil {
-		return err
-	}
-	flusher.Flush()
-	return nil
-}
-
-func (event projectMessageStreamEvent) streamType() string {
-	if event.Type != "" {
-		return event.Type
-	}
-	switch {
-	case event.BeginRendering != nil:
-		return "beginRendering"
-	case event.SurfaceUpdate != nil:
-		return "surfaceUpdate"
-	case event.DataModelUpdate != nil:
-		return "dataModelUpdate"
-	case event.InterruptRequest != nil:
-		return "interruptRequest"
-	default:
-		return "message"
-	}
-}
-
-var invalidProjectNameChars = regexp.MustCompile(`[^a-z0-9-]+`)
-
-func slugifyProjectName(str string) string {
-	str = strings.ToLower(strings.TrimSpace(str))
-	str = invalidProjectNameChars.ReplaceAllString(str, "-")
-	str = strings.Trim(str, "-")
-	for strings.Contains(str, "--") {
-		str = strings.ReplaceAll(str, "--", "-")
-	}
-	if len(str) > 63 {
-		str = strings.Trim(str[:63], "-")
-	}
-	return str
 }

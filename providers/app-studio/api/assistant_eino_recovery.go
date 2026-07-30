@@ -152,8 +152,12 @@ var errProjectAssistantPlanGrantPersistence = errors.New("assistant plan grant p
 func (m *projectEinoAssistantSafeToolErrorMiddleware) WrapInvokableToolCall(
 	_ context.Context,
 	endpoint adk.InvokableToolCallEndpoint,
-	_ *adk.ToolContext,
+	toolCtx *adk.ToolContext,
 ) (adk.InvokableToolCallEndpoint, error) {
+	toolName := ""
+	if toolCtx != nil {
+		toolName = projectToolBaseName(toolCtx.Name)
+	}
 	return func(
 		ctx context.Context,
 		argumentsInJSON string,
@@ -163,17 +167,19 @@ func (m *projectEinoAssistantSafeToolErrorMiddleware) WrapInvokableToolCall(
 		if err == nil || projectEinoAssistantPropagateToolError(err) {
 			return result, err
 		}
-		return truncateProjectToolInfo(
-			"Tool call failed: " + projectEinoAssistantSafeErrorText(err),
-		), nil
+		return projectEinoAssistantSafeToolFailureResult(toolName, err), nil
 	}, nil
 }
 
 func (m *projectEinoAssistantSafeToolErrorMiddleware) WrapEnhancedInvokableToolCall(
 	_ context.Context,
 	endpoint adk.EnhancedInvokableToolCallEndpoint,
-	_ *adk.ToolContext,
+	toolCtx *adk.ToolContext,
 ) (adk.EnhancedInvokableToolCallEndpoint, error) {
+	toolName := ""
+	if toolCtx != nil {
+		toolName = projectToolBaseName(toolCtx.Name)
+	}
 	return func(
 		ctx context.Context,
 		toolArgument *schema.ToolArgument,
@@ -186,12 +192,27 @@ func (m *projectEinoAssistantSafeToolErrorMiddleware) WrapEnhancedInvokableToolC
 		return &schema.ToolResult{
 			Parts: []schema.ToolOutputPart{{
 				Type: schema.ToolPartTypeText,
-				Text: truncateProjectToolInfo(
-					"Tool call failed: " + projectEinoAssistantSafeErrorText(err),
-				),
+				Text: projectEinoAssistantSafeToolFailureResult(toolName, err),
 			}},
 		}, nil
 	}, nil
+}
+
+func projectEinoAssistantSafeToolFailureResult(toolName string, err error) string {
+	safeReason := projectEinoAssistantSafeErrorText(err)
+	recovery := ""
+	lowerReason := strings.ToLower(safeReason)
+	switch {
+	case toolName == projectToolWriteFile && strings.Contains(lowerReason, "create-only"):
+		recovery = " Recovery: do not retry write_file for this existing path. Use apply_patch with a small exact replacement."
+	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, "oldtext was not found"):
+		recovery = " Recovery: reread the relevant target section, copy a small unique exact oldText anchor, and retry apply_patch. Do not fall back to write_file."
+	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, "oldtext matched"):
+		recovery = " Recovery: add surrounding context so oldText is unique and retry apply_patch. Use replaceAll only when every match should change; do not fall back to write_file."
+	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, "patch made no changes"):
+		recovery = " Recovery: choose newText that implements the requested behavior and differs from oldText, then retry apply_patch. Do not verify an unchanged workspace."
+	}
+	return truncateProjectToolInfo("Tool call failed: " + safeReason + recovery)
 }
 
 func projectEinoAssistantPropagateToolError(err error) bool {

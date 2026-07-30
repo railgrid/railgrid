@@ -211,7 +211,7 @@ func (p *Server) buildMCPHandler(cluster, resource, edgeName string) http.Handle
 		// The MCP SDK's streamable handler has DNS-rebinding protection that 403s
 		// ("invalid Host header") when the server's local address is loopback but
 		// the request Host isn't. Behind the hub backend proxy the provider sees
-		// Host "host.docker.internal:8084" (or the pod address) on a loopback
+		// Host "host.docker.internal:8088" (or the pod address) on a loopback
 		// connection, which trips it. That guard is meant for browser-facing
 		// localhost servers; this endpoint is reached only through the hub's
 		// authenticated proxy, so normalize Host to loopback to satisfy the check.

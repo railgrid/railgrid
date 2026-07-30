@@ -18,6 +18,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -253,6 +254,14 @@ func TestFileStoreMutationValidation(t *testing.T) {
 	}); err == nil {
 		t.Fatal("ApplyPatch returned nil error for ambiguous patch")
 	}
+	if _, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
+		Path:       "ambiguous.txt",
+		OldText:    "same",
+		NewText:    "same",
+		ReplaceAll: true,
+	}); err == nil || !strings.Contains(err.Error(), "made no changes") {
+		t.Fatalf("ApplyPatch no-op error = %v, want explicit no-change rejection", err)
+	}
 	patch, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
 		Path:       "ambiguous.txt",
 		OldText:    "same",
@@ -264,6 +273,229 @@ func TestFileStoreMutationValidation(t *testing.T) {
 	}
 	if patch.Replacements != 2 {
 		t.Fatalf("replaceAll replacements = %d, want 2", patch.Replacements)
+	}
+}
+
+func TestFileStoreCreateOnlyAndStructuredDiff(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+
+	result, err := store.WriteFile(context.Background(), scope, WriteOptions{
+		Path:       "src/app.js",
+		Content:    "const theme = 'light'\n",
+		CreateOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("create-only WriteFile returned error: %v", err)
+	}
+	if result.Additions != 1 || result.Deletions != 0 || !strings.Contains(result.Patch, "+++ b/src/app.js") {
+		t.Fatalf("create diff = %#v", result)
+	}
+
+	if _, err := store.WriteFile(context.Background(), scope, WriteOptions{
+		Path:       "src/app.js",
+		Content:    "const theme = 'dark'\n",
+		CreateOnly: true,
+	}); err == nil {
+		t.Fatal("create-only WriteFile overwrote an existing file")
+	}
+	read, err := store.ReadFile(context.Background(), scope, ReadOptions{Path: "src/app.js"})
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if read.Content != "const theme = 'light'\n" {
+		t.Fatalf("content = %q, want original source", read.Content)
+	}
+
+	patch, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
+		Path:    "src/app.js",
+		OldText: "'light'",
+		NewText: "'dark'",
+	})
+	if err != nil {
+		t.Fatalf("ApplyPatch returned error: %v", err)
+	}
+	if patch.Replacements != 1 || patch.Additions != 1 || patch.Deletions != 1 ||
+		!strings.Contains(patch.Patch, "-const theme = 'light'") ||
+		!strings.Contains(patch.Patch, "+const theme = 'dark'") {
+		t.Fatalf("patch diff = %#v", patch)
+	}
+}
+
+func TestFileStoreMutationsPreserveExistingFileMode(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "start.sh", Content: "#!/bin/sh\necho light\n"}}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	dir, err := store.scopeDir(scope)
+	if err != nil {
+		t.Fatalf("scopeDir returned error: %v", err)
+	}
+	target := filepath.Join(dir, "start.sh")
+	if err := os.Chmod(target, 0o755); err != nil {
+		t.Fatalf("Chmod returned error: %v", err)
+	}
+
+	if _, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
+		Path:    "start.sh",
+		OldText: "light",
+		NewText: "dark",
+	}); err != nil {
+		t.Fatalf("ApplyPatch returned error: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("Stat returned error: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("mode after patch = %o, want 755", got)
+	}
+}
+
+func TestFileStoreRestoresAssistantSnapshotWithoutClobberingNewerChanges(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "src/app.js", Content: "light\n"}}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	if _, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
+		Path:       "src/app.js",
+		OldText:    "light",
+		NewText:    "dark",
+		SnapshotID: "run-1",
+	}); err != nil {
+		t.Fatalf("ApplyPatch returned error: %v", err)
+	}
+	if _, err := store.WriteFile(context.Background(), scope, WriteOptions{
+		Path:       "src/theme.js",
+		Content:    "export const dark = true\n",
+		CreateOnly: true,
+		SnapshotID: "run-1",
+	}); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	restored, err := store.RestoreSnapshot(context.Background(), scope, "run-1")
+	if err != nil {
+		t.Fatalf("RestoreSnapshot returned error: %v", err)
+	}
+	if len(restored.Files) != 2 {
+		t.Fatalf("restored files = %d, want 2", len(restored.Files))
+	}
+	read, err := store.ReadFile(context.Background(), scope, ReadOptions{Path: "src/app.js"})
+	if err != nil || read.Content != "light\n" {
+		t.Fatalf("restored app = %#v, err = %v", read, err)
+	}
+	if _, err := store.ReadFile(context.Background(), scope, ReadOptions{Path: "src/theme.js"}); err == nil {
+		t.Fatal("new file still exists after restore")
+	}
+	restoredAgain, err := store.RestoreSnapshot(context.Background(), scope, "run-1")
+	if err != nil || len(restoredAgain.Files) != 2 {
+		t.Fatalf("idempotent RestoreSnapshot = %#v, err = %v", restoredAgain, err)
+	}
+
+	if _, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
+		Path:       "src/app.js",
+		OldText:    "light",
+		NewText:    "dark",
+		SnapshotID: "run-2",
+	}); err != nil {
+		t.Fatalf("second ApplyPatch returned error: %v", err)
+	}
+	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "src/app.js", Content: "manual newer edit\n"}}); err != nil {
+		t.Fatalf("manual ApplyFiles returned error: %v", err)
+	}
+	if _, err := store.RestoreSnapshot(context.Background(), scope, "run-2"); !errors.Is(err, ErrSnapshotConflict) {
+		t.Fatalf("RestoreSnapshot error = %v, want ErrSnapshotConflict", err)
+	}
+	read, err = store.ReadFile(context.Background(), scope, ReadOptions{Path: "src/app.js"})
+	if err != nil || read.Content != "manual newer edit\n" {
+		t.Fatalf("newer content = %#v, err = %v", read, err)
+	}
+}
+
+func TestFileStoreDeleteSnapshotsIsProjectScoped(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	otherProject := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "other"}
+	otherWorkspace := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-2", ProjectName: "demo"}
+	for _, target := range []Scope{scope, otherProject, otherWorkspace} {
+		if _, err := store.WriteFile(context.Background(), target, WriteOptions{
+			Path:       "src/app.js",
+			Content:    "export default true\n",
+			CreateOnly: true,
+			SnapshotID: "run-1",
+		}); err != nil {
+			t.Fatalf("WriteFile(%q) returned error: %v", target.ProjectName, err)
+		}
+	}
+
+	if err := store.DeleteSnapshots(context.Background(), scope); err != nil {
+		t.Fatalf("DeleteSnapshots returned error: %v", err)
+	}
+	if _, err := store.RestoreSnapshot(context.Background(), scope, "run-1"); !errors.Is(err, ErrSnapshotNotFound) {
+		t.Fatalf("deleted project RestoreSnapshot error = %v, want ErrSnapshotNotFound", err)
+	}
+	for _, target := range []Scope{otherProject, otherWorkspace} {
+		if _, err := store.RestoreSnapshot(context.Background(), target, "run-1"); err != nil {
+			t.Fatalf("other scope %q/%q RestoreSnapshot returned error: %v", target.WorkspaceUUID, target.ProjectName, err)
+		}
+	}
+
+	if _, err := store.WriteFile(context.Background(), scope, WriteOptions{
+		Path:       "src/app.js",
+		Content:    "export default false\n",
+		SnapshotID: "run-2",
+	}); err != nil {
+		t.Fatalf("WriteFile after deletion returned error: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := store.DeleteSnapshots(cancelled, scope); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled DeleteSnapshots error = %v, want context.Canceled", err)
+	}
+	if _, err := store.RestoreSnapshot(context.Background(), scope, "run-2"); err != nil {
+		t.Fatalf("cancelled deletion removed snapshot: %v", err)
+	}
+}
+
+func TestFileStoreSnapshotFailureDoesNotMutateSource(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "src/app.js", Content: "light\n"}}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	if _, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
+		Path:       "src/app.js",
+		OldText:    "light",
+		NewText:    "dark",
+		SnapshotID: "run-1",
+	}); err != nil {
+		t.Fatalf("first ApplyPatch returned error: %v", err)
+	}
+	snapshotDir, err := store.snapshotDir(scope, "run-1")
+	if err != nil {
+		t.Fatalf("snapshotDir returned error: %v", err)
+	}
+	entries, err := os.ReadDir(snapshotDir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("snapshot entries = %v, err = %v", entries, err)
+	}
+	if err := os.WriteFile(filepath.Join(snapshotDir, entries[0].Name()), []byte("{"), 0o600); err != nil {
+		t.Fatalf("corrupt snapshot entry: %v", err)
+	}
+	if _, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
+		Path:       "src/app.js",
+		OldText:    "dark",
+		NewText:    "contrast",
+		SnapshotID: "run-1",
+	}); err == nil {
+		t.Fatal("ApplyPatch returned nil error for corrupt snapshot")
+	}
+	read, err := store.ReadFile(context.Background(), scope, ReadOptions{Path: "src/app.js"})
+	if err != nil || read.Content != "dark\n" {
+		t.Fatalf("content after snapshot failure = %#v, err = %v", read, err)
 	}
 }
 

@@ -19,7 +19,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"time"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -46,7 +45,7 @@ type projectAssistantEngine interface {
 
 type projectAssistantRunRequest struct {
 	Identity                 identity
-	HTTPRequest              *http.Request
+	ToolPort                 projectAssistantToolPort
 	Client                   *asclient.Client
 	Project                  *aiv1alpha1.Project
 	Repository               *ProjectRepositoryView
@@ -58,7 +57,6 @@ type projectAssistantRunRequest struct {
 	MCPBaseURL               string
 	MCPInsecureSkipTLSVerify bool
 	ApprovalMode             store.AssistantApprovalMode
-	AutoApproveActions       bool
 	StreamCallbacks          projectAssistantStreamCallbacks
 	TurnProfile              projectAssistantTurnProfile
 	TurnPolicy               projectAssistantTurnPolicy
@@ -72,8 +70,12 @@ type projectAssistantRunRequest struct {
 	InitialApprovedPlan *projectAssistantApprovedPlan
 	Continuation        *projectAssistantCheckpointState
 	AssistantRun        *store.AssistantRun
-	snapshotAccumulator *projectAssistantSnapshotAccumulator
-	auditRecorder       *projectAssistantRunAuditRecorder
+	// executionAuthority is an App Studio-internal seam for focused engine
+	// tests. Production requests leave it nil and are bound to the Server's
+	// durable WorkItem authority below; it is deliberately not part of any
+	// HTTP, provider, or Eino contract.
+	executionAuthority projectAssistantExecutionAuthority
+	auditRecorder      *projectAssistantRunAuditRecorder
 }
 
 type projectAssistantRunResult struct {
@@ -84,11 +86,14 @@ type projectAssistantRunResult struct {
 }
 
 type projectAssistantCompletionEvidence struct {
-	PlanDefined            bool     `json:"planDefined"`
-	PlanComplete           bool     `json:"planComplete"`
-	LatestMutationVerified bool     `json:"latestMutationVerified"`
-	VerificationOutcome    string   `json:"verificationOutcome,omitempty"`
-	Blockers               []string `json:"blockers,omitempty"`
+	PlanDefined              bool     `json:"planDefined"`
+	PlanComplete             bool     `json:"planComplete"`
+	SourceMutationRevision   uint64   `json:"sourceMutationRevision,omitempty"`
+	VerifiedMutationRevision uint64   `json:"verifiedMutationRevision,omitempty"`
+	LatestMutationVerified   bool     `json:"latestMutationVerified"`
+	VerificationOutcome      string   `json:"verificationOutcome,omitempty"`
+	VerificationSummary      string   `json:"verificationSummary,omitempty"`
+	Blockers                 []string `json:"blockers,omitempty"`
 }
 
 type projectAssistantEvent struct {

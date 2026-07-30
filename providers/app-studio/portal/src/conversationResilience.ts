@@ -20,7 +20,6 @@ export interface AssistantRunStartRequest {
   content: string
   clientRequestID: string
   assistantAction: 'auto' | 'ask' | 'build' | 'continue'
-  initialProjectPrompt?: boolean
   workItemID?: string
   workItemRevision?: number
 }
@@ -50,15 +49,11 @@ export function firstProjectStartPlan(submission: PendingFirstProjectSubmission)
     projectName: submission.projectName,
     content: submission.content,
     clientRequestID: submission.clientRequestID,
-    ...(submission.projectName ? { initialProjectPrompt: true } : {}),
   }
 }
 
-export function assistantRunStartPayload(content: string, clientRequestID: string, initialProjectPrompt = false, assistantAction: 'auto' | 'ask' | 'build' = 'auto') {
-  const action = initialProjectPrompt ? 'build' : assistantAction
-  return initialProjectPrompt
-    ? { content, clientRequestID, assistantAction: action, initialProjectPrompt: true }
-    : { content, clientRequestID, assistantAction: action }
+export function assistantRunStartPayload(content: string, clientRequestID: string, assistantAction: 'auto' | 'ask' | 'build' = 'auto') {
+  return { content, clientRequestID, assistantAction }
 }
 
 export function assistantRunStartFingerprint(projectName: string, request: Omit<AssistantRunStartRequest, 'clientRequestID'>): string {
@@ -66,7 +61,6 @@ export function assistantRunStartFingerprint(projectName: string, request: Omit<
     projectName,
     request.content,
     request.assistantAction,
-    Boolean(request.initialProjectPrompt),
     request.workItemID ?? '',
     request.workItemRevision ?? 0,
   ])
@@ -77,12 +71,14 @@ export function assistantRunMatchesStartRequest(run: AssistantRun | undefined, r
   if ((run.workItemID ?? '') !== (request.workItemID ?? '')) return false
   const expectedMode = request.assistantAction === 'continue'
     ? 'continue'
-    : request.assistantAction === 'build' || request.initialProjectPrompt
+    : request.assistantAction === 'build'
     ? 'new'
     : request.assistantAction === 'ask'
     ? 'discussion'
     : 'adaptive'
-  return run.mode === expectedMode
+  // A creation prompt is submitted as an ordinary auto turn. The server may
+  // recognize its one-time bootstrap permit and persist it as a new run.
+  return run.mode === expectedMode || (request.assistantAction === 'auto' && run.mode === 'new')
 }
 
 export function firstProjectSubmissionAccepted(submission: PendingFirstProjectSubmission, user: Pick<ProjectMessage, 'id' | 'content'> | undefined): boolean {

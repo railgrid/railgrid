@@ -19,18 +19,57 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/cloudwego/eino/adk"
+	einomodel "github.com/cloudwego/eino/components/model"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 type projectEinoAssistantPhase string
+
+type projectEinoAssistantNoProgressError struct {
+	Phase            projectEinoAssistantPhase
+	ToolName         string
+	Calls            int
+	Limit            int
+	SourceRevision   uint64
+	VerifiedRevision uint64
+}
+
+func (e *projectEinoAssistantNoProgressError) Error() string {
+	if e == nil {
+		return errProjectAssistantNoProgress.Error()
+	}
+	if toolName := projectToolBaseName(e.ToolName); toolName != "" {
+		return fmt.Sprintf(
+			"%s: phase %s repeated %s %d times",
+			errProjectAssistantNoProgress,
+			e.Phase,
+			toolName,
+			e.Limit,
+		)
+	}
+	return fmt.Sprintf(
+		"%s: phase %s completed %d consecutive model turns without new progress",
+		errProjectAssistantNoProgress,
+		e.Phase,
+		e.Limit,
+	)
+}
+
+func (e *projectEinoAssistantNoProgressError) Unwrap() error {
+	return errProjectAssistantNoProgress
+}
 
 const (
 	projectEinoAssistantPhasePlan     projectEinoAssistantPhase = "plan"
@@ -38,6 +77,7 @@ const (
 	projectEinoAssistantPhaseMutate   projectEinoAssistantPhase = "mutate"
 	projectEinoAssistantPhaseVerify   projectEinoAssistantPhase = "verify"
 	projectEinoAssistantPhaseRepair   projectEinoAssistantPhase = "repair"
+	projectEinoAssistantPhaseWarmup   projectEinoAssistantPhase = "warmup"
 	projectEinoAssistantPhaseCommit   projectEinoAssistantPhase = "commit"
 	projectEinoAssistantPhaseReport   projectEinoAssistantPhase = "report"
 )
@@ -54,9 +94,8 @@ const (
 )
 
 const (
-	projectEinoAssistantPlanModelCallLimit     = 4
-	projectEinoAssistantApprovalModelCallLimit = 8
-	projectEinoAssistantMutateModelCallLimit   = 4
+	projectEinoAssistantRepeatedActionWarnAt = 2
+	projectEinoAssistantRepeatedActionLimit  = maxAssistantDeepIterations
 )
 
 type projectEinoAssistantTodoProgressInput struct {
@@ -72,17 +111,93 @@ type projectEinoAssistantTodoProgressItem struct {
 type projectEinoAssistantPhaseFilterMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 
-	req               projectAssistantRunRequest
-	runState          *projectEinoAssistantRunState
-	toolInfos         []*schema.ToolInfo
-	deferredToolInfos []*schema.ToolInfo
-	phase             projectEinoAssistantPhase
-	approvedPlan      *projectAssistantApprovedPlan
-	progressPhase     projectEinoAssistantPhase
-	progressSource    uint64
-	progressVerified  uint64
-	progressCalls     int
-	progressWarned    bool
+	req                  projectAssistantRunRequest
+	runState             *projectEinoAssistantRunState
+	toolInfos            []*schema.ToolInfo
+	deferredToolInfos    []*schema.ToolInfo
+	phase                projectEinoAssistantPhase
+	approvedPlan         *projectAssistantApprovedPlan
+	modelCallPhase       projectEinoAssistantPhase
+	modelCallOrdinal     int
+	approvalSearchClosed bool
+	recoveryReadPaths    []string
+	recoveryPatchPath    string
+	recoveryReadComplete bool
+	mustApplyPatch       bool
+	missingMutationPaths []string
+}
+
+type projectEinoAssistantCompletionBarrierModel struct {
+	einomodel.BaseChatModel
+
+	verificationToolName string
+	runState             *projectEinoAssistantRunState
+}
+
+func (m *projectEinoAssistantCompletionBarrierModel) Generate(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.Message, error) {
+	message, err := m.BaseChatModel.Generate(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return projectEinoAssistantCompletionBarrierMessage(message, m.verificationToolName, m.runState), nil
+}
+
+func (m *projectEinoAssistantCompletionBarrierModel) Stream(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	reader, err := m.BaseChatModel.Stream(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	message, err := schema.ConcatMessageStream(reader)
+	if err != nil {
+		return nil, fmt.Errorf("combine dirty assistant completion stream: %w", err)
+	}
+	if message == nil {
+		return nil, errors.New("dirty assistant completion returned an empty model stream")
+	}
+	message = projectEinoAssistantCompletionBarrierMessage(message, m.verificationToolName, m.runState)
+	return schema.StreamReaderFromArray([]*schema.Message{message}), nil
+}
+
+func projectEinoAssistantCompletionBarrierMessage(
+	message *schema.Message,
+	verificationToolName string,
+	runState *projectEinoAssistantRunState,
+) *schema.Message {
+	if message == nil || len(message.ToolCalls) > 0 ||
+		(strings.TrimSpace(message.Content) == "" &&
+			strings.TrimSpace(message.ReasoningContent) == "" &&
+			len(message.AssistantGenMultiContent) == 0) {
+		return message
+	}
+	result := *message
+	result.Role = schema.Assistant
+	result.Content = ""
+	result.MultiContent = nil
+	result.UserInputMultiContent = nil
+	result.AssistantGenMultiContent = nil
+	result.Name = ""
+	result.ToolCallID = ""
+	result.ToolName = ""
+	result.ReasoningContent = ""
+	result.ToolCalls = []schema.ToolCall{{
+		ID:   "call-" + uuid.NewString(),
+		Type: "function",
+		Function: schema.FunctionCall{
+			Name:      strings.TrimSpace(verificationToolName),
+			Arguments: `{}`,
+		},
+	}}
+	adk.EnsureMessageID(&result)
+	runState.RewriteCompletionAsVerification(&result)
+	return &result
 }
 
 func projectEinoAssistantPhaseMiddleware(
@@ -101,7 +216,7 @@ func projectEinoAssistantPhaseMiddleware(
 			if phase == projectEinoAssistantPhaseApproval &&
 				req.Continuation.Eino != nil &&
 				projectEinoAssistantCommitTool(req.Continuation.Eino.ToolName) {
-				phase = projectEinoAssistantPhaseForStateWithApproval(req, state, true)
+				phase = projectEinoAssistantPhaseForStateWithApproval(req, runState, state, true)
 			}
 		}
 	}
@@ -167,13 +282,107 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) BeforeModelRewriteState(
 		return ctx, state, nil
 	}
 	phase := projectEinoAssistantPhaseForState(m.req, m.runState, state)
-	if err := m.enforceSemanticProgress(state, phase); err != nil {
+	if phase == projectEinoAssistantPhaseWarmup {
+		m.runState.BeginRuntimeWarmupModelCall()
+	}
+	warningInjected, err := m.enforceRepeatedActionProgress(state, phase)
+	if err != nil {
 		return ctx, nil, err
 	}
 	approvedPlan := projectEinoAssistantPhaseApprovedPlan(m.req, m.runState)
+	sourceRevision, verifiedRevision := m.runState.SourceMutationRevisions()
+	completedReadPaths := m.runState.CompletedReadFilePaths()
+	observedReadPaths := m.runState.ObservedReadFilePaths()
+	hideWriteFile := !projectAssistantInitialBuildActive(m.req, m.runState) &&
+		projectEinoAssistantAllApprovedTargetsAreKnownExisting(approvedPlan, observedReadPaths)
+	approvalSearchClosed := phase == projectEinoAssistantPhaseApproval &&
+		len(completedReadPaths) > 0
+	awaitingFirstMutation := phase == projectEinoAssistantPhaseMutate &&
+		projectEinoAssistantAwaitingFirstApprovedMutation(m.runState, approvedPlan)
+	recoveryReadPath, recoveryReadComplete := m.runState.PatchRecovery()
+	if recoveryReadPath == "" &&
+		(phase == projectEinoAssistantPhaseMutate || phase == projectEinoAssistantPhaseRepair) {
+		recoveryReadPath = projectEinoAssistantLatestFailedPatchPath(state, approvedPlan)
+		if recoveryReadPath != "" {
+			m.runState.StartPatchRecovery(recoveryReadPath)
+		}
+	}
+	mutationReadPaths := []string(nil)
+	if awaitingFirstMutation {
+		mutationReadPaths = projectEinoAssistantUnreadKnownExistingApprovedTargets(
+			approvedPlan,
+			observedReadPaths,
+			completedReadPaths,
+		)
+	}
+	if recoveryReadPath != "" && !recoveryReadComplete &&
+		!slices.Contains(mutationReadPaths, recoveryReadPath) {
+		mutationReadPaths = append(mutationReadPaths, recoveryReadPath)
+	}
+	mustApplyPatch := awaitingFirstMutation &&
+		recoveryReadPath == "" &&
+		len(mutationReadPaths) == 0 &&
+		projectEinoAssistantAllApprovedTargetsAreKnownExisting(approvedPlan, observedReadPaths)
+	missingMutationPaths := projectEinoAssistantMissingKnownExistingMutationTargets(
+		approvedPlan,
+		observedReadPaths,
+		m.runState.SuccessfulMutationPaths(),
+	)
+	if phase == projectEinoAssistantPhaseApproval {
+		projectEinoAssistantRemoveMutationProgressInstruction(state)
+		projectEinoAssistantRemoveCommitProgressInstruction(state)
+		projectEinoAssistantReplaceApprovalProgressInstruction(
+			state,
+			projectEinoAssistantPhaseProgressInstruction(
+				phase,
+				completedReadPaths,
+			),
+		)
+	} else if phase == projectEinoAssistantPhaseMutate {
+		projectEinoAssistantRemoveApprovalProgressInstruction(state)
+		projectEinoAssistantRemoveCommitProgressInstruction(state)
+		projectEinoAssistantReplaceMutationProgressInstruction(
+			state,
+			projectEinoAssistantMutationProgressInstruction(
+				approvedPlan,
+				sourceRevision,
+				verifiedRevision,
+				awaitingFirstMutation,
+				observedReadPaths,
+				len(mutationReadPaths) > 0,
+				missingMutationPaths,
+			),
+		)
+	} else if phase == projectEinoAssistantPhaseCommit {
+		projectEinoAssistantRemoveApprovalProgressInstruction(state)
+		projectEinoAssistantRemoveMutationProgressInstruction(state)
+		projectEinoAssistantReplaceCommitProgressInstruction(
+			state,
+			"Runtime verification passed for the current workspace revision. Call commit_project_files now. Do not request reads, checkpoints, edits, runtime tools, or replanning in this phase.",
+		)
+	} else if phase == projectEinoAssistantPhaseReport {
+		projectEinoAssistantRemoveApprovalProgressInstruction(state)
+		projectEinoAssistantRemoveMutationProgressInstruction(state)
+		projectEinoAssistantReplaceCommitProgressInstruction(
+			state,
+			"The approved implementation is committed and runtime verification passed. Respond to the user now with a concise summary of the completed changes and verification. Do not call tools, request approval, or start more work.",
+		)
+	} else if phase == projectEinoAssistantPhaseWarmup {
+		projectEinoAssistantRemoveApprovalProgressInstruction(state)
+		projectEinoAssistantRemoveCommitProgressInstruction(state)
+		projectEinoAssistantReplaceMutationProgressInstruction(
+			state,
+			"The source edit is complete, but the runtime is still becoming available. Do not inspect or edit workspace files. Use only bounded runtime status, preview, log, or verification checks; source repair is allowed only after verification reports concrete build or application log blockers.",
+		)
+	} else {
+		projectEinoAssistantRemoveApprovalProgressInstruction(state)
+		projectEinoAssistantRemoveMutationProgressInstruction(state)
+		projectEinoAssistantRemoveCommitProgressInstruction(state)
+	}
 	templateBootstrapAllowed := projectEinoAssistantPhaseTemplateBootstrapAllowed(m.req.Project)
 	m.phase = phase
 	m.approvedPlan = cloneProjectAssistantApprovedPlan(approvedPlan)
+	m.approvalSearchClosed = approvalSearchClosed
 	if m.req.auditRecorder != nil {
 		m.req.auditRecorder.recordPhase(phase)
 	}
@@ -185,6 +394,37 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) BeforeModelRewriteState(
 		projectAssistantInlinePromotionEnabled(m.req),
 		normalizeProjectAssistantTurnPolicy(m.req.TurnPolicy, m.req.TurnProfile),
 	)
+	if awaitingFirstMutation {
+		state.ToolInfos = projectEinoAssistantPhaseFilterPreMutationTools(
+			state.ToolInfos,
+			templateBootstrapAllowed,
+		)
+	}
+	if approvalSearchClosed {
+		state.ToolInfos = projectEinoAssistantPhaseFilterPostInspectionSearchTools(state.ToolInfos)
+	}
+	if hideWriteFile {
+		state.ToolInfos = projectEinoAssistantPhaseWithoutWriteFile(state.ToolInfos)
+	}
+	if len(mutationReadPaths) > 0 {
+		state.ToolInfos = projectEinoAssistantPhaseWithNamedTool(
+			state.ToolInfos,
+			m.toolInfos,
+			projectToolReadFile,
+		)
+	}
+	if recoveryReadPath != "" && !recoveryReadComplete {
+		state.ToolInfos = projectEinoAssistantPhaseOnlyNamedTool(state.ToolInfos, projectToolReadFile)
+	} else if recoveryReadPath != "" {
+		state.ToolInfos = projectEinoAssistantPhaseOnlyNamedTool(state.ToolInfos, projectToolApplyPatch)
+	} else if mustApplyPatch {
+		state.ToolInfos = projectEinoAssistantPhaseOnlyNamedTool(state.ToolInfos, projectToolApplyPatch)
+	} else if len(missingMutationPaths) > 0 {
+		state.ToolInfos = projectEinoAssistantPhaseWithoutNamedTool(
+			state.ToolInfos,
+			projectToolVerifyDevelopmentRuntime,
+		)
+	}
 	state.DeferredToolInfos = projectEinoAssistantPhaseFilterTools(
 		phase,
 		approvedPlan,
@@ -193,80 +433,535 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) BeforeModelRewriteState(
 		projectAssistantInlinePromotionEnabled(m.req),
 		normalizeProjectAssistantTurnPolicy(m.req.TurnPolicy, m.req.TurnProfile),
 	)
+	if awaitingFirstMutation {
+		state.DeferredToolInfos = projectEinoAssistantPhaseFilterPreMutationTools(
+			state.DeferredToolInfos,
+			templateBootstrapAllowed,
+		)
+	}
+	if approvalSearchClosed {
+		state.DeferredToolInfos = projectEinoAssistantPhaseFilterPostInspectionSearchTools(state.DeferredToolInfos)
+	}
+	if hideWriteFile {
+		state.DeferredToolInfos = projectEinoAssistantPhaseWithoutWriteFile(state.DeferredToolInfos)
+	}
+	if len(mutationReadPaths) > 0 {
+		state.DeferredToolInfos = projectEinoAssistantPhaseWithNamedTool(
+			state.DeferredToolInfos,
+			m.deferredToolInfos,
+			projectToolReadFile,
+		)
+	}
+	if recoveryReadPath != "" && !recoveryReadComplete {
+		state.DeferredToolInfos = projectEinoAssistantPhaseOnlyNamedTool(
+			state.DeferredToolInfos,
+			projectToolReadFile,
+		)
+	} else if recoveryReadPath != "" {
+		state.DeferredToolInfos = projectEinoAssistantPhaseOnlyNamedTool(
+			state.DeferredToolInfos,
+			projectToolApplyPatch,
+		)
+	} else if mustApplyPatch {
+		state.DeferredToolInfos = projectEinoAssistantPhaseOnlyNamedTool(
+			state.DeferredToolInfos,
+			projectToolApplyPatch,
+		)
+	} else if len(missingMutationPaths) > 0 {
+		state.DeferredToolInfos = projectEinoAssistantPhaseWithoutNamedTool(
+			state.DeferredToolInfos,
+			projectToolVerifyDevelopmentRuntime,
+		)
+	}
 	if projectAssistantInlinePromotionEnabled(m.req) &&
 		phase == projectEinoAssistantPhaseApproval {
 		state.ToolInfos = projectEinoAssistantPhaseWithoutToolSearch(state.ToolInfos)
 	}
+	m.modelCallPhase = phase
+	m.modelCallOrdinal = m.runState.NextModelCallOrdinal()
+	m.recoveryReadPaths = append([]string(nil), mutationReadPaths...)
+	m.recoveryPatchPath = recoveryReadPath
+	m.recoveryReadComplete = recoveryReadComplete
+	m.mustApplyPatch = mustApplyPatch
+	m.missingMutationPaths = append([]string(nil), missingMutationPaths...)
+	if m.req.auditRecorder != nil {
+		if err := m.req.auditRecorder.recordModelCall(
+			ctx,
+			phase,
+			m.modelCallOrdinal,
+			sourceRevision,
+			verifiedRevision,
+			warningInjected,
+			state.ToolInfos,
+			state.DeferredToolInfos,
+		); err != nil {
+			return ctx, nil, fmt.Errorf("persist assistant model-call start: %w", err)
+		}
+	}
 	return ctx, state, nil
 }
 
-func (m *projectEinoAssistantPhaseFilterMiddleware) enforceSemanticProgress(
+func (m *projectEinoAssistantPhaseFilterMiddleware) WrapModel(
+	_ context.Context,
+	base einomodel.BaseChatModel,
+	modelCtx *adk.ModelContext,
+) (einomodel.BaseChatModel, error) {
+	if base == nil || m.runState == nil ||
+		(m.phase != projectEinoAssistantPhaseMutate && m.phase != projectEinoAssistantPhaseRepair) {
+		return base, nil
+	}
+	if !m.runState.NeedsCompletionVerification() {
+		return base, nil
+	}
+	verificationToolName := ""
+	if modelCtx != nil {
+		for _, tool := range modelCtx.Tools {
+			if tool != nil && projectToolBaseName(tool.Name) == projectToolVerifyDevelopmentRuntime {
+				verificationToolName = strings.TrimSpace(tool.Name)
+				break
+			}
+		}
+	}
+	if verificationToolName == "" {
+		return base, nil
+	}
+	return &projectEinoAssistantCompletionBarrierModel{
+		BaseChatModel:        base,
+		verificationToolName: verificationToolName,
+		runState:             m.runState,
+	}, nil
+}
+
+func (m *projectEinoAssistantPhaseFilterMiddleware) AfterModelRewriteState(
+	ctx context.Context,
+	state *adk.ChatModelAgentState,
+	_ *adk.ModelContext,
+) (context.Context, *adk.ChatModelAgentState, error) {
+	if m.req.auditRecorder != nil && m.modelCallPhase != "" && m.modelCallOrdinal > 0 {
+		var response *schema.Message
+		if state != nil && len(state.Messages) > 0 {
+			response = state.Messages[len(state.Messages)-1]
+		}
+		if err := m.req.auditRecorder.recordModelResult(
+			ctx,
+			m.modelCallPhase,
+			m.modelCallOrdinal,
+			response,
+		); err != nil {
+			return ctx, nil, fmt.Errorf("persist assistant model-call result: %w", err)
+		}
+	}
+	m.modelCallPhase = ""
+	m.modelCallOrdinal = 0
+	return ctx, state, nil
+}
+
+func (m *projectEinoAssistantPhaseFilterMiddleware) enforceRepeatedActionProgress(
 	state *adk.ChatModelAgentState,
 	phase projectEinoAssistantPhase,
-) error {
-	limit := projectEinoAssistantPhaseModelCallLimit(phase)
-	if limit == 0 {
-		m.resetSemanticProgress(phase, 0, 0)
-		return nil
+) (bool, error) {
+	_, repeats := m.runState.RepeatedCompletedAction()
+	if repeats < projectEinoAssistantRepeatedActionWarnAt {
+		return false, nil
 	}
-	source, verified := uint64(0), uint64(0)
-	if m.runState != nil {
-		source, verified = m.runState.SourceMutationRevisions()
+	if state != nil && phase != projectEinoAssistantPhaseApproval {
+		instruction := projectEinoAssistantPhaseProgressInstruction(
+			phase,
+			m.runState.CompletedReadFilePaths(),
+		)
+		if recovery := projectEinoAssistantLatestEditRecoveryInstruction(state); recovery != "" {
+			instruction = recovery
+		}
+		state.Messages = append(
+			state.Messages,
+			schema.SystemMessage(instruction),
+		)
 	}
-	if phase != m.progressPhase || source != m.progressSource || verified != m.progressVerified {
-		m.resetSemanticProgress(phase, source, verified)
-	}
-	m.progressCalls++
-	if m.progressCalls > limit {
-		return fmt.Errorf("%w: phase %s made no progress after %d model calls", errProjectAssistantNoProgress, phase, limit)
-	}
-	if !m.progressWarned && m.progressCalls >= limit-1 {
-		state.Messages = append(state.Messages, schema.SystemMessage(projectEinoAssistantPhaseProgressInstruction(phase)))
-		m.progressWarned = true
-	}
-	return nil
+	return true, nil
 }
 
-func (m *projectEinoAssistantPhaseFilterMiddleware) resetSemanticProgress(
-	phase projectEinoAssistantPhase,
-	source uint64,
-	verified uint64,
+const projectEinoAssistantApprovalProgressPrefix = "[App Studio approval phase] "
+const projectEinoAssistantMutationProgressPrefix = "[App Studio mutation phase] "
+const projectEinoAssistantCommitProgressPrefix = "[App Studio commit phase] "
+
+func projectEinoAssistantReplaceApprovalProgressInstruction(
+	state *adk.ChatModelAgentState,
+	instruction string,
 ) {
-	m.progressPhase = phase
-	m.progressSource = source
-	m.progressVerified = verified
-	m.progressCalls = 0
-	m.progressWarned = false
-}
-
-func projectEinoAssistantPhaseModelCallLimit(phase projectEinoAssistantPhase) int {
-	switch phase {
-	case projectEinoAssistantPhasePlan:
-		return projectEinoAssistantPlanModelCallLimit
-	case projectEinoAssistantPhaseApproval:
-		return projectEinoAssistantApprovalModelCallLimit
-	case projectEinoAssistantPhaseMutate:
-		return projectEinoAssistantMutateModelCallLimit
-	default:
-		return 0
+	if state == nil {
+		return
 	}
+	projectEinoAssistantRemoveApprovalProgressInstruction(state)
+	state.Messages = append(
+		state.Messages,
+		schema.SystemMessage(projectEinoAssistantApprovalProgressPrefix+instruction),
+	)
 }
 
-func projectEinoAssistantPhaseProgressInstruction(phase projectEinoAssistantPhase) string {
+func projectEinoAssistantRemoveApprovalProgressInstruction(state *adk.ChatModelAgentState) {
+	if state == nil {
+		return
+	}
+	messages := state.Messages[:0]
+	for _, message := range state.Messages {
+		if message != nil &&
+			message.Role == schema.System &&
+			strings.HasPrefix(message.Content, projectEinoAssistantApprovalProgressPrefix) {
+			continue
+		}
+		messages = append(messages, message)
+	}
+	state.Messages = messages
+}
+
+func projectEinoAssistantReplaceMutationProgressInstruction(
+	state *adk.ChatModelAgentState,
+	instruction string,
+) {
+	if state == nil {
+		return
+	}
+	projectEinoAssistantRemoveMutationProgressInstruction(state)
+	state.Messages = append(
+		state.Messages,
+		schema.SystemMessage(projectEinoAssistantMutationProgressPrefix+instruction),
+	)
+}
+
+func projectEinoAssistantRemoveMutationProgressInstruction(state *adk.ChatModelAgentState) {
+	if state == nil {
+		return
+	}
+	messages := state.Messages[:0]
+	for _, message := range state.Messages {
+		if message != nil &&
+			message.Role == schema.System &&
+			strings.HasPrefix(message.Content, projectEinoAssistantMutationProgressPrefix) {
+			continue
+		}
+		messages = append(messages, message)
+	}
+	state.Messages = messages
+}
+
+func projectEinoAssistantReplaceCommitProgressInstruction(
+	state *adk.ChatModelAgentState,
+	instruction string,
+) {
+	if state == nil {
+		return
+	}
+	projectEinoAssistantRemoveCommitProgressInstruction(state)
+	state.Messages = append(
+		state.Messages,
+		schema.SystemMessage(projectEinoAssistantCommitProgressPrefix+instruction),
+	)
+}
+
+func projectEinoAssistantRemoveCommitProgressInstruction(state *adk.ChatModelAgentState) {
+	if state == nil {
+		return
+	}
+	messages := state.Messages[:0]
+	for _, message := range state.Messages {
+		if message != nil &&
+			message.Role == schema.System &&
+			strings.HasPrefix(message.Content, projectEinoAssistantCommitProgressPrefix) {
+			continue
+		}
+		messages = append(messages, message)
+	}
+	state.Messages = messages
+}
+
+func projectEinoAssistantPendingPermissionResult(content string) bool {
+	return strings.HasPrefix(
+		strings.ToLower(strings.TrimSpace(content)),
+		"tool call skipped: waiting for approval",
+	)
+}
+
+func projectEinoAssistantPhaseProgressInstruction(
+	phase projectEinoAssistantPhase,
+	completedReadPaths []string,
+) string {
 	switch phase {
 	case projectEinoAssistantPhasePlan:
 		return "Define the initial execution plan now with define_initial_project_plan. This is an internal, auto-authorized planning step; do not ask the user to approve it."
 	case projectEinoAssistantPhaseApproval:
-		return "Finish bounded inspection now. Request one complete source-edit plan, ask the user for missing information, or report a concrete blocker. Do not repeat prior reads or searches."
+		if len(completedReadPaths) == 0 {
+			return "Complete one bounded inspection batch for the current implementation task. Read known relevant files directly and batch independent reads. Then request one complete source-edit plan, ask the user for missing information, or report a concrete blocker."
+		}
+		const maxListedPaths = 12
+		listedPaths := completedReadPaths
+		if len(listedPaths) > maxListedPaths {
+			listedPaths = listedPaths[:maxListedPaths]
+		}
+		encodedPaths, _ := json.Marshal(listedPaths)
+		evidence := string(encodedPaths)
+		if len(completedReadPaths) > len(listedPaths) {
+			evidence += fmt.Sprintf(" and %d more", len(completedReadPaths)-len(listedPaths))
+		}
+		return "The initial source-inspection batch is complete. Already-read project file paths for the current workspace revision: " + evidence + ". Workspace discovery and search tools are now unavailable in plan approval. Reuse this evidence and call request_project_plan_approval now with complete target paths and acceptance criteria. A direct read_file remains available only for a concrete dependency path discovered from existing evidence; otherwise ask for specifically missing information or report a concrete blocker instead of searching again."
 	case projectEinoAssistantPhaseMutate:
-		return "A source-edit plan is already approved. Stop broad inspection and apply the approved workspace mutation now. Ask the user only if required information is missing; do not request another equivalent plan."
-	case projectEinoAssistantPhaseVerify:
-		return "The workspace changed. Verify the current development result now. Do not repeat source inspection unless a concrete verification failure identifies a repair target."
+		return "A source-edit plan is already approved. Apply the approved workspace mutation now. Continue the edit batch until the change is coherent, then call verify_development_runtime or finish so App Studio can verify it. Ask the user only if required information is missing."
 	case projectEinoAssistantPhaseRepair:
-		return "Use the latest verification failure to make one targeted repair, then verify again. Do not restart broad project inspection."
+		return "Use the latest verification failure to make a targeted repair batch, then call verify_development_runtime or finish so App Studio can verify the new revision. Do not restart broad project inspection."
 	default:
 		return "Complete the current task phase now or report a concrete blocker."
 	}
+}
+
+func projectEinoAssistantMutationProgressInstruction(
+	approvedPlan *projectAssistantApprovedPlan,
+	sourceRevision uint64,
+	verifiedRevision uint64,
+	awaitingFirstMutation bool,
+	completedReadPaths []string,
+	targetReadsPending bool,
+	missingMutationPaths []string,
+) string {
+	targets := "the approved target-path grant"
+	if approvedPlan != nil && len(approvedPlan.TargetPaths) > 0 {
+		const maxListedPaths = 20
+		listedPaths := approvedPlan.TargetPaths
+		if len(listedPaths) > maxListedPaths {
+			listedPaths = listedPaths[:maxListedPaths]
+		}
+		encodedPaths, _ := json.Marshal(listedPaths)
+		targets = string(encodedPaths)
+		if len(approvedPlan.TargetPaths) > len(listedPaths) {
+			targets += fmt.Sprintf(" and %d more", len(approvedPlan.TargetPaths)-len(listedPaths))
+		}
+	}
+	knownExisting := projectEinoAssistantKnownExistingApprovedTargets(approvedPlan, completedReadPaths)
+	existingInstruction := ""
+	if len(knownExisting) > 0 {
+		encodedPaths, _ := json.Marshal(knownExisting)
+		existingInstruction = " Known existing approved files: " + string(encodedPaths) +
+			". Never use write_file for these paths; use small exact apply_patch replacements."
+	}
+	if awaitingFirstMutation {
+		editInstruction := "Apply the approved workspace mutation now with write_file for a genuinely new path, apply_patch for an existing file, or mkdir."
+		readInstruction := " Further workspace discovery and search are unavailable."
+		if projectEinoAssistantAllApprovedTargetsAreKnownExisting(approvedPlan, completedReadPaths) {
+			if targetReadsPending {
+				editInstruction = "Use read_file now on the available approved existing target files whose exact current content you need, then apply the approved workspace mutation with apply_patch. Do not ask the user to paste file contents."
+				readInstruction = " Only unread exact approved-target reads are available; workspace discovery and search remain unavailable."
+			} else {
+				editInstruction = "Apply the approved workspace mutation now with apply_patch using the exact current content already returned. Do not reread files or ask the user to paste file contents."
+			}
+		}
+		return "Approved source target paths: " + targets + "." + existingInstruction + " " +
+			editInstruction +
+			" Verification, runtime inspection, repository actions, and replanning are unavailable until a successful source mutation advances the workspace revision." +
+			readInstruction +
+			" Use write_todos only to update progress, or ask_follow_up only when required implementation information cannot be obtained from the approved target files."
+	}
+	instruction := fmt.Sprintf(
+		"Approved source target paths: %s.%s Workspace source revision %d is dirty and verified revision is %d. Continue the approved edit batch until the change is coherent, then call verify_development_runtime. Do not replan or broaden the objective.",
+		targets,
+		existingInstruction,
+		sourceRevision,
+		verifiedRevision,
+	)
+	if len(missingMutationPaths) > 0 {
+		instruction += " Runtime verification is unavailable until these approved target files are successfully mutated: " +
+			strings.Join(missingMutationPaths, ", ") + "."
+	}
+	return instruction
+}
+
+func projectEinoAssistantUnreadKnownExistingApprovedTargets(
+	approvedPlan *projectAssistantApprovedPlan,
+	observedReadPaths []string,
+	completedReadPaths []string,
+) []string {
+	knownExisting := projectEinoAssistantKnownExistingApprovedTargets(approvedPlan, observedReadPaths)
+	if len(knownExisting) == 0 || len(completedReadPaths) == 0 {
+		return knownExisting
+	}
+	completed := make(map[string]struct{}, len(completedReadPaths))
+	for _, path := range completedReadPaths {
+		clean, err := workspace.CleanProjectPath(path)
+		if err == nil {
+			completed[clean] = struct{}{}
+		}
+	}
+	unread := make([]string, 0, len(knownExisting))
+	for _, path := range knownExisting {
+		if _, ok := completed[path]; !ok {
+			unread = append(unread, path)
+		}
+	}
+	return unread
+}
+
+func projectEinoAssistantMissingKnownExistingMutationTargets(
+	approvedPlan *projectAssistantApprovedPlan,
+	observedReadPaths []string,
+	successfulMutationPaths []string,
+) []string {
+	if !projectEinoAssistantAllApprovedTargetsAreKnownExisting(approvedPlan, observedReadPaths) {
+		return nil
+	}
+	mutated := make(map[string]struct{}, len(successfulMutationPaths))
+	for _, path := range successfulMutationPaths {
+		clean, err := workspace.CleanProjectPath(path)
+		if err == nil {
+			mutated[clean] = struct{}{}
+		}
+	}
+	missing := make([]string, 0, len(approvedPlan.TargetPaths))
+	for _, path := range approvedPlan.TargetPaths {
+		clean, err := workspace.CleanProjectPath(path)
+		if err != nil {
+			continue
+		}
+		if _, ok := mutated[clean]; !ok {
+			missing = append(missing, clean)
+		}
+	}
+	return missing
+}
+
+func projectEinoAssistantKnownExistingApprovedTargets(
+	approvedPlan *projectAssistantApprovedPlan,
+	completedReadPaths []string,
+) []string {
+	if approvedPlan == nil || len(approvedPlan.TargetPaths) == 0 || len(completedReadPaths) == 0 {
+		return nil
+	}
+	completed := make(map[string]struct{}, len(completedReadPaths))
+	for _, path := range completedReadPaths {
+		clean, err := workspace.CleanProjectPath(path)
+		if err == nil {
+			completed[clean] = struct{}{}
+		}
+	}
+	known := make([]string, 0, len(approvedPlan.TargetPaths))
+	for _, path := range approvedPlan.TargetPaths {
+		if strings.HasSuffix(strings.TrimSpace(path), "/") {
+			continue
+		}
+		clean, err := workspace.CleanProjectPath(path)
+		if err != nil {
+			continue
+		}
+		if _, ok := completed[clean]; ok {
+			known = append(known, clean)
+		}
+	}
+	return known
+}
+
+func projectEinoAssistantAllApprovedTargetsAreKnownExisting(
+	approvedPlan *projectAssistantApprovedPlan,
+	completedReadPaths []string,
+) bool {
+	if approvedPlan == nil || len(approvedPlan.TargetPaths) == 0 {
+		return false
+	}
+	for _, path := range approvedPlan.TargetPaths {
+		if strings.HasSuffix(strings.TrimSpace(path), "/") {
+			return false
+		}
+	}
+	return len(projectEinoAssistantKnownExistingApprovedTargets(approvedPlan, completedReadPaths)) ==
+		len(approvedPlan.TargetPaths)
+}
+
+func projectEinoAssistantLatestEditRecoveryInstruction(state *adk.ChatModelAgentState) string {
+	if state == nil {
+		return ""
+	}
+	for index := len(state.Messages) - 1; index >= 0; index-- {
+		message := state.Messages[index]
+		if message == nil || message.Role != schema.Tool {
+			continue
+		}
+		name := projectToolBaseName(message.ToolName)
+		content := strings.ToLower(strings.TrimSpace(message.Content))
+		if !strings.HasPrefix(content, "tool call failed:") {
+			continue
+		}
+		switch {
+		case name == projectToolWriteFile && strings.Contains(content, "create-only"):
+			return "The previous write_file failed because the target is an existing file. Do not retry write_file for that path and do not verify yet. Use apply_patch with a small exact replacement."
+		case name == projectToolApplyPatch && strings.Contains(content, "oldtext was not found"):
+			return "The previous apply_patch failed because its exact oldText was not found. Do not switch to write_file and do not verify yet. Reread the relevant target section, copy a small unique exact anchor, and retry apply_patch."
+		case name == projectToolApplyPatch && strings.Contains(content, "oldtext matched"):
+			return "The previous apply_patch matched more than once. Do not switch to write_file and do not verify yet. Add surrounding context so oldText is unique, then retry apply_patch; use replaceAll only when every match should change."
+		case name == projectToolApplyPatch && strings.Contains(content, "patch made no changes"):
+			return "The previous apply_patch made no changes. Do not verify yet. Choose newText that actually implements the requested behavior and differs from oldText, then retry apply_patch."
+		case name == projectToolApplyPatch:
+			return "The previous apply_patch failed. Do not switch to write_file and do not verify yet. Use the failure details to make one smaller exact localized patch."
+		}
+		return ""
+	}
+	return ""
+}
+
+func projectEinoAssistantLatestFailedPatchPath(
+	state *adk.ChatModelAgentState,
+	approvedPlan *projectAssistantApprovedPlan,
+) string {
+	if state == nil || approvedPlan == nil {
+		return ""
+	}
+	toolCallID := ""
+	for index := len(state.Messages) - 1; index >= 0; index-- {
+		message := state.Messages[index]
+		if message == nil || message.Role != schema.Tool {
+			continue
+		}
+		if projectToolBaseName(message.ToolName) != projectToolApplyPatch ||
+			!strings.HasPrefix(strings.ToLower(strings.TrimSpace(message.Content)), "tool call failed:") {
+			return ""
+		}
+		toolCallID = strings.TrimSpace(message.ToolCallID)
+		break
+	}
+	if toolCallID == "" {
+		return ""
+	}
+	for index := len(state.Messages) - 1; index >= 0; index-- {
+		message := state.Messages[index]
+		if message == nil || message.Role != schema.Assistant {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			if strings.TrimSpace(call.ID) != toolCallID ||
+				projectToolBaseName(call.Function.Name) != projectToolApplyPatch {
+				continue
+			}
+			arguments, err := projectEinoToolArguments(call.Function.Arguments)
+			if err != nil || !projectAssistantApprovedPlanAllowsWrite(
+				approvedPlan,
+				projectToolApplyPatch,
+				arguments,
+			) {
+				return ""
+			}
+			clean, err := workspace.CleanProjectPath(projectToolString(arguments["path"]))
+			if err != nil {
+				return ""
+			}
+			return clean
+		}
+	}
+	return ""
+}
+
+func projectEinoAssistantAwaitingFirstApprovedMutation(
+	runState *projectEinoAssistantRunState,
+	approvedPlan *projectAssistantApprovedPlan,
+) bool {
+	if runState == nil || approvedPlan == nil {
+		return false
+	}
+	sourceRevision, verifiedRevision := runState.SourceMutationRevisions()
+	return sourceRevision == verifiedRevision
 }
 
 func (m *projectEinoAssistantPhaseFilterMiddleware) WrapInvokableToolCall(
@@ -311,24 +1006,154 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) WrapInvokableToolCall(
 		if approvedPlan == nil {
 			approvedPlan = m.approvedPlan
 		}
+		templateBootstrapAllowed := projectEinoAssistantPhaseTemplateBootstrapAllowed(m.req.Project)
 		if name == projectEinoAssistantToolSearchTool &&
 			projectAssistantInlinePromotionEnabled(m.req) &&
 			m.phase == projectEinoAssistantPhaseApproval {
+			m.recordNoProgressAction(name, argumentsInJSON)
 			return fmt.Sprintf("Tool call denied: %s is unavailable in the current assistant phase", name), nil
+		}
+		recoveryReadAllowed := projectEinoAssistantRecoveryReadAllowed(
+			name,
+			argumentsInJSON,
+			m.recoveryReadPaths,
+		)
+		if m.recoveryPatchPath != "" && !m.recoveryReadComplete && !recoveryReadAllowed {
+			m.recordNoProgressAction(name, argumentsInJSON)
+			return fmt.Sprintf(
+				"Tool call denied: reread %q before any other action",
+				m.recoveryPatchPath,
+			), nil
+		}
+		if m.recoveryPatchPath != "" && m.recoveryReadComplete &&
+			!projectEinoAssistantPatchTargetsPath(name, argumentsInJSON, m.recoveryPatchPath) {
+			m.recordNoProgressAction(name, argumentsInJSON)
+			return fmt.Sprintf(
+				"Tool call denied: retry apply_patch for %q before any other action",
+				m.recoveryPatchPath,
+			), nil
+		}
+		if m.mustApplyPatch && name != projectToolApplyPatch {
+			m.recordNoProgressAction(name, argumentsInJSON)
+			return "Tool call denied: apply the approved existing-file change with apply_patch now", nil
+		}
+		if name == projectToolVerifyDevelopmentRuntime && len(m.missingMutationPaths) > 0 {
+			m.recordNoProgressAction(name, argumentsInJSON)
+			return fmt.Sprintf(
+				"Tool call denied: complete the approved source edits for %s before runtime verification",
+				strings.Join(m.missingMutationPaths, ", "),
+			), nil
 		}
 		if !projectEinoAssistantPhaseAllowsTool(
 			m.phase,
 			approvedPlan,
-			projectEinoAssistantPhaseTemplateBootstrapAllowed(m.req.Project),
+			templateBootstrapAllowed,
 			tool,
 			projectAssistantInlinePromotionEnabled(m.req),
 			normalizeProjectAssistantTurnPolicy(m.req.TurnPolicy, m.req.TurnProfile),
-		) {
+		) && !recoveryReadAllowed {
+			m.recordNoProgressAction(name, argumentsInJSON)
 			return fmt.Sprintf("Tool call denied: %s is unavailable in the current assistant phase", name), nil
+		}
+		if m.phase == projectEinoAssistantPhaseApproval &&
+			m.approvalSearchClosed &&
+			projectEinoAssistantPhaseApprovalSearchTool(tool) {
+			m.recordNoProgressAction(name, argumentsInJSON)
+			return fmt.Sprintf("Tool call denied: %s is unavailable after the initial approval inspection batch", name), nil
+		}
+		if m.phase == projectEinoAssistantPhaseMutate &&
+			projectEinoAssistantAwaitingFirstApprovedMutation(m.runState, approvedPlan) &&
+			!projectEinoAssistantPhasePreMutationToolAllowed(tool, templateBootstrapAllowed) &&
+			!recoveryReadAllowed {
+			m.recordNoProgressAction(name, argumentsInJSON)
+			return fmt.Sprintf("Tool call denied: %s is unavailable until an approved source mutation succeeds", name), nil
+		}
+		callID := strings.TrimSpace(toolCtx.CallID)
+		if name == projectToolVerifyDevelopmentRuntime {
+			if callID == "" {
+				callID = "call-" + uuid.NewString()
+			}
+			m.emitToolCall(projectToolCallStreamEvent{
+				ID:        callID,
+				Name:      name,
+				Status:    "running",
+				Arguments: strings.TrimSpace(argumentsInJSON),
+			})
+			if m.req.StreamCallbacks.OnStatus != nil {
+				m.req.StreamCallbacks.OnStatus("Verifying development runtime")
+			}
 		}
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
 		if err != nil {
+			if m.runState != nil && !projectEinoAssistantFilesystemReadTool(name) {
+				arguments := strings.TrimSpace(argumentsInJSON)
+				if parsed, parseErr := projectEinoToolArguments(arguments); parseErr == nil {
+					arguments = projectEinoToolArgumentsString(parsed)
+				}
+				m.runState.RecordCompletedAction(name, arguments, false)
+				if name == projectToolApplyPatch {
+					m.runState.RecordPatchResult(false)
+					if parsed, parseErr := projectEinoToolArguments(arguments); parseErr == nil {
+						path := projectToolString(parsed["path"])
+						m.runState.ReopenReadFile(path)
+						m.runState.StartPatchRecovery(path)
+					}
+				}
+			}
+			if name == projectToolVerifyDevelopmentRuntime {
+				m.emitToolCall(projectToolCallStreamEvent{
+					ID:        callID,
+					Name:      name,
+					Status:    "failed",
+					Arguments: strings.TrimSpace(argumentsInJSON),
+					Error:     projectEinoAssistantSafeErrorText(err),
+				})
+			}
 			return result, err
+		}
+		if name == projectToolVerifyDevelopmentRuntime {
+			m.emitToolCall(projectToolCallStreamEvent{
+				ID:        callID,
+				Name:      name,
+				Status:    "succeeded",
+				Arguments: strings.TrimSpace(argumentsInJSON),
+				Summary:   projectEinoAssistantVerificationToolSummary(result),
+			})
+			if m.req.StreamCallbacks.OnStatus != nil {
+				m.req.StreamCallbacks.OnStatus("Reviewing verification results")
+			}
+		}
+		if m.runState != nil &&
+			!projectEinoAssistantFilesystemReadTool(name) &&
+			!projectEinoAssistantPendingPermissionResult(result) {
+			arguments := strings.TrimSpace(argumentsInJSON)
+			parsed, parseErr := projectEinoToolArguments(arguments)
+			if parseErr == nil {
+				arguments = projectEinoToolArgumentsString(parsed)
+			}
+			successful := projectEinoAssistantPhaseSuccessfulToolContent(result)
+			if name == projectToolApplyPatch && !successful && parseErr == nil {
+				path := projectToolString(parsed["path"])
+				m.runState.ReopenReadFile(path)
+				m.runState.StartPatchRecovery(path)
+			}
+			if name == projectToolApplyPatch {
+				m.runState.RecordPatchResult(successful)
+			}
+			if name == projectToolApplyPatch && successful && parseErr == nil {
+				path := projectToolString(parsed["path"])
+				m.runState.RecordSuccessfulMutationPath(path)
+				m.runState.ClearPatchRecovery(path)
+			}
+			m.runState.RecordCompletedAction(
+				name,
+				arguments,
+				successful,
+			)
+			if projectEinoAssistantCommitTool(name) &&
+				successful {
+				m.runState.CompleteExecutionPlan()
+			}
 		}
 		if name == projectEinoAssistantWriteTodosTool {
 			plan, status := projectEinoAssistantTodoProgress(
@@ -348,6 +1173,77 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) WrapInvokableToolCall(
 		}
 		return result, nil
 	}, nil
+}
+
+func projectEinoAssistantRecoveryReadAllowed(name, argumentsInJSON string, recoveryReadPaths []string) bool {
+	if projectToolBaseName(name) != projectToolReadFile || len(recoveryReadPaths) == 0 {
+		return false
+	}
+	arguments, err := projectEinoToolArguments(argumentsInJSON)
+	if err != nil {
+		return false
+	}
+	readPath := projectToolString(arguments["file_path"])
+	if readPath == "" {
+		readPath = projectToolString(arguments["path"])
+	}
+	clean, err := workspace.CleanProjectPath(readPath)
+	return err == nil && slices.Contains(recoveryReadPaths, clean)
+}
+
+func projectEinoAssistantPatchTargetsPath(name, argumentsInJSON, target string) bool {
+	if projectToolBaseName(name) != projectToolApplyPatch {
+		return false
+	}
+	arguments, err := projectEinoToolArguments(argumentsInJSON)
+	if err != nil {
+		return false
+	}
+	path, err := workspace.CleanProjectPath(projectToolString(arguments["path"]))
+	return err == nil && path == target
+}
+
+func (m *projectEinoAssistantPhaseFilterMiddleware) recordNoProgressAction(name, arguments string) {
+	if m == nil || m.runState == nil {
+		return
+	}
+	arguments = strings.TrimSpace(arguments)
+	if parsed, err := projectEinoToolArguments(arguments); err == nil {
+		arguments = projectEinoToolArgumentsString(parsed)
+	}
+	m.runState.RecordCompletedAction(name, arguments, false)
+}
+
+func (m *projectEinoAssistantPhaseFilterMiddleware) emitToolCall(event projectToolCallStreamEvent) {
+	if m == nil {
+		return
+	}
+	if m.runState == nil {
+		if m.req.StreamCallbacks.OnToolCall != nil {
+			m.req.StreamCallbacks.OnToolCall(event)
+		}
+		return
+	}
+	m.runState.EmitToolCall(m.req.StreamCallbacks.OnToolCall, event)
+}
+
+func projectEinoAssistantVerificationToolSummary(result string) string {
+	var verification projectAssistantRuntimeVerificationResult
+	if json.Unmarshal([]byte(result), &verification) != nil {
+		return "Development runtime verification completed."
+	}
+	status := strings.ToLower(strings.TrimSpace(verification.Status))
+	if status == "" {
+		return "Development runtime verification completed."
+	}
+	if verification.CheckedMutationRevision > 0 {
+		return fmt.Sprintf(
+			"Verification status %s for workspace revision %d.",
+			status,
+			verification.CheckedMutationRevision,
+		)
+	}
+	return fmt.Sprintf("Verification status %s.", status)
 }
 
 func projectEinoAssistantTodoProgress(argumentsInJSON string, includeLabels bool) (projectAssistantPlanSnapshot, string) {
@@ -566,11 +1462,20 @@ func projectEinoAssistantPhaseForState(
 			return projectEinoAssistantPhasePlan
 		}
 	}
+	history := projectEinoAssistantPhaseHistoryForState(state)
 	phase := projectEinoAssistantPhaseForHistory(
-		projectEinoAssistantPhaseHistoryForState(state),
+		history,
 		approvedPlan != nil,
 		initialCreation,
 	)
+	sourceRevision, _ := runState.SourceMutationRevisions()
+	if sourceRevision > 0 &&
+		history.latestWrite >= 0 &&
+		history.latestVerification > history.latestWrite &&
+		history.verificationReady &&
+		(runState == nil || !runState.SourceMutationVerified()) {
+		phase = projectEinoAssistantPhaseRepair
+	}
 	if initialPlanningRequired && phase == projectEinoAssistantPhaseReport && !runState.ExecutionPlanComplete() {
 		return projectEinoAssistantPhaseMutate
 	}
@@ -579,14 +1484,25 @@ func projectEinoAssistantPhaseForState(
 
 func projectEinoAssistantPhaseForStateWithApproval(
 	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
 	state *adk.ChatModelAgentState,
 	approved bool,
 ) projectEinoAssistantPhase {
-	return projectEinoAssistantPhaseForHistory(
-		projectEinoAssistantPhaseHistoryForState(state),
+	history := projectEinoAssistantPhaseHistoryForState(state)
+	phase := projectEinoAssistantPhaseForHistory(
+		history,
 		approved,
 		req.InitialApprovedPlan != nil,
 	)
+	sourceRevision, _ := runState.SourceMutationRevisions()
+	if sourceRevision > 0 &&
+		history.latestWrite >= 0 &&
+		history.latestVerification > history.latestWrite &&
+		history.verificationReady &&
+		(runState == nil || !runState.SourceMutationVerified()) {
+		return projectEinoAssistantPhaseRepair
+	}
+	return phase
 }
 
 type projectEinoAssistantPhaseHistory struct {
@@ -597,6 +1513,7 @@ type projectEinoAssistantPhaseHistory struct {
 	latestVerification      int
 	latestCommit            int
 	verificationReady       bool
+	verificationDisposition projectEinoAssistantVerificationDisposition
 }
 
 func projectEinoAssistantPhaseHistoryForState(state *adk.ChatModelAgentState) projectEinoAssistantPhaseHistory {
@@ -638,8 +1555,12 @@ func projectEinoAssistantPhaseHistoryForState(state *adk.ChatModelAgentState) pr
 			}
 			if name == projectToolVerifyDevelopmentRuntime && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(message.Content)), "tool call skipped: waiting for approval") {
 				history.latestVerification = index
-				history.verificationReady = projectEinoAssistantPhaseSuccessfulToolResult(message) &&
-					projectEinoAssistantPhaseVerificationReady(message.Content)
+				history.verificationReady = false
+				history.verificationDisposition = projectEinoAssistantVerificationBlocked
+				if projectEinoAssistantPhaseSuccessfulToolResult(message) {
+					history.verificationDisposition = projectEinoAssistantPhaseVerificationDisposition(message.Content)
+					history.verificationReady = history.verificationDisposition == projectEinoAssistantVerificationReadyDisposition
+				}
 				continue
 			}
 			if !projectEinoAssistantPhaseSuccessfulToolResult(message) {
@@ -689,16 +1610,28 @@ func projectEinoAssistantPhaseForHistory(
 	if history.latestWrite < 0 {
 		return projectEinoAssistantPhaseMutate
 	}
-	if history.latestVerification < history.latestWrite {
-		return projectEinoAssistantPhaseVerify
+	if history.latestVerification < 0 {
+		return projectEinoAssistantPhaseMutate
+	}
+	if history.latestVerification > history.latestWrite {
+		if !history.verificationReady {
+			if history.verificationDisposition == projectEinoAssistantVerificationOperational {
+				return projectEinoAssistantPhaseWarmup
+			}
+			if history.verificationDisposition == projectEinoAssistantVerificationBlocked {
+				return projectEinoAssistantPhaseReport
+			}
+			return projectEinoAssistantPhaseRepair
+		}
+		if initialCreation {
+			return projectEinoAssistantPhaseReport
+		}
+		return projectEinoAssistantPhaseCommit
 	}
 	if !history.verificationReady {
 		return projectEinoAssistantPhaseRepair
 	}
-	if initialCreation {
-		return projectEinoAssistantPhaseReport
-	}
-	return projectEinoAssistantPhaseCommit
+	return projectEinoAssistantPhaseMutate
 }
 
 func projectEinoAssistantCommitTool(name string) bool {
@@ -724,7 +1657,11 @@ func projectEinoAssistantPhaseSuccessfulToolResult(message *schema.Message) bool
 	if message == nil || message.Role != schema.Tool || strings.TrimSpace(message.ToolName) == "" {
 		return false
 	}
-	content := strings.ToLower(strings.TrimSpace(message.Content))
+	return projectEinoAssistantPhaseSuccessfulToolContent(message.Content)
+}
+
+func projectEinoAssistantPhaseSuccessfulToolContent(content string) bool {
+	content = strings.ToLower(strings.TrimSpace(content))
 	for _, prefix := range []string{
 		"tool call failed:",
 		"tool call denied:",
@@ -739,18 +1676,15 @@ func projectEinoAssistantPhaseSuccessfulToolResult(message *schema.Message) bool
 }
 
 func projectEinoAssistantPhaseVerificationReady(content string) bool {
-	var result struct {
-		Status string `json:"status"`
-	}
+	return projectEinoAssistantPhaseVerificationDisposition(content) == projectEinoAssistantVerificationReadyDisposition
+}
+
+func projectEinoAssistantPhaseVerificationDisposition(content string) projectEinoAssistantVerificationDisposition {
+	var result projectAssistantRuntimeVerificationResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &result); err != nil {
-		return false
+		return projectEinoAssistantVerificationBlocked
 	}
-	switch strings.ToLower(strings.TrimSpace(result.Status)) {
-	case "reachable", "ready", "available":
-		return true
-	default:
-		return false
-	}
+	return projectEinoAssistantRuntimeVerificationDisposition(result)
 }
 
 func projectEinoAssistantPhaseFilterTools(
@@ -771,6 +1705,51 @@ func projectEinoAssistantPhaseFilterTools(
 		}
 	}
 	return filtered
+}
+
+func projectEinoAssistantPhaseFilterPreMutationTools(
+	tools []*schema.ToolInfo,
+	templateBootstrapAllowed bool,
+) []*schema.ToolInfo {
+	filtered := make([]*schema.ToolInfo, 0, len(tools))
+	for _, tool := range tools {
+		if projectEinoAssistantPhasePreMutationToolAllowed(tool, templateBootstrapAllowed) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
+}
+
+func projectEinoAssistantPhasePreMutationToolAllowed(
+	tool *schema.ToolInfo,
+	templateBootstrapAllowed bool,
+) bool {
+	if tool == nil {
+		return false
+	}
+	name := projectToolBaseName(tool.Name)
+	if name == projectEinoAssistantWriteTodosTool || name == projectToolAskFollowUp {
+		return true
+	}
+	risk, bundle, ok := projectEinoAssistantPhaseToolMetadata(tool)
+	if !ok {
+		return false
+	}
+	return (projectEinoAssistantPhaseCanonicalEditTool(tool.Name) &&
+		bundle == projectAssistantToolBundleEdit &&
+		risk == projectAssistantToolRiskWrite) ||
+		projectEinoAssistantPhaseTemplateBootstrapTool(
+			tool.Name,
+			risk,
+			bundle,
+			templateBootstrapAllowed,
+		) ||
+		projectEinoAssistantPhaseTemplateInspectionTool(
+			tool.Name,
+			risk,
+			bundle,
+			templateBootstrapAllowed,
+		)
 }
 
 func projectEinoAssistantPhaseMergeTools(existing, current []*schema.ToolInfo) []*schema.ToolInfo {
@@ -796,6 +1775,31 @@ func projectEinoAssistantPhaseMergeTools(existing, current []*schema.ToolInfo) [
 	return merged
 }
 
+func projectEinoAssistantPhaseFilterPostInspectionSearchTools(
+	tools []*schema.ToolInfo,
+) []*schema.ToolInfo {
+	filtered := make([]*schema.ToolInfo, 0, len(tools))
+	for _, tool := range tools {
+		if projectEinoAssistantPhaseApprovalSearchTool(tool) {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
+}
+
+func projectEinoAssistantPhaseApprovalSearchTool(tool *schema.ToolInfo) bool {
+	if tool == nil {
+		return false
+	}
+	switch strings.TrimSpace(tool.Name) {
+	case projectToolLS, projectToolGlob, projectToolGrep:
+		return true
+	default:
+		return false
+	}
+}
+
 func projectEinoAssistantPhaseWithoutToolSearch(tools []*schema.ToolInfo) []*schema.ToolInfo {
 	filtered := make([]*schema.ToolInfo, 0, len(tools))
 	for _, tool := range tools {
@@ -805,6 +1809,50 @@ func projectEinoAssistantPhaseWithoutToolSearch(tools []*schema.ToolInfo) []*sch
 		filtered = append(filtered, tool)
 	}
 	return filtered
+}
+
+func projectEinoAssistantPhaseWithoutWriteFile(tools []*schema.ToolInfo) []*schema.ToolInfo {
+	return projectEinoAssistantPhaseWithoutNamedTool(tools, projectToolWriteFile)
+}
+
+func projectEinoAssistantPhaseWithoutNamedTool(tools []*schema.ToolInfo, name string) []*schema.ToolInfo {
+	filtered := make([]*schema.ToolInfo, 0, len(tools))
+	for _, tool := range tools {
+		if tool != nil && projectToolBaseName(tool.Name) == name {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
+}
+
+func projectEinoAssistantPhaseOnlyNamedTool(tools []*schema.ToolInfo, name string) []*schema.ToolInfo {
+	filtered := make([]*schema.ToolInfo, 0, 1)
+	for _, tool := range tools {
+		if tool != nil && projectToolBaseName(tool.Name) == name {
+			filtered = append(filtered, tool)
+			break
+		}
+	}
+	return filtered
+}
+
+func projectEinoAssistantPhaseWithNamedTool(
+	current []*schema.ToolInfo,
+	available []*schema.ToolInfo,
+	name string,
+) []*schema.ToolInfo {
+	for _, tool := range current {
+		if tool != nil && projectToolBaseName(tool.Name) == name {
+			return current
+		}
+	}
+	for _, tool := range available {
+		if tool != nil && projectToolBaseName(tool.Name) == name {
+			return append(current, tool)
+		}
+	}
+	return current
 }
 
 func projectEinoAssistantPhaseAllowsTool(
@@ -833,7 +1881,6 @@ func projectEinoAssistantPhaseAllowsTool(
 	}
 	if name == projectEinoAssistantWriteTodosTool {
 		return (phase == projectEinoAssistantPhaseMutate ||
-			phase == projectEinoAssistantPhaseVerify ||
 			phase == projectEinoAssistantPhaseRepair) &&
 			approvedPlan != nil &&
 			(approvedPlan.RunLocal || len(approvedPlan.Steps) > 1)
@@ -893,6 +1940,8 @@ func projectEinoAssistantPhaseAllowsTool(
 	case projectEinoAssistantPhaseMutate:
 		return (projectEinoAssistantPhaseCanonicalEditTool(tool.Name) &&
 			bundle == projectAssistantToolBundleEdit && risk == projectAssistantToolRiskWrite) ||
+			(name == projectToolVerifyDevelopmentRuntime &&
+				bundle == projectAssistantToolBundleRuntime && risk == projectAssistantToolRiskRead) ||
 			templateBootstrap ||
 			templateInspection ||
 			directAction ||
@@ -908,11 +1957,19 @@ func projectEinoAssistantPhaseAllowsTool(
 		return (bundle == projectAssistantToolBundleWorkspaceRead && risk == projectAssistantToolRiskRead) ||
 			(projectEinoAssistantPhaseCanonicalEditTool(tool.Name) &&
 				bundle == projectAssistantToolBundleEdit && risk == projectAssistantToolRiskWrite) ||
+			(name == projectToolVerifyDevelopmentRuntime &&
+				bundle == projectAssistantToolBundleRuntime && risk == projectAssistantToolRiskRead) ||
 			templateBootstrap ||
 			templateInspection ||
 			directAction ||
 			operationalRead ||
 			(name == projectToolAskFollowUp && risk == projectAssistantToolRiskInput)
+	case projectEinoAssistantPhaseWarmup:
+		return operationalRead &&
+			(name == projectToolGetRuntimeStatus ||
+				name == projectToolGetPreviewURL ||
+				name == projectToolGetRuntimeLogs ||
+				name == projectToolVerifyDevelopmentRuntime)
 	case projectEinoAssistantPhaseCommit:
 		return tool.Name == projectToolCommitProjectFiles &&
 			bundle == projectAssistantToolBundleRepo &&

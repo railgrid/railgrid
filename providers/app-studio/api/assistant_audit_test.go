@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,6 +29,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	einomodel "github.com/cloudwego/eino/components/model"
 	einotool "github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
 
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
@@ -162,6 +164,293 @@ func TestProjectAssistantRunAuditRecordsAdaptiveRoutingAndPromotion(t *testing.T
 		audit.PromotedWorkItemID != "work-item-1" {
 		t.Fatalf("adaptive routing audit = %#v", audit)
 	}
+}
+
+func TestProjectAssistantRunAuditRecordsModelCallShapeWithoutPayloads(t *testing.T) {
+	started := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	run := &store.AssistantRun{ID: "run-model-call"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, started)
+	recorder.recordModelCall(
+		context.Background(),
+		projectEinoAssistantPhaseMutate,
+		2,
+		7,
+		5,
+		true,
+		[]*schema.ToolInfo{
+			{Name: projectToolWriteFile},
+			{Name: projectEinoAssistantWriteTodosTool},
+		},
+		[]*schema.ToolInfo{{Name: projectToolApplyPatch}},
+	)
+	recorder.recordModelResult(
+		context.Background(),
+		projectEinoAssistantPhaseMutate,
+		2,
+		schema.AssistantMessage("top-secret-model-content", []schema.ToolCall{{
+			ID:   "call-todos",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      projectEinoAssistantWriteTodosTool,
+				Arguments: `{"todos":[{"content":"top-secret-todo-content","status":"in_progress"}]}`,
+			},
+		}}),
+	)
+
+	raw := string(run.Audit)
+	for _, forbidden := range []string{
+		"top-secret-model-content",
+		"top-secret-todo-content",
+		`"arguments"`,
+		`"todos"`,
+	} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("model-call audit leaked %q: %s", forbidden, raw)
+		}
+	}
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if len(audit.ModelCalls) != 1 {
+		t.Fatalf("model calls = %#v, want one entry", audit.ModelCalls)
+	}
+	call := audit.ModelCalls[0]
+	if call.Phase != projectEinoAssistantPhaseMutate ||
+		call.Ordinal != 2 ||
+		call.SourceRevision != 7 ||
+		call.VerifiedRevision != 5 ||
+		!call.WarningInjected ||
+		call.Outcome != "tool_calls" {
+		t.Fatalf("model call = %#v", call)
+	}
+	wantVisible := []string{projectToolWriteFile, projectEinoAssistantWriteTodosTool, projectToolApplyPatch}
+	if strings.Join(call.VisibleTools, ",") != strings.Join(wantVisible, ",") {
+		t.Fatalf("visible tools = %#v, want %#v", call.VisibleTools, wantVisible)
+	}
+	if len(call.RequestedTools) != 1 || call.RequestedTools[0] != projectEinoAssistantWriteTodosTool {
+		t.Fatalf("requested tools = %#v, want write_todos", call.RequestedTools)
+	}
+}
+
+func TestProjectAssistantRunAuditRecordsDuplicateReadAsSkipped(t *testing.T) {
+	run := &store.AssistantRun{ID: "run-skipped-read"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
+	recorder.recordTool(projectToolCallStreamEvent{
+		ID:        "call-read",
+		Name:      projectToolReadFile,
+		Status:    "skipped",
+		Arguments: "path src/App.tsx",
+		Summary:   "untrusted summary must not persist",
+	})
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.Tools) != 1 ||
+		audit.Tools[0].Status != "skipped" ||
+		audit.Tools[0].Summary != "Skipped an unchanged duplicate read." {
+		t.Fatalf("skipped read audit = %#v", audit.Tools)
+	}
+	if strings.Contains(string(run.Audit), "untrusted summary") {
+		t.Fatalf("skipped read audit persisted caller summary: %s", run.Audit)
+	}
+}
+
+func TestProjectAssistantRunAuditPersistsBoundedModelMilestones(t *testing.T) {
+	run := &store.AssistantRun{ID: "run-model-milestones"}
+	recorder := newProjectAssistantRunAuditRecorder(
+		projectAssistantRunRequest{},
+		run,
+		time.Now().UTC().Add(-time.Second),
+	)
+	var snapshots [][]byte
+	recorder.setPersister(func(_ context.Context, audit []byte) error {
+		snapshots = append(snapshots, append([]byte(nil), audit...))
+		return nil
+	})
+
+	if err := recorder.recordModelCall(
+		context.Background(),
+		projectEinoAssistantPhasePlan,
+		1,
+		0,
+		0,
+		false,
+		[]*schema.ToolInfo{{Name: projectToolDefineInitialProjectPlan}},
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	recorder.recordModelResponseChunk(context.Background(), true)
+	recorder.recordModelResponseChunk(context.Background(), true)
+	if err := recorder.recordModelResult(
+		context.Background(),
+		projectEinoAssistantPhasePlan,
+		1,
+		schema.AssistantMessage("", []schema.ToolCall{{
+			Function: schema.FunctionCall{Name: projectToolDefineInitialProjectPlan},
+		}}),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(snapshots) != 3 {
+		t.Fatalf("persisted snapshots = %d, want start, first/tool chunk, and result", len(snapshots))
+	}
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(snapshots[len(snapshots)-1], &audit); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.ModelCalls) != 1 {
+		t.Fatalf("model calls = %#v", audit.ModelCalls)
+	}
+	call := audit.ModelCalls[0]
+	if call.FirstResponseAtOffsetMS == nil ||
+		call.ToolCallStartedAtOffsetMS == nil ||
+		call.CompletedAtOffsetMS == nil ||
+		call.Outcome != "tool_calls" {
+		t.Fatalf("model milestones = %#v", call)
+	}
+}
+
+func TestProjectAssistantRunAuditTransportErrorDoesNotPreemptRetryResult(t *testing.T) {
+	run := &store.AssistantRun{ID: "run-model-retry"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
+	if err := recorder.recordModelCall(
+		context.Background(),
+		projectEinoAssistantPhaseApproval,
+		1,
+		0,
+		0,
+		false,
+		nil,
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	recorder.recordModelTransportError(context.Background(), errors.New("temporary provider failure"))
+	if err := recorder.recordModelResult(
+		context.Background(),
+		projectEinoAssistantPhaseApproval,
+		1,
+		schema.AssistantMessage("recovered", nil),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatal(err)
+	}
+	call := audit.ModelCalls[0]
+	if !call.TransportErrorObserved || call.Outcome != "text" || call.CompletedAtOffsetMS == nil {
+		t.Fatalf("retry model call = %#v", call)
+	}
+	if strings.Contains(string(run.Audit), "temporary provider failure") {
+		t.Fatalf("model audit leaked provider error: %s", run.Audit)
+	}
+}
+
+func TestProjectAssistantRunAuditKeepsFailureAdjacentModelCalls(t *testing.T) {
+	run := &store.AssistantRun{ID: "run-model-call-window"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
+	total := projectAssistantAuditMaxModelCalls + 3
+	for ordinal := 1; ordinal <= total; ordinal++ {
+		recorder.recordModelCall(context.Background(), projectEinoAssistantPhaseMutate, ordinal, 0, 0, false, nil, nil)
+		recorder.recordModelResult(
+			context.Background(),
+			projectEinoAssistantPhaseMutate,
+			ordinal,
+			schema.AssistantMessage("safe", nil),
+		)
+	}
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if len(audit.ModelCalls) != projectAssistantAuditMaxModelCalls {
+		t.Fatalf("model calls = %d, want %d", len(audit.ModelCalls), projectAssistantAuditMaxModelCalls)
+	}
+	if audit.ModelCalls[0].Ordinal != 4 || audit.ModelCalls[len(audit.ModelCalls)-1].Ordinal != total {
+		t.Fatalf("model-call window = %d..%d, want 4..%d",
+			audit.ModelCalls[0].Ordinal,
+			audit.ModelCalls[len(audit.ModelCalls)-1].Ordinal,
+			total,
+		)
+	}
+}
+
+func TestProjectAssistantRunAuditMarksUnfinishedModelCallAsError(t *testing.T) {
+	run := &store.AssistantRun{ID: "run-model-call-error"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
+	recorder.recordModelCall(context.Background(), projectEinoAssistantPhaseMutate, 1, 0, 0, false, nil, nil)
+	recorder.recordModelError()
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if len(audit.ModelCalls) != 1 || audit.ModelCalls[0].Outcome != "error" {
+		t.Fatalf("model calls = %#v, want unfinished call marked error", audit.ModelCalls)
+	}
+}
+
+func TestProjectAssistantRunAuditPersistsSafeStructuredFailures(t *testing.T) {
+	t.Run("no progress preserves safe fields", func(t *testing.T) {
+		run, err := recordProjectAssistantRunAuditFailure(store.AssistantRun{}, &projectEinoAssistantNoProgressError{
+			Phase:            projectEinoAssistantPhaseMutate,
+			ToolName:         "provider__read_file",
+			Calls:            3,
+			Limit:            3,
+			SourceRevision:   9,
+			VerifiedRevision: 6,
+		})
+		if err != nil {
+			t.Fatalf("record failure: %v", err)
+		}
+
+		var audit projectAssistantRunAudit
+		if err := json.Unmarshal(run.Audit, &audit); err != nil {
+			t.Fatalf("decode audit: %v", err)
+		}
+		if audit.Failure == nil ||
+			audit.Failure.Kind != "no_progress" ||
+			audit.Failure.Phase != projectEinoAssistantPhaseMutate ||
+			audit.Failure.ToolName != projectToolReadFile ||
+			audit.Failure.Calls != 3 ||
+			audit.Failure.Limit != 3 ||
+			audit.Failure.SourceRevision != 9 ||
+			audit.Failure.VerifiedRevision != 6 {
+			t.Fatalf("failure = %#v", audit.Failure)
+		}
+	})
+
+	t.Run("generic error text is not persisted", func(t *testing.T) {
+		const secret = "arbitrary-secret-backend-error"
+		run, err := recordProjectAssistantRunAuditFailure(
+			store.AssistantRun{},
+			errors.New("backend failed: "+secret),
+		)
+		if err != nil {
+			t.Fatalf("record failure: %v", err)
+		}
+		if strings.Contains(string(run.Audit), secret) {
+			t.Fatalf("generic failure audit leaked raw error: %s", run.Audit)
+		}
+
+		var audit projectAssistantRunAudit
+		if err := json.Unmarshal(run.Audit, &audit); err != nil {
+			t.Fatalf("decode audit: %v", err)
+		}
+		if audit.Failure == nil ||
+			audit.Failure.Kind != "operation_failed" ||
+			audit.Failure.Summary != "assistant operation failed" {
+			t.Fatalf("failure = %#v, want safe generic summary", audit.Failure)
+		}
+	})
 }
 
 func TestProjectAssistantRunAuditCanonicalReadsAreSanitized(t *testing.T) {
@@ -583,11 +872,13 @@ func TestCompleteClaimedProjectAssistantRunAfterResumeErrorFinalizesAudit(t *tes
 
 func TestEinoAssistantEnginePersistsCompletedAndFailedRunAudits(t *testing.T) {
 	tests := []struct {
-		name        string
-		profile     projectAssistantTurnProfile
-		content     string
-		wantOutcome projectAssistantAuditOutcome
-		wantErr     bool
+		name             string
+		profile          projectAssistantTurnProfile
+		content          string
+		streamErrors     []error
+		wantOutcome      projectAssistantAuditOutcome
+		wantErr          bool
+		wantModelOutcome string
 	}{
 		{
 			name:        "completed discussion",
@@ -601,13 +892,22 @@ func TestEinoAssistantEnginePersistsCompletedAndFailedRunAudits(t *testing.T) {
 			content:     "I reviewed the request.",
 			wantOutcome: projectAssistantAuditOutcomeSucceeded,
 		},
+		{
+			name:             "failed model call records error shape",
+			profile:          projectAssistantTurnProfileImplementation,
+			content:          "unreachable",
+			streamErrors:     []error{io.ErrUnexpectedEOF, io.ErrUnexpectedEOF, io.ErrUnexpectedEOF},
+			wantOutcome:      projectAssistantAuditOutcomeFailed,
+			wantErr:          true,
+			wantModelOutcome: "error",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			messages := &countingAssistantRunStore{MemoryStore: store.NewMemoryStore()}
 			server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
-			chatModel := &retryingEinoChatModel{content: tt.content}
+			chatModel := &retryingEinoChatModel{content: tt.content, streamErrors: tt.streamErrors}
 			engine := projectEinoAssistantEngine{
 				server: server,
 				newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
@@ -619,8 +919,24 @@ func TestEinoAssistantEnginePersistsCompletedAndFailedRunAudits(t *testing.T) {
 			}
 			req := projectEinoRunRequestForProfileTest(tt.profile)
 			req.LLM = projectLLMSettings{Provider: "google-ai-studio", Model: "google/gemini-3.5-flash"}
+			var started projectAssistantDurableStartResult
+			var err error
+			attach := func(run store.AssistantRun, assistant store.Message, _ bool) error {
+				_, attachErr := server.projectAssistantSupervisor().Attach(req.MessageScope, run, assistant)
+				return attachErr
+			}
+			if tt.profile == projectAssistantTurnProfileImplementation {
+				started, err = server.startProjectAssistantBuildRunDurably(context.Background(), req.MessageScope, req.Identity.user, "Implement the request", "audit-"+strings.ReplaceAll(tt.name, " ", "-"), attach)
+			} else {
+				started, err = server.startProjectAssistantRunDurably(context.Background(), req.MessageScope, req.Identity.user, "Answer the request", "audit-"+strings.ReplaceAll(tt.name, " ", "-"), attach)
+			}
+			if err != nil {
+				t.Fatalf("start durable audit run: %v", err)
+			}
+			req.AssistantRun = &started.Run
+			req.executionAuthority = nil
 
-			_, err := engine.StreamProjectAssistant(context.Background(), req)
+			_, err = engine.StreamProjectAssistant(context.Background(), req)
 			if tt.wantErr && err == nil {
 				t.Fatal("StreamProjectAssistant error = nil, want lifecycle failure")
 			}
@@ -633,8 +949,8 @@ func TestEinoAssistantEnginePersistsCompletedAndFailedRunAudits(t *testing.T) {
 			if messages.lastAssistantRun == nil {
 				t.Fatal("no assistant run persisted")
 			}
-			if messages.lastAssistantRun.Status != store.AssistantRunStatusCompleted {
-				t.Fatalf("run status = %q, want completed terminal row", messages.lastAssistantRun.Status)
+			if messages.lastAssistantRun.Status != store.AssistantRunStatusRunning {
+				t.Fatalf("run status = %q, want lifecycle-owned running row", messages.lastAssistantRun.Status)
 			}
 			var audit projectAssistantRunAudit
 			if err := json.Unmarshal(messages.lastAssistantRun.Audit, &audit); err != nil {
@@ -642,6 +958,11 @@ func TestEinoAssistantEnginePersistsCompletedAndFailedRunAudits(t *testing.T) {
 			}
 			if audit.Outcome != tt.wantOutcome || audit.Provider != req.LLM.Provider || audit.Model != req.LLM.Model {
 				t.Fatalf("audit = %#v", audit)
+			}
+			if tt.wantModelOutcome != "" {
+				if len(audit.ModelCalls) == 0 || audit.ModelCalls[len(audit.ModelCalls)-1].Outcome != tt.wantModelOutcome {
+					t.Fatalf("model calls = %#v, want terminal outcome %q", audit.ModelCalls, tt.wantModelOutcome)
+				}
 			}
 		})
 	}

@@ -20,7 +20,7 @@ replicaCount: 1
 
 service:
   type: ClusterIP
-  port: 8084
+  port: 8088
 
 # Hub wiring.
 hub:

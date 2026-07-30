@@ -49,7 +49,6 @@ type Server struct {
 	hubBase                      string
 	mcpInsecureSkipTLSVerify     bool
 	previewInsecureSkipTLSVerify bool
-	autoApproveActions           bool
 	assistantEngine              projectAssistantEngine
 	assistantTurnRouter          projectAssistantTurnRouter
 	assistantRunManager          *projectAssistantRunManager
@@ -99,18 +98,6 @@ func (s *Server) projectAssistantSupervisor() *projectAssistantSupervisor {
 	return s.assistantSupervisor
 }
 
-func (s *Server) SetAutoApproveAssistantActions(enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.autoApproveActions = enabled
-}
-
-func (s *Server) autoApproveAssistantActions() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.autoApproveActions
-}
-
 func (s *Server) projectAssistantEngine() projectAssistantEngine {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -158,7 +145,6 @@ func (s *Server) developmentSyncLock(id identity, projectName string) *sync.Mute
 func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects", s.listProjects).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects", s.createProject).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/stream", s.createProjectStartStream).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/create-readiness", s.getProjectCreateReadiness).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/development-templates", s.listDevelopmentTemplates).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/import-repositories", s.listImportRepositories).Methods(http.MethodGet)
@@ -169,7 +155,6 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}", s.deleteProject).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/messages", s.listProjectMessages).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/messages", s.startProjectAssistantRun).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/messages/stream", s.createProjectMessageStream).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/template", s.putProjectTemplate).Methods(http.MethodPut)
 	r.HandleFunc("/api/projects/{project}/promotion", s.getProjectPromotion).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/checkpoints", s.getProjectCheckpoints).Methods(http.MethodGet)
@@ -181,8 +166,8 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/development-status", s.statusProjectDevelopment).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/authorize-development-preview", s.authorizeProjectDevelopmentPreview).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/resume", s.resumeProjectAssistant).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/{run}/abort", s.abortProjectAssistant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/stop", s.stopProjectAssistant).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/{run}/undo", s.undoProjectAssistantRun).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.getProjectAssistantApprovalMode).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.patchProjectAssistantApprovalMode).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}/assistant/work-items", s.listProjectAssistantWorkItems).Methods(http.MethodGet)

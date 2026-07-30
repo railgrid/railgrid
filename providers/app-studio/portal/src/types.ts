@@ -79,8 +79,14 @@ export interface ProjectAssistantAbortResponse {
   decision?: 'allow' | 'deny'
 }
 
+export interface ProjectAssistantUndoResponse {
+  runID: string
+  fileCount: number
+  message: ProjectMessage
+}
+
 export type ProjectAssistantActionKind = 'inspect' | 'clarify' | 'edit' | 'run' | 'commit' | 'plan' | 'other'
-export type ProjectAssistantActionStatus = 'running' | 'waiting' | 'succeeded' | 'failed' | 'rejected'
+export type ProjectAssistantActionStatus = 'running' | 'waiting' | 'succeeded' | 'skipped' | 'failed' | 'rejected'
 export type ProjectAssistantActionSeverity = 'normal' | 'attention' | 'error'
 export type ProjectAssistantDiagnosticCategory = 'timeout' | 'permission' | 'validation' | 'runtime' | 'provider' | 'unknown'
 
@@ -167,20 +173,6 @@ export interface ProjectAssistantResumeResponse {
   decision?: 'allow' | 'deny'
   uiEvents?: ProjectAssistantUIEvent[]
   assistantMessage?: ProjectMessage
-}
-
-export type ProjectMessageStreamEvent =
-  | ProjectAssistantUIEvent
-  | ProjectMessageStreamControlEvent
-
-export interface ProjectMessageStreamControlEvent {
-  type:
-    | 'run_failed'
-    | 'run_finished'
-    | 'project'
-  assistantMessageID?: string
-  error?: string
-  project?: Project
 }
 
 export interface Project {

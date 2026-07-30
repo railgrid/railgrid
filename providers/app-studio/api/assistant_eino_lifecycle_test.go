@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -55,7 +56,7 @@ func TestProjectEinoAssistantLifecycleRequiresFreshVerificationForCommit(t *test
 	}
 
 	verify := wrapProjectEinoAssistantLifecycleTool(t, middleware, projectToolVerifyDevelopmentRuntime, func(context.Context, string, ...einotool.Option) (string, error) {
-		return `{"status":"reachable"}`, nil
+		return `{"status":"ready","checkedMutationRevision":1}`, nil
 	})
 	if _, err := verify(context.Background(), `{}`); err != nil {
 		t.Fatalf("verify: %v", err)
@@ -93,6 +94,171 @@ func TestProjectEinoAssistantLifecycleCheckpointPreservesVerificationRevision(t 
 	restored.RecordSourceMutation()
 	if restored.SourceMutationVerified() {
 		t.Fatal("new source mutation did not invalidate restored verification")
+	}
+}
+
+func TestProjectEinoAssistantLifecycleTracksCheckedRevisionAndInvalidatesAfterMutation(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.RecordSourceMutation()
+	state.RecordDevelopmentVerificationResult(
+		`{"checkedMutationRevision":1,"status":"not_ready","summary":"compile failed","blockers":["SyntaxError"]}`,
+	)
+	if state.NeedsCompletionVerification() {
+		t.Fatal("current failed verification should enter repair without immediately re-verifying")
+	}
+	evidence := state.CompletionEvidence()
+	if evidence.SourceMutationRevision != 1 ||
+		evidence.VerifiedMutationRevision != 0 ||
+		evidence.VerificationOutcome != "not_ready" ||
+		evidence.VerificationSummary != "compile failed" ||
+		len(evidence.Blockers) != 1 {
+		t.Fatalf("completion evidence = %#v", evidence)
+	}
+
+	state.RecordSourceMutation()
+	if !state.NeedsCompletionVerification() {
+		t.Fatal("repair mutation did not require verification for the new revision")
+	}
+	checkpoint := state.CheckpointState()
+	if checkpoint.SourceMutationRevision != 2 ||
+		checkpoint.VerifiedMutationRevision != 0 ||
+		checkpoint.CheckedMutationRevision != 0 ||
+		checkpoint.VerificationAttempted ||
+		checkpoint.VerificationOutcome != "" ||
+		checkpoint.VerificationSummary != "" ||
+		len(checkpoint.VerificationBlockers) != 0 {
+		t.Fatalf("checkpoint = %#v, want dirty revision with cleared verification", checkpoint)
+	}
+}
+
+func TestProjectEinoAssistantLifecycleTreatsRepositoryHandoffAsRuntimeWarning(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.RecordSourceMutation()
+	state.RecordDevelopmentVerificationResult(
+		`{"checkedMutationRevision":1,"status":"ready","summary":"The development runtime is ready. The Git repository is still becoming ready, so commit and CI handoff are pending.","warnings":["The repository handoff is still in progress."]}`,
+	)
+
+	if !state.SourceMutationVerified() {
+		t.Fatal("repository handoff warning prevented runtime verification")
+	}
+	if state.NeedsCompletionVerification() {
+		t.Fatal("repository handoff warning requested another runtime verification")
+	}
+	evidence := state.CompletionEvidence()
+	if evidence.VerificationOutcome != "ready" ||
+		evidence.VerifiedMutationRevision != 1 ||
+		!strings.Contains(evidence.VerificationSummary, "repository") ||
+		len(evidence.Blockers) != 0 {
+		t.Fatalf("completion evidence = %#v, want verified runtime with repository handoff summary", evidence)
+	}
+}
+
+func TestProjectEinoAssistantLifecycleRejectsStaleReadyVerification(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.RecordSourceMutation()
+	state.RecordSourceMutation()
+	state.RecordDevelopmentVerificationResult(`{"checkedMutationRevision":1,"status":"ready"}`)
+
+	evidence := state.CompletionEvidence()
+	if evidence.LatestMutationVerified ||
+		evidence.VerifiedMutationRevision != 0 ||
+		evidence.VerificationOutcome != "stale" {
+		t.Fatalf("completion evidence = %#v, want stale verification rejection", evidence)
+	}
+	if len(evidence.Blockers) == 0 {
+		t.Fatalf("completion evidence = %#v, want stale revision blocker", evidence)
+	}
+}
+
+func TestProjectEinoAssistantLifecycleRequiresCanonicalReadyStatus(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.RecordSourceMutation()
+	state.RecordDevelopmentVerificationResult(`{"checkedMutationRevision":1,"status":"READY"}`)
+
+	evidence := state.CompletionEvidence()
+	if evidence.LatestMutationVerified ||
+		evidence.VerifiedMutationRevision != 0 ||
+		evidence.VerificationOutcome != "unavailable" {
+		t.Fatalf("completion evidence = %#v, want non-canonical ready rejection", evidence)
+	}
+	if len(evidence.Blockers) == 0 {
+		t.Fatalf("completion evidence = %#v, want non-canonical status blocker", evidence)
+	}
+}
+
+func TestProjectEinoAssistantLifecycleLegacyCheckpointRequiresFreshVerification(t *testing.T) {
+	restored := newProjectEinoAssistantRunState()
+	restored.RestoreCheckpointState(projectAssistantCheckpointState{
+		SourceMutationRevision:   3,
+		VerifiedMutationRevision: 3,
+		VerificationAttempted:    true,
+		VerificationOutcome:      "ready",
+	})
+	if restored.SourceMutationVerified() {
+		t.Fatal("legacy checkpoint without checked revision authorized completion")
+	}
+	if !restored.NeedsCompletionVerification() {
+		t.Fatal("legacy checkpoint did not request one fresh verification")
+	}
+}
+
+func TestProjectEinoAssistantLifecycleCheckpointPreservesProgressGuardAndModelOrdinal(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	if ordinal := state.NextModelCallOrdinal(); ordinal != 1 {
+		t.Fatalf("first model ordinal = %d, want 1", ordinal)
+	}
+	state.RecordCompletedAction(projectToolReadFile, `{"file_path":"src/App.tsx","limit":2000}`, false)
+	state.RecordCompletedAction(projectToolGrep, `{"pattern":"App"}`, false)
+	state.RecordCompletedRead(projectToolReadFile, `{"file_path":"src/App.tsx","limit":2000}`)
+	state.RecordReadFileRange("src/App.tsx", 1, 400)
+
+	restored := newProjectEinoAssistantRunState()
+	restored.RestoreCheckpointState(state.CheckpointState())
+	if name, count := restored.ConsecutiveNoProgressModelCalls(); name != "" || count != 1 {
+		t.Fatalf("restored no-progress model calls = (%q, %d), want one model batch", name, count)
+	}
+	restored.RecordCompletedAction(projectToolLS, `{"path":"src"}`, false)
+	if _, count := restored.ConsecutiveNoProgressModelCalls(); count != 1 {
+		t.Fatalf("same restored model batch count = %d, want 1", count)
+	}
+	if ordinal := restored.NextModelCallOrdinal(); ordinal != 2 {
+		t.Fatalf("resumed model ordinal = %d, want 2", ordinal)
+	}
+	restored.RecordCompletedAction(projectToolLS, `{"path":"src/other"}`, false)
+	if _, count := restored.ConsecutiveNoProgressModelCalls(); count != 2 {
+		t.Fatalf("next model batch count = %d, want 2", count)
+	}
+	if !restored.RepeatedCompletedRead(projectToolReadFile, `{"file_path":"src/App.tsx","limit":2000}`) {
+		t.Fatal("completed read hash was not restored")
+	}
+	if !restored.ReadFileRangeCovered("src/App.tsx", 101, 200) {
+		t.Fatal("read-file range coverage was not restored")
+	}
+}
+
+func TestProjectEinoAssistantReadCoverageMergesOutOfOrderRanges(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.RecordReadFileRange("app.js", 100, 200)
+	state.RecordReadFileRange("app.js", 1, 50)
+	state.RecordReadFileRange("app.js", 51, 99)
+	if !state.ReadFileRangeCovered("app.js", 1, 200) {
+		t.Fatal("out-of-order adjacent ranges were not coalesced")
+	}
+}
+
+func TestProjectEinoAssistantReadCoverageRestoresRoundedLegacyEOFSentinel(t *testing.T) {
+	var checkpoint projectAssistantCheckpointState
+	if err := json.Unmarshal(
+		[]byte(`{"readFileCoverage":{"package.json":[{"start":1,"end":9223372036854776000}]}}`),
+		&checkpoint,
+	); err != nil {
+		t.Fatalf("decode legacy checkpoint: %v", err)
+	}
+
+	state := newProjectEinoAssistantRunState()
+	state.RestoreCheckpointState(checkpoint)
+	if !state.ReadFileRangeCovered("package.json", 1, projectEinoAssistantReadThroughEOF) {
+		t.Fatal("rounded legacy EOF sentinel was not restored as through-EOF coverage")
 	}
 }
 
@@ -140,7 +306,7 @@ func TestProjectEinoAssistantCompletionEvidenceRequiresPlanProgressAndLatestVeri
 		t.Fatalf("provisioning outcome = %#v, want explicit blocker", evidence)
 	}
 
-	state.RecordDevelopmentVerificationResult(`{"status":"ready"}`)
+	state.RecordDevelopmentVerificationResult(`{"status":"ready","checkedMutationRevision":1}`)
 	evidence = state.CompletionEvidence()
 	if !evidence.PlanDefined || !evidence.PlanComplete || !evidence.LatestMutationVerified ||
 		evidence.VerificationOutcome != "ready" || len(evidence.Blockers) != 0 {

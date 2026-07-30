@@ -56,3 +56,25 @@ func TestProjectAssistantApprovalModeIsCapturedPerRun(t *testing.T) {
 		t.Fatalf("run approval mode after preference change = %q, want immutable snapshot", got)
 	}
 }
+
+func TestProjectAssistantApprovalModeDefaultsToAutoApprove(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := &Server{store: messages}
+	scope := store.Scope{
+		OrgUUID:       "org-a",
+		WorkspaceUUID: "workspace-a",
+		ProjectName:   "demo",
+		ProjectUID:    "project-uid",
+	}
+	run := store.AssistantRun{}
+	if err := server.captureProjectAssistantApprovalMode(ctx, scope, "alice", &run); err != nil {
+		t.Fatal(err)
+	}
+	if run.ApprovalMode != store.AssistantApprovalModeAutoApprove {
+		t.Fatalf("captured default approval mode = %q, want auto approve", run.ApprovalMode)
+	}
+	if got := projectAssistantApprovalModeFromRun(store.AssistantRun{}); got != store.AssistantApprovalModeAlwaysAsk {
+		t.Fatalf("legacy run default approval mode = %q, want conservative fallback", got)
+	}
+}

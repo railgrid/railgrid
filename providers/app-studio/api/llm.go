@@ -28,6 +28,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,12 +63,32 @@ const (
 	// cycles Eino allows before terminating a DeepAgent run.
 	// Match Eino's reference DeepAgent headroom while retaining a finite guard
 	// against models that loop indefinitely.
-	maxAssistantDeepIterations       = 32
+	maxAssistantDeepIterations       = 100
+	projectAssistantMaxIterationsEnv = "APP_STUDIO_ASSISTANT_MAX_ITERATIONS"
 	projectToolInfoLimit             = 1000
 	projectMCPCallTimeout            = 2 * time.Minute
 	projectCommitProjectFilesMax     = 500
 	projectCommitProjectFilesMaxSize = 16 * 1024 * 1024
 )
+
+func projectAssistantDeepIterations() int {
+	return projectAssistantDeepIterationsForValue(os.Getenv(projectAssistantMaxIterationsEnv))
+}
+
+func projectAssistantDeepIterationsForValue(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return maxAssistantDeepIterations
+	}
+	if strings.EqualFold(value, "unlimited") {
+		return int(^uint(0) >> 1)
+	}
+	iterations, err := strconv.Atoi(value)
+	if err != nil || iterations <= 0 {
+		return maxAssistantDeepIterations
+	}
+	return iterations
+}
 
 const (
 	projectToolPlanProjectChanges             = "plan_project_changes"
@@ -365,7 +386,7 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		"mutation", turnDecision.RequestsMutation, "runtime", turnDecision.RequiresRuntimeState)
 	req := projectAssistantRunRequest{
 		Identity:                 id,
-		HTTPRequest:              r,
+		ToolPort:                 newProjectAssistantHTTPToolPort(s, r),
 		Client:                   c,
 		Project:                  p,
 		Repository:               projectRepositoryView(ctx, c, p),
@@ -377,7 +398,6 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		MCPBaseURL:               s.hubBase,
 		MCPInsecureSkipTLSVerify: s.mcpInsecureSkipTLSVerify,
 		ApprovalMode:             projectAssistantApprovalModeFromRun(durable),
-		AutoApproveActions:       s.autoApproveAssistantActions(),
 		StreamCallbacks:          callbacks,
 		TurnProfile:              turnPolicy.profile,
 		TurnPolicy:               turnPolicy,
@@ -389,7 +409,6 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	if hasDurableRun {
 		durableCopy := durable
 		req.AssistantRun = &durableCopy
-		req.snapshotAccumulator = s.projectAssistantSupervisor().accumulatorFor(req.MessageScope, durable.ID)
 	}
 	if start != nil && start.InitialApprovedPlan != nil {
 		req.InitialApprovedPlan = cloneProjectAssistantApprovedPlan(start.InitialApprovedPlan)
@@ -424,6 +443,10 @@ func (s *Server) loadProjectAssistantTurnMessages(ctx context.Context, scope sto
 	switch {
 	case hasDurableRun && run.WorkItemID != "":
 		return s.store.LoadMessagesForWorkItem(ctx, scope, run.WorkItemID, 24)
+	case hasDurableRun && (run.Mode == store.AssistantRunModeDiscussion || run.Mode == store.AssistantRunModeAdaptive):
+		// Discussion and unpromoted adaptive turns continue only the
+		// non-WorkItem transcript. Mutation work remains WorkItem-scoped above.
+		return s.store.LoadRecentDiscussionMessages(ctx, scope, 24)
 	case hasDurableRun && run.UserMessageID != "":
 		current, err := s.findProjectMessage(ctx, scope, run.UserMessageID)
 		if err != nil {
@@ -1227,6 +1250,12 @@ func summarizeWorkspaceMutationResult(decoded map[string]any) string {
 	}
 	if replacements, ok := projectToolNumber(decoded["replacements"]); ok {
 		parts = append(parts, fmt.Sprintf("%d replacement(s)", replacements))
+	}
+	if additions, ok := projectToolNumber(decoded["additions"]); ok {
+		parts = append(parts, fmt.Sprintf("+%d", additions))
+	}
+	if deletions, ok := projectToolNumber(decoded["deletions"]); ok {
+		parts = append(parts, fmt.Sprintf("-%d", deletions))
 	}
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
 }

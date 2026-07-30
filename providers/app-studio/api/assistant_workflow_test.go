@@ -26,6 +26,9 @@ import (
 
 	einotool "github.com/cloudwego/eino/components/tool"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic/fake"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -285,6 +288,7 @@ func TestPollProjectAssistantRuntimeVerificationReturnsProvisioningAtDeadline(t 
 
 func TestFormatProjectAssistantRuntimeVerificationRejectsBrokenProcessLogs(t *testing.T) {
 	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		Readiness: &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
 		Runtime: &projectAssistantRuntimeWorkflowResult{
 			Status:     "reachable",
 			Summary:    "The preview edge is reachable.",
@@ -309,6 +313,7 @@ func TestFormatProjectAssistantRuntimeVerificationRejectsBrokenProcessLogs(t *te
 func TestFormatInitialProjectRuntimeVerificationRequiresProcessEvidence(t *testing.T) {
 	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
 		RequireProcessEvidence: true,
+		Readiness:              &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
 		Runtime: &projectAssistantRuntimeWorkflowResult{
 			Status:     "reachable",
 			Summary:    "The preview edge is reachable.",
@@ -319,8 +324,207 @@ func TestFormatInitialProjectRuntimeVerificationRequiresProcessEvidence(t *testi
 	if err != nil {
 		t.Fatalf("format runtime verification returned error: %v", err)
 	}
-	if result.Status != "not_ready" || len(result.Blockers) != 1 {
+	if result.Status != "unavailable" || len(result.Blockers) != 1 {
 		t.Fatalf("result = %#v, want unavailable process evidence blocker", result)
+	}
+}
+
+func TestFormatProjectAssistantRuntimeVerificationRejectsEmptyProcessLogs(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		CheckedMutationRevision: 4,
+		RequireProcessEvidence:  true,
+		Readiness:               &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{
+			Status:  "ok",
+			Summary: "No runtime output is available yet; the development process may still be starting.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "unavailable" || len(result.Blockers) != 1 {
+		t.Fatalf("result = %#v, want unavailable empty process evidence", result)
+	}
+}
+
+func TestFormatProjectAssistantRuntimeVerificationPromotesCleanRevisionToReady(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		CheckedMutationRevision: 7,
+		RequireProcessEvidence:  true,
+		Readiness:               &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			Summary:    "The preview edge is reachable.",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{
+			Status: "available",
+			Lines:  []string{"server listening on port 3000"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "ready" {
+		t.Fatalf("status = %q, want ready", result.Status)
+	}
+	if result.CheckedMutationRevision != 7 {
+		t.Fatalf("checked revision = %d, want 7", result.CheckedMutationRevision)
+	}
+	if len(result.Blockers) != 0 {
+		t.Fatalf("blockers = %#v, want none", result.Blockers)
+	}
+}
+
+func TestFormatProjectAssistantRuntimeVerificationSeparatesRepositoryHandoffFromRuntime(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		CheckedMutationRevision: 4,
+		RequireProcessEvidence:  true,
+		Readiness: &projectAssistantReadinessWorkflowResult{
+			Status:     "needs_repository",
+			Summary:    "Project Demo is waiting for its Git repository to become ready.",
+			Repository: &projectAssistantWorkflowRepo{Status: projectRepositoryStatusProvisioning},
+		},
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{
+			Status: "available",
+			Lines:  []string{"server listening on port 3000"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "ready" {
+		t.Fatalf("status = %q, want ready", result.Status)
+	}
+	if len(result.Warnings) != 1 || len(result.Blockers) != 0 {
+		t.Fatalf("result = %#v, want one handoff warning and no runtime blockers", result)
+	}
+	if !strings.Contains(result.Summary, "runtime is ready") || !strings.Contains(result.Summary, "commit and CI") {
+		t.Fatalf("summary = %q, want separate runtime and repository status", result.Summary)
+	}
+}
+
+func TestFormatProjectAssistantRuntimeVerificationDoesNotHideProcessFailureBehindRepositoryHandoff(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		Readiness: &projectAssistantReadinessWorkflowResult{
+			Status:     "needs_repository",
+			Repository: &projectAssistantWorkflowRepo{Status: projectRepositoryStatusProvisioning},
+		},
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{
+			Status:   "failed",
+			Blockers: []string{"SyntaxError: Unexpected token"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "not_ready" || len(result.Blockers) != 1 || len(result.Warnings) != 0 {
+		t.Fatalf("result = %#v, want process failure to remain blocking", result)
+	}
+}
+
+func TestFormatProjectAssistantRuntimeVerificationRequiresReadyProjectState(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		CheckedMutationRevision: 2,
+		Readiness:               &projectAssistantReadinessWorkflowResult{Status: "needs_workspace_context"},
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{Status: "available"},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "not_ready" {
+		t.Fatalf("status = %q, want not_ready", result.Status)
+	}
+	if len(result.Blockers) == 0 {
+		t.Fatalf("blockers = %#v, want readiness blocker", result.Blockers)
+	}
+}
+
+func TestCollectProjectAssistantRuntimeReadinessRefreshesLiveRepositoryState(t *testing.T) {
+	current := projectWithRepository("demo-repo", "demo", "github")
+	current.Name = "demo"
+	current.UID = "project-uid-demo"
+	current.Spec.DisplayName = "Demo"
+	current.Spec.Memory.Requirements = []string{"Show a working page"}
+	projectObject, err := runtime.DefaultUnstructuredConverter.ToUnstructured(current)
+	if err != nil {
+		t.Fatalf("convert project to unstructured: %v", err)
+	}
+	projectResource := &unstructured.Unstructured{Object: projectObject}
+	projectResource.SetAPIVersion(aiv1alpha1.SchemeGroupVersion.String())
+	projectResource.SetKind("Project")
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{
+			asclient.ProjectGVR:      "ProjectList",
+			codeConnectionsGVR:       "ConnectionList",
+			codeRepositoriesGVR:      "RepositoryList",
+			codeRepositoryCommitsGVR: "RepositoryCommitList",
+		},
+		projectResource,
+		codeRepositoryObject("demo-repo", "demo", "github", true),
+		codeConnectionObject("github"),
+	))
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: current.Name}
+	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "index.html", Content: "<main>ready</main>\n"}); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	stale := current.DeepCopy()
+	runCtx := projectAssistantWorkflowRunContext{
+		Server:         NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false),
+		Client:         client,
+		Project:        stale,
+		Repository:     &ProjectRepositoryView{Ref: "demo-repo", Status: projectRepositoryStatusProvisioning},
+		WorkspaceScope: scope,
+	}
+	input := &projectAssistantRuntimeVerificationContext{
+		Args: &projectAssistantRuntimeVerificationToolInput{},
+	}
+	refreshed, err := collectProjectAssistantRuntimeReadiness(runCtx)(context.Background(), input)
+	if err != nil {
+		t.Fatalf("collect runtime readiness returned error: %v", err)
+	}
+	if refreshed.Readiness == nil ||
+		refreshed.Readiness.Status != "ready_to_verify" ||
+		refreshed.Readiness.Repository == nil ||
+		refreshed.Readiness.Repository.Status != projectRepositoryStatusReady {
+		t.Fatalf("readiness = %#v, want live ready repository rather than stale provisioning snapshot", refreshed.Readiness)
+	}
+}
+
+func TestFormatProjectAssistantReadinessUsesConversationalRepositorySummary(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	project.Spec.DisplayName = "Six String Shop"
+	project.Spec.Memory.Requirements = []string{"Show a working page"}
+	result, err := formatProjectAssistantReadinessWorkflowResult(context.Background(), projectAssistantWorkflowContext{
+		Project:        project,
+		Repository:     &ProjectRepositoryView{Ref: "demo-repo", Status: projectRepositoryStatusProvisioning},
+		WorkspaceFiles: []string{"index.html"},
+	})
+	if err != nil {
+		t.Fatalf("format readiness returned error: %v", err)
+	}
+	if result.Status != "needs_repository" ||
+		result.Summary != "Project Six String Shop is waiting for its Git repository to become ready." {
+		t.Fatalf("result = %#v, want conversational provisioning summary", result)
 	}
 }
 

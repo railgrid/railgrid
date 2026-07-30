@@ -25,7 +25,7 @@ spec:
     # the embedded Vite bundle; the hub proxies /ui/providers/edges/* here and
     # ProviderFrame mounts <kedge-provider-edges>. Overridden by the chart to the
     # in-cluster Service DNS name.
-    url: "http://localhost:8084"
+    url: "http://localhost:8088"
     indexPath: "/"
     # Sidebar sub-nav under the edges provider. The parent item routes to the
     # edges fleet (/providers/edges); "Workloads" routes to /providers/edges/
@@ -40,7 +40,7 @@ spec:
     # Agent ingress (/agent/*) and consumer egress (/edgeproxy/*) route through
     # the hub backend proxy at /services/providers/edges/* to this Service.
     # Overridden by the chart to the in-cluster Service DNS name.
-    url: "http://localhost:8084"
+    url: "http://localhost:8088"
     healthPath: "/healthz"
   apiExport:
     name: "edges.providers.kedge.faros.sh"

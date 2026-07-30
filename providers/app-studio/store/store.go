@@ -30,6 +30,7 @@ var ErrAssistantRunConflict = errors.New("assistant run version conflict")
 var ErrAssistantWorkItemNotFound = errors.New("assistant work item not found")
 var ErrAssistantWorkItemConflict = errors.New("assistant work item conflict")
 var ErrAssistantApprovalModeInvalid = errors.New("assistant approval mode is invalid")
+var ErrProjectBootstrapPermitConflict = errors.New("project bootstrap permit conflict")
 
 // Scope identifies a tenant/project boundary. Every query must include all
 // three fields to keep App Studio data isolated per org/workspace/project.
@@ -73,12 +74,6 @@ type AssistantRunMode string
 type AssistantApprovalMode string
 
 const (
-	// AssistantRunIDApprovedPlanGrant is retained only so API code can be moved
-	// to WorkItem grants in a later task. Store implementations no longer
-	// reserve or special-case this value.
-	// Deprecated: use AssistantWorkItem.PlanGrant.
-	AssistantRunIDApprovedPlanGrant = "approved-plan-grant"
-
 	AssistantRunModeDiscussion AssistantRunMode = "discussion"
 	AssistantRunModeAdaptive   AssistantRunMode = "adaptive"
 	AssistantRunModeNew        AssistantRunMode = "new"
@@ -131,12 +126,6 @@ type AssistantRun struct {
 	UpdatedAt             time.Time             `json:"updatedAt"`
 }
 
-// AssistantRunIsConversation reports whether a run is user-visible. Every
-// durable run is now a conversation run; grants live on AssistantWorkItem.
-func AssistantRunIsConversation(run AssistantRun) bool {
-	return run.ID != ""
-}
-
 type AssistantWorkItemStatus string
 
 const (
@@ -162,8 +151,11 @@ type AssistantWorkItem struct {
 	GrantRevision         string                  `json:"grantRevision,omitempty"`
 	ExecutionPlan         json.RawMessage         `json:"executionPlan,omitempty"`
 	ExecutionPlanRevision string                  `json:"executionPlanRevision,omitempty"`
-	CreatedAt             time.Time               `json:"createdAt"`
-	UpdatedAt             time.Time               `json:"updatedAt"`
+	// CancellationReceipt records the identity of an accepted cancel request.
+	// It is separate from PlanGrant so cancelled items do not retain authority.
+	CancellationReceipt json.RawMessage `json:"cancellationReceipt,omitempty"`
+	CreatedAt           time.Time       `json:"createdAt"`
+	UpdatedAt           time.Time       `json:"updatedAt"`
 }
 
 // Page is an ordered slice of messages plus the next cursor for pagination.
@@ -178,8 +170,11 @@ type Store interface {
 	AppendMessage(ctx context.Context, scope Scope, msg Message) error
 	ListMessages(ctx context.Context, scope Scope, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, limit int) ([]Message, error)
+	LoadRecentDiscussionMessages(ctx context.Context, scope Scope, limit int) ([]Message, error)
 	GetAssistantApprovalPreference(ctx context.Context, scope Scope, actor string) (AssistantApprovalPreference, error)
 	SetAssistantApprovalPreference(ctx context.Context, scope Scope, preference AssistantApprovalPreference) (AssistantApprovalPreference, error)
+	CreateProjectBootstrapPermit(ctx context.Context, scope Scope, actor, promptDigest string) error
+	ConsumeProjectBootstrapPermit(ctx context.Context, scope Scope, actor, promptDigest, clientRequestID string, now time.Time) (bool, error)
 	SaveAssistantRun(ctx context.Context, scope Scope, run AssistantRun) error
 	CreateAssistantRun(ctx context.Context, scope Scope, user Message, assistant Message, run AssistantRun) (AssistantRun, error)
 	CreateWorkItemAndAssistantRun(ctx context.Context, scope Scope, item AssistantWorkItem, user Message, assistant Message, run AssistantRun) (AssistantWorkItem, error)
@@ -192,11 +187,12 @@ type Store interface {
 	ApproveWorkItemPlan(ctx context.Context, scope Scope, workItemID, runID string, expectedRevision int64, grantRevision string, planGrant json.RawMessage, now time.Time) (AssistantWorkItem, error)
 	RetireWorkItemPlan(ctx context.Context, scope Scope, workItemID, runID, actor string, expectedWorkItemRevision int64, expectedGrantRevision, tombstoneGrantRevision string, now time.Time) (AssistantWorkItem, error)
 	RequestAssistantRunStop(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, now time.Time) (AssistantRun, error)
+	RequestAssistantRunStopWithAssistantMessage(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error)
 	TransitionWorkItemAndRun(ctx context.Context, scope Scope, workItemID string, expectedWorkItemRevision int64, run AssistantRun, status AssistantWorkItemStatus, reason string, now time.Time) error
+	TransitionWorkItemAndRunWithAssistantMessage(ctx context.Context, scope Scope, workItemID string, expectedWorkItemRevision int64, run AssistantRun, status AssistantWorkItemStatus, reason string, assistant Message, now time.Time) error
 	LoadMessagesForWorkItem(ctx context.Context, scope Scope, workItemID string, limit int) ([]Message, error)
 	LatestAssistantRunForWorkItem(ctx context.Context, scope Scope, workItemID string) (AssistantRun, error)
 	SaveAssistantRunSnapshot(ctx context.Context, scope Scope, run AssistantRun, messages []Message, expectedRevision int64) error
-	CompareAndSwapAssistantRun(ctx context.Context, scope Scope, run AssistantRun, expectedRequestID string) error
 	ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error)
 	GetAssistantRun(ctx context.Context, scope Scope, id string) (AssistantRun, error)
 	FindAssistantRunByClientRequestID(ctx context.Context, scope Scope, clientRequestID string) (AssistantRun, error)
@@ -206,7 +202,8 @@ type Store interface {
 }
 
 // NormalizeAssistantApprovalMode validates a persisted or API-supplied mode.
-// Empty values safely fall back to Always ask.
+// Empty persisted run values retain the conservative legacy interpretation;
+// the user-facing default is supplied by GetAssistantApprovalPreference.
 func NormalizeAssistantApprovalMode(mode AssistantApprovalMode) (AssistantApprovalMode, error) {
 	mode = AssistantApprovalMode(strings.ToLower(strings.TrimSpace(string(mode))))
 	if mode == "" {

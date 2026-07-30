@@ -725,7 +725,7 @@ local_resource(
     resource_deps=['hub'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=8084, path='/healthz'),
+        http_get=http_get_action(port=8088, path='/healthz'),
     ),
     labels=['edges'],
 )

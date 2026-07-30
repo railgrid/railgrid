@@ -87,38 +87,56 @@ func TestProjectAssistantPublicRunSnapshotsOmitInternalExecutionState(t *testing
 	}
 }
 
-func projectMessageStreamEventsHaveAppendedContent(events []projectMessageStreamEvent) bool {
-	for _, event := range events {
-		if event.DataModelUpdate == nil {
-			continue
-		}
-		for _, content := range event.DataModelUpdate.Contents {
-			if content.Append {
-				return true
-			}
+func TestProjectAssistantMutationTerminalContentExplainsStateConversationally(t *testing.T) {
+	complete := projectAssistantMutationTerminalContent(projectAssistantCompletionEvidence{
+		SourceMutationRevision:   4,
+		VerifiedMutationRevision: 4,
+		LatestMutationVerified:   true,
+		VerificationOutcome:      "ready",
+		VerificationSummary:      "The development runtime is ready.",
+	}, true)
+	for _, expected := range []string{
+		"Status: Complete",
+		"The latest app changes are running in the development preview.",
+		"What I verified:",
+		"The development runtime is ready.",
+	} {
+		if !strings.Contains(complete, expected) {
+			t.Fatalf("complete content = %q, want %q", complete, expected)
 		}
 	}
-	return false
-}
+	if strings.Contains(complete, "Workspace revision") || strings.Contains(complete, "Outcome:") {
+		t.Fatalf("complete content exposes internal verification language: %q", complete)
+	}
 
-func countProjectAssistantToolCards(events []projectMessageStreamEvent) int {
-	count := 0
-	for _, event := range events {
-		if event.SurfaceUpdate == nil {
-			continue
-		}
-		for _, component := range event.SurfaceUpdate.Components {
-			if component.Component.Card != nil {
-				count++
-			}
+	pending := projectAssistantMutationTerminalContent(projectAssistantCompletionEvidence{
+		PlanDefined:              true,
+		PlanComplete:             false,
+		VerificationOutcome:      "ready",
+		VerificationSummary:      "The development runtime is ready. The Git repository is still becoming ready, so commit and CI handoff are pending.",
+		SourceMutationRevision:   4,
+		VerifiedMutationRevision: 4,
+		LatestMutationVerified:   true,
+	}, true)
+	for _, expected := range []string{
+		"Status: Incomplete",
+		"The app is running in the development preview",
+		"requested project work is not finished yet",
+		"repository is still becoming ready",
+		"Finish the remaining project steps",
+	} {
+		if !strings.Contains(pending, expected) {
+			t.Fatalf("pending content = %q, want %q", pending, expected)
 		}
 	}
-	return count
+	if strings.Contains(pending, "initial project objective is incomplete") {
+		t.Fatalf("pending content contains circular blocker: %q", pending)
+	}
 }
 
 func TestProjectAssistantDurableMetadataTracksEveryTransition(t *testing.T) {
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, Revision: 2, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, Revision: 2, CreatedAt: now, UpdatedAt: now}
 	plan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
 		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "completed"},
 		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},
@@ -168,11 +186,84 @@ func TestProjectAssistantInitialCompletionSuspensionReason(t *testing.T) {
 		{
 			name: "complete initial build",
 			evidence: projectAssistantCompletionEvidence{
-				PlanDefined:            true,
-				PlanComplete:           true,
-				LatestMutationVerified: true,
-				VerificationOutcome:    "ready",
+				PlanDefined:              true,
+				PlanComplete:             true,
+				SourceMutationRevision:   5,
+				VerifiedMutationRevision: 5,
+				LatestMutationVerified:   true,
+				VerificationOutcome:      "ready",
 			},
+		},
+		{
+			name: "complete ordinary mutation",
+			evidence: projectAssistantCompletionEvidence{
+				SourceMutationRevision:   2,
+				VerifiedMutationRevision: 2,
+				LatestMutationVerified:   true,
+				VerificationOutcome:      "ready",
+			},
+		},
+		{
+			name: "ordinary dirty mutation suspends",
+			evidence: projectAssistantCompletionEvidence{
+				SourceMutationRevision: 2,
+				VerificationOutcome:    "not_run",
+			},
+			want: "objective incomplete",
+		},
+		{
+			name: "non-authoritative reachable cannot complete",
+			evidence: projectAssistantCompletionEvidence{
+				SourceMutationRevision:   2,
+				VerifiedMutationRevision: 2,
+				LatestMutationVerified:   true,
+				VerificationOutcome:      "reachable",
+			},
+			want: "objective incomplete",
+		},
+		{
+			name: "non-authoritative available cannot complete",
+			evidence: projectAssistantCompletionEvidence{
+				SourceMutationRevision:   2,
+				VerifiedMutationRevision: 2,
+				LatestMutationVerified:   true,
+				VerificationOutcome:      "available",
+			},
+			want: "objective incomplete",
+		},
+		{
+			name: "not ready cannot complete",
+			evidence: projectAssistantCompletionEvidence{
+				SourceMutationRevision: 2,
+				VerificationOutcome:    "not_ready",
+			},
+			want: "objective incomplete",
+		},
+		{
+			name: "unavailable cannot complete",
+			evidence: projectAssistantCompletionEvidence{
+				SourceMutationRevision: 2,
+				VerificationOutcome:    "unavailable",
+			},
+			want: "objective incomplete",
+		},
+		{
+			name: "not configured cannot complete",
+			evidence: projectAssistantCompletionEvidence{
+				SourceMutationRevision: 2,
+				VerificationOutcome:    "not_configured",
+			},
+			want: "objective incomplete",
+		},
+		{
+			name: "non-canonical uppercase ready cannot complete",
+			evidence: projectAssistantCompletionEvidence{
+				SourceMutationRevision:   2,
+				VerifiedMutationRevision: 2,
+				LatestMutationVerified:   true,
+				VerificationOutcome:      "READY",
+			},
+			want: "objective incomplete",
 		},
 		{
 			name: "early prose suspends",
@@ -195,13 +286,99 @@ func TestProjectAssistantInitialCompletionSuspensionReason(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := projectAssistantRunResult{CompletionEvidence: tt.evidence}
-			if got := projectAssistantInitialCompletionSuspensionReason(result, false); got != tt.want {
+			if got := projectAssistantCompletionSuspensionReason(result, false); got != tt.want {
 				t.Fatalf("reason = %q, want %q", got, tt.want)
 			}
 		})
 	}
-	if got := projectAssistantInitialCompletionSuspensionReason(projectAssistantRunResult{}, true); got != "objective incomplete" {
+	if got := projectAssistantCompletionSuspensionReason(projectAssistantRunResult{}, true); got != "objective incomplete" {
 		t.Fatalf("fresh initial prose reason = %q, want objective incomplete", got)
+	}
+}
+
+func TestProjectAssistantCompletedPlanSnapshotRequiresVerifiedTerminalWork(t *testing.T) {
+	plan := &projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
+		{Content: "Edit source", ActiveForm: "Editing source", Status: "completed"},
+		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},
+		{Content: "Commit changes", ActiveForm: "Committing changes", Status: "pending"},
+	}}
+	ready := projectAssistantCompletionEvidence{
+		SourceMutationRevision:   3,
+		VerifiedMutationRevision: 3,
+		LatestMutationVerified:   true,
+		VerificationOutcome:      "ready",
+	}
+	if !projectAssistantVerifiedMutationCompleted(ready) {
+		t.Fatal("current exact-ready verification was not recognized")
+	}
+	if projectAssistantTerminalPlanCompleted(ready, nil) {
+		t.Fatal("runtime readiness alone authorized terminal plan completion")
+	}
+	if !projectAssistantTerminalPlanCompleted(ready, []projectToolCallStreamEvent{{
+		Name:   projectToolCommitProjectFiles,
+		Status: "succeeded",
+	}}) {
+		t.Fatal("verified mutation with successful commit did not authorize terminal plan completion")
+	}
+	plannedReady := ready
+	plannedReady.PlanDefined = true
+	plannedReady.PlanComplete = true
+	if !projectAssistantTerminalPlanCompleted(plannedReady, nil) {
+		t.Fatal("completed authoritative plan did not authorize terminal plan completion")
+	}
+	completed := projectAssistantCompletedPlanSnapshot(plan)
+	if completed == nil || len(completed.Steps) != len(plan.Steps) {
+		t.Fatalf("completed plan = %#v, want cloned plan", completed)
+	}
+	for index, step := range completed.Steps {
+		if step.Status != "completed" {
+			t.Fatalf("completed step %d status = %q, want completed", index, step.Status)
+		}
+		if step.Content != plan.Steps[index].Content || step.ActiveForm != plan.Steps[index].ActiveForm {
+			t.Fatalf("completed step %d = %#v, want content preserved", index, step)
+		}
+	}
+	if plan.Steps[1].Status != "in_progress" || plan.Steps[2].Status != "pending" {
+		t.Fatalf("source plan was mutated: %#v", plan)
+	}
+
+	for _, evidence := range []projectAssistantCompletionEvidence{
+		{},
+		{
+			SourceMutationRevision:   3,
+			VerifiedMutationRevision: 2,
+			LatestMutationVerified:   true,
+			VerificationOutcome:      "ready",
+		},
+		{
+			SourceMutationRevision:   3,
+			VerifiedMutationRevision: 3,
+			LatestMutationVerified:   true,
+			VerificationOutcome:      "READY",
+		},
+		{
+			SourceMutationRevision:   3,
+			VerifiedMutationRevision: 3,
+			VerificationOutcome:      "ready",
+		},
+	} {
+		if projectAssistantTerminalPlanCompleted(evidence, []projectToolCallStreamEvent{{
+			Name:   projectToolCommitProjectFiles,
+			Status: "succeeded",
+		}}) {
+			t.Fatalf("evidence %#v unexpectedly authorized terminal plan completion", evidence)
+		}
+	}
+	incompletePlan := ready
+	incompletePlan.PlanDefined = true
+	if projectAssistantTerminalPlanCompleted(incompletePlan, []projectToolCallStreamEvent{{
+		Name:   projectToolCommitProjectFiles,
+		Status: "succeeded",
+	}}) {
+		t.Fatal("successful commit overrode an explicitly incomplete authoritative plan")
+	}
+	if completed := projectAssistantCompletedPlanSnapshot(nil); completed != nil {
+		t.Fatalf("nil plan completion = %#v, want nil", completed)
 	}
 }
 
@@ -264,7 +441,7 @@ func TestProjectAssistantDurableMetadataFromExistingDecodesOnlyValidPlanSnapshot
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			metadata := projectAssistantDurableMetadataFromExisting(
-				store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, Revision: 3},
+				store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, Revision: 3},
 				"Working",
 				false,
 				map[string]any{projectAssistantMetadataPlan: tt.plan},
@@ -280,59 +457,6 @@ func TestProjectAssistantDurableMetadataFromExistingDecodesOnlyValidPlanSnapshot
 				t.Fatalf("assistant plan = %#v, want %#v", got, *tt.want)
 			}
 		})
-	}
-}
-
-func TestLegacyAssistantStreamEventsTranslateDurableTerminalSnapshots(t *testing.T) {
-	message := store.Message{ID: "assistant-1", Role: "assistant", Content: "completed response"}
-	events := projectAssistantLegacyStreamEvents(projectAssistantRunSnapshot{
-		Run:     store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusCompleted, Revision: 3},
-		Message: message,
-	})
-	var content *projectMessageStreamEvent
-	for i := range events {
-		if events[i].DataModelUpdate != nil {
-			content = &events[i]
-		}
-	}
-	if content == nil {
-		t.Fatalf("events = %#v, want durable assistant content", events)
-	}
-	terminal := events[len(events)-1]
-	if terminal.Type != string(projectAssistantEventRunFinished) || terminal.AssistantMessageID != message.ID {
-		t.Fatalf("terminal event = %#v, want run_finished for assistant", terminal)
-	}
-}
-
-func TestLegacyAssistantStreamAdapterReplacesDurableRevisionsWithoutDuplicatingContent(t *testing.T) {
-	adapter := newProjectAssistantLegacyStreamAdapter()
-	action := projectAssistantActionFeedItem{ID: "tool-1", Kind: projectAssistantActionFeedItemEdit, Status: "running", Title: "Editing", Severity: projectAssistantActionFeedSeverityNormal}
-	first := projectAssistantRunSnapshot{
-		Run: store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, Revision: 1},
-		Message: store.Message{ID: "assistant-1", Role: "assistant", Content: "one", Metadata: map[string]any{
-			projectAssistantMetadataWorkingStatus:     "Writing files",
-			projectMessageMetadataAssistantActionFeed: []projectAssistantActionFeedItem{action},
-		}},
-	}
-	second := first
-	second.Run.Revision = 2
-	second.Message.Content = "one two"
-	second.Message.Metadata = cloneAnyMap(first.Message.Metadata)
-	second.Message.Metadata[projectMessageMetadataAssistantActionFeed] = []projectAssistantActionFeedItem{{ID: action.ID, Kind: action.Kind, Status: "succeeded", Title: "Edited files", Severity: projectAssistantActionFeedSeverityNormal}}
-
-	firstEvents := adapter.Events(first)
-	secondEvents := adapter.Events(second)
-	if len(firstEvents) == 0 || len(secondEvents) == 0 {
-		t.Fatalf("adapter events = %#v / %#v, want both revisions", firstEvents, secondEvents)
-	}
-	if projectMessageStreamEventsHaveAppendedContent(secondEvents) {
-		t.Fatalf("second durable revision appended content instead of replacing it: %#v", secondEvents)
-	}
-	if got := countProjectAssistantToolCards(secondEvents); got != 0 {
-		t.Fatalf("second durable revision tool cards = %d, want action feed omitted from A2UI", got)
-	}
-	if replay := adapter.Events(second); len(replay) != 0 {
-		t.Fatalf("same durable revision replayed legacy events: %#v", replay)
 	}
 }
 
@@ -354,54 +478,12 @@ func TestProjectAssistantDurableFinalContentUsesReturnedReplyWithoutDuplicatingP
 	}
 }
 
-func TestLegacyAssistantStreamAdapterCarriesInterruptPreviewAndEachTerminalStatus(t *testing.T) {
-	interrupt := &projectAssistantUIInterruptRequest{InterruptID: "interrupt-1", Kind: "permission", Status: "pending"}
-	for _, status := range []store.AssistantRunStatus{
-		store.AssistantRunStatusCompleted,
-		store.AssistantRunStatusFailed,
-		store.AssistantRunStatusInterrupted,
-		store.AssistantRunStatusAborted,
-	} {
-		t.Run(string(status), func(t *testing.T) {
-			adapter := newProjectAssistantLegacyStreamAdapter()
-			snapshot := projectAssistantRunSnapshot{Run: store.AssistantRun{ID: "run-1", Status: status, Revision: 1}, Message: store.Message{ID: "assistant-1", Metadata: map[string]any{
-				projectMessageMetadataAssistantInterrupt:     interrupt,
-				projectAssistantMetadataPreviewRefreshNeeded: true,
-			}}}
-			events := adapter.Events(snapshot)
-			if !projectMessageStreamEventsHaveInterrupt(events) || !projectMessageStreamEventsHaveContent(events, projectAssistantUIDevelopmentPreviewRefreshKey) {
-				t.Fatalf("events = %#v, want interrupt and preview refresh", events)
-			}
-			terminal := events[len(events)-1]
-			if status == store.AssistantRunStatusCompleted && terminal.Type != string(projectAssistantEventRunFinished) {
-				t.Fatalf("terminal = %#v, want completed event", terminal)
-			}
-			if status != store.AssistantRunStatusCompleted && terminal.Type != string(projectAssistantEventRunFailed) {
-				t.Fatalf("terminal = %#v, want failed legacy event", terminal)
-			}
-			snapshot.Run.Revision++
-			if replay := adapter.Events(snapshot); projectMessageStreamEventsHaveContent(replay, projectAssistantUIDevelopmentPreviewRefreshKey) {
-				t.Fatalf("preview refresh replayed on later revision: %#v", replay)
-			}
-		})
-	}
-}
-
-func projectMessageStreamEventsHaveInterrupt(events []projectMessageStreamEvent) bool {
-	for _, event := range events {
-		if event.InterruptRequest != nil {
-			return true
-		}
-	}
-	return false
-}
-
 func TestProjectAssistantDurableMetadataSurvivesStatusToolProvisionalAndTerminalTransitions(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "test-project-uid-project-1"}
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", Content: "make it", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "make it", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
 	msgStore := store.NewMemoryStore()
 	if _, err := msgStore.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
@@ -480,8 +562,8 @@ func TestReconcileOrphanedProjectAssistantRunPersistsInterruptedMessageMetadata(
 	ctx := context.Background()
 	now := time.Now().UTC()
 	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "test-project-uid-project-1"}
-	run := store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
-	user := store.Message{ID: "user-1", Role: "user", CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
 	msgStore := store.NewMemoryStore()
 	if _, err := msgStore.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {

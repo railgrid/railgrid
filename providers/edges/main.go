@@ -44,8 +44,8 @@ import (
 	"k8s.io/klog/v2"
 
 	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
-	sdktunnel "github.com/faroshq/provider-edges/internal/tunnel"
 	"github.com/faroshq/provider-edges/internal/svccatalog"
+	sdktunnel "github.com/faroshq/provider-edges/internal/tunnel"
 )
 
 // providerPublicBase is the path prefix (behind the hub backend proxy) this
@@ -91,7 +91,7 @@ func runServe() error {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8084"
+		port = "8088"
 	}
 
 	mux := http.NewServeMux()

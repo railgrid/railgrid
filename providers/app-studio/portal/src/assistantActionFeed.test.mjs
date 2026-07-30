@@ -21,6 +21,10 @@ const action = (overrides = {}) => ({
 
 test('parses only the fresh allowlisted action feed contract', () => {
   assert.deepEqual(feed.parseAssistantActionFeed([action()]), [action()])
+  assert.deepEqual(
+    feed.parseAssistantActionFeed([action({ status: 'skipped', title: 'Skipped duplicate read' })]),
+    [action({ status: 'skipped', title: 'Skipped duplicate read' })],
+  )
   assert.deepEqual(feed.parseAssistantActionFeed([action({ tool: 'read_file' })]), [])
   assert.deepEqual(feed.parseAssistantActionFeed([action({ arguments: 'offset=200 limit=50' })]), [])
 })
@@ -84,6 +88,7 @@ test('never groups failures, rejected actions, diagnostics, or milestones', () =
   assert.equal(grouped.length, 3)
   assert.equal(feed.assistantActionStatusLabel('failed'), 'Failed')
   assert.equal(feed.assistantActionStatusLabel('rejected'), 'Rejected')
+  assert.equal(feed.assistantActionStatusLabel('skipped'), 'Skipped')
 })
 
 test('bounds collapsed summaries while preserving grouped count', () => {

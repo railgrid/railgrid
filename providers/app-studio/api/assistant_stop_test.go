@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,15 @@ import (
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
+
+type failingAssistantStopMessageStore struct {
+	store.Store
+	err error
+}
+
+func (s failingAssistantStopMessageStore) RequestAssistantRunStopWithAssistantMessage(context.Context, store.Scope, string, string, int64, int64, store.Message, time.Time) (store.AssistantRun, error) {
+	return store.AssistantRun{}, s.err
+}
 
 func TestProjectAssistantStopPersistsStoppingBeforeCancellingWorker(t *testing.T) {
 	messages := store.NewMemoryStore()
@@ -78,6 +88,122 @@ func TestProjectAssistantStopPersistsStoppingBeforeCancellingWorker(t *testing.T
 	again, found, err := supervisor.Stop(scope, run.ID)
 	if err != nil || !found || again.Status != store.AssistantRunStatusStopping {
 		t.Fatalf("repeated Stop = %#v, %v, %v", again, found, err)
+	}
+}
+
+func TestProjectAssistantStopReattachesDurableCheckpointAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	beforeRestart := NewWithWorkspace(nil, messages, nil, "", false)
+	scope := testProjectMessageScope("org-a", "workspace-a", "demo")
+	started, err := beforeRestart.startProjectAssistantBuildRunDurably(
+		ctx, scope, "alice", "Implement dark mode", "build-restart-stop-1",
+		func(store.AssistantRun, store.Message, bool) error { return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := messages.GetAssistantWorkItem(ctx, scope, started.Run.WorkItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err = messages.ApproveWorkItemPlan(
+		ctx, scope, item.ID, started.Run.ID, item.Revision,
+		"grant-restart-stop", []byte(`{"capabilities":["workspace_mutate"]}`), time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := messages.GetAssistantRun(ctx, scope, started.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.AssistantRunStatusPendingPermission
+	run.RequestID = "permission-restart-stop"
+	run.Checkpoint = json.RawMessage(`{"eino":{"interruptType":"permission"}}`)
+	run.UpdatedAt = time.Now().UTC()
+	if err := messages.SaveAssistantRun(ctx, scope, run); err != nil {
+		t.Fatal(err)
+	}
+
+	afterRestart := NewWithWorkspace(nil, messages, nil, "", false)
+	run, err = messages.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := afterRestart.reattachProjectAssistantPendingRun(ctx, scope, run); err != nil {
+		t.Fatalf("reattachProjectAssistantPendingRun: %v", err)
+	}
+	found, err := afterRestart.projectAssistantSupervisor().BindStopRequest(ctx, scope, run.ID, "alice", "stop-restart-1")
+	if err != nil || !found {
+		t.Fatalf("BindStopRequest = %v, %v", found, err)
+	}
+	stopped, found, err := afterRestart.projectAssistantSupervisor().Stop(scope, run.ID)
+	if err != nil || !found {
+		t.Fatalf("Stop = %#v, %v, %v", stopped, found, err)
+	}
+	if stopped.Status != store.AssistantRunStatusAborted {
+		t.Fatalf("run status = %q, want aborted", stopped.Status)
+	}
+	item, err = messages.GetAssistantWorkItem(ctx, scope, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != store.AssistantWorkItemStatusSuspended || item.ActiveRunID != "" ||
+		item.GrantRevision != "" || len(item.PlanGrant) != 0 {
+		t.Fatalf("WorkItem after restarted Stop = %#v, want suspended with admission revoked", item)
+	}
+	message, err := afterRestart.findProjectMessage(ctx, scope, run.ActiveMessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := message.Metadata[projectAssistantMetadataWorkingStatus].(string); got != "Aborted" {
+		t.Fatalf("assistant message status = %q, want Aborted", got)
+	}
+}
+
+func TestProjectAssistantStopMessagePersistenceFailureLeavesDurableSnapshotUnchanged(t *testing.T) {
+	inner := store.NewMemoryStore()
+	failing := failingAssistantStopMessageStore{Store: inner, err: errors.New("injected stopping message persistence failure")}
+	supervisor := newProjectAssistantSupervisor(context.Background(), failing)
+	scope := testProjectMessageScope("org-a", "workspace-a", "demo")
+	now := time.Now().UTC()
+	run := store.AssistantRun{
+		ID: "run-stop-message-failure", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning,
+		ClientRequestID: "request-stop-message-failure", UserMessageID: "user-stop-message-failure", ActiveMessageID: "assistant-stop-message-failure",
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	user := store.Message{ID: run.UserMessageID, Role: "user", ActorID: "alice", Content: "hello", CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Content: "working", CreatedAt: now, UpdatedAt: now}
+	if _, err := inner.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
+		t.Fatal(err)
+	}
+	accumulator, err := supervisor.Attach(scope, run, assistant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := supervisor.Stop(scope, run.ID); !errors.Is(err, failing.err) || found {
+		t.Fatalf("Stop found/error = %v/%v, want false/injected failure", found, err)
+	}
+	persisted, err := inner.GetAssistantRun(context.Background(), scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := inner.ListMessages(context.Background(), scope, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != store.AssistantRunStatusRunning || persisted.Revision != run.Revision {
+		t.Fatalf("stop failure persisted partial run: %#v", persisted)
+	}
+	for _, message := range messages.Items {
+		if message.ID == assistant.ID && (message.Content != assistant.Content || message.Metadata != nil) {
+			t.Fatalf("stop failure persisted partial assistant message: %#v", message)
+		}
+	}
+	committed, ok := accumulator.CommittedRun()
+	if !ok || committed.Status != store.AssistantRunStatusRunning || committed.Revision != run.Revision {
+		t.Fatalf("committed run = %#v/%v, want unchanged running snapshot", committed, ok)
 	}
 }
 

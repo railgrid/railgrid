@@ -31,7 +31,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/edges-provider /edges-provider
 COPY deploy/chart/files/schemas /etc/kedge/schemas
-EXPOSE 8084
-ENV PORT=8084
+EXPOSE 8088
+ENV PORT=8088
 USER nonroot:nonroot
 ENTRYPOINT ["/edges-provider"]

@@ -44,7 +44,7 @@ const (
 	projectEinoAssistantSummaryContextTokens    = 24000
 	projectEinoAssistantClosingEvidenceMaxItems = 64
 	projectEinoAssistantSummaryInstruction      = "Summarize this App Studio project session for the next builder turn. Preserve user requirements, accepted plans, files touched or inspected, unresolved questions, repository/runtime state, and any constraints. Keep it concise and operational."
-	projectEinoAssistantDeepInstruction         = "Use only the currently exposed App Studio tools; do not assume shell, browser, host filesystem, or subagent access. For a new project's initial build, first call define_initial_project_plan; this internal plan is auto-authorized and must include concrete acceptance criteria. Source mutations require an approved target-path grant and successful development verification before commit. For multi-step source work, use write_todos to keep the visible execution-plan progress current; keep exactly one step in progress, mark every step complete only when its outcome is satisfied, never include secrets or raw tool data, and remember that todos track progress but grant no authority. Runtime, infrastructure, and repository effects use their exact tools and approval boundaries. Never tell the user to approve or authorize a phase unless you have actually called a permission-bearing tool and App Studio created a pending permission request. Repair defects found by verification inside the same objective; do not invent a next phase for unfinished work. Keep changes minimal and focused on the user's request. Treat successful whole-file writes as authoritative; do not reread them unless a later result shows a conflict or failure. Batch independent reads, inspect existing content before editing, and report blockers honestly instead of calling unrelated tools. Finish with a concise evidence-based result."
+	projectEinoAssistantDeepInstruction         = "Use only the currently exposed App Studio tools; do not assume shell, browser, host filesystem, or subagent access. For a new project's initial build, first call define_initial_project_plan; this internal plan is auto-authorized and must include concrete acceptance criteria. Source mutations require an approved target-path grant and successful development verification before commit. For multi-step source work, use write_todos to keep the visible execution-plan progress current; never create todo.md or todos.md for execution tracking. Keep exactly one step in progress, mark every step complete only when its outcome is satisfied, never include secrets or raw tool data, and remember that todos track progress but grant no authority. Do not add repository commit or handoff as a todo step; App Studio enters a dedicated commit phase after runtime verification. Runtime, infrastructure, and repository effects use their exact tools and approval boundaries. Never tell the user to approve or authorize a phase unless you have actually called a permission-bearing tool and App Studio created a pending permission request. Repair defects found by verification inside the same objective; do not invent a next phase for unfinished work. Keep changes minimal and focused on the user's request. After initial project creation, write_file may create new paths but must not replace existing files; read each existing target in the current turn and use apply_patch for exact, localized changes. Treat successful whole-file writes as authoritative; do not reread them unless a later result shows a conflict or failure. Batch independent reads, inspect existing content before editing, and report blockers honestly instead of calling unrelated tools. Finish with a concise evidence-based result."
 	projectEinoAssistantNoOutputFallback        = "I couldn't produce a response for that turn. Please try again or rephrase the request, and I can continue from the current project context."
 )
 
@@ -102,53 +102,25 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	runState := newProjectEinoAssistantRunState()
 	runState.SetTurnPolicy(req.TurnPolicy)
 	runState.SetProjectRepositoryRef(projectEinoAssistantProjectRepositoryRef(req))
-	// A new chat message starts a fresh run, so seed the plan-approval grant
-	// that a previous turn earned. Without this the model re-requests approval
-	// every turn even though the grant is meant to last until the next commit.
-	if e.server != nil && req.AssistantRun != nil && req.AssistantRun.WorkItemID != "" &&
-		projectAssistantTurnProfileAllowsMutation(req.TurnProfile) {
-		grant, revision, err := e.server.loadProjectAssistantWorkItemApprovedPlan(ctx, req.MessageScope, req.Identity.user, *req.AssistantRun)
+	if projectAssistantTurnProfileAllowsMutation(req.TurnProfile) {
+		authority := e.executionAuthority(req)
+		loaded, err := authority.Load(ctx)
 		if err != nil {
-			return projectAssistantRunResult{}, fmt.Errorf("load assistant plan grant: %w", err)
+			return projectAssistantRunResult{}, fmt.Errorf("load assistant execution authority: %w", err)
 		}
-		runState.SetApprovedPlanGrantRevision(revision)
-		if grant != nil {
-			runState.ApprovePlan(*grant)
+		runState.SetApprovedPlanGrantRevision(loaded.GrantRevision)
+		if loaded.ApprovedPlan != nil {
+			runState.ApprovePlan(*loaded.ApprovedPlan)
 		}
-		item, itemErr := e.server.store.GetAssistantWorkItem(ctx, req.MessageScope, req.AssistantRun.WorkItemID)
-		if itemErr != nil {
-			return projectAssistantRunResult{}, fmt.Errorf("load assistant execution plan: %w", itemErr)
-		}
-		if len(item.ExecutionPlan) > 0 {
-			var executionPlan projectAssistantApprovedPlan
-			if err := json.Unmarshal(item.ExecutionPlan, &executionPlan); err != nil {
-				return projectAssistantRunResult{}, fmt.Errorf("decode assistant execution plan: %w", err)
+		if loaded.ExecutionPlan != nil {
+			runState.SetExecutionPlan(*loaded.ExecutionPlan, loaded.ExecutionPlanRevision)
+			runState.ApprovePlan(*loaded.ExecutionPlan)
+			if progress, ok := projectEinoAssistantLatestPlanProgress(req.History); ok {
+				runState.SetPlanProgress(progress)
 			}
-			executionPlan = normalizeProjectAssistantApprovedPlan(executionPlan)
-			if executionPlan.RunLocal && strings.TrimSpace(executionPlan.Goal) != "" {
-				runState.SetExecutionPlan(executionPlan, item.ExecutionPlanRevision)
-				runState.ApprovePlan(executionPlan)
-				if progress, ok := projectEinoAssistantLatestPlanProgress(req.History); ok {
-					runState.SetPlanProgress(progress)
-				}
-				if projectEinoAssistantHistoryHasSourceMutation(req.History) {
-					runState.RecordSourceMutation()
-				}
+			if projectEinoAssistantHistoryHasSourceMutation(req.History) {
+				runState.RecordSourceMutation()
 			}
-		} else if goal, ok := projectEinoAssistantInitialBuildGoal(req.History); ok {
-			runState.ApprovePlan(projectAssistantInitialCreationPlan(goal))
-		}
-	} else if e.server != nil && req.AssistantRun == nil {
-		// Unit-level engine callers without a durable run retain the legacy
-		// harness. HTTP execution always supplies a durable run and therefore
-		// can never enter this project-wide authority path.
-		grant, revision, err := e.server.loadProjectAssistantApprovedPlanGrant(ctx, req.MessageScope)
-		if err != nil {
-			return projectAssistantRunResult{}, fmt.Errorf("load assistant plan grant: %w", err)
-		}
-		runState.SetApprovedPlanGrantRevision(revision)
-		if grant != nil {
-			runState.ApprovePlan(*grant)
 		}
 	}
 	// A fresh Project creation prompt is explicit authorization to build the
@@ -202,27 +174,6 @@ func projectEinoAssistantHistoryHasSourceMutation(history []store.Message) bool 
 	return false
 }
 
-func projectEinoAssistantInitialBuildGoal(history []store.Message) (string, bool) {
-	initialBuild := false
-	for _, message := range history {
-		if marker, _ := message.Metadata[projectAssistantMetadataInitialBuild].(bool); marker {
-			initialBuild = true
-			break
-		}
-	}
-	if !initialBuild {
-		return "", false
-	}
-	for _, message := range history {
-		if message.Role == "user" {
-			if goal := strings.TrimSpace(message.Content); goal != "" {
-				return goal, true
-			}
-		}
-	}
-	return "", false
-}
-
 func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	ctx context.Context,
 	req projectAssistantRunRequest,
@@ -242,30 +193,30 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 		return projectAssistantRunResult{}, errors.New("eino tool factory is not configured")
 	}
 
-	if e.server == nil {
-		return projectAssistantRunResult{}, errors.New("server is required to validate resumed assistant plan grant")
+	hasWorkItem := req.AssistantRun != nil && strings.TrimSpace(req.AssistantRun.WorkItemID) != ""
+	checkpointCarriesAuthority := state.ApprovedPlan != nil || strings.TrimSpace(state.ApprovedPlanGrantRevision) != "" ||
+		state.ExecutionPlan != nil || strings.TrimSpace(state.ExecutionPlanRevision) != ""
+	checkpointAllowsMutation := projectAssistantTurnProfileAllowsMutation(state.TurnPolicy.Profile)
+	if !hasWorkItem && (checkpointAllowsMutation || checkpointCarriesAuthority) {
+		return projectAssistantRunResult{}, store.ErrAssistantWorkItemConflict
 	}
 	var approvedPlan *projectAssistantApprovedPlan
 	var revision string
-	var err error
-	if req.AssistantRun != nil && req.AssistantRun.WorkItemID != "" {
-		approvedPlan, revision, err = e.server.loadProjectAssistantWorkItemApprovedPlan(ctx, req.MessageScope, req.Identity.user, *req.AssistantRun)
-		if err == nil && strings.TrimSpace(state.ApprovedPlanGrantRevision) != revision {
-			err = fmt.Errorf("%w: checkpoint revision %q does not match WorkItem revision %q", errProjectAssistantCheckpointGrantStale, state.ApprovedPlanGrantRevision, revision)
+	if hasWorkItem {
+		if e.server == nil && req.executionAuthority == nil {
+			return projectAssistantRunResult{}, errors.New("server is required to validate resumed assistant plan grant")
 		}
-		if err == nil && state.ApprovedPlan != nil && state.ApprovedPlan.RunLocal {
+		loaded, err := e.executionAuthority(req).Load(ctx)
+		if err != nil {
+			return projectAssistantRunResult{}, fmt.Errorf("validate resumed assistant plan grant: %w", err)
+		}
+		approvedPlan, revision = loaded.ApprovedPlan, loaded.GrantRevision
+		if strings.TrimSpace(state.ApprovedPlanGrantRevision) != revision {
+			return projectAssistantRunResult{}, fmt.Errorf("%w: checkpoint revision %q does not match WorkItem revision %q", errProjectAssistantCheckpointGrantStale, state.ApprovedPlanGrantRevision, revision)
+		}
+		if state.ApprovedPlan != nil && state.ApprovedPlan.RunLocal {
 			approvedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
 		}
-	} else {
-		approvedPlan, revision, err = e.server.projectAssistantApprovedPlanForCheckpointResume(
-			ctx,
-			req.MessageScope,
-			state.ApprovedPlan,
-			state.ApprovedPlanGrantRevision,
-		)
-	}
-	if err != nil {
-		return projectAssistantRunResult{}, fmt.Errorf("validate resumed assistant plan grant: %w", err)
 	}
 	runState := newProjectEinoAssistantRunState()
 	runState.RestoreCheckpointState(state)
@@ -314,45 +265,33 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 func (e projectEinoAssistantEngine) startProjectAssistantRunAudit(
 	ctx context.Context,
 	req *projectAssistantRunRequest,
-	runID string,
+	_ string,
 ) (*projectAssistantRunAuditRecorder, error) {
-	if req == nil || e.server == nil || e.server.store == nil || !projectAssistantAuditScopeComplete(req.MessageScope) {
+	if req == nil || !projectAssistantAuditScopeComplete(req.MessageScope) {
 		return nil, nil
 	}
-	now := time.Now().UTC()
 	if req.AssistantRun != nil && strings.TrimSpace(req.AssistantRun.ID) != "" {
 		recorder := newProjectAssistantRunAuditRecorder(*req, req.AssistantRun, req.AssistantRun.CreatedAt)
 		req.auditRecorder = recorder
+		recorder.setPersister(e.executionAuthority(*req).PersistAudit)
 		recorder.wrapCallbacks(&req.StreamCallbacks)
 		return recorder, nil
 	}
-	run := &store.AssistantRun{
-		ID:           runID,
-		ProjectName:  req.Project.Name,
-		ApprovalMode: req.ApprovalMode,
-		Status:       store.AssistantRunStatusRunning,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-	}
-	recorder := newProjectAssistantRunAuditRecorder(*req, run, now)
-	req.AssistantRun = run
-	req.auditRecorder = recorder
-	recorder.wrapCallbacks(&req.StreamCallbacks)
-	if err := e.server.store.SaveAssistantRun(ctx, req.MessageScope, *run); err != nil {
-		return nil, fmt.Errorf("persist assistant run audit: %w", err)
-	}
-	return recorder, nil
+	// Durable runs are created by the App Studio supervisor before Eino is
+	// entered. Do not manufacture an unmanaged AssistantRun for audit data.
+	return nil, nil
 }
 
 func (e projectEinoAssistantEngine) resumeProjectAssistantRunAudit(
 	req *projectAssistantRunRequest,
 ) (*projectAssistantRunAuditRecorder, error) {
-	if req == nil || req.AssistantRun == nil || e.server == nil || e.server.store == nil || !projectAssistantAuditScopeComplete(req.MessageScope) {
+	if req == nil || req.AssistantRun == nil || !projectAssistantAuditScopeComplete(req.MessageScope) {
 		return nil, nil
 	}
 	started := req.AssistantRun.CreatedAt
 	recorder := newProjectAssistantRunAuditRecorder(*req, req.AssistantRun, started)
 	req.auditRecorder = recorder
+	recorder.setPersister(e.executionAuthority(*req).PersistAudit)
 	recorder.wrapCallbacks(&req.StreamCallbacks)
 	return recorder, nil
 }
@@ -363,7 +302,7 @@ func (e projectEinoAssistantEngine) finishProjectAssistantRunAudit(
 	recorder *projectAssistantRunAuditRecorder,
 	runErr error,
 ) error {
-	if recorder == nil || req.AssistantRun == nil || e.server == nil || e.server.store == nil {
+	if recorder == nil || req.AssistantRun == nil {
 		return runErr
 	}
 	var permissionErr *projectAssistantPermissionRequiredError
@@ -374,27 +313,16 @@ func (e projectEinoAssistantEngine) finishProjectAssistantRunAudit(
 	outcome := projectAssistantAuditOutcomeSucceeded
 	if runErr != nil {
 		outcome = projectAssistantAuditOutcomeFailed
+		recorder.recordModelError()
+		recorder.recordFailure(runErr)
 		if errors.Is(runErr, errProjectAssistantTurnPreempted) || errors.Is(context.Cause(ctx), errProjectAssistantTurnPreempted) {
 			outcome = projectAssistantAuditOutcomePreempted
 		}
 	}
 	recorder.finalize(outcome)
-	if req.snapshotAccumulator != nil {
-		updated := *req.AssistantRun
-		if err := req.snapshotAccumulator.UpdateRun(context.Background(), func(run *store.AssistantRun) { run.Audit = updated.Audit }); err != nil {
-			if runErr != nil {
-				return errors.Join(runErr, err)
-			}
-			return err
-		}
-		return runErr
-	}
-	req.AssistantRun.Status = store.AssistantRunStatusCompleted
-	req.AssistantRun.RequestID = ""
-	req.AssistantRun.UpdatedAt = time.Now().UTC()
 	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
 	defer cancel()
-	if err := e.server.store.SaveAssistantRun(persistCtx, req.MessageScope, *req.AssistantRun); err != nil {
+	if err := e.executionAuthority(req).PersistAudit(persistCtx, req.AssistantRun.Audit); err != nil {
 		persistErr := fmt.Errorf("persist assistant run audit: %w", err)
 		if runErr != nil {
 			return errors.Join(runErr, persistErr)
@@ -504,7 +432,7 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		// agent protocol that fought the underlying loop.
 		Instruction:            "",
 		ToolsConfig:            toolsConfig,
-		MaxIteration:           maxAssistantDeepIterations,
+		MaxIteration:           projectAssistantDeepIterations(),
 		WithoutWriteTodos:      !projectEinoAssistantTurnUsesDeepTodos(req),
 		WithoutGeneralSubAgent: true,
 		Handlers:               handlers,
