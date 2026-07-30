@@ -259,7 +259,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				return projectAssistantToolJSONResult(map[string]any{
 					"template":   info.Name,
 					"components": info.Components,
-					"note":       "development environment is re-provisioning in development mode; the workspace will be synced into it automatically",
+					"note":       "development environment is re-provisioning in development mode; the workspace will be synced into it automatically. Write each component's source under its directory from `components` (component name → workspace directory) — files outside every component directory are never synced to the development sandbox and cannot run",
 				}, nil)
 			},
 		},

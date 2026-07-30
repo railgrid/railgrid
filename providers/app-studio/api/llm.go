@@ -2058,6 +2058,7 @@ func projectSystemPromptForInitialPlan(p *aiv1alpha1.Project, repository *Projec
 	b.WriteString("- Name: " + p.Name + "\n")
 	if p.Spec.Template != nil && strings.TrimSpace(p.Spec.Template.Name) != "" {
 		b.WriteString("- Development template: " + strings.TrimSpace(p.Spec.Template.Name) + " (the development environment runs this infrastructure template in development mode; source directories map to its declared components, so keep new code under the component directories). " +
+			"The turn snapshot's developmentComponents field maps each component to the exact workspace directory file sync routes from — ALL application source MUST live under one of those directories (never invent your own top-level source directories); files outside every component directory are NEVER synced to the development sandbox and cannot run, so only non-runtime files like README or docs belong outside. " +
 			"This template is the app's ENVIRONMENT CONTRACT: before reasoning about what infrastructure, backing services, or environment variables the app has, call infrastructure__describe_template on THIS template and treat its agent.usage / agent.outputs as authoritative. " +
 			"Backing services the template declares (for example a managed database) exist for the development instance too, with the same injected environment (for example DATABASE_URL) — do not conclude a declared service is missing just because the app code does not use it yet, and do not provision a separate instance of a service the bound template already provides.\n")
 	} else {

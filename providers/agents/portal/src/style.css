@@ -243,6 +243,10 @@ kedge-provider-agents .agents-wiring { display: flex; flex-direction: column; ga
 kedge-provider-agents .agents-inbound-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 kedge-provider-agents .agents-inbound-actions { margin-left: auto; display: flex; gap: 8px; }
 kedge-provider-agents .agents-wire-fs { border: 1px solid var(--color-border-default, #d9e0ec); border-radius: 10px; padding: 11px 13px; display: flex; flex-direction: column; gap: 7px; }
+kedge-provider-agents .agents-tool-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+kedge-provider-agents .agents-bg-toggle { font-size: 12px; color: var(--color-text-secondary, currentColor); white-space: nowrap; }
+kedge-provider-agents .agents-bg-toggle svg { width: 12px; height: 12px; }
+kedge-provider-agents .agents-bg-toggle:has(input:disabled) { opacity: 0.45; }
 kedge-provider-agents .agents-wire-fs legend { font-weight: 600; padding: 0 6px; display: inline-flex; align-items: center; gap: 5px; }
 /* Multi-channel editor: one row per bound channel (role name, connection,
  * primary radio, remove), then a save/add action bar and inbound status list. */

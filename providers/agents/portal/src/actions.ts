@@ -321,3 +321,25 @@ export async function wireToolTo(vc: ViewCtx, agentName: string, target: string,
   await vc.api.send('PUT', `/api/agents/${encodeURIComponent(agentName)}`, { interactiveConnections: [...cur, cn], interactiveFamilies: vc.store.familiesFor([...cur, cn]) })
   await vc.store.loadAgents()
 }
+
+// setToolsetBackground toggles whether a linked toolset also applies to
+// background runs (schedules, triggers, heartbeats). The interactive link is
+// untouched — background is an explicit opt-in on top of it.
+export async function setToolsetBackground(vc: ViewCtx, agentName: string, toolset: string, on: boolean): Promise<void> {
+  const a = vc.store.agent(agentName)
+  const cur = a?.spec?.tools?.background?.toolsets || []
+  if (on === cur.includes(toolset)) return
+  const next = on ? [...cur, toolset] : cur.filter((t) => t !== toolset)
+  await updateAgent(vc, agentName, { backgroundToolsets: next }, on ? 'Toolset enabled for background runs.' : 'Toolset is now interactive-only.')
+}
+
+// setToolBackground toggles a directly-granted tool for background runs,
+// re-deriving background families from the resulting connection set so the
+// tool actually resolves there (same derivation as the interactive grant).
+export async function setToolBackground(vc: ViewCtx, agentName: string, cn: string, on: boolean): Promise<void> {
+  const a = vc.store.agent(agentName)
+  const cur = a?.spec?.tools?.background?.connections || []
+  if (on === cur.includes(cn)) return
+  const next = on ? [...cur, cn] : cur.filter((x) => x !== cn)
+  await updateAgent(vc, agentName, { backgroundConnections: next, backgroundFamilies: vc.store.familiesFor(next) }, on ? 'Tool enabled for background runs.' : 'Tool is now interactive-only.')
+}

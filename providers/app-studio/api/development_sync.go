@@ -81,6 +81,21 @@ func (t projectDevelopmentSyncTargetInfo) sortedComponents() []string {
 	return names
 }
 
+// componentWorkspacePathSummary renders the component → workspacePath map for
+// error messages, sorted by component name (e.g. "backend → api/, frontend → web/").
+func (t projectDevelopmentSyncTargetInfo) componentWorkspacePathSummary() string {
+	parts := make([]string, 0, len(t.Components))
+	for _, name := range t.sortedComponents() {
+		wp := path.Clean(strings.TrimSpace(t.Components[name]))
+		if wp == "." {
+			parts = append(parts, name+" → the workspace root")
+			continue
+		}
+		parts = append(parts, name+" → "+wp+"/")
+	}
+	return strings.Join(parts, ", ")
+}
+
 type projectSandboxSyncFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
@@ -211,6 +226,15 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	// by workspacePath prefix (docs/app-studio-template-sandboxes.md §4.2).
 	// Files outside every component (README, docs) sync nowhere.
 	routed := routeProjectSyncFiles(files, target.Components)
+	// A populated workspace whose files all fall outside every component
+	// directory would "succeed" while shipping nothing to the sandbox — the
+	// app never starts and nothing explains why. Fail with the expected
+	// layout instead.
+	if len(files) > 0 && countRoutedProjectSyncFiles(routed) == 0 {
+		return nil, fmt.Errorf(
+			"none of the %d workspace files are under a development component directory (%s); application source must live under those directories to reach the development sandbox",
+			len(files), target.componentWorkspacePathSummary())
+	}
 	results := map[string]json.RawMessage{}
 	for _, component := range target.sortedComponents() {
 		payload, err := json.Marshal(projectSandboxSyncRequest{Files: routed[component], Restart: "auto"})
@@ -269,6 +293,15 @@ func routeProjectSyncFiles(files []projectSandboxSyncFile, components map[string
 		}
 	}
 	return out
+}
+
+// countRoutedProjectSyncFiles totals the files routed across all components.
+func countRoutedProjectSyncFiles(routed map[string][]projectSandboxSyncFile) int {
+	total := 0
+	for _, files := range routed {
+		total += len(files)
+	}
+	return total
 }
 
 // authorizeProjectDevelopmentPreviewTarget resolves the preview for a
@@ -351,6 +384,8 @@ func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id i
 		return
 	}
 	if _, err := s.syncProjectDevelopmentTarget(ctx, c, id, p, target); err != nil {
-		klog.V(2).Infof("development sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
+		// A failed post-mutation sync means the user's edit never reached the
+		// development sandbox — warn, don't bury it at debug verbosity.
+		klog.Warningf("development sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
 	}
 }

@@ -37,7 +37,12 @@ type projectEinoAssistantSessionSnapshot struct {
 	LastKnownBranch   string                            `json:"lastKnownBranch"`
 	LastFileSnapshot  []string                          `json:"lastFileSnapshot"`
 	RecommendedChecks []string                          `json:"recommendedChecks,omitempty"`
-	Memory            projectEinoAssistantSessionMemory `json:"memory"`
+	// DevelopmentComponents maps each of the bound template's development
+	// component names to the workspace directory file sync routes from ("."
+	// is the workspace root). Application source outside every listed
+	// directory never reaches the development sandbox.
+	DevelopmentComponents map[string]string                 `json:"developmentComponents,omitempty"`
+	Memory                projectEinoAssistantSessionMemory `json:"memory"`
 	LastBuildRun      *projectEinoAssistantSessionBuild `json:"lastBuildRun,omitempty"`
 	ContextIssue      string                            `json:"contextIssue,omitempty"`
 }
@@ -103,8 +108,29 @@ func projectEinoAssistantSnapshot(ctx context.Context, req projectAssistantRunRe
 	files, issue := projectEinoAssistantWorkspaceSnapshot(ctx, req)
 	snapshot.LastFileSnapshot = files
 	snapshot.RecommendedChecks = projectAssistantRecommendedRuntimeChecks(files)
+	snapshot.DevelopmentComponents = projectAssistantTemplateComponents(ctx, req)
 	snapshot.ContextIssue = issue
 	return snapshot
+}
+
+// projectAssistantTemplateComponents reads the bound template's development
+// component → workspacePath map for the turn snapshot. Best-effort: a project
+// without a template, a missing client, or a failed catalog read yields nil —
+// the snapshot then simply carries no directory contract instead of failing
+// the turn.
+func projectAssistantTemplateComponents(ctx context.Context, req projectAssistantRunRequest) map[string]string {
+	if req.Client == nil || req.Project == nil || req.Project.Spec.Template == nil {
+		return nil
+	}
+	name := strings.TrimSpace(req.Project.Spec.Template.Name)
+	if name == "" {
+		return nil
+	}
+	info, err := fetchProjectTemplate(ctx, req.Client, name)
+	if err != nil {
+		return nil
+	}
+	return info.Components
 }
 
 func projectEinoAssistantLatestBuild(commits []ProjectRepositoryCommitView) *projectEinoAssistantSessionBuild {

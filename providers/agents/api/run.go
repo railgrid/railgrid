@@ -141,6 +141,11 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		maxIters = min(v, 32)
 	}
 
+	// Assemble the turn before persisting the task message — LoadRecentMessages
+	// has no notion of "current run", so appending first would replay the task
+	// into history and the model would see it twice.
+	msgs := s.assembleTurnCtx(ctx, scope, agent, sessionID, run.Task, run.Trigger, mcpInstructions)
+
 	_ = s.store.AppendMessage(ctx, scope, store.Message{
 		ID: uuid.NewString(), AgentName: agent.Name, SessionID: sessionID, RunID: runID,
 		Role: "user", Content: run.Task, CreatedAt: now,
@@ -150,8 +155,6 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		ParentRunID: run.ParentRunID,
 		Phase:       store.RunPhaseRunning, Input: run.Task, CreatedAt: now, UpdatedAt: now, StartedAt: &now,
 	})
-
-	msgs := s.assembleTurnCtx(ctx, scope, agent, sessionID, run.Task, mcpInstructions)
 	res, err := s.engine.StreamTurnWithTools(ctx, model, msgs, toolset, maxIters, run.OnDelta, run.OnTool)
 	end := time.Now().UTC()
 	if err != nil {
@@ -195,7 +198,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 // assembleTurnCtx builds the message list (system prompt + recent history +
 // task) using a context rather than an *http.Request, so background callers
 // (scheduler) can reuse it.
-func (s *Server) assembleTurnCtx(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, sessionID, task, mcpInstructions string) []engine.Message {
+func (s *Server) assembleTurnCtx(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, sessionID, task, trigger, mcpInstructions string) []engine.Message {
 	var msgs []engine.Message
 	if sp := agent.Spec.SystemPrompt; sp != "" {
 		msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: sp})
@@ -214,6 +217,14 @@ func (s *Server) assembleTurnCtx(ctx context.Context, scope store.Scope, agent *
 			role = engine.RoleAssistant
 		}
 		msgs = append(msgs, engine.Message{Role: role, Content: m.Content})
+	}
+	// Background sessions (schedule/heartbeat/wakeup) accumulate the agent's
+	// own prior replies turn after turn — kept deliberately, so e.g. a news
+	// schedule can see what it already posted and not repeat itself. That pile
+	// can outweigh the one persona line at the top, so re-assert it after
+	// history to keep the agent in character.
+	if sp := agent.Spec.SystemPrompt; sp != "" && !isInteractive(trigger) && len(history) > 0 {
+		msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: "Reminder — your persona and standing instructions still apply to this reply:\n\n" + sp})
 	}
 	msgs = append(msgs, engine.Message{Role: engine.RoleUser, Content: task})
 	return msgs

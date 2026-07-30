@@ -10,7 +10,7 @@ import type { ViewCtx } from '../view'
 import type { Agent, Connection } from '../types'
 import { escapeHTML, effectiveChannels } from '../types'
 import { connCategory } from '../conn-defs'
-import { updateAgent, linkToolset, wireToolTo, testConnection, enableInbound } from '../actions'
+import { updateAgent, linkToolset, wireToolTo, setToolBackground, setToolsetBackground, testConnection, enableInbound } from '../actions'
 import * as schedules from './schedules'
 import * as triggers from './triggers'
 
@@ -95,29 +95,41 @@ export function render(vc: ViewCtx, a: Agent): string {
       ${inboundRows ? `<div class="agents-chan-inbound">${inboundRows}</div>` : ''}
     </div>`
 
-  // Tools & toolsets
+  // Tools & toolsets. The main checkbox grants the tool (interactive); the
+  // background toggle additionally opts it into schedules/triggers/heartbeats,
+  // which get a deliberately smaller default surface (design rule 5).
   const agentToolsets = new Set([...(a.spec?.tools?.interactive?.toolsets || []), ...(a.spec?.tools?.background?.toolsets || [])])
   const agentTools = new Set([...(a.spec?.tools?.interactive?.connections || []), ...(a.spec?.tools?.background?.connections || [])])
+  const bgToolsets = new Set(a.spec?.tools?.background?.toolsets || [])
+  const bgTools = new Set(a.spec?.tools?.background?.connections || [])
+  const bgToggle = (attr: string, key: string, linked: boolean, on: boolean) =>
+    `<label class="agents-check agents-bg-toggle" title="Background runs (schedules, triggers, heartbeats) have no human watching, so tools stay interactive-only unless opted in here."><input type="checkbox" ${attr}="${escapeHTML(key)}" ${on ? 'checked' : ''} ${linked ? '' : 'disabled'} /> ${ic('clock')} background</label>`
   const toolConns = vc.store.connections.filter((c) => connCategory(c.spec.type) === 'tool')
   const toolsetRows = vc.store.toolsets.length
     ? vc.store.toolsets
-        .map(
-          (t) =>
-            `<label class="agents-check"><input type="checkbox" data-wire-toolset="${escapeHTML(t.metadata.name)}" ${agentToolsets.has(t.metadata.name) ? 'checked' : ''} /> ${escapeHTML(t.spec.displayName || t.metadata.name)}</label>`,
-        )
+        .map((t) => {
+          const n = t.metadata.name
+          return `<div class="agents-tool-row">
+              <label class="agents-check"><input type="checkbox" data-wire-toolset="${escapeHTML(n)}" ${agentToolsets.has(n) ? 'checked' : ''} /> ${escapeHTML(t.spec.displayName || n)}</label>
+              ${bgToggle('data-wire-toolset-bg', n, agentToolsets.has(n), bgToolsets.has(n))}
+            </div>`
+        })
         .join('')
     : `<p class="agents-hint">No toolsets yet — create one under ${ic('puzzle')} Toolsets.</p>`
   const toolRows = toolConns.length
     ? toolConns
-        .map(
-          (c) =>
-            `<label class="agents-check"><input type="checkbox" data-wire-tool="${escapeHTML(c.metadata.name)}" ${agentTools.has(c.metadata.name) ? 'checked' : ''} /> ${escapeHTML(c.spec.displayName || c.metadata.name)} <span class="muted">${escapeHTML(c.spec.type)}</span></label>`,
-        )
+        .map((c) => {
+          const n = c.metadata.name
+          return `<div class="agents-tool-row">
+              <label class="agents-check"><input type="checkbox" data-wire-tool="${escapeHTML(n)}" ${agentTools.has(n) ? 'checked' : ''} /> ${escapeHTML(c.spec.displayName || n)} <span class="muted">${escapeHTML(c.spec.type)}</span></label>
+              ${bgToggle('data-wire-tool-bg', n, agentTools.has(n), bgTools.has(n))}
+            </div>`
+        })
         .join('')
     : `<p class="agents-hint">No tools yet — add one under ${ic('plug')} Connections.</p>`
   const toolsSec = `<div class="agents-panel">
       <h3>${ic('wrench')} Tools &amp; toolsets</h3>
-      <p class="muted">What this agent can call. Toolsets are shared bundles; direct tools grant a single connection.</p>
+      <p class="muted">What this agent can call. Toolsets are shared bundles; direct tools grant a single connection. Chat always gets a granted tool; tick <strong>background</strong> to also allow it on schedules, triggers, and heartbeats.</p>
       <fieldset class="agents-wire-fs"><legend>${ic('puzzle')} Toolsets</legend>${toolsetRows}</fieldset>
       <fieldset class="agents-wire-fs"><legend>${ic('wrench')} Direct tools</legend>${toolRows}</fieldset>
     </div>`
@@ -220,5 +232,14 @@ export function wire(vc: ViewCtx, root: HTMLElement, a: Agent): void {
         )
       }
     }),
+  )
+
+  // Background opt-in per toolset / tool. Only enabled while the item is linked;
+  // unlinking above clears the background grant too.
+  root.querySelectorAll<HTMLInputElement>('[data-wire-toolset-bg]').forEach((el) =>
+    el.addEventListener('change', () => void setToolsetBackground(vc, name, el.dataset.wireToolsetBg!, el.checked)),
+  )
+  root.querySelectorAll<HTMLInputElement>('[data-wire-tool-bg]').forEach((el) =>
+    el.addEventListener('change', () => void setToolBackground(vc, name, el.dataset.wireToolBg!, el.checked)),
   )
 }
