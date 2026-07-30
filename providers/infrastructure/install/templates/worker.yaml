@@ -34,11 +34,12 @@ spec:
         • Configuration comes from your image; there is no platform-injected
           env.
 
-      DEVELOPMENT MODE (the platform-injected kedgeMode field): the image
+      DEVELOPMENT MODE (provision with kedgeMode: development): the image
       input is ignored (and may be omitted) — the platform runs a Node.js dev
       container against the project workspace (workspacePath "."). The dev
-      process is `npm run dev` (falling back to `npm start`); logs and
-      restarts are available through the project's development runtime verbs.
+      process is `npm run dev` (falling back to `npm start`); push source with
+      the dev_sync tool (hot reload, no image builds), read logs with
+      dev_logs, and restart with dev_restart.
 
       INPUTS you set when provisioning: name (required); image (required in
       production, ignored in development), replicas.

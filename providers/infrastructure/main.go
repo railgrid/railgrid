@@ -136,21 +136,23 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 		port = "8081"
 	}
 
+	// Data-plane subresource proxy (logs/sync/restart/preview proxy/status).
+	// nil in REST-only/dev (no kcp or runtime cluster); the handler then reports
+	// 503 so the route exists but is clearly unavailable. Shared with the MCP
+	// server so the dev_* tools can drive the same verbs in-process.
+	var dataPlaneHandler http.Handler
+	if h := buildDataPlaneHandler(kcpConfig); h != nil {
+		dataPlaneHandler = h
+	}
+
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
-		Tenant: tenant.NewClientFactory(kcpConfig),
+		Tenant:    tenant.NewClientFactory(kcpConfig),
+		DataPlane: dataPlaneHandler,
 	})
 
 	fileServer, distFS, err := portalHandler()
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
-	}
-
-	// Data-plane subresource proxy (logs/sync/restart/preview proxy/status).
-	// nil in REST-only/dev (no kcp or runtime cluster); the handler then reports
-	// 503 so the route exists but is clearly unavailable.
-	var dataPlaneHandler http.Handler
-	if h := buildDataPlaneHandler(kcpConfig); h != nil {
-		dataPlaneHandler = h
 	}
 
 	srv := server.New(server.Deps{

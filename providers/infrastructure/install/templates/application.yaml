@@ -78,9 +78,18 @@ spec:
           (set oidc.issuerURL + oidc.clientID; client secret via prerequisites).
         • platform — kedge SSO; NOT yet supported.
 
-      INPUTS you set when provisioning: frontendImage, backendImage (required);
-      name, frontendPort, backendPort, frontendReplicas, backendReplicas,
-      database.version, oidc.*. The platform stamps spec.expose.fqdn and
+      DEVELOPMENT MODE (provision with kedgeMode: development): both image
+      inputs are ignored (and may be omitted) — each tier runs a Node.js dev
+      server against its own workspace directory (frontend → web/, backend →
+      api/), with Postgres and DATABASE_URL exactly as in production. Push
+      source with the dev_sync tool (hot reload, no image builds; files are
+      routed by those directories), read dev-server logs with dev_logs, and
+      preview on the instance's status.url.
+
+      INPUTS you set when provisioning: frontendImage, backendImage (required
+      in production mode; omit in development mode); name, frontendPort,
+      backendPort, frontendReplicas, backendReplicas, database.version,
+      oidc.*. The platform stamps spec.expose.fqdn and
       spec.credentialsSecretName — do not set those.
     prerequisites:
       - "oidc.mode=byo only: a Secret named 'cloud-credentials' in the tenant's default namespace, key 'oidc_client_secret' = the OAuth2 client secret for your oidc.clientID."

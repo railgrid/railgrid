@@ -37,10 +37,11 @@ spec:
         • The platform provisions the Service, the public route, and the URL;
           you do NOT create Services, Ingresses, or routes.
 
-      DEVELOPMENT MODE (the platform-injected kedgeMode field): the image input
+      DEVELOPMENT MODE (provision with kedgeMode: development): the image input
       is ignored (and may be omitted) — the platform runs a Node.js dev
       container against the project workspace and serves it on the same public
-      URL a production instance would get. The whole project workspace is the
+      URL a production instance would get. Push source with the dev_sync tool
+      (hot reload, no image builds) and read dev-server logs with dev_logs. The whole project workspace is the
       app (workspacePath "."); a package.json with a dev script (vite et al)
       is auto-detected, otherwise vite is bootstrapped directly.
 

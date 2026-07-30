@@ -145,7 +145,7 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "describe_template",
 		Title:       "Inspect a template's inputs schema",
-		Description: "Return a template's metadata and JSON-schema for its inputs. Use this to learn what values kro_provision will require before calling it.",
+		Description: "Return a template's metadata, JSON-schema for its inputs, agent guidance (usage/prerequisites/outputs), and — when present — its development contract (development.components maps each component to the workspace directory dev_sync routes from). Use this to learn what values provision will require before calling it.",
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in describeTemplateInput) (*mcp.CallToolResult, kro.Template, error) {
 		dyn, err := tenantClient(deps, ident)
@@ -165,7 +165,7 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "provision",
 		Title:       "Provision a template instance in your workspace",
-		Description: "Create an instance of the named template as a CR in the caller's tenant workspace; the backend reconciles it. Identity is taken from the bearer token; the user does not need to supply a tenant path.",
+		Description: "Create an instance of the named template as a CR in the caller's tenant workspace; the backend reconciles it. For development-capable templates (describe_template reports a development block), set values.kedgeMode=\"development\" to get a live dev sandbox instead of a production deployment: image inputs may be omitted, and source is pushed with dev_sync (hot reload, no image builds). Identity is taken from the bearer token; the user does not need to supply a tenant path.",
 		Annotations: &mcp.ToolAnnotations{
 			IdempotentHint:  false,
 			DestructiveHint: &no,
@@ -269,4 +269,6 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 		}
 		return nil, deleteOutput{Deleted: true}, nil
 	})
+
+	registerDevTools(srv, deps, ident)
 }

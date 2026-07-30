@@ -78,6 +78,13 @@ type Template struct {
 	// template via MCP (what it does, prerequisites, where outputs land).
 	// Read from the Template's spec.agent; nil when not provided.
 	Agent *TemplateAgent `json:"agent,omitempty"`
+	// Development is the template's development-mode contract, read from
+	// spec.development. Non-nil means instances can be provisioned with
+	// kedgeMode "development": image inputs are ignored, each component runs
+	// a platform dev server with hot reload, and source reaches it via the
+	// dev_sync tool routed by each component's workspacePath. nil means the
+	// template has no development mode.
+	Development *TemplateDevelopment `json:"development,omitempty"`
 	// View is optional presentation metadata that drives how the portal
 	// renders this template's instances (extra list columns + grouped
 	// detail fields). Read from the kedge.faros.sh/view annotation on the
@@ -143,6 +150,24 @@ type TemplateAgent struct {
 	Prerequisites []string `json:"prerequisites,omitempty"`
 	// Outputs describe where the instance's results land (URL, DB Secret, …).
 	Outputs []string `json:"outputs,omitempty"`
+}
+
+// TemplateDevelopment is the MCP-facing projection of a Template's
+// spec.development block: just enough for an agent to drive the dev loop —
+// which components exist and which workspace directory each one syncs from.
+// Runtime details (dev images, start commands, reload rules) stay
+// provider-internal.
+type TemplateDevelopment struct {
+	// Components maps each development component name to its contract.
+	Components map[string]TemplateDevelopmentComponent `json:"components"`
+}
+
+// TemplateDevelopmentComponent is one hot-swappable component's dev contract.
+type TemplateDevelopmentComponent struct {
+	// WorkspacePath is the source directory dev_sync routes to this
+	// component ("." = the whole workspace). Files outside every component's
+	// directory never reach the development sandbox.
+	WorkspacePath string `json:"workspacePath"`
 }
 
 // Instance is a portal-shaped view of a kro RGD instance CR in the

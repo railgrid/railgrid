@@ -107,7 +107,25 @@ func templateFromUnstructured(u *unstructured.Unstructured) kro.Template {
 		InputsSchema: inputs,
 		SampleValues: sample,
 		Agent:        agent,
+		Development:  templateDevelopmentFromSpec(u),
 	}
+}
+
+// templateDevelopmentFromSpec projects spec.development into the MCP DTO:
+// component names + workspacePaths only (runtime details like dev images and
+// start commands stay provider-internal). Returns nil when the Template
+// declares no development block — the template then has no dev mode.
+func templateDevelopmentFromSpec(u *unstructured.Unstructured) *kro.TemplateDevelopment {
+	comps, found, _ := unstructured.NestedMap(u.Object, "spec", "development", "components")
+	if !found || len(comps) == 0 {
+		return nil
+	}
+	out := &kro.TemplateDevelopment{Components: make(map[string]kro.TemplateDevelopmentComponent, len(comps))}
+	for name := range comps {
+		wp, _, _ := unstructured.NestedString(u.Object, "spec", "development", "components", name, "workspacePath")
+		out.Components[name] = kro.TemplateDevelopmentComponent{WorkspacePath: wp}
+	}
+	return out
 }
 
 // templateAgentFromSpec reads spec.agent (AI-agent guidance) into the MCP DTO.

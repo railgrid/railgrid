@@ -33,9 +33,15 @@ import (
 
 // Deps is what the MCP transport needs. Templates + instances are CRD-based
 // against the tenant workspace (see catalog.go), so the per-tenant kcp client
-// factory is the only dependency — no RGD/kro-cluster client.
+// factory is the main dependency — no RGD/kro-cluster client.
 type Deps struct {
 	Tenant *tenant.ClientFactory
+	// DataPlane is the provider's own /dataplane/* subresource handler
+	// (serve_dataplane.go), shared so the dev_* tools can drive sync/log/
+	// restart verbs in-process — same caller auth, contract resolution, and
+	// runtime proxying as the hub HTTP route. nil (REST-only/dev, or no
+	// runtime cluster) disables the dev tools with a clear error.
+	DataPlane http.Handler
 }
 
 // NewHandler returns the streamable-HTTP MCP handler to mount at /mcp.
@@ -63,10 +69,17 @@ func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 	}, &mcp.ServerOptions{
 		Instructions: "This MCP endpoint brokers a curated catalog of kro " +
 			"(Kube Resource Orchestrator) templates into your kedge " +
-			"tenant workspace. Use kro_list_templates first to see " +
-			"what's available, then kro_describe_template to inspect a " +
-			"template's inputs schema, then kro_provision to " +
-			"materialize an instance. Cloud credentials are read from " +
+			"tenant workspace. Use list_templates first to see " +
+			"what's available, then describe_template to inspect a " +
+			"template's inputs schema, then provision to " +
+			"materialize an instance. Templates that report a " +
+			"`development` block support a live dev loop with no image " +
+			"builds: provision with values.kedgeMode=\"development\" " +
+			"(image inputs may be omitted), push source with dev_sync " +
+			"(hot reload), read dev server logs with dev_logs, and " +
+			"preview at the instance's status.url; ship for real by " +
+			"re-provisioning with kedgeMode \"production\" and built " +
+			"images. Cloud credentials are read from " +
 			"a `cloud-credentials` Secret in your workspace's default " +
 			"namespace; if it's missing, ask the user to create it (see " +
 			"the kedge-bound cloud-credentials docs). Tenant identity " +
