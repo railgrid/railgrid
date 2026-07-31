@@ -64,26 +64,34 @@ func tokenFingerprint(tok string) string {
 // tick, so bots connect within one poll interval of being created and
 // disconnect when their connection (or token) is removed.
 func (m *discordManager) reconcile(ctx context.Context) {
-	list, err := m.bg.wildcard.Resource(agentsclient.ConnectionGVR).List(ctx, metav1.ListOptions{})
+	// Across every shard: a connection on a shard we did not list is a bot that
+	// never comes online, with no error anywhere to say so.
+	items, err := m.bg.listAll(ctx, agentsclient.ConnectionGVR)
 	if err != nil {
+		log.Printf("discord: listing connections: %v", err)
 		return
 	}
 	desired := map[string]string{} // key -> bot token
-	for i := range list.Items {
-		conn, err := fromU[agentsv1alpha1.Connection](&list.Items[i])
+	for i := range items {
+		conn, err := fromU[agentsv1alpha1.Connection](&items[i])
 		if err != nil || conn.Spec.Type != agentsv1alpha1.ConnectionTypeDiscord {
 			continue
 		}
-		cluster := list.Items[i].GetAnnotations()["kcp.io/cluster"]
+		cluster := items[i].GetAnnotations()["kcp.io/cluster"]
 		if cluster == "" {
 			continue
 		}
-		dyn, err := m.bg.scoped(cluster)
+		dyn, err := m.bg.scoped(ctx, cluster)
 		if err != nil {
+			log.Printf("discord: connection %s/%s: addressing its workspace: %v", cluster, conn.Name, err)
 			continue
 		}
+		// Report rather than swallow: without this a connection whose Secret is
+		// missing or unreadable through the permission claim looks identical to
+		// a healthy webhook-only one — the bot simply never appears.
 		sec, err := (vwSecrets{dyn}).GetSecret(ctx, llm.SecretNamespace, connectionSecretName(conn.Name))
 		if err != nil {
+			log.Printf("discord: connection %s/%s: reading its credential Secret: %v", cluster, conn.Name, err)
 			continue
 		}
 		token := strings.TrimSpace(string(sec.Data["token"]))
@@ -160,7 +168,7 @@ func (m *discordManager) makeHandler(cluster, connName string) func(*discordgo.S
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		dyn, err := m.bg.scoped(cluster)
+		dyn, err := m.bg.scoped(ctx, cluster)
 		if err != nil {
 			return
 		}

@@ -221,7 +221,7 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 // stores tokens in the connection Secret via the virtual workspace (this
 // route is anonymous — the signed state is the auth).
 func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
-	if s.bg == nil || s.bg.vwURL == "" {
+	if s.bg == nil || !s.bg.ready() {
 		http.Error(w, "background executor is not running on this provider", http.StatusServiceUnavailable)
 		return
 	}
@@ -235,7 +235,7 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing code", http.StatusBadRequest)
 		return
 	}
-	dyn, err := s.bg.scoped(st.Cluster)
+	dyn, err := s.bg.scoped(r.Context(), st.Cluster)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -415,18 +415,18 @@ func updateSecretKeys(ctx context.Context, dyn dynamic.Interface, name string, u
 // background tick). Only connections with a refresh_token and an expiry within
 // the horizon are touched.
 func (b *background) refreshOAuthTokens(ctx context.Context) {
-	list, err := b.wildcard.Resource(agentsclient.ConnectionGVR).List(ctx, metav1.ListOptions{})
+	items, err := b.listAll(ctx, agentsclient.ConnectionGVR)
 	if err != nil {
 		return
 	}
-	for i := range list.Items {
-		item := &list.Items[i]
+	for i := range items {
+		item := &items[i]
 		conn, err := fromU[agentsv1alpha1.Connection](item)
 		if err != nil || conn.Spec.Auth != "oauth" || conn.Spec.OAuth == nil {
 			continue
 		}
 		cluster := item.GetAnnotations()["kcp.io/cluster"]
-		dyn, err := b.scoped(cluster)
+		dyn, err := b.scoped(ctx, cluster)
 		if err != nil {
 			continue
 		}

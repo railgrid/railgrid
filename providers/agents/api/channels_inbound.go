@@ -49,7 +49,7 @@ func channelWebhookName(conn string) string { return "channel/" + conn }
 func (s *Server) webhookChannel(w http.ResponseWriter, r *http.Request) {
 	cluster, name, token := r.PathValue("cluster"), r.PathValue("name"), r.PathValue("token")
 	expected := s.webhookToken(cluster, channelWebhookName(name))
-	if expected == "" || s.bg == nil || s.bg.wildcard == nil {
+	if expected == "" || s.bg == nil || !s.bg.ready() {
 		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "background executor is not running on this provider")
 		return
 	}
@@ -57,7 +57,7 @@ func (s *Server) webhookChannel(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusForbidden, "Forbidden", "invalid webhook token")
 		return
 	}
-	dyn, err := s.bg.scoped(cluster)
+	dyn, err := s.bg.scoped(r.Context(), cluster)
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
