@@ -35,10 +35,13 @@ func TestConnectMCPInstanceAddressing(t *testing.T) {
 		}
 	})
 
-	t.Run("a background run is told why, not left with a 401", func(t *testing.T) {
+	t.Run("a run with no identity is told why, not left with a 401", func(t *testing.T) {
+		// Interactive runs carry the user's token, background runs the agent's
+		// ServiceAccount token. Neither means provisioning failed, and the
+		// message has to point at that rather than at the instance.
 		_, err := DataPlane{HubBase: dp.HubBase, ClusterID: dp.ClusterID}.ProxyURL("mcp", "browser", browserResource, "browser")
-		if err == nil || !strings.Contains(err.Error(), "background") {
-			t.Fatalf("want the background-run limitation named, got %v", err)
+		if err == nil || !strings.Contains(err.Error(), "no identity") {
+			t.Fatalf("want the missing identity named, got %v", err)
 		}
 	})
 

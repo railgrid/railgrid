@@ -64,9 +64,11 @@ type Deps struct {
 // hostname. See docs/platform-internal-networking.md.
 //
 // Token is the CALLER's bearer token: the data plane authorizes by re-reading
-// the instance as the caller, so a run with no user token (any background run,
-// today) cannot use it. That is a deliberate property of the contract, not an
-// oversight here — see the provider-identity phase in the design note.
+// the instance as the caller. An interactive run supplies the human's token; a
+// background run supplies the AGENT's own ServiceAccount token, minted into the
+// tenant workspace (see api/agentidentity.go). Empty means neither was
+// available — the identity could not be provisioned — and instance-backed tools
+// report that rather than composing a call that 401s two hops away.
 type DataPlane struct {
 	HubBase   string
 	ClusterID string
@@ -93,10 +95,7 @@ func (d DataPlane) ProxyURL(kind, connName, resource, instance string) (string, 
 		return "", fmt.Errorf("%s connection %q names instance %q, but this provider has no hub/workspace context to reach it", kind, connName, instance)
 	}
 	if d.Token == "" {
-		// Background runs carry no user token, and the data plane has no other
-		// identity to authorize yet. See the provider-identity phase in
-		// docs/platform-internal-networking.md.
-		return "", fmt.Errorf("%s connection %q reaches instance %q over the platform data plane, which authorizes as the calling user — unavailable to scheduled/background runs until provider identity lands", kind, connName, instance)
+		return "", fmt.Errorf("%s connection %q reaches instance %q over the platform data plane, which authorizes per caller, but this run has no identity — an interactive run uses yours, a background run uses the agent's own ServiceAccount, and provisioning that failed (check the provider log for \"identity unavailable\")", kind, connName, instance)
 	}
 	return strings.TrimRight(d.HubBase, "/") +
 		fmt.Sprintf("/services/providers/infrastructure/dataplane/clusters/%s/%s/%s/proxy",

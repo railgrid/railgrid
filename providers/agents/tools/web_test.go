@@ -226,14 +226,14 @@ func TestDataPlaneSearchRequest(t *testing.T) {
 		}
 	})
 
-	t.Run("a background run gets a precise error, not a bare 401 two hops away", func(t *testing.T) {
+	t.Run("a run with no identity gets a precise error, not a bare 401 two hops away", func(t *testing.T) {
 		noToken := DataPlane{HubBase: dp.HubBase, ClusterID: dp.ClusterID}
 		_, err := searchRequest(ctx, instanceConn(map[string]string{"instance": "search"}), noToken, "", "x")
 		if err == nil {
-			t.Fatal("want an error explaining background runs cannot use the data plane")
+			t.Fatal("want an error explaining the run has no identity to authorize as")
 		}
-		if !strings.Contains(err.Error(), "background") {
-			t.Fatalf("error should name the limitation: %v", err)
+		if !strings.Contains(err.Error(), "no identity") {
+			t.Fatalf("error should name the missing identity: %v", err)
 		}
 	})
 

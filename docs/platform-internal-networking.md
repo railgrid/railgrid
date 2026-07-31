@@ -524,10 +524,16 @@ URL. The kro backend rejects a template whose marker contradicts its graph — a
 `internal` template carrying an HTTPRoute, or an `optional` one whose route has
 no `includeWhen` — so the marker cannot drift away from what is deployed.
 
-The known gap is stated where it bites: the data plane authorizes as the caller,
-so **background and scheduled runs cannot use an instance-backed tool** until
-provider identity lands. The tools return an explicit message saying so rather
-than a bare 401 two hops away.
+The caller-authorizes property initially left background and scheduled runs
+unable to use an instance-backed tool at all. That is now closed, not by giving
+the provider an identity of its own, but by giving **each agent** a ServiceAccount
+in the tenant workspace and having background runs act as it — the same shape
+the hub already uses for per-MCPServer identities. Interactive runs still act as
+the human. See the background-runs section of
+[agent-web-access.md](agent-web-access.md) for what is created and the two
+properties worth knowing: the grant is workspace-wide rather than
+connection-scoped, and the token is long-lived because kcp has no TokenRequest
+API.
 
 ## Open questions
 

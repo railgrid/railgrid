@@ -72,6 +72,10 @@ type background struct {
 	interval time.Duration
 	key      []byte // webhook HMAC key ("" → webhooks disabled)
 
+	// identities memoises each agent's minted ServiceAccount token, so a busy
+	// scheduler does not re-provision on every run. See agentidentity.go.
+	identities *identityCache
+
 	discord *discordManager // Discord gateway bots (inbound chat)
 }
 
@@ -92,7 +96,7 @@ func (s *Server) StartBackground(ctx context.Context) {
 	if s.cfg.SchedulerInterval > 0 {
 		interval = s.cfg.SchedulerInterval
 	}
-	bg := &background{server: s, base: base, interval: interval, key: s.webhookKeyBytes()}
+	bg := &background{server: s, base: base, interval: interval, key: s.webhookKeyBytes(), identities: newIdentityCache()}
 	bg.exec = executor.NewInProcess(bg.handle, 4, 10*time.Minute)
 	bg.discord = newDiscordManager(bg)
 	_ = bg.exec.Start(ctx)
@@ -162,6 +166,26 @@ func (b *background) ensureVW(ctx context.Context) error {
 	b.wildcard = wildcard
 	log.Printf("background: using APIExport virtual workspace %s", b.vwURL)
 	return nil
+}
+
+// agentToken returns the agent's ServiceAccount token, provisioning the
+// identity on first use. Returns "" on failure — the caller degrades to a run
+// without instance-backed tools, which reports a clear message per tool, rather
+// than failing the whole run.
+func (b *background) agentToken(ctx context.Context, dyn dynamic.Interface, cluster, agent string) string {
+	if b.identities == nil {
+		return ""
+	}
+	if tok, ok := b.identities.get(cluster, agent); ok {
+		return tok
+	}
+	tok, err := ensureAgentIdentity(ctx, dyn, agent)
+	if err != nil {
+		log.Printf("background: agent %q identity unavailable, instance-backed tools disabled for this run: %v", agent, err)
+		return ""
+	}
+	b.identities.put(cluster, agent, tok)
+	return tok
 }
 
 // apiExportNameForSlice is the slice name (same as the export by convention).
@@ -425,6 +449,12 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		Creds: vwSecrets{dyn}, CR: vwCR{dyn}, Scope: scope, Agent: agent,
 		SessionID: job.SessionID, Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
 		NotifyChannel: job.NotifyChannel,
+		// There is no user to act as here, so the run acts as the AGENT's own
+		// ServiceAccount. Failing to mint one is not fatal: the run proceeds
+		// without instance-backed tools, exactly as it did before, rather than
+		// losing a scheduled run over a search backend it may never touch.
+		ClusterID: job.ClusterID,
+		HubToken:  b.agentToken(ctx, dyn, job.ClusterID, agent.Name),
 	})
 
 	b.recordOutcome(ctx, job, res.RunID, runErr)

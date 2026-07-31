@@ -142,17 +142,40 @@ upstream set (the prefix is the Connection name).
 An `mcp` Connection with a `baseURL` and no `instance` is unchanged: that is how
 you reach an MCP server outside the platform.
 
-### Background and scheduled runs cannot use this yet
+### Background and scheduled runs: the agent's own identity
 
-The data plane authorizes as the calling user, and a scheduled, heartbeat or
-inbound-channel run has no user token — so an instance-backed tool (search or
-browser) fails there with an explicit message rather than a confusing 401.
-Interactive chat works. Closing this needs the provider to call the data plane
-under its own identity with the requesting user's scope attached; see the
-provider-identity phase in
-[platform-internal-networking.md](platform-internal-networking.md).
+The data plane authorizes per caller, and a scheduled, heartbeat, wakeup or
+inbound-channel run has no human to act as. Each agent therefore gets a
+**ServiceAccount of its own** in the tenant workspace, and background runs call
+the data plane as that identity. Nothing to configure: the provider creates it
+on first use.
 
-A Brave-backed `websearch` Connection has no such limit — its credential is in
+What gets created, once per agent, in the `default` namespace:
+
+| Object | Name | Purpose |
+|---|---|---|
+| ServiceAccount | `kedge-agent-<agent>` | the identity |
+| Secret | `kedge-agent-<agent>-token` | its token, populated by kcp's token controller |
+| ClusterRole + binding | `kedge-agent-<agent>` | `get`/`list` on `infrastructure.kedge.faros.sh` |
+
+Things worth knowing before you rely on it:
+
+- **The grant is workspace-wide, not connection-scoped.** The agent's identity
+  can read *any* infrastructure instance in its workspace, not only the ones its
+  Connections name. That keeps the Role stable as connections change, at the
+  cost of a wider blast radius if the token is read out of the workspace.
+- **It is a standing credential.** kcp has no TokenRequest API, so this is a
+  long-lived ("legacy") ServiceAccount token that does not expire. Revoking it
+  means deleting the ServiceAccount; the provider caches tokens for 30 minutes,
+  so a revocation takes effect within that window.
+- **Read-only.** The Role grants `get` and `list` and nothing else, over one API
+  group. An agent identity cannot read Secrets or mutate anything.
+- **Failure is not fatal to the run.** If the identity cannot be provisioned,
+  the run proceeds without instance-backed tools rather than being lost, and the
+  provider logs `identity unavailable`. The tool then reports that it has no
+  identity, instead of composing a call that 401s two hops away.
+
+A Brave-backed `websearch` Connection needs none of this — its credential is in
 the Connection Secret, which every run can read.
 
 ### Local development (Tilt)

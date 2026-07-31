@@ -32,6 +32,23 @@ spec:
       - resource: secrets
         verbs: ["get", "list", "watch", "create", "update", "delete"]
         tenantScoped: true
+      # Per-agent identity for background runs. A scheduled run has no user to
+      # act as, so the provider mints the agent a ServiceAccount in the tenant
+      # workspace and calls the platform data plane as that identity. See
+      # api/agentidentity.go. Create-only on the RBAC objects: the provider
+      # grants the agent read access to instances and can never widen it to
+      # anything else, because it cannot write arbitrary roles.
+      - resource: serviceaccounts
+        verbs: ["get", "create"]
+        tenantScoped: true
+      - resource: clusterroles
+        group: rbac.authorization.k8s.io
+        verbs: ["get", "create"]
+        tenantScoped: true
+      - resource: clusterrolebindings
+        group: rbac.authorization.k8s.io
+        verbs: ["get", "create"]
+        tenantScoped: true
 {{- end -}}
 
 {{- if .Values.catalogEntry.enabled -}}
