@@ -154,6 +154,29 @@ func TestHandlerProxyVerbAppendsCallerPath(t *testing.T) {
 	}
 }
 
+// The caller's query string must survive the rewrite. The Director replaces
+// only URL.Path, so RawQuery rides along on the cloned request — but nothing
+// enforced that, and the agents provider's self-hosted search puts its entire
+// request in the query (`?q=…&format=json`). Dropping it would turn every
+// search into an empty-but-successful response, which reads as "no results"
+// rather than as a bug.
+func TestHandlerProxyVerbPreservesQueryString(t *testing.T) {
+	var gotQuery string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+	}))
+	defer upstream.Close()
+
+	h := newTestHandler(t, &fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeRuntime{host: upstream.URL})
+	rec := doRequest(h, http.MethodGet, dataplaneURL("proxy")+"/search?q=ada+lovelace&format=json")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotQuery != "q=ada+lovelace&format=json" {
+		t.Errorf("upstream query = %q, want the caller's verbatim", gotQuery)
+	}
+}
+
 func TestHandlerProxiesSandboxPreviewWithoutRouteGate(t *testing.T) {
 	// The public preview HTTPRoute is now created declaratively by the
 	// SandboxRunner RGD (same as the application template), so the data-plane
@@ -313,10 +336,10 @@ func TestParsePath(t *testing.T) {
 			want: request{workspace: "ws", resource: "applications", name: "shop", component: "frontend", verb: "log", callerPath: "/tail"},
 			ok:   true,
 		},
-		{path: PathPrefix + "clusters/ws/sandboxrunners/r1", ok: false},              // no verb
-		{path: "/other/clusters/ws/sandboxrunners/r1/log", ok: false},                // wrong prefix
-		{path: PathPrefix + "clusters//sandboxrunners/r1/log", ok: false},            // empty ws
-		{path: PathPrefix + "clusters/ws/applications/shop/components/", ok: false},  // no component
+		{path: PathPrefix + "clusters/ws/sandboxrunners/r1", ok: false},               // no verb
+		{path: "/other/clusters/ws/sandboxrunners/r1/log", ok: false},                 // wrong prefix
+		{path: PathPrefix + "clusters//sandboxrunners/r1/log", ok: false},             // empty ws
+		{path: PathPrefix + "clusters/ws/applications/shop/components/", ok: false},   // no component
 		{path: PathPrefix + "clusters/ws/applications/shop/components/be", ok: false}, // component without verb
 	} {
 		got, ok := parsePath(tc.path)

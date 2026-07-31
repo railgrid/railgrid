@@ -71,7 +71,7 @@ func (s *Server) listCredentials(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	writeList(w, out)
 }
 
 // createCredential writes a named model-credential Secret (create-or-update).
@@ -227,7 +227,7 @@ func (e *probeError) Error() string {
 // modelCatalog returns the curated pricing + capability catalog (public — no
 // tenant data, just reference data for the Models UI).
 func (s *Server) modelCatalog(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": llm.Catalog()})
+	writeList(w, llm.Catalog())
 }
 
 func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request) {

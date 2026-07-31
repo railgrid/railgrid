@@ -87,25 +87,54 @@ function dialog(opts: ConfirmOptions, showCancel: boolean): Promise<boolean> {
         </div>
       </div>`
     let done = false
+    const previouslyFocused = document.activeElement as HTMLElement | null
     const close = (v: boolean): void => {
       if (done) return
       done = true
-      window.removeEventListener('keydown', onKey)
+      overlay.removeEventListener('keydown', onKey)
       overlay.remove()
+      previouslyFocused?.focus?.()
       resolve(v)
     }
+    // Keydown is scoped to the dialog (not window) and Enter is deliberately
+    // NOT handled: the focused button activates on Enter natively, so focus
+    // decides the outcome. A global Enter-confirms handler used to fire a
+    // destructive confirm no matter where focus was.
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') close(false)
-      else if (e.key === 'Enter') close(true)
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        close(false)
+        return
+      }
+      if (e.key !== 'Tab') return
+      // Focus trap: keep Tab inside the dialog so the underlying page can't be
+      // reached while a modal is open.
+      const focusables = [...overlay.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter(
+        (el) => !el.hasAttribute('disabled'),
+      )
+      if (!focusables.length) return
+      const first = focusables[0]
+      const last = focusables[focusables.length - 1]
+      const active = document.activeElement as HTMLElement | null
+      if (e.shiftKey && (active === first || !overlay.contains(active))) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault()
+        first.focus()
+      }
     }
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) close(false) // backdrop
     })
     overlay.querySelector('[data-cancel]')?.addEventListener('click', () => close(false))
     overlay.querySelector('[data-confirm]')?.addEventListener('click', () => close(true))
-    window.addEventListener('keydown', onKey)
+    overlay.addEventListener('keydown', onKey)
     document.body.appendChild(overlay)
-    overlay.querySelector<HTMLElement>('[data-confirm]')?.focus()
+    // Danger dialogs focus Cancel so a reflexive Enter/Space cancels rather
+    // than deletes; non-destructive ones focus the primary action.
+    const initial = opts.danger && showCancel ? '[data-cancel]' : '[data-confirm]'
+    overlay.querySelector<HTMLElement>(initial)?.focus()
   })
 }
 

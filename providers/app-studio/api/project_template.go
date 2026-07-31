@@ -60,16 +60,44 @@ type projectTemplateInfo struct {
 	Kind       string
 	Resource   string
 
-	// Components maps a development component name to its workspacePath
-	// ("." claims the whole workspace). Non-empty iff the template declares
-	// spec.development.
-	Components map[string]string
+	// Components maps a development component name to its contract. Non-empty
+	// iff the template declares spec.development.
+	Components map[string]projectTemplateComponent
+}
 
-	// ImageInputs maps a development component name to the production schema
-	// input its built image feeds on launch (TemplateDevelopmentComponent
-	// .imageInput). A component absent here (empty imageInput) produces no
-	// launchable image. Keyed identically to Components.
-	ImageInputs map[string]string
+// projectTemplateComponent is one development component's contract: where its
+// source lives AND what will execute it in the development sandbox.
+//
+// The runtime half (Toolchain, StartCommand) is here because omitting it is
+// what let an assistant write a Go backend into a component whose sandbox runs
+// a Node image with "npm run dev || npm start": knowing only the directory, a
+// Go layout is a reasonable guess. The template's agent.usage prose describes
+// this too, but prose can be truncated, unread, or drift from the actual
+// startCommand — these fields cannot.
+type projectTemplateComponent struct {
+	// WorkspacePath is the workspace subdirectory whose files belong to this
+	// component ("." claims the whole workspace).
+	WorkspacePath string `json:"workspacePath"`
+
+	// Toolchain is the component's development runtime, derived from the
+	// template's ${kedge.devImage.<toolchain>} token (e.g. "node"). Empty when
+	// the template declares no parseable devImage.
+	Toolchain string `json:"toolchain,omitempty"`
+
+	// StartCommand is the shell command the dev agent supervises in the
+	// sandbox — the ground truth for what the component's source must be. May
+	// be long (a template can inline a config shim); callers that surface it
+	// to an agent should bound it.
+	StartCommand string `json:"startCommand,omitempty"`
+
+	// Port is the named container port the dev process serves on. Empty means
+	// the component serves no traffic (e.g. a worker).
+	Port string `json:"port,omitempty"`
+
+	// ImageInput is the production schema input this component's built image
+	// feeds on launch (TemplateDevelopmentComponent.imageInput). Empty means
+	// the component produces no launchable image.
+	ImageInput string `json:"imageInput,omitempty"`
 }
 
 // fetchProjectTemplate reads the named Template from the tenant workspace
@@ -107,8 +135,7 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 		return projectTemplateInfo{}, fmt.Errorf("template %q spec.development is malformed: %w", info.Name, err)
 	}
 	if found && len(components) > 0 {
-		info.Components = make(map[string]string, len(components))
-		info.ImageInputs = make(map[string]string, len(components))
+		info.Components = make(map[string]projectTemplateComponent, len(components))
 		for name, raw := range components {
 			comp, ok := raw.(map[string]any)
 			if !ok {
@@ -119,13 +146,53 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 			if wp == "" {
 				return projectTemplateInfo{}, fmt.Errorf("template %q development component %q has no workspacePath", info.Name, name)
 			}
-			info.Components[name] = wp
-			if img, _ := comp["imageInput"].(string); strings.TrimSpace(img) != "" {
-				info.ImageInputs[name] = strings.TrimSpace(img)
+			devImage, _ := comp["devImage"].(string)
+			startCommand, _ := comp["startCommand"].(string)
+			port, _ := comp["port"].(string)
+			imageInput, _ := comp["imageInput"].(string)
+			info.Components[name] = projectTemplateComponent{
+				WorkspacePath: wp,
+				Toolchain:     projectTemplateToolchain(devImage),
+				StartCommand:  strings.TrimSpace(startCommand),
+				Port:          strings.TrimSpace(port),
+				ImageInput:    strings.TrimSpace(imageInput),
 			}
 		}
 	}
 	return info, nil
+}
+
+// WorkspacePaths projects the components down to the name → workspacePath map
+// the portal DTOs and path-routing callers use. Keeps their JSON shape stable
+// now that the internal component carries the runtime contract too.
+func (i projectTemplateInfo) WorkspacePaths() map[string]string {
+	if len(i.Components) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(i.Components))
+	for name, comp := range i.Components {
+		out[name] = comp.WorkspacePath
+	}
+	return out
+}
+
+// projectTemplateDevImageTokenPrefix mirrors the infrastructure provider's
+// reserved token family for platform-managed development images. The
+// Template CRD validates devImage against ^\$\{kedge\.devImage\.[a-z][a-z0-9-]*\}$,
+// so the toolchain is exactly the token's suffix.
+const projectTemplateDevImageTokenPrefix = "${kedge.devImage."
+
+// projectTemplateToolchain extracts the toolchain name from a component's
+// devImage token ("${kedge.devImage.node}" → "node"). Anything that is not a
+// well-formed token yields "" — App Studio never resolves the token to a real
+// image (that is the infrastructure provider's job), it only needs the name to
+// tell an agent which runtime its code has to target.
+func projectTemplateToolchain(devImage string) string {
+	devImage = strings.TrimSpace(devImage)
+	if !strings.HasPrefix(devImage, projectTemplateDevImageTokenPrefix) || !strings.HasSuffix(devImage, "}") {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(devImage, projectTemplateDevImageTokenPrefix), "}")
 }
 
 // projectBuildComponent is one launchable component of a template-backed
@@ -148,12 +215,15 @@ type projectBuildComponent struct {
 // template with development components but no imageInputs (e.g. a worker-only
 // dev template) yields none.
 func projectBuildComponents(info projectTemplateInfo) []projectBuildComponent {
-	out := make([]projectBuildComponent, 0, len(info.ImageInputs))
-	for name, imageInput := range info.ImageInputs {
+	out := make([]projectBuildComponent, 0, len(info.Components))
+	for name, comp := range info.Components {
+		if comp.ImageInput == "" {
+			continue
+		}
 		out = append(out, projectBuildComponent{
 			Name:       name,
-			Context:    info.Components[name],
-			ImageInput: imageInput,
+			Context:    comp.WorkspacePath,
+			ImageInput: comp.ImageInput,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -433,7 +503,7 @@ func developmentTemplateViews(items []unstructured.Unstructured) []projectDevelo
 		}
 		view := projectDevelopmentTemplateView{
 			Name:       info.Name,
-			Components: info.Components,
+			Components: info.WorkspacePaths(),
 		}
 		view.DisplayName, _, _ = unstructured.NestedString(obj.Object, "spec", "displayName")
 		view.Description, _, _ = unstructured.NestedString(obj.Object, "spec", "description")
@@ -489,7 +559,7 @@ func (s *Server) putProjectTemplate(w http.ResponseWriter, r *http.Request) {
 	raw, _ := json.Marshal(updated)
 	writeJSON(w, http.StatusOK, projectTemplateSelectResponse{
 		Template:   info.Name,
-		Components: info.Components,
+		Components: info.WorkspacePaths(),
 		Project:    raw,
 	})
 }

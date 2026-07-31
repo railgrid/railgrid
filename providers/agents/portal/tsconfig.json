@@ -13,7 +13,12 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
+    // Lit's @property/@state decorators are the legacy (experimental) flavour,
+    // and its generated accessors require class fields to be assigned rather
+    // than defined — hence useDefineForClassFields: false.
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
     "types": ["vite/client"]
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "vite.config.ts", "vitest.config.ts"]
 }

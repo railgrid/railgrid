@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
+	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 	"github.com/faroshq/provider-infrastructure/kro"
 )
 
@@ -77,6 +78,7 @@ func templateFromUnstructured(u *unstructured.Unstructured) kro.Template {
 	cloud, _, _ := unstructured.NestedString(u.Object, "spec", "cloud")
 	version, _, _ := unstructured.NestedString(u.Object, "spec", "version")
 	iconURL, _, _ := unstructured.NestedString(u.Object, "spec", "iconURL")
+	exposure, _, _ := unstructured.NestedString(u.Object, "spec", "exposure")
 	group, _, _ := unstructured.NestedString(u.Object, "spec", "instanceCRD", "group")
 	crdVersion, _, _ := unstructured.NestedString(u.Object, "spec", "instanceCRD", "version")
 	resource, _, _ := unstructured.NestedString(u.Object, "spec", "instanceCRD", "resource")
@@ -91,20 +93,26 @@ func templateFromUnstructured(u *unstructured.Unstructured) kro.Template {
 	if group == "" {
 		group = templateGroup
 	}
+	// Absent means internal: a template that never declared exposure is
+	// assumed not to publish. Mirrors TemplateSpec.ExposureClass().
+	if exposure == "" {
+		exposure = string(infrav1alpha1.ExposureInternal)
+	}
 	if crdVersion == "" {
 		crdVersion = "v1alpha1"
 	}
 	return kro.Template{
-		Name:         name,
-		DisplayName:  displayName,
-		Description:  description,
-		Category:     category,
-		Cloud:        cloud,
-		Version:      version,
-		IconURL:      iconURL,
-		Backend:      "kro",
-		InstanceKind: kind,
-		InstanceGVR:  schema.GroupVersionResource{Group: group, Version: crdVersion, Resource: resource},
+		Name:            name,
+		DisplayName:     displayName,
+		Description:     description,
+		Category:        category,
+		Cloud:           cloud,
+		Version:         version,
+		IconURL:         iconURL,
+		Exposure:        exposure,
+		Backend:         "kro",
+		InstanceKind:    kind,
+		InstanceGVR:     schema.GroupVersionResource{Group: group, Version: crdVersion, Resource: resource},
 		InputsSchema:    inputs,
 		SampleValues:    sample,
 		Agent:           agent,
@@ -133,9 +141,11 @@ func immutableInputsFromAnnotation(u *unstructured.Unstructured) []string {
 }
 
 // templateDevelopmentFromSpec projects spec.development into the MCP DTO:
-// component names + workspacePaths only (runtime details like dev images and
-// start commands stay provider-internal). Returns nil when the Template
-// declares no development block — the template then has no dev mode.
+// each component's workspacePath plus the toolchain and start command that
+// execute it, so an agent can write source the sandbox can actually run. The
+// resolved dev image reference and reload rules stay provider-internal.
+// Returns nil when the Template declares no development block — the template
+// then has no dev mode.
 func templateDevelopmentFromSpec(u *unstructured.Unstructured) *kro.TemplateDevelopment {
 	comps, found, _ := unstructured.NestedMap(u.Object, "spec", "development", "components")
 	if !found || len(comps) == 0 {
@@ -144,9 +154,34 @@ func templateDevelopmentFromSpec(u *unstructured.Unstructured) *kro.TemplateDeve
 	out := &kro.TemplateDevelopment{Components: make(map[string]kro.TemplateDevelopmentComponent, len(comps))}
 	for name := range comps {
 		wp, _, _ := unstructured.NestedString(u.Object, "spec", "development", "components", name, "workspacePath")
-		out.Components[name] = kro.TemplateDevelopmentComponent{WorkspacePath: wp}
+		devImage, _, _ := unstructured.NestedString(u.Object, "spec", "development", "components", name, "devImage")
+		startCommand, _, _ := unstructured.NestedString(u.Object, "spec", "development", "components", name, "startCommand")
+		port, _, _ := unstructured.NestedString(u.Object, "spec", "development", "components", name, "port")
+		out.Components[name] = kro.TemplateDevelopmentComponent{
+			WorkspacePath: wp,
+			Toolchain:     devToolchainFromImageToken(devImage),
+			StartCommand:  strings.TrimSpace(startCommand),
+			Port:          strings.TrimSpace(port),
+		}
 	}
 	return out
+}
+
+// devImageTokenPrefix is the reserved token family template authors put in
+// spec.development.components[].devImage. The Template CRD validates the full
+// ${kedge.devImage.<toolchain>} shape, so the toolchain is the token's suffix.
+const devImageTokenPrefix = "${kedge.devImage."
+
+// devToolchainFromImageToken extracts the toolchain name an agent needs
+// ("${kedge.devImage.node}" → "node"). The MCP layer never resolves the token
+// to a real image — that is the backend's job — it only names the runtime so
+// an agent knows which language the component must be written in.
+func devToolchainFromImageToken(devImage string) string {
+	devImage = strings.TrimSpace(devImage)
+	if !strings.HasPrefix(devImage, devImageTokenPrefix) || !strings.HasSuffix(devImage, "}") {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(devImage, devImageTokenPrefix), "}")
 }
 
 // templateAgentFromSpec reads spec.agent (AI-agent guidance) into the MCP DTO.

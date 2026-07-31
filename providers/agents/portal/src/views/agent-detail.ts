@@ -1,72 +1,99 @@
-// Agent detail page: a header (back to Agents, title, Chat|Flow|Settings tabs,
-// delete) over one of three tab bodies. Chat is the default. The flow tab mounts
-// the imperative FlowCanvas after render.
+// Agent detail page — the one canonical place an agent is edited.
+//
+// Config tab = two panes: the full configuration form on the left, a live chat
+// playground on the right (edit config, try it immediately). Runs tab = this
+// agent's Activity feed, filtered.
 
+import { html, nothing, type TemplateResult } from 'lit'
+import { property } from 'lit/decorators.js'
+import { StoreElement } from '../ui/base'
+import { icon } from '../ui/icon'
+import { loadingState } from '../ui/states'
 import { confirmModal } from '../portalkit/modal'
-import { ic } from '../portalkit/icons'
-import type { ViewCtx } from '../view'
+import { mutate } from '../mutate'
 import type { AgentTab } from '../router'
-import { escapeHTML } from '../types'
-import { deleteAgent } from '../actions'
-import * as chat from './agent-chat'
-import * as settings from './agent-settings'
-import * as wiring from './agent-wiring'
-import * as flowView from './flow-view'
 
-const TABS: [AgentTab, string][] = [
-  ['chat', `${ic('message')} Chat`],
-  ['flow', `${ic('workflow')} Flow`],
-  ['wiring', `${ic('sliders')} Wiring`],
-  ['settings', `${ic('settings')} Settings`],
+import './agent-config'
+import './agent-chat'
+import './activity'
+
+const TABS: [AgentTab, TemplateResult][] = [
+  ['config', html`${icon('sliders')} Config`],
+  ['runs', html`${icon('gauge')} Runs`],
 ]
 
-export function render(vc: ViewCtx, name: string, tab: AgentTab): string {
-  const a = vc.store.agent(name)
-  if (!a) {
-    // Agents may still be loading — show a gentle placeholder rather than an
-    // error, since the list refreshes into place.
-    return `<div class="agents-detail"><div class="agents-detail-head"><div class="agents-detail-title"><button class="agents-back" data-back>${ic('arrow-left')} Agents</button></div></div><div class="agents-empty"><p class="muted">Loading agent…</p></div></div>`
+export class AgentDetail extends StoreElement {
+  @property({ type: String }) name = ''
+  @property({ type: String }) tab: AgentTab = 'config'
+
+  private async del(): Promise<void> {
+    const ok = await confirmModal({
+      title: `Delete agent “${this.name}”?`,
+      message: 'This also deletes its chat history.',
+      danger: true,
+      confirmLabel: 'Delete',
+    })
+    if (!ok) return
+    const res = await mutate(this.store, {
+      run: () => this.api.deleteAgent(this.name),
+      success: `Agent “${this.name}” deleted.`,
+      failure: 'Delete failed',
+      reload: ['agents'],
+    })
+    if (res !== undefined) this.navigate({ kind: 'menu', menu: 'agents' })
   }
-  const body =
-    tab === 'chat'
-      ? chat.render(a)
-      : tab === 'settings'
-        ? settings.render(vc, a)
-        : tab === 'wiring'
-          ? wiring.render(vc, a)
-          : `<div class="agents-flow-host" data-flow-host></div>`
-  return `
-    <div class="agents-detail ${tab === 'flow' ? 'is-flow' : ''}">
-      <div class="agents-detail-head">
-        <div class="agents-detail-title">
-          <button class="agents-back" data-back>${ic('arrow-left')} Agents</button>
-          <h2>${escapeHTML(a.spec?.displayName || a.metadata.name)}</h2>
+
+  render(): TemplateResult {
+    const a = this.store.agent(this.name)
+    const back = html`<button class="agents-back" @click=${() => this.navigate({ kind: 'menu', menu: 'agents' })}>
+      ${icon('arrow-left')} Agents
+    </button>`
+    if (!a) {
+      // Agents may still be loading — a placeholder beats an error, since the
+      // list refreshes into place.
+      return html`<div class="agents-detail">
+        <div class="agents-detail-head"><div class="agents-detail-title">${back}</div></div>
+        ${this.store.agents.loaded
+          ? html`<div class="agents-state agents-state-empty">${icon('bot')} No agent named “${this.name}” in this workspace.</div>`
+          : loadingState('Loading agent…')}
+      </div>`
+    }
+    return html`
+      <div class="agents-detail">
+        <div class="agents-detail-head">
+          <div class="agents-detail-title">
+            ${back}
+            <h2>${a.spec?.displayName || a.metadata.name}</h2>
+            ${a.status?.suspendedReason ? html`<span class="agents-badge agents-badge-warn">${a.status.suspendedReason}</span>` : nothing}
+          </div>
+          <div class="agents-detail-actions">
+            <nav class="agents-subnav" aria-label="Agent sections">
+              ${TABS.map(
+                ([id, label]) => html`<button
+                  class="agents-subtab ${this.tab === id ? 'sel' : ''}"
+                  aria-current=${this.tab === id ? 'page' : nothing}
+                  @click=${() => this.navigate({ kind: 'agent', name: this.name, tab: id })}
+                >
+                  ${label}
+                </button>`,
+              )}
+            </nav>
+            <button class="secondary" @click=${() => void this.del()}>${icon('trash')} Delete</button>
+          </div>
         </div>
-        <div class="agents-detail-actions">
-          <nav class="agents-subnav">
-            ${TABS.map(([id, label]) => `<button class="agents-subtab ${tab === id ? 'sel' : ''}" data-subtab="${id}">${label}</button>`).join('')}
-          </nav>
-          <button class="secondary" data-delagent="${escapeHTML(a.metadata.name)}">Delete</button>
-        </div>
+        ${this.tab === 'runs'
+          ? html`<agents-activity .store=${this.store} .api=${this.api} .agent=${this.name}></agents-activity>`
+          : html`<div class="agents-split">
+              <div class="agents-split-config">
+                <agents-agent-config .store=${this.store} .api=${this.api} .name=${this.name}></agents-agent-config>
+              </div>
+              <div class="agents-split-chat">
+                <agents-agent-chat .store=${this.store} .api=${this.api} .name=${this.name}></agents-agent-chat>
+              </div>
+            </div>`}
       </div>
-      ${tab === 'flow' ? body : `<div class="agents-detail-body">${body}</div>`}
-    </div>`
+    `
+  }
 }
 
-export function wire(vc: ViewCtx, root: HTMLElement, name: string, tab: AgentTab): void {
-  root.querySelector<HTMLElement>('[data-back]')?.addEventListener('click', () => vc.navigate({ kind: 'menu', menu: 'agents' }))
-  root.querySelectorAll<HTMLElement>('[data-subtab]').forEach((el) =>
-    el.addEventListener('click', () => vc.navigate({ kind: 'agent', name, tab: el.dataset.subtab as AgentTab })),
-  )
-  root.querySelector<HTMLElement>('[data-delagent]')?.addEventListener('click', async () => {
-    if (await confirmModal({ title: `Delete agent “${name}”?`, message: 'This also deletes its chat history.', danger: true, confirmLabel: 'Delete' })) {
-      void deleteAgent(vc, name).then(() => vc.navigate({ kind: 'menu', menu: 'agents' }))
-    }
-  })
-  const a = vc.store.agent(name)
-  if (!a) return
-  if (tab === 'chat') chat.wire(vc, root, a)
-  else if (tab === 'settings') settings.wire(vc, root, a)
-  else if (tab === 'wiring') wiring.wire(vc, root, a)
-  else flowView.mount(vc, root, name)
-}
+if (!customElements.get('agents-agent-detail')) customElements.define('agents-agent-detail', AgentDetail)

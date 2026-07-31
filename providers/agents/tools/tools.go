@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -49,10 +50,69 @@ type Deps struct {
 	ConnSecretName func(name string) string
 	// RunID is the executing run — recorded on sub-agent runs as the parent.
 	RunID string
+	// DataPlane addresses tenant workloads through the infrastructure
+	// provider's data plane. Zero value disables instance-backed tools.
+	DataPlane DataPlane
 	// Delegate runs a scoped task on another agent and returns its answer.
 	// Injected by the api layer (it owns run execution); nil disables the
 	// delegate tool.
 	Delegate func(ctx context.Context, targetAgent, task string) (string, error)
+}
+
+// DataPlane is what a tool needs to reach a tenant workload provisioned by the
+// infrastructure provider, over the platform-internal path rather than a public
+// hostname. See docs/platform-internal-networking.md.
+//
+// Token is the CALLER's bearer token: the data plane authorizes by re-reading
+// the instance as the caller, so a run with no user token (any background run,
+// today) cannot use it. That is a deliberate property of the contract, not an
+// oversight here — see the provider-identity phase in the design note.
+type DataPlane struct {
+	HubBase   string
+	ClusterID string
+	Token     string
+	// Insecure skips TLS verification against the hub (dev self-signed certs).
+	Insecure bool
+}
+
+// Available reports whether a data-plane call can be made at all.
+func (d DataPlane) Available() bool {
+	return d.HubBase != "" && d.ClusterID != "" && d.Token != ""
+}
+
+// ProxyURL composes the URL of an instance's `proxy` verb:
+//
+//	{hub}/services/providers/infrastructure/dataplane/clusters/{cluster}/{resource}/{name}/proxy
+//
+// The caller appends its own path, if the template's endpoint does not pin one.
+// It returns an error rather than a URL when the data plane is unusable, so
+// every caller reports the same precise reason instead of a bare 401 from two
+// hops away.
+func (d DataPlane) ProxyURL(kind, connName, resource, instance string) (string, error) {
+	if d.HubBase == "" || d.ClusterID == "" {
+		return "", fmt.Errorf("%s connection %q names instance %q, but this provider has no hub/workspace context to reach it", kind, connName, instance)
+	}
+	if d.Token == "" {
+		// Background runs carry no user token, and the data plane has no other
+		// identity to authorize yet. See the provider-identity phase in
+		// docs/platform-internal-networking.md.
+		return "", fmt.Errorf("%s connection %q reaches instance %q over the platform data plane, which authorizes as the calling user — unavailable to scheduled/background runs until provider identity lands", kind, connName, instance)
+	}
+	return strings.TrimRight(d.HubBase, "/") +
+		fmt.Sprintf("/services/providers/infrastructure/dataplane/clusters/%s/%s/%s/proxy",
+			url.PathEscape(d.ClusterID), url.PathEscape(resource), url.PathEscape(instance)), nil
+}
+
+// instanceRef reads the instance a Connection is bound to, with the resource
+// name the template's instance CRD uses. Empty instance means the connection is
+// not instance-backed.
+func instanceRef(conn *agentsv1alpha1.Connection, defaultResource string) (instance, resource string) {
+	instance = strings.TrimSpace(conn.Spec.Config["instance"])
+	resource = strings.TrimSpace(conn.Spec.Config["instanceResource"])
+	if resource == "" {
+		resource = defaultResource
+	}
+	return instance, resource
 }
 
 // connToken reads a connection's credential token ("" when absent).

@@ -43,8 +43,20 @@ func applicationTemplateObject() *unstructured.Unstructured {
 			},
 			"development": map[string]any{
 				"components": map[string]any{
-					"frontend": map[string]any{"workspacePath": "web", "devImage": "${kedge.devImage.node}"},
-					"backend":  map[string]any{"workspacePath": "api", "devImage": "${kedge.devImage.node}"},
+					"frontend": map[string]any{
+						"workspacePath": "web",
+						"devImage":      "${kedge.devImage.node}",
+						"startCommand":  "npm run dev",
+						"port":          "frontend",
+						"imageInput":    "frontendImage",
+					},
+					"backend": map[string]any{
+						"workspacePath": "api",
+						"devImage":      "${kedge.devImage.node}",
+						"startCommand":  "npm run dev || npm start",
+						"port":          "backend",
+						"imageInput":    "backendImage",
+					},
 				},
 			},
 		},
@@ -59,9 +71,18 @@ func TestProjectTemplateInfoFromUnstructured(t *testing.T) {
 	if info.APIVersion != "infrastructure.kedge.faros.sh/v1alpha1" || info.Kind != "Application" || info.Resource != "applications" {
 		t.Errorf("instance coordinates = %s/%s/%s", info.APIVersion, info.Kind, info.Resource)
 	}
-	want := map[string]string{"frontend": "web", "backend": "api"}
+	// The runtime half of the contract must survive extraction: without the
+	// toolchain and start command, nothing downstream can tell an agent which
+	// language its code has to be written in.
+	want := map[string]projectTemplateComponent{
+		"frontend": {WorkspacePath: "web", Toolchain: "node", StartCommand: "npm run dev", Port: "frontend", ImageInput: "frontendImage"},
+		"backend":  {WorkspacePath: "api", Toolchain: "node", StartCommand: "npm run dev || npm start", Port: "backend", ImageInput: "backendImage"},
+	}
 	if !reflect.DeepEqual(info.Components, want) {
 		t.Errorf("components = %v, want %v", info.Components, want)
+	}
+	if got, want := info.WorkspacePaths(), map[string]string{"frontend": "web", "backend": "api"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("WorkspacePaths = %v, want %v", got, want)
 	}
 
 	// A template without a development block yields no components.
@@ -297,7 +318,7 @@ func TestRouteProjectSyncFiles(t *testing.T) {
 		{Path: "README.md", Content: "docs"},
 		{Path: "website/index.html", Content: "not web/"},
 	}
-	routed := routeProjectSyncFiles(files, map[string]string{"frontend": "web", "backend": "api"})
+	routed := routeProjectSyncFiles(files, devComponentPaths(map[string]string{"frontend": "web", "backend": "api"}))
 
 	wantFrontend := []projectSandboxSyncFile{
 		{Path: "package.json", Content: "{}"},
@@ -315,7 +336,7 @@ func TestRouteProjectSyncFiles(t *testing.T) {
 	}
 
 	// "." claims the whole workspace (single-component templates), verbatim.
-	routedRoot := routeProjectSyncFiles(files, map[string]string{"runner": "."})
+	routedRoot := routeProjectSyncFiles(files, devComponentPaths(map[string]string{"runner": "."}))
 	if !reflect.DeepEqual(routedRoot["runner"], files) {
 		t.Errorf("root component files = %v, want all files unchanged", routedRoot["runner"])
 	}
@@ -327,7 +348,7 @@ func TestProjectDevelopmentTargetRefs(t *testing.T) {
 		Kind:         "Application",
 		APIVersion:   "infrastructure.kedge.faros.sh/v1alpha1",
 		ResourceName: "shop-dev",
-		Components:   map[string]string{"frontend": "web", "backend": "api"},
+		Components:   devComponentPaths(map[string]string{"frontend": "web", "backend": "api"}),
 	}
 	ref := target.dataPlaneRefFor("backend")
 	if ref.Resource != "applications" || ref.Name != "shop-dev" || ref.Component != "backend" {

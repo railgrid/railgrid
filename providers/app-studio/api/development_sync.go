@@ -53,7 +53,7 @@ type projectDevelopmentSyncTargetInfo struct {
 	// template-backed projects (docs/app-studio-template-sandboxes.md §4.2).
 	// Empty means the legacy single-runner target: whole-workspace sync to
 	// the instance-level verbs.
-	Components map[string]string `json:"Components,omitempty"`
+	Components map[string]projectTemplateComponent `json:"Components,omitempty"`
 }
 
 // instanceResource is the tenant.Resource descriptor for the target instance.
@@ -86,7 +86,7 @@ func (t projectDevelopmentSyncTargetInfo) sortedComponents() []string {
 func (t projectDevelopmentSyncTargetInfo) componentWorkspacePathSummary() string {
 	parts := make([]string, 0, len(t.Components))
 	for _, name := range t.sortedComponents() {
-		wp := path.Clean(strings.TrimSpace(t.Components[name]))
+		wp := path.Clean(strings.TrimSpace(t.Components[name].WorkspacePath))
 		if wp == "." {
 			parts = append(parts, name+" → the workspace root")
 			continue
@@ -235,6 +235,12 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 			"none of the %d workspace files are under a development component directory (%s); application source must live under those directories to reach the development sandbox",
 			len(files), target.componentWorkspacePathSummary())
 	}
+	// Files landing in the right directory but written for the wrong runtime
+	// fail silently otherwise: the sandbox image has no toolchain for them, the
+	// start command finds nothing to run, and the pod simply never listens.
+	if err := validateProjectSyncToolchains(routed, target.Components); err != nil {
+		return nil, err
+	}
 	results := map[string]json.RawMessage{}
 	for _, component := range target.sortedComponents() {
 		payload, err := json.Marshal(projectSandboxSyncRequest{Files: routed[component], Restart: "auto"})
@@ -274,10 +280,10 @@ func (s *Server) validateDevelopmentInstance(ctx context.Context, c *asclient.Cl
 // prefix stripped (the component's PVC holds only its own subtree). "." claims
 // the whole workspace (single-component templates); the Template validation
 // guarantees paths never nest, so a file maps to at most one component.
-func routeProjectSyncFiles(files []projectSandboxSyncFile, components map[string]string) map[string][]projectSandboxSyncFile {
+func routeProjectSyncFiles(files []projectSandboxSyncFile, components map[string]projectTemplateComponent) map[string][]projectSandboxSyncFile {
 	out := make(map[string][]projectSandboxSyncFile, len(components))
-	for component, workspacePath := range components {
-		wp := path.Clean(strings.TrimSpace(workspacePath))
+	for component, comp := range components {
+		wp := path.Clean(strings.TrimSpace(comp.WorkspacePath))
 		if wp == "." {
 			out[component] = files
 			continue
@@ -293,6 +299,139 @@ func routeProjectSyncFiles(files []projectSandboxSyncFile, components map[string
 		}
 	}
 	return out
+}
+
+// projectToolchainManifests names the file every known toolchain needs before
+// its component's start command can run: without it the dev process exits
+// immediately (or never starts), the port stays closed, and the only symptom is
+// an app that "looks up" while every request to it fails.
+//
+// Keyed by the toolchain half of the template's ${kedge.devImage.<toolchain>}
+// token. A toolchain absent from this map is not validated — an unknown
+// toolchain must never block a sync, since the template, not App Studio, is the
+// authority on what its sandbox can run.
+var projectToolchainManifests = map[string]struct {
+	// Files are the accepted manifest names; any one present satisfies the check.
+	Files []string
+	// Hint tells the caller what to write instead, in the terms the agent
+	// needs to act on.
+	Hint string
+}{
+	"node": {
+		Files: []string{"package.json"},
+		Hint:  "write a package.json whose \"dev\" or \"start\" script launches the server on $PORT",
+	},
+	"python": {
+		Files: []string{"requirements.txt", "pyproject.toml", "Pipfile", "setup.py"},
+		Hint:  "write a requirements.txt or pyproject.toml declaring the app's dependencies",
+	},
+	"go": {
+		Files: []string{"go.mod"},
+		Hint:  "write a go.mod at the component root",
+	},
+	"ruby": {
+		Files: []string{"Gemfile"},
+		Hint:  "write a Gemfile at the component root",
+	},
+}
+
+// validateProjectSyncToolchains rejects a sync whose routed files cannot
+// possibly run in the component's sandbox. It fires only when a component
+// received files AND its toolchain is one we know AND that toolchain's manifest
+// is absent — so an empty component (nothing written yet) and an unrecognized
+// toolchain both pass untouched.
+//
+// This is the backstop for the contract being ignored rather than unavailable:
+// the template declares the toolchain and start command, inspect_development_
+// templates surfaces them, and the prompt states them — but none of that
+// guarantees the generated code matches, and a mismatch is otherwise invisible
+// until someone opens the app and finds nothing listening.
+func validateProjectSyncToolchains(routed map[string][]projectSandboxSyncFile, components map[string]projectTemplateComponent) error {
+	names := make([]string, 0, len(routed))
+	for name := range routed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		files := routed[name]
+		if len(files) == 0 {
+			continue
+		}
+		comp, ok := components[name]
+		if !ok {
+			continue
+		}
+		manifest, known := projectToolchainManifests[comp.Toolchain]
+		if !known {
+			continue
+		}
+		if projectSyncFilesContainManifest(files, manifest.Files) {
+			continue
+		}
+		where := path.Clean(strings.TrimSpace(comp.WorkspacePath))
+		if where == "." {
+			where = "the workspace root"
+		} else {
+			where += "/"
+		}
+		return fmt.Errorf(
+			"component %q runs a %s development sandbox but %s contains no %s — %s. The sandbox has no other toolchain installed and starts this component with: %s",
+			name, comp.Toolchain, where,
+			humanizeProjectManifestList(manifest.Files), manifest.Hint,
+			summarizeProjectStartCommand(comp.StartCommand))
+	}
+	return nil
+}
+
+// projectSyncFilesContainManifest reports whether any accepted manifest sits at
+// the component root. Paths are already component-relative here (the router
+// strips the workspacePath prefix), so a root manifest has no separator — a
+// nested one (e.g. "vendor/package.json") must not satisfy the check.
+func projectSyncFilesContainManifest(files []projectSandboxSyncFile, accepted []string) bool {
+	for _, f := range files {
+		p := path.Clean(strings.TrimSpace(f.Path))
+		if strings.Contains(p, "/") {
+			continue
+		}
+		for _, name := range accepted {
+			if p == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// humanizeProjectManifestList renders accepted manifests as "a package.json" or
+// "a requirements.txt, pyproject.toml, Pipfile, or setup.py".
+func humanizeProjectManifestList(files []string) string {
+	switch len(files) {
+	case 0:
+		return "manifest"
+	case 1:
+		return files[0]
+	case 2:
+		return files[0] + " or " + files[1]
+	default:
+		return strings.Join(files[:len(files)-1], ", ") + ", or " + files[len(files)-1]
+	}
+}
+
+// projectStartCommandSummaryMaxChars bounds a start command in an error
+// message. Templates may inline a long config shim (the application template's
+// frontend embeds a base64 vite config), and the useful signal is the leading
+// command, not the payload.
+const projectStartCommandSummaryMaxChars = 160
+
+func summarizeProjectStartCommand(cmd string) string {
+	cmd = strings.Join(strings.Fields(cmd), " ")
+	if cmd == "" {
+		return "(the template declares no start command)"
+	}
+	if len(cmd) > projectStartCommandSummaryMaxChars {
+		return cmd[:projectStartCommandSummaryMaxChars] + "..."
+	}
+	return cmd
 }
 
 // countRoutedProjectSyncFiles totals the files routed across all components.
@@ -385,7 +524,53 @@ func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id i
 	}
 	if _, err := s.syncProjectDevelopmentTarget(ctx, c, id, p, target); err != nil {
 		// A failed post-mutation sync means the user's edit never reached the
-		// development sandbox — warn, don't bury it at debug verbosity.
+		// development sandbox — warn, don't bury it at debug verbosity, and
+		// record it so the assistant's own verification reports it instead of
+		// silently diagnosing a stale sandbox.
 		klog.Warningf("development sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
+		s.recordDevelopmentSyncFailure(id, p.Name, fmt.Sprintf("the last workspace sync after %s failed, so the development sandbox is still running the previous code: %v", projectToolBaseName(name), err))
+		return
 	}
+	s.clearDevelopmentSyncFailure(id, p.Name)
+}
+
+// developmentSyncFailureKey scopes a recorded failure to one tenant's project,
+// matching developmentSyncLock's key.
+func developmentSyncFailureKey(id identity, projectName string) string {
+	return id.orgUUID + "/" + id.workspaceUUID + "/" + projectName
+}
+
+// recordDevelopmentSyncFailure stores the reason the last background sync
+// failed. Overwrites any previous reason: only the latest matters.
+func (s *Server) recordDevelopmentSyncFailure(id identity, projectName, reason string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.developmentSyncFailures == nil {
+		s.developmentSyncFailures = map[string]string{}
+	}
+	s.developmentSyncFailures[developmentSyncFailureKey(id, projectName)] = reason
+}
+
+// clearDevelopmentSyncFailure drops a recorded failure once a sync succeeds,
+// so a stale blocker never outlives the problem it described.
+func (s *Server) clearDevelopmentSyncFailure(id identity, projectName string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.developmentSyncFailures, developmentSyncFailureKey(id, projectName))
+}
+
+// lastDevelopmentSyncFailure returns the recorded failure for a project, if any.
+func (s *Server) lastDevelopmentSyncFailure(id identity, projectName string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.developmentSyncFailures[developmentSyncFailureKey(id, projectName)]
 }

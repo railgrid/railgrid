@@ -87,12 +87,34 @@ type projectAssistantTemplateCatalog struct {
 }
 
 type projectAssistantTemplateCandidate struct {
-	Name        string            `json:"name"`
-	DisplayName string            `json:"displayName,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Category    string            `json:"category,omitempty"`
-	AgentUsage  string            `json:"agentUsage,omitempty"`
-	Components  map[string]string `json:"components"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName,omitempty"`
+	Description string `json:"description,omitempty"`
+	Category    string `json:"category,omitempty"`
+	AgentUsage  string `json:"agentUsage,omitempty"`
+
+	// Components carries each development component's full contract —
+	// directory, toolchain, and start command — not just the directory. The
+	// directory alone tells an agent where to put source but nothing about
+	// what will execute it, which is how a Go backend ends up in a component
+	// whose sandbox only runs Node.
+	Components map[string]projectAssistantTemplateComponent `json:"components"`
+
+	// RawAgentUsage is the untrimmed agent.usage text, kept so the aggregate
+	// budget can re-trim from the original rather than compounding an already
+	// truncated string. Never serialized — the model reads AgentUsage.
+	RawAgentUsage string `json:"-"`
+}
+
+// projectAssistantTemplateComponent is one component's contract as the model
+// sees it. Field names are chosen to read as instructions, not metadata: an
+// agent scanning this must come away knowing which directory to write, which
+// runtime that code has to be written for, and what will be executed.
+type projectAssistantTemplateComponent struct {
+	WorkspacePath string `json:"workspaceDirectory"`
+	Toolchain     string `json:"toolchain,omitempty"`
+	StartCommand  string `json:"startCommand,omitempty"`
+	Port          string `json:"port,omitempty"`
 }
 
 type projectAssistantTemplateInspectionResult struct {
@@ -486,12 +508,13 @@ func filterProjectAssistantDevelopmentTemplates(ctx context.Context, catalog *pr
 		category, _, _ := unstructured.NestedString(obj.Object, "spec", "category")
 		usage, _, _ := unstructured.NestedString(obj.Object, "spec", "agent", "usage")
 		candidates = append(candidates, projectAssistantTemplateCandidate{
-			Name:        info.Name,
-			DisplayName: trimProjectAssistantWorkflowString(displayName, 80),
-			Description: trimProjectAssistantWorkflowString(description, 160),
-			Category:    trimProjectAssistantWorkflowString(category, 40),
-			AgentUsage:  trimProjectAssistantWorkflowString(usage, 160),
-			Components:  boundedProjectAssistantTemplateComponents(info.Components),
+			Name:          info.Name,
+			DisplayName:   trimProjectAssistantWorkflowString(displayName, 80),
+			Description:   trimProjectAssistantWorkflowString(description, projectAssistantTemplateDescriptionChars),
+			Category:      trimProjectAssistantWorkflowString(category, 40),
+			RawAgentUsage: strings.TrimSpace(usage),
+			AgentUsage:    trimProjectAssistantWorkflowString(usage, projectAssistantTemplateUsageChars),
+			Components:    boundedProjectAssistantTemplateComponents(info.Components),
 		})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Name < candidates[j].Name })
@@ -502,14 +525,98 @@ func filterProjectAssistantDevelopmentTemplates(ctx context.Context, catalog *pr
 			Templates: candidates,
 		}, nil
 	}
+	truncated := boundProjectAssistantTemplateCandidates(candidates)
+	summary := fmt.Sprintf("Found %d development-capable template(s). agent.usage below is the template's authoritative environment contract — read the DEVELOPMENT MODE guidance before choosing, then call select_project_template.", len(candidates))
+	if truncated {
+		summary += " Some agent.usage text was shortened to fit; call infrastructure__describe_template on a candidate for its full contract before writing code against it."
+	}
 	return &projectAssistantTemplateInspectionResult{
 		Status:    "ok",
-		Summary:   fmt.Sprintf("Found %d development-capable template(s). Choose one deliberately, then call select_project_template.", len(candidates)),
+		Summary:   summary,
 		Templates: candidates,
 	}, nil
 }
 
-func boundedProjectAssistantTemplateComponents(src map[string]string) map[string]string {
+// Development-template inspection is the ONE read that decides which runtime a
+// project's code has to target, so it carries the templates' agent.usage in
+// full rather than a blurb: a 160-char snippet cut off mid-sentence, long
+// before the DEVELOPMENT MODE paragraph that names the sandbox toolchain, and
+// agents bound templates without ever seeing which runtime would execute their
+// code. The dev-capable catalog is small (the filter above already drops
+// production-only templates), so the whole set fits comfortably; the aggregate
+// budget below is a guard against a tenant publishing an unusually large
+// catalog, not a routine trim.
+const (
+	// projectAssistantTemplateUsageChars is the per-template agent.usage
+	// budget. Set well above the largest shipped contract (application is
+	// ~5.8k) so a template author can expand their guidance without silently
+	// losing the tail of it.
+	projectAssistantTemplateUsageChars = 12000
+	// projectAssistantTemplateDescriptionChars bounds the short summary line.
+	projectAssistantTemplateDescriptionChars = 4000
+	// projectAssistantTemplateInspectionMaxBytes caps the encoded result
+	// across all candidates.
+	projectAssistantTemplateInspectionMaxBytes = 65536
+)
+
+// projectAssistantTemplateUsageFallbackChars are the successively tighter
+// per-template agent.usage budgets applied when the full catalog exceeds
+// projectAssistantTemplateInspectionMaxBytes. Every step keeps all candidates
+// (dropping templates would hide a valid choice entirely) and stays well past
+// the point where a contract's DEVELOPMENT MODE guidance is readable.
+var projectAssistantTemplateUsageFallbackChars = []int{3000, 1500, 600}
+
+// boundProjectAssistantTemplateCandidates shrinks agent.usage in place until
+// the encoded result fits the aggregate budget. It reports whether any
+// candidate ended up truncated, so the caller can tell the model to fetch the
+// full contract with describe_template.
+func boundProjectAssistantTemplateCandidates(candidates []projectAssistantTemplateCandidate) bool {
+	truncated := false
+	for i := range candidates {
+		if candidates[i].AgentUsage != candidates[i].RawAgentUsage {
+			truncated = true
+		}
+	}
+	fits := func() bool {
+		raw, err := json.Marshal(candidates)
+		return err == nil && len(raw) <= projectAssistantTemplateInspectionMaxBytes
+	}
+	if fits() {
+		return truncated
+	}
+	apply := func(budget int) {
+		for i := range candidates {
+			trimmed := ""
+			if budget > 0 {
+				trimmed = trimProjectAssistantWorkflowString(candidates[i].RawAgentUsage, budget)
+			}
+			if trimmed != candidates[i].AgentUsage {
+				candidates[i].AgentUsage = trimmed
+				truncated = true
+			}
+		}
+	}
+	for _, budget := range projectAssistantTemplateUsageFallbackChars {
+		apply(budget)
+		if fits() {
+			return truncated
+		}
+	}
+	// A catalog large enough to exhaust the ladder keeps halving until it fits;
+	// dropping usage entirely is the floor, and the caller's summary then points
+	// the model at describe_template. Templates themselves are never dropped —
+	// a missing candidate is a choice the agent never learns exists.
+	for budget := projectAssistantTemplateUsageFallbackChars[len(projectAssistantTemplateUsageFallbackChars)-1] / 2; budget > 0; budget /= 2 {
+		apply(budget)
+		if fits() {
+			return truncated
+		}
+	}
+	apply(0)
+	return true
+}
+
+func boundedProjectAssistantTemplateComponents(src map[string]projectTemplateComponent) map[string]projectAssistantTemplateComponent {
 	if len(src) == 0 {
 		return nil
 	}
@@ -518,12 +625,23 @@ func boundedProjectAssistantTemplateComponents(src map[string]string) map[string
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	if len(names) > 4 {
-		names = names[:4]
+	// Every component is a directory the agent MUST place source under, so a
+	// dropped one is source written where nothing syncs it. Keep them all up
+	// to a sanity bound far above any real template's component count.
+	if len(names) > 24 {
+		names = names[:24]
 	}
-	out := make(map[string]string, len(names))
+	out := make(map[string]projectAssistantTemplateComponent, len(names))
 	for _, name := range names {
-		out[trimProjectAssistantWorkflowString(name, 48)] = trimProjectAssistantWorkflowString(src[name], 80)
+		comp := src[name]
+		out[trimProjectAssistantWorkflowString(name, 48)] = projectAssistantTemplateComponent{
+			WorkspacePath: trimProjectAssistantWorkflowString(comp.WorkspacePath, 128),
+			Toolchain:     trimProjectAssistantWorkflowString(comp.Toolchain, 48),
+			// Bounded: a template may inline a long config shim in its start
+			// command, and the leading command carries the signal.
+			StartCommand: trimProjectAssistantWorkflowString(comp.StartCommand, 240),
+			Port:         trimProjectAssistantWorkflowString(comp.Port, 63),
+		}
 	}
 	return out
 }

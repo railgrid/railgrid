@@ -129,14 +129,6 @@ spec:
                   - name
                   type: object
                 type: array
-              defaultNotifyConnection:
-                description: |-
-                  DefaultNotifyConnection is DEPRECATED in favor of Channels. It names a
-                  single Connection used to deliver proactive messages. When Channels is
-                  non-empty this field is ignored; when Channels is empty it is treated as
-                  an implicit "primary" channel so existing agents keep working unchanged.
-                maxLength: 253
-                type: string
               delegates:
                 description: |-
                   Delegates lists the names of other Agents this agent may spawn as
@@ -208,18 +200,6 @@ spec:
                   "compaction" (summarization). An empty map falls back to the "chat"
                   profile for every purpose.
                 type: object
-              runner:
-                default: auto
-                description: |-
-                  Runner selects the execution backend: "auto" (default) runs in-process
-                  on Eino unless the task is long-running and the claude-code runner is
-                  available; "eino" pins the in-process loop; "claude-code" pins the
-                  pod-backed Claude Code runner (requires the infrastructure provider).
-                enum:
-                - auto
-                - eino
-                - claude-code
-                type: string
               systemPrompt:
                 description: |-
                   SystemPrompt is the agent's persona and standing instructions, injected

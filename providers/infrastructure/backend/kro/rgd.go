@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"regexp"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -92,6 +93,13 @@ func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstruct
 		return nil, err
 	}
 
+	if err := checkExposure(tmpl, resources); err != nil {
+		return nil, err
+	}
+	if err := checkStatusExpressions(tmpl, status); err != nil {
+		return nil, err
+	}
+
 	// A development block extends the graph with the mechanically synthesized
 	// dev overlay (mode-gated dev workloads, workspace PVCs, control plane)
 	// and injects the kedgeMode field into the RGD schema. See devoverlay.go.
@@ -133,6 +141,99 @@ func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstruct
 		},
 	}}
 	return rgd, nil
+}
+
+// schemaRefRE finds a reference to the instance's own spec inside a status
+// expression. Word-boundary anchored so a resource legitimately named e.g.
+// "openapiSchema" is not mistaken for one.
+var schemaRefRE = regexp.MustCompile(`\bschema\.`)
+
+// exprRE spans one ${...} expression. Only their contents are checked: a
+// status value may contain the word "schema." as literal text.
+var exprRE = regexp.MustCompile(`\$\{[^}]*\}`)
+
+// checkStatusExpressions rejects ${schema.*} in a status mapping. This kro fork
+// builds the instance status schema without the spec in scope, so such an
+// expression does not degrade — it makes kro reject the whole RGD with
+// "references unknown identifiers: [schema]", which surfaces as a template
+// that silently never becomes ready.
+//
+// Catching it here turns an 8-minute E2E failure and an opaque kro message
+// into an immediate one that says what to do instead. Status is derived from
+// RESOURCES (which carry the resolved values anyway); a field that should only
+// exist sometimes gets there by referencing an includeWhen-gated resource,
+// which simply does not resolve when that resource is excluded.
+func checkStatusExpressions(tmpl *infrav1alpha1.Template, status map[string]any) error {
+	var walk func(path string, v any) error
+	walk = func(path string, v any) error {
+		switch t := v.(type) {
+		case string:
+			for _, expr := range exprRE.FindAllString(t, -1) {
+				if schemaRefRE.MatchString(expr) {
+					return fmt.Errorf("template %q: status field %s uses %s — ${schema.*} is not in scope when kro builds the status schema and the RGD is rejected outright; derive the value from a resource instead (an includeWhen-gated resource yields a field that is absent when that resource is excluded)",
+						tmpl.Name, path, expr)
+				}
+			}
+		case map[string]any:
+			for k, sub := range t {
+				if err := walk(path+"."+k, sub); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for i, sub := range t {
+				if err := walk(fmt.Sprintf("%s[%d]", path, i), sub); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	for k, v := range status {
+		if err := walk("status."+k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkExposure holds spec.exposure to what the graph actually does. The
+// marker is what the portal and the MCP tools tell users ("this has no URL"),
+// so a template that declares `internal` and then publishes an HTTPRoute would
+// have every surface confidently saying the opposite of the truth. An
+// unconditional route in an `optional` template is the same lie in the other
+// direction: the caller is told to check the instance, but every instance is
+// published regardless.
+//
+// The reverse — public/optional with no route — is NOT an error. A route may
+// legitimately arrive from the dev overlay, and a template may declare its
+// intent before its graph catches up.
+func checkExposure(tmpl *infrav1alpha1.Template, resources []any) error {
+	class := tmpl.Spec.ExposureClass()
+	if class == infrav1alpha1.ExposurePublic {
+		return nil
+	}
+	for _, item := range resources {
+		res, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		tpl, _ := res["template"].(map[string]any)
+		if kind, _ := tpl["kind"].(string); kind != "HTTPRoute" {
+			continue
+		}
+		id, _ := res["id"].(string)
+		if class == infrav1alpha1.ExposureInternal {
+			return fmt.Errorf("template %q declares exposure %q but its graph publishes an HTTPRoute (%s) — either drop the route or declare the exposure it really has",
+				tmpl.Name, class, id)
+		}
+		// optional: the route must be conditional, or it isn't optional.
+		if when, _ := res["includeWhen"].([]any); len(when) == 0 {
+			return fmt.Errorf("template %q declares exposure %q but its HTTPRoute (%s) has no includeWhen — every instance would be published, which is exposure %q",
+				tmpl.Name, class, id, infrav1alpha1.ExposurePublic)
+		}
+	}
+	return nil
 }
 
 // backendConfig decodes Template.spec.backendConfig and extracts the kro

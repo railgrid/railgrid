@@ -30,9 +30,11 @@ import (
 // shape.
 func applicationTemplateInfo() projectTemplateInfo {
 	return projectTemplateInfo{
-		Name:        "application",
-		Components:  map[string]string{"frontend": "web", "backend": "api"},
-		ImageInputs: map[string]string{"frontend": "frontendImage", "backend": "backendImage"},
+		Name: "application",
+		Components: map[string]projectTemplateComponent{
+			"frontend": {WorkspacePath: "web", ImageInput: "frontendImage"},
+			"backend":  {WorkspacePath: "api", ImageInput: "backendImage"},
+		},
 	}
 }
 
@@ -55,9 +57,11 @@ func TestProjectBuildComponentsSortedWithImageInput(t *testing.T) {
 
 func TestProjectBuildComponentsSkipsComponentsWithoutImageInput(t *testing.T) {
 	info := projectTemplateInfo{
-		Name:        "worker-only",
-		Components:  map[string]string{"worker": ".", "web": "web"},
-		ImageInputs: map[string]string{"web": "image"}, // worker declares none
+		Name: "worker-only",
+		Components: map[string]projectTemplateComponent{
+			"worker": {WorkspacePath: "."}, // declares no imageInput
+			"web":    {WorkspacePath: "web", ImageInput: "image"},
+		},
 	}
 	got := projectBuildComponents(info)
 	if len(got) != 1 || got[0].Name != "web" {
@@ -133,9 +137,10 @@ func TestProjectBuildWorkflowYAMLSingleComponent(t *testing.T) {
 	// simple-webapp shape: one component claiming the whole workspace ("."),
 	// which must render as a quoted scalar so YAML does not read it as null.
 	info := projectTemplateInfo{
-		Name:        "simple-webapp",
-		Components:  map[string]string{"app": "."},
-		ImageInputs: map[string]string{"app": "image"},
+		Name: "simple-webapp",
+		Components: map[string]projectTemplateComponent{
+			"app": {WorkspacePath: ".", ImageInput: "image"},
+		},
 	}
 	wf := projectBuildWorkflowYAMLComponents(projectBuildComponents(info))
 	var parsed map[string]any

@@ -11,6 +11,10 @@ spec:
   description: "A standalone PostgreSQL database for workloads. StatefulSet + Service + credentials Secret; credentials stay in-cluster and are exposed only as a Secret reference."
   category: Databases
   version: 0.1.0
+  # exposure: what the platform tells callers about reaching an instance.
+  # Consumed pod-to-pod on the runtime cluster via status.connectionSecretRef.
+  # No HTTP surface at all, so no dataPlane either.
+  exposure: internal
   backend: kro
   sampleValues:
     name: todo-db

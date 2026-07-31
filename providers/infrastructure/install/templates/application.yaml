@@ -11,6 +11,10 @@ spec:
   description: "A 3-tier app — frontend + backend + Postgres — exposed on a URL guarded by OIDC (oauth2-proxy). Authenticated users only; the backend and database are never exposed."
   category: Workloads
   version: 0.1.0
+  # exposure: what the platform tells callers about reaching an instance.
+  # Every instance gets an HTTPRoute. The template brings its own gate
+  # (oauth2-proxy, oidc.mode) — the platform adds none.
+  exposure: public
   backend: kro
   # Example payload the portal pre-fills the provision form with, so the 3-tier
   # demo is effectively one click. The frontend/backend images are the example
@@ -37,14 +41,22 @@ spec:
       (a static site, an SPA, a self-contained server), prefer the simple-webapp
       template — it is also development-capable and carries none of this weight.
 
-      YOU SUPPLY exactly two container images — frontendImage and backendImage —
+      READ THE DEVELOPMENT MODE SECTION BELOW BEFORE WRITING ANY CODE. The
+      language rules differ by mode: PRODUCTION mode runs container images you
+      build, in any language; DEVELOPMENT mode (kedgeMode: development, what an
+      App Studio project uses while you build it) runs BOTH tiers in a Node.js
+      sandbox image and can execute nothing else. Everything below headed
+      "IMAGES" applies to production images only.
+
+      PRODUCTION MODE — YOU SUPPLY exactly two container images — frontendImage
+      and backendImage —
       and nothing else app-side. The platform provisions Postgres, injects the DB
       connection, path-routes one URL to both tiers, and (in byo mode) authenticates
       in front; you do NOT create the database, Secrets, Services, or routes. This
       contract is fully self-contained — build BOTH images from it BEFORE you
       provision; the only runtime couplings are the env var and ports below.
 
-      BOTH IMAGES:
+      BOTH IMAGES (production mode only — see DEVELOPMENT MODE for the sandbox):
         • Plain HTTP server, any language/base image. Bind to 0.0.0.0 on the port
           below (NOT 127.0.0.1), or the platform cannot route to it.
         • Stateless — no local/persistent disk; ALL state lives in Postgres. Pods
@@ -83,12 +95,30 @@ spec:
         • platform — kedge SSO; NOT yet supported.
 
       DEVELOPMENT MODE (provision with kedgeMode: development): both image
-      inputs are ignored (and may be omitted) — each tier runs a Node.js dev
-      server against its own workspace directory (frontend → web/, backend →
-      api/), with Postgres and DATABASE_URL exactly as in production. Push
-      source with the dev_sync tool (hot reload, no image builds; files are
-      routed by those directories), read dev-server logs with dev_logs, and
-      preview on the instance's status.url.
+      inputs are ignored (and may be omitted) — each tier runs in a
+      platform-managed Node.js sandbox image against its own workspace directory
+      (frontend → web/, backend → api/), with Postgres and DATABASE_URL exactly
+      as in production. Push source with the dev_sync tool (hot reload, no image
+      builds; files are routed by those directories), read dev-server logs with
+      dev_logs, and preview on the instance's status.url.
+
+        • BOTH TIERS MUST BE WRITTEN IN NODE.JS/JAVASCRIPT/TYPESCRIPT. The
+          sandbox image contains the Node toolchain and NOTHING ELSE — no Go,
+          Python, Ruby, Java, or .NET compiler or interpreter is installed. Go
+          source, a Python app, or any other stack placed in web/ or api/ cannot
+          run there however correct it is: the start command finds nothing to
+          launch and the tier silently never listens on its port.
+        • api/ MUST contain a package.json whose "dev" or "start" script starts
+          the server on $PORT (the backend is started with
+          `npm run dev || npm start`). Without that file nothing runs.
+        • web/ MUST contain a package.json for a vite-based frontend (started
+          with `npm run dev`, falling back to `npx vite`).
+        • A Dockerfile is for the PRODUCTION image build only — it is never
+          built or executed in development mode, so adding one does NOT make
+          another language runnable in the sandbox.
+        • If the app genuinely requires a non-Node backend, this template cannot
+          develop it: say so and pick a template whose development toolchain
+          matches, rather than writing source the sandbox cannot execute.
 
       INPUTS you set when provisioning: frontendImage, backendImage (required
       in production mode; omit in development mode); name, frontendPort,

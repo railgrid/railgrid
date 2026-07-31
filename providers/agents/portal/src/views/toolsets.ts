@@ -1,108 +1,188 @@
-// Toolsets menu: shared bundles of Tools that agents link. Define once, attach
-// to many agents (in each agent's Flow, drag the toolset onto the agent).
-// Checked tool-connections drive the derived families.
+// Toolsets — shared bundles of Tools that agents link, rendered as a section of
+// the Connections tab. Checked tool-connections drive the DERIVED families; the
+// families list is never hand-picked.
 
+import { html, nothing, type TemplateResult } from 'lit'
+import { state } from 'lit/decorators.js'
+import { repeat } from 'lit/directives/repeat.js'
+import { StoreElement } from '../ui/base'
+import { icon } from '../ui/icon'
+import { errorState } from '../ui/states'
 import { confirmModal } from '../portalkit/modal'
-import { ic } from '../portalkit/icons'
-import type { ViewCtx } from '../view'
-import { escapeHTML } from '../types'
-import { createToolset, updateToolset, deleteToolset } from '../actions'
+import { mutate } from '../mutate'
+import type { Toolset } from '../types'
 
-// View-local edit state.
-let toolsetEdit: string | null = null
+export class Toolsets extends StoreElement {
+  // editing: null = closed, '' = creating, name = editing that toolset.
+  @state() private editing: string | null = null
+  @state() private draftName = ''
+  @state() private draftDisplay = ''
+  @state() private draftConns: string[] = []
 
-export function render(vc: ViewCtx): string {
-  const toolConns = vc.store.toolConnections()
-  const usedByCount = (name: string): number =>
-    vc.store.agents.filter((a) => [...(a.spec?.tools?.interactive?.toolsets || []), ...(a.spec?.tools?.background?.toolsets || [])].includes(name)).length
-  const rows =
-    vc.store.toolsets.length === 0
-      ? ''
-      : vc.store.toolsets
-          .map((t) => {
-            const conns = t.spec.connections || []
-            const used = usedByCount(t.metadata.name)
-            return `<tr>
-              <td><strong>${escapeHTML(t.spec.displayName || t.metadata.name)}</strong>${t.spec.displayName ? `<span class="agents-hint"> ${escapeHTML(t.metadata.name)}</span>` : ''}</td>
-              <td>${conns.length ? conns.map((c) => `<span class="agents-badge">${escapeHTML(c)}</span>`).join(' ') : '<span class="muted">—</span>'}</td>
-              <td class="muted">${used} agent${used === 1 ? '' : 's'}</td>
-              <td class="agents-row-actions">
-                <button class="agents-iconbtn" data-edittoolset="${escapeHTML(t.metadata.name)}" title="Edit">${ic('pencil')}</button>
-                <button class="agents-iconbtn agents-iconbtn-danger" data-deltoolset="${escapeHTML(t.metadata.name)}" title="Delete">${ic('trash')}</button>
-              </td>
-            </tr>`
-          })
-          .join('')
-  const editing = vc.store.toolsets.find((t) => t.metadata.name === toolsetEdit)
-  const connChecks = (on: Set<string>): string =>
-    toolConns.length
-      ? toolConns
-          .map(
-            (c) => `<label class="agents-check"><input type="checkbox" name="connection" value="${escapeHTML(c.metadata.name)}" ${on.has(c.metadata.name) ? 'checked' : ''} /> ${escapeHTML(c.metadata.name)} <span class="agents-hint">${escapeHTML(c.spec.type)}</span></label>`,
-          )
-          .join('')
-      : `<span class="muted">No tools yet — create MCP/GitHub/web tools under ${ic('plug')} Connections. Cluster edges are always on.</span>`
-  const form = editing
-    ? `<form class="agents-toolset-form" data-edit="${escapeHTML(editing.metadata.name)}">
-        <h4>Edit toolset <code>${escapeHTML(editing.metadata.name)}</code></h4>
-        <label>Display name<input name="displayName" value="${escapeHTML(editing.spec.displayName || '')}" /></label>
-        <fieldset class="agents-tools"><legend>Tools</legend><div class="agents-checkrow">${connChecks(new Set(editing.spec.connections || []))}</div></fieldset>
-        <div class="agents-form-actions"><button>Save</button><button type="button" class="secondary" data-toolsetcancel>Cancel</button></div>
-      </form>`
-    : `<form class="agents-toolset-form">
-        <h4>New toolset</h4>
-        <div class="agents-grid2">
-          <label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="dev-tools" /></label>
-          <label>Display name<input name="displayName" placeholder="optional" /></label>
-        </div>
-        <fieldset class="agents-tools"><legend>Tools</legend><div class="agents-checkrow">${connChecks(new Set())}</div></fieldset>
-        <button>Create toolset</button>
-      </form>`
-  return `
-    <div class="agents-panel agents-form-panel">
-      <h3>Toolsets</h3>
-      <p class="muted">Shared bundles of Tools that agents link. Define once, attach to many agents (in each agent's Flow, drag the toolset onto the agent).</p>
-      ${
-        vc.store.toolsets.length === 0
-          ? `<p class="agents-hint">${ic('package')} No toolsets yet — create one below.</p>`
-          : `<table class="agents-table">
-        <thead><tr><th>Name</th><th>Tools</th><th>Used by</th><th class="agents-th-actions">Actions</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`
-      }
-      ${form}
-    </div>`
-}
+  private openCreate(): void {
+    this.editing = ''
+    this.draftName = ''
+    this.draftDisplay = ''
+    this.draftConns = []
+  }
 
-export function wire(vc: ViewCtx, root: HTMLElement): void {
-  root.querySelectorAll<HTMLElement>('[data-edittoolset]').forEach((el) =>
-    el.addEventListener('click', () => {
-      toolsetEdit = el.dataset.edittoolset!
-      vc.rerender()
-    }),
-  )
-  root.querySelector<HTMLElement>('[data-toolsetcancel]')?.addEventListener('click', () => {
-    toolsetEdit = null
-    vc.rerender()
-  })
-  root.querySelectorAll<HTMLElement>('[data-deltoolset]').forEach((el) =>
-    el.addEventListener('click', async () => {
-      if (await confirmModal({ title: `Delete toolset “${el.dataset.deltoolset}”?`, message: 'Agents linking it will lose those tools.', danger: true, confirmLabel: 'Delete' })) void deleteToolset(vc, el.dataset.deltoolset!)
-    }),
-  )
-  const form = root.querySelector<HTMLFormElement>('.agents-toolset-form')
-  form?.addEventListener('submit', (e) => {
+  private openEdit(t: Toolset): void {
+    this.editing = t.metadata.name
+    this.draftName = t.metadata.name
+    this.draftDisplay = t.spec.displayName || ''
+    this.draftConns = [...(t.spec.connections || [])]
+  }
+
+  private async save(e: Event): Promise<void> {
     e.preventDefault()
-    const connections = Array.from(form.querySelectorAll<HTMLInputElement>('input[name=connection]:checked')).map((i) => i.value)
-    const families = vc.store.familiesFor(connections) // derived, never hand-picked
-    const displayName = (form.querySelector<HTMLInputElement>('input[name=displayName]')?.value || '').trim()
-    const editName = form.dataset.edit
-    if (editName) {
-      void updateToolset(vc, editName, { displayName, families, connections })
-      toolsetEdit = null
-    } else {
-      const name = (form.querySelector<HTMLInputElement>('input[name=name]')?.value || '').trim()
-      if (name) void createToolset(vc, { name, displayName, families, connections })
-    }
-  })
+    const connections = this.draftConns
+    const families = this.store.familiesFor(connections)
+    const displayName = this.draftDisplay.trim()
+    const editing = this.editing
+    const res = editing
+      ? await mutate(this.store, {
+          run: () => this.api.patchToolset(editing, { displayName, families, connections }),
+          success: 'Toolset updated.',
+          failure: 'Update failed',
+          reload: ['toolsets'],
+        })
+      : await mutate(this.store, {
+          run: () => this.api.createToolset({ name: this.draftName.trim(), displayName, families, connections }),
+          success: 'Toolset created.',
+          failure: 'Create failed',
+          reload: ['toolsets'],
+        })
+    if (res) this.editing = null
+  }
+
+  private async del(name: string): Promise<void> {
+    const ok = await confirmModal({
+      title: `Delete toolset “${name}”?`,
+      message: 'Agents linking it will lose those tools.',
+      danger: true,
+      confirmLabel: 'Delete',
+    })
+    if (!ok) return
+    await mutate(this.store, {
+      run: () => this.api.deleteToolset(name),
+      success: 'Toolset deleted.',
+      failure: 'Delete failed',
+      reload: ['toolsets'],
+    })
+  }
+
+  private usedBy(name: string): number {
+    return this.store.agents.data.filter((a) =>
+      [...(a.spec?.tools?.interactive?.toolsets || []), ...(a.spec?.tools?.background?.toolsets || [])].includes(name),
+    ).length
+  }
+
+  render(): TemplateResult {
+    const slice = this.store.toolsets
+    return html`<div class="agents-panel">
+      <div class="agents-panel-head">
+        <h3>${icon('package')} Toolsets</h3>
+        ${this.editing === null ? html`<button class="secondary" @click=${() => this.openCreate()}>${icon('plus')} New toolset</button>` : nothing}
+      </div>
+      <p class="muted">Shared bundles of Tools. Define once, link from any agent's Config pane.</p>
+      ${slice.error
+        ? errorState(slice.error, () => void this.store.load('toolsets'))
+        : slice.data.length === 0
+          ? html`<p class="agents-hint">${icon('package')} No toolsets yet.</p>`
+          : html`<div class="agents-tablewrap">
+              <table class="agents-table">
+                <thead>
+                  <tr><th>Name</th><th>Tools</th><th>Used by</th><th class="agents-th-actions">Actions</th></tr>
+                </thead>
+                <tbody>
+                  ${repeat(
+                    slice.data,
+                    (t) => t.metadata.name,
+                    (t) => {
+                      const conns = t.spec.connections || []
+                      const used = this.usedBy(t.metadata.name)
+                      return html`<tr class=${this.editing === t.metadata.name ? 'is-editing' : ''}>
+                        <td>
+                          <strong>${t.spec.displayName || t.metadata.name}</strong>
+                          ${t.spec.displayName ? html`<span class="agents-hint"> ${t.metadata.name}</span>` : nothing}
+                        </td>
+                        <td>${conns.length ? conns.map((c) => html`<span class="agents-badge">${c}</span>`) : html`<span class="muted">—</span>`}</td>
+                        <td class="muted">${used} agent${used === 1 ? '' : 's'}</td>
+                        <td class="agents-row-actions">
+                          <button class="agents-iconbtn" aria-label="Edit ${t.metadata.name}" title="Edit" @click=${() => this.openEdit(t)}>
+                            ${icon('pencil')}
+                          </button>
+                          <button
+                            class="agents-iconbtn agents-iconbtn-danger"
+                            aria-label="Delete ${t.metadata.name}"
+                            title="Delete"
+                            @click=${() => void this.del(t.metadata.name)}
+                          >
+                            ${icon('trash')}
+                          </button>
+                        </td>
+                      </tr>`
+                    },
+                  )}
+                </tbody>
+              </table>
+            </div>`}
+      ${this.editing !== null ? this.form() : nothing}
+    </div>`
+  }
+
+  private form(): TemplateResult {
+    const toolConns = this.store.toolConnections()
+    const isEdit = !!this.editing
+    return html`<form class="agents-toolset-form" @submit=${(e: Event) => void this.save(e)}>
+      <h4>${isEdit ? html`Edit toolset <code>${this.editing}</code>` : 'New toolset'}</h4>
+      ${isEdit
+        ? html`<label>Display name<input .value=${this.draftDisplay} @input=${(e: Event) => (this.draftDisplay = (e.target as HTMLInputElement).value)} /></label>`
+        : html`<div class="agents-grid2">
+            <label
+              >Name *<input
+                required
+                pattern="[a-z0-9-]+"
+                placeholder="dev-tools"
+                .value=${this.draftName}
+                @input=${(e: Event) => (this.draftName = (e.target as HTMLInputElement).value)}
+            /></label>
+            <label
+              >Display name<input
+                placeholder="optional"
+                .value=${this.draftDisplay}
+                @input=${(e: Event) => (this.draftDisplay = (e.target as HTMLInputElement).value)}
+            /></label>
+          </div>`}
+      <fieldset class="agents-tools">
+        <legend>Tools</legend>
+        <div class="agents-checkrow">
+          ${toolConns.length
+            ? toolConns.map(
+                (c) => html`<label class="agents-check">
+                  <input
+                    type="checkbox"
+                    .checked=${this.draftConns.includes(c.metadata.name)}
+                    @change=${(e: Event) => {
+                      const on = (e.target as HTMLInputElement).checked
+                      this.draftConns = on
+                        ? [...this.draftConns, c.metadata.name]
+                        : this.draftConns.filter((x) => x !== c.metadata.name)
+                    }}
+                  />
+                  ${c.metadata.name} <span class="agents-hint">${c.spec.type}</span>
+                </label>`,
+              )
+            : html`<span class="muted">No tools yet — create MCP/GitHub/web tools above. Cluster edges are always on.</span>`}
+        </div>
+        <span class="agents-hint">Tool families are derived from these connections — never picked by hand.</span>
+      </fieldset>
+      <div class="agents-form-actions">
+        <button type="submit">${isEdit ? 'Save' : 'Create toolset'}</button>
+        <button type="button" class="secondary" @click=${() => (this.editing = null)}>Cancel</button>
+      </div>
+    </form>`
+  }
 }
+
+if (!customElements.get('agents-toolsets')) customElements.define('agents-toolsets', Toolsets)

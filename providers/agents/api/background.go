@@ -26,6 +26,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -423,9 +424,23 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	res, runErr := b.server.executeTask(ctx, taskRun{
 		Creds: vwSecrets{dyn}, CR: vwCR{dyn}, Scope: scope, Agent: agent,
 		SessionID: job.SessionID, Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
+		NotifyChannel: job.NotifyChannel,
 	})
 
 	b.recordOutcome(ctx, job, res.RunID, runErr)
+
+	// Tell the portal the source's status moved (nextRun/lastFired/lastRunID)
+	// so schedule and trigger rows refresh without waiting for a poll.
+	b.server.events.publish(store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID},
+		string(job.Kind), map[string]any{
+			"name": job.SourceName, "agent": agent.Name, "runID": res.RunID, "failed": runErr != nil,
+		})
+
+	// Paused on an approval gate: the request is already in the inbox and was
+	// pushed to the user's channel. Delivery happens when the run resumes.
+	if runErr == nil && res.Pending != nil {
+		return nil
+	}
 
 	// Channel conversations reply through the SOURCE connection — the chat
 	// the user is standing in — not the notify connection.
@@ -557,10 +572,66 @@ func (b *background) replyToChannelTarget(ctx context.Context, dyn dynamic.Inter
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
+	return safeTruncate(s, n)
+}
+
+// triggerFilterAllows evaluates a Trigger's filter against an inbound webhook
+// delivery. Supported keys:
+//
+//	eventType      — exact match on the platform's event header
+//	                 (X-GitHub-Event / X-Event-Type) or a top-level "type"/
+//	                 "action" field in the JSON body
+//	match          — substring that must appear in the raw payload
+//	header.<name>  — exact match on a request header
+//
+// Unknown keys are ignored rather than failing closed, so a filter written for
+// a future source never silently blocks every event.
+func triggerFilterAllows(filter map[string]string, r *http.Request, body []byte) (string, bool) {
+	if len(filter) == 0 {
+		return "", true
 	}
-	return s[:n] + "…"
+	for key, want := range filter {
+		want = strings.TrimSpace(want)
+		if want == "" {
+			continue
+		}
+		switch {
+		case key == "eventType":
+			if !strings.EqualFold(want, webhookEventType(r, body)) {
+				return "eventType does not match " + want, false
+			}
+		case key == "match":
+			if !strings.Contains(string(body), want) {
+				return "payload does not contain " + want, false
+			}
+		case strings.HasPrefix(key, "header."):
+			if !strings.EqualFold(r.Header.Get(strings.TrimPrefix(key, "header.")), want) {
+				return key + " does not match", false
+			}
+		}
+	}
+	return "", true
+}
+
+// webhookEventType resolves the delivery's event type from the conventional
+// platform headers, falling back to a "type"/"action" field in the JSON body.
+func webhookEventType(r *http.Request, body []byte) string {
+	for _, h := range []string{"X-GitHub-Event", "X-Event-Type", "X-Event-Key"} {
+		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+			return v
+		}
+	}
+	var probe struct {
+		Type   string `json:"type"`
+		Action string `json:"action"`
+	}
+	if json.Unmarshal(body, &probe) == nil {
+		if probe.Type != "" {
+			return probe.Type
+		}
+		return probe.Action
+	}
+	return ""
 }
 
 // ---- inbound webhooks --------------------------------------------------------
@@ -596,6 +667,12 @@ func (s *Server) webhookTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	// spec.filter narrows which deliveries actually fire a run. A filtered-out
+	// event is acked (202) so the sender does not retry.
+	if reason, ok := triggerFilterAllows(trig.Spec.Filter, r, body); !ok {
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "filtered", "reason": reason})
+		return
+	}
 	task := trig.Spec.Task
 	if len(strings.TrimSpace(string(body))) > 0 {
 		task += "\n\nEvent payload:\n" + string(body)

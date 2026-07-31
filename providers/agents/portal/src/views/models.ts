@@ -1,4 +1,4 @@
-// Models menu: model credentials as an ops surface, not a plain table.
+// Models tab: model credentials as an ops surface, not a plain table.
 //  - a usage dashboard (spend, tokens, runs, error rate, p50/p95 latency) over a
 //    selectable window, with a daily spend sparkline and by-model / by-agent
 //    breakdowns — all from GET /api/usage (derived from the runs table);
@@ -9,444 +9,441 @@
 //
 // Each credential is its own Secret (kedge-agents-model-<name>).
 
+import { html, nothing, svg, type TemplateResult } from 'lit'
+import { state } from 'lit/decorators.js'
+import { repeat } from 'lit/directives/repeat.js'
+import { StoreElement } from '../ui/base'
+import { icon } from '../ui/icon'
+import { errorState } from '../ui/states'
+import { toast } from '../ui/toast'
 import { confirmModal } from '../portalkit/modal'
-import { ic } from '../portalkit/icons'
-import type { ViewCtx } from '../view'
-import type { Credential } from '../types'
-import { escapeHTML } from '../types'
+import { mutate } from '../mutate'
 import { PROVIDER_PRESETS } from '../conn-defs'
-import { createCredential, deleteCredential } from '../actions'
+import {
+  fmtTokens,
+  fmtUSD,
+  type Credential,
+  type CredentialTestResult,
+  type ModelInfo,
+  type UsagePoint,
+  type UsageResponse,
+} from '../types'
 
-// ---- data shapes (mirror the backend JSON) ---------------------------------
+export class Models extends StoreElement {
+  @state() private catalog: ModelInfo[] = []
+  @state() private usage: UsageResponse | null = null
+  @state() private usageError: string | null = null
+  @state() private windowDays = 30
+  @state() private tested = new Map<string, CredentialTestResult>()
+  @state() private discovered = new Map<string, string[]>()
+  @state() private editName: string | null = null
+  @state() private creating = false
 
-interface ModelInfo {
-  id: string
-  family: string
-  label?: string
-  contextWindow?: number
-  inputPer1M: number
-  outputPer1M: number
-  vision?: boolean
-  toolCall?: boolean
-  reasoning?: boolean
-}
-interface UsageBucket {
-  key: string
-  runs: number
-  errors: number
-  inputTokens: number
-  outputTokens: number
-  usdMicros: number
-  latencyP50MS: number
-  latencyP95MS: number
-}
-interface UsagePoint {
-  date: string
-  runs: number
-  inputTokens: number
-  outputTokens: number
-  usdMicros: number
-}
-interface UsageResponse {
-  windowDays: number
-  total: UsageBucket
-  byAgent: UsageBucket[]
-  byModel: UsageBucket[]
-  series: UsagePoint[]
-}
-interface TestResult {
-  ok: boolean
-  latencyMS: number
-  error?: string
-  models?: string[]
-}
+  private started = false
 
-// ---- view-local state ------------------------------------------------------
+  protected willUpdate(): void {
+    super.willUpdate()
+    if (this.started || !this.api) return
+    this.started = true
+    void this.api.catalog().then(
+      (c) => (this.catalog = c),
+      () => (this.catalog = []),
+    )
+    void this.loadUsage()
+  }
 
-let catalog: ModelInfo[] = []
-let catalogLoaded = false
-let usage: UsageResponse | null = null
-let windowDays = 30
-const tested = new Map<string, TestResult>() // credential name → last probe
-const discovered = new Map<string, string[]>() // credential name → served model ids
-let editName: string | null = null // credential being edited (rotate/model), or null
-let creating = false
-let msg: string | null = null
-
-// resetForTenant clears cross-workspace state on a tenant switch.
-export function resetForTenant(): void {
-  catalog = []
-  catalogLoaded = false
-  usage = null
-  tested.clear()
-  discovered.clear()
-  editName = null
-  creating = false
-  msg = null
-}
-
-async function ensureLoaded(vc: ViewCtx): Promise<void> {
-  if (!catalogLoaded) {
-    catalogLoaded = true
+  private async loadUsage(): Promise<void> {
     try {
-      catalog = await vc.api.list<ModelInfo>('/api/catalog')
-    } catch {
-      catalog = []
+      this.usage = await this.api.usage(this.windowDays)
+      this.usageError = null
+    } catch (e) {
+      this.usage = null
+      this.usageError = (e as Error).message
     }
-    vc.rerender()
   }
-  if (!usage) void loadUsage(vc)
-}
 
-async function loadUsage(vc: ViewCtx): Promise<void> {
-  try {
-    usage = await vc.api.get<UsageResponse>(`/api/usage?days=${windowDays}`)
-  } catch {
-    usage = null
+  // lookupModel mirrors the backend's catalog normalization: exact id first,
+  // then the longest prefix match (so "gpt-4o-2024-08-06" finds "gpt-4o").
+  private lookupModel(model: string): ModelInfo | undefined {
+    const norm = (model || '').toLowerCase().trim().replace(/^.*\//, '')
+    if (!norm) return undefined
+    let exact: ModelInfo | undefined
+    let best: ModelInfo | undefined
+    for (const m of this.catalog) {
+      if (m.id === norm) exact = m
+      if (norm.startsWith(m.id) && (!best || m.id.length > best.id.length)) best = m
+    }
+    return exact || best
   }
-  vc.rerender()
-}
 
-// ---- catalog helpers (client mirror of the backend normalization) ----------
-
-function lookupModel(model: string): ModelInfo | undefined {
-  const norm = (model || '').toLowerCase().trim().replace(/^.*\//, '')
-  if (!norm) return undefined
-  let exact: ModelInfo | undefined
-  let best: ModelInfo | undefined
-  for (const m of catalog) {
-    if (m.id === norm) exact = m
-    if (norm.startsWith(m.id) && (!best || m.id.length > best.id.length)) best = m
+  private async testCredential(name: string): Promise<void> {
+    try {
+      const res = await this.api.testCredential(name)
+      this.tested = new Map(this.tested).set(name, res)
+      if (res.models?.length) this.discovered = new Map(this.discovered).set(name, res.models)
+      toast(
+        res.ok ? 'ok' : 'error',
+        res.ok ? `${name}: healthy · ${res.latencyMS}ms${res.models?.length ? ` · ${res.models.length} models` : ''}` : `${name}: ${res.error || 'failed'}`,
+      )
+    } catch (e) {
+      this.tested = new Map(this.tested).set(name, { ok: false, latencyMS: 0, error: (e as Error).message })
+      toast('error', `${name}: ${(e as Error).message}`)
+    }
   }
-  return exact || best
-}
 
-// ---- formatting ------------------------------------------------------------
+  private async del(name: string): Promise<void> {
+    const ok = await confirmModal({
+      title: `Delete credential “${name}”?`,
+      message: 'Agents using it will need reassigning.',
+      danger: true,
+      confirmLabel: 'Delete',
+    })
+    if (!ok) return
+    await mutate(this.store, {
+      run: () => this.api.deleteCredential(name),
+      success: 'Credential deleted.',
+      failure: 'Delete failed',
+      reload: ['credentials'],
+    })
+  }
 
-function fmtUSD(micros: number): string {
-  const usd = micros / 1e6
-  if (usd === 0) return '$0'
-  if (usd < 0.01) return '$' + usd.toFixed(4)
-  if (usd < 100) return '$' + usd.toFixed(2)
-  return '$' + Math.round(usd).toLocaleString()
-}
-function fmtTokens(n: number): string {
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k'
-  return String(n)
-}
-function fmtCtx(n?: number): string {
-  if (!n) return ''
-  if (n >= 1e6) return n / 1e6 + 'M ctx'
-  if (n >= 1e3) return Math.round(n / 1e3) + 'k ctx'
-  return n + ' ctx'
-}
-function pct(n: number, d: number): string {
-  if (d === 0) return '0%'
-  return Math.round((n / d) * 100) + '%'
-}
-
-// capabilityChips renders capability + pricing badges for a catalog entry.
-function capabilityChips(mi: ModelInfo): string {
-  const chips: string[] = []
-  if (mi.contextWindow) chips.push(`<span class="agents-chip">${fmtCtx(mi.contextWindow)}</span>`)
-  if (mi.vision) chips.push(`<span class="agents-chip">${ic('eye')} vision</span>`)
-  if (mi.toolCall) chips.push(`<span class="agents-chip">${ic('wrench')} tools</span>`)
-  if (mi.reasoning) chips.push(`<span class="agents-chip">${ic('brain')} reasoning</span>`)
-  chips.push(`<span class="agents-chip agents-chip-price">$${mi.inputPer1M}/$${mi.outputPer1M} per 1M</span>`)
-  return chips.join('')
-}
-
-// sparkline draws a tiny inline-SVG area chart of daily spend (monochrome,
-// theme-aware via the accent token). No chart lib — the page is self-contained.
-function sparkline(series: UsagePoint[]): string {
-  const pts = series.map((p) => p.usdMicros)
-  if (pts.length < 2 || Math.max(...pts) === 0) return '<div class="agents-spark-empty muted">no spend in this window</div>'
-  const w = 260
-  const h = 40
-  const max = Math.max(...pts)
-  const step = w / (pts.length - 1)
-  const coords = pts.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * (h - 4) - 2).toFixed(1)}`)
-  const line = coords.join(' ')
-  const area = `0,${h} ${line} ${w},${h}`
-  return `<svg class="agents-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="daily spend">
-      <polygon class="agents-spark-fill" points="${area}" />
-      <polyline class="agents-spark-line" points="${line}" />
-    </svg>`
-}
-
-// bar renders one labeled horizontal bar (value relative to max).
-function bar(label: string, value: number, max: number, right: string): string {
-  const w = max > 0 ? Math.max(2, Math.round((value / max) * 100)) : 0
-  return `<div class="agents-bar-row">
-      <div class="agents-bar-label" title="${escapeHTML(label)}">${escapeHTML(label)}</div>
-      <div class="agents-bar-track"><div class="agents-bar-fill" style="width:${w}%"></div></div>
-      <div class="agents-bar-val">${escapeHTML(right)}</div>
+  render(): TemplateResult {
+    const creds = this.store.credentials
+    return html`<div class="agents-panel">
+      <div class="agents-panel-head">
+        <h3>Models</h3>
+        ${this.creating ? nothing : html`<button @click=${() => (this.creating = true)}>${icon('plus')} New model</button>`}
+      </div>
+      <p class="muted">
+        Model credentials shared across the workspace (each is a Secret <code>kedge-agents-model-&lt;name&gt;</code>). Assign them to
+        agents in each agent's Config pane.
+      </p>
+      ${this.dashboard()}
+      <h3 class="agents-section-h">Credentials</h3>
+      ${creds.error
+        ? errorState(creds.error, () => void this.store.load('credentials'))
+        : creds.data.length === 0
+          ? html`<p class="agents-hint">${icon('cpu')} No models yet${this.creating ? '.' : ' — add one below.'}</p>`
+          : html`<div class="agents-model-grid">
+              ${repeat(
+                creds.data,
+                (c) => c.name,
+                (c) => this.card(c),
+              )}
+            </div>`}
+      ${this.creating ? this.createForm() : nothing}
+      <datalist id="agents-catalog-models">
+        ${this.catalog.map((m) => html`<option value=${m.id}>${m.label || m.id}</option>`)}
+      </datalist>
     </div>`
-}
+  }
 
-// ---- render ----------------------------------------------------------------
+  // ---- dashboard -----------------------------------------------------------
 
-function renderDashboard(): string {
-  if (!usage) return `<div class="agents-dash-loading muted">Loading usage…</div>`
-  const t = usage.total
-  const errRate = pct(t.errors, t.runs)
-  const tokens = t.inputTokens + t.outputTokens
-  const stat = (label: string, value: string, sub = '') =>
-    `<div class="agents-stat"><div class="agents-stat-v">${value}</div><div class="agents-stat-k">${escapeHTML(label)}</div>${sub ? `<div class="agents-stat-sub">${escapeHTML(sub)}</div>` : ''}</div>`
-  const maxModel = Math.max(1, ...usage.byModel.map((b) => b.usdMicros))
-  const modelBars =
-    usage.byModel.length && usage.byModel.some((b) => b.usdMicros > 0 || b.runs > 0)
-      ? usage.byModel
-          .slice(0, 6)
-          .map((b) => bar(b.key, b.usdMicros, maxModel, `${fmtUSD(b.usdMicros)} · ${b.runs} run${b.runs === 1 ? '' : 's'}`))
-          .join('')
-      : '<div class="muted" style="font-size:12px">No runs yet in this window.</div>'
-  const maxAgent = Math.max(1, ...usage.byAgent.map((b) => b.usdMicros))
-  const agentBars = usage.byAgent
-    .slice(0, 6)
-    .map((b) => bar(b.key, b.usdMicros, maxAgent, `${fmtUSD(b.usdMicros)} · ${b.latencyP50MS ? b.latencyP50MS + 'ms p50' : '—'}${b.errors ? ` · ${b.errors} err` : ''}`))
-    .join('')
-  return `
-    <div class="agents-dash">
+  private dashboard(): TemplateResult {
+    if (this.usageError) return errorState(`Usage unavailable: ${this.usageError}`, () => void this.loadUsage())
+    if (!this.usage) return html`<div class="agents-dash-loading muted">Loading usage…</div>`
+    // Normalize defensively as well as in the client: a throw in here takes the
+    // whole Models view down with it, including the controls to fix whatever
+    // was wrong. Nothing about an empty workspace should cost the user the page.
+    const u = {
+      ...this.usage,
+      byAgent: this.usage.byAgent ?? [],
+      byModel: this.usage.byModel ?? [],
+      series: this.usage.series ?? [],
+    }
+    const t = u.total
+    const tokens = t.inputTokens + t.outputTokens
+    const errRate = t.runs ? Math.round((t.errors / t.runs) * 100) + '%' : '0%'
+    const stat = (label: string, value: string, sub = ''): TemplateResult => html`<div class="agents-stat">
+      <div class="agents-stat-v">${value}</div>
+      <div class="agents-stat-k">${label}</div>
+      ${sub ? html`<div class="agents-stat-sub">${sub}</div>` : nothing}
+    </div>`
+    const maxModel = Math.max(1, ...u.byModel.map((b) => b.usdMicros))
+    const maxAgent = Math.max(1, ...u.byAgent.map((b) => b.usdMicros))
+    return html`<div class="agents-dash">
       <div class="agents-dash-head">
         <h3>Usage &amp; cost</h3>
-        <div class="agents-seg" data-window>
-          ${[7, 30, 90].map((d) => `<button class="${d === windowDays ? 'on' : ''}" data-days="${d}">${d}d</button>`).join('')}
+        <div class="agents-seg" role="group" aria-label="Usage window">
+          ${[7, 30, 90].map(
+            (d) => html`<button
+              class=${d === this.windowDays ? 'on' : ''}
+              aria-pressed=${d === this.windowDays ? 'true' : 'false'}
+              @click=${() => {
+                if (d === this.windowDays) return
+                this.windowDays = d
+                this.usage = null
+                void this.loadUsage()
+              }}
+            >
+              ${d}d
+            </button>`,
+          )}
         </div>
       </div>
       <div class="agents-stats">
-        ${stat('spend', fmtUSD(t.usdMicros), `${usage.windowDays}d`)}
+        ${stat('spend', fmtUSD(t.usdMicros), `${u.windowDays}d`)}
         ${stat('tokens', fmtTokens(tokens), `${fmtTokens(t.inputTokens)} in · ${fmtTokens(t.outputTokens)} out`)}
-        ${stat('runs', String(t.runs), errRate + ' errors')}
-        ${stat('latency', t.latencyP50MS ? t.latencyP50MS + 'ms' : '—', t.latencyP95MS ? t.latencyP95MS + 'ms p95' : 'p50 / p95')}
+        ${stat('runs', String(t.runs), `${errRate} errors`)}
+        ${stat('latency', t.latencyP50MS ? `${t.latencyP50MS}ms` : '—', t.latencyP95MS ? `${t.latencyP95MS}ms p95` : 'p50 / p95')}
       </div>
       <div class="agents-dash-grid">
         <div class="agents-dash-card">
           <div class="agents-dash-card-h">Daily spend</div>
-          ${sparkline(usage.series)}
+          ${sparkline(u.series)}
         </div>
         <div class="agents-dash-card">
           <div class="agents-dash-card-h">Spend by model</div>
-          <div class="agents-bars">${modelBars}</div>
+          <div class="agents-bars">
+            ${u.byModel.length && u.byModel.some((b) => b.usdMicros > 0 || b.runs > 0)
+              ? u.byModel.slice(0, 6).map((b) => bar(b.key, b.usdMicros, maxModel, `${fmtUSD(b.usdMicros)} · ${b.runs} run${b.runs === 1 ? '' : 's'}`))
+              : html`<div class="muted agents-bars-empty">No runs yet in this window.</div>`}
+          </div>
         </div>
         <div class="agents-dash-card">
           <div class="agents-dash-card-h">Spend by agent</div>
-          <div class="agents-bars">${agentBars || '<div class="muted" style="font-size:12px">—</div>'}</div>
-        </div>
-      </div>
-    </div>`
-}
-
-function healthBadge(name: string): string {
-  const t = tested.get(name)
-  if (!t) return `<span class="agents-health agents-health-unknown" title="not tested">${ic('circle')} untested</span>`
-  if (t.ok) return `<span class="agents-health agents-health-ok" title="healthy">${ic('circle')} healthy · ${t.latencyMS}ms</span>`
-  return `<span class="agents-health agents-health-bad" title="${escapeHTML(t.error || 'failed')}">${ic('circle')} failed</span>`
-}
-
-function credentialCard(vc: ViewCtx, c: Credential): string {
-  const mi = lookupModel(c.model || '')
-  // Assignments: which agents reason with this credential, and in what role.
-  // primary = spec.models.chat; fallback = appears in spec.modelFallbacks. This
-  // surfaces the existing fallback/routing chain in the Models context.
-  const primaryOf = vc.store.agents.filter((a) => a.spec?.models?.chat === c.name)
-  const fallbackOf = vc.store.agents.filter((a) => a.spec?.models?.chat !== c.name && (a.spec?.modelFallbacks || []).includes(c.name))
-  const usedBy = [...primaryOf, ...fallbackOf]
-  const disc = discovered.get(c.name)
-  const isEditing = editName === c.name
-  const chips = mi ? capabilityChips(mi) : `<span class="agents-chip agents-chip-warn">not in catalog — no pricing</span>`
-  return `
-    <article class="agents-model-card ${isEditing ? 'is-editing' : ''}">
-      <div class="agents-model-head">
-        <div class="agents-model-title">
-          <span class="agents-model-glyph">${ic('settings')}</span>
-          <div>
-            <h4>${escapeHTML(c.name)}</h4>
-            <div class="agents-model-sub"><span class="mono">${escapeHTML(c.model || '—')}</span>${mi?.label ? ` · ${escapeHTML(mi.label)}` : ''}</div>
+          <div class="agents-bars">
+            ${u.byAgent.length
+              ? u.byAgent
+                  .slice(0, 6)
+                  .map((b) =>
+                    bar(b.key, b.usdMicros, maxAgent, `${fmtUSD(b.usdMicros)} · ${b.latencyP50MS ? b.latencyP50MS + 'ms p50' : '—'}${b.errors ? ` · ${b.errors} err` : ''}`),
+                  )
+              : html`<div class="muted agents-bars-empty">—</div>`}
           </div>
         </div>
-        ${healthBadge(c.name)}
       </div>
-      <div class="agents-model-chips">${chips}</div>
+    </div>`
+  }
+
+  // ---- credential cards ----------------------------------------------------
+
+  private card(c: Credential): TemplateResult {
+    const mi = this.lookupModel(c.model || '')
+    // Assignments: which agents reason with this credential, and in what role.
+    const primaryOf = this.store.agents.data.filter((a) => a.spec?.models?.chat === c.name)
+    const fallbackOf = this.store.agents.data.filter((a) => a.spec?.models?.chat !== c.name && (a.spec?.modelFallbacks || []).includes(c.name))
+    const disc = this.discovered.get(c.name)
+    const isEditing = this.editName === c.name
+    return html`<article class="agents-model-card ${isEditing ? 'is-editing' : ''}">
+      <div class="agents-model-head">
+        <div class="agents-model-title">
+          <span class="agents-model-glyph">${icon('cpu')}</span>
+          <div>
+            <h4>${c.name}</h4>
+            <div class="agents-model-sub">
+              <span class="mono">${c.model || '—'}</span>${mi?.label ? ` · ${mi.label}` : ''}
+            </div>
+          </div>
+        </div>
+        ${this.healthBadge(c.name)}
+      </div>
+      <div class="agents-model-chips">
+        ${mi ? capabilityChips(mi) : html`<span class="agents-chip agents-chip-warn">not in catalog — no pricing</span>`}
+      </div>
       <div class="agents-model-meta">
-        <span class="muted">${escapeHTML(c.provider || 'openai-compatible')}</span>
-        ${c.baseURL ? `<span class="muted mono">${escapeHTML(c.baseURL)}</span>` : ''}
+        <span class="muted">${c.provider || 'openai-compatible'}</span>
+        ${c.baseURL ? html`<span class="muted mono">${c.baseURL}</span>` : nothing}
       </div>
       <div class="agents-model-assign">
-        ${
-          usedBy.length
-            ? [
-                ...primaryOf.map((a) => `<span class="agents-chip agents-chip-primary" title="primary model">${ic('chevron-right')} ${escapeHTML(a.spec?.displayName || a.metadata.name)}</span>`),
-                ...fallbackOf.map((a) => `<span class="agents-chip agents-chip-fallback" title="fallback model">${ic('corner-down-right')} ${escapeHTML(a.spec?.displayName || a.metadata.name)}</span>`),
-              ].join('')
-            : '<span class="muted" style="font-size:12px">not assigned to any agent</span>'
-        }
+        ${primaryOf.length || fallbackOf.length
+          ? html`${primaryOf.map(
+                (a) => html`<span class="agents-chip agents-chip-primary" title="primary model"
+                  >${icon('chevron-right')} ${a.spec?.displayName || a.metadata.name}</span
+                >`,
+              )}
+              ${fallbackOf.map(
+                (a) => html`<span class="agents-chip agents-chip-fallback" title="fallback model"
+                  >${icon('corner-down-right')} ${a.spec?.displayName || a.metadata.name}</span
+                >`,
+              )}`
+          : html`<span class="muted agents-assign-none">not assigned to any agent</span>`}
       </div>
-      ${
-        disc && disc.length
-          ? `<div class="agents-model-discovered"><span class="muted">served models — click to switch:</span> ${disc
-              .slice(0, 24)
-              .map((m) => `<button class="agents-chip agents-chip-btn" data-setmodel="${escapeHTML(c.name)}" data-model="${escapeHTML(m)}">${escapeHTML(m)}</button>`)
-              .join('')}</div>`
-          : ''
-      }
-      ${isEditing ? renderRotate(c) : ''}
+      ${disc?.length
+        ? html`<div class="agents-model-discovered">
+            <span class="muted">served models — click to switch:</span>
+            ${disc.slice(0, 24).map(
+              (m) => html`<button class="agents-chip agents-chip-btn" @click=${() => void this.switchModel(c, m)}>${m}</button>`,
+            )}
+          </div>`
+        : nothing}
+      ${isEditing ? this.rotateForm(c) : nothing}
       <div class="agents-model-actions">
-        <button class="secondary" data-testcred="${escapeHTML(c.name)}">${ic('plug')} Test</button>
-        <button class="secondary" data-editcred="${escapeHTML(c.name)}">${isEditing ? 'Close' : `${ic('key')} Rotate / model`}</button>
-        <button class="agents-iconbtn agents-iconbtn-danger" data-delcred="${escapeHTML(c.name)}" title="Delete">${ic('trash')}</button>
+        <button class="secondary" @click=${() => void this.testCredential(c.name)}>${icon('plug')} Test</button>
+        <button class="secondary" @click=${() => (this.editName = isEditing ? null : c.name)}>
+          ${isEditing ? 'Close' : html`${icon('key')} Rotate / model`}
+        </button>
+        <button class="agents-iconbtn agents-iconbtn-danger" aria-label="Delete ${c.name}" title="Delete" @click=${() => void this.del(c.name)}>
+          ${icon('trash')}
+        </button>
       </div>
     </article>`
-}
+  }
 
-// renderRotate is the inline edit panel: rotate the key and/or change the model.
-function renderRotate(c: Credential): string {
-  return `<form class="agents-rotate-form" data-rotate="${escapeHTML(c.name)}">
+  private healthBadge(name: string): TemplateResult {
+    const t = this.tested.get(name)
+    if (!t) return html`<span class="agents-health agents-health-unknown" title="not tested">${icon('circle')} untested</span>`
+    if (t.ok) return html`<span class="agents-health agents-health-ok" title="healthy">${icon('circle')} healthy · ${t.latencyMS}ms</span>`
+    return html`<span class="agents-health agents-health-bad" title=${t.error || 'failed'}>${icon('circle')} failed</span>`
+  }
+
+  private async switchModel(c: Credential, model: string): Promise<void> {
+    // The credential POST is an upsert: re-posting name+baseURL with a new
+    // model keeps the stored API key.
+    const res = await mutate(this.store, {
+      run: () => this.api.saveCredential({ name: c.name, provider: 'openai-compatible', baseURL: c.baseURL, model }),
+      success: `${c.name} now uses ${model}.`,
+      failure: 'Save failed',
+      reload: ['credentials'],
+    })
+    if (res) {
+      const next = new Map(this.tested)
+      next.delete(c.name)
+      this.tested = next
+    }
+  }
+
+  private rotateForm(c: Credential): TemplateResult {
+    return html`<form
+      class="agents-rotate-form"
+      @submit=${(e: Event) => {
+        e.preventDefault()
+        const f = e.target as HTMLFormElement
+        const g = (n: string): string => (f.querySelector<HTMLInputElement>(`[name=${n}]`)?.value || '').trim()
+        const key = g('apiKey')
+        void mutate(this.store, {
+          run: () =>
+            this.api.saveCredential({
+              name: c.name,
+              provider: 'openai-compatible',
+              model: g('model'),
+              baseURL: g('baseURL'),
+              ...(key ? { apiKey: key } : {}),
+            }),
+          success: 'Credential saved.',
+          failure: 'Save failed',
+          reload: ['credentials'],
+        }).then((ok) => {
+          if (!ok) return
+          this.editName = null
+          const next = new Map(this.tested)
+          next.delete(c.name)
+          this.tested = next
+        })
+      }}
+    >
       <div class="agents-grid2">
-        <label>Model<input name="model" value="${escapeHTML(c.model || '')}" class="mono" placeholder="gpt-4o" list="agents-catalog-models" /></label>
-        <label>Base URL<input name="baseURL" value="${escapeHTML(c.baseURL || '')}" class="mono" placeholder="https://api.openai.com/v1" /></label>
+        <label>Model<input name="model" .value=${c.model || ''} class="mono" placeholder="gpt-4o" list="agents-catalog-models" /></label>
+        <label>Base URL<input name="baseURL" .value=${c.baseURL || ''} class="mono" placeholder="https://api.openai.com/v1" /></label>
       </div>
-      <label>New API key <span class="agents-hint">leave blank to keep the current key</span><input name="apiKey" type="password" autocomplete="off" placeholder="sk-… (rotate)" /></label>
-      <div class="agents-form-actions"><button>Save</button><button type="button" class="secondary" data-editcancel>Cancel</button></div>
+      <label>
+        New API key <span class="agents-hint">leave blank to keep the current key</span>
+        <input name="apiKey" type="password" autocomplete="off" placeholder="sk-… (rotate)" />
+      </label>
+      <div class="agents-form-actions">
+        <button type="submit">Save</button>
+        <button type="button" class="secondary" @click=${() => (this.editName = null)}>Cancel</button>
+      </div>
     </form>`
-}
+  }
 
-export function render(vc: ViewCtx): string {
-  void ensureLoaded(vc)
-  const creds = vc.store.credentials
-  const cards = creds.length
-    ? creds.map((c) => credentialCard(vc, c)).join('')
-    : `<p class="agents-hint">${ic('settings')} No models yet${creating ? '.' : ' — add one below.'}</p>`
-  const createForm = creating
-    ? `<form class="agents-cred-form agents-model-create">
-        <h4>New model credential</h4>
-        <div class="agents-grid2">
-          <label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="my-openai" /></label>
-          <label>Provider<select name="preset">${PROVIDER_PRESETS.map((p) => `<option value="${p.id}">${escapeHTML(p.label)}</option>`).join('')}</select></label>
-          <label>Base URL<input name="baseURL" class="mono" value="${PROVIDER_PRESETS[0].baseURL}" placeholder="https://api.openai.com/v1" /></label>
-          <label>Model<input name="model" class="mono" placeholder="gpt-4o" required list="agents-catalog-models" /></label>
-        </div>
-        <label>API key<input name="apiKey" type="password" autocomplete="off" placeholder="sk-…" required /></label>
-        ${msg ? `<div class="agents-msg-note">${escapeHTML(msg)}</div>` : ''}
-        <div class="agents-form-actions"><button>Add credential</button><button type="button" class="secondary" data-createcancel>Cancel</button></div>
-      </form>`
-    : ''
-  // A datalist of known catalog model ids helps autocomplete the model field.
-  const datalist = `<datalist id="agents-catalog-models">${catalog.map((m) => `<option value="${escapeHTML(m.id)}">${escapeHTML(m.label || m.id)}</option>`).join('')}</datalist>`
-  return `
-    <div class="agents-panel">
-      <div class="agents-panel-head"><h3>Models</h3>${creating ? '' : `<button data-newcred>${ic('plus')} New model</button>`}</div>
-      <p class="muted">Model credentials shared across the workspace (each is a Secret <code>kedge-agents-model-&lt;name&gt;</code>). Assign them to agents in each agent's Settings or Flow.</p>
-      ${renderDashboard()}
-      <h3 class="agents-section-h">Credentials</h3>
-      <div class="agents-model-grid">${cards}</div>
-      ${createForm}
-      ${datalist}
-    </div>`
-}
-
-// ---- wire ------------------------------------------------------------------
-
-async function testCredential(vc: ViewCtx, name: string): Promise<void> {
-  vc.notify(`Testing ${name}…`)
-  try {
-    const res = await vc.api.send<TestResult>('POST', `/api/credentials/${encodeURIComponent(name)}/test`)
-    tested.set(name, res)
-    if (res.models?.length) discovered.set(name, res.models)
-    vc.notify(res.ok ? `${name}: healthy · ${res.latencyMS}ms${res.models?.length ? ` · ${res.models.length} models` : ''}` : `${name}: ${res.error || 'failed'}`)
-  } catch (e) {
-    tested.set(name, { ok: false, latencyMS: 0, error: (e as Error).message })
-    vc.notify(`${name}: ${(e as Error).message}`)
+  private createForm(): TemplateResult {
+    return html`<form
+      class="agents-cred-form agents-model-create"
+      @submit=${(e: Event) => {
+        e.preventDefault()
+        const f = e.target as HTMLFormElement
+        const g = (n: string): string => (f.querySelector<HTMLInputElement>(`[name=${n}]`)?.value || '').trim()
+        void mutate(this.store, {
+          run: () =>
+            this.api.saveCredential({
+              name: g('name'),
+              provider: 'openai-compatible',
+              baseURL: g('baseURL'),
+              model: g('model'),
+              apiKey: g('apiKey'),
+            }),
+          success: 'Credential saved.',
+          failure: 'Save failed',
+          reload: ['credentials'],
+        }).then((ok) => ok && (this.creating = false))
+      }}
+    >
+      <h4>New model credential</h4>
+      <div class="agents-grid2">
+        <label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="my-openai" /></label>
+        <label>
+          Provider
+          <select
+            name="preset"
+            @change=${(e: Event) => {
+              const p = PROVIDER_PRESETS.find((x) => x.id === (e.target as HTMLSelectElement).value)
+              if (!p) return
+              const form = (e.target as HTMLElement).closest('form')!
+              const baseURL = form.querySelector<HTMLInputElement>('input[name=baseURL]')!
+              const model = form.querySelector<HTMLInputElement>('input[name=model]')!
+              if (p.id !== 'custom') baseURL.value = p.baseURL
+              model.placeholder = p.modelHint
+            }}
+          >
+            ${PROVIDER_PRESETS.map((p) => html`<option value=${p.id}>${p.label}</option>`)}
+          </select>
+        </label>
+        <label>Base URL<input name="baseURL" class="mono" .value=${PROVIDER_PRESETS[0].baseURL} placeholder="https://api.openai.com/v1" /></label>
+        <label>Model<input name="model" class="mono" placeholder="gpt-4o" required list="agents-catalog-models" /></label>
+      </div>
+      <label>API key<input name="apiKey" type="password" autocomplete="off" placeholder="sk-…" required /></label>
+      <div class="agents-form-actions">
+        <button type="submit">Add credential</button>
+        <button type="button" class="secondary" @click=${() => (this.creating = false)}>Cancel</button>
+      </div>
+    </form>`
   }
 }
 
-export function wire(vc: ViewCtx, root: HTMLElement): void {
-  // Window selector for the dashboard.
-  root.querySelectorAll<HTMLElement>('[data-window] button').forEach((el) =>
-    el.addEventListener('click', () => {
-      const d = Number(el.dataset.days)
-      if (d && d !== windowDays) {
-        windowDays = d
-        usage = null
-        vc.rerender()
-        void loadUsage(vc)
-      }
-    }),
-  )
-  root.querySelector<HTMLElement>('[data-newcred]')?.addEventListener('click', () => {
-    creating = true
-    msg = null
-    vc.rerender()
-  })
-  root.querySelector<HTMLElement>('[data-createcancel]')?.addEventListener('click', () => {
-    creating = false
-    vc.rerender()
-  })
-  root.querySelectorAll<HTMLElement>('[data-testcred]').forEach((el) => el.addEventListener('click', () => void testCredential(vc, el.dataset.testcred!)))
-  root.querySelectorAll<HTMLElement>('[data-editcred]').forEach((el) =>
-    el.addEventListener('click', () => {
-      const n = el.dataset.editcred!
-      editName = editName === n ? null : n
-      vc.rerender()
-    }),
-  )
-  root.querySelector<HTMLElement>('[data-editcancel]')?.addEventListener('click', () => {
-    editName = null
-    vc.rerender()
-  })
-  root.querySelectorAll<HTMLElement>('[data-delcred]').forEach((el) =>
-    el.addEventListener('click', async () => {
-      if (await confirmModal({ title: `Delete credential “${el.dataset.delcred}”?`, message: 'Agents using it will need reassigning.', danger: true, confirmLabel: 'Delete' })) void deleteCredential(vc, el.dataset.delcred!)
-    }),
-  )
-  // Click a discovered model chip → set that credential's model.
-  root.querySelectorAll<HTMLElement>('[data-setmodel]').forEach((el) =>
-    el.addEventListener('click', () => {
-      const name = el.dataset.setmodel!
-      const model = el.dataset.model!
-      const c = vc.store.credentials.find((x) => x.name === name)
-      void createCredential(vc, { name, provider: 'openai-compatible', baseURL: c?.baseURL, model }).then(() => {
-        tested.delete(name)
-        vc.rerender()
-      })
-    }),
-  )
-  // Rotate / model edit form.
-  const rf = root.querySelector<HTMLFormElement>('.agents-rotate-form')
-  rf?.addEventListener('submit', (e) => {
-    e.preventDefault()
-    const name = rf.dataset.rotate!
-    const g = (n: string) => (rf.querySelector<HTMLInputElement>(`[name=${n}]`)?.value || '').trim()
-    const body: Record<string, unknown> = { name, provider: 'openai-compatible', model: g('model'), baseURL: g('baseURL') }
-    const key = g('apiKey')
-    if (key) body.apiKey = key
-    void createCredential(vc, body).then((ok) => {
-      if (ok) {
-        editName = null
-        tested.delete(name)
-        vc.rerender()
-      }
-    })
-  })
-  // Create form.
-  const cf = root.querySelector<HTMLFormElement>('.agents-model-create')
-  if (cf) {
-    const preset = cf.querySelector<HTMLSelectElement>('select[name=preset]')!
-    const baseURL = cf.querySelector<HTMLInputElement>('input[name=baseURL]')!
-    const model = cf.querySelector<HTMLInputElement>('input[name=model]')!
-    preset.addEventListener('change', () => {
-      const p = PROVIDER_PRESETS.find((x) => x.id === preset.value)
-      if (p && p.id !== 'custom') baseURL.value = p.baseURL
-      if (p) model.placeholder = p.modelHint
-    })
-    cf.addEventListener('submit', (e) => {
-      e.preventDefault()
-      const g = (n: string) => (cf.querySelector<HTMLInputElement>(`input[name=${n}]`)?.value || '').trim()
-      void createCredential(vc, { name: g('name'), provider: 'openai-compatible', baseURL: baseURL.value.trim(), model: model.value.trim(), apiKey: g('apiKey') }).then((ok) => {
-        if (ok) creating = false
-      })
-    })
-  }
+// capabilityChips renders capability + pricing badges for a catalog entry.
+function capabilityChips(mi: ModelInfo): TemplateResult {
+  return html`
+    ${mi.contextWindow ? html`<span class="agents-chip">${fmtCtx(mi.contextWindow)}</span>` : nothing}
+    ${mi.vision ? html`<span class="agents-chip">${icon('eye')} vision</span>` : nothing}
+    ${mi.toolCall ? html`<span class="agents-chip">${icon('wrench')} tools</span>` : nothing}
+    ${mi.reasoning ? html`<span class="agents-chip">${icon('brain')} reasoning</span>` : nothing}
+    <span class="agents-chip agents-chip-price">$${mi.inputPer1M}/$${mi.outputPer1M} per 1M</span>
+  `
 }
+
+function fmtCtx(n: number): string {
+  if (n >= 1e6) return n / 1e6 + 'M ctx'
+  if (n >= 1e3) return Math.round(n / 1e3) + 'k ctx'
+  return n + ' ctx'
+}
+
+// sparkline draws a tiny inline-SVG area chart of daily spend (monochrome,
+// theme-aware via the accent token). No chart lib — the bundle stays
+// self-contained.
+function sparkline(series: UsagePoint[]): TemplateResult {
+  const pts = series.map((p) => p.usdMicros)
+  if (pts.length < 2 || Math.max(...pts) === 0) return html`<div class="agents-spark-empty muted">no spend in this window</div>`
+  const w = 260
+  const h = 40
+  const max = Math.max(...pts)
+  const step = w / (pts.length - 1)
+  const line = pts.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * (h - 4) - 2).toFixed(1)}`).join(' ')
+  return html`<svg class="agents-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="daily spend">
+    ${svg`<polygon class="agents-spark-fill" points="0,${h} ${line} ${w},${h}" />
+    <polyline class="agents-spark-line" points="${line}" />`}
+  </svg>`
+}
+
+// bar renders one labeled horizontal bar (value relative to max).
+function bar(label: string, value: number, max: number, right: string): TemplateResult {
+  const pct = max > 0 ? Math.max(2, Math.round((value / max) * 100)) : 0
+  return html`<div class="agents-bar-row">
+    <div class="agents-bar-label" title=${label}>${label}</div>
+    <div class="agents-bar-track"><div class="agents-bar-fill" style="width:${pct}%"></div></div>
+    <div class="agents-bar-val">${right}</div>
+  </div>`
+}
+
+if (!customElements.get('agents-models')) customElements.define('agents-models', Models)

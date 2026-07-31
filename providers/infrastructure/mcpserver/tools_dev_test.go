@@ -18,14 +18,27 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/faroshq/provider-infrastructure/kro"
 )
+
+// devComponentPaths builds a development contract from name → workspacePath
+// for tests that only exercise path routing. Toolchain-contract tests build
+// kro.TemplateDevelopmentComponent values directly.
+func devComponentPaths(paths map[string]string) map[string]kro.TemplateDevelopmentComponent {
+	out := make(map[string]kro.TemplateDevelopmentComponent, len(paths))
+	for name, wp := range paths {
+		out[name] = kro.TemplateDevelopmentComponent{WorkspacePath: wp}
+	}
+	return out
+}
 
 func TestRouteDevSyncFilesRootComponentReceivesEverything(t *testing.T) {
 	files := []devSyncFile{
 		{Path: "src/index.js", Content: "a"},
 		{Path: "package.json", Content: "b"},
 	}
-	routed := routeDevSyncFiles(files, map[string]string{"app": "."})
+	routed := routeDevSyncFiles(files, devComponentPaths(map[string]string{"app": "."}))
 	if len(routed["app"]) != 2 {
 		t.Fatalf("app routed %d files, want 2", len(routed["app"]))
 	}
@@ -35,7 +48,7 @@ func TestRouteDevSyncFilesRootComponentReceivesEverything(t *testing.T) {
 }
 
 func TestRouteDevSyncFilesStripsComponentPrefix(t *testing.T) {
-	components := map[string]string{"backend": "api", "frontend": "web"}
+	components := devComponentPaths(map[string]string{"backend": "api", "frontend": "web"})
 	files := []devSyncFile{
 		{Path: "api/index.js", Content: "a"},
 		{Path: "web/src/App.jsx", Content: "b"},
@@ -55,13 +68,13 @@ func TestRouteDevSyncFilesStripsComponentPrefix(t *testing.T) {
 }
 
 func TestRequireDevComponentDefaultsWhenSingle(t *testing.T) {
-	target := devTarget{components: map[string]string{"app": "."}}
+	target := devTarget{components: devComponentPaths(map[string]string{"app": "."})}
 	got, err := requireDevComponent(target, "")
 	if err != nil || got != "app" {
 		t.Fatalf("single-component default = (%q, %v), want (app, nil)", got, err)
 	}
 
-	multi := devTarget{components: map[string]string{"frontend": "web", "backend": "api"}}
+	multi := devTarget{components: devComponentPaths(map[string]string{"frontend": "web", "backend": "api"})}
 	if _, err := requireDevComponent(multi, ""); err == nil || !strings.Contains(err.Error(), "backend, frontend") {
 		t.Errorf("multi-component empty pick must list components, got %v", err)
 	}
@@ -148,5 +161,97 @@ func TestTemplateDevelopmentFromSpec(t *testing.T) {
 	}}
 	if got := templateDevelopmentFromSpec(plain); got != nil {
 		t.Errorf("template without development block must project nil, got %+v", got)
+	}
+}
+
+func TestValidateDevSyncToolchains(t *testing.T) {
+	node := map[string]kro.TemplateDevelopmentComponent{
+		"backend": {WorkspacePath: "api", Toolchain: "node", StartCommand: "npm run dev || npm start"},
+	}
+
+	// The failure this guard exists for: correct directory, wrong runtime.
+	err := validateDevSyncToolchains(map[string][]devSyncFile{
+		"backend": {{Path: "main.go"}, {Path: "go.mod"}, {Path: "Dockerfile"}},
+	}, node)
+	if err == nil {
+		t.Fatal("validateDevSyncToolchains = nil, want an error for Go source in a node component")
+	}
+	for _, want := range []string{"backend", "node", "api/", "package.json", "npm run dev || npm start"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+
+	if err := validateDevSyncToolchains(map[string][]devSyncFile{
+		"backend": {{Path: "package.json"}, {Path: "server.js"}},
+	}, node); err != nil {
+		t.Errorf("matching source rejected: %v", err)
+	}
+
+	// A nested manifest does not make the component runnable.
+	if err := validateDevSyncToolchains(map[string][]devSyncFile{
+		"backend": {{Path: "vendor/x/package.json"}},
+	}, node); err == nil {
+		t.Error("nested package.json accepted, want rejection")
+	}
+
+	// Unknown toolchains and untouched components must never block a sync.
+	if err := validateDevSyncToolchains(map[string][]devSyncFile{
+		"backend": {{Path: "main.ex"}},
+	}, map[string]kro.TemplateDevelopmentComponent{
+		"backend": {WorkspacePath: "api", Toolchain: "elixir"},
+	}); err != nil {
+		t.Errorf("unknown toolchain blocked the sync: %v", err)
+	}
+	if err := validateDevSyncToolchains(map[string][]devSyncFile{}, node); err != nil {
+		t.Errorf("empty component blocked the sync: %v", err)
+	}
+}
+
+func TestDevToolchainFromImageToken(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"${kedge.devImage.node}", "node"},
+		{"  ${kedge.devImage.python}  ", "python"},
+		{"docker.io/library/node:22-bookworm", ""},
+		{"${kedge.devAgentImage}", ""},
+		{"", ""},
+	} {
+		if got := devToolchainFromImageToken(tc.in); got != tc.want {
+			t.Errorf("devToolchainFromImageToken(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// describe_template is where an MCP agent learns what a template's sandbox can
+// run. Projecting only workspacePath (as this DTO once did) leaves the agent
+// choosing a language blind.
+func TestTemplateDevelopmentFromSpecCarriesRuntimeContract(t *testing.T) {
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"spec": map[string]any{
+			"development": map[string]any{
+				"components": map[string]any{
+					"backend": map[string]any{
+						"workspacePath": "api",
+						"devImage":      "${kedge.devImage.node}",
+						"startCommand":  "npm run dev || npm start",
+						"port":          "backend",
+					},
+				},
+			},
+		},
+	}}
+	dev := templateDevelopmentFromSpec(u)
+	if dev == nil {
+		t.Fatal("templateDevelopmentFromSpec = nil, want a development contract")
+	}
+	got := dev.Components["backend"]
+	want := kro.TemplateDevelopmentComponent{
+		WorkspacePath: "api",
+		Toolchain:     "node",
+		StartCommand:  "npm run dev || npm start",
+		Port:          "backend",
+	}
+	if got != want {
+		t.Errorf("backend component = %#v, want %#v", got, want)
 	}
 }

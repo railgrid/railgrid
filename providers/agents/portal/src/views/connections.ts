@@ -1,249 +1,429 @@
-// Connections menu: shared credentials for external systems. Each is a ${ic('wrench')} Tool
-// agents call, a ${ic('megaphone')} Channel they message you on, or a ${ic('plug')} generic Connection.
-// Type-driven create (CONN_DEFS), edit with Discord special-casing, test /
-// enable-inbound / OAuth-connect actions.
+// Connections tab: shared credentials for external systems. Each is a Tool
+// agents call, a Channel they message you on, or a generic Connection.
+// Type-driven create (CONN_DEFS carries the per-type setup guides), edit, test /
+// enable-inbound / OAuth-connect actions. Toolsets live here as a section —
+// both are "reusable capability config".
 
+import { html, nothing, type TemplateResult } from 'lit'
+import { state } from 'lit/decorators.js'
+import { repeat } from 'lit/directives/repeat.js'
+import { unsafeHTML } from 'lit/directives/unsafe-html.js'
+import { StoreElement } from '../ui/base'
+import { icon } from '../ui/icon'
+import { sliceView } from '../ui/states'
+import { toast } from '../ui/toast'
 import { confirmModal } from '../portalkit/modal'
-import { ic } from '../portalkit/icons'
-import type { ViewCtx } from '../view'
-import type { Connection } from '../types'
-import { escapeHTML } from '../types'
+import { mutate } from '../mutate'
 import {
-  CONN_DEFS,
   CATEGORY_META,
+  CONN_DEFS,
   connCategory,
+  connShape,
   type ConnCategory,
   type ConnField,
   type ConnTypeDef,
 } from '../conn-defs'
-import { createConnection, updateConnection, deleteConnection, testConnection, oauthConnect, enableInbound } from '../actions'
+import type { Agent, Connection, ConnectionWrite } from '../types'
 
-// View-local UI state (survives re-renders; the element lives for the app life).
-let connType: string | null = null
-let connMode = ''
-let connEdit: string | null = null
+import './toolsets'
+import './assisted-search'
 
-function connFieldHTML(f: ConnField): string {
-  return `<label>${escapeHTML(f.label)}${f.required ? ' *' : ''}
-    <input name="${f.key}" ${f.password ? 'type="password"' : ''} placeholder="${escapeHTML(f.placeholder || '')}" ${f.required ? 'required' : ''} autocomplete="off" />
-    ${f.hint ? `<span class="agents-hint">${escapeHTML(f.hint)}</span>` : ''}
-  </label>`
+// needsInstance flags a self-hosted search connection that names no instance.
+// The websearch tool errors at runtime in that state and nothing else in the
+// row shows it, so the table says so explicitly.
+function needsInstance(c: Connection): boolean {
+  return selfHostedSearch(c) && !c.spec.config?.instance
 }
 
-function renderConnEditForm(c: Connection): string {
-  const cat = connCategory(c.spec.type)
-  const usesChannel = cat === 'channel' || !!c.spec.channel
-  // Discord is one backend type with two shapes: a webhook (channel is a
-  // https:// URL, no secret) or a chat bot (channel is a numeric id or blank,
-  // secret is the bot token). Detect so editing shows the right form.
-  const isDiscord = c.spec.type === 'discord'
-  const isDiscordWebhook = isDiscord && (c.spec.channel || '').startsWith('https://')
-  const isDiscordBot = isDiscord && !isDiscordWebhook
-
-  let endpointLabel: string
-  if (isDiscordWebhook) endpointLabel = 'Webhook URL'
-  else if (isDiscordBot) endpointLabel = 'Channel ID (optional)'
-  else if (!usesChannel) endpointLabel = 'Endpoint URL'
-  else if (c.spec.type === 'slack') endpointLabel = 'Webhook URL / channel'
-  else if (c.spec.type === 'smtp') endpointLabel = 'Send to'
-  else endpointLabel = 'Channel / chat ID'
-
-  const endpointVal = usesChannel ? c.spec.channel || '' : c.spec.baseURL || ''
-  const isOAuth = c.spec.auth === 'oauth'
-  const secretField = isDiscordWebhook
-    ? ''
-    : isOAuth
-      ? `<p class="agents-hint">This is an OAuth connection — use the ${ic('link')} button in the table to re-authorize. Client credentials aren’t edited here.</p>`
-      : `<label>New ${isDiscordBot ? 'bot token' : 'secret / token'}<input name="secret" type="password" placeholder="leave blank to keep the current one" /><span class="agents-hint">Only set this to rotate the credential.</span></label>`
-  const kindLabel = isDiscordWebhook ? 'Discord webhook' : isDiscordBot ? 'Discord chat' : ''
-  return `<form class="agents-conn-form" data-editconn="${escapeHTML(c.metadata.name)}" data-usechannel="${usesChannel ? '1' : '0'}">
-      <div class="agents-conn-formhead">
-        <button type="button" class="agents-back" data-conncancel>${ic('arrow-left')} connections</button>
-        <h4>Edit ${ic(CATEGORY_META[cat].icon)} <code>${escapeHTML(c.metadata.name)}</code>${kindLabel ? ` <span class="agents-badge">${escapeHTML(kindLabel)}</span>` : ''}</h4>
-      </div>
-      <label>Display name<input name="displayName" value="${escapeHTML(c.spec.displayName || '')}" placeholder="${escapeHTML(c.metadata.name)}" /></label>
-      <label>${endpointLabel}<input name="endpoint" value="${escapeHTML(endpointVal)}" /></label>
-      ${secretField}
-      <div class="agents-form-actions"><button>Save changes</button><button type="button" class="secondary" data-conncancel>Cancel</button></div>
-    </form>`
+// selfHostedSearch is the websearch mode with no credential and no URL: it
+// names an infrastructure instance and is reached over the data plane.
+function selfHostedSearch(c: Connection): boolean {
+  return c.spec.type === 'websearch' && c.spec.config?.provider === 'searxng'
 }
 
-function renderConnForm(def: ConnTypeDef, oauthApps: Set<string>): string {
-  const mode = connMode || def.modes?.[0].id || ''
-  let fields = def.modes ? def.modes.find((m) => m.id === mode)!.fields : def.fields || []
-  // Platform OAuth app configured (operator env)? Then OAuth modes need no
-  // client id/secret — drop those fields.
-  const isOAuthMode = fields.some((f) => f.key === 'clientID')
-  let platformNote = ''
-  if (isOAuthMode && oauthApps.has(def.id)) {
-    fields = fields.filter((f) => f.key !== 'clientID' && f.key !== 'clientSecret')
-    platformNote = `<div class="agents-platform-note">${ic('check')} Using the platform's ${escapeHTML(def.label)} OAuth app — no client id/secret needed. Create it, then click <strong>Connect</strong>.</div>`
-  }
-  return `
-    <form class="agents-conn-form" data-type="${def.id}">
-      <div class="agents-conn-formhead">
-        <button type="button" class="agents-back" data-conntypes>${ic('arrow-left')} connection types</button>
-        <h4>${ic(def.glyph)} ${escapeHTML(def.label)}</h4>
-      </div>
-      <p class="muted">${escapeHTML(def.desc)}</p>
-      ${
-        def.setup
-          ? `<details class="agents-setup" open><summary>Before you start — setup steps</summary><ol>${def.setup.map((s) => `<li>${s}</li>`).join('')}</ol></details>`
-          : ''
-      }
-      <label>Name *<input name="name" required pattern="[a-z0-9-]+" placeholder="my-${def.id}" /><span class="agents-hint">A short id you'll reference from agents.</span></label>
-      ${
-        def.modes
-          ? `<div class="agents-modeseg">${def.modes.map((m) => `<button type="button" class="agents-modebtn ${m.id === mode ? 'sel' : ''}" data-connmode="${m.id}">${escapeHTML(m.label)}</button>`).join('')}</div>`
-          : ''
-      }
-      ${platformNote}
-      ${fields.map((f) => connFieldHTML(f)).join('')}
-      ${def.advanced?.length ? `<details class="agents-adv"><summary>Advanced</summary>${def.advanced.map((f) => connFieldHTML(f)).join('')}</details>` : ''}
-      <div><button>Create connection</button></div>
-    </form>`
+// instanceBacked covers every connection addressed by instance name rather than
+// by URL — self-hosted search and any MCP workload in this workspace. Those
+// edit an instance name; everything else edits an endpoint and a secret.
+function instanceBacked(c: Connection): boolean {
+  return selfHostedSearch(c) || (c.spec.type === 'mcp' && !!c.spec.config?.instance)
 }
 
-export function render(vc: ViewCtx): string {
-  const conns = vc.store.connections
-  const def = connType ? CONN_DEFS.find((d) => d.id === connType) : null
-  const tile = (d: ConnTypeDef) => `<button class="agents-conn-tile" data-conntype="${d.id}">
-               <span class="agents-conn-glyph">${ic(d.glyph)}</span>
-               <span class="agents-conn-name">${escapeHTML(d.label)}</span>
-               <span class="muted">${escapeHTML(d.desc)}</span>
-             </button>`
-  const groups = (['tool', 'channel', 'connection'] as ConnCategory[])
-    .map((cat) => {
-      const defs = CONN_DEFS.filter((d) => connCategory(d.id) === cat)
-      if (!defs.length) return ''
-      const m = CATEGORY_META[cat]
-      return `<div class="agents-conn-group">
-          <h5 class="agents-conn-grouphead">${ic(m.icon)} ${escapeHTML(m.label)}s <span class="muted">— ${escapeHTML(m.blurb)}</span></h5>
-          <div class="agents-conn-types">${defs.map(tile).join('')}</div>
-        </div>`
+// unwired flags a tool connection no agent has been granted. A tool family only
+// exists for an agent that was wired the connection backing it, so an unwired
+// search connection means every agent still answers "I can't make web
+// requests" — a failure that is otherwise completely invisible from here.
+function unwired(c: Connection, agents: Agent[]): boolean {
+  if (connCategory(c.spec.type) !== 'tool') return false
+  const name = c.metadata.name
+  return !agents.some((a) => {
+    const t = a.spec?.tools
+    return (
+      (t?.interactive?.connections || []).includes(name) ||
+      (t?.background?.connections || []).includes(name) ||
+      // A shared Toolset can carry the grant instead of the agent listing it.
+      (t?.interactive?.toolsets || []).length > 0 ||
+      (t?.background?.toolsets || []).length > 0
+    )
+  })
+}
+
+export class Connections extends StoreElement {
+  @state() private connType: string | null = null
+  @state() private connMode = ''
+  @state() private editing: string | null = null
+
+  private async create(def: ConnTypeDef, form: HTMLFormElement): Promise<void> {
+    const v: Record<string, string> = {}
+    form.querySelectorAll<HTMLInputElement>('input[name]').forEach((el) => (v[el.name] = el.value.trim()))
+    const mode = this.connMode || def.modes?.[0].id || ''
+    const res = await mutate(this.store, {
+      run: () => this.api.createConnection(def.build(v, mode)),
+      success: 'Connection created.',
+      failure: 'Create failed',
+      reload: ['connections'],
     })
-    .join('')
-  const editConn = connEdit ? conns.find((c) => c.metadata.name === connEdit) : undefined
-  const adder = editConn
-    ? renderConnEditForm(editConn)
-    : def
-      ? renderConnForm(def, vc.store.oauthApps)
-      : `<div class="agents-conn-picker"><h4>Add a connection</h4>${groups}</div>`
-  const catBadge = (id: string) => {
-    const m = CATEGORY_META[connCategory(id)]
-    return `<span class="agents-badge agents-badge-cat agents-cat-${connCategory(id)}">${ic(m.icon)} ${escapeHTML(m.label)}</span>`
+    if (res) {
+      this.connType = null
+      this.connMode = ''
+    }
   }
-  const typeLabel = (c: Connection) => {
-    if (c.spec.type !== 'discord') return c.spec.type
-    return (c.spec.channel || '').startsWith('https://') ? 'discord webhook' : 'discord chat'
+
+  private async saveEdit(c: Connection, form: HTMLFormElement, usesChannel: boolean): Promise<void> {
+    const g = (n: string): string => (form.querySelector<HTMLInputElement>(`[name=${n}]`)?.value || '').trim()
+    const patch: ConnectionWrite = { displayName: g('displayName') }
+    // A self-hosted search connection is addressed by instance name, not by
+    // URL — it is reached over the platform's internal data plane. config is
+    // replaced wholesale by the patch endpoint, so provider must be re-sent.
+    if (instanceBacked(c)) patch.config = { ...c.spec.config, instance: g('instance') }
+    else if (usesChannel) patch.channel = g('endpoint')
+    else patch.baseURL = g('endpoint')
+    const secret = g('secret')
+    if (secret) patch.secret = secret
+    const res = await mutate(this.store, {
+      run: () => this.api.patchConnection(c.metadata.name, patch),
+      success: 'Connection updated.',
+      failure: 'Update failed',
+      reload: ['connections'],
+    })
+    if (res) this.editing = null
   }
-  return `
-    <div class="agents-panel">
-      <h3>Connections</h3>
-      <p class="muted">Shared credentials for external systems. Each is a ${ic('wrench')} <strong>Tool</strong> agents call, a ${ic('megaphone')} <strong>Channel</strong> they message you on, or a ${ic('plug')} generic <strong>Connection</strong>. Stored as Secrets in your workspace.</p>
+
+  private async del(name: string): Promise<void> {
+    const ok = await confirmModal({ title: `Delete connection “${name}”?`, danger: true, confirmLabel: 'Delete' })
+    if (!ok) return
+    await mutate(this.store, {
+      run: () => this.api.deleteConnection(name),
+      success: 'Connection deleted.',
+      failure: 'Delete failed',
+      reload: ['connections'],
+    })
+  }
+
+  // Connection tests signal failure with an HTTP error (502 SendFailed, 400 for
+  // a non-messaging type) carrying the reason in the status body, whereas
+  // credential tests answer 200 with {ok:false, error} — see models.ts. Both
+  // conventions are handled where they are; do not "align" one blindly.
+  private async test(name: string): Promise<void> {
+    await mutate(this.store, {
+      run: () => this.api.testConnection(name),
+      success: `Test message sent via ${name}. Check the channel.`,
+      failure: `Test of “${name}” failed`,
+    })
+  }
+
+  private async enableInbound(name: string): Promise<void> {
+    const res = await mutate(this.store, {
+      run: () => this.api.enableInbound(name),
+      failure: 'Enable inbound failed',
+      reload: ['connections'],
+    })
+    if (res) toast(res.registered ? 'ok' : 'info', `${res.note} ${res.webhookURL}`)
+  }
+
+  private async oauth(name: string): Promise<void> {
+    const res = await mutate(this.store, { run: () => this.api.oauthAuthorize(name), failure: 'OAuth connect failed' })
+    if (!res) return
+    window.open(res.authorizeURL, '_blank', 'noopener')
+    toast('info', 'Authorize in the opened tab, then refresh.')
+  }
+
+  render(): TemplateResult {
+    return html`
+      <div class="agents-panel">
+        <h3>Connections</h3>
+        <p class="muted">
+          Shared credentials for external systems. Each is a ${icon('wrench')} <strong>Tool</strong> agents call, a
+          ${icon('megaphone')} <strong>Channel</strong> they message you on, or a ${icon('plug')} generic
+          <strong>Connection</strong>. Stored as Secrets in your workspace.
+        </p>
+        ${sliceView<Connection>({
+          slice: this.store.connections,
+          emptyIcon: 'plug',
+          emptyText: 'No connections yet — add one below.',
+          retry: () => void this.store.load('connections'),
+          content: (rows) => this.table(rows),
+        })}
+        ${this.editorArea()}
+      </div>
+      <agents-toolsets .store=${this.store} .api=${this.api}></agents-toolsets>
+    `
+  }
+
+  private table(rows: Connection[]): TemplateResult {
+    return html`<div class="agents-tablewrap">
       <table class="agents-table">
-        <thead><tr><th>Name</th><th>Kind</th><th>Type</th><th>Endpoint / channel</th><th class="agents-th-actions">Actions</th></tr></thead>
+        <thead>
+          <tr><th>Name</th><th>Kind</th><th>Type</th><th>Endpoint / channel</th><th class="agents-th-actions">Actions</th></tr>
+        </thead>
         <tbody>
-          ${
-            conns.length
-              ? conns
-                  .map(
-                    (c) => `<tr>
-                      <td><span class="agents-cell-name">${escapeHTML(c.spec.displayName || c.metadata.name)}</span>${c.status?.webhookPath ? ` <span class="agents-inbound-on" title="Inbound enabled">${ic('swap')}</span>` : ''}${c.status?.oauthConnected ? ` <span class="agents-inbound-on" title="OAuth connected">${ic('link')}</span>` : ''}</td>
-                      <td>${catBadge(c.spec.type)}</td>
-                      <td><span class="agents-badge">${escapeHTML(typeLabel(c))}</span></td>
-                      <td class="agents-cell-task muted">${escapeHTML(c.spec.baseURL || c.spec.channel || '—')}</td>
-                      <td class="agents-row-actions">
-                        <button class="agents-iconbtn" data-editconn="${escapeHTML(c.metadata.name)}" title="Edit">${ic('pencil')}</button>
-                        ${connCategory(c.spec.type) === 'channel' ? `<button class="agents-iconbtn" data-testconn="${escapeHTML(c.metadata.name)}" title="Send a test message">${ic('send')}</button>` : ''}
-                        ${connCategory(c.spec.type) === 'channel' ? `<button class="agents-iconbtn" data-inbound="${escapeHTML(c.metadata.name)}" title="${c.status?.webhookPath ? 'Inbound enabled' : 'Enable inbound chat'}">${ic('swap')}</button>` : ''}
-                        ${c.spec.auth === 'oauth' ? `<button class="agents-iconbtn" data-oauth="${escapeHTML(c.metadata.name)}" title="${c.status?.oauthConnected ? 'Reconnect OAuth' : 'Connect OAuth'}">${ic('link')}</button>` : ''}
-                        <button class="agents-iconbtn agents-iconbtn-danger" data-delconn="${escapeHTML(c.metadata.name)}" title="Delete">${ic('trash')}</button>
-                      </td>
-                    </tr>`,
-                  )
-                  .join('')
-              : `<tr class="agents-empty-row"><td colspan="5"><span class="agents-empty">${ic('plug')} No connections yet — add one below.</span></td></tr>`
-          }
+          ${repeat(
+            rows,
+            (c) => c.metadata.name,
+            (c) => {
+              const cat = connCategory(c.spec.type)
+              const meta = CATEGORY_META[cat]
+              const name = c.metadata.name
+              return html`<tr class=${this.editing === name ? 'is-editing' : ''}>
+                <td>
+                  <span class="agents-cell-name">${c.spec.displayName || name}</span>
+                  ${c.status?.webhookPath ? html`<span class="agents-inbound-on" title="Inbound enabled">${icon('swap')}</span>` : nothing}
+                  ${c.status?.oauthConnected ? html`<span class="agents-inbound-on" title="OAuth connected">${icon('link')}</span>` : nothing}
+                </td>
+                <td><span class="agents-badge agents-badge-cat agents-cat-${cat}">${icon(meta.icon)} ${meta.label}</span></td>
+                <td><span class="agents-badge">${connShape(c).typeLabel}</span></td>
+                <td class="agents-cell-task muted">
+                  ${needsInstance(c)
+                    ? html`<button
+                        class="agents-badge agents-badge-warn agents-badge-btn"
+                        title="Edit this connection and name the searxng instance it should search through"
+                        @click=${() => {
+                          this.editing = name
+                          this.connType = null
+                        }}
+                      >
+                        ${icon('pencil')} needs an instance
+                      </button>`
+                    : c.spec.config?.instance || c.spec.baseURL || c.spec.channel || '—'}
+                  ${unwired(c, this.store.agents.data)
+                    ? html`<span class="agents-badge agents-badge-warn" title="No agent has been granted this tool — add it under an agent's Config → Tools"
+                        >not wired to an agent</span
+                      >`
+                    : nothing}
+                </td>
+                <td class="agents-row-actions">
+                  <button
+                    class="agents-iconbtn"
+                    aria-label="Edit ${name}"
+                    title="Edit"
+                    @click=${() => {
+                      this.editing = name
+                      this.connType = null
+                    }}
+                  >
+                    ${icon('pencil')}
+                  </button>
+                  ${cat === 'channel'
+                    ? html`<button class="agents-iconbtn" aria-label="Send a test message via ${name}" title="Send a test message" @click=${() => void this.test(name)}>
+                          ${icon('send')}
+                        </button>
+                        <button
+                          class="agents-iconbtn"
+                          aria-label="Enable inbound chat for ${name}"
+                          title=${c.status?.webhookPath ? 'Inbound enabled' : 'Enable inbound chat'}
+                          @click=${() => void this.enableInbound(name)}
+                        >
+                          ${icon('swap')}
+                        </button>`
+                    : nothing}
+                  ${c.spec.auth === 'oauth'
+                    ? html`<button
+                        class="agents-iconbtn"
+                        aria-label="Connect OAuth for ${name}"
+                        title=${c.status?.oauthConnected ? 'Reconnect OAuth' : 'Connect OAuth'}
+                        @click=${() => void this.oauth(name)}
+                      >
+                        ${icon('link')}
+                      </button>`
+                    : nothing}
+                  <button class="agents-iconbtn agents-iconbtn-danger" aria-label="Delete ${name}" title="Delete" @click=${() => void this.del(name)}>
+                    ${icon('trash')}
+                  </button>
+                </td>
+              </tr>`
+            },
+          )}
         </tbody>
       </table>
-      ${adder}
     </div>`
+  }
+
+  // ---- create / edit forms -------------------------------------------------
+
+  private editorArea(): TemplateResult {
+    const editConn = this.editing ? this.store.connections.data.find((c) => c.metadata.name === this.editing) : undefined
+    if (editConn) return this.editForm(editConn)
+    const def = this.connType ? CONN_DEFS.find((d) => d.id === this.connType) : null
+    if (def) return this.createForm(def)
+    return this.picker()
+  }
+
+  private picker(): TemplateResult {
+    const tile = (d: ConnTypeDef): TemplateResult => html`<button
+      class="agents-conn-tile"
+      @click=${() => {
+        this.connType = d.id
+        this.connMode = ''
+      }}
+    >
+      <span class="agents-conn-glyph">${icon(d.glyph)}</span>
+      <span class="agents-conn-name">${d.label}</span>
+      <span class="muted">${d.desc}</span>
+    </button>`
+    return html`<div class="agents-conn-picker">
+      <h4>Add a connection</h4>
+      ${(['tool', 'channel', 'connection'] as ConnCategory[]).map((cat) => {
+        const defs = CONN_DEFS.filter((d) => connCategory(d.id) === cat)
+        if (!defs.length) return nothing
+        const m = CATEGORY_META[cat]
+        return html`<div class="agents-conn-group">
+          <h5 class="agents-conn-grouphead">${icon(m.icon)} ${m.label}s <span class="muted">— ${m.blurb}</span></h5>
+          <div class="agents-conn-types">${defs.map(tile)}</div>
+          ${cat === 'tool'
+            ? html`<agents-assisted-search .store=${this.store} .api=${this.api}></agents-assisted-search>`
+            : nothing}
+        </div>`
+      })}
+    </div>`
+  }
+
+  private field(f: ConnField): TemplateResult {
+    return html`<label>
+      ${f.label}${f.required ? ' *' : ''}
+      <input
+        name=${f.key}
+        type=${f.password ? 'password' : 'text'}
+        placeholder=${f.placeholder || ''}
+        ?required=${f.required}
+        autocomplete="off"
+      />
+      ${f.hint ? html`<span class="agents-hint">${f.hint}</span>` : nothing}
+    </label>`
+  }
+
+  private createForm(def: ConnTypeDef): TemplateResult {
+    const mode = this.connMode || def.modes?.[0].id || ''
+    const activeMode = def.modes?.find((m) => m.id === mode)
+    let fields = def.modes ? activeMode!.fields : def.fields || []
+    const advanced = [...(def.advanced || []), ...(activeMode?.advanced || [])]
+    // Platform OAuth app configured (operator env)? Then OAuth modes need no
+    // client id/secret — drop those fields.
+    const isOAuthMode = fields.some((f) => f.key === 'clientID')
+    const platformApp = isOAuthMode && this.store.oauthApps.has(def.id)
+    if (platformApp) fields = fields.filter((f) => f.key !== 'clientID' && f.key !== 'clientSecret')
+    return html`<form
+      class="agents-conn-form"
+      @submit=${(e: Event) => {
+        e.preventDefault()
+        void this.create(def, e.target as HTMLFormElement)
+      }}
+    >
+      <div class="agents-conn-formhead">
+        <button type="button" class="agents-back" @click=${() => (this.connType = null)}>${icon('arrow-left')} connection types</button>
+        <h4>${icon(def.glyph)} ${def.label}</h4>
+      </div>
+      <p class="muted">${def.desc}</p>
+      ${def.setup
+        ? html`<details class="agents-setup" open>
+            <summary>Before you start — setup steps</summary>
+            <ol>
+              ${def.setup.map((s) => html`<li>${unsafeHTML(s)}</li>`)}
+            </ol>
+          </details>`
+        : nothing}
+      <label>
+        Name *
+        <input name="name" required pattern="[a-z0-9-]+" placeholder=${`my-${def.id}`} autocomplete="off" />
+        <span class="agents-hint">A short id you'll reference from agents.</span>
+      </label>
+      ${def.modes
+        ? html`<div class="agents-modeseg" role="group" aria-label="Authentication mode">
+            ${def.modes.map(
+              (m) => html`<button type="button" class="agents-modebtn ${m.id === mode ? 'sel' : ''}" @click=${() => (this.connMode = m.id)}>
+                ${m.label}
+              </button>`,
+            )}
+          </div>`
+        : nothing}
+      ${platformApp
+        ? html`<div class="agents-platform-note">
+            ${icon('check')} Using the platform's ${def.label} OAuth app — no client id/secret needed. Create it, then click
+            <strong>Connect</strong>.
+          </div>`
+        : nothing}
+      ${fields.map((f) => this.field(f))}
+      ${advanced.length
+        ? html`<details class="agents-adv"><summary>Advanced</summary>${advanced.map((f) => this.field(f))}</details>`
+        : nothing}
+      <div><button type="submit">Create connection</button></div>
+    </form>`
+  }
+
+  private editForm(c: Connection): TemplateResult {
+    const cat = connCategory(c.spec.type)
+    const usesChannel = cat === 'channel' || !!c.spec.channel
+    const shape = connShape(c)
+    let endpointLabel: string
+    if (shape.discordWebhook) endpointLabel = 'Webhook URL'
+    else if (shape.discordBot) endpointLabel = 'Channel ID (optional)'
+    else if (!usesChannel) endpointLabel = 'Endpoint URL'
+    else if (c.spec.type === 'slack') endpointLabel = 'Webhook URL / channel'
+    else if (c.spec.type === 'smtp') endpointLabel = 'Send to'
+    else endpointLabel = 'Channel / chat ID'
+    const isOAuth = c.spec.auth === 'oauth'
+    return html`<form
+      class="agents-conn-form"
+      @submit=${(e: Event) => {
+        e.preventDefault()
+        void this.saveEdit(c, e.target as HTMLFormElement, usesChannel)
+      }}
+    >
+      <div class="agents-conn-formhead">
+        <button type="button" class="agents-back" @click=${() => (this.editing = null)}>${icon('arrow-left')} connections</button>
+        <h4>
+          Edit ${icon(CATEGORY_META[cat].icon)} <code>${c.metadata.name}</code>
+          ${c.spec.type === 'discord' ? html`<span class="agents-badge">${shape.typeLabel}</span>` : nothing}
+        </h4>
+      </div>
+      <label>Display name<input name="displayName" .value=${c.spec.displayName || ''} placeholder=${c.metadata.name} /></label>
+      ${instanceBacked(c)
+        ? html`<label>
+            Instance name *
+            <input name="instance" .value=${c.spec.config?.instance || ''} placeholder="search" required autocomplete="off" />
+            <span class="agents-hint">
+              The instance under Infrastructure. Agents reach it over the platform's internal path — there is no URL and no token.
+            </span>
+          </label>`
+        : html`<label>${endpointLabel}<input name="endpoint" .value=${(usesChannel ? c.spec.channel : c.spec.baseURL) || ''} /></label>`}
+      ${instanceBacked(c)
+        ? nothing
+        : shape.discordWebhook
+        ? nothing
+        : isOAuth
+          ? html`<p class="agents-hint">
+              This is an OAuth connection — use the ${icon('link')} button in the table to re-authorize. Client credentials aren't
+              edited here.
+            </p>`
+          : html`<label>
+              New ${shape.discordBot ? 'bot token' : 'secret / token'}
+              <input name="secret" type="password" placeholder="leave blank to keep the current one" autocomplete="off" />
+              <span class="agents-hint">Only set this to rotate the credential.</span>
+            </label>`}
+      <div class="agents-form-actions">
+        <button type="submit">Save changes</button>
+        <button type="button" class="secondary" @click=${() => (this.editing = null)}>Cancel</button>
+      </div>
+    </form>`
+  }
 }
 
-export function wire(vc: ViewCtx, root: HTMLElement): void {
-  root.querySelectorAll<HTMLElement>('[data-delconn]').forEach((el) =>
-    el.addEventListener('click', async () => {
-      if (await confirmModal({ title: `Delete connection “${el.dataset.delconn}”?`, danger: true, confirmLabel: 'Delete' })) void deleteConnection(vc, el.dataset.delconn!)
-    }),
-  )
-  root.querySelectorAll<HTMLElement>('[data-oauth]').forEach((el) => el.addEventListener('click', () => void oauthConnect(vc, el.dataset.oauth!)))
-  root.querySelectorAll<HTMLElement>('[data-testconn]').forEach((el) => el.addEventListener('click', () => void testConnection(vc, el.dataset.testconn!)))
-  root.querySelectorAll<HTMLElement>('[data-inbound]').forEach((el) => el.addEventListener('click', () => void enableInbound(vc, el.dataset.inbound!)))
-  // Edit an existing connection.
-  root.querySelectorAll<HTMLElement>('[data-editconn]:not(form)').forEach((el) =>
-    el.addEventListener('click', () => {
-      connEdit = el.dataset.editconn!
-      connType = null
-      vc.rerender()
-    }),
-  )
-  root.querySelectorAll<HTMLElement>('[data-conncancel]').forEach((el) =>
-    el.addEventListener('click', () => {
-      connEdit = null
-      vc.rerender()
-    }),
-  )
-  // Type picker → open that type's form.
-  root.querySelectorAll<HTMLElement>('[data-conntype]').forEach((el) =>
-    el.addEventListener('click', () => {
-      connType = el.dataset.conntype!
-      connMode = ''
-      vc.rerender()
-    }),
-  )
-  root.querySelector<HTMLElement>('[data-conntypes]')?.addEventListener('click', () => {
-    connType = null
-    vc.rerender()
-  })
-  root.querySelectorAll<HTMLElement>('[data-connmode]').forEach((el) =>
-    el.addEventListener('click', () => {
-      connMode = el.dataset.connmode!
-      vc.rerender()
-    }),
-  )
-  const f = root.querySelector<HTMLFormElement>('.agents-conn-form')
-  if (!f) return
-  // Edit-form submit (patch an existing connection).
-  if (f.dataset.editconn) {
-    f.addEventListener('submit', (e) => {
-      e.preventDefault()
-      const g = (n: string) => (f.querySelector<HTMLInputElement>(`[name=${n}]`)?.value || '').trim()
-      const patch: Record<string, unknown> = { displayName: g('displayName') }
-      if (f.dataset.usechannel === '1') patch.channel = g('endpoint')
-      else patch.baseURL = g('endpoint')
-      const secret = g('secret')
-      if (secret) patch.secret = secret
-      void updateConnection(vc, f.dataset.editconn!, patch).then((ok) => {
-        if (ok) connEdit = null
-      })
-    })
-    return
-  }
-  // Create-form submit.
-  const def = connType ? CONN_DEFS.find((d) => d.id === connType) : null
-  if (!def) return
-  f.addEventListener('submit', (e) => {
-    e.preventDefault()
-    const v: Record<string, string> = {}
-    f.querySelectorAll<HTMLInputElement>('input[name]').forEach((el) => (v[el.name] = el.value.trim()))
-    const mode = connMode || def.modes?.[0].id || ''
-    const body = def.build(v, mode)
-    void createConnection(vc, body).then((ok) => {
-      if (ok) {
-        connType = null
-        connMode = ''
-      }
-    })
-  })
-}
+if (!customElements.get('agents-connections')) customElements.define('agents-connections', Connections)

@@ -7,6 +7,9 @@ spec:
   description: "A single-container web app on a public URL — Deployment + Service + HTTPRoute. No backend tiers, no database. Development-capable: can back an App Studio project with a hot-reload dev server."
   category: Workloads
   version: 0.2.0
+  # exposure: what the platform tells callers about reaching an instance.
+  # Every instance is published; App Studio's preview depends on it.
+  exposure: public
   backend: kro
   # One-click provision defaults for the portal form. nginx serves its welcome
   # page on port 80, so "Provision → see it working" needs zero external setup.

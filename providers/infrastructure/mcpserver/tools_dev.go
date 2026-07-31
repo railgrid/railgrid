@@ -22,10 +22,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -100,9 +102,12 @@ type devSandboxRequest struct {
 // devTarget is a resolved development instance: the instance CR plus its
 // template's plural (data-plane addressing) and development contract.
 type devTarget struct {
-	resource   string
-	instance   *kro.Instance
-	components map[string]string // component name → workspacePath
+	resource string
+	instance *kro.Instance
+	// components is the template's development contract per component name:
+	// workspacePath (sync routing) plus toolchain and start command (what the
+	// sandbox will actually execute).
+	components map[string]kro.TemplateDevelopmentComponent
 }
 
 // registerDevTools wires the dev-loop tools. Registered unconditionally so
@@ -145,6 +150,12 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 			return nil, devSyncOutput{}, fmt.Errorf(
 				"none of the %d files are under a development component directory (%s); source must live under those directories to reach the sandbox",
 				len(in.Files), devComponentSummary(target.components))
+		}
+		// Files in the right directory but written for the wrong runtime sync
+		// "successfully" and then never start: the sandbox image has no
+		// toolchain for them. Fail here rather than leaving a dead component.
+		if err := validateDevSyncToolchains(routed, target.components); err != nil {
+			return nil, devSyncOutput{}, err
 		}
 
 		out := devSyncOutput{Instance: in.Instance, Components: map[string]devSyncComponentResult{}}
@@ -272,10 +283,8 @@ func resolveDevTarget(ctx context.Context, deps Deps, ident identity, instanceNa
 	if mode, _ := inst.Values["kedgeMode"].(string); mode != "development" {
 		return devTarget{}, fmt.Errorf("instance %q is not in development mode (kedgeMode=%q) — provision a dev instance with values.kedgeMode=\"development\"", instanceName, mode)
 	}
-	components := make(map[string]string, len(tmpl.Development.Components))
-	for name, c := range tmpl.Development.Components {
-		components[name] = c.WorkspacePath
-	}
+	components := make(map[string]kro.TemplateDevelopmentComponent, len(tmpl.Development.Components))
+	maps.Copy(components, tmpl.Development.Components)
 	return devTarget{resource: tmpl.InstanceGVR.Resource, instance: inst, components: components}, nil
 }
 
@@ -332,10 +341,10 @@ func callDataPlane(ctx context.Context, dp http.Handler, ident identity, method,
 // "<workspacePath>/" are routed with the prefix stripped (the sandbox works
 // tree is the component directory). Files outside every component route
 // nowhere. Mirrors app-studio's routing so both edit paths behave identically.
-func routeDevSyncFiles(files []devSyncFile, components map[string]string) map[string][]devSyncFile {
+func routeDevSyncFiles(files []devSyncFile, components map[string]kro.TemplateDevelopmentComponent) map[string][]devSyncFile {
 	out := make(map[string][]devSyncFile, len(components))
-	for component, workspacePath := range components {
-		wp := path.Clean(strings.TrimSpace(workspacePath))
+	for component, comp := range components {
+		wp := path.Clean(strings.TrimSpace(comp.WorkspacePath))
 		if wp == "." {
 			out[component] = files
 			continue
@@ -350,6 +359,83 @@ func routeDevSyncFiles(files []devSyncFile, components map[string]string) map[st
 	return out
 }
 
+// devToolchainManifests names the file each known toolchain needs at a
+// component's root before its start command can run. Keyed by the toolchain
+// from the template's ${kedge.devImage.<toolchain>} token. A toolchain absent
+// here is never validated: the template, not this server, is the authority on
+// what its sandbox can run, so an unknown toolchain must not block a sync.
+var devToolchainManifests = map[string]struct {
+	Files []string
+	Hint  string
+}{
+	"node":   {Files: []string{"package.json"}, Hint: "add a package.json whose \"dev\" or \"start\" script launches the server on $PORT"},
+	"python": {Files: []string{"requirements.txt", "pyproject.toml", "Pipfile", "setup.py"}, Hint: "add a requirements.txt or pyproject.toml"},
+	"go":     {Files: []string{"go.mod"}, Hint: "add a go.mod at the component root"},
+	"ruby":   {Files: []string{"Gemfile"}, Hint: "add a Gemfile at the component root"},
+}
+
+// validateDevSyncToolchains rejects a sync whose files cannot run in the
+// component's sandbox. It fires only when a component received files, its
+// toolchain is known, and that toolchain's manifest is missing from the
+// component root — so partial syncs and unknown toolchains pass untouched.
+func validateDevSyncToolchains(routed map[string][]devSyncFile, components map[string]kro.TemplateDevelopmentComponent) error {
+	for _, name := range sortedDevComponents(components) {
+		files := routed[name]
+		if len(files) == 0 {
+			continue
+		}
+		comp := components[name]
+		manifest, known := devToolchainManifests[comp.Toolchain]
+		if !known || devFilesContainManifest(files, manifest.Files) {
+			continue
+		}
+		where := path.Clean(strings.TrimSpace(comp.WorkspacePath))
+		if where == "." {
+			where = "the workspace root"
+		} else {
+			where += "/"
+		}
+		return fmt.Errorf(
+			"component %q runs a %s development sandbox but %s has no %s — %s. The sandbox has no other toolchain installed and starts this component with: %s",
+			name, comp.Toolchain, where, strings.Join(manifest.Files, " / "), manifest.Hint,
+			summarizeDevStartCommand(comp.StartCommand))
+	}
+	return nil
+}
+
+// devFilesContainManifest reports whether an accepted manifest sits at the
+// component root. Paths here are component-relative (the router strips the
+// workspacePath prefix), so a root manifest contains no separator — a nested
+// one does not make the component runnable.
+func devFilesContainManifest(files []devSyncFile, accepted []string) bool {
+	for _, f := range files {
+		p := path.Clean(strings.TrimSpace(f.Path))
+		if strings.Contains(p, "/") {
+			continue
+		}
+		if slices.Contains(accepted, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// devStartCommandSummaryMaxChars bounds a start command in an error message:
+// templates may inline a long config shim, and the leading command is the
+// part that tells an agent what its source must provide.
+const devStartCommandSummaryMaxChars = 160
+
+func summarizeDevStartCommand(cmd string) string {
+	cmd = strings.Join(strings.Fields(cmd), " ")
+	if cmd == "" {
+		return "(the template declares no start command)"
+	}
+	if len(cmd) > devStartCommandSummaryMaxChars {
+		return cmd[:devStartCommandSummaryMaxChars] + "..."
+	}
+	return cmd
+}
+
 func countRoutedDevFiles(routed map[string][]devSyncFile) int {
 	total := 0
 	for _, files := range routed {
@@ -358,7 +444,7 @@ func countRoutedDevFiles(routed map[string][]devSyncFile) int {
 	return total
 }
 
-func sortedDevComponents(components map[string]string) []string {
+func sortedDevComponents(components map[string]kro.TemplateDevelopmentComponent) []string {
 	names := make([]string, 0, len(components))
 	for name := range components {
 		names = append(names, name)
@@ -369,10 +455,10 @@ func sortedDevComponents(components map[string]string) []string {
 
 // devComponentSummary renders the component → workspacePath map for error
 // messages, sorted by component name (e.g. "backend → api/, frontend → web/").
-func devComponentSummary(components map[string]string) string {
+func devComponentSummary(components map[string]kro.TemplateDevelopmentComponent) string {
 	parts := make([]string, 0, len(components))
 	for _, name := range sortedDevComponents(components) {
-		wp := path.Clean(strings.TrimSpace(components[name]))
+		wp := path.Clean(strings.TrimSpace(components[name].WorkspacePath))
 		if wp == "." {
 			parts = append(parts, name+" → the workspace root")
 			continue

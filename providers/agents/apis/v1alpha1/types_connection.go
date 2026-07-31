@@ -95,11 +95,6 @@ type ConnectionSpec struct {
 	// +kubebuilder:validation:MaxLength=2048
 	BaseURL string `json:"baseURL,omitempty"`
 
-	// AllowedHosts restricts which hosts the web/http tools may reach when this
-	// connection is in scope. Empty means the provider default policy applies.
-	// +optional
-	AllowedHosts []string `json:"allowedHosts,omitempty"`
-
 	// Channel identifies the destination for messaging connections: a Telegram
 	// chat ID, a Slack channel ID, or an email address for smtp.
 	// +optional

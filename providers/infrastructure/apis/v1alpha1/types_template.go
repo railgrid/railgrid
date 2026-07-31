@@ -107,6 +107,20 @@ type TemplateSpec struct {
 	// +kubebuilder:validation:MaxLength=2048
 	IconURL string `json:"iconURL,omitempty"`
 
+	// Exposure declares whether instances of this template are reachable from
+	// outside the platform. It is a statement ABOUT the resource graph, not a
+	// switch that changes it — the graph still has to carry (or not carry) the
+	// HTTPRoute. Declaring it lets every caller stop guessing: the portal and
+	// the MCP tools can say "this has no URL" instead of surfacing an empty
+	// status field, and an agent stops polling status.url forever for an
+	// instance that will never have one.
+	//
+	// Defaults to ExposureInternal when empty, which is the safe reading: a
+	// template that never said it publishes anything is assumed not to.
+	// +optional
+	// +kubebuilder:validation:Enum=internal;optional;public
+	Exposure TemplateExposure `json:"exposure,omitempty"`
+
 	// Backend names the registered backend implementation that
 	// reconciles instances of this template. The Template controller
 	// validates the backend is registered at admission time
@@ -370,6 +384,44 @@ type TemplateDevelopmentScaffold struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
 	Ref string `json:"ref,omitempty"`
+}
+
+// TemplateExposure classifies how instances of a template are reachable.
+type TemplateExposure string
+
+const (
+	// ExposureInternal means instances are reachable only from inside the
+	// platform — in practice, through the template's dataPlane verbs, which
+	// authorize per caller. There is no hostname and no status.url; anything
+	// looking for one is looking for something that does not exist.
+	ExposureInternal TemplateExposure = "internal"
+
+	// ExposureOptional means the graph carries exposure resources behind an
+	// includeWhen, so a given instance may or may not be published depending on
+	// its own spec. Callers must read the instance, not the template, to know.
+	ExposureOptional TemplateExposure = "optional"
+
+	// ExposurePublic means every instance is published on a hostname. The
+	// template is responsible for its own auth gate — the platform does not
+	// add one.
+	ExposurePublic TemplateExposure = "public"
+)
+
+// ExposureClass returns the template's exposure class, defaulting an unset
+// value to ExposureInternal. Read through this rather than the field: seed
+// templates authored before the field existed, and treating those as public
+// would be the wrong way to be wrong.
+func (s TemplateSpec) ExposureClass() TemplateExposure {
+	if s.Exposure == "" {
+		return ExposureInternal
+	}
+	return s.Exposure
+}
+
+// Publishable reports whether an instance of this template may have a public
+// URL — either always (public) or depending on its spec (optional).
+func (s TemplateSpec) Publishable() bool {
+	return s.ExposureClass() != ExposureInternal
 }
 
 // TemplateDataPlane is the declarative contract for an instance's live data

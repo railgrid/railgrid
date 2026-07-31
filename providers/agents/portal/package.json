@@ -7,10 +7,20 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
+    "@types/node": "^26.1.2",
+    "jsdom": "^29.1.1",
     "typescript": "^5.6.3",
-    "vite": "^6.4.1"
+    "vite": "^6.4.1",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.12",
+    "lit": "^3.3.3",
+    "marked": "^18.0.7"
   }
 }

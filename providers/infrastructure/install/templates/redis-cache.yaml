@@ -7,6 +7,9 @@ spec:
   description: "A Redis instance for caching workloads — StatefulSet + Service; the size knob picks the memory bucket. Ephemeral: data does not survive a restart."
   category: Databases
   version: 0.2.0
+  # exposure: what the platform tells callers about reaching an instance.
+  # Consumed pod-to-pod on the runtime cluster. No HTTP surface.
+  exposure: internal
   backend: kro
   sampleValues:
     name: cache

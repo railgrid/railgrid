@@ -28,23 +28,25 @@ import (
 const projectEinoAssistantSessionSnapshotKey = "appStudioProjectSnapshot"
 
 type projectEinoAssistantSessionSnapshot struct {
-	ProjectName       string                            `json:"projectName"`
-	DisplayName       string                            `json:"displayName,omitempty"`
-	RepoReady         bool                              `json:"repoReady"`
-	RepositoryRef     string                            `json:"repositoryRef,omitempty"`
-	RepositoryStatus  string                            `json:"repositoryStatus,omitempty"`
-	RepositoryMessage string                            `json:"repositoryMessage,omitempty"`
-	LastKnownBranch   string                            `json:"lastKnownBranch"`
-	LastFileSnapshot  []string                          `json:"lastFileSnapshot"`
-	RecommendedChecks []string                          `json:"recommendedChecks,omitempty"`
+	ProjectName       string   `json:"projectName"`
+	DisplayName       string   `json:"displayName,omitempty"`
+	RepoReady         bool     `json:"repoReady"`
+	RepositoryRef     string   `json:"repositoryRef,omitempty"`
+	RepositoryStatus  string   `json:"repositoryStatus,omitempty"`
+	RepositoryMessage string   `json:"repositoryMessage,omitempty"`
+	LastKnownBranch   string   `json:"lastKnownBranch"`
+	LastFileSnapshot  []string `json:"lastFileSnapshot"`
+	RecommendedChecks []string `json:"recommendedChecks,omitempty"`
 	// DevelopmentComponents maps each of the bound template's development
-	// component names to the workspace directory file sync routes from ("."
-	// is the workspace root). Application source outside every listed
-	// directory never reaches the development sandbox.
-	DevelopmentComponents map[string]string                 `json:"developmentComponents,omitempty"`
-	Memory                projectEinoAssistantSessionMemory `json:"memory"`
-	LastBuildRun      *projectEinoAssistantSessionBuild `json:"lastBuildRun,omitempty"`
-	ContextIssue      string                            `json:"contextIssue,omitempty"`
+	// component names to its contract: the workspace directory file sync
+	// routes from ("." is the workspace root), plus the toolchain and start
+	// command the sandbox executes it with. Application source outside every
+	// listed directory never reaches the development sandbox, and source
+	// written for a different toolchain than the one listed cannot run in it.
+	DevelopmentComponents map[string]projectTemplateComponent `json:"developmentComponents,omitempty"`
+	Memory                projectEinoAssistantSessionMemory   `json:"memory"`
+	LastBuildRun          *projectEinoAssistantSessionBuild   `json:"lastBuildRun,omitempty"`
+	ContextIssue          string                              `json:"contextIssue,omitempty"`
 }
 
 type projectEinoAssistantSessionMemory struct {
@@ -118,7 +120,7 @@ func projectEinoAssistantSnapshot(ctx context.Context, req projectAssistantRunRe
 // without a template, a missing client, or a failed catalog read yields nil —
 // the snapshot then simply carries no directory contract instead of failing
 // the turn.
-func projectAssistantTemplateComponents(ctx context.Context, req projectAssistantRunRequest) map[string]string {
+func projectAssistantTemplateComponents(ctx context.Context, req projectAssistantRunRequest) map[string]projectTemplateComponent {
 	if req.Client == nil || req.Project == nil || req.Project.Spec.Template == nil {
 		return nil
 	}

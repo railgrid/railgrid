@@ -16,11 +16,9 @@ limitations under the License.
 
 package v1alpha1
 
-import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-// Run triggers and phases.
+// Run triggers. Runs are store-native records (transcripts, steps, checkpoints
+// live in the provider's Postgres) exposed over /api/runs — deliberately not a
+// CRD, so the schema and the execution reality cannot drift.
 const (
 	RunTriggerChat       = "chat"
 	RunTriggerSchedule   = "schedule"
@@ -30,127 +28,4 @@ const (
 	RunTriggerAPI        = "api"
 	RunTriggerChannel    = "channel"
 	RunTriggerDelegation = "delegation"
-
-	RunPhasePending         = "Pending"
-	RunPhaseRunning         = "Running"
-	RunPhasePendingApproval = "PendingApproval"
-	RunPhaseSucceeded       = "Succeeded"
-	RunPhaseFailed          = "Failed"
-	RunPhaseAborted         = "Aborted"
 )
-
-// +genclient
-// +genclient:nonNamespaced
-// +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
-// +kubebuilder:resource:path=runs,singular=run,scope=Cluster,shortName=run
-// +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=".spec.agentRef"
-// +kubebuilder:printcolumn:name="Trigger",type=string,JSONPath=".spec.trigger"
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-
-// Run records one execution of an agent. The transcript and resumable
-// checkpoint live in the provider store; this resource is the durable index
-// entry with status and usage for API and portal consumption.
-type Run struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   RunSpec   `json:"spec,omitempty"`
-	Status RunStatus `json:"status,omitempty"`
-}
-
-// RunSpec is the run request.
-type RunSpec struct {
-	// AgentRef names the Agent that executed.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	AgentRef string `json:"agentRef"`
-
-	// Trigger is what initiated the run: chat, schedule, heartbeat, wakeup,
-	// event, api, channel, or delegation.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=chat;schedule;heartbeat;wakeup;event;api;channel;delegation
-	Trigger string `json:"trigger"`
-
-	// ScheduleRef names the Schedule that fired this run, when applicable.
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	ScheduleRef string `json:"scheduleRef,omitempty"`
-
-	// TriggerRef names the Trigger that fired this run, for event runs.
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	TriggerRef string `json:"triggerRef,omitempty"`
-
-	// ParentRunID references the Run that spawned this one via delegation.
-	// Empty for top-level runs.
-	// +optional
-	// +kubebuilder:validation:MaxLength=128
-	ParentRunID string `json:"parentRunID,omitempty"`
-
-	// Input is the prompt or task text for this run.
-	// +optional
-	// +kubebuilder:validation:MaxLength=32768
-	Input string `json:"input,omitempty"`
-
-	// SessionID groups runs into a conversation for transcript continuity.
-	// +optional
-	// +kubebuilder:validation:MaxLength=128
-	SessionID string `json:"sessionID,omitempty"`
-}
-
-// RunStatus is the observed run state.
-type RunStatus struct {
-	// Phase is Pending, Running, PendingApproval, Succeeded, Failed, or Aborted.
-	// +optional
-	Phase string `json:"phase,omitempty"`
-
-	// Message carries a failure reason or a short result summary.
-	// +optional
-	// +kubebuilder:validation:MaxLength=4096
-	Message string `json:"message,omitempty"`
-
-	// StartedAt is when execution began.
-	// +optional
-	StartedAt *metav1.Time `json:"startedAt,omitempty"`
-
-	// FinishedAt is when execution ended.
-	// +optional
-	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
-
-	// Attempt is the 1-based retry attempt number.
-	// +optional
-	Attempt int32 `json:"attempt,omitempty"`
-
-	// Usage reports token and cost consumption for this run.
-	// +optional
-	Usage *RunUsage `json:"usage,omitempty"`
-}
-
-// RunUsage is the per-run consumption.
-type RunUsage struct {
-	// InputTokens consumed by the run.
-	// +optional
-	InputTokens int64 `json:"inputTokens,omitempty"`
-
-	// OutputTokens produced by the run.
-	// +optional
-	OutputTokens int64 `json:"outputTokens,omitempty"`
-
-	// USD is the run's estimated cost in US dollars.
-	// +optional
-	USD string `json:"usd,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-
-// RunList contains a list of Runs.
-type RunList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Run `json:"items"`
-}

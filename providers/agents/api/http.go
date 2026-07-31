@@ -107,6 +107,22 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// writeList writes a collection response, normalizing a nil slice to an empty
+// JSON array. Go marshals a nil slice as null, which faults any client that
+// maps over the result — an empty workspace is not an error case.
+func writeList[T any](w http.ResponseWriter, items []T, extra ...map[string]any) {
+	if items == nil {
+		items = []T{}
+	}
+	body := map[string]any{"items": items}
+	for _, e := range extra {
+		for k, v := range e {
+			body[k] = v
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
 // scope derives the store Scope for this identity, optionally narrowed to an
 // agent.
 func (id identity) scope(agentName string) store.Scope {

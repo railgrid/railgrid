@@ -67,12 +67,17 @@ type OAuthApp struct {
 
 // Server holds the provider's backend dependencies.
 type Server struct {
-	cfg     Config
-	store   store.Store
-	gql     *tenant.GraphQLClient
-	engine  *engine.Engine
-	bg      *background
-	started time.Time
+	cfg      Config
+	store    store.Store
+	gql      *tenant.GraphQLClient
+	engine   *engine.Engine
+	bg       *background
+	events   *eventBus
+	liveRuns *runRegistry
+	// capabilities caches what the hub's aggregate tool endpoint federates for
+	// a workspace, so the portal can hide flows the tenant cannot perform.
+	capabilities *capabilityCache
+	started      time.Time
 }
 
 // New constructs the server and opens the durable store: Postgres when a
@@ -104,11 +109,14 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	}
 
 	return &Server{
-		cfg:     cfg,
-		store:   st,
-		gql:     gql,
-		engine:  engine.New(),
-		started: time.Now().UTC(),
+		cfg:          cfg,
+		store:        st,
+		gql:          gql,
+		engine:       engine.New(),
+		events:       newEventBus(),
+		liveRuns:     newRunRegistry(),
+		capabilities: newCapabilityCache(),
+		started:      time.Now().UTC(),
 	}, nil
 }
 
@@ -136,8 +144,23 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/agents/{name}", s.updateAgent)
 	mux.HandleFunc("DELETE /api/agents/{name}", s.deleteAgent)
 	mux.HandleFunc("GET /api/agents/{name}/sessions", s.listSessions)
+	mux.HandleFunc("DELETE /api/agents/{name}/sessions/{session}", s.deleteSession)
 	mux.HandleFunc("GET /api/agents/{name}/messages", s.listMessages)
 	mux.HandleFunc("POST /api/agents/{name}/chat", s.chat)
+
+	// Runs: the Activity feed and per-run trace (steps from the tool-call
+	// audit), plus cancellation of live runs.
+	mux.HandleFunc("GET /api/runs", s.listRuns)
+	mux.HandleFunc("GET /api/runs/{id}", s.getRun)
+	mux.HandleFunc("POST /api/runs/{id}/cancel", s.cancelRun)
+
+	// Server-push events (SSE): run phases, inbox items — keeps the portal
+	// live without polling.
+	mux.HandleFunc("GET /api/events", s.streamEvents)
+
+	// What the tenant's enabled providers let an agent do — drives the portal's
+	// assisted setup flows.
+	mux.HandleFunc("GET /api/capabilities", s.listCapabilities)
 
 	// Named model credentials — created once, assigned to agents by name.
 	mux.HandleFunc("GET /api/credentials", s.listCredentials)

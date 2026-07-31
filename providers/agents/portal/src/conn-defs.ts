@@ -3,6 +3,7 @@
 // fields, each labelled with where to get the value.
 
 import type { IconName } from './portalkit/icons'
+import type { Connection, ConnectionWrite } from './types'
 
 export const PROVIDER_PRESETS: { id: string; label: string; baseURL: string; modelHint: string }[] = [
   { id: 'openai', label: 'OpenAI', baseURL: 'https://api.openai.com/v1', modelHint: 'gpt-4o' },
@@ -23,6 +24,9 @@ export interface ConnMode {
   id: string
   label: string
   fields: ConnField[]
+  // Mode-specific advanced fields, merged with the type's own when this mode
+  // is selected (a self-hosted backend needs knobs the hosted one does not).
+  advanced?: ConnField[]
 }
 export interface ConnTypeDef {
   id: string
@@ -35,7 +39,7 @@ export interface ConnTypeDef {
   fields?: ConnField[]
   modes?: ConnMode[]
   advanced?: ConnField[]
-  build: (v: Record<string, string>, mode: string) => Record<string, unknown>
+  build: (v: Record<string, string>, mode: string) => ConnectionWrite
 }
 
 // Connections fall into three kinds so the UI can label what each one is FOR:
@@ -62,6 +66,48 @@ export const CATEGORY_META: Record<ConnCategory, { icon: IconName; label: string
 }
 export function connCategory(id: string): ConnCategory {
   return CONN_CATEGORY[id] || 'connection'
+}
+
+// Discord is ONE backend type with two shapes: a webhook (channel is an
+// https:// URL, no secret — outbound only) or a chat bot (channel is a numeric
+// id or blank, secret is the bot token). Every place that renders or edits a
+// Discord connection needs the distinction, so it is derived here once.
+export interface ConnShape {
+  discordWebhook: boolean
+  discordBot: boolean
+  // typeLabel is what the UI calls this connection ("discord chat" vs the bare
+  // spec.type for everything else).
+  typeLabel: string
+}
+
+export function connShape(c: Pick<Connection, 'spec'>): ConnShape {
+  const isDiscord = c.spec.type === 'discord'
+  const discordWebhook = isDiscord && (c.spec.channel || '').startsWith('https://')
+  const discordBot = isDiscord && !discordWebhook
+  return {
+    discordWebhook,
+    discordBot,
+    typeLabel: discordWebhook ? 'discord webhook' : discordBot ? 'discord chat' : c.spec.type,
+  }
+}
+
+export interface InboundState {
+  on: boolean
+  canEnable: boolean
+  note: string
+}
+
+// channelInbound reports whether a channel Connection can receive messages for
+// an agent. Chat-capable: telegram/slack (webhook inbound) and the Discord bot;
+// send-only otherwise. An agent receives on every channel it lists, so any
+// bound chat-capable channel is a receiver.
+export function channelInbound(c: Pick<Connection, 'spec' | 'status'>): InboundState {
+  const shape = connShape(c)
+  const canReceive = c.spec.type === 'telegram' || c.spec.type === 'slack' || shape.discordBot
+  if (!canReceive) return { on: false, canEnable: false, note: 'Send-only — this channel can notify you, but can’t receive chat.' }
+  if (shape.discordBot) return { on: true, canEnable: false, note: 'Inbound is automatic — the Discord bot delivers messages while linked.' }
+  if (c.status?.webhookPath) return { on: true, canEnable: false, note: 'Receiving — messages from this channel reach the agent.' }
+  return { on: false, canEnable: true, note: 'Not receiving yet — enable inbound to register the webhook.' }
 }
 
 // Map a tool-type connection to the built-in family the backend uses to resolve
@@ -102,7 +148,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
     ],
     advanced: [{ key: 'baseURL', label: 'MCP endpoint (GitHub Enterprise only)', placeholder: 'https://api.githubcopilot.com/mcp' }],
     build: (v, mode) => {
-      const b: Record<string, unknown> = { type: 'github', name: v.name }
+      const b: ConnectionWrite = { type: 'github', name: v.name }
       if (v.baseURL) b.baseURL = v.baseURL
       if (mode === 'oauth') {
         b.auth = 'oauth'
@@ -118,21 +164,85 @@ export const CONN_DEFS: ConnTypeDef[] = [
     id: 'mcp',
     label: 'MCP server',
     glyph: 'puzzle',
-    desc: 'Any Model Context Protocol server',
-    fields: [
-      { key: 'baseURL', label: 'Server endpoint', required: true, placeholder: 'https://example.com/mcp', hint: 'The server’s streamable-HTTP MCP URL.' },
-      { key: 'token', label: 'Bearer token', password: true, hint: 'Only if the server requires authentication.' },
+    desc: 'A workload in your workspace, or any external Model Context Protocol server',
+    setup: [
+      'A <strong>workload in this workspace</strong> — the <code>browser</code> template, say — is named, not addressed: agents reach it over the platform’s internal path, so it is never published and needs no token.',
+      'An <strong>external server</strong> takes its streamable-HTTP URL and, if it authenticates, a bearer token.',
     ],
-    build: (v) => ({ type: 'mcp', name: v.name, baseURL: v.baseURL, secret: v.token || undefined }),
+    modes: [
+      {
+        id: 'instance',
+        label: 'Workload in this workspace',
+        fields: [
+          {
+            key: 'instance',
+            label: 'Instance name',
+            required: true,
+            placeholder: 'browser',
+            hint: 'The instance under Infrastructure. No URL, no token — access is authorized by your own permission on it.',
+          },
+        ],
+        advanced: [
+          {
+            key: 'instanceResource',
+            label: 'Instance resource',
+            placeholder: 'browsers',
+            hint: 'Only if the instance comes from a fork of the template under a different CRD.',
+          },
+        ],
+      },
+      {
+        id: 'external',
+        label: 'External server',
+        fields: [
+          { key: 'baseURL', label: 'Server endpoint', required: true, placeholder: 'https://example.com/mcp', hint: 'The server’s streamable-HTTP MCP URL.' },
+          { key: 'token', label: 'Bearer token', password: true, hint: 'Only if the server requires authentication.' },
+        ],
+      },
+    ],
+    build: (v, mode): ConnectionWrite =>
+      mode === 'external'
+        ? { type: 'mcp', name: v.name, baseURL: v.baseURL, secret: v.token || undefined }
+        : { type: 'mcp', name: v.name, config: { instance: v.instance, ...(v.instanceResource ? { instanceResource: v.instanceResource } : {}) } },
   },
   {
     id: 'websearch',
     label: 'Web search',
     glyph: 'search',
-    desc: 'Give agents web_search (Brave-compatible API)',
-    fields: [{ key: 'token', label: 'API key', password: true, required: true, hint: 'Brave Search API key — api.search.brave.com/app/keys (free tier available).' }],
-    advanced: [{ key: 'baseURL', label: 'Custom endpoint', placeholder: 'https://api.search.brave.com/res/v1/web/search' }],
-    build: (v) => ({ type: 'websearch', name: v.name, secret: v.token, baseURL: v.baseURL || undefined }),
+    desc: 'Give agents web_search — your own SearXNG instance, or a Brave API key',
+    setup: [
+      'Self-hosted is the default — no API key, no per-query bill. Provision the <strong>searxng</strong> template under Infrastructure, then name that instance here.',
+      'Agents reach the instance over the platform’s internal path (the infrastructure provider’s data plane), so it is never published to the internet and there is no URL or token to copy around. Access is authorized by your own permission on the instance.',
+      'Brave is the alternative if you would rather not run anything — it needs a free-tier API key from <code>api.search.brave.com/app/keys</code>.',
+    ],
+    modes: [
+      {
+        id: 'searxng',
+        label: 'Self-hosted (SearXNG)',
+        fields: [
+          {
+            key: 'instance',
+            label: 'Instance name',
+            required: true,
+            placeholder: 'search',
+            hint: 'The name of your searxng instance under Infrastructure. Nothing else is needed — no URL, no token.',
+          },
+        ],
+      },
+      {
+        id: 'brave',
+        label: 'Brave API',
+        fields: [{ key: 'token', label: 'API key', password: true, required: true, hint: 'Brave Search API key — api.search.brave.com/app/keys (free tier available).' }],
+        advanced: [{ key: 'baseURL', label: 'Custom endpoint', placeholder: 'https://api.search.brave.com/res/v1/web/search' }],
+      },
+    ],
+    build: (v, mode): ConnectionWrite => ({
+      type: 'websearch',
+      name: v.name,
+      secret: mode === 'brave' ? v.token : undefined,
+      baseURL: mode === 'brave' ? v.baseURL || undefined : undefined,
+      config: mode === 'brave' ? { provider: 'brave' } : { provider: 'searxng', instance: v.instance },
+    }),
   },
   {
     id: 'telegram',
@@ -176,7 +286,7 @@ export const CONN_DEFS: ConnTypeDef[] = [
       },
     ],
     build: (v, mode) => {
-      const b: Record<string, unknown> = { type: 'slack', name: v.name }
+      const b: ConnectionWrite = { type: 'slack', name: v.name }
       if (mode === 'webhook') b.channel = v.channel
       else if (mode === 'oauth') {
         b.auth = 'oauth'

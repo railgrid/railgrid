@@ -207,12 +207,20 @@ func (s *Server) channelCommand(r *http.Request, scope store.Scope, dyn dynamic.
 			state = store.InboxStateDenied
 			verb = "🚫 Denied"
 		}
-		if _, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, state, "via channel", time.Now().UTC()); err != nil {
+		resolved, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, state, "via channel", time.Now().UTC())
+		if err != nil {
 			return "Failed: " + err.Error(), true
 		}
+		s.events.publish(wsScope, "inbox", map[string]any{
+			"id": resolved.ID, "state": string(resolved.State), "agent": resolved.AgentName, "runID": resolved.RunID,
+		})
 		extra := ""
-		if item.Kind == store.InboxKindApproval && state == store.InboxStateApproved {
-			extra = " Tell the agent to retry (the approval authorizes one call)."
+		if item.Kind == store.InboxKindApproval && resolved.RunID != "" {
+			// Resume the paused run through the virtual workspace — the reply
+			// (or the denial's fallout) arrives on this channel when it finishes.
+			rd := resumeDeps{Creds: vwSecrets{dyn}, CR: vwCR{dyn}}
+			go s.resumeApprovedRun(wsScope, resolved, rd, state == store.InboxStateApproved, "via channel")
+			extra = " Resuming the run…"
 		}
 		return verb + ": " + item.Prompt + extra, true
 	case "/answer":
@@ -236,8 +244,8 @@ func (s *Server) channelCommand(r *http.Request, scope store.Scope, dyn dynamic.
 
 // routeChannelAgent picks the agent for a channel message: explicit
 // config["agent"] override first, else the agent that lists this connection as
-// one of its channels (spec.channels[].connectionRef, or the deprecated
-// spec.defaultNotifyConnection). An agent may own several channels, so it can
+// one of its channels (spec.channels[].connectionRef). An agent may own
+// several channels, so it can
 // receive on more than one connection; inbound uniqueness (at most one agent
 // per connection) is enforced when an agent's channels are saved.
 func (s *Server) routeChannelAgent(ctx context.Context, dyn dynamic.Interface, conn *agentsv1alpha1.Connection) (*agentsv1alpha1.Agent, error) {
@@ -386,7 +394,11 @@ func (s *Server) enableInbound(w http.ResponseWriter, r *http.Request) {
 
 // connectionToken reads a connection's stored secret token as the caller.
 func (s *Server) connectionToken(r *http.Request, c *agentsclient.Client, name string) string {
-	sec, err := c.GetSecret(r.Context(), llm.SecretNamespace, connectionSecretName(name))
+	return s.connectionTokenCtx(r.Context(), c, name)
+}
+
+func (s *Server) connectionTokenCtx(ctx context.Context, c *agentsclient.Client, name string) string {
+	sec, err := c.GetSecret(ctx, llm.SecretNamespace, connectionSecretName(name))
 	if err != nil {
 		return ""
 	}

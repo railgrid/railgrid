@@ -14,9 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	einomodel "github.com/cloudwego/eino/components/model"
+	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -29,16 +31,36 @@ import (
 // chatHistoryLimit bounds how many prior messages are replayed into a turn.
 const chatHistoryLimit = 40
 
+// writeResourceError maps a tenant-API error onto an HTTP status. Validation
+// and permission failures keep their own class — mapping them all to 502 made
+// a user's own bad input look like an upstream outage.
 func writeResourceError(w http.ResponseWriter, err error) {
 	switch {
 	case apierrors.IsNotFound(err):
 		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
-	case apierrors.IsAlreadyExists(err):
+	case apierrors.IsAlreadyExists(err), apierrors.IsConflict(err):
 		writeStatus(w, http.StatusConflict, "Conflict", err.Error())
-	case apierrors.IsConflict(err):
-		writeStatus(w, http.StatusConflict, "Conflict", err.Error())
+	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+	case apierrors.IsForbidden(err):
+		writeStatus(w, http.StatusForbidden, "Forbidden", err.Error())
+	case apierrors.IsUnauthorized(err):
+		writeStatus(w, http.StatusUnauthorized, "Unauthorized", err.Error())
 	default:
-		writeStatus(w, http.StatusBadGateway, "UpstreamError", err.Error())
+		// The GraphQL gateway flattens admission errors into plain messages, so
+		// sniff the well-known validation phrases before blaming the upstream.
+		msg := strings.ToLower(err.Error())
+		switch {
+		case strings.Contains(msg, "is invalid") || strings.Contains(msg, "validation") ||
+			strings.Contains(msg, "must be") || strings.Contains(msg, "required"):
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		case strings.Contains(msg, "forbidden") || strings.Contains(msg, "not allowed"):
+			writeStatus(w, http.StatusForbidden, "Forbidden", err.Error())
+		case strings.Contains(msg, "not found"):
+			writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
+		default:
+			writeStatus(w, http.StatusBadGateway, "UpstreamError", err.Error())
+		}
 	}
 }
 
@@ -82,12 +104,8 @@ type createAgentRequest struct {
 	BudgetTokens int64 `json:"budgetTokens,omitempty"`
 	// BudgetUSD caps spend per month as a decimal string (empty = unlimited).
 	BudgetUSD string `json:"budgetUSD,omitempty"`
-	// NotifyConnection is DEPRECATED — names a single messaging Connection
-	// background runs deliver output/alerts to. Prefer Channels. Used only when
-	// Channels is empty (mapped to a "primary" channel).
-	NotifyConnection string `json:"notifyConnection,omitempty"`
 	// Channels binds named messaging channels to the agent (primary + secondary
-	// + …). When set, it supersedes NotifyConnection.
+	// + …).
 	Channels []channelInput `json:"channels,omitempty"`
 }
 
@@ -98,17 +116,27 @@ type channelInput struct {
 	Primary       bool   `json:"primary,omitempty"`
 }
 
-// normalizeChannels cleans user-supplied channel rows: trims, drops incomplete
-// rows, rejects duplicate names, and guarantees exactly one primary (the first
-// entry when none is marked, the first-marked when several are).
+// normalizeChannels cleans user-supplied channel rows: trims, ignores wholly
+// blank rows, rejects duplicate names, and guarantees exactly one primary (the
+// first entry when none is marked, the first-marked when several are).
+//
+// A half-filled row is an error rather than a silent drop: dropping it made a
+// save look successful while binding nothing, so the agent appeared configured
+// but no channel ever reached it.
 func normalizeChannels(in []channelInput) ([]agentsv1alpha1.AgentChannel, error) {
 	seen := map[string]bool{}
 	out := []agentsv1alpha1.AgentChannel{}
 	for _, ci := range in {
 		name := strings.TrimSpace(ci.Name)
 		conn := strings.TrimSpace(ci.ConnectionRef)
-		if name == "" || conn == "" {
+		if name == "" && conn == "" {
 			continue
+		}
+		if conn == "" {
+			return nil, fmt.Errorf("channel %q has no connectionRef", name)
+		}
+		if name == "" {
+			return nil, fmt.Errorf("the channel bound to connection %q has no name", conn)
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("duplicate channel name %q", name)
@@ -153,7 +181,7 @@ func (s *Server) validateChannelUniqueness(ctx context.Context, c *agentsclient.
 		if other.Name == selfName {
 			continue
 		}
-		for _, och := range other.Spec.EffectiveChannels() {
+		for _, och := range other.Spec.Channels {
 			if mine[och.ConnectionRef] {
 				return fmt.Errorf("connection %q is already a channel of agent %q", och.ConnectionRef, other.Name)
 			}
@@ -209,8 +237,6 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.Spec.Channels = chans
-	} else {
-		a.Spec.DefaultNotifyConnection = strings.TrimSpace(req.NotifyConnection)
 	}
 	out, err := c.Agents().Create(r.Context(), a, metav1.CreateOptions{})
 	if err != nil {
@@ -255,15 +281,18 @@ func normalizeFamilies(in []string) []string {
 }
 
 type updateAgentRequest struct {
-	ModelCredential  *string   `json:"modelCredential,omitempty"`
-	ModelFallbacks   *[]string `json:"modelFallbacks,omitempty"`
-	SystemPrompt     *string   `json:"systemPrompt,omitempty"`
-	Autonomy         *string   `json:"autonomy,omitempty"`
-	BudgetTokens     *int64    `json:"budgetTokens,omitempty"`
-	BudgetUSD        *string   `json:"budgetUSD,omitempty"`
-	NotifyConnection *string   `json:"notifyConnection,omitempty"`
-	// Channels replaces the agent's whole channel list when present. Supersedes
-	// NotifyConnection.
+	ModelCredential *string   `json:"modelCredential,omitempty"`
+	ModelFallbacks  *[]string `json:"modelFallbacks,omitempty"`
+	SystemPrompt    *string   `json:"systemPrompt,omitempty"`
+	Description     *string   `json:"description,omitempty"`
+	Autonomy        *string   `json:"autonomy,omitempty"`
+	BudgetTokens    *int64    `json:"budgetTokens,omitempty"`
+	BudgetUSD       *string   `json:"budgetUSD,omitempty"`
+	// MaxToolTurns caps tool-call iterations per run (0 = provider default).
+	MaxToolTurns *int32 `json:"maxToolTurns,omitempty"`
+	// TimeoutSeconds bounds a run's wall clock (0 = provider default).
+	TimeoutSeconds *int32 `json:"timeoutSeconds,omitempty"`
+	// Channels replaces the agent's whole channel list when present.
 	Channels    *[]channelInput `json:"channels,omitempty"`
 	Delegates   *[]string       `json:"delegates,omitempty"`
 	DisplayName *string         `json:"displayName,omitempty"`
@@ -315,8 +344,17 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.SystemPrompt != nil {
 		agent.Spec.SystemPrompt = *req.SystemPrompt
 	}
+	if req.Description != nil {
+		agent.Spec.Description = strings.TrimSpace(*req.Description)
+	}
 	if req.Autonomy != nil {
 		agent.Spec.Autonomy = *req.Autonomy
+	}
+	if req.MaxToolTurns != nil {
+		agent.Spec.Limits.MaxToolTurns = *req.MaxToolTurns
+	}
+	if req.TimeoutSeconds != nil {
+		agent.Spec.Limits.TimeoutSeconds = *req.TimeoutSeconds
 	}
 	if req.Channels != nil {
 		chans, err := normalizeChannels(*req.Channels)
@@ -329,11 +367,6 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		agent.Spec.Channels = chans
-		// Channels supersede the legacy scalar; clear it to avoid a stale
-		// default lingering in the spec.
-		agent.Spec.DefaultNotifyConnection = ""
-	} else if req.NotifyConnection != nil {
-		agent.Spec.DefaultNotifyConnection = strings.TrimSpace(*req.NotifyConnection)
 	}
 	if req.Delegates != nil {
 		out := make([]string, 0, len(*req.Delegates))
@@ -410,12 +443,19 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	session := r.URL.Query().Get("session")
-	page, err := s.store.ListMessages(r.Context(), id.scope(name), session, 100, r.URL.Query().Get("cursor"))
+	limit := 100
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = min(v, 500)
+	}
+	// Messages carry runID, and tool-role messages carry metadata.tool/args, so
+	// a reloaded session can rebuild its tool cards rather than showing a flat
+	// wall of text.
+	page, err := s.store.ListMessages(r.Context(), id.scope(name), session, limit, r.URL.Query().Get("cursor"))
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, page)
+	writeList(w, page.Items, map[string]any{"nextCursor": page.NextCursor})
 }
 
 // listSessions returns the agent's chat threads (most-recently-active first)
@@ -431,7 +471,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": sessions})
+	writeList(w, sessions)
 }
 
 type chatRequest struct {
@@ -478,39 +518,82 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	seq := 0
 	sse := func(event string, payload any) {
+		seq++
 		b, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, event, b)
 		flusher.Flush()
 	}
 
+	// The runID goes out first so a dropped stream can reconcile against
+	// GET /api/runs/{id}.
+	runID := uuid.NewString()
+	sse("start", map[string]string{"runID": runID, "sessionID": req.SessionID})
+
 	res, err := s.executeTask(r.Context(), taskRun{
 		Creds: c, CR: clientCR{c}, Scope: id.scope(name), Agent: agent,
+		RunID:     runID,
 		SessionID: req.SessionID, Task: req.Message, Trigger: agentsv1alpha1.RunTriggerChat,
-		EdgesEndpoint: s.edgesEndpoint(id.clusterID), EdgesToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+		EdgesEndpoint: s.edgesEndpoint(id.clusterID), HubToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+		// ClusterID addresses the tenant workspace on the data plane — without
+		// it an instance-backed tool (self-hosted search, a browser instance)
+		// has no way to compose its URL.
+		ClusterID: id.clusterID,
 		OnDelta: func(delta string) {
 			sse("delta", map[string]string{"text": delta})
 		},
+		OnToolStart: func(callID, toolName, args string) {
+			sse("tool_start", map[string]any{"id": callID, "name": toolName, "args": redactArgs(args)})
+		},
 		OnTool: func(ev engine.ToolEvent) {
-			sse("tool", map[string]any{
-				"name": ev.Name, "args": clipArgs(ev.Args), "result": clipArgs(ev.Result),
+			sse("tool_end", map[string]any{
+				"id": ev.ID, "name": ev.Name, "args": redactArgs(ev.Args), "result": safeTruncate(ev.Result, 8*1024),
 				"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
 			})
 		},
 	})
 	if err != nil {
 		if s.credentialsError(err) {
-			sse("error", map[string]string{"message": "no model configured — open Model settings to add one"})
+			sse("error", map[string]string{"runID": runID, "message": "no model configured — open Model settings to add one"})
 		} else {
-			sse("error", map[string]string{"message": err.Error()})
+			sse("error", map[string]string{"runID": runID, "message": err.Error()})
 		}
 		return
 	}
+	// Paused on an approval gate: the portal renders an approval card; the run
+	// resumes via the inbox resolution (watch /api/events for the outcome).
+	if res.Pending != nil {
+		sse("approval_required", map[string]any{
+			"runID": runID, "inboxID": res.Pending.InboxID,
+			"tool": res.Pending.Tool, "args": redactArgs(res.Pending.Args),
+			"content": res.Content,
+		})
+		return
+	}
 	sse("done", map[string]any{
-		"runID":   res.RunID,
+		"runID":   runID,
 		"content": res.Content,
-		"usage":   map[string]int64{"inputTokens": res.Usage.InputTokens, "outputTokens": res.Usage.OutputTokens},
+		"usage": map[string]int64{
+			"inputTokens": res.Usage.InputTokens, "outputTokens": res.Usage.OutputTokens,
+			"usdMicros": res.Usage.USDMicros,
+		},
 	})
+}
+
+// deleteSession wipes one chat session's transcript.
+func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
+	_, id, ok := s.requireClient(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	session := r.PathValue("session")
+	if err := s.store.DeleteSession(r.Context(), id.scope(name), session); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // edgesEndpoint is the hub's aggregate MCP virtual endpoint for a workspace

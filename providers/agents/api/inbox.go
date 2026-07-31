@@ -30,7 +30,7 @@ func (s *Server) listInboxItems(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeList(w, items)
 }
 
 type resolveInboxRequest struct {
@@ -39,11 +39,12 @@ type resolveInboxRequest struct {
 	Response string `json:"response,omitempty"`
 }
 
-// resolveInboxItem records the user's decision on an approval or question. When
-// the tool loop lands, resolving an item resumes the checkpointed run; today it
-// records the decision so the queue reflects reality.
+// resolveInboxItem records the user's decision on an approval or question.
+// Resolving an approval bound to a paused run resumes it in place: approve
+// executes the gated call with the exact requested arguments, deny feeds the
+// refusal back to the model.
 func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
-	_, id, ok := s.requireClient(w, r)
+	c, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
@@ -64,11 +65,27 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "decision must be approve, deny, or answer")
 		return
 	}
-	item, err := s.store.ResolveInboxItem(r.Context(), store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID},
-		r.PathValue("id"), state, req.Response, time.Now().UTC())
+	wsScope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID}
+	item, err := s.store.ResolveInboxItem(r.Context(), wsScope, r.PathValue("id"), state, req.Response, time.Now().UTC())
 	if err != nil {
-		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
+		if strings.Contains(err.Error(), "not found") {
+			writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
+		} else {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		}
 		return
+	}
+	s.events.publish(wsScope, "inbox", map[string]any{
+		"id": item.ID, "state": string(item.State), "agent": item.AgentName, "runID": item.RunID,
+	})
+	// Resume the paused run as the resolving user (tenant client + edges).
+	if item.Kind == store.InboxKindApproval && item.RunID != "" && state != store.InboxStateAnswered {
+		rd := resumeDeps{
+			Creds: c, CR: clientCR{c},
+			EdgesEndpoint: s.edgesEndpoint(id.clusterID), HubToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+			ClusterID: id.clusterID,
+		}
+		go s.resumeApprovedRun(wsScope, item, rd, state == store.InboxStateApproved, req.Response)
 	}
 	writeJSON(w, http.StatusOK, item)
 }

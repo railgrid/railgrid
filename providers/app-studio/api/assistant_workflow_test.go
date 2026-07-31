@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -115,8 +116,15 @@ func TestProjectAssistantInspectDevelopmentTemplatesGraphToolFiltersAndBoundsCat
 	if candidate.Name != "application" || candidate.DisplayName != "Simple application" || candidate.AgentUsage != "Use this for a simple app." {
 		t.Fatalf("candidate = %#v, want surfaced catalog metadata", candidate)
 	}
-	if len(candidate.Components) != 2 || candidate.Components["frontend"] != "web" {
+	if len(candidate.Components) != 2 || candidate.Components["frontend"].WorkspacePath != "web" {
 		t.Fatalf("components = %#v, want development component map", candidate.Components)
+	}
+	// The runtime contract is what stops an agent writing a component in a
+	// language its sandbox cannot execute, so it must reach the model here —
+	// this is the one read that precedes choosing a template.
+	backend := candidate.Components["backend"]
+	if backend.Toolchain != "node" || backend.StartCommand != "npm run dev || npm start" {
+		t.Errorf("backend component = %#v, want the toolchain and start command surfaced", backend)
 	}
 	if project.Spec.Template != nil {
 		t.Fatalf("inspection mutated project template = %#v", project.Spec.Template)
@@ -1031,4 +1039,70 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// A template's agent.usage states its DEVELOPMENT MODE contract several
+// thousand characters in. The old 160-char bound cut it off mid-second-sentence,
+// so agents chose templates and wrote code having never seen which runtime the
+// sandbox would execute. Anything that shortens this again reintroduces that.
+func TestFilterProjectAssistantDevelopmentTemplatesCarriesFullAgentUsage(t *testing.T) {
+	usage := strings.Repeat("Production guidance that buries the runtime contract. ", 70) +
+		"DEVELOPMENT MODE: each tier runs a Node.js dev server; write package.json."
+	if len(usage) < 3500 {
+		t.Fatalf("fixture usage is %d chars, too short to exercise the bound", len(usage))
+	}
+	obj := applicationTemplateObject()
+	_ = unstructured.SetNestedField(obj.Object, usage, "spec", "agent", "usage")
+
+	result, err := filterProjectAssistantDevelopmentTemplates(
+		context.Background(),
+		&projectAssistantTemplateCatalog{Items: []unstructured.Unstructured{*obj}},
+	)
+	if err != nil {
+		t.Fatalf("filterProjectAssistantDevelopmentTemplates: %v", err)
+	}
+	if len(result.Templates) != 1 {
+		t.Fatalf("templates = %d, want 1", len(result.Templates))
+	}
+	if got := result.Templates[0].AgentUsage; got != usage {
+		t.Errorf("agentUsage was truncated at %d of %d chars — the development contract must survive intact", len(got), len(usage))
+	}
+	if strings.Contains(result.Summary, "shortened") {
+		t.Errorf("summary claims truncation for a catalog that fits: %q", result.Summary)
+	}
+}
+
+// The aggregate budget exists only for an unusually large catalog, and even
+// then it must shorten rather than drop: a dropped template is a choice the
+// agent never learns exists.
+func TestFilterProjectAssistantDevelopmentTemplatesBoundsOversizedCatalog(t *testing.T) {
+	usage := strings.Repeat("x", projectAssistantTemplateUsageChars)
+	items := make([]unstructured.Unstructured, 0, 40)
+	for i := range 40 {
+		obj := applicationTemplateObject()
+		obj.SetName(fmt.Sprintf("template-%02d", i))
+		_ = unstructured.SetNestedField(obj.Object, usage, "spec", "agent", "usage")
+		items = append(items, *obj)
+	}
+
+	result, err := filterProjectAssistantDevelopmentTemplates(
+		context.Background(),
+		&projectAssistantTemplateCatalog{Items: items},
+	)
+	if err != nil {
+		t.Fatalf("filterProjectAssistantDevelopmentTemplates: %v", err)
+	}
+	if len(result.Templates) != 40 {
+		t.Fatalf("templates = %d, want all 40 kept", len(result.Templates))
+	}
+	raw, err := json.Marshal(result.Templates)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(raw) > projectAssistantTemplateInspectionMaxBytes {
+		t.Errorf("encoded templates = %d bytes, want <= %d", len(raw), projectAssistantTemplateInspectionMaxBytes)
+	}
+	if !strings.Contains(result.Summary, "shortened") {
+		t.Errorf("summary = %q, want it to tell the model to fetch the full contract", result.Summary)
+	}
 }

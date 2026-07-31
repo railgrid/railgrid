@@ -50,6 +50,12 @@ type Template struct {
 	// kedge.faros.sh/icon-url annotation. The portal falls back to a
 	// generic icon when empty.
 	IconURL string `json:"iconURL,omitempty"`
+	// Exposure says whether instances of this template are reachable from
+	// outside the platform: "internal" (never — reached through the data
+	// plane), "optional" (depends on the instance's own spec) or "public"
+	// (always). Read it before looking for a URL: an internal instance has
+	// none, and polling status.url for one is an infinite wait.
+	Exposure string `json:"exposure,omitempty"`
 	// Backend identifies which provisioning engine handles this
 	// template — currently always "kro" (this provider's only
 	// implementation) but exposed in the API now so a future
@@ -160,10 +166,16 @@ type TemplateAgent struct {
 }
 
 // TemplateDevelopment is the MCP-facing projection of a Template's
-// spec.development block: just enough for an agent to drive the dev loop —
-// which components exist and which workspace directory each one syncs from.
-// Runtime details (dev images, start commands, reload rules) stay
-// provider-internal.
+// spec.development block: what an agent needs to drive the dev loop AND to
+// write source the sandbox can actually execute — which components exist,
+// which workspace directory each syncs from, and which toolchain runs it.
+//
+// The toolchain and start command are deliberately exposed. Withholding them
+// (they were once treated as provider-internal alongside the resolved image
+// references) left agents choosing a language with no evidence about the
+// runtime, which produced components the sandbox could not start. The resolved
+// dev image references and reload rules do stay internal — those are
+// deployment details an agent cannot act on.
 type TemplateDevelopment struct {
 	// Components maps each development component name to its contract.
 	Components map[string]TemplateDevelopmentComponent `json:"components"`
@@ -175,6 +187,22 @@ type TemplateDevelopmentComponent struct {
 	// component ("." = the whole workspace). Files outside every component's
 	// directory never reach the development sandbox.
 	WorkspacePath string `json:"workspacePath"`
+
+	// Toolchain is the ONLY runtime installed in this component's development
+	// sandbox image (e.g. "node"), from the template's
+	// ${kedge.devImage.<toolchain>} token. Source written in another language
+	// cannot run in the sandbox regardless of correctness. Empty when the
+	// template declares no parseable devImage.
+	Toolchain string `json:"toolchain,omitempty"`
+
+	// StartCommand is exactly what the sandbox executes for this component
+	// (e.g. "npm run dev || npm start") — the ground truth for what the source
+	// must provide, such as a package.json with a matching script.
+	StartCommand string `json:"startCommand,omitempty"`
+
+	// Port is the named container port the dev process serves on. Empty means
+	// the component serves no traffic (e.g. a worker).
+	Port string `json:"port,omitempty"`
 }
 
 // Instance is a portal-shaped view of a kro RGD instance CR in the
@@ -182,21 +210,21 @@ type TemplateDevelopmentComponent struct {
 // .metadata + .spec + a small set of well-known status fields kro
 // writes onto every instance (Conditions, Children).
 type Instance struct {
-	Name      string                 `json:"name"`
-	Namespace string                 `json:"namespace"`
-	Template  string                 `json:"template"`
-	Phase     string                 `json:"phase"`
-	Message   string                 `json:"message,omitempty"`
-	Conditions []InstanceCondition   `json:"conditions,omitempty"`
-	Children  []InstanceChild        `json:"children,omitempty"`
-	Values    map[string]any         `json:"values,omitempty"`
+	Name       string              `json:"name"`
+	Namespace  string              `json:"namespace"`
+	Template   string              `json:"template"`
+	Phase      string              `json:"phase"`
+	Message    string              `json:"message,omitempty"`
+	Conditions []InstanceCondition `json:"conditions,omitempty"`
+	Children   []InstanceChild     `json:"children,omitempty"`
+	Values     map[string]any      `json:"values,omitempty"`
 	// Status carries the instance's computed status fields (everything
 	// under .status except the conditions/children arrays already promoted
 	// above). Surfaces controller-computed outputs — a provisioned URL,
 	// FQDN, secret name — so a template's View can reference status.* the
 	// same way it references spec.* (the user's input values).
-	Status    map[string]any         `json:"status,omitempty"`
-	CreatedAt time.Time              `json:"createdAt"`
+	Status    map[string]any `json:"status,omitempty"`
+	CreatedAt time.Time      `json:"createdAt"`
 }
 
 // InstanceCondition mirrors metav1.Condition with a JSON-shape the
@@ -272,9 +300,9 @@ const (
 	LabelTemplate = "kedge.faros.sh/template"
 	// LabelManagedBy is set on the per-tenant namespace and any
 	// helper resources the provider creates in central kro.
-	LabelManagedBy      = "kedge.faros.sh/managed-by"
-	ManagedByValue      = "infrastructure-provider"
-	ManagedByNamespace  = "kedge-tenants"
+	LabelManagedBy     = "kedge.faros.sh/managed-by"
+	ManagedByValue     = "infrastructure-provider"
+	ManagedByNamespace = "kedge-tenants"
 )
 
 // RGD is the kro upstream type expressed as a plain GVR. The provider

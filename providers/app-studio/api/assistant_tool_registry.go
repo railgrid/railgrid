@@ -263,7 +263,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				return projectAssistantToolJSONResult(map[string]any{
 					"template":   info.Name,
 					"components": info.Components,
-					"note":       "development environment is re-provisioning in development mode; the workspace will be synced into it automatically. Write each component's source under its directory from `components` (component name → workspace directory) — files outside every component directory are never synced to the development sandbox and cannot run",
+					"note":       "development environment is re-provisioning in development mode; the workspace will be synced into it automatically. Each entry in `components` is binding: write that component's source under its `workspacePath` (files outside every component directory are never synced and cannot run) AND write it for that component's `toolchain` — the sandbox image contains that toolchain and no other, and runs the component with its `startCommand`, so source in another language, or missing the toolchain's manifest (package.json for node, go.mod for go, requirements.txt/pyproject.toml for python), will never start no matter how correct it is",
 				}, nil)
 			},
 		},

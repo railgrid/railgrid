@@ -472,6 +472,23 @@ spec:
                   catalog. Empty falls back to metadata.name.
                 maxLength: 128
                 type: string
+              exposure:
+                description: |-
+                  Exposure declares whether instances of this template are reachable from
+                  outside the platform. It is a statement ABOUT the resource graph, not a
+                  switch that changes it — the graph still has to carry (or not carry) the
+                  HTTPRoute. Declaring it lets every caller stop guessing: the portal and
+                  the MCP tools can say "this has no URL" instead of surfacing an empty
+                  status field, and an agent stops polling status.url forever for an
+                  instance that will never have one.
+
+                  Defaults to ExposureInternal when empty, which is the safe reading: a
+                  template that never said it publishes anything is assumed not to.
+                enum:
+                - internal
+                - optional
+                - public
+                type: string
               iconURL:
                 description: |-
                   IconURL is an optional asset URL the portal shows on catalog

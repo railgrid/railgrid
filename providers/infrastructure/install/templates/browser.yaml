@@ -1,0 +1,550 @@
+apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: browser
+spec:
+  displayName: "Browser (Playwright MCP)"
+  description: "A headless Chromium driven by the official Playwright MCP server, reachable only from inside the platform over the infrastructure provider's data plane — wire it to an agent and it gains real browsing tools: navigate, click, type, snapshot."
+  category: Agent tools
+  version: 0.1.0
+  # exposure: what the platform tells callers about reaching an instance.
+  # Internal by default, reachable through the dataPlane proxy verb.
+  # Setting expose.enabled publishes it behind oauth2-proxy — never ungated.
+  exposure: optional
+  backend: kro
+  sampleValues:
+    name: browser
+    size: small
+  # Operational guidance for AI agents discovering this template over MCP.
+  agent:
+    usage: |
+      Provisions a PRIVATE headless browser: Chromium plus the official
+      Playwright MCP server. Choose this when an agent has to drive a real
+      browser — a page that renders its content with JavaScript, a flow behind a
+      login or a form, a multi-step click-through, a screenshot or an
+      accessibility snapshot of what a page actually looks like.
+
+      THERE IS NO PUBLIC URL AND NO INSTANCE TOKEN. This instance is not on the
+      internet. Its MCP endpoint is reachable only from inside the platform,
+      through the infrastructure provider's data plane, and the data-plane verb
+      root IS the MCP endpoint — nothing is appended, no `/mcp` suffix to
+      remember:
+
+        {hub}/services/providers/infrastructure/dataplane/clusters/{clusterID}/browsers/{name}/proxy
+
+      GET, POST and DELETE are allowed, which is the full streamable-HTTP MCP
+      set (POST for requests, GET for the SSE stream, DELETE to end a session).
+      The hop is hub → infrastructure provider → the runtime cluster's
+      kube-apiserver `services/proxy` subresource → the instance's Service. The
+      caller authenticates as ITSELF with its own kedge credential; the gate is
+      the caller's kcp RBAC on this instance — a caller that cannot GET the
+      Browser object gets 403/404 and never reaches Chromium. So there is
+      nothing to paste anywhere: no bearer token, no baseURL to copy out of
+      status, no Connection Secret to keep in step with the instance.
+
+      Playwright's tools then appear to the model as browser_navigate,
+      browser_click, browser_type, browser_snapshot, browser_take_screenshot
+      and the rest of the upstream set.
+
+      WHEN NOT TO USE IT. A browser instance is expensive and slow next to the
+      alternatives, so reach for it last:
+        • Plain page text — use `web_fetch`. It is one HTTP request; a browser
+          round-trip is a page load, a render and an accessibility dump.
+        • Finding pages — use `web_search` (the searxng template). The browser
+          does not search, it visits.
+      Use the browser when, and only when, the page genuinely needs JavaScript
+      execution, a session/login, or interaction.
+
+      IT IS STATEFUL, AND EFFECTIVELY SINGLE-SESSION. One instance is one
+      Chromium: the page you navigated to stays open, cookies and logins
+      persist between tool calls, and the tools act on whatever the current
+      page is. Two agents pointed at the same instance will fight over the same
+      tab — provision one instance per agent that needs concurrent browsing.
+      A pod restart drops all of it (open tabs, cookies, logins); nothing here
+      is persisted, so treat a session as disposable and re-establish state
+      rather than assuming it survived. This is also why the instance is pinned
+      to one replica: the data plane's services/proxy hop picks a random ready
+      pod per request, so a second replica would answer half a session's calls
+      from a Chromium that never saw the first navigation.
+
+      INPUTS you set when provisioning: name (required) and size. There is no
+      headless toggle: the upstream container image supports headless Chromium
+      only, and it has no display to render into.
+    prerequisites:
+      - "None. The caller needs read access to the provisioned Browser instance in this workspace — that RBAC is the only access control on the MCP endpoint."
+    outputs:
+      - "Data-plane verb 'proxy' — {hub}/services/providers/infrastructure/dataplane/clusters/{clusterID}/browsers/{name}/proxy. This IS the MCP streamable-HTTP endpoint; do not append /mcp. Platform-internal, authorized by the caller's RBAC on the instance."
+      - "status.ready — ready replica count for the browser Deployment."
+      - "status.runtimeNamespace / status.serviceRef — where the instance's Service lives; the data plane resolves the proxy verb through them. Informational; callers address the verb, not the Service."
+  # ── Portal presentation ───────────────────────────────────────────────
+  # No endpoint column: there is no address a human can open. The instance is
+  # operated through the data plane, by other platform components.
+  view:
+    columns:
+      - header: Size
+        path: spec.size
+        type: badge
+      - header: Ready
+        path: status.ready
+    detail:
+      - title: Configuration
+        fields:
+          - label: Size
+            path: spec.size
+            type: badge
+      - title: Readiness
+        fields:
+          - label: Browser
+            path: status.ready
+      - title: Runtime
+        fields:
+          - label: Namespace
+            path: status.runtimeNamespace
+            type: code
+  instanceCRD:
+    group: infrastructure.kedge.faros.sh
+    version: v1alpha1
+    resource: browsers
+    kind: Browser
+  # ── Tenant-facing inputs ──────────────────────────────────────────────
+  # No `headless` input: the upstream image ships an entrypoint that hard-codes
+  # --headless and, per upstream, supports headless chromium only. An input that
+  # could not change the behaviour would just be a lie in the schema.
+  #
+  # No exposure input and no token input either. This instance has one consumer
+  # — another part of the platform — and one path to it, the data plane below; a
+  # public hostname on a remote-controlled browser would be an internet-facing
+  # surface that then has to be defended.
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        description: "Logical name; used as the resource-name prefix in the tenant namespace."
+      size:
+        type: string
+        enum: ["small", "medium", "large"]
+        default: "small"
+        description: "Chromium memory bucket — container limit and the matching /dev/shm size (small=1Gi/256Mi, medium=2Gi/512Mi, large=4Gi/1Gi). Heavy single-page apps, many open tabs, and full-page screenshots all push this up; a tab that dies with 'Target closed' is the symptom of being under-sized."
+
+      # ── Optional public exposure ──────────────────────────────────────
+      # Off by default: the platform reaches this instance over the data plane
+      # below, which needs no hostname. Turn it on only when a HUMAN needs to
+      # open it in a browser.
+      #
+      # There is deliberately no ungated option. This app has no authentication
+      # of its own, so publishing it without a gate would put a remotely-driven browser running with your cluster's egress IP
+      # on the open internet. oidc.mode is therefore an enum of one: exposing
+      # means putting oauth2-proxy in front of it.
+      expose:
+        type: object
+        default: {}
+        properties:
+          enabled:
+            type: boolean
+            default: false
+            description: "Publish this instance on a public hostname, behind the OIDC gate. Default false — the platform reaches it internally and needs no hostname. Requires oidc.issuerURL + oidc.clientID and the client secret in your cloud-credentials Secret."
+          hostnamePrefix:
+            type: string
+            pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            maxLength: 50
+            description: "Left-most DNS label. Defaults to .name. Final host = <prefix>-<tenantHash>.<appBaseDomain>."
+          fqdn:
+            type: string
+            description: "Computed by the platform — do NOT set."
+
+      # ── OIDC (the gate, whenever exposed) ─────────────────────────────
+      # Only consulted when expose.enabled. "byo" is the only mode: platform
+      # SSO needs the hub Dex client-management API, which is not provisioned
+      # yet, and "none" is not offered on purpose (see above).
+      #
+      # issuerURL and clientID are not schema-required — kro cannot express
+      # "required when another field is true". Omitting them fails CLOSED:
+      # oauth2-proxy refuses to start, so the route serves 503 and the app is
+      # never reachable unauthenticated.
+      oidc:
+        type: object
+        default: {}
+        properties:
+          mode:
+            type: string
+            enum: ["byo"]
+            default: "byo"
+            description: "byo = your own IdP. Set issuerURL + clientID, and put the client secret in your cloud-credentials Secret under key oidc_client_secret."
+          issuerURL:
+            type: string
+            description: "Your IdP's OIDC issuer URL. Required when expose.enabled."
+          clientID:
+            type: string
+            description: "Your OAuth2 client ID. Required when expose.enabled."
+          scopes:
+            type: string
+            default: "openid email profile"
+
+      # Controller-injected; the runtime Secret the platform bridges the OIDC
+      # client secret into (key: oidc_client_secret).
+      credentialsSecretName:
+        type: string
+        description: "Computed by the platform — do NOT set."
+    required:
+      - name
+
+  # ── Data plane (the only way in) ──────────────────────────────────────
+  # Served as …/browsers/<name>/proxy; the provider resolves it to services/proxy
+  # on the runtime kube-apiserver and confines the target to
+  # status.runtimeNamespace.
+  #
+  # upstreamPath pins the verb root to /mcp, rather than making the caller
+  # append it, for two reasons: an MCP client is configured with a single URL it
+  # must not have to modify, and pinning it means the verb cannot be used as a
+  # general proxy into the rest of the Playwright control server.
+  #
+  # stream: true disables response buffering — streamable HTTP answers with an
+  # SSE stream that stays open for the life of the MCP session, and a buffered
+  # hop would hold each event until a block filled (the client appears to hang
+  # mid-tool-call). No `upgrade`: streamable HTTP is plain HTTP/1.1 + SSE, not a
+  # WebSocket, so nothing here needs a connection upgrade.
+  dataPlane:
+    runtimeNamespacePath: status.runtimeNamespace
+    endpoints:
+      proxy:
+        servicePath: status.serviceRef
+        port: http
+        upstreamPath: /mcp
+        methods: ["GET", "POST", "DELETE"]
+        stream: true
+
+  # ── backendConfig: the kro resource graph ─────────────────────────────
+  # Every resource sets namespace: default — the control-plane/data-plane split
+  # materializes these on the runtime cluster and remaps that to the per-tenant
+  # namespace.
+  #
+  # Pod shape: ONE container. The MCP server binds 0.0.0.0 and the Service
+  # points straight at it.
+  #
+  # POSTURE, STATED PLAINLY: Playwright MCP has no authentication of its own and
+  # there is no longer a gate in front of it. Anything that can reach this
+  # Service inside the runtime cluster can drive this browser unauthenticated —
+  # there are no NetworkPolicies here, so that includes any other pod that knows
+  # the address, and driving it means fetching arbitrary URLs from the cluster's
+  # egress IP with whatever logins the current session holds. What the removal
+  # of the public HTTPRoute buys is that the set of things able to reach it is
+  # now "workloads on the runtime cluster" rather than "the internet", and that
+  # the platform-sanctioned path (the data plane above) is RBAC-gated per
+  # caller.
+  backendConfig:
+    resources:
+      # No Secret, ServiceAccount or generator Job in this graph: Chromium has
+      # nothing to keep, and with the bearer gate gone there is no credential
+      # left to mint or bridge.
+      - id: deployment
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${schema.spec.name}
+            namespace: default
+          spec:
+            # Single replica, and deliberately so, for two reasons that point
+            # the same way: an MCP session is bound to the browser process that
+            # started it, and the data plane's services/proxy hop resolves to a
+            # RANDOM ready pod (it bypasses kube-proxy, so there is no session
+            # affinity to lean on). A second replica would answer half the
+            # calls from a browser that never saw the first navigation.
+            replicas: 1
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}
+            # A browser holds live sessions; rolling a second pod in alongside
+            # would hand some calls to a cold Chromium. Replace, don't overlap.
+            strategy:
+              type: Recreate
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}
+              spec:
+                containers:
+                  - name: browser
+                    image: mcr.microsoft.com/playwright/mcp:latest
+                    # The image ENTRYPOINT is
+                    # `node /app/cli.js --headless --browser chromium --no-sandbox`,
+                    # so args only append the HTTP-server flags. --no-sandbox is
+                    # already there and is required: Chromium's setuid sandbox
+                    # needs privileges this pod does not have; the pod boundary
+                    # is what contains it instead.
+                    #
+                    # --host 0.0.0.0, not loopback: the Service is the way in
+                    # now, and services/proxy resolves to the POD IP, so
+                    # anything bound to 127.0.0.1 would be unreachable.
+                    args:
+                      - --port
+                      - "8931"
+                      - --host
+                      - "0.0.0.0"
+                    ports:
+                      - name: http
+                        containerPort: 8931
+                    volumeMounts:
+                      # Chromium puts renderer shared memory in /dev/shm. The
+                      # container default is 64Mi, and overflowing it kills the
+                      # tab with the classic "Target closed"/"Page crashed"
+                      # error, so it gets a tmpfs scaled to the size bucket.
+                      - name: dshm
+                        mountPath: /dev/shm
+                    # A TCP connect is the only honest readiness signal here:
+                    # the MCP endpoint cannot serve as a probe, because a GET
+                    # without a session is an error by protocol, not a health
+                    # signal. (It used to take an in-pod `node` exec because the
+                    # server was loopback-bound; binding 0.0.0.0 lets kubelet
+                    # reach the port directly.)
+                    readinessProbe:
+                      tcpSocket:
+                        port: 8931
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                    # tmpfs pages count against the container's memory limit, so
+                    # the /dev/shm bucket is a quarter of the limit — enough for
+                    # renderer surfaces without letting shared memory alone
+                    # consume the whole allowance. Single-quoted: the CEL
+                    # ternaries contain ": ", which YAML would otherwise read as
+                    # mappings.
+                    resources:
+                      requests:
+                        cpu: 200m
+                        memory: '${schema.spec.size == "small" ? "512Mi" : (schema.spec.size == "medium" ? "1Gi" : "2Gi")}'
+                      limits:
+                        memory: '${schema.spec.size == "small" ? "1Gi" : (schema.spec.size == "medium" ? "2Gi" : "4Gi")}'
+                volumes:
+                  - name: dshm
+                    emptyDir:
+                      medium: Memory
+                      sizeLimit: '${schema.spec.size == "small" ? "256Mi" : (schema.spec.size == "medium" ? "512Mi" : "1Gi")}'
+
+      # The port is NAMED because the data-plane contract addresses it by name
+      # (services/proxy takes <service>:<port-name>), not by number.
+      - id: service
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}
+            namespace: default
+          spec:
+            type: ClusterIP
+            selector:
+              app: ${schema.spec.name}
+            ports:
+              - name: http
+                port: 8931
+                targetPort: 8931
+
+      # ─────────────── Optional public exposure (expose.enabled) ───────────────
+      # Every resource below is gated on the SAME condition, so an instance is
+      # either fully internal or fully published-behind-a-gate. There is no
+      # partial state where the route exists but the gate does not — that state
+      # would be an open a remotely-driven browser running with your cluster's egress IP.
+      - id: oauthCookieSecret
+        includeWhen:
+          - '${schema.spec.expose.enabled}'
+        template:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ${schema.spec.name}-oauth-cookie
+            namespace: default
+      - id: oauthPwgenAccount
+        includeWhen:
+          - '${schema.spec.expose.enabled}'
+        template:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: ${schema.spec.name}-oauth-pwgen
+            namespace: default
+      - id: oauthPwgenRole
+        includeWhen:
+          - '${schema.spec.expose.enabled}'
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: ${schema.spec.name}-oauth-pwgen
+            namespace: default
+          rules:
+            - apiGroups: [""]
+              resources: ["secrets"]
+              verbs: ["get", "patch"]
+      - id: oauthPwgenBinding
+        includeWhen:
+          - '${schema.spec.expose.enabled}'
+        template:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: ${schema.spec.name}-oauth-pwgen
+            namespace: default
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: ${oauthPwgenRole.metadata.name}
+          subjects:
+            - kind: ServiceAccount
+              name: ${oauthPwgenAccount.metadata.name}
+              namespace: default
+      # oauth2-proxy's cookie secret, generated in-graph (32 random bytes).
+      # Rotating it would invalidate live sessions, so the Job no-ops when the
+      # key is already set.
+      - id: oauthPwgen
+        includeWhen:
+          - '${schema.spec.expose.enabled}'
+        template:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${schema.spec.name}-oauth-pwgen
+            namespace: default
+          spec:
+            backoffLimit: 5
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                serviceAccountName: ${oauthPwgenAccount.metadata.name}
+                restartPolicy: OnFailure
+                containers:
+                  - name: pwgen
+                    image: bitnami/kubectl
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -eu
+                        SECRET="${oauthCookieSecret.metadata.name}"
+                        if [ -z "$(kubectl get secret "$SECRET" -o jsonpath='{.data.cookie-secret}' 2>/dev/null)" ]; then
+                          CS="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+                          kubectl patch secret "$SECRET" --type merge \
+                            -p "{\"stringData\":{\"cookie-secret\":\"$CS\"}}"
+                          echo "generated cookie secret for $SECRET"
+                        else
+                          echo "cookie secret already present for $SECRET"
+                        fi
+      - id: oauthDeployment
+        includeWhen:
+          - '${schema.spec.expose.enabled}'
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${schema.spec.name}-oauth
+            namespace: default
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}-oauth
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}-oauth
+              spec:
+                containers:
+                  - name: oauth2-proxy
+                    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+                    args:
+                      - --provider=oidc
+                      - --oidc-issuer-url=${schema.spec.oidc.issuerURL}
+                      - --client-id=${schema.spec.oidc.clientID}
+                      - --redirect-url=https://${schema.spec.expose.fqdn}/oauth2/callback
+                      # The one upstream is the app's own Service — the same
+                      # Service the data plane proxies to. Public callers go
+                      # through the gate; platform callers go through the data
+                      # plane. Neither path can reach the other's credential.
+                      - --upstream=http://${schema.spec.name}:8931
+                      - --http-address=0.0.0.0:4180
+                      - --scope=${schema.spec.oidc.scopes}
+                      # v1: any successfully-authenticated user of your IdP.
+                      - --email-domain=*
+                      - --cookie-secure=true
+                      # Behind the ingress/Cloudflare edge — trust XFF headers.
+                      - --reverse-proxy=true
+                      - --skip-provider-button=true
+                      # MCP streams over a long-lived response; the default 30s
+                      # upstream timeout would cut sessions mid-flight.
+                      - --upstream-timeout=0
+                    env:
+                      - name: OAUTH2_PROXY_CLIENT_SECRET
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${schema.spec.credentialsSecretName}
+                            key: oidc_client_secret
+                      - name: OAUTH2_PROXY_COOKIE_SECRET
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${oauthCookieSecret.metadata.name}
+                            key: cookie-secret
+                    ports:
+                      - containerPort: 4180
+      - id: oauthService
+        includeWhen:
+          - '${schema.spec.expose.enabled}'
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}-oauth
+            namespace: default
+          spec:
+            type: ClusterIP
+            selector:
+              app: ${schema.spec.name}-oauth
+            ports:
+              - port: 4180
+                targetPort: 4180
+      # The route points at the gate, never at the app: there is no mode in
+      # which the public hostname reaches the Playwright control server directly.
+      - id: httpRoute
+        includeWhen:
+          - '${schema.spec.expose.enabled}'
+        template:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: ${schema.spec.name}
+            namespace: default
+          spec:
+            parentRefs:
+              - group: gateway.networking.k8s.io
+                kind: Gateway
+                name: ${kedge.gatewayName}
+                namespace: ${kedge.gatewayNamespace}
+            hostnames:
+              - ${schema.spec.expose.fqdn}
+            rules:
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /
+                backendRefs:
+                  - name: ${oauthService.metadata.name}
+                    port: 4180
+    # The data plane resolves its target through these paths, so they are part
+    # of the contract, not decoration.
+    #
+    # runtimeNamespace cannot be computed: ${schema.*} is forbidden in status by
+    # this kro fork, and the namespace every resource declares ("default") is
+    # remapped to the per-tenant runtime namespace by the backend anyway. So it
+    # is read back off a resource that landed there — the same trick the
+    # synthesized dev overlay uses (backend/kro/devoverlay.go).
+    status:
+      runtimeNamespace: ${service.metadata.namespace}
+      serviceRef:
+        name: ${service.metadata.name}
+        namespace: ${service.metadata.namespace}
+      ready: ${deployment.status.readyReplicas}
+      # Read off the HTTPRoute, never off spec: ${schema.*} is forbidden in
+      # status by this kro fork (the RGD is rejected outright), and the route
+      # is includeWhen-gated — so this resolves only for an instance that
+      # opted into exposure and is simply absent otherwise. That is exactly
+      # the wanted semantics: no URL that is only sometimes real.
+      url: ${"https://" + httpRoute.spec.hostnames[0] + "${kedge.appPublicPort}"}
+

@@ -275,6 +275,69 @@ func (m *MemoryStore) ListRuns(_ context.Context, scope Scope, limit int) ([]Run
 	return out, nil
 }
 
+func (m *MemoryStore) QueryRuns(_ context.Context, scope Scope, q RunQuery) (RunPage, error) {
+	if err := scope.validate(); err != nil {
+		return RunPage{}, err
+	}
+	limit := q.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	before, beforeID, err := decodeCursor(q.Cursor)
+	if err != nil {
+		return RunPage{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prefix := tenantKey(scope) + "|"
+	var all []Run
+	for k, run := range m.runs {
+		if !hasPrefix(k, prefix) {
+			continue
+		}
+		if scope.AgentName != "" && run.AgentName != scope.AgentName {
+			continue
+		}
+		if q.Phase != "" && run.Phase != q.Phase {
+			continue
+		}
+		if q.Trigger != "" && run.Trigger != q.Trigger {
+			continue
+		}
+		if q.SessionID != "" && run.SessionID != q.SessionID {
+			continue
+		}
+		if q.ParentRunID != "" && run.ParentRunID != q.ParentRunID {
+			continue
+		}
+		all = append(all, run)
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].ID > all[j].ID
+		}
+		return all[i].CreatedAt.After(all[j].CreatedAt)
+	})
+	out := make([]Run, 0, limit)
+	for _, run := range all {
+		if !before.IsZero() {
+			if run.CreatedAt.After(before) || (run.CreatedAt.Equal(before) && run.ID >= beforeID) {
+				continue
+			}
+		}
+		out = append(out, run)
+		if len(out) == limit {
+			break
+		}
+	}
+	page := RunPage{Items: out}
+	if len(out) == limit {
+		last := out[len(out)-1]
+		page.NextCursor = encodeCursor(last.CreatedAt, last.ID)
+	}
+	return page, nil
+}
+
 func (m *MemoryStore) PutMemory(_ context.Context, scope Scope, mem Memory) error {
 	if err := scope.withAgent(); err != nil {
 		return err
@@ -384,6 +447,27 @@ func (m *MemoryStore) AppendToolCall(_ context.Context, scope Scope, tc ToolCall
 	k := tenantKey(scope)
 	m.toolCalls[k] = append(m.toolCalls[k], tc)
 	return nil
+}
+
+func (m *MemoryStore) ListToolCalls(_ context.Context, scope Scope, runID string) ([]ToolCall, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []ToolCall
+	for _, tc := range m.toolCalls[tenantKey(scope)] {
+		if tc.RunID == runID {
+			out = append(out, tc)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
 }
 
 func (m *MemoryStore) AddUsage(_ context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error) {

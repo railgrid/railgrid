@@ -244,7 +244,7 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
-	@for r in agents connections schedules triggers runs toolsets; do \
+	@for r in agents connections schedules triggers toolsets; do \
 		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.kedge.faros.sh.yaml \
 		   providers/agents/deploy/chart/files/schemas/$$r.agents.kedge.faros.sh.yaml; \
 	done
@@ -1164,6 +1164,7 @@ run-provider-infrastructure: build-infrastructure-provider ## Run the infrastruc
 	KEDGE_APP_BASE_DOMAIN=$${KEDGE_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
 	KEDGE_GATEWAY_NAME=$${KEDGE_GATEWAY_NAME:-cloudflare-tunnel} \
 	KEDGE_GATEWAY_NAMESPACE=$${KEDGE_GATEWAY_NAMESPACE:-cfgate-system} \
+	KEDGE_APP_PUBLIC_PORT=$${KEDGE_APP_PUBLIC_PORT:-10443} \
 		$(BINDIR)/infrastructure-provider
 
 run-provider-infrastructure-operator: build-infrastructure-provider ## Run the infrastructure provider in OPERATOR mode (bootstrap reconcile + serve from a provider + runtime kubeconfig)

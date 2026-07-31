@@ -189,10 +189,9 @@ func (s *Server) deleteSchedule(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// runScheduleNow executes a schedule's task immediately (synchronous, as the
-// calling user). This is how a user tests a schedule before relying on the
-// background scheduler to fire it. Heartbeats run their checklist; cron/wakeup
-// run their task.
+// runScheduleNow fires a schedule's task immediately as the calling user,
+// asynchronously: it returns 202 with the runID and the run executes in the
+// background — follow it via GET /api/runs/{id} or the /api/events stream.
 func (s *Server) runScheduleNow(w http.ResponseWriter, r *http.Request) {
 	c, id, ok := s.requireClient(w, r)
 	if !ok {
@@ -219,20 +218,9 @@ func (s *Server) runScheduleNow(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "this schedule has no task/checklist to run")
 		return
 	}
-	res, err := s.executeTask(r.Context(), taskRun{
-		Creds: c, CR: clientCR{c}, Scope: id.scope(agent.Name), Agent: agent,
+	runID := s.startDetachedRun(r, c, id, agent, taskRun{
 		SessionID: "schedule:" + name, Task: task, Trigger: trigger, SourceName: name,
-		EdgesEndpoint: s.edgesEndpoint(id.clusterID), EdgesToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+		NotifyChannel: sched.Spec.ChannelRef,
 	})
-	if err != nil {
-		if s.credentialsError(err) {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "no model configured — open Model settings to add one")
-			return
-		}
-		writeStatus(w, http.StatusBadGateway, "RunFailed", err.Error())
-		return
-	}
-	// Deliver to the schedule's channel so "Run now" fires like a real run.
-	s.deliverToNotifyChannel(r, c, agent, sched.Spec.ChannelRef, name, res.Content)
-	writeJSON(w, http.StatusOK, res)
+	writeJSON(w, http.StatusAccepted, map[string]string{"runID": runID})
 }

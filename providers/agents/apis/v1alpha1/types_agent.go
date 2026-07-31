@@ -30,6 +30,15 @@ const (
 	AgentPhaseSuspended = "Suspended"
 )
 
+// Autonomy postures. Enforced at toolset assembly: suggest gates every
+// consequential tool behind approval, ask honors the grant's requireApproval
+// list, auto never gates.
+const (
+	AutonomySuggest = "suggest"
+	AutonomyAsk     = "ask"
+	AutonomyAuto    = "auto"
+)
+
 // +genclient
 // +genclient:nonNamespaced
 // +kubebuilder:object:root=true
@@ -87,15 +96,6 @@ type AgentSpec struct {
 	// +optional
 	ModelFallbacks []string `json:"modelFallbacks,omitempty"`
 
-	// Runner selects the execution backend: "auto" (default) runs in-process
-	// on Eino unless the task is long-running and the claude-code runner is
-	// available; "eino" pins the in-process loop; "claude-code" pins the
-	// pod-backed Claude Code runner (requires the infrastructure provider).
-	// +optional
-	// +kubebuilder:validation:Enum=auto;eino;claude-code
-	// +kubebuilder:default=auto
-	Runner string `json:"runner,omitempty"`
-
 	// Autonomy is the agent's default posture toward taking action: "suggest"
 	// drafts but never acts, "ask" acts after approval, "auto" acts freely
 	// within the tool policy. Per-trigger requireApproval lists refine it.
@@ -127,14 +127,6 @@ type AgentSpec struct {
 	// stays available.
 	// +optional
 	Budget *AgentBudget `json:"budget,omitempty"`
-
-	// DefaultNotifyConnection is DEPRECATED in favor of Channels. It names a
-	// single Connection used to deliver proactive messages. When Channels is
-	// non-empty this field is ignored; when Channels is empty it is treated as
-	// an implicit "primary" channel so existing agents keep working unchanged.
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	DefaultNotifyConnection string `json:"defaultNotifyConnection,omitempty"`
 
 	// Channels binds named messaging channels to the agent. The channel marked
 	// Primary (or, failing that, the first entry) is the default notify target
@@ -169,25 +161,11 @@ type AgentChannel struct {
 	Primary bool `json:"primary,omitempty"`
 }
 
-// EffectiveChannels returns the agent's channels, synthesizing a single
-// "primary" channel from the deprecated DefaultNotifyConnection when the
-// Channels list is empty. This is the one place the legacy field is bridged, so
-// every consumer can treat an agent as a list of named channels.
-func (s *AgentSpec) EffectiveChannels() []AgentChannel {
-	if len(s.Channels) > 0 {
-		return s.Channels
-	}
-	if conn := strings.TrimSpace(s.DefaultNotifyConnection); conn != "" {
-		return []AgentChannel{{Name: "primary", ConnectionRef: conn, Primary: true}}
-	}
-	return nil
-}
-
 // PrimaryChannel returns the agent's default notify channel: the one marked
 // Primary, else the first entry. ok is false when the agent has no channel
 // configured at all.
 func (s *AgentSpec) PrimaryChannel() (AgentChannel, bool) {
-	chans := s.EffectiveChannels()
+	chans := s.Channels
 	if len(chans) == 0 {
 		return AgentChannel{}, false
 	}
@@ -206,7 +184,7 @@ func (s *AgentSpec) PrimaryChannel() (AgentChannel, bool) {
 func (s *AgentSpec) ResolveChannelConnection(role string) (connName string, ok bool) {
 	role = strings.TrimSpace(role)
 	if role != "" {
-		for _, ch := range s.EffectiveChannels() {
+		for _, ch := range s.Channels {
 			if ch.Name == role {
 				return strings.TrimSpace(ch.ConnectionRef), strings.TrimSpace(ch.ConnectionRef) != ""
 			}
@@ -224,7 +202,7 @@ func (s *AgentSpec) ResolveChannelConnection(role string) (connName string, ok b
 // channel message belongs to.
 func (s *AgentSpec) AgentClaimsConnection(connName string) bool {
 	connName = strings.TrimSpace(connName)
-	for _, ch := range s.EffectiveChannels() {
+	for _, ch := range s.Channels {
 		if strings.TrimSpace(ch.ConnectionRef) == connName {
 			return true
 		}

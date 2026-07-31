@@ -49,16 +49,33 @@ func (s *MCPSession) Close() {
 // returned (not fatal to the run) so a dead MCP server degrades to "tools
 // missing" rather than breaking chat.
 func ConnectMCP(ctx context.Context, d Deps, conn *agentsv1alpha1.Connection) (*MCPSession, error) {
+	// An instance-backed connection names a workload provisioned by the
+	// infrastructure provider and is reached over the platform's internal data
+	// plane — no public hostname, and authorized as the calling user rather
+	// than by a credential of its own. The verb root IS the MCP endpoint: the
+	// template pins the upstream path (the browser template pins /mcp), so
+	// nothing is appended here.
+	if instance, resource := instanceRef(conn, browserResource); instance != "" {
+		endpoint, err := d.DataPlane.ProxyURL("mcp", conn.Name, resource, instance)
+		if err != nil {
+			return nil, err
+		}
+		return ConnectMCPEndpoint(ctx, endpoint, d.DataPlane.Token, conn.Name, d.DataPlane.Insecure)
+	}
 	endpoint := strings.TrimSpace(conn.Spec.BaseURL)
 	if endpoint == "" {
 		if conn.Spec.Type == agentsv1alpha1.ConnectionTypeGitHub {
 			endpoint = githubMCPEndpoint
 		} else {
-			return nil, fmt.Errorf("mcp connection %q has no baseURL", conn.Name)
+			return nil, fmt.Errorf("mcp connection %q names neither an instance nor a baseURL — point it at a browser instance in this workspace, or at an external MCP server's URL", conn.Name)
 		}
 	}
 	return ConnectMCPEndpoint(ctx, endpoint, d.connToken(ctx, conn.Name), conn.Name, false)
 }
+
+// browserResource is the instance resource the seed `browser` template projects.
+// config.instanceResource overrides it for a fork under a different CRD.
+const browserResource = "browsers"
 
 // ConnectMCPEndpoint dials an arbitrary MCP server over streamable HTTP with
 // an optional bearer token and exposes its tools as <prefix>__<tool>. Used by

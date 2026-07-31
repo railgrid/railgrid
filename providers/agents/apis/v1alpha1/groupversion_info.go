@@ -47,8 +47,6 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&ScheduleList{},
 		&Trigger{},
 		&TriggerList{},
-		&Run{},
-		&RunList{},
 		&Toolset{},
 		&ToolsetList{},
 	)

@@ -27,12 +27,12 @@ import (
 // real events ([background.handle]). Without this, "Fire"/"Run now" only
 // returned output to the UI and never pinged the channel, so a test never
 // looked like a real event. No-op when the agent has no channel for that role.
-func (s *Server) deliverToNotifyChannel(r *http.Request, c *agentsclient.Client, agent *agentsv1alpha1.Agent, role, prefix, text string) {
+func (s *Server) deliverToNotifyChannel(ctx context.Context, c *agentsclient.Client, agent *agentsv1alpha1.Agent, role, prefix, text string) {
 	connName, ok := agent.Spec.ResolveChannelConnection(role)
 	if !ok || strings.TrimSpace(text) == "" {
 		return
 	}
-	conn, err := c.Connections().Get(r.Context(), connName, metav1.GetOptions{})
+	conn, err := c.Connections().Get(ctx, connName, metav1.GetOptions{})
 	if err != nil {
 		return
 	}
@@ -40,9 +40,9 @@ func (s *Server) deliverToNotifyChannel(r *http.Request, c *agentsclient.Client,
 	if prefix != "" {
 		msg = "[" + prefix + "] " + text
 	}
-	_ = channels.Send(context.WithoutCancel(r.Context()), channels.Message{
+	_ = channels.Send(ctx, channels.Message{
 		Type:   conn.Spec.Type,
-		Token:  s.connectionToken(r, c, connName),
+		Token:  s.connectionTokenCtx(ctx, c, connName),
 		Target: conn.Spec.Channel,
 		Config: conn.Spec.Config,
 		Text:   truncate(msg, 3500),
@@ -232,9 +232,9 @@ func (s *Server) deleteTrigger(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// runTriggerNow fires a trigger's task immediately (synchronous, as the calling
-// user) with an optional payload — the way to test a trigger's agent + task
-// before wiring the real event source. Mirrors schedule "run now".
+// runTriggerNow fires a trigger's task immediately as the calling user with an
+// optional payload, asynchronously: 202 + runID, output delivered to the
+// trigger's channel like a real event. Mirrors schedule "run now".
 func (s *Server) runTriggerNow(w http.ResponseWriter, r *http.Request) {
 	c, id, ok := s.requireClient(w, r)
 	if !ok {
@@ -264,20 +264,9 @@ func (s *Server) runTriggerNow(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "this trigger has no task to run")
 		return
 	}
-	res, err := s.executeTask(r.Context(), taskRun{
-		Creds: c, CR: clientCR{c}, Scope: id.scope(agent.Name), Agent: agent,
+	runID := s.startDetachedRun(r, c, id, agent, taskRun{
 		SessionID: "trigger:" + name, Task: task, Trigger: agentsv1alpha1.RunTriggerEvent, SourceName: name,
-		EdgesEndpoint: s.edgesEndpoint(id.clusterID), EdgesToken: id.token, EdgesInsecure: s.cfg.HubInsecure,
+		NotifyChannel: trig.Spec.ChannelRef,
 	})
-	if err != nil {
-		if s.credentialsError(err) {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "no model configured — assign one on the Models tab")
-			return
-		}
-		writeStatus(w, http.StatusBadGateway, "RunFailed", err.Error())
-		return
-	}
-	// Deliver to the trigger's channel so a test fires like a real event.
-	s.deliverToNotifyChannel(r, c, agent, trig.Spec.ChannelRef, name, res.Content)
-	writeJSON(w, http.StatusOK, res)
+	writeJSON(w, http.StatusAccepted, map[string]string{"runID": runID})
 }

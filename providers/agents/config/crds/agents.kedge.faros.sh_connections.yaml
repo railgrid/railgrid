@@ -54,13 +54,6 @@ spec:
           spec:
             description: ConnectionSpec is the user-authored connection configuration.
             properties:
-              allowedHosts:
-                description: |-
-                  AllowedHosts restricts which hosts the web/http tools may reach when this
-                  connection is in scope. Empty means the provider default policy applies.
-                items:
-                  type: string
-                type: array
               auth:
                 default: secret
                 description: |-

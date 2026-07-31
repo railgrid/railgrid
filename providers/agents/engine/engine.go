@@ -87,13 +87,43 @@ type Observation struct {
 // a single turn, so a fan-out of snapshot calls can't blow the token budget.
 const maxTurnImages = 8
 
-// ToolEvent reports a tool invocation to the caller (for SSE/UI + audit).
+// ToolEvent reports a completed tool invocation to the caller (for SSE/UI +
+// audit). ID is the model's tool-call id, correlating with OnToolStart.
 type ToolEvent struct {
+	ID       string
 	Name     string
 	Args     string // raw JSON arguments from the model
 	Result   string // observation (or error text)
 	Err      bool
 	Duration time.Duration
+}
+
+// Callbacks stream run progress to the caller. All fields are optional.
+type Callbacks struct {
+	// OnDelta receives assistant content deltas as they stream.
+	OnDelta func(string)
+	// OnToolStart fires when a tool call begins executing.
+	OnToolStart func(id, name, args string)
+	// OnTool fires when a tool call completes (or fails).
+	OnTool func(ToolEvent)
+}
+
+func (c Callbacks) delta(s string) {
+	if c.OnDelta != nil {
+		c.OnDelta(s)
+	}
+}
+
+func (c Callbacks) toolStart(id, name, args string) {
+	if c.OnToolStart != nil {
+		c.OnToolStart(id, name, args)
+	}
+}
+
+func (c Callbacks) tool(ev ToolEvent) {
+	if c.OnTool != nil {
+		c.OnTool(ev)
+	}
 }
 
 // Usage reports token consumption for a completed turn, when the provider
@@ -103,10 +133,13 @@ type Usage struct {
 	OutputTokens int64
 }
 
-// Result is the outcome of a completed streaming turn.
+// Result is the outcome of a streaming turn. When Interrupt is non-nil the
+// turn did not complete: a gated tool call paused the run, and Interrupt
+// carries the checkpoint to resume from once the user decides.
 type Result struct {
-	Content string
-	Usage   Usage
+	Content   string
+	Usage     Usage
+	Interrupt *Interrupt
 }
 
 // Engine runs turns against a chat model. It holds no per-request state, so a
@@ -118,25 +151,25 @@ func New() *Engine { return &Engine{} }
 
 // StreamTurn runs one assistant turn (no tools) and streams content deltas.
 func (e *Engine) StreamTurn(ctx context.Context, model einomodel.BaseChatModel, msgs []Message, onDelta func(string)) (Result, error) {
-	return e.StreamTurnWithTools(ctx, model, msgs, nil, 1, onDelta, nil)
+	return e.StreamTurnWithTools(ctx, model, msgs, nil, 1, Callbacks{OnDelta: onDelta})
 }
 
 // StreamTurnWithTools runs an assistant turn with a tool-call loop: the model
 // may call tools, observations are fed back, and the loop continues until the
-// model answers without tool calls or maxIters is reached. Content deltas
-// stream to onDelta as they arrive (including pre-tool-call narration); each
-// tool execution is reported to onTool for UI + audit.
+// model answers without tool calls or maxIters is reached. A tool returning an
+// *InterruptError pauses the loop and yields a Result with an Interrupt
+// checkpoint instead of finishing the turn.
 func (e *Engine) StreamTurnWithTools(
 	ctx context.Context,
 	model einomodel.BaseChatModel,
 	msgs []Message,
 	tools []Tool,
 	maxIters int,
-	onDelta func(string),
-	onTool func(ToolEvent),
+	cb Callbacks,
 ) (Result, error) {
-	if model == nil {
-		return Result{}, errors.New("engine: nil chat model")
+	active, byName, err := e.bindTools(model, tools)
+	if err != nil {
+		return Result{}, err
 	}
 	in := toEino(msgs)
 	if len(in) == 0 {
@@ -145,88 +178,161 @@ func (e *Engine) StreamTurnWithTools(
 	if maxIters <= 0 {
 		maxIters = 1
 	}
-
-	active := model
-	byName := map[string]Tool{}
-	if len(tools) > 0 {
-		tcm, ok := model.(einomodel.ToolCallingChatModel)
-		if !ok {
-			return Result{}, errors.New("engine: model does not support tool calling")
-		}
-		infos, err := toToolInfos(tools)
-		if err != nil {
-			return Result{}, fmt.Errorf("engine: building tool schemas: %w", err)
-		}
-		bound, err := tcm.WithTools(infos)
-		if err != nil {
-			return Result{}, fmt.Errorf("engine: binding tools: %w", err)
-		}
-		active = bound
-		for _, t := range tools {
-			byName[t.Name] = t
-		}
-	}
-
 	var content strings.Builder
 	var usage Usage
+	return e.loop(ctx, active, byName, in, maxIters, 0, &content, &usage, nil, nil, cb)
+}
 
-	for iter := 0; iter < maxIters; iter++ {
-		full, err := e.streamOnce(ctx, active, in, &content, &usage, onDelta)
-		if err != nil {
-			return Result{}, err
-		}
-		if len(full.ToolCalls) == 0 {
-			return Result{Content: content.String(), Usage: usage}, nil
+// ResumeTurnWithTools continues a checkpointed turn after the user decided on
+// the gated tool call. approve=true executes the pending call (the caller's
+// wrapper must grant it — the engine just re-runs it); approve=false injects a
+// denial observation so the model can react, then the loop continues normally.
+func (e *Engine) ResumeTurnWithTools(
+	ctx context.Context,
+	model einomodel.BaseChatModel,
+	ck Checkpoint,
+	tools []Tool,
+	maxIters int,
+	approve bool,
+	denyNote string,
+	cb Callbacks,
+) (Result, error) {
+	active, byName, err := e.bindTools(model, tools)
+	if err != nil {
+		return Result{}, err
+	}
+	in := restoreMessages(ck.Messages)
+	if len(in) == 0 {
+		return Result{}, errors.New("engine: checkpoint has no messages")
+	}
+	if maxIters <= 0 || maxIters <= ck.Iter {
+		maxIters = ck.Iter + 1
+	}
+	var content strings.Builder
+	content.WriteString(ck.Content)
+	usage := ck.Usage
+	pending := ck.Pending
+	dec := &decision{approve: approve, note: denyNote}
+	return e.loop(ctx, active, byName, in, maxIters, ck.Iter, &content, &usage, pending, dec, cb)
+}
+
+// decision is the user's verdict on the FIRST pending call of a resumed turn.
+type decision struct {
+	approve bool
+	note    string
+	used    bool
+}
+
+// bindTools prepares the (optionally tool-bound) model and the tool index.
+func (e *Engine) bindTools(model einomodel.BaseChatModel, tools []Tool) (einomodel.BaseChatModel, map[string]Tool, error) {
+	if model == nil {
+		return nil, nil, errors.New("engine: nil chat model")
+	}
+	byName := map[string]Tool{}
+	if len(tools) == 0 {
+		return model, byName, nil
+	}
+	tcm, ok := model.(einomodel.ToolCallingChatModel)
+	if !ok {
+		return nil, nil, errors.New("engine: model does not support tool calling")
+	}
+	infos, err := toToolInfos(tools)
+	if err != nil {
+		return nil, nil, fmt.Errorf("engine: building tool schemas: %w", err)
+	}
+	bound, err := tcm.WithTools(infos)
+	if err != nil {
+		return nil, nil, fmt.Errorf("engine: binding tools: %w", err)
+	}
+	for _, t := range tools {
+		byName[t.Name] = t
+	}
+	return bound, byName, nil
+}
+
+// loop is the shared tool-call loop for fresh and resumed turns. When pending
+// is non-empty the first pass skips the model stream and executes the pending
+// calls (a resume); dec applies to the first of them.
+func (e *Engine) loop(
+	ctx context.Context,
+	active einomodel.BaseChatModel,
+	byName map[string]Tool,
+	in []*schema.Message,
+	maxIters, startIter int,
+	content *strings.Builder,
+	usage *Usage,
+	pending []PendingCall,
+	dec *decision,
+	cb Callbacks,
+) (Result, error) {
+	for iter := startIter; iter < maxIters; iter++ {
+		if len(pending) == 0 {
+			full, err := e.streamOnce(ctx, active, in, content, usage, cb.OnDelta)
+			if err != nil {
+				return Result{}, err
+			}
+			if len(full.ToolCalls) == 0 {
+				return Result{Content: content.String(), Usage: *usage}, nil
+			}
+			// Feed the assistant's tool-call message back, then execute each
+			// call and append its observation.
+			in = append(in, full)
+			pending = pendingFromToolCalls(full.ToolCalls)
 		}
 
-		// Feed the assistant's tool-call message back, then execute each call
-		// and append its observation. Images returned by tools are collected and
-		// appended once, after all tool messages: the OpenAI wire format requires
-		// each tool_call to be answered by a contiguous tool message, and image
-		// content must ride on a user message (a tool-role message can't carry
-		// it), so the images become a single follow-up user turn.
-		in = append(in, full)
+		// Images returned by tools are collected and appended once, after all
+		// tool messages: the OpenAI wire format requires each tool_call to be
+		// answered by a contiguous tool message, and image content must ride on
+		// a user message, so the images become a single follow-up user turn.
 		var turnImages []ToolImage
-		for _, tc := range full.ToolCalls {
-			name := tc.Function.Name
-			args := tc.Function.Arguments
-			started := time.Now()
-			var result string
-			var failed bool
-			if tool, ok := byName[name]; ok {
-				switch {
-				case tool.ExecRich != nil:
-					obs, execErr := tool.ExecRich(ctx, args)
-					if execErr != nil {
-						result = "error: " + execErr.Error()
-						failed = true
-					} else {
-						result = obs.Text
-						turnImages = append(turnImages, obs.Images...)
-						if result == "" && len(obs.Images) > 0 {
-							result = fmt.Sprintf("[returned %d image(s); shown below]", len(obs.Images))
-						}
-					}
-				case tool.Exec != nil:
-					out, execErr := tool.Exec(ctx, args)
-					if execErr != nil {
-						result = "error: " + execErr.Error()
-						failed = true
-					} else {
-						result = out
-					}
-				default:
-					result = fmt.Sprintf("error: tool %q has no executor", name)
-					failed = true
+		for len(pending) > 0 {
+			pc := pending[0]
+
+			// A resumed denial: answer the gated call with a denial observation
+			// instead of executing it.
+			if dec != nil && !dec.used && !dec.approve {
+				dec.used = true
+				result := "the user denied this tool call"
+				if dec.note != "" {
+					result += ": " + dec.note
 				}
-			} else {
-				result = fmt.Sprintf("error: unknown tool %q", name)
-				failed = true
+				cb.tool(ToolEvent{ID: pc.ID, Name: pc.Name, Args: pc.Args, Result: result, Err: false})
+				in = append(in, schema.ToolMessage(result, pc.ID, schema.WithToolName(pc.Name)))
+				pending = pending[1:]
+				continue
 			}
-			if onTool != nil {
-				onTool(ToolEvent{Name: name, Args: args, Result: result, Err: failed, Duration: time.Since(started)})
+			if dec != nil && !dec.used {
+				dec.used = true // approved: execute normally (the wrapper grants it)
 			}
-			in = append(in, schema.ToolMessage(result, tc.ID, schema.WithToolName(name)))
+
+			started := time.Now()
+			cb.toolStart(pc.ID, pc.Name, pc.Args)
+			result, images, execErr := execute(ctx, byName, pc)
+			if ie := asInterrupt(execErr); ie != nil {
+				// Pause: checkpoint the conversation with the un-executed calls
+				// (this one first) so the run resumes exactly here.
+				return Result{
+					Content: content.String(), Usage: *usage,
+					Interrupt: &Interrupt{
+						Tool: ie.Tool, Args: ie.Args, RequestID: ie.RequestID,
+						Checkpoint: Checkpoint{
+							Messages: checkpointMessages(in),
+							Pending:  pending,
+							Content:  content.String(),
+							Usage:    *usage,
+							Iter:     iter,
+						},
+					},
+				}, nil
+			}
+			failed := false
+			if execErr != nil {
+				result, failed = "error: "+execErr.Error(), true
+			}
+			turnImages = append(turnImages, images...)
+			cb.tool(ToolEvent{ID: pc.ID, Name: pc.Name, Args: pc.Args, Result: result, Err: failed, Duration: time.Since(started)})
+			in = append(in, schema.ToolMessage(result, pc.ID, schema.WithToolName(pc.Name)))
+			pending = pending[1:]
 		}
 		if msg := imageUserMessage(turnImages); msg != nil {
 			in = append(in, msg)
@@ -236,7 +342,34 @@ func (e *Engine) StreamTurnWithTools(
 	// Ran out of iterations mid-loop: surface what we have plus a marker so
 	// the transcript is honest about the truncation.
 	content.WriteString("\n\n[stopped: reached the tool-call limit for one turn]")
-	return Result{Content: content.String(), Usage: usage}, nil
+	return Result{Content: content.String(), Usage: *usage}, nil
+}
+
+// execute runs one tool call, preferring the rich executor. The returned error
+// may be an *InterruptError (approval gate) — callers check before treating it
+// as a failure observation.
+func execute(ctx context.Context, byName map[string]Tool, pc PendingCall) (string, []ToolImage, error) {
+	tool, ok := byName[pc.Name]
+	if !ok {
+		return "", nil, fmt.Errorf("unknown tool %q", pc.Name)
+	}
+	switch {
+	case tool.ExecRich != nil:
+		obs, err := tool.ExecRich(ctx, pc.Args)
+		if err != nil {
+			return "", nil, err
+		}
+		result := obs.Text
+		if result == "" && len(obs.Images) > 0 {
+			result = fmt.Sprintf("[returned %d image(s); shown below]", len(obs.Images))
+		}
+		return result, obs.Images, nil
+	case tool.Exec != nil:
+		out, err := tool.Exec(ctx, pc.Args)
+		return out, nil, err
+	default:
+		return "", nil, fmt.Errorf("tool %q has no executor", pc.Name)
+	}
 }
 
 // streamOnce streams a single model response, forwarding content deltas and

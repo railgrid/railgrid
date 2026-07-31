@@ -10,11 +10,13 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -86,6 +88,12 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 				Trigger:     agentsv1alpha1.RunTriggerDelegation,
 				SourceName:  parentDeps.Agent.Name,
 				ParentRunID: parentDeps.RunID,
+				// The child acts as the same caller, so it inherits the data
+				// plane. Edges is deliberately NOT inherited (no endpoint), so
+				// this widens nothing: it only lets a delegated sub-agent use
+				// the same instance-backed tools its parent could.
+				ClusterID: parentDeps.DataPlane.ClusterID,
+				HubToken:  parentDeps.DataPlane.Token,
 			})
 			if err != nil {
 				return "", err
@@ -94,6 +102,14 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 			// against the parent.
 			_, _ = s.store.AddUsage(dctx, parentDeps.Scope, parentDeps.Agent.Name,
 				res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.USDMicros, time.Now().UTC(), 30*24*time.Hour)
+			// The child hit its own approval gate. Say so plainly rather than
+			// handing back a partial answer the parent would treat as final —
+			// the child's run resumes on its own once the user decides.
+			if res.Pending != nil {
+				return fmt.Sprintf(
+					"%s\n\n[delegation paused: %s needs approval to run %s. The user was asked; this sub-task will finish on its own once approved. Do not retry it.]",
+					res.Content, target, res.Pending.Tool), nil
+			}
 			return res.Content, nil
 		}
 	}
@@ -104,6 +120,15 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	// Merge any linked Toolsets (shared bundles) into this grant so their
 	// families/connections/approval apply as if written inline.
 	grant = s.expandToolsets(ctx, deps, grant)
+	// Autonomy overrides the approval patterns: "suggest" gates every
+	// consequential tool, "auto" acts freely, "ask" (default) uses the grant's
+	// requireApproval list.
+	switch deps.Agent.Spec.Autonomy {
+	case agentsv1alpha1.AutonomySuggest:
+		grant.RequireApproval = []string{"*"}
+	case agentsv1alpha1.AutonomyAuto:
+		grant.RequireApproval = nil
+	}
 	families := grant.Families
 	if len(families) == 0 {
 		families = defaultFamilies(interactive)
@@ -150,10 +175,10 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	// dialed as the calling user. This is a base-layer capability provided by
 	// the hub, not a wired-in provider tool — it is always enabled, never opt-in.
 	// It is naturally interactive-only: it acts as the calling user, and only
-	// interactive runs carry a user token (background runs leave EdgesToken
+	// interactive runs carry a user token (background runs leave HubToken
 	// empty), so the token check scopes it without a family gate.
-	if run.EdgesEndpoint != "" && run.EdgesToken != "" {
-		sess, err := tools.ConnectMCPEndpoint(ctx, run.EdgesEndpoint, run.EdgesToken, "edges", run.EdgesInsecure)
+	if run.EdgesEndpoint != "" && run.HubToken != "" {
+		sess, err := tools.ConnectMCPEndpoint(ctx, run.EdgesEndpoint, run.HubToken, "edges", run.EdgesInsecure)
 		if err != nil {
 			log.Printf("toolset: edges MCP unavailable: %v", err)
 		} else {
@@ -164,7 +189,7 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 
 	// Approval gating + audit wrap every tool.
 	for i := range out {
-		out[i] = s.wrapTool(out[i], deps, trigger, grant.RequireApproval)
+		out[i] = s.wrapTool(out[i], deps, run, trigger, grant.RequireApproval)
 	}
 
 	var mcpInstr []string
@@ -216,33 +241,93 @@ func (s *Server) expandToolsets(ctx context.Context, deps tools.Deps, grant agen
 	return grant
 }
 
-// wrapTool layers approval gating (when the tool matches the grant's
-// requireApproval list) and audit logging around a tool's Exec.
-func (s *Server) wrapTool(t engine.Tool, deps tools.Deps, trigger string, requireApproval []string) engine.Tool {
-	needsApproval := toolNeedsApproval(t.Name, requireApproval)
-	inner := t.Exec
-	t.Exec = func(ctx context.Context, argsJSON string) (string, error) {
-		if needsApproval {
-			ok, msg := s.consumeApproval(ctx, deps, t.Name)
-			if !ok {
-				return msg, nil
-			}
+// approvalExempt lists tools that never require approval: they only talk to
+// the user or the agent's own memory, so gating them (e.g. under
+// autonomy=suggest's "*") would make the agent unable to even ask.
+var approvalExempt = map[string]bool{
+	"memory_save": true, "memory_list": true, "notify": true, "ask": true,
+	"wait": true, "schedule_list": true,
+}
+
+// wrapTool normalizes every tool onto one audited execution path (ExecRich —
+// the engine prefers it, so nothing can dodge the wrapper) and layers the
+// approval gate over it. A gated call posts an approval request and pauses the
+// run via an engine interrupt; the resume path pre-authorizes exactly one call
+// (run.ApproveTool/ApproveArgs) which executes without re-gating.
+func (s *Server) wrapTool(t engine.Tool, deps tools.Deps, run taskRun, trigger string, requireApproval []string) engine.Tool {
+	needsApproval := toolNeedsApproval(t.Name, requireApproval) && !approvalExempt[t.Name]
+	richInner, textInner := t.ExecRich, t.Exec
+	inner := func(ctx context.Context, argsJSON string) (engine.Observation, error) {
+		if richInner != nil {
+			return richInner(ctx, argsJSON)
+		}
+		out, err := textInner(ctx, argsJSON)
+		return engine.Observation{Text: out}, err
+	}
+	approved := run.approvalFor(t.Name)
+	t.Exec = nil
+	t.ExecRich = func(ctx context.Context, argsJSON string) (engine.Observation, error) {
+		if needsApproval && !approved.consume(argsJSON) {
+			reqID := s.postApprovalRequest(ctx, deps, trigger, t.Name, argsJSON)
+			_ = s.store.AppendToolCall(ctx, deps.Scope, store.ToolCall{
+				ID: uuid.NewString(), AgentName: deps.Agent.Name, RunID: deps.RunID, Trigger: trigger,
+				Tool: t.Name, Args: redactArgs(argsJSON), Outcome: "pending_approval",
+				CreatedAt: time.Now().UTC(),
+			})
+			return engine.Observation{}, &engine.InterruptError{Tool: t.Name, Args: argsJSON, RequestID: reqID}
 		}
 		started := time.Now()
-		outStr, err := inner(ctx, argsJSON)
-		outcome := "ok"
-		errText := ""
+		obs, err := inner(ctx, argsJSON)
+		outcome, errText := "ok", ""
 		if err != nil {
 			outcome, errText = "error", err.Error()
 		}
 		_ = s.store.AppendToolCall(ctx, deps.Scope, store.ToolCall{
-			ID: uuid.NewString(), AgentName: deps.Agent.Name, Trigger: trigger,
-			Tool: t.Name, ArgsDigest: clipArgs(argsJSON), Outcome: outcome, Error: clipArgs(errText),
+			ID: uuid.NewString(), AgentName: deps.Agent.Name, RunID: deps.RunID, Trigger: trigger,
+			Tool: t.Name, Args: redactArgs(argsJSON), Result: safeTruncate(obs.Text, maxStoredResult),
+			Outcome: outcome, Error: safeTruncate(errText, 4000),
 			DurationMS: time.Since(started).Milliseconds(), CreatedAt: time.Now().UTC(),
 		})
-		return outStr, err
+		return obs, err
 	}
 	return t
+}
+
+// postApprovalRequest records a pending approval (bound to this run and the
+// exact requested call) and pushes it to the user's primary channel.
+func (s *Server) postApprovalRequest(ctx context.Context, deps tools.Deps, trigger, toolName, argsJSON string) string {
+	now := time.Now().UTC()
+	wsScope := store.Scope{OrgUUID: deps.Scope.OrgUUID, WorkspaceUUID: deps.Scope.WorkspaceUUID}
+	id := uuid.NewString()
+	_ = s.store.AddInboxItem(ctx, wsScope, store.InboxItem{
+		ID: id, AgentName: deps.Agent.Name, RunID: deps.RunID, Kind: store.InboxKindApproval,
+		State:  store.InboxStatePending,
+		Prompt: "Allow " + deps.Agent.Name + " to run " + toolName + "?",
+		Payload: map[string]any{
+			"tool": toolName, "args": redactArgs(argsJSON), "trigger": trigger,
+		},
+		CreatedAt: now, UpdatedAt: now,
+	})
+	s.events.publish(wsScope, "inbox", map[string]any{
+		"id": id, "state": "pending", "agent": deps.Agent.Name, "tool": toolName, "runID": deps.RunID,
+	})
+	// Push the request to the user's channel so it can be answered where they
+	// live: reply /inbox to list, /approve N to allow (which resumes the run).
+	if connName, ok := deps.Agent.Spec.ResolveChannelConnection(""); ok {
+		if conn, err := deps.CR.GetConnection(ctx, connName); err == nil {
+			token := ""
+			if sec, serr := deps.Secrets.GetSecret(ctx, llm.SecretNamespace, connectionSecretName(connName)); serr == nil {
+				if v, ok := sec.Data["token"]; ok {
+					token = string(v)
+				}
+			}
+			_ = channels.Send(ctx, channels.Message{
+				Type: conn.Spec.Type, Token: token, Target: conn.Spec.Channel, Config: conn.Spec.Config,
+				Text: fmt.Sprintf("⏳ %s wants to run %s. Reply /inbox to review, /approve to allow — the run resumes automatically.", deps.Agent.Name, toolName),
+			})
+		}
+	}
+	return id
 }
 
 // toolNeedsApproval matches a tool name against the grant's requireApproval
@@ -263,50 +348,90 @@ func toolNeedsApproval(name string, patterns []string) bool {
 	return false
 }
 
-// consumeApproval checks the inbox for an un-consumed approval for this
-// agent+tool. Present → consume it and allow the call. Absent → post an
-// approval request (portal inbox + channel via the notify path is the
-// caller's concern) and tell the model to wait.
-func (s *Server) consumeApproval(ctx context.Context, deps tools.Deps, toolName string) (bool, string) {
-	items, err := s.store.ListInbox(ctx, store.Scope{OrgUUID: deps.Scope.OrgUUID, WorkspaceUUID: deps.Scope.WorkspaceUUID}, store.InboxStateApproved)
-	if err == nil {
-		for _, it := range items {
-			if it.AgentName == deps.Agent.Name && it.Kind == store.InboxKindApproval && it.Payload["tool"] == toolName {
-				// Consume: flip to answered so one approval authorizes one call.
-				_, _ = s.store.ResolveInboxItem(ctx, store.Scope{OrgUUID: deps.Scope.OrgUUID, WorkspaceUUID: deps.Scope.WorkspaceUUID},
-					it.ID, store.InboxStateAnswered, "consumed by "+toolName, time.Now().UTC())
-				return true, ""
-			}
-		}
-	}
-	now := time.Now().UTC()
-	_ = s.store.AddInboxItem(ctx, store.Scope{OrgUUID: deps.Scope.OrgUUID, WorkspaceUUID: deps.Scope.WorkspaceUUID}, store.InboxItem{
-		ID: uuid.NewString(), AgentName: deps.Agent.Name, Kind: store.InboxKindApproval,
-		State: store.InboxStatePending, Prompt: "Allow " + deps.Agent.Name + " to run " + toolName + "?",
-		Payload: map[string]any{"tool": toolName}, CreatedAt: now, UpdatedAt: now,
-	})
-	// Push the request to the user's channel so it can be answered where they
-	// live: reply /inbox to list, /approve N to allow.
-	if connName, ok := deps.Agent.Spec.ResolveChannelConnection(""); ok {
-		if conn, err := deps.CR.GetConnection(ctx, connName); err == nil {
-			token := ""
-			if sec, serr := deps.Secrets.GetSecret(ctx, llm.SecretNamespace, connectionSecretName(connName)); serr == nil {
-				if v, ok := sec.Data["token"]; ok {
-					token = string(v)
-				}
-			}
-			_ = channels.Send(ctx, channels.Message{
-				Type: conn.Spec.Type, Token: token, Target: conn.Spec.Channel, Config: conn.Spec.Config,
-				Text: fmt.Sprintf("⏳ %s wants to run %s. Reply /inbox to review, /approve 1 to allow.", deps.Agent.Name, toolName),
-			})
-		}
-	}
-	return false, "this tool requires user approval — an approval request was posted to the user's inbox and channel; tell the user to approve it and try again"
+// Storage caps for audit payloads. Full-fidelity within reason: enough for a
+// trace view, bounded so a pathological tool result can't bloat a row.
+const (
+	maxStoredArgs   = 16 * 1024
+	maxStoredResult = 64 * 1024
+)
+
+// approvalGrant pre-authorizes exactly one call of one tool with exact
+// arguments — set on the resume path after the user approved. consume reports
+// whether the call matches and burns the grant.
+type approvalGrant struct {
+	args string
+	used *bool
 }
 
-func clipArgs(s string) string {
-	if len(s) <= 300 {
+func (g approvalGrant) consume(argsJSON string) bool {
+	if g.used == nil || *g.used || g.args != argsJSON {
+		return false
+	}
+	*g.used = true
+	return true
+}
+
+// approvalFor returns the pre-authorized grant for a tool ("no grant" for all
+// tools except the approved resume call).
+func (r taskRun) approvalFor(toolName string) approvalGrant {
+	if r.ApproveTool == "" || r.ApproveTool != toolName || r.approveUsed == nil {
+		return approvalGrant{}
+	}
+	return approvalGrant{args: r.ApproveArgs, used: r.approveUsed}
+}
+
+// sensitiveArgKeys flags JSON argument keys whose values are redacted before
+// the audit log persists them.
+var sensitiveArgKeys = []string{"token", "password", "secret", "authorization", "api_key", "apikey", "api-key", "bearer", "credential"}
+
+// redactArgs redacts secret-looking values in a JSON arguments object and
+// bounds its stored size. Non-JSON input is stored truncated as-is.
+func redactArgs(argsJSON string) string {
+	trimmed := strings.TrimSpace(argsJSON)
+	if trimmed == "" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &m); err != nil {
+		return safeTruncate(trimmed, maxStoredArgs)
+	}
+	redactMap(m)
+	b, err := json.Marshal(m)
+	if err != nil {
+		return safeTruncate(trimmed, maxStoredArgs)
+	}
+	return safeTruncate(string(b), maxStoredArgs)
+}
+
+func redactMap(m map[string]any) {
+	for k, v := range m {
+		lk := strings.ToLower(k)
+		redact := false
+		for _, s := range sensitiveArgKeys {
+			if strings.Contains(lk, s) {
+				redact = true
+				break
+			}
+		}
+		if redact {
+			m[k] = "[redacted]"
+			continue
+		}
+		if nested, ok := v.(map[string]any); ok {
+			redactMap(nested)
+		}
+	}
+}
+
+// safeTruncate bounds s to at most n bytes without splitting a UTF-8 rune,
+// appending an honest truncation marker.
+func safeTruncate(s string, n int) string {
+	if len(s) <= n {
 		return s
 	}
-	return s[:300] + "…"
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…[truncated]"
 }

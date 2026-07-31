@@ -1,15 +1,16 @@
 # Agents provider — standalone skeleton design
 
-Status: **Substantially implemented (2026-07-13). Chat with a tool loop
+Status: **Substantially implemented (2026-07-30). Chat with a tool loop
 (core/web/github/mcp/edges), named model credentials, autonomous cron/heartbeat
-firing, event-trigger webhooks, sub-agent delegation, an approvals inbox
-(portal + channel), channels in/out (Telegram/Slack), OAuth connections, token
-budgets, and a durable Postgres store are built. Not built: the file workspace
-(needs the infrastructure provider), the claude-code runner, resumable
-approval-paused runs, and the hardening items in
+firing, event-trigger webhooks with filters, sub-agent delegation, an approvals
+inbox (portal + channel) with **durable pause/resume**, a **runs API with
+step-level traces**, server-push events, run cancellation, channels in/out
+(Telegram/Slack/Discord), OAuth connections, USD budgets, and a durable
+Postgres store are built. Not built: the file workspace (needs the
+infrastructure provider), context compaction, evals, and the hardening items in
 [Implementation status](#implementation-status). Not yet driven end-to-end
 against a running hub — integration bugs expected.**
-Author: 2026-07-12 (status updated 2026-07-13)
+Author: 2026-07-12 (status updated 2026-07-30)
 Related: [`agents-provider-research.md`](./agents-provider-research.md) (the
 research this design follows from), [`providers.md`](./providers.md),
 [`mcp-architecture.md`](./mcp-architecture.md),
@@ -41,8 +42,9 @@ never core function.
 As of 2026-07-12 the provider (`providers/agents/`) is partially built. The
 resource model (all five CRDs + Tier 1 fields) is complete; execution is split
 between per-request paths that work today and background/autonomous paths that
-are not wired yet. The UI has six tabs: Chat, Schedules, Triggers, Connections,
-Inbox, Models.
+are not wired yet. The portal has four tabs: Agents, Activity (runs + approvals),
+Connections (incl. toolsets), Models — an agent's schedules, triggers, channels,
+and tools are edited inside the agent, next to a live chat playground.
 
 ### Built and usable now
 
@@ -56,16 +58,18 @@ Inbox, Models.
   provider (OpenAI-compatible today).
 - **Schedules / Triggers / Connections CRUD** — full create/list/delete of the
   `AgentSchedule`, `AgentTrigger`, and `Connection` CRs from their tabs.
-- **Run now / Fire now** — execute a schedule's or trigger's task
-  *synchronously* (as the calling user) to test it before autonomous firing
-  exists.
+- **Run now / Fire now** — execute a schedule's or trigger's task as the
+  calling user *asynchronously*: the endpoint returns `202 {runID}` and the run
+  is followed in Activity (a synchronous variant would hit proxy timeouts on
+  long tool loops).
 - **Budgets** — per-agent monthly token/USD caps, enforced before every run
   (chat, run-now, fire-now); blocks with a clear message when exceeded.
 - **Channel notify (outbound)** — Telegram / Slack / SMTP delivery via the
   `channels` package, with a per-connection **Test** button that sends a real
   message.
-- **Approvals inbox surface** — list + approve/deny API and tab (populated once
-  the tool loop raises approvals — see gaps).
+- **Approvals inbox** — list + approve/deny API, surfaced in Activity and
+  pushed to the agent's channel. Resolving an approval **resumes the paused
+  run** (see Durable approvals below).
 - **Background executor** — schedules fire **autonomously**. The provider reads
   its APIExportEndpointSlice (via `KEDGE_PROVIDER_KUBECONFIG`) to discover the
   APIExport virtual workspace, polls `AgentSchedule` CRs across all bound tenant
@@ -77,8 +81,8 @@ Inbox, Models.
   quiet heartbeats (notify only when actionable), disable-after-5-failures, and
   per-job watchdog timeouts.
 - **Background notify** — output/failure of background runs is delivered to the
-  agent's `defaultNotifyConnection` (Telegram/Slack/SMTP), settable per agent in
-  the UI.
+  agent channel named by the schedule/trigger's `channelRef`, else the agent's
+  primary channel (`spec.channels[]`).
 - **Trigger webhooks (inbound)** — webhook/github triggers get an HMAC-tokenized
   URL (shown in the Triggers tab): external `POST`s fire the agent with the
   event payload, no tenant auth needed.
@@ -90,15 +94,18 @@ Inbox, Models.
     schedule *themselves*), `schedules_list`, `notify`, `ask` (posts a question
     to the inbox + channel).
   - `web`: `web_fetch` (SSRF-guarded at dial time — blocks private/loopback,
-    defeats DNS rebinding) and `web_search` (Brave-compatible `websearch`
-    connection).
+    defeats DNS rebinding) and `web_search`, backed by a `websearch`
+    Connection speaking either a **self-hosted SearXNG instance** (no API key —
+    the `searxng` infrastructure Template provisions one per tenant) or the
+    Brave API. See [`agent-web-access.md`](./agent-web-access.md).
   - `mcp`/`github`: any `mcp` connection is dialed via the official MCP Go SDK
     and its tools exposed as `<connection>__<tool>`; a `github` connection with
     a PAT gets the hosted GitHub MCP server's full toolset with zero config.
-  Per-trigger policy applies (interactive: all families by default; background:
-  core+web only — connection-backed families need explicit grants), every call
-  lands in the audit log, `requireApproval` patterns gate tools through the
-  inbox (approve once → one call), and tool calls render live in the chat UI.
+  Per-trigger policy applies (tools are wired explicitly; an agent with nothing
+  wired gets only `core`). **Every** tool — including MCP/edges tools, which
+  expose only the rich executor — passes through one wrapper that gates
+  approvals and writes the audit row, so no tool can dodge either. Calls render
+  live in chat (`tool_start`/`tool_end`) and replay in the run trace.
 
 - **Channel inbound** — chat with an agent *from* Telegram/Slack. Each
   messaging connection gets an HMAC-tokenized inbound webhook (**Inbound**
@@ -111,8 +118,30 @@ Inbox, Models.
 
 - **Approvals + questions over the channel** — approval requests push to the
   agent's channel; `/inbox` lists pending items, `/approve N` / `/deny N`
-  resolve approvals (one approval authorizes one tool call), `/answer N <text>`
-  answers agent questions — all from Telegram/Slack.
+  resolve approvals (which **resumes the paused run**), `/answer N <text>`
+  answers agent questions — all from Telegram/Slack/Discord.
+- **Durable approvals (pause/resume)** — a gated tool call raises an engine
+  *interrupt*: the loop stops, the conversation + un-executed calls are
+  serialized into the run's `checkpoint`, and the run parks in
+  `PendingApproval`. Approving resumes the loop in place and executes that call
+  with the **exact arguments the user saw** (one approval = one call, bound to
+  its run); denying feeds a refusal observation back so the model can react.
+  Resumed runs that hit another gate check-point again.
+- **Runs API + traces** — `GET /api/runs` (filters: agent, class, phase,
+  trigger, session, parent; cursor-paged) and `GET /api/runs/{id}` returning the
+  step-level trace (each tool call's args, result, outcome, duration — secrets
+  redacted), pending-approval state, and delegated children.
+  `POST /api/runs/{id}/cancel` aborts a live run; `spec.limits.timeoutSeconds`
+  bounds every run.
+- **Server-push events** — `GET /api/events` (SSE) streams run phase changes and
+  inbox activity per workspace, so the portal reflects background work without
+  polling.
+- **Long-term memory injection** — saved notes are injected into every run's
+  system context (bounded by `spec.memory.maxNotes`), so recall no longer
+  depends on the model choosing to call `memory_list`.
+- **Trigger filters** — `spec.filter` gates webhook deliveries on `eventType`
+  (platform header or body `type`/`action`), `match` (payload substring), and
+  `header.<name>`; filtered deliveries are acked, not run.
 - **Sub-agent delegation** — the `delegate` tool: agents listed in
   `spec.delegates` can be handed a scoped task; the child runs through the
   same execution path with `parentRunID` lineage, its usage rolls into the
@@ -147,40 +176,46 @@ those outranks new features.**
    needs the `agent-workspace` Template in the **infrastructure provider** (PVC
    + file-access pod + Template-declared dataplane subresources — the
    sandbox-runner successor). The agents-side `files` tool family is small once
-   that exists. Also blocks item 3.
-2. **Resumable approval-paused runs.** An approval-gated tool call ends its
-   attempt with "approve and retry"; the design wants the run *paused* at an
-   Eino checkpoint and *resumed* on `/approve`. The store's `checkpoint` column
-   exists but is unused — this is the wiring to close that gap.
-3. **claude-code runner.** Only the in-process `eino` runner exists; the
-   pod-backed `claude-code` runner needs the workspace PVC (item 1) plus a
-   `Runner` interface extraction.
-4. **Context compaction.** No `/compact` and no automatic summarize-and-truncate
+   that exists. Also blocks the claude-code runner.
+2. **Context compaction.** No `/compact` and no automatic summarize-and-truncate
    — long-lived channel sessions will overflow the model window; `/new` is the
-   only relief today.
+   only relief today. The `compaction` model purpose exists for this and is
+   still unread.
+3. **claude-code runner.** Only the in-process Eino loop exists. `spec.runner`
+   was **removed from the schema** (it was a silent no-op); re-add it with the
+   runner, which needs the workspace PVC (item 1) plus a `Runner` interface
+   extraction.
+4. **Evals / datasets.** No analog to LangSmith datasets or OpenAI trace
+   grading. The run trace (steps + args + results) is now recorded, which is
+   the substrate an annotation→dataset flow would build on.
 5. **AgentSkill.** In the schema, no behavior; the cross-tenant skill catalog
    (the ClawHub analog) lands after the resource does.
 6. **Native Gemini/Vertex.** `llm.BuildModel` implements only the
    OpenAI-compatible path (covers OpenAI, Anthropic-compat, OpenRouter).
+7. **Agent config versioning/drafts.** CR edits are live immediately; the field
+   standard (Agent Builder versions, Copilot Studio publish, Dify app versions)
+   is draft→publish with rollback.
 
 ### Not yet implemented — hardening (works, rough edges)
 
-7. **USD budgets don't self-trip.** Runs don't compute dollar cost (no pricing
-   table), so only *token* caps enforce; a `usdLimit` never fires from real
-   usage.
 8. **At-rest encryption.** Message/memory content is plaintext in Postgres (the
    columns exist; the app-studio-style key wiring isn't ported).
-9. **Autonomy + policy have no UI editor.** `suggest/ask/auto`, per-trigger
-   `requireApproval` lists, and `delegates` are API-only; only the
-   interactive/background split is enforced from `autonomy`.
-10. **Runs & audit have no UI.** The store records every run and tool call, but
-    there is no runs-history / audit tab to inspect background activity.
-11. **Retry backoff.** Failed schedules count failures and disable at 5; the
-    designed 30s/60s/5m escalating retry isn't implemented.
-12. **Slack signing-secret verification** (URL token is the only webhook auth
-    today), **trigger filters/idempotency** (payloads pass verbatim, duplicate
-    deliveries double-fire), **inbound email**, and **multi-chat routing** (one
-    connection = one configured chat).
+9. **Retry backoff.** Failed schedules count failures and disable at 5; the
+   designed 30s/60s/5m escalating retry isn't implemented
+   (`schedule.spec.retry.maxAttempts` is still unread).
+10. **Slack signing-secret verification** (URL token is the only webhook auth
+    today), **webhook idempotency** (duplicate deliveries double-fire —
+    filters now gate *which* events fire, not repeat deliveries), **inbound
+    email**, and **multi-chat routing** (one connection = one configured chat,
+    with no per-user identity inside it).
+11. **Per-tool grant granularity.** Grants stop at family/connection: granting
+    `mcp` + a connection exposes every tool that server discovers, and the
+    aggregate kedge endpoint is all-or-nothing for interactive runs. There is
+    also no cached tool inventory, so every run re-dials each MCP connection
+    serially.
+12. **Executor durability + fairness.** The in-process pool is 4 workers
+    globally (not per-tenant) with drop-on-full submit and no persistence
+    across restarts.
 
 ### Milestone mapping
 
@@ -219,12 +254,17 @@ The [Milestones](#milestones) section lists the full plan.
 
 | Kind | Purpose |
 |---|---|
-| `Agent` | The persistent assistant: persona/system prompt, model profile refs (per purpose: `chat`, `background`, `compaction`), memory policy, tool grants (connection refs + built-in family toggles) with per-trigger policy, runner preference, limits (max tool turns, per-run timeout), **budget** (monthly token/cost cap, action on breach: suspend + notify), default notification connection, **`autonomy`** (`suggest`/`ask`/`auto`), and **`delegates`** (agent names this agent may spawn as sub-agents) |
+| `Agent` | The persistent assistant: persona/system prompt, model profile refs (per purpose: `chat`, `background`, `compaction`), memory policy, tool grants (connection refs + toolset refs + built-in families) with per-trigger policy, limits (max tool turns, per-run timeout), **budget** (rolling token/USD cap), **`channels`** (named messaging bindings, one primary), **`autonomy`** (`suggest`/`ask`/`auto` — enforced at toolset assembly), and **`delegates`** (agent names this agent may spawn as sub-agents) |
 | `Connection` | A named credential to an external system: `type` (`github`, `mcp`, `websearch`, `http`, `telegram`, `slack`, `smtp`), **`auth`** (`secret` default, or `oauth`), `secretRef` to a tenant-workspace Secret, non-secret config (base URL, allowed hosts, channel/chat IDs). For `auth: oauth`, an `oauth` block (provider, scopes) and a provider-run callback mint + refresh the token into the Secret. Connections turn tool families and channels on per agent |
 | `AgentSchedule` | Time-based firing. `type: cron \| wakeup \| heartbeat`; cron spec (5-field) + **`timeZone`** (IANA name, like `CronJob.spec.timeZone`; default UTC) + task prompt (cron) or standing checklist ref (heartbeat) + `agentRef` + retry policy + `suspend`. Status: `nextRun`, `lastRun`, `consecutiveFailures`, `disabledReason` |
 | `AgentTrigger` | Event-based firing — the non-time half of automation. `spec.source` (`webhook`, `channel`, `email`, `github`, `connection`) + `connectionRef` + `filter` (source-specific match: header/signature, message regex, event type, label) + `task` + `agentRef` + `suspend`. Webhook sources get a hub-routed inbound endpoint; connection sources subscribe to a Connection's event stream. Status: `lastFired`, `consecutiveFailures`, `disabledReason` |
-| `AgentRun` | One execution: trigger (`chat`, `schedule`, `heartbeat`, `wakeup`, `event`, `api`, `channel`, `delegation`), input, phase, usage/cost, **`parentRunID`** (set for sub-agent runs — delegation lineage), pointer to transcript + checkpoint in the store |
+| `Toolset` | A shareable bundle of tool grants (families, connections, approval rules) many agents can link, so wiring is written once |
 | `AgentSkill` *(post-v1)* | Markdown instructions + required connection types + tool grants, attachable to agents. Later: shareable across tenants via the catalog — the ClawHub analog, which a single-user OpenClaw cannot do |
+
+**Runs are deliberately not a CRD.** A run's transcript, step-level tool trace,
+and resume checkpoint live in the provider's Postgres and are served over
+`/api/runs`; a Run CRD existed briefly, was never instantiated, and only created
+room for the schema and the execution reality to drift.
 
 Tenant-facing permission claim: `secrets` (tenant-scoped), under this
 provider's own names: `kedge-agents-llm` (model profiles — see Runner) and
@@ -234,20 +274,34 @@ provider's own names: `kedge-agents-llm` (model profiles — see Runner) and
 
 `Agent.spec.autonomy` sets the default posture — `suggest` (draft only, never
 act), `ask` (act after approval), `auto` (act freely within tool policy) — and
-the per-trigger `requireApproval` lists refine it per tool. When a run needs
-sign-off it parks in `PendingApproval` (its checkpoint already persisted) and
-writes an **inbox item** to the store rather than blocking. The inbox is a
-single cross-agent queue of pending approvals and agent questions, surfaced at
-`/api/inbox` in the portal and pushed to the agent's default channel; an
-approve/deny (portal button or channel reply) resumes the checkpointed run.
-This unifies what would otherwise be scattered per-run approval prompts and is
-what makes unattended agents safe to grant real tools.
+the per-trigger `requireApproval` lists refine it per tool. Autonomy is applied
+when the toolset is assembled: `suggest` rewrites the approval list to `*`,
+`auto` clears it, `ask` keeps the grant's own patterns. A small exempt set
+(`notify`, `ask`, `memory_*`, `wait`, `schedule_list`) is never gated — under
+`suggest` an agent must still be able to reach the user.
+
+When a gated call comes up, the tool wrapper raises an **interrupt** rather
+than executing: the engine unwinds the loop, the api layer serializes the
+conversation and the un-executed calls into the run's `checkpoint`, parks the
+run in `PendingApproval`, and writes an **inbox item** carrying the run ID and
+the exact requested arguments. The inbox is a single cross-agent queue of
+pending approvals and agent questions, surfaced at `/api/inbox` and in
+Activity, and pushed to the agent's primary channel.
+
+Resolving it (portal button or channel `/approve`) **resumes the checkpointed
+run in place**: the run is claimed (so a double-approve can't run it twice),
+the loop rehydrates from the checkpoint, and the approved call executes with
+the arguments the user actually saw — an approval authorizes exactly one call
+and cannot be replayed onto different arguments. A denial feeds a refusal
+observation back so the model can adapt instead of failing. Runs resumed into
+another gate check-point again. This is what makes unattended agents safe to
+grant real tools.
 
 ### Sub-agent delegation
 
 An agent runs a flat loop by default. `Agent.spec.delegates` lists other agent
 names it may spawn; a `delegate` tool in the `core` family starts a child
-`AgentRun` (trigger `delegation`, `parentRunID` set) against the named agent
+run (trigger `delegation`, `parentRunID` set) against the named agent
 with a scoped task, streams its result back, and counts its usage against the
 parent's budget. Eino's ADK/DeepAgent provides the sub-agent primitive; the
 provider adds the run lineage and budget rollup. Depth and fan-out are bounded
@@ -301,7 +355,7 @@ The repo's first Go scheduler, deliberately boring:
   errors; extended backoff (to 60m) for consecutively failing recurring
   schedules; immediate disable with `disabledReason` on permanent errors
   (revoked credentials, deleted agent); 60-minute default watchdog per run.
-- Each fire creates an `AgentRun` and hands it to the runner. Concurrency per
+- Each fire creates a run record and hands it to the executor. Concurrency per
   schedule is `Forbid`: a schedule whose previous run is still active skips
   the tick and records it.
 
@@ -392,7 +446,7 @@ the hub MCP endpoint.
 | Family | Backing | Notes |
 |---|---|---|
 | `core` | store | `memory_write/list/read`, `schedule_create/list/cancel`, `wakeup`, `trigger_create/list/cancel` (register an event automation), `sessions_list/history`, **`notify`** (deliver a message to the agent's default channel connection), **`delegate`** (spawn a sub-agent run against a name in `spec.delegates`), **`ask`** (post a question to the approvals inbox and await the user) |
-| `web` | Go stdlib + readability extraction | `web_fetch` (SSRF-guarded: DNS pinning, deny private ranges, per-connection allowlist), `web_search` via a `websearch` Connection. No headless browser in v1; `chromedp` family is a later opt-in |
+| `web` | Go stdlib + readability extraction | `web_fetch` (SSRF-guarded: the URL comes from the model, so private ranges are refused), `web_search` via a `websearch` Connection (`config.provider`: `searxng` self-hosted, or `brave`) whose baseURL is user-authored configuration and so may be private/in-cluster. Link-local is refused on both paths — that range carries cloud instance-metadata. A real browser is not in this family: the `browser` infrastructure Template runs Playwright MCP and is wired as an ordinary `mcp` Connection |
 | `github` | `github` Connection | Remote GitHub MCP endpoint with the tenant's PAT, or a bundled `github-mcp-server` binary (Go/static) over stdio. Pre-wired instead of hand-configured MCP |
 | `mcp` | `mcp` Connection | Arbitrary remote MCP server (URL + auth header from the Secret), client via the official `modelcontextprotocol/go-sdk`. The extensibility escape hatch |
 | `files` | infrastructure `agent-workspace` | Optional (see above) |

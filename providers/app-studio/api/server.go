@@ -55,6 +55,12 @@ type Server struct {
 	assistantSupervisor          *projectAssistantSupervisor
 	developmentSyncLocks         map[string]*sync.Mutex
 	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string)
+	// developmentSyncFailures records the most recent post-mutation sync
+	// failure per project so verify_development_runtime can report it. A
+	// failed background sync means the assistant's edits never reached the
+	// sandbox; logging it alone made that invisible to the user AND to the
+	// model, which would then diagnose a stale runtime as a code bug.
+	developmentSyncFailures map[string]string
 	// previewEdgeProbe + edgeReadyURLs implement the preview edge-readiness
 	// gate (see preview_edge.go). Nil probe → the real HTTPS probe.
 	previewEdgeProbe func(context.Context, string) error

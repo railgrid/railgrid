@@ -143,16 +143,19 @@ type InboxItem struct {
 	UpdatedAt time.Time      `json:"updatedAt"`
 }
 
-// ToolCall is one audit-log entry. ArgsDigest is a redacted/hashed summary, not
-// raw arguments, so secrets never land in the log.
+// ToolCall is one audit-log entry and the step record behind the run trace
+// view. Args and Result are the full payloads (secret-looking JSON values
+// redacted, oversized payloads truncated with a marker) so a run's steps can
+// be inspected after the fact.
 type ToolCall struct {
 	ID         string    `json:"id"`
 	AgentName  string    `json:"agentName"`
 	RunID      string    `json:"runID"`
 	Trigger    string    `json:"trigger"`
 	Tool       string    `json:"tool"`
-	ArgsDigest string    `json:"argsDigest,omitempty"`
-	Outcome    string    `json:"outcome"` // ok | error | denied
+	Args       string    `json:"args,omitempty"`
+	Result     string    `json:"result,omitempty"`
+	Outcome    string    `json:"outcome"` // ok | error | denied | pending_approval
 	Error      string    `json:"error,omitempty"`
 	DurationMS int64     `json:"durationMS,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
@@ -172,6 +175,23 @@ type Usage struct {
 type Page struct {
 	Items      []Message `json:"items"`
 	NextCursor string    `json:"nextCursor,omitempty"`
+}
+
+// RunQuery filters a run listing. Zero values mean "any". Scope.AgentName (when
+// set) narrows to one agent; Cursor/Limit page newest-first.
+type RunQuery struct {
+	Phase       RunPhase
+	Trigger     string
+	SessionID   string
+	ParentRunID string
+	Limit       int
+	Cursor      string
+}
+
+// RunPage is an ordered slice of runs plus the next cursor.
+type RunPage struct {
+	Items      []Run  `json:"items"`
+	NextCursor string `json:"nextCursor,omitempty"`
 }
 
 // Session summarizes one chat thread of an agent: its ID, activity bounds,
@@ -231,6 +251,8 @@ type Store interface {
 	// one replica resumes it.
 	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time) (Run, error)
 	ListRuns(ctx context.Context, scope Scope, limit int) ([]Run, error)
+	// QueryRuns lists runs newest-first with filters and cursor pagination.
+	QueryRuns(ctx context.Context, scope Scope, q RunQuery) (RunPage, error)
 
 	// Long-term memory.
 	PutMemory(ctx context.Context, scope Scope, m Memory) error
@@ -244,6 +266,8 @@ type Store interface {
 
 	// Audit + usage.
 	AppendToolCall(ctx context.Context, scope Scope, tc ToolCall) error
+	// ListToolCalls returns one run's tool calls in execution order.
+	ListToolCalls(ctx context.Context, scope Scope, runID string) ([]ToolCall, error)
 	AddUsage(ctx context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error)
 	GetUsage(ctx context.Context, scope Scope, agentName string, now time.Time, window time.Duration) (Usage, error)
 

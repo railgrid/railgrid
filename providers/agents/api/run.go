@@ -10,8 +10,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/engine"
 	"github.com/faroshq/provider-agents/llm"
 	"github.com/faroshq/provider-agents/store"
@@ -70,15 +73,35 @@ func budgetName(b *agentsv1alpha1.AgentBudget) string {
 	return "month"
 }
 
-// runResult is the outcome of a non-streaming agent execution.
+// runResult is the outcome of a non-streaming agent execution. A non-nil
+// Pending means the run paused on an approval gate rather than finishing.
 type runResult struct {
-	RunID   string `json:"runID"`
-	Content string `json:"content"`
+	RunID   string       `json:"runID"`
+	Content string       `json:"content"`
+	Pending *pendingInfo `json:"pending,omitempty"`
 	Usage   struct {
 		InputTokens  int64 `json:"inputTokens"`
 		OutputTokens int64 `json:"outputTokens"`
 		USDMicros    int64 `json:"usdMicros"`
 	} `json:"usage"`
+}
+
+// pendingInfo describes the approval gate a paused run is waiting on.
+type pendingInfo struct {
+	InboxID string `json:"inboxID"`
+	Tool    string `json:"tool"`
+	Args    string `json:"args"`
+}
+
+// runCheckpoint is the payload persisted in store.Run.Checkpoint: the engine's
+// loop state plus what the api layer needs to rebuild the toolset on resume.
+type runCheckpoint struct {
+	Engine        engine.Checkpoint `json:"engine"`
+	Tool          string            `json:"tool"`
+	Args          string            `json:"args"`
+	InboxID       string            `json:"inboxID"`
+	SourceName    string            `json:"sourceName,omitempty"`
+	NotifyChannel string            `json:"notifyChannel,omitempty"`
 }
 
 // taskRun bundles everything one agent execution needs. Creds reads the model
@@ -92,23 +115,49 @@ type taskRun struct {
 	Scope store.Scope
 	Agent *agentsv1alpha1.Agent
 
+	// RunID pre-assigns the run's ID (async run-now, chat's SSE start event,
+	// resume). Empty → generated.
+	RunID string
+
 	SessionID   string
 	Task        string
 	Trigger     string
 	SourceName  string // schedule/trigger/connection that fired this run
 	ParentRunID string
 
+	// NotifyChannel is the agent-channel role a paused/resumed background run
+	// delivers to (recorded in the checkpoint for resume delivery).
+	NotifyChannel string
+
+	// ApproveTool/ApproveArgs pre-authorize exactly one tool call — the resume
+	// path sets them after the user approved the gated call.
+	ApproveTool string
+	ApproveArgs string
+	approveUsed *bool
+
 	EdgesEndpoint string // hub mcpserver MCP URL ("" → edges family absent)
-	EdgesToken    string
+	// HubToken is the CALLER's bearer token for the hub. It authenticates the
+	// edges MCP dial AND the infrastructure data plane, so anything reaching a
+	// tenant workload through the platform needs it. Empty on background runs,
+	// which have no user to act as.
+	HubToken      string
 	EdgesInsecure bool
 
-	OnDelta func(string)
-	OnTool  func(engine.ToolEvent)
+	// ClusterID is the tenant workspace's kcp logical-cluster ID, used with the
+	// caller's token to address instance-backed tools over the infrastructure
+	// provider's data plane.
+	ClusterID string
+
+	OnDelta     func(string)
+	OnToolStart func(id, name, args string)
+	OnTool      func(engine.ToolEvent)
 }
 
-// executeTask runs one agent turn to completion against a task prompt,
-// persisting the transcript and run record. It is the shared execution path
-// for chat, run-now, background fires, channel messages, and delegation.
+// executeTask runs one agent turn against a task prompt, persisting the
+// transcript (including tool steps) and run record. It is the shared execution
+// path for chat, run-now, background fires, channel messages, and delegation.
+// A gated tool call pauses the run (phase PendingApproval, checkpoint saved)
+// instead of finishing; resolveApproval resumes it.
 func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error) {
 	scope, agent := run.Scope, run.Agent
 	now := time.Now().UTC()
@@ -125,14 +174,30 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		sessionID = run.Trigger // e.g. schedules share a per-trigger session
 	}
 
-	runID := uuid.NewString()
+	runID := run.RunID
+	if runID == "" {
+		runID = uuid.NewString()
+	}
+	run.RunID = runID
+
+	// spec.limits.timeoutSeconds bounds the run's wall clock (default 1h).
+	timeout := time.Hour
+	if v := agent.Spec.Limits.TimeoutSeconds; v > 0 {
+		timeout = time.Duration(v) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	// Register for POST /api/runs/{id}/cancel.
+	s.liveRuns.register(runID, cancel)
+	defer s.liveRuns.unregister(runID)
 
 	// Assemble the agent's tools for this trigger class (policy + approvals +
 	// audit + delegation); MCP sessions are released when the run ends.
 	toolset, mcpInstructions, closeTools := s.buildToolset(ctx, tools.Deps{
 		Store: s.store, Scope: scope, Agent: agent, CR: run.CR,
 		Secrets: run.Creds, ConnSecretName: connectionSecretName,
-		RunID: runID,
+		RunID:     runID,
+		DataPlane: s.dataPlaneFor(run),
 	}, run)
 	defer closeTools()
 
@@ -155,44 +220,168 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		ParentRunID: run.ParentRunID,
 		Phase:       store.RunPhaseRunning, Input: run.Task, CreatedAt: now, UpdatedAt: now, StartedAt: &now,
 	})
-	res, err := s.engine.StreamTurnWithTools(ctx, model, msgs, toolset, maxIters, run.OnDelta, run.OnTool)
+	s.publishRunEvent(scope, runID, agent.Name, run.Trigger, store.RunPhaseRunning)
+
+	res, err := s.engine.StreamTurnWithTools(ctx, model, msgs, toolset, maxIters, s.runCallbacks(ctx, run, sessionID))
 	end := time.Now().UTC()
 	if err != nil {
-		if run, gerr := s.store.GetRun(ctx, scope, runID); gerr == nil {
-			run.Phase = store.RunPhaseFailed
-			run.Message = err.Error()
-			run.UpdatedAt = end
-			run.FinishedAt = &end
-			_ = s.store.SaveRun(ctx, scope, run)
+		phase := store.RunPhaseFailed
+		// A registry cancel (or run timeout) surfaces as a context error —
+		// record it as Aborted, not Failed.
+		if ctx.Err() != nil {
+			phase = store.RunPhaseAborted
 		}
-		return runResult{}, err
+		s.finishRun(ctx, scope, runID, phase, err.Error(), engine.Usage{}, 0, end)
+		s.publishRunEvent(scope, runID, agent.Name, run.Trigger, phase)
+		return runResult{RunID: runID}, err
+	}
+
+	// Estimate cost from the catalog so budgets enforce dollars (not just
+	// tokens) and the Models dashboard can show spend. Cost is attributed to the
+	// agent's primary model; unknown models cost 0 rather than a fabricated
+	// number.
+	costMicros := llm.CostMicros(s.primaryModelName(ctx, run.Creds, agent), res.Usage.InputTokens, res.Usage.OutputTokens)
+	_, _ = s.store.AddUsage(ctx, scope, agent.Name, res.Usage.InputTokens, res.Usage.OutputTokens, costMicros, end, 30*24*time.Hour)
+
+	// Paused on an approval gate: persist the checkpoint and stop here — the
+	// approval resolution resumes the run in place.
+	if res.Interrupt != nil {
+		ck := runCheckpoint{
+			Engine: res.Interrupt.Checkpoint, Tool: res.Interrupt.Tool, Args: res.Interrupt.Args,
+			InboxID: res.Interrupt.RequestID, SourceName: run.SourceName, NotifyChannel: run.NotifyChannel,
+		}
+		ckJSON, _ := json.Marshal(ck)
+		if stored, gerr := s.store.GetRun(ctx, scope, runID); gerr == nil {
+			stored.Phase = store.RunPhasePendingApproval
+			stored.Checkpoint = ckJSON
+			stored.InputTokens = res.Usage.InputTokens
+			stored.OutputTokens = res.Usage.OutputTokens
+			stored.USDMicros = costMicros
+			stored.UpdatedAt = end
+			_ = s.store.SaveRun(ctx, scope, stored)
+		}
+		s.publishRunEvent(scope, runID, agent.Name, run.Trigger, store.RunPhasePendingApproval)
+		out := runResult{RunID: runID, Content: res.Content,
+			Pending: &pendingInfo{InboxID: res.Interrupt.RequestID, Tool: res.Interrupt.Tool, Args: res.Interrupt.Args}}
+		out.Usage.InputTokens = res.Usage.InputTokens
+		out.Usage.OutputTokens = res.Usage.OutputTokens
+		out.Usage.USDMicros = costMicros
+		return out, nil
 	}
 
 	_ = s.store.AppendMessage(ctx, scope, store.Message{
 		ID: uuid.NewString(), AgentName: agent.Name, SessionID: sessionID, RunID: runID,
 		Role: "assistant", Content: res.Content, CreatedAt: end,
 	})
-	// Estimate cost from the catalog so budgets enforce dollars (not just
-	// tokens) and the Models dashboard can show spend. Cost is attributed to the
-	// agent's primary model; unknown models cost 0 rather than a fabricated
-	// number.
-	costMicros := llm.CostMicros(s.primaryModelName(ctx, run.Creds, agent), res.Usage.InputTokens, res.Usage.OutputTokens)
-	if run, gerr := s.store.GetRun(ctx, scope, runID); gerr == nil {
-		run.Phase = store.RunPhaseSucceeded
-		run.InputTokens = res.Usage.InputTokens
-		run.OutputTokens = res.Usage.OutputTokens
-		run.USDMicros = costMicros
-		run.UpdatedAt = end
-		run.FinishedAt = &end
-		_ = s.store.SaveRun(ctx, scope, run)
-	}
-	_, _ = s.store.AddUsage(ctx, scope, agent.Name, res.Usage.InputTokens, res.Usage.OutputTokens, costMicros, end, 30*24*time.Hour)
+	s.finishRun(ctx, scope, runID, store.RunPhaseSucceeded, "", res.Usage, costMicros, end)
+	s.publishRunEvent(scope, runID, agent.Name, run.Trigger, store.RunPhaseSucceeded)
 
 	out := runResult{RunID: runID, Content: res.Content}
 	out.Usage.InputTokens = res.Usage.InputTokens
 	out.Usage.OutputTokens = res.Usage.OutputTokens
 	out.Usage.USDMicros = costMicros
 	return out, nil
+}
+
+// startDetachedRun pre-creates a Pending run record and executes the task in a
+// detached goroutine as the calling user, so run-now endpoints return 202 with
+// a runID immediately instead of blocking the HTTP request on the whole agent
+// loop. Output is delivered to the run's notify channel when it finishes, like
+// a real background fire.
+func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id identity, agent *agentsv1alpha1.Agent, tr taskRun) string {
+	runID := uuid.NewString()
+	now := time.Now().UTC()
+	scope := id.scope(agent.Name)
+	tr.RunID = runID
+	tr.Creds = c
+	tr.CR = clientCR{c}
+	tr.Scope = scope
+	tr.Agent = agent
+	tr.EdgesEndpoint = s.edgesEndpoint(id.clusterID)
+	tr.HubToken = id.token
+	tr.EdgesInsecure = s.cfg.HubInsecure
+	tr.ClusterID = id.clusterID
+
+	// Detach from the request context: the response returns immediately while
+	// the run continues (executeTask applies the agent's own timeout).
+	ctx := context.WithoutCancel(r.Context())
+	_ = s.store.SaveRun(ctx, scope, store.Run{
+		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
+		Phase: store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
+	})
+	go func() {
+		res, err := s.executeTask(ctx, tr)
+		if err != nil || res.Pending != nil {
+			return // outcome is on the run record; approvals resume separately
+		}
+		s.deliverToNotifyChannel(ctx, c, agent, tr.NotifyChannel, tr.SourceName, res.Content)
+	}()
+	return runID
+}
+
+// dataPlaneFor describes how instance-backed tools reach tenant workloads for
+// this run. Background runs carry no user token, so the result is unusable by
+// design — the tool reports that precisely rather than failing at the hub.
+func (s *Server) dataPlaneFor(run taskRun) tools.DataPlane {
+	return tools.DataPlane{
+		HubBase:   s.cfg.HubURL,
+		ClusterID: run.ClusterID,
+		Token:     run.HubToken,
+		Insecure:  s.cfg.HubInsecure,
+	}
+}
+
+// runCallbacks chains the caller's streaming callbacks with tool-step
+// persistence: every completed tool call lands in the session transcript so
+// follow-up turns (and the transcript view) can see what the run actually did.
+func (s *Server) runCallbacks(ctx context.Context, run taskRun, sessionID string) engine.Callbacks {
+	return engine.Callbacks{
+		OnDelta:     run.OnDelta,
+		OnToolStart: run.OnToolStart,
+		OnTool: func(ev engine.ToolEvent) {
+			_ = s.store.AppendMessage(ctx, run.Scope, store.Message{
+				ID: uuid.NewString(), AgentName: run.Agent.Name, SessionID: sessionID, RunID: run.RunID,
+				Role: "tool", Content: safeTruncate(ev.Result, 8*1024),
+				Metadata: map[string]any{
+					"tool": ev.Name, "args": redactArgs(ev.Args),
+					"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
+				},
+				CreatedAt: time.Now().UTC(),
+			})
+			if run.OnTool != nil {
+				run.OnTool(ev)
+			}
+		},
+	}
+}
+
+// finishRun stamps a run's terminal phase, usage, and timestamps, and clears
+// any checkpoint.
+func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string, phase store.RunPhase, msg string, usage engine.Usage, costMicros int64, end time.Time) {
+	stored, err := s.store.GetRun(ctx, scope, runID)
+	if err != nil {
+		return
+	}
+	stored.Phase = phase
+	stored.Message = msg
+	stored.Checkpoint = nil
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		stored.InputTokens = usage.InputTokens
+		stored.OutputTokens = usage.OutputTokens
+	}
+	if costMicros > 0 {
+		stored.USDMicros = costMicros
+	}
+	stored.UpdatedAt = end
+	stored.FinishedAt = &end
+	_ = s.store.SaveRun(ctx, scope, stored)
+}
+
+// publishRunEvent pushes a run lifecycle change to /api/events subscribers.
+func (s *Server) publishRunEvent(scope store.Scope, runID, agent, trigger string, phase store.RunPhase) {
+	s.events.publish(store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}, "run", map[string]any{
+		"id": runID, "agent": agent, "trigger": trigger, "phase": string(phase),
+	})
 }
 
 // assembleTurnCtx builds the message list (system prompt + recent history +
@@ -203,6 +392,23 @@ func (s *Server) assembleTurnCtx(ctx context.Context, scope store.Scope, agent *
 	if sp := agent.Spec.SystemPrompt; sp != "" {
 		msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: sp})
 	}
+	// Long-term memory: auto-inject the agent's saved notes so recall does not
+	// depend on the model remembering to call memory_list. spec.memory.enabled
+	// defaults to true; maxNotes bounds the injection.
+	if agent.Spec.Memory.Enabled == nil || *agent.Spec.Memory.Enabled {
+		maxNotes := 20
+		if v := int(agent.Spec.Memory.MaxNotes); v > 0 {
+			maxNotes = min(v, 100)
+		}
+		if notes, err := s.store.ListMemories(ctx, scope, maxNotes); err == nil && len(notes) > 0 {
+			var b strings.Builder
+			b.WriteString("Long-term notes you saved earlier (use memory_save to add or update):\n")
+			for _, n := range notes {
+				fmt.Fprintf(&b, "- %s: %s\n", n.Title, safeTruncate(n.Body, 500))
+			}
+			msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: b.String()})
+		}
+	}
 	// Ambient guidance from connected MCP servers (e.g. an edges Service's
 	// spec.instructions describing its entity layout / quirks). Injected as a
 	// system message so it reaches the model even though MCP clients don't
@@ -212,11 +418,20 @@ func (s *Server) assembleTurnCtx(ctx context.Context, scope store.Scope, agent *
 	}
 	history, _ := s.store.LoadRecentMessages(ctx, scope, sessionID, chatHistoryLimit)
 	for _, m := range history {
-		role := engine.RoleUser
-		if m.Role == "assistant" {
-			role = engine.RoleAssistant
+		switch m.Role {
+		case "assistant":
+			msgs = append(msgs, engine.Message{Role: engine.RoleAssistant, Content: m.Content})
+		case "tool":
+			// Replay persisted tool steps as compact context so a follow-up turn
+			// can see what earlier turns actually did.
+			toolName, _ := m.Metadata["tool"].(string)
+			args, _ := m.Metadata["args"].(string)
+			msgs = append(msgs, engine.Message{Role: engine.RoleUser, Content: fmt.Sprintf(
+				"[record of an earlier tool call]\ntool: %s\nargs: %s\nresult: %s",
+				toolName, safeTruncate(args, 500), safeTruncate(m.Content, 1500))})
+		default:
+			msgs = append(msgs, engine.Message{Role: engine.RoleUser, Content: m.Content})
 		}
-		msgs = append(msgs, engine.Message{Role: role, Content: m.Content})
 	}
 	// Background sessions (schedule/heartbeat/wakeup) accumulate the agent's
 	// own prior replies turn after turn — kept deliberately, so e.g. a news

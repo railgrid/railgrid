@@ -156,7 +156,12 @@ func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	total.LatencyP50MS, total.LatencyP95MS = percentiles(latAll)
-	resp := usageResponse{WindowDays: days, Total: total}
+	// Non-nil slices: a nil slice marshals to JSON null, and a client mapping
+	// over the result would fault on an empty workspace.
+	resp := usageResponse{
+		WindowDays: days, Total: total,
+		ByAgent: []usageBucket{}, ByModel: []usageBucket{}, Series: []usagePoint{},
+	}
 	for k, b := range byAgent {
 		b.LatencyP50MS, b.LatencyP95MS = percentiles(latByAgent[k])
 		resp.ByAgent = append(resp.ByAgent, *b)

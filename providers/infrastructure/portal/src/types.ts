@@ -11,6 +11,10 @@ export interface Template {
   cloud?: string
   version?: string
   iconURL?: string
+  // exposure says whether instances of this template are reachable from
+  // outside the platform. Absent is read as 'internal' — a template that
+  // never declared exposure is assumed not to publish anything.
+  exposure?: TemplateExposure
   kind: string
   inputsSchema: JSONSchema
   sampleValues?: Record<string, unknown>
@@ -19,6 +23,8 @@ export interface Template {
   // columns + grouped detail fields). Absent → default raw-values rendering.
   view?: TemplateView
 }
+
+export type TemplateExposure = 'internal' | 'optional' | 'public'
 
 // FieldType selects how a view value is rendered. 'text' is the default.
 export type FieldType = 'text' | 'link' | 'badge' | 'code'

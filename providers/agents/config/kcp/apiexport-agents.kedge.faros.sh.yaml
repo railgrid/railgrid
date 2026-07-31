@@ -6,17 +6,12 @@ spec:
   resources:
   - group: agents.kedge.faros.sh
     name: agents
-    schema: v260724-50c73a4.agents.agents.kedge.faros.sh
+    schema: v260730-4d9a8444.agents.agents.kedge.faros.sh
     storage:
       crd: {}
   - group: agents.kedge.faros.sh
     name: connections
-    schema: v260714-56b44bb.connections.agents.kedge.faros.sh
-    storage:
-      crd: {}
-  - group: agents.kedge.faros.sh
-    name: runs
-    schema: v260714-9965166.runs.agents.kedge.faros.sh
+    schema: v260731-8b9a2703.connections.agents.kedge.faros.sh
     storage:
       crd: {}
   - group: agents.kedge.faros.sh

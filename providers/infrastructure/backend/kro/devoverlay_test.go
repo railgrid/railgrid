@@ -88,7 +88,7 @@ func devTestTemplate(t *testing.T) *infrav1alpha1.Template {
 				}
 			}
 		],
-		"status": {"url": "https://${schema.spec.name}.example.test"}
+		"status": {"url": "https://${appService.metadata.name}.example.test"}
 	}`)}
 	tmpl.Spec.Development = &infrav1alpha1.TemplateDevelopment{
 		Components: map[string]infrav1alpha1.TemplateDevelopmentComponent{
@@ -257,7 +257,7 @@ func TestDevOverlayStatusAdditions(t *testing.T) {
 	if !found {
 		t.Fatal("RGD has no status mapping")
 	}
-	if status["url"] != "https://${schema.spec.name}.example.test" {
+	if status["url"] != "https://${appService.metadata.name}.example.test" {
 		t.Errorf("authored status key lost: url = %v", status["url"])
 	}
 	raw, _ := json.Marshal(status)

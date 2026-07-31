@@ -129,6 +129,23 @@ spec:
   category: Databases
   version: "0.1.0"
 
+  # Whether instances of this template are reachable from outside the
+  # platform. A statement ABOUT the graph, not a switch that changes it:
+  #   internal  no hostname, ever. Reached through spec.dataPlane verbs
+  #             (authorized per caller) or, like a database, pod-to-pod on
+  #             the runtime cluster. Callers must not wait for status.url.
+  #   optional  the graph's exposure resources sit behind an includeWhen,
+  #             so a given instance may or may not be published — read the
+  #             instance, not the template.
+  #   public    every instance gets a hostname. The template owns its own
+  #             auth gate; the platform adds none.
+  # Absent reads as `internal`, which is the safe way to be wrong.
+  #
+  # The kro backend rejects a marker that contradicts the graph: `internal`
+  # with an HTTPRoute in it, or `optional` with an unconditional one. The
+  # portal and the MCP catalog surface this, so it must not drift.
+  exposure: internal
+
   # Which backend reconciles instances of this template.
   # Defaults to "kro" while we only ship one backend; an admission
   # validator will eventually enforce that the named backend is

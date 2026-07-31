@@ -7,6 +7,9 @@ spec:
   description: "A long-running background process — Deployment only, no Service, no URL. Queue consumers, bots, pollers. Development-capable: can back an App Studio project with a hot-reload dev process."
   category: Workloads
   version: 0.1.0
+  # exposure: what the platform tells callers about reaching an instance.
+  # A background consumer. Reachable only through its dataPlane verbs.
+  exposure: internal
   backend: kro
   # One-click provision defaults for the portal form. nginx is a stand-in
   # long-running process that always starts; a real worker replaces it.

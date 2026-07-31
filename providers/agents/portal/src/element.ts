@@ -1,229 +1,184 @@
 // AgentsElement is the custom element the kedge portal renders for the agents
 // provider. The portal loads main.js (registering this element), appends the
-// element, sets element.kedgeContext as a JS property, and listens for bubbled
-// events. The element runs in light DOM so the portal's CSS variables cascade.
+// element, and sets element.kedgeContext as a JS property — no iframe, no
+// postMessage. The element runs in light DOM so the portal's CSS variables
+// cascade in.
 //
-// Information architecture: a persistent MENU bar of global entity lists
-// (Agents · Connections · Toolsets · Schedules · Triggers · Models · Inbox).
-// Objects are global and agent-agnostic. Clicking an agent opens its DETAIL page
-// (Chat first, then Flow and Settings) — chat is always scoped to a known agent.
+// Information architecture: four tabs — Agents · Activity · Connections ·
+// Models. Agents own their schedules, triggers, channels and tools (edited in
+// the agent's Config pane, next to a live chat playground); Activity is the run
+// feed and trace viewer, with pending approvals pinned on top; Connections
+// carries Toolsets as a section; Models is the usage dashboard + credentials.
 //
 // This element is a thin shell: it owns the KedgeContext, one ApiClient, one
-// AppStore, the current Route, and the render dispatch. Every view lives in
-// views/*; mutations go through actions.ts.
+// AppStore, the current Route, and the render dispatch.
 
+import { html, nothing, type TemplateResult } from 'lit'
+import { state } from 'lit/decorators.js'
 import { ApiClient } from './api'
 import { AppStore } from './store'
+import { LightElement } from './ui/base'
+import { icon, type IconName } from './ui/icon'
+import { clearToasts } from './ui/toast'
 import type { KedgeContext } from './types'
-import { ic, type IconName } from './portalkit/icons'
-import { escapeHTML } from './types'
-import { DEFAULT_ROUTE, MENUS, parseHash, syncHash, type MenuKey, type Route } from './router'
-import type { ViewCtx } from './view'
+import { DEFAULT_ROUTE, MENUS, activeMenu, parseHash, syncHash, type MenuKey, type Route } from './router'
 
-import * as agentsView from './views/agents'
-import * as agentDetail from './views/agent-detail'
-import * as connectionsView from './views/connections'
-import * as toolsetsView from './views/toolsets'
-import * as schedulesView from './views/schedules'
-import * as triggersView from './views/triggers'
-import * as modelsView from './views/models'
-import * as inboxView from './views/inbox'
-import { resetForTenant as resetChat } from './views/agent-chat'
-import { resetForTenant as resetModels } from './views/models'
+import './ui/toast'
+import './views/agents-list'
+import './views/agent-detail'
+import './views/activity'
+import './views/run-detail'
+import './views/connections'
+import './views/models'
 
 const MENU_META: Record<MenuKey, { icon: IconName; label: string }> = {
   agents: { icon: 'bot', label: 'Agents' },
+  activity: { icon: 'gauge', label: 'Activity' },
   connections: { icon: 'plug', label: 'Connections' },
-  toolsets: { icon: 'package', label: 'Toolsets' },
-  schedules: { icon: 'clock', label: 'Schedules' },
-  triggers: { icon: 'zap', label: 'Triggers' },
   models: { icon: 'cpu', label: 'Models' },
-  inbox: { icon: 'inbox', label: 'Inbox' },
 }
 
-export class AgentsElement extends HTMLElement {
-  private _ctx: KedgeContext | null = null
-  private _api = new ApiClient()
-  private _store: AppStore
-  private _route: Route = DEFAULT_ROUTE
-  private _note: string | null = null
-  private _loadedTenant: string | null = null
+export class AgentsElement extends LightElement {
+  @state() private ctx: KedgeContext | null = null
+  @state() private route: Route = DEFAULT_ROUTE
 
-  constructor() {
-    super()
-    this._store = new AppStore(this._api, () => this._render())
-  }
+  private api = new ApiClient()
+  private store = new AppStore(this.api)
+  private loadedTenant: string | null = null
 
   set kedgeContext(v: KedgeContext | null) {
-    this._ctx = v
-    this._api.setContext(v)
-    this._render()
-    this._maybeLoad()
+    this.ctx = v
+    this.api.setContext(v)
+    this.maybeLoad()
   }
   get kedgeContext(): KedgeContext | null {
-    return this._ctx
+    return this.ctx
   }
 
-  private _onHashChange = (): void => {
-    this._route = parseHash()
-    this._render()
+  private onHashChange = (): void => {
+    this.route = parseHash()
   }
+  private onStoreChange = (): void => this.requestUpdate()
+  private onNavigate = (e: Event): void => {
+    this.go((e as CustomEvent<Route>).detail)
+  }
+
   connectedCallback(): void {
-    this._route = parseHash()
-    window.addEventListener('hashchange', this._onHashChange)
-    this._render()
-    this._maybeLoad()
+    super.connectedCallback()
+    this.route = parseHash()
+    window.addEventListener('hashchange', this.onHashChange)
+    this.addEventListener('agents-navigate', this.onNavigate)
+    this.store.addEventListener('change', this.onStoreChange)
+    this.maybeLoad()
   }
+
   disconnectedCallback(): void {
-    window.removeEventListener('hashchange', this._onHashChange)
+    window.removeEventListener('hashchange', this.onHashChange)
+    this.removeEventListener('agents-navigate', this.onNavigate)
+    this.store.removeEventListener('change', this.onStoreChange)
+    this.store.disconnect()
+    super.disconnectedCallback()
   }
 
-  private _ctxObj(): ViewCtx {
-    return {
-      store: this._store,
-      api: this._api,
-      route: this._route,
-      navigate: (r) => this._navigate(r),
-      notify: (m) => {
-        this._note = m
-        this._render()
-      },
-      rerender: () => this._render(),
-    }
-  }
-
-  private _navigate(r: Route): void {
-    this._route = r
-    this._note = null
+  private go(r: Route): void {
+    this.route = r
     syncHash(r)
-    this._render()
   }
 
-  private _maybeLoad(): void {
-    if (!this._ctx?.basePath || !this._api.hasWorkspace()) return
-    const key = this._api.tenantKey()
-    if (key === this._loadedTenant) return
-    // Switching tenants (not the first load) resets to the Agents menu so we
-    // never show a stale agent from another workspace. On first load we keep the
-    // hash-restored route so a refresh stays put.
-    if (this._loadedTenant !== null) {
-      resetChat()
-      resetModels()
-      this._route = DEFAULT_ROUTE
-      syncHash(this._route)
+  private maybeLoad(): void {
+    if (!this.ctx?.basePath || !this.api.hasWorkspace()) return
+    const key = this.api.tenantKey()
+    if (key === this.loadedTenant) return
+    // Switching tenants (not the first load) resets to the Agents tab so we
+    // never show a stale agent from another workspace. On first load we keep
+    // the hash-restored route so a refresh stays put. Component state dies with
+    // the components themselves — no manual reset choreography needed.
+    if (this.loadedTenant !== null) {
+      clearToasts()
+      this.go(DEFAULT_ROUTE)
     }
-    this._loadedTenant = key
-    resetChat()
-    resetModels()
-    this._store.loadAll()
+    this.loadedTenant = key
+    // A fresh store drops every slice, so views can't render another
+    // workspace's rows for a frame.
+    this.store.disconnect()
+    this.store.removeEventListener('change', this.onStoreChange)
+    this.store = new AppStore(this.api)
+    this.store.addEventListener('change', this.onStoreChange)
+    this.store.loadAll()
+    this.store.connect()
+    this.requestUpdate()
   }
 
-  // ---- rendering: shell ----------------------------------------------------
-
-  private _render(): void {
-    if (!this._ctx) {
-      this.innerHTML = `<div class="agents-empty"><p class="muted">Connecting…</p></div>`
-      return
-    }
-    if (!this._api.hasWorkspace()) {
-      this.innerHTML = `<div class="agents-empty"><p class="muted">Select an organization and workspace in the sidebar to use your agents.</p></div>`
-      return
-    }
-    syncHash(this._route)
-    const vc = this._ctxObj()
-
-    let inner: string
-    if (this._route.kind === 'agent') {
-      inner = agentDetail.render(vc, this._route.name, this._route.tab)
-    } else {
-      inner = `<div class="agents-page">${this._renderMenu(this._route.menu, vc)}</div>`
-    }
-
-    this.innerHTML = `
-      <div class="agents-app">
-        ${this._renderNav()}
-        ${this._note ? `<div class="agents-note" data-clear-note>${escapeHTML(this._note)}</div>` : ''}
-        ${this._store.error ? `<div class="agents-err">${escapeHTML(this._store.error)}</div>` : ''}
-        ${inner}
+  render(): TemplateResult {
+    if (!this.ctx) return html`<div class="agents-empty"><p class="muted">Connecting…</p></div>`
+    if (!this.api.hasWorkspace()) {
+      return html`<div class="agents-empty">
+        <p class="muted">Select an organization and workspace in the sidebar to use your agents.</p>
       </div>`
-
-    this.querySelector<HTMLElement>('[data-clear-note]')?.addEventListener('click', () => {
-      this._note = null
-      this._render()
-    })
-    this.querySelectorAll<HTMLElement>('[data-nav]').forEach((el) =>
-      el.addEventListener('click', () => this._navigate({ kind: 'menu', menu: el.dataset.nav as MenuKey })),
-    )
-
-    if (this._route.kind === 'agent') agentDetail.wire(vc, this, this._route.name, this._route.tab)
-    else this._wireMenu(this._route.menu, vc)
-  }
-
-  private _renderNav(): string {
-    const activeMenu = this._route.kind === 'agent' ? 'agents' : this._route.menu
-    const pending = this._store.inbox.filter((i) => i.state === 'pending').length
-    const count = (m: MenuKey): number => {
-      switch (m) {
-        case 'agents':
-          return this._store.agents.length
-        case 'connections':
-          return this._store.connections.length
-        case 'toolsets':
-          return this._store.toolsets.length
-        case 'schedules':
-          return this._store.schedules.length
-        case 'triggers':
-          return this._store.triggers.length
-        case 'models':
-          return this._store.credentials.length
-        case 'inbox':
-          return pending
-      }
     }
-    const tabs = MENUS.map((m) => {
-      const meta = MENU_META[m]
-      const n = count(m)
-      const badge = n ? ` <span class="agents-navcount">${n}</span>` : ''
-      return `<button class="agents-navtab ${m === activeMenu ? 'sel' : ''}" data-nav="${m}">${ic(meta.icon)} ${meta.label}${badge}</button>`
-    }).join('')
-    return `<nav class="agents-nav">${tabs}</nav>`
+    syncHash(this.route)
+    return html`
+      <div class="agents-app">
+        ${this.renderNav()}
+        <div class="agents-view">${this.renderRoute()}</div>
+      </div>
+      <agents-toasts></agents-toasts>
+    `
   }
 
-  private _renderMenu(menu: MenuKey, vc: ViewCtx): string {
-    switch (menu) {
-      case 'agents':
-        return agentsView.render(vc)
-      case 'connections':
-        return connectionsView.render(vc)
-      case 'toolsets':
-        return toolsetsView.render(vc)
-      case 'schedules':
-        return schedulesView.render(vc)
-      case 'triggers':
-        return triggersView.render(vc)
-      case 'models':
-        return modelsView.render(vc)
-      case 'inbox':
-        return inboxView.render(vc)
+  private renderRoute(): TemplateResult {
+    const bind = { store: this.store, api: this.api }
+    switch (this.route.kind) {
+      case 'agent':
+        return html`<agents-agent-detail
+          .store=${bind.store}
+          .api=${bind.api}
+          .name=${this.route.name}
+          .tab=${this.route.tab}
+        ></agents-agent-detail>`
+      case 'run':
+        return html`<agents-run-detail .store=${bind.store} .api=${bind.api} .runID=${this.route.id}></agents-run-detail>`
+      default:
+        switch (this.route.menu) {
+          case 'agents':
+            return html`<agents-agents-list .store=${bind.store} .api=${bind.api}></agents-agents-list>`
+          case 'activity':
+            return html`<agents-activity .store=${bind.store} .api=${bind.api}></agents-activity>`
+          case 'connections':
+            return html`<agents-connections .store=${bind.store} .api=${bind.api}></agents-connections>`
+          case 'models':
+            return html`<agents-models .store=${bind.store} .api=${bind.api}></agents-models>`
+        }
     }
   }
 
-  private _wireMenu(menu: MenuKey, vc: ViewCtx): void {
-    switch (menu) {
-      case 'agents':
-        return agentsView.wire(vc, this)
-      case 'connections':
-        return connectionsView.wire(vc, this)
-      case 'toolsets':
-        return toolsetsView.wire(vc, this)
-      case 'schedules':
-        return schedulesView.wire(vc, this)
-      case 'triggers':
-        return triggersView.wire(vc, this)
-      case 'models':
-        return modelsView.wire(vc, this)
-      case 'inbox':
-        return inboxView.wire(vc, this)
+  private renderNav(): TemplateResult {
+    const active = activeMenu(this.route)
+    const counts: Record<MenuKey, number> = {
+      agents: this.store.agents.data.length,
+      activity: this.store.pendingInbox().length,
+      connections: this.store.connections.data.length + this.store.toolsets.data.length,
+      models: this.store.credentials.data.length,
     }
+    return html`<nav class="agents-nav" aria-label="Agents provider sections">
+      ${MENUS.map((m) => {
+        const meta = MENU_META[m]
+        const n = counts[m]
+        const isActive = m === active
+        return html`<button
+          class="agents-navtab ${isActive ? 'sel' : ''}"
+          aria-current=${isActive ? 'page' : nothing}
+          @click=${() => this.go({ kind: 'menu', menu: m })}
+        >
+          ${icon(meta.icon)} ${meta.label}
+          ${n ? html`<span class="agents-navcount ${m === 'activity' ? 'attn' : ''}">${n}</span>` : nothing}
+        </button>`
+      })}
+      ${this.store.live
+        ? nothing
+        : html`<span class="agents-offline" title="Live updates are reconnecting; falling back to polling."
+            >${icon('refresh')} reconnecting</span
+          >`}
+    </nav>`
   }
 }

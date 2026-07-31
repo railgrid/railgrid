@@ -60,6 +60,8 @@ type templateSummary struct {
 	Cloud       string `json:"cloud,omitempty"`
 	Version     string `json:"version,omitempty"`
 	Kind        string `json:"kind"`
+	// Exposure: "internal" | "optional" | "public". See kro.Template.
+	Exposure string `json:"exposure,omitempty"`
 }
 
 type listTemplatesOutput struct {
@@ -127,7 +129,7 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_templates",
 		Title:       "List provisioning templates",
-		Description: "List every template available in your workspace catalog, optionally filtered by category or cloud. Call this first when the user asks 'what can I deploy?'.",
+		Description: "List every template available in your workspace catalog, optionally filtered by category or cloud. Call this first when the user asks 'what can I deploy?'. Each entry's exposure says whether its instances get a public URL: \"internal\" means never (reached over the platform data plane instead), \"optional\" means only if the instance asks for it, \"public\" means always.",
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in listTemplatesInput) (*mcp.CallToolResult, listTemplatesOutput, error) {
 		dyn, err := tenantClient(deps, ident)
@@ -149,6 +151,7 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 			out.Templates = append(out.Templates, templateSummary{
 				Name: t.Name, DisplayName: t.DisplayName, Description: t.Description,
 				Category: t.Category, Cloud: t.Cloud, Version: t.Version, Kind: t.InstanceKind,
+				Exposure: t.Exposure,
 			})
 		}
 		return nil, out, nil
@@ -157,7 +160,7 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "describe_template",
 		Title:       "Inspect a template's inputs schema",
-		Description: "Return a template's metadata, JSON-schema for its inputs, agent guidance (usage/prerequisites/outputs), and — when present — its development contract (development.components maps each component to the workspace directory dev_sync routes from). Use this to learn what values provision will require before calling it.",
+		Description: "Return a template's metadata, JSON-schema for its inputs, agent guidance (usage/prerequisites/outputs), and — when present — its development contract (development.components maps each component to the workspace directory dev_sync routes from). Use this to learn what values provision will require before calling it. Check exposure before promising the user a URL: \"internal\" instances never get one, so do not poll status.url for them.",
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in describeTemplateInput) (*mcp.CallToolResult, kro.Template, error) {
 		dyn, err := tenantClient(deps, ident)

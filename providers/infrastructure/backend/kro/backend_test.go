@@ -157,6 +157,9 @@ func TestBuildRGDSubstitutesGatewayRef(t *testing.T) {
 		Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "applications", Kind: "Application",
 	}
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)}
+	// A graph with an unconditional HTTPRoute is exposure "public"; anything
+	// else is rejected as a marker that contradicts the graph.
+	tmpl.Spec.Exposure = infrav1alpha1.ExposurePublic
 	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"httpRoute","template":{"apiVersion":"gateway.networking.k8s.io/v1","kind":"HTTPRoute","spec":{"parentRefs":[{"name":"${kedge.gatewayName}","namespace":"${kedge.gatewayNamespace}"}]}}}]}`)}
 
 	rgd, err := buildRGD(tmpl, testTokens())

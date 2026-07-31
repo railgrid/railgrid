@@ -7,6 +7,9 @@ spec:
   description: "A container that runs on a cron schedule and exits — CronJob only, no Service, no URL. Reports, cleanups, periodic syncs."
   category: Workloads
   version: 0.1.0
+  # exposure: what the platform tells callers about reaching an instance.
+  # A schedule, not a server. Nothing to reach.
+  exposure: internal
   backend: kro
   # One-click provision defaults for the portal form. busybox's default
   # entrypoint exits 0 immediately, so the sample schedule visibly produces

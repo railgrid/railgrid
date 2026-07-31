@@ -125,14 +125,22 @@ var agentsSchema = []string{
 		run_id TEXT NOT NULL DEFAULT '',
 		trigger_kind TEXT NOT NULL DEFAULT '',
 		tool TEXT NOT NULL,
-		args_digest TEXT NOT NULL DEFAULT '',
+		args TEXT NOT NULL DEFAULT '',
+		result TEXT NOT NULL DEFAULT '',
 		outcome TEXT NOT NULL,
 		error TEXT NOT NULL DEFAULT '',
 		duration_ms BIGINT NOT NULL DEFAULT 0,
 		created_at TIMESTAMPTZ NOT NULL
 	)`,
+	// Pre-runs-API deployments stored a clipped args_digest and no result;
+	// migrate in place (idempotent).
+	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS args TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS result TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_tool_calls DROP COLUMN IF EXISTS args_digest`,
 	`CREATE INDEX IF NOT EXISTS agents_tool_calls_scope_idx
 		ON agents_tool_calls (org_uuid, workspace_uuid, agent_name, created_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS agents_tool_calls_run_idx
+		ON agents_tool_calls (org_uuid, workspace_uuid, run_id, created_at ASC)`,
 	`CREATE TABLE IF NOT EXISTS agents_usage (
 		org_uuid TEXT NOT NULL,
 		workspace_uuid TEXT NOT NULL,
@@ -416,6 +424,68 @@ func (p *PostgresStore) ListRuns(ctx context.Context, scope Scope, limit int) ([
 	return out, rows.Err()
 }
 
+func (p *PostgresStore) QueryRuns(ctx context.Context, scope Scope, q RunQuery) (RunPage, error) {
+	if err := scope.validate(); err != nil {
+		return RunPage{}, err
+	}
+	limit := q.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	before, beforeID, err := decodeCursor(q.Cursor)
+	if err != nil {
+		return RunPage{}, err
+	}
+	qs := `
+		SELECT id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, message,
+		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at
+		FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2`
+	args := []any{scope.OrgUUID, scope.WorkspaceUUID}
+	add := func(clause string, v any) {
+		args = append(args, v)
+		qs += fmt.Sprintf(clause, len(args))
+	}
+	if scope.AgentName != "" {
+		add(` AND agent_name=$%d`, scope.AgentName)
+	}
+	if q.Phase != "" {
+		add(` AND phase=$%d`, string(q.Phase))
+	}
+	if q.Trigger != "" {
+		add(` AND trigger_kind=$%d`, q.Trigger)
+	}
+	if q.SessionID != "" {
+		add(` AND session_id=$%d`, q.SessionID)
+	}
+	if q.ParentRunID != "" {
+		add(` AND parent_run_id=$%d`, q.ParentRunID)
+	}
+	if !before.IsZero() {
+		args = append(args, before, beforeID)
+		qs += fmt.Sprintf(` AND (created_at < $%d OR (created_at = $%d AND id < $%d))`, len(args)-1, len(args)-1, len(args))
+	}
+	qs += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT %d`, limit)
+	rows, err := p.db.QueryContext(ctx, qs, args...)
+	if err != nil {
+		return RunPage{}, err
+	}
+	defer rows.Close()
+	var out []Run
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return RunPage{}, err
+		}
+		out = append(out, run)
+	}
+	page := RunPage{Items: out}
+	if len(out) == limit {
+		last := out[len(out)-1]
+		page.NextCursor = encodeCursor(last.CreatedAt, last.ID)
+	}
+	return page, rows.Err()
+}
+
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scanRun(r rowScanner) (Run, error) {
@@ -591,11 +661,38 @@ func (p *PostgresStore) AppendToolCall(ctx context.Context, scope Scope, tc Tool
 		return err
 	}
 	_, err := p.db.ExecContext(ctx, `
-		INSERT INTO agents_tool_calls (id, org_uuid, workspace_uuid, agent_name, run_id, trigger_kind, tool, args_digest, outcome, error, duration_ms, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-		tc.ID, scope.OrgUUID, scope.WorkspaceUUID, tc.AgentName, tc.RunID, tc.Trigger, tc.Tool, tc.ArgsDigest,
+		INSERT INTO agents_tool_calls (id, org_uuid, workspace_uuid, agent_name, run_id, trigger_kind, tool, args, result, outcome, error, duration_ms, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		tc.ID, scope.OrgUUID, scope.WorkspaceUUID, tc.AgentName, tc.RunID, tc.Trigger, tc.Tool, tc.Args, tc.Result,
 		tc.Outcome, tc.Error, tc.DurationMS, tc.CreatedAt.UTC())
 	return err
+}
+
+func (p *PostgresStore) ListToolCalls(ctx context.Context, scope Scope, runID string) ([]ToolCall, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id, agent_name, run_id, trigger_kind, tool, args, result, outcome, error, duration_ms, created_at
+		FROM agents_tool_calls
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND run_id=$3
+		ORDER BY created_at ASC, id ASC LIMIT 500`,
+		scope.OrgUUID, scope.WorkspaceUUID, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ToolCall
+	for rows.Next() {
+		var tc ToolCall
+		if err := rows.Scan(&tc.ID, &tc.AgentName, &tc.RunID, &tc.Trigger, &tc.Tool, &tc.Args, &tc.Result,
+			&tc.Outcome, &tc.Error, &tc.DurationMS, &tc.CreatedAt); err != nil {
+			return nil, err
+		}
+		tc.CreatedAt = tc.CreatedAt.UTC()
+		out = append(out, tc)
+	}
+	return out, rows.Err()
 }
 
 func (p *PostgresStore) AddUsage(ctx context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error) {
