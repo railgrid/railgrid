@@ -18,7 +18,7 @@ package mcpaggregate
 
 // Provider federation is the ONLY seam the aggregate has: every Ready
 // provider that exposes its own MCP endpoint (kuery, code, infrastructure,
-// and now the edges provider — all first-class provider binaries) has its
+// edges, agents — all first-class provider binaries) has its
 // tools proxied into this aggregate at request-build time. There is no
 // in-process tool registry and no edge-specific machinery here — edges
 // register the same way every other provider does.
@@ -443,10 +443,10 @@ func (c *providerMCPClient) rpc(ctx context.Context, mcpURL, method string, para
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-		// No usable MCP endpoint at this path: 404 = no route (e.g. agents,
-		// which consumes MCP rather than serving it); 405 = a route exists but
-		// doesn't accept the streamable-HTTP POST (e.g. app-studio's mux). Not
-		// an error — the provider contributes no tools and is dropped silently.
+		// No usable MCP endpoint at this path: 404 = no route (a provider that
+		// only consumes MCP); 405 = a route exists but doesn't accept the
+		// streamable-HTTP POST (e.g. app-studio's mux). Not an error — the
+		// provider contributes no tools and is dropped silently.
 		return nil, errNoMCPEndpoint
 	}
 	if resp.StatusCode >= 400 {

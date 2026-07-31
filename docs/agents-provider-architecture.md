@@ -155,6 +155,13 @@ and tools are edited inside the agent, next to a live chat playground.
 - **Edges family** — the hub's aggregate MCP endpoint (kube clusters + SSH
   servers, MCPServer "default") exposed as `edges__*` tools, dialed as the
   calling user. Interactive runs only (background runs have no user token).
+- **Own MCP surface** — the provider serves `/mcp` (streamable HTTP,
+  stateless, per-request identity), which the hub aggregate federates as
+  `agents__*` tools: `list_agents`/`get_agent`/`update_agent` (settings
+  read/edit sharing the REST `applyAgentUpdate` path) plus read-only
+  `list_model_credentials`/`list_connections`/`list_toolsets`/
+  `list_schedules`. This is how an agent — or any MCP client on the
+  aggregate — edits agent settings without the portal.
 
 ### Priority 0 — validate before building more
 

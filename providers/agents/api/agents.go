@@ -309,6 +309,30 @@ type updateAgentRequest struct {
 	BackgroundConnections  *[]string `json:"backgroundConnections,omitempty"`
 }
 
+// requestError is a caller-input failure produced outside the tenant API (so
+// writeResourceError cannot classify it). It keeps its HTTP class so the REST
+// handler and the MCP tools report the same condition consistently.
+type requestError struct {
+	code   int
+	reason string
+	msg    string
+}
+
+func (e *requestError) Error() string { return e.msg }
+
+func errBadRequest(msg string) error { return &requestError{http.StatusBadRequest, "BadRequest", msg} }
+func errConflict(msg string) error   { return &requestError{http.StatusConflict, "Conflict", msg} }
+
+// writeUpdateError maps requestError to its own class before falling back to
+// the tenant-API mapping.
+func writeUpdateError(w http.ResponseWriter, err error) {
+	if re, ok := errors.AsType[*requestError](err); ok {
+		writeStatus(w, re.code, re.reason, re.msg)
+		return
+	}
+	writeResourceError(w, err)
+}
+
 // updateAgent patches mutable agent fields — notably the assigned model
 // credential, so a user can reassign an agent to a different credential.
 func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
@@ -316,16 +340,27 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := r.PathValue("name")
-	agent, err := c.Agents().Get(r.Context(), name, metav1.GetOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
 	var req updateAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
+	}
+	out, err := s.applyAgentUpdate(r.Context(), c, r.PathValue("name"), &req)
+	if err != nil {
+		writeUpdateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// applyAgentUpdate reads the agent, applies the patch fields that are present,
+// and writes it back. Shared by the REST handler and the MCP update_agent tool
+// so both surfaces have identical semantics: absent fields are untouched, list
+// fields replace wholesale, and core is always re-added to family grants.
+func (s *Server) applyAgentUpdate(ctx context.Context, c *agentsclient.Client, name string, req *updateAgentRequest) (*agentsv1alpha1.Agent, error) {
+	agent, err := c.Agents().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
 	}
 	if req.ModelCredential != nil {
 		cred := strings.TrimSpace(*req.ModelCredential)
@@ -359,12 +394,10 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.Channels != nil {
 		chans, err := normalizeChannels(*req.Channels)
 		if err != nil {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-			return
+			return nil, errBadRequest(err.Error())
 		}
-		if err := s.validateChannelUniqueness(r.Context(), c, name, chans); err != nil {
-			writeStatus(w, http.StatusConflict, "Conflict", err.Error())
-			return
+		if err := s.validateChannelUniqueness(ctx, c, name, chans); err != nil {
+			return nil, errConflict(err.Error())
 		}
 		agent.Spec.Channels = chans
 	}
@@ -413,12 +446,7 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 			agent.Spec.Budget = nil
 		}
 	}
-	out, err := c.Agents().Update(r.Context(), agent, metav1.UpdateOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
+	return c.Agents().Update(ctx, agent, metav1.UpdateOptions{})
 }
 
 func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {

@@ -19,6 +19,8 @@
 //     in the portal under /ui/providers/agents/.
 //   - /healthz, /api/* — the backend HTTP API, reached via
 //     /services/providers/agents/.
+//   - /mcp, /mcp/sse — the MCP transport the hub's aggregate endpoint
+//     federates as agents__* tools (agent settings read/edit).
 package main
 
 import (

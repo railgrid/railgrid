@@ -133,6 +133,13 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.healthz)
 
+	// MCP transport — the hub's aggregate MCP endpoint probes every Ready
+	// provider's /mcp and federates these tools as "agents__<tool>", so agents
+	// (and any MCP client on the aggregate) can read and edit agent settings.
+	mcpHandler := s.MCPHandler()
+	mux.Handle("/mcp", mcpHandler)
+	mux.Handle("/mcp/sse", mcpHandler)
+
 	// Identity echo — proves the hub forwarded tenant headers and a bearer
 	// token. Useful for provider connectivity debugging.
 	mux.HandleFunc("GET /api/whoami", s.whoami)
