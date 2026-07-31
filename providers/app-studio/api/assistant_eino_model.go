@@ -43,6 +43,27 @@ func newProjectEinoAssistantModelFactory(server *Server) projectEinoAssistantMod
 	}
 }
 
+type projectEinoAssistantTransientEvidenceModel struct {
+	einomodel.BaseChatModel
+	runState *projectEinoAssistantRunState
+}
+
+func (m *projectEinoAssistantTransientEvidenceModel) Generate(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.Message, error) {
+	return m.BaseChatModel.Generate(ctx, m.runState.ExpandTransientToolMessages(input), opts...)
+}
+
+func (m *projectEinoAssistantTransientEvidenceModel) Stream(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	return m.BaseChatModel.Stream(ctx, m.runState.ExpandTransientToolMessages(input), opts...)
+}
+
 func newProjectEinoChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
 	if err := normalizeProjectLLMSettings(&settings); err != nil {
 		return nil, err

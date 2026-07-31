@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -54,6 +56,8 @@ const (
 	// projectAssistantRuntimeLogsMaxBytes bounds the raw log body pulled from the
 	// data plane so a noisy dev process cannot blow the assistant context.
 	projectAssistantRuntimeLogsMaxBytes = 1 << 20
+	projectAssistantProcessWarmup       = 3 * time.Second
+	projectAssistantProcessPollInterval = 250 * time.Millisecond
 	// projectAssistantRuntimeEnvMaxKeys bounds a single set_runtime_env call.
 	projectAssistantRuntimeEnvMaxKeys = 32
 )
@@ -63,11 +67,23 @@ type projectAssistantRuntimeLogsToolInput struct {
 }
 
 type projectAssistantRuntimeLogsResult struct {
-	Status    string   `json:"status"`
-	Summary   string   `json:"summary"`
-	Lines     []string `json:"lines,omitempty"`
-	Blockers  []string `json:"blockers,omitempty"`
-	NextSteps []string `json:"nextSteps,omitempty"`
+	Status                  string                                   `json:"status"`
+	Summary                 string                                   `json:"summary"`
+	Lines                   []string                                 `json:"lines,omitempty"`
+	Processes               map[string]projectAssistantProcessStatus `json:"processes,omitempty"`
+	ProcessEvidenceComplete *bool                                    `json:"processEvidenceComplete,omitempty"`
+	Blockers                []string                                 `json:"blockers,omitempty"`
+	NextSteps               []string                                 `json:"nextSteps,omitempty"`
+}
+
+type projectAssistantProcessStatus struct {
+	AttemptID               uint64 `json:"attemptID"`
+	AttemptStartedUnixMilli int64  `json:"attemptStartedUnixMilli,omitempty"`
+	Configured              bool   `json:"configured"`
+	Running                 bool   `json:"running"`
+	Port                    string `json:"port,omitempty"`
+	PortReachable           bool   `json:"portReachable,omitempty"`
+	PortWarmupPending       bool   `json:"-"`
 }
 
 type projectAssistantRuntimeEnvToolInput struct {
@@ -142,15 +158,17 @@ func newProjectAssistantVerifyRuntimeGraphTool(runCtx projectAssistantWorkflowRu
 		AddInput("initialize-verification")
 	workflow.AddLambdaNode("collect-diagnostic-logs", compose.InvokableLambda(collectProjectAssistantRuntimeVerificationLogs(runCtx))).
 		AddInput("resolve-development-runtime")
-	workflow.AddLambdaNode("collect-project-readiness", compose.InvokableLambda(collectProjectAssistantRuntimeReadiness(runCtx))).
+	workflow.AddLambdaNode("collect-browser-console", compose.InvokableLambda(collectProjectAssistantRuntimeVerificationBrowserConsole(runCtx))).
 		AddInput("collect-diagnostic-logs")
+	workflow.AddLambdaNode("collect-project-readiness", compose.InvokableLambda(collectProjectAssistantRuntimeReadiness(runCtx))).
+		AddInput("collect-browser-console")
 	workflow.AddLambdaNode("format-runtime-verification", compose.InvokableLambda(formatProjectAssistantRuntimeVerification)).
 		AddInput("collect-project-readiness")
 	workflow.End().AddInput("format-runtime-verification")
 	return graphtool.NewInvokableGraphTool(
 		workflow,
 		projectToolVerifyDevelopmentRuntime,
-		"Run post-edit verification in one read: project readiness, live runtime status, preview URL, and diagnostic logs only when the runtime state warrants them.",
+		"Run post-edit verification in one read: project readiness, live runtime status, preview URL, runtime logs, and advisory browser-console health for supported browser apps.",
 		compose.WithGraphName("app-studio-verify-project-runtime"),
 	)
 }
@@ -163,6 +181,7 @@ type projectAssistantRuntimeVerificationContext struct {
 	RuntimeInput            projectAssistantRuntimeWorkflowInput
 	Runtime                 *projectAssistantRuntimeWorkflowResult
 	Logs                    *projectAssistantRuntimeLogsResult
+	BrowserConsole          *projectAssistantBrowserConsoleResult
 	RequireProcessEvidence  bool
 }
 
@@ -332,6 +351,71 @@ func collectProjectAssistantRuntimeVerificationLogs(runCtx projectAssistantWorkf
 	}
 }
 
+func collectProjectAssistantRuntimeVerificationBrowserConsole(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
+	return func(ctx context.Context, input *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationContext, error) {
+		if input == nil {
+			return nil, errors.New("runtime verification context is required")
+		}
+		currentRunCtx := input.RunContext
+		if currentRunCtx.Project == nil {
+			currentRunCtx = runCtx
+		}
+		if currentRunCtx.Server == nil || !previewConsoleProjectSupported(currentRunCtx.Project) {
+			return input, nil
+		}
+		console, err := currentRunCtx.Server.getProjectPreviewConsoleLogs(projectAssistantToolCallRequest{
+			Identity: currentRunCtx.Identity,
+			Project:  currentRunCtx.Project,
+			Arguments: map[string]any{
+				"levels": []string{"warn", "error", "pageerror", "unhandledrejection"},
+				"limit":  previewConsoleMaxToolEvents,
+			},
+		})
+		if err != nil {
+			input.BrowserConsole = &projectAssistantBrowserConsoleResult{
+				Status:  "unavailable",
+				Summary: "Browser console evidence is temporarily unavailable.",
+			}
+			return input, nil
+		}
+		result := &projectAssistantBrowserConsoleResult{
+			Status:        console.Status,
+			Summary:       console.Summary,
+			DroppedCount:  console.DroppedCount,
+			RedactedCount: console.RedactedCount,
+			ReceivedCount: console.ReceivedCount,
+		}
+		for _, event := range console.Events {
+			switch event.Level {
+			case "error", "pageerror", "unhandledrejection":
+				result.ErrorCount++
+			case "warn":
+				result.WarningCount++
+			}
+		}
+		result.Summary = projectAssistantBrowserConsoleVerificationSummary(result)
+		input.BrowserConsole = result
+		return input, nil
+	}
+}
+
+func projectAssistantBrowserConsoleVerificationSummary(result *projectAssistantBrowserConsoleResult) string {
+	if result == nil {
+		return ""
+	}
+	if result.Status != "available" && result.Status != "empty" {
+		return "Browser console evidence is " + strings.ReplaceAll(result.Status, "_", " ") + "."
+	}
+	if result.ErrorCount == 0 && result.WarningCount == 0 {
+		return "No browser-console warnings or errors were captured in the current preview session."
+	}
+	return fmt.Sprintf(
+		"Browser console captured %d error-class and %d warning event(s) in the current preview session.",
+		result.ErrorCount,
+		result.WarningCount,
+	)
+}
+
 // projectAssistantLastSyncFailure reports why the project's most recent
 // background workspace sync failed, or "" when the last one succeeded (or none
 // has run). Safe on a run context missing a server or project.
@@ -357,6 +441,7 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 		Runtime:                 input.Runtime,
 		PreviewURL:              input.Runtime.PreviewURL,
 		Logs:                    input.Logs,
+		BrowserConsole:          input.BrowserConsole,
 	}
 	// A background sync that failed is the single most misleading state to
 	// verify in: the sandbox is healthy and serving, just not the code that was
@@ -391,16 +476,44 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 		result.Blockers = []string{"development runtime returned an unsupported verification status"}
 		return result, nil
 	}
+	if input.BrowserConsole != nil {
+		switch input.BrowserConsole.Status {
+		case "not_connected", "expired", "unsupported", "unavailable":
+			result.Warnings = append(result.Warnings, "Browser console evidence is unavailable; this advisory signal did not block runtime verification.")
+		}
+		if input.BrowserConsole.WarningCount > 0 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"Browser console reported %d warning event(s).",
+				input.BrowserConsole.WarningCount,
+			))
+		}
+		if input.BrowserConsole.ErrorCount > 0 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"Browser console reported %d error, page-error, or unhandled-rejection event(s); this untrusted advisory evidence did not change runtime readiness.",
+				input.BrowserConsole.ErrorCount,
+			))
+		}
+		if input.BrowserConsole.DroppedCount > 0 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"Browser console dropped %d event(s) before verification.",
+				input.BrowserConsole.DroppedCount,
+			))
+		}
+	}
+	diagnosticBlockers := []string(nil)
 	if input.Logs != nil && len(input.Logs.Blockers) > 0 {
+		diagnosticBlockers = append(diagnosticBlockers, input.Logs.Blockers...)
+	}
+	if len(diagnosticBlockers) > 0 {
 		result.Status = "not_ready"
-		result.Summary = "The preview edge is reachable, but the latest development process logs contain a startup or compilation failure."
-		result.Blockers = append([]string(nil), input.Logs.Blockers...)
+		result.Summary = "The preview edge is reachable, but runtime diagnostics contain failures."
+		result.Blockers = diagnosticBlockers
 	} else if input.RequireProcessEvidence &&
 		(input.Logs == nil ||
 			input.Logs.Status == "unavailable" ||
 			input.Logs.Status == "error" ||
 			input.Logs.Status == "failed" ||
-			len(input.Logs.Lines) == 0) {
+			!projectAssistantHasReadyProcess(input.Logs)) {
 		result.Status = "unavailable"
 		result.Summary = "Development process evidence is unavailable."
 		result.Blockers = []string{"development process logs contain no positive runtime evidence"}
@@ -427,6 +540,24 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 		result.Summary = "The development runtime is ready."
 	}
 	return result, nil
+}
+
+func projectAssistantHasReadyProcess(logs *projectAssistantRuntimeLogsResult) bool {
+	if logs == nil {
+		return false
+	}
+	if logs.ProcessEvidenceComplete != nil {
+		return *logs.ProcessEvidenceComplete
+	}
+	if len(logs.Processes) == 0 {
+		return len(logs.Lines) > 0
+	}
+	for _, process := range logs.Processes {
+		if !process.Configured || !process.Running || (process.Port != "" && !process.PortReachable) {
+			return false
+		}
+	}
+	return true
 }
 
 func projectAssistantRepositoryHandoffProvisioning(readiness *projectAssistantReadinessWorkflowResult) bool {
@@ -489,6 +620,109 @@ func boundedProjectAssistantRuntimeLogs(logs *projectAssistantRuntimeLogsResult)
 	return &out
 }
 
+func pollProjectAssistantProcessStatus(
+	ctx context.Context,
+	server *Server,
+	id identity,
+	ref dataPlaneRef,
+) (projectAssistantProcessStatus, bool, error) {
+	return pollProjectAssistantProcessStatusWithTiming(
+		ctx, server, id, ref,
+		projectAssistantProcessWarmup,
+		projectAssistantProcessPollInterval,
+	)
+}
+
+func pollProjectAssistantProcessStatusWithTiming(
+	ctx context.Context,
+	server *Server,
+	id identity,
+	ref dataPlaneRef,
+	warmup time.Duration,
+	pollInterval time.Duration,
+) (projectAssistantProcessStatus, bool, error) {
+	var firstAttempt uint64
+	attemptInitialized := false
+	var deadline time.Time
+	observedDuringWarmup := false
+	for {
+		body, statusCode, err := server.dataPlaneGet(ctx, id, ref, dataPlaneVerbProcess, 16<<10)
+		if err != nil {
+			return projectAssistantProcessStatus{}, false, err
+		}
+		if statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed {
+			return projectAssistantProcessStatus{}, false, nil
+		}
+		if statusCode < 200 || statusCode >= 300 {
+			return projectAssistantProcessStatus{}, false, fmt.Errorf("status endpoint returned %d", statusCode)
+		}
+		var process projectAssistantProcessStatus
+		if err := json.Unmarshal(body, &process); err != nil {
+			return projectAssistantProcessStatus{}, false, fmt.Errorf("decode process status: %w", err)
+		}
+		if !process.Running || process.Port == "" || process.PortReachable {
+			return process, true, nil
+		}
+
+		now := time.Now()
+		if !attemptInitialized || process.AttemptID != firstAttempt {
+			attemptInitialized = true
+			firstAttempt = process.AttemptID
+			deadline = now
+			if process.AttemptStartedUnixMilli > 0 {
+				deadline = time.UnixMilli(process.AttemptStartedUnixMilli).Add(warmup)
+			}
+			if deadline.After(now.Add(warmup)) {
+				deadline = now.Add(warmup)
+			}
+			observedDuringWarmup = now.Before(deadline)
+		}
+		if !now.Before(deadline) {
+			process.PortWarmupPending = observedDuringWarmup
+			return process, true, nil
+		}
+		timer := time.NewTimer(min(pollInterval, time.Until(deadline)))
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return projectAssistantProcessStatus{}, false, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// Missing-script output can be emitted by the platform's intentional shell
+// fallback chain (`npm run dev || npm start`). It is not a current failure
+// while that same attempt is still running, and once its declared port is
+// reachable the structured status is authoritative. Other diagnostic classes
+// (syntax/compile/module failures) remain blocking even with an open port.
+func currentProjectAssistantRuntimeLogBlockers(process projectAssistantProcessStatus, blockers []string) []string {
+	if !process.Running {
+		return blockers
+	}
+	return slices.DeleteFunc(blockers, func(blocker string) bool {
+		normalized := strings.ToLower(blocker)
+		return strings.Contains(normalized, "missing script:") ||
+			strings.Contains(normalized, "npm error missing script")
+	})
+}
+
+func projectAssistantComponentHasProcessEvidence(
+	processSupported bool,
+	process projectAssistantProcessStatus,
+	lines []string,
+) bool {
+	if !processSupported {
+		return len(lines) > 0
+	}
+	return process.Configured &&
+		process.Running &&
+		!process.PortWarmupPending &&
+		(process.Port == "" || process.PortReachable)
+}
+
 func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeLogsToolInput) (*projectAssistantRuntimeLogsResult, error) {
 	return func(ctx context.Context, args *projectAssistantRuntimeLogsToolInput) (*projectAssistantRuntimeLogsResult, error) {
 		if err := ctx.Err(); err != nil {
@@ -516,7 +750,41 @@ func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext)
 		}
 		lines := make([]string, 0, tail)
 		var blockers []string
+		processes := map[string]projectAssistantProcessStatus{}
+		evidenceComponents := 0
 		for _, component := range components {
+			componentHasEvidence := false
+			process, processSupported, processErr := pollProjectAssistantProcessStatus(ctx, server, id, target.dataPlaneRefFor(component))
+			if processErr != nil {
+				return &projectAssistantRuntimeLogsResult{
+					Status:  "unavailable",
+					Summary: "Development process status is temporarily unavailable: " + processErr.Error(),
+				}, nil
+			}
+			// Older/custom Templates may not publish structured process status.
+			// Keep their existing log-based verification behavior. Once the
+			// endpoint is declared, however, malformed evidence is a hard
+			// availability failure rather than something to guess through.
+			if processSupported {
+				key := component
+				if key == "" {
+					key = "default"
+				}
+				processes[key] = process
+				prefix := ""
+				if component != "" {
+					prefix = "[" + component + "] "
+				}
+				switch {
+				case !process.Configured:
+					blockers = append(blockers, prefix+"development start command is not configured")
+				case !process.Running:
+					blockers = append(blockers, prefix+"development process is not running")
+				case process.PortWarmupPending:
+				case process.Port != "" && !process.PortReachable:
+					blockers = append(blockers, prefix+"development process is not accepting connections on declared port "+process.Port)
+				}
+			}
 			body, status, err := server.dataPlaneGet(ctx, id, target.dataPlaneRefFor(component), dataPlaneVerbLog, projectAssistantRuntimeLogsMaxBytes)
 			if err != nil {
 				return &projectAssistantRuntimeLogsResult{
@@ -531,26 +799,36 @@ func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext)
 				}, nil
 			}
 			componentLines := boundedRuntimeLogLines(string(body), tail)
+			componentHasEvidence = projectAssistantComponentHasProcessEvidence(processSupported, process, componentLines)
 			for _, line := range componentLines {
 				if component != "" {
 					line = "[" + component + "] " + line
 				}
 				lines = append(lines, line)
 			}
-			if len(blockers) == 0 {
-				blockers = projectAssistantRuntimeLogBlockers(componentLines)
-				if len(blockers) > 0 && component != "" {
-					blockers[0] = "[" + component + "] " + blockers[0]
-				}
+			logBlockers := projectAssistantRuntimeLogBlockers(componentLines)
+			if processSupported {
+				logBlockers = currentProjectAssistantRuntimeLogBlockers(process, logBlockers)
+			}
+			if len(logBlockers) > 0 && component != "" {
+				logBlockers[0] = "[" + component + "] " + logBlockers[0]
+			}
+			blockers = append(blockers, logBlockers...)
+			if componentHasEvidence {
+				evidenceComponents++
 			}
 		}
+		evidenceComplete := evidenceComponents == len(components)
 		if len(lines) > tail {
 			lines = lines[len(lines)-tail:]
 		}
 		if len(lines) == 0 {
 			return &projectAssistantRuntimeLogsResult{
-				Status:  "ok",
-				Summary: "The runtime has not produced any logs yet; the dev process may still be starting.",
+				Status:                  "ok",
+				Summary:                 "The runtime has not produced any logs yet; the dev process may still be starting.",
+				Processes:               processes,
+				ProcessEvidenceComplete: &evidenceComplete,
+				Blockers:                blockers,
 			}, nil
 		}
 		status := "ok"
@@ -560,10 +838,12 @@ func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext)
 			summary = "The latest development runtime logs contain a startup or compilation failure."
 		}
 		return &projectAssistantRuntimeLogsResult{
-			Status:   status,
-			Summary:  summary,
-			Lines:    lines,
-			Blockers: blockers,
+			Status:                  status,
+			Summary:                 summary,
+			Lines:                   lines,
+			Processes:               processes,
+			ProcessEvidenceComplete: &evidenceComplete,
+			Blockers:                blockers,
 		}, nil
 	}
 }
@@ -577,15 +857,20 @@ func projectAssistantRuntimeLogBlockers(lines []string) []string {
 		"failed to compile",
 		"npm error missing script",
 	}
+	var blockers []string
 	for _, line := range lines {
 		normalized := strings.ToLower(strings.TrimSpace(line))
 		for _, pattern := range patterns {
 			if strings.Contains(normalized, pattern) {
-				return []string{trimProjectAssistantWorkflowString(strings.TrimSpace(line), 240)}
+				blockers = append(blockers, trimProjectAssistantWorkflowString(strings.TrimSpace(line), 240))
+				break
 			}
 		}
+		if len(blockers) >= 4 {
+			break
+		}
 	}
-	return nil
+	return blockers
 }
 
 // boundedRuntimeLogLines keeps the last tail non-empty-trailing lines of a raw

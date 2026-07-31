@@ -134,6 +134,34 @@ type projectEinoAssistantCompletionBarrierModel struct {
 	runState             *projectEinoAssistantRunState
 }
 
+type projectEinoAssistantForcedToolModel struct {
+	einomodel.BaseChatModel
+}
+
+func (m *projectEinoAssistantForcedToolModel) Generate(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.Message, error) {
+	return m.BaseChatModel.Generate(
+		ctx,
+		input,
+		append(opts, einomodel.WithToolChoice(schema.ToolChoiceForced))...,
+	)
+}
+
+func (m *projectEinoAssistantForcedToolModel) Stream(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	return m.BaseChatModel.Stream(
+		ctx,
+		input,
+		append(opts, einomodel.WithToolChoice(schema.ToolChoiceForced))...,
+	)
+}
+
 func (m *projectEinoAssistantCompletionBarrierModel) Generate(
 	ctx context.Context,
 	input []*schema.Message,
@@ -374,6 +402,13 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) BeforeModelRewriteState(
 			state,
 			"The source edit is complete, but the runtime is still becoming available. Do not inspect or edit workspace files. Use only bounded runtime status, preview, log, or verification checks; source repair is allowed only after verification reports concrete build or application log blockers.",
 		)
+	} else if phase == projectEinoAssistantPhaseRepair {
+		projectEinoAssistantRemoveApprovalProgressInstruction(state)
+		projectEinoAssistantRemoveCommitProgressInstruction(state)
+		projectEinoAssistantReplaceMutationProgressInstruction(
+			state,
+			"The latest runtime verification found a repairable blocker. Use the diagnostic evidence to take a targeted repair action now. Runtime verification is unavailable until a successful source mutation advances the workspace revision. Do not respond with a completion report; use ask_follow_up only when required repair information cannot be obtained from the workspace.",
+		)
 	} else {
 		projectEinoAssistantRemoveApprovalProgressInstruction(state)
 		projectEinoAssistantRemoveMutationProgressInstruction(state)
@@ -405,6 +440,12 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) BeforeModelRewriteState(
 	}
 	if hideWriteFile {
 		state.ToolInfos = projectEinoAssistantPhaseWithoutWriteFile(state.ToolInfos)
+	}
+	if phase == projectEinoAssistantPhaseRepair && !m.runState.NeedsCompletionVerification() {
+		state.ToolInfos = projectEinoAssistantPhaseWithoutNamedTool(
+			state.ToolInfos,
+			projectToolVerifyDevelopmentRuntime,
+		)
 	}
 	if len(mutationReadPaths) > 0 {
 		state.ToolInfos = projectEinoAssistantPhaseWithNamedTool(
@@ -445,6 +486,12 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) BeforeModelRewriteState(
 	if hideWriteFile {
 		state.DeferredToolInfos = projectEinoAssistantPhaseWithoutWriteFile(state.DeferredToolInfos)
 	}
+	if phase == projectEinoAssistantPhaseRepair && !m.runState.NeedsCompletionVerification() {
+		state.DeferredToolInfos = projectEinoAssistantPhaseWithoutNamedTool(
+			state.DeferredToolInfos,
+			projectToolVerifyDevelopmentRuntime,
+		)
+	}
 	if len(mutationReadPaths) > 0 {
 		state.DeferredToolInfos = projectEinoAssistantPhaseWithNamedTool(
 			state.DeferredToolInfos,
@@ -472,6 +519,34 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) BeforeModelRewriteState(
 			state.DeferredToolInfos,
 			projectToolVerifyDevelopmentRuntime,
 		)
+	}
+	if projectEinoAssistantProgressEnabled(m.req, m.runState) &&
+		projectEinoAssistantPhaseRequiresProgress(phase) &&
+		!m.runState.ProgressReported(phase) {
+		projectEinoAssistantReplaceCommentaryProgressInstruction(state, phase)
+		state.ToolInfos = projectEinoAssistantPhaseWithNamedTool(
+			state.ToolInfos,
+			m.toolInfos,
+			projectEinoAssistantReportProgressTool,
+		)
+		state.DeferredToolInfos = projectEinoAssistantPhaseWithNamedTool(
+			state.DeferredToolInfos,
+			m.deferredToolInfos,
+			projectEinoAssistantReportProgressTool,
+		)
+	} else {
+		projectEinoAssistantRemoveCommentaryProgressInstruction(state)
+		if projectEinoAssistantProgressEnabled(m.req, m.runState) &&
+			projectEinoAssistantPhaseRequiresProgress(phase) {
+			state.ToolInfos = projectEinoAssistantPhaseWithoutNamedTool(
+				state.ToolInfos,
+				projectEinoAssistantReportProgressTool,
+			)
+			state.DeferredToolInfos = projectEinoAssistantPhaseWithoutNamedTool(
+				state.DeferredToolInfos,
+				projectEinoAssistantReportProgressTool,
+			)
+		}
 	}
 	if projectAssistantInlinePromotionEnabled(m.req) &&
 		phase == projectEinoAssistantPhaseApproval {
@@ -509,6 +584,9 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) WrapModel(
 	if base == nil || m.runState == nil ||
 		(m.phase != projectEinoAssistantPhaseMutate && m.phase != projectEinoAssistantPhaseRepair) {
 		return base, nil
+	}
+	if m.phase == projectEinoAssistantPhaseRepair && !m.runState.NeedsCompletionVerification() {
+		return &projectEinoAssistantForcedToolModel{BaseChatModel: base}, nil
 	}
 	if !m.runState.NeedsCompletionVerification() {
 		return base, nil
@@ -583,6 +661,54 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) enforceRepeatedActionProgres
 const projectEinoAssistantApprovalProgressPrefix = "[App Studio approval phase] "
 const projectEinoAssistantMutationProgressPrefix = "[App Studio mutation phase] "
 const projectEinoAssistantCommitProgressPrefix = "[App Studio commit phase] "
+const projectEinoAssistantCommentaryProgressPrefix = "[App Studio commentary requirement] "
+
+func projectEinoAssistantReplaceCommentaryProgressInstruction(
+	state *adk.ChatModelAgentState,
+	phase projectEinoAssistantPhase,
+) {
+	if state == nil {
+		return
+	}
+	projectEinoAssistantRemoveCommentaryProgressInstruction(state)
+	state.Messages = append(state.Messages, schema.SystemMessage(
+		projectEinoAssistantCommentaryProgressPrefix+
+			"Before continuing the "+string(phase)+" phase, include report_progress with one or two natural sentences for the user. "+
+			"State the meaningful outcome or direction, not private reasoning. Do not name tools or expose raw arguments, results, logs, or secrets. "+
+			"You may batch it with this phase's first real action, but put report_progress first.",
+	))
+}
+
+func projectEinoAssistantRemoveCommentaryProgressInstruction(state *adk.ChatModelAgentState) {
+	if state == nil {
+		return
+	}
+	messages := state.Messages[:0]
+	for _, message := range state.Messages {
+		if message != nil &&
+			message.Role == schema.System &&
+			strings.HasPrefix(message.Content, projectEinoAssistantCommentaryProgressPrefix) {
+			continue
+		}
+		messages = append(messages, message)
+	}
+	state.Messages = messages
+}
+
+func projectEinoAssistantPhaseRequiresProgress(phase projectEinoAssistantPhase) bool {
+	switch phase {
+	case projectEinoAssistantPhasePlan,
+		projectEinoAssistantPhaseApproval,
+		projectEinoAssistantPhaseMutate,
+		projectEinoAssistantPhaseVerify,
+		projectEinoAssistantPhaseRepair,
+		projectEinoAssistantPhaseWarmup,
+		projectEinoAssistantPhaseCommit:
+		return true
+	default:
+		return false
+	}
+}
 
 func projectEinoAssistantReplaceApprovalProgressInstruction(
 	state *adk.ChatModelAgentState,
@@ -1013,6 +1139,17 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) WrapInvokableToolCall(
 			m.recordNoProgressAction(name, argumentsInJSON)
 			return fmt.Sprintf("Tool call denied: %s is unavailable in the current assistant phase", name), nil
 		}
+		if projectEinoAssistantProgressEnabled(m.req, m.runState) &&
+			name == projectEinoAssistantReportProgressTool {
+			if !m.runState.ReserveProgressPhase(m.phase) {
+				return `{"status":"duplicate","reason":"progress already reported for this phase"}`, nil
+			}
+			result, err := endpoint(ctx, argumentsInJSON, opts...)
+			if err != nil || !strings.Contains(result, `"status":"shown"`) {
+				m.runState.ReleaseProgressPhase(m.phase)
+			}
+			return result, err
+		}
 		recoveryReadAllowed := projectEinoAssistantRecoveryReadAllowed(
 			name,
 			argumentsInJSON,
@@ -1043,6 +1180,12 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) WrapInvokableToolCall(
 				"Tool call denied: complete the approved source edits for %s before runtime verification",
 				strings.Join(m.missingMutationPaths, ", "),
 			), nil
+		}
+		if m.phase == projectEinoAssistantPhaseRepair &&
+			name == projectToolVerifyDevelopmentRuntime &&
+			!m.runState.NeedsCompletionVerification() {
+			m.recordNoProgressAction(name, argumentsInJSON)
+			return "Tool call denied: verify_development_runtime is unavailable until a repair source mutation succeeds", nil
 		}
 		if !projectEinoAssistantPhaseAllowsTool(
 			m.phase,
@@ -1728,7 +1871,9 @@ func projectEinoAssistantPhasePreMutationToolAllowed(
 		return false
 	}
 	name := projectToolBaseName(tool.Name)
-	if name == projectEinoAssistantWriteTodosTool || name == projectToolAskFollowUp {
+	if name == projectEinoAssistantWriteTodosTool ||
+		name == projectEinoAssistantReportProgressTool ||
+		name == projectToolAskFollowUp {
 		return true
 	}
 	risk, bundle, ok := projectEinoAssistantPhaseToolMetadata(tool)
@@ -1867,6 +2012,9 @@ func projectEinoAssistantPhaseAllowsTool(
 		return false
 	}
 	name := projectToolBaseName(tool.Name)
+	if name == projectEinoAssistantReportProgressTool {
+		return phase != projectEinoAssistantPhaseReport
+	}
 	if strings.TrimSpace(tool.Name) == projectToolInspectDevelopmentTemplates &&
 		!templateBootstrapAllowed {
 		return false
@@ -1950,7 +2098,8 @@ func projectEinoAssistantPhaseAllowsTool(
 	case projectEinoAssistantPhaseVerify:
 		return (projectEinoAssistantPhaseCanonicalEditTool(tool.Name) &&
 			bundle == projectAssistantToolBundleEdit && risk == projectAssistantToolRiskWrite) ||
-			(tool.Name == projectToolVerifyDevelopmentRuntime &&
+			((tool.Name == projectToolVerifyDevelopmentRuntime ||
+				tool.Name == projectToolGetPreviewConsoleLogs) &&
 				bundle == projectAssistantToolBundleRuntime && risk == projectAssistantToolRiskRead) ||
 			(name == projectToolAskFollowUp && risk == projectAssistantToolRiskInput)
 	case projectEinoAssistantPhaseRepair:
@@ -1968,6 +2117,7 @@ func projectEinoAssistantPhaseAllowsTool(
 		return operationalRead &&
 			(name == projectToolGetRuntimeStatus ||
 				name == projectToolGetPreviewURL ||
+				name == projectToolGetPreviewConsoleLogs ||
 				name == projectToolGetRuntimeLogs ||
 				name == projectToolVerifyDevelopmentRuntime)
 	case projectEinoAssistantPhaseCommit:
@@ -2034,6 +2184,7 @@ func projectEinoAssistantPhaseOperationalReadTool(
 	switch strings.TrimSpace(name) {
 	case projectToolGetRuntimeStatus,
 		projectToolGetPreviewURL,
+		projectToolGetPreviewConsoleLogs,
 		projectToolGetRuntimeLogs,
 		projectToolVerifyDevelopmentRuntime:
 		return bundle == projectAssistantToolBundleRuntime
@@ -2053,6 +2204,7 @@ func projectEinoAssistantPhaseReservedOperationalReadName(name string) bool {
 	switch projectToolBaseName(name) {
 	case projectToolGetRuntimeStatus,
 		projectToolGetPreviewURL,
+		projectToolGetPreviewConsoleLogs,
 		projectToolGetRuntimeLogs,
 		projectToolVerifyDevelopmentRuntime,
 		projectToolCheckProjectBuild,

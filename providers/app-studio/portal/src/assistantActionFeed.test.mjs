@@ -21,6 +21,9 @@ const action = (overrides = {}) => ({
 
 test('parses only the fresh allowlisted action feed contract', () => {
   assert.deepEqual(feed.parseAssistantActionFeed([action()]), [action()])
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ sequence: 2 })]), [action({ sequence: 2 })])
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ sequence: 0 })]), [])
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ sequence: 10_001 })]), [])
   assert.deepEqual(
     feed.parseAssistantActionFeed([action({ status: 'skipped', title: 'Skipped duplicate read' })]),
     [action({ status: 'skipped', title: 'Skipped duplicate read' })],

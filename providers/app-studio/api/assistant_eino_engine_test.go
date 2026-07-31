@@ -190,8 +190,9 @@ func TestProjectEinoAssistantMessageOutputDoesNotPublishFailedStream(t *testing.
 	}
 }
 
-func TestProjectEinoAssistantMessageOutputStreamsToolCallContent(t *testing.T) {
+func TestProjectEinoAssistantMessageOutputRoutesToolCallContentToProgress(t *testing.T) {
 	var chunks []string
+	var progress []string
 	output := &adk.TypedMessageVariant[*schema.Message]{
 		IsStreaming: true,
 		MessageStream: schema.StreamReaderFromArray([]*schema.Message{
@@ -209,7 +210,8 @@ func TestProjectEinoAssistantMessageOutputStreamsToolCallContent(t *testing.T) {
 	}
 
 	msg, err := projectEinoAssistantMessageOutput(context.Background(), output, projectAssistantStreamCallbacks{
-		OnChunk: func(chunk string) { chunks = append(chunks, chunk) },
+		OnChunk:    func(chunk string) { chunks = append(chunks, chunk) },
+		OnProgress: func(message string) { progress = append(progress, message) },
 	})
 	if err != nil {
 		t.Fatalf("message output returned error: %v", err)
@@ -217,8 +219,8 @@ func TestProjectEinoAssistantMessageOutputStreamsToolCallContent(t *testing.T) {
 	if msg == nil || len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != projectToolCheckProjectReadiness {
 		t.Fatalf("message = %#v, want preserved tool call for existing tool summary UX", msg)
 	}
-	if strings.Join(chunks, "") != "I will inspect the project." {
-		t.Fatalf("chunks = %#v, want assistant content streamed even when a tool call follows", chunks)
+	if len(chunks) != 0 || strings.Join(progress, "") != "I will inspect the project." {
+		t.Fatalf("chunks = %#v progress = %#v, want tool-call prose routed only to progress", chunks, progress)
 	}
 }
 
@@ -904,7 +906,7 @@ func TestEinoAssistantEngineDeepPhasePreservesTerminalPhaseAcrossReductionAfterS
 			Risk:        projectAssistantToolRiskCommit,
 		},
 	}
-	largeSource := strings.Repeat("source ", 9000)
+	largeSource := strings.Repeat("source ", 7000)
 	tests := []struct {
 		name            string
 		initialCreation bool

@@ -17,7 +17,9 @@ limitations under the License.
 package install
 
 import (
+	"encoding/base64"
 	"io/fs"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -25,6 +27,8 @@ import (
 
 	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 )
+
+var viteShimPattern = regexp.MustCompile(`printf '%s' '([^']+)' \| base64 -d`)
 
 // TestSeedTemplatesDecodeAndValidate decodes every embedded seed template
 // into the typed API (catching field typos YAML would silently keep as
@@ -71,5 +75,84 @@ func TestSeedTemplatesDecodeAndValidate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPreviewConsolePluginIsLimitedToBuiltInViteComponents(t *testing.T) {
+	want := map[string]string{
+		"simple-webapp": "app",
+		"application":   "frontend",
+	}
+	found := map[string]bool{}
+	references := 0
+
+	entries, err := fs.ReadDir(seedTemplatesFS, "templates")
+	if err != nil {
+		t.Fatalf("read embedded templates/: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+		raw, err := fs.ReadFile(seedTemplatesFS, "templates/"+entry.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		var tmpl infrav1alpha1.Template
+		if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+			t.Fatalf("decode %s: %v", entry.Name(), err)
+		}
+		if tmpl.Spec.Development == nil {
+			continue
+		}
+		for componentName, component := range tmpl.Spec.Development.Components {
+			matches := viteShimPattern.FindStringSubmatch(component.StartCommand)
+			if len(matches) != 2 {
+				continue
+			}
+			shim, err := base64.StdEncoding.DecodeString(matches[1])
+			if err != nil {
+				t.Fatalf("%s/%s decode Vite shim: %v", tmpl.Name, componentName, err)
+			}
+			source := string(shim)
+			if !strings.Contains(source, "preview-console-plugin.mjs") {
+				continue
+			}
+			key := tmpl.Name + "/" + componentName
+			if found[key] {
+				t.Errorf("duplicate preview console discovery for %s", key)
+			}
+			found[key] = true
+			count := strings.Count(source, "file:///kedge/bin/preview-console-plugin.mjs")
+			references += count
+			if count != 1 {
+				t.Errorf("%s Vite shim has %d preview-console imports, want exactly 1", key, count)
+			}
+			for _, required := range []string{
+				"await import('file:///kedge/bin/preview-console-plugin.mjs')",
+				"forced.plugins = [previewConsolePlugin()]",
+				"} catch (e) {",
+				"return mergeConfig(base, forced)",
+			} {
+				if !strings.Contains(source, required) {
+					t.Errorf("%s/%s Vite shim lacks %q:\n%s", tmpl.Name, componentName, required, source)
+				}
+			}
+			if strings.Contains(source, "preview console bridge unavailable") {
+				t.Errorf("%s/%s Vite shim logs while optional instrumentation is disabled", tmpl.Name, componentName)
+			}
+		}
+	}
+	if len(found) != len(want) {
+		t.Fatalf("preview console plugin components = %v, want exactly %v", found, want)
+	}
+	if references != len(want) {
+		t.Errorf("preview console import references = %d, want exactly %d", references, len(want))
+	}
+	for templateName, componentName := range want {
+		key := templateName + "/" + componentName
+		if !found[key] {
+			t.Errorf("missing preview console plugin from %s", key)
+		}
 	}
 }

@@ -107,6 +107,7 @@ export interface ProjectAssistantActionFeedItem {
   severity: ProjectAssistantActionSeverity
   groupKey?: string
   groupTitle?: string
+  sequence?: number
   diagnostic?: ProjectAssistantActionDiagnostic
 }
 

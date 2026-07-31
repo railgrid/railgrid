@@ -66,7 +66,10 @@ func newProjectEinoAssistantToolsFactory(server *Server) projectEinoAssistantToo
 		catalogPolicy := projectAssistantToolCatalogPolicy(req)
 		localTools := projectAssistantToolsForTurnPolicy(registry.Tools(discovery.IncludeCommitBridge), catalogPolicy)
 		mcpTools := projectAssistantToolsForTurnPolicy(discovery.MCPTools, catalogPolicy)
-		out := make([]einotool.BaseTool, 0, len(localTools)+len(mcpTools))
+		out := make([]einotool.BaseTool, 0, len(localTools)+len(mcpTools)+1)
+		if projectEinoAssistantProgressEnabled(req, runState) {
+			out = append(out, newProjectEinoAssistantProgressTool(req, runState))
+		}
 		graphTools, err := newProjectAssistantGraphWorkflowTools(ctx, projectAssistantWorkflowRunContextForRequest(server, req, runState), catalogPolicy)
 		if err != nil {
 			return nil, err
@@ -449,11 +452,42 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 		Summary:   summarizeProjectToolResult(spec.Name, result),
 		Mutation:  projectAssistantMutationFromResult(spec.Name, result),
 	})
-	t.recordToolMessage(callID, spec.Name, result)
+	modelResult := t.runState.RegisterTransientToolResult(spec.Name, result)
+	t.recordToolMessage(callID, spec.Name, modelResult)
 	if spec.Risk == projectAssistantToolRiskWrite {
 		t.appendBuilderEvent(projectBuilderEventWorkspaceChanged)
 	}
-	return result, nil
+	return modelResult, nil
+}
+
+func projectEinoAssistantPersistentToolResult(name, result string) string {
+	if projectToolBaseName(name) != projectToolGetPreviewConsoleLogs {
+		return result
+	}
+	var decoded struct {
+		Status        string `json:"status"`
+		NextSequence  uint64 `json:"nextSequence,omitempty"`
+		DroppedCount  int    `json:"droppedCount,omitempty"`
+		ReceivedCount int    `json:"receivedCount,omitempty"`
+		RedactedCount int    `json:"redactedCount,omitempty"`
+		Summary       string `json:"summary,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
+		return `{"status":"unavailable","summary":"transient preview console result omitted from persistence"}`
+	}
+	persistent, err := json.Marshal(map[string]any{
+		"status":         strings.TrimSpace(decoded.Status),
+		"nextSequence":   decoded.NextSequence,
+		"droppedCount":   decoded.DroppedCount,
+		"receivedCount":  decoded.ReceivedCount,
+		"redactedCount":  decoded.RedactedCount,
+		"summary":        strings.TrimSpace(decoded.Summary),
+		"transientEvent": true,
+	})
+	if err != nil {
+		return `{"status":"unavailable","summary":"transient preview console result omitted from persistence"}`
+	}
+	return string(persistent)
 }
 
 func projectAssistantMutationFromResult(name, result string) *projectAssistantMutation {

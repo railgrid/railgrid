@@ -62,11 +62,14 @@ Environment variables consumed by the binary:
 | `APP_STUDIO_PREVIEW_TOKEN_SECRET` | Optional shared signing secret for preview URLs; configure for multi-replica deployments |
 | `APP_STUDIO_DATABASE_URL` | Postgres DSN for the message store |
 | `APP_STUDIO_IN_MEMORY_MESSAGE_STORE` | `true` → non-durable in-memory store (dev) |
-| `APP_STUDIO_MESSAGE_ENCRYPTION_KEYS` | Comma-separated `key-id:base64-aes-key` entries |
+| `APP_STUDIO_MESSAGE_ENCRYPTION_KEYS` | Comma-separated `key-id:base64-aes-key` entries for message content and metadata encryption at rest |
 | `APP_STUDIO_MESSAGE_RETENTION` | Retention window (`time.ParseDuration`, e.g. `720h`) |
 | `APP_STUDIO_WORKSPACE_ROOT` | Filesystem root for App Studio project workspaces and local file tools |
 | `APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verify on MCP calls (dev) |
 | `APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verification only for preview readiness probes (local dev with a self-signed Gateway) |
+| `APP_STUDIO_PREVIEW_CONSOLE_ENABLED` | Automatically shares bounded browser-console evidence while the embedded preview is open; set `false` for a deployment-wide kill switch. |
+| `APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY` | PEM-encoded P-256 private key used to sign short-lived ES256 iframe capabilities |
+| `APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID` | Stable key ID matching the public JWK independently deployed to the preview bridge |
 
 ## Local message history
 
@@ -82,6 +85,18 @@ The database container is named `kedge-app-studio-postgres`, listens on
 `127.0.0.1:55432`, and stores data under `.kcp/app-studio-postgres/`. Both
 Tiltfiles expose it as the `app-studio-db` resource, so hard-refreshing the UI
 or rebuilding the provider no longer drops prior conversation history.
+
+Both Tilt stacks also expose an `app-studio-preview-console-key` resource.
+It atomically generates and reuses a P-256 key under
+`.kcp/app-studio-preview-console/`. The App Studio process receives the private
+key and derived key ID; Infrastructure receives only the matching public JWKS
+and propagates it into development-preview init containers. The directory is
+gitignored and uses mode `0700`; the private key uses mode `0600`. Delete that
+directory only when intentionally rotating the local key, then restart the
+App Studio and Infrastructure Tilt resources so both sides receive the new
+pair. Local Make/Tilt targets intentionally ignore one-sided signing-key or
+JWKS environment overrides; use the Helm values or launch the binaries directly
+when testing a custom key pair.
 
 To use your own database, set `APP_STUDIO_DATABASE_URL` in the environment or in
 `providers/app-studio/.env` (copy from `.env.example`). To intentionally use the
@@ -107,17 +122,19 @@ is saved. Explicit Ask remains read-only; explicit Build creates the WorkItem
 at start; `continue` requires a selected suspended WorkItem ID and exact
 revision. Mutation history, plan grants, runs, and messages are scoped by the
 immutable Kubernetes Project UID and WorkItem rather than by the reusable
-project name.
+project name. The portal exposes only Adaptive and Discuss; explicit `build`
+and `continue` remain API compatibility contracts for existing clients and
+persisted runs, not composer choices.
 
 Mutation-capable Eino runs expose a phase-specific tool catalog for
 `approval -> mutate -> verify -> repair/warmup/commit -> report`, while every tool
 invocation still validates the durable lifecycle and grant. A phase-local
 no-progress bound warns the model before stopping a run that keeps reasoning
 without plan approval or an approved source mutation. The WorkItem is suspended
-with reason `no_progress` and can be retried with Continue. After a source
-mutation, the strict verification catalog and global iteration ceiling apply so
-a run-local mutation marker is never discarded by this handoff. This does not
-apply to read-only Ask turns.
+with reason `no_progress`; a new Adaptive message starts a fresh turn from the
+preserved project state. After a source mutation, the strict verification
+catalog and global iteration ceiling apply so a run-local mutation marker is
+never discarded by this handoff. This does not apply to read-only Ask turns.
 
 Patch conflicts enter a persisted two-step recovery lane: reread only the failed
 target, then retry only `apply_patch` for that target. Transient runtime
@@ -148,6 +165,7 @@ cd portal \
   && npm run test:workbench \
   && npm run test:preview-state \
   && npm run test:create-readiness \
+  && npm run test:llm-settings \
   && npm run test:assistant-actions \
   && npm run test:assistant-plan \
   && npm run test:assistant-plan-popover \

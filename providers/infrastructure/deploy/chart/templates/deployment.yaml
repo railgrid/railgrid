@@ -152,6 +152,13 @@ spec:
             - name: KEDGE_DEV_AGENT_IMAGE
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.development.previewConsole.verificationJWKS }}
+            # Current and optional previous public ES256 keys for the
+            # development preview-console bridge. Signing keys remain in App
+            # Studio and are never passed to the infrastructure provider.
+            - name: KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS
+              value: {{ . | quote }}
+            {{- end }}
             {{- range $toolchain, $image := .Values.development.images }}
             {{- if $image }}
             # Dev-mode toolchain image (${kedge.devImage.{{ $toolchain }}}).

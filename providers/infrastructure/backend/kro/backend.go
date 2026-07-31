@@ -112,6 +112,9 @@ func New(runtime dynamic.Interface) *Backend {
 		gatewayNameToken:      gatewayName,
 		gatewayNamespaceToken: gatewayNamespace,
 		appPublicPortToken:    appPublicPortSuffix(os.Getenv("KEDGE_APP_PUBLIC_PORT")),
+		previewConsoleVerificationJWKSConfigKey: strings.TrimSpace(
+			os.Getenv("KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS"),
+		),
 	}
 	maps.Copy(tokens, devImageTokens())
 	return &Backend{runtime: runtime, tokens: tokens}

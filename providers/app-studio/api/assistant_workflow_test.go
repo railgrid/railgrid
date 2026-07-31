@@ -20,8 +20,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -243,6 +246,66 @@ func TestProjectAssistantRuntimeVerificationCollectsLogsWhenPreviewEdgeIsReachab
 	}
 }
 
+func TestCollectProjectAssistantRuntimeVerificationBrowserConsoleSummarizesWithoutRawEvents(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	signer, err := newEphemeralPreviewConsoleCapabilitySigner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.previewConsoleEnabled = true
+	server.previewConsoleStore = newPreviewConsoleStore()
+	server.previewConsoleSigner = signer
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	project.UID = "project-uid-demo"
+	project.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "application"}
+	id := identity{clusterID: "cluster-1", orgUUID: "org-1", workspaceUUID: "workspace-1", user: "alice@example.com"}
+	scope, err := projectPreviewConsoleScope(id, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	server.previewConsoleStore.now = func() time.Time { return now }
+	const generation = "826e6fa5-c38b-4bdb-8f8f-098198b74f65"
+	session, err := server.previewConsoleStore.create(scope, "https://demo.preview.example", "https://console.example", generation, previewConsoleProtocolVersion, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := server.previewConsoleStore.append(session.ID, scope, generation, previewConsoleProtocolVersion, []previewConsoleIncomingEvent{
+		{Sequence: 1, DocumentID: generation, Level: "error", Message: "stale error before the source change", ClientTime: now.Format(time.RFC3339Nano), SourceURL: "https://demo.preview.example/"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := time.Now().UTC().Add(time.Millisecond)
+	server.previewConsoleStore.now = func() time.Time { return fresh }
+	if _, _, _, err := server.previewConsoleStore.append(session.ID, scope, generation, previewConsoleProtocolVersion, []previewConsoleIncomingEvent{
+		{Sequence: 2, DocumentID: generation, Level: "warn", Message: "warning details stay transient", ClientTime: fresh.Format(time.RFC3339Nano), SourceURL: "https://demo.preview.example/"},
+		{Sequence: 3, DocumentID: generation, Level: "pageerror", Message: "secret error details stay transient", ClientTime: fresh.Format(time.RFC3339Nano), SourceURL: "https://demo.preview.example/"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runCtx := projectAssistantWorkflowRunContext{Server: server, Project: project, Identity: id}
+	collected, err := collectProjectAssistantRuntimeVerificationBrowserConsole(runCtx)(context.Background(), &projectAssistantRuntimeVerificationContext{RunContext: runCtx})
+	if err != nil {
+		t.Fatalf("collect browser console returned error: %v", err)
+	}
+	if collected.BrowserConsole == nil ||
+		collected.BrowserConsole.Status != "available" ||
+		collected.BrowserConsole.ErrorCount != 2 ||
+		collected.BrowserConsole.WarningCount != 1 {
+		t.Fatalf("browser console = %#v, want two summarized errors and one warning", collected.BrowserConsole)
+	}
+	encoded, err := json.Marshal(collected.BrowserConsole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"secret error details", "warning details", "stale error", `"events"`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("verification summary persisted transient console content %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestPollProjectAssistantRuntimeVerificationWaitsForReady(t *testing.T) {
 	calls := 0
 	input, result, err := pollProjectAssistantRuntimeVerification(
@@ -318,6 +381,60 @@ func TestFormatProjectAssistantRuntimeVerificationRejectsBrokenProcessLogs(t *te
 	}
 }
 
+func TestFormatProjectAssistantRuntimeVerificationReportsBrowserConsoleErrorsAsAdvisory(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		Readiness: &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			Summary:    "The preview edge is reachable.",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{
+			Status: "available",
+			Lines:  []string{"server listening on port 3000"},
+		},
+		BrowserConsole: &projectAssistantBrowserConsoleResult{
+			Status:     "available",
+			Summary:    "1 browser console event(s): 1 pageerror",
+			ErrorCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "ready" || len(result.Blockers) != 0 || len(result.Warnings) != 1 {
+		t.Fatalf("result = %#v, want ready with browser-console warning", result)
+	}
+	if disposition := projectEinoAssistantRuntimeVerificationDisposition(*result); disposition != projectEinoAssistantVerificationReadyDisposition {
+		t.Fatalf("disposition = %q, want ready", disposition)
+	}
+}
+
+func TestFormatProjectAssistantRuntimeVerificationTreatsDisconnectedBrowserConsoleAsAdvisory(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		Readiness: &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			Summary:    "The preview edge is reachable.",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{
+			Status: "available",
+			Lines:  []string{"server listening on port 3000"},
+		},
+		BrowserConsole: &projectAssistantBrowserConsoleResult{
+			Status:  "not_connected",
+			Summary: "Browser console evidence is not connected.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "ready" || len(result.Blockers) != 0 || len(result.Warnings) != 1 {
+		t.Fatalf("result = %#v, want ready with one advisory warning", result)
+	}
+}
+
 func TestFormatInitialProjectRuntimeVerificationRequiresProcessEvidence(t *testing.T) {
 	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
 		RequireProcessEvidence: true,
@@ -356,6 +473,189 @@ func TestFormatProjectAssistantRuntimeVerificationRejectsEmptyProcessLogs(t *tes
 	}
 	if result.Status != "unavailable" || len(result.Blockers) != 1 {
 		t.Fatalf("result = %#v, want unavailable empty process evidence", result)
+	}
+}
+
+func TestFormatProjectAssistantRuntimeVerificationAcceptsStructuredReadyProcessWithoutLogs(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		CheckedMutationRevision: 5,
+		RequireProcessEvidence:  true,
+		Readiness:               &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{
+			Status: "ok",
+			Processes: map[string]projectAssistantProcessStatus{
+				"app": {AttemptID: 2, Configured: true, Running: true, Port: "8080", PortReachable: true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "ready" || len(result.Blockers) != 0 {
+		t.Fatalf("result = %#v, want ready from structured current-process evidence", result)
+	}
+}
+
+func TestFormatProjectAssistantRuntimeVerificationRejectsIncompleteComponentEvidence(t *testing.T) {
+	incomplete := false
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		RequireProcessEvidence: true,
+		Readiness:              &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{
+			Status: "ok",
+			Lines:  []string{"backend server starting"},
+			Processes: map[string]projectAssistantProcessStatus{
+				"frontend": {AttemptID: 2, Configured: true, Running: true, Port: "8080", PortReachable: true},
+			},
+			ProcessEvidenceComplete: &incomplete,
+		},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "unavailable" {
+		t.Fatalf("result = %#v, want incomplete multi-component evidence to block completion", result)
+	}
+}
+
+func TestFormatProjectAssistantRuntimeVerificationRejectsUnreachableDeclaredPort(t *testing.T) {
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
+		RequireProcessEvidence: true,
+		Readiness:              &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
+		Runtime: &projectAssistantRuntimeWorkflowResult{
+			Status:     "reachable",
+			PreviewURL: "https://app.example.com",
+		},
+		Logs: &projectAssistantRuntimeLogsResult{
+			Status: "failed",
+			Processes: map[string]projectAssistantProcessStatus{
+				"backend": {AttemptID: 3, Configured: true, Running: true, Port: "8080"},
+			},
+			Blockers: []string{"[backend] development process is not accepting connections on declared port 8080"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("format runtime verification returned error: %v", err)
+	}
+	if result.Status != "not_ready" || !strings.Contains(result.Blockers[0], "port 8080") {
+		t.Fatalf("result = %#v, want declared-port blocker", result)
+	}
+}
+
+func TestCurrentRuntimeLogBlockersIgnoreRunningFallbackFailure(t *testing.T) {
+	process := projectAssistantProcessStatus{Running: true, Port: "8080", PortReachable: true}
+	got := currentProjectAssistantRuntimeLogBlockers(process, projectAssistantRuntimeLogBlockers([]string{
+		`npm error Missing script: "dev"`,
+		"SyntaxError: Unexpected token",
+	}))
+	if !reflect.DeepEqual(got, []string{"SyntaxError: Unexpected token"}) {
+		t.Fatalf("current blockers = %#v", got)
+	}
+	exited := currentProjectAssistantRuntimeLogBlockers(
+		projectAssistantProcessStatus{Running: false},
+		[]string{`npm error Missing script: "dev"`},
+	)
+	if len(exited) != 1 {
+		t.Fatalf("exited-process blockers = %#v, want fallback failure retained", exited)
+	}
+}
+
+func TestWarmupLogsAreNotPositiveStructuredProcessEvidence(t *testing.T) {
+	process := projectAssistantProcessStatus{
+		Configured:        true,
+		Running:           true,
+		Port:              "8080",
+		PortWarmupPending: true,
+	}
+	if projectAssistantComponentHasProcessEvidence(true, process, []string{"backend server starting"}) {
+		t.Fatal("ordinary startup logs made a warmup-pending structured process ready")
+	}
+	process.PortWarmupPending = false
+	process.PortReachable = true
+	if !projectAssistantComponentHasProcessEvidence(true, process, nil) {
+		t.Fatal("reachable structured process was not positive evidence")
+	}
+	if !projectAssistantComponentHasProcessEvidence(false, projectAssistantProcessStatus{}, []string{"legacy server ready"}) {
+		t.Fatal("legacy log-only process lost backward-compatible evidence")
+	}
+}
+
+func TestPollProjectAssistantProcessStatusWaitsForCurrentAttemptPort(t *testing.T) {
+	var calls atomic.Int32
+	started := time.Now().UnixMilli()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		call := calls.Add(1)
+		_ = json.NewEncoder(w).Encode(projectAssistantProcessStatus{
+			AttemptID:               7,
+			AttemptStartedUnixMilli: started,
+			Configured:              true,
+			Running:                 true,
+			Port:                    "8080",
+			PortReachable:           call >= 3,
+		})
+	}))
+	defer upstream.Close()
+	server := &Server{hubBase: upstream.URL}
+	process, supported, err := pollProjectAssistantProcessStatusWithTiming(
+		context.Background(),
+		server,
+		identity{clusterID: "root"},
+		dataPlaneRef{Resource: "applications", Name: "demo", Component: "backend"},
+		100*time.Millisecond,
+		5*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatalf("poll process status: %v", err)
+	}
+	if !supported || !process.PortReachable || process.PortWarmupPending || calls.Load() < 3 {
+		t.Fatalf("process = %+v supported=%t calls=%d", process, supported, calls.Load())
+	}
+}
+
+func TestPollProjectAssistantProcessStatusMarksFirstWarmupTimeoutOperational(t *testing.T) {
+	var started atomic.Int64
+	started.Store(time.Now().UnixMilli())
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(projectAssistantProcessStatus{
+			AttemptID:               0,
+			AttemptStartedUnixMilli: started.Load(),
+			Configured:              true,
+			Running:                 true,
+			Port:                    "8080",
+		})
+	}))
+	defer upstream.Close()
+	server := &Server{hubBase: upstream.URL}
+	ref := dataPlaneRef{Resource: "applications", Name: "demo", Component: "backend"}
+	process, _, err := pollProjectAssistantProcessStatusWithTiming(
+		context.Background(), server, identity{clusterID: "root"}, ref,
+		25*time.Millisecond, 5*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatalf("poll process status: %v", err)
+	}
+	if !process.PortWarmupPending {
+		t.Fatalf("process = %+v, want first same-attempt timeout classified as warmup", process)
+	}
+
+	started.Store(time.Now().Add(-time.Second).UnixMilli())
+	process, _, err = pollProjectAssistantProcessStatusWithTiming(
+		context.Background(), server, identity{clusterID: "root"}, ref,
+		25*time.Millisecond, 5*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatalf("poll old process status: %v", err)
+	}
+	if process.PortWarmupPending {
+		t.Fatalf("process = %+v, old attempt should expose a stable port mismatch", process)
 	}
 }
 

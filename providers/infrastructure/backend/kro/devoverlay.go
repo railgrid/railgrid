@@ -88,6 +88,7 @@ func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, re
 	if agentImage == "" {
 		return nil, nil, fmt.Errorf("template %q: dev agent image is not configured; set KEDGE_DEV_AGENT_IMAGE", tmpl.Name)
 	}
+	previewConsoleVerificationJWKS := tokens[previewConsoleVerificationJWKSConfigKey]
 
 	byID, err := indexResources(resources)
 	if err != nil {
@@ -127,7 +128,17 @@ func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, re
 			return nil, nil, fmt.Errorf("template %q component %q (%s): %w", tmpl.Name, name, workloadID, err)
 		}
 
-		devRes, ns, err := synthesizeComponent(tmpl.Name, name, comp, workloadID, workload, devImage, agentImage, byID)
+		devRes, ns, err := synthesizeComponent(
+			tmpl.Name,
+			name,
+			comp,
+			workloadID,
+			workload,
+			devImage,
+			agentImage,
+			previewConsoleVerificationJWKS,
+			byID,
+		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("template %q component %q: %w", tmpl.Name, name, err)
 		}
@@ -186,7 +197,7 @@ func findComponentWorkload(byID map[string]map[string]any, name string) (string,
 // synthesizeComponent builds the dev-mode resources for one component: the
 // workspace PVC, the dev variant of the workload, and the control Service.
 // Returns the resources plus the namespace expression the workload deploys to.
-func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateDevelopmentComponent, workloadID string, workload map[string]any, devImage, agentImage string, byID map[string]map[string]any) ([]any, string, error) {
+func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateDevelopmentComponent, workloadID string, workload map[string]any, devImage, agentImage, previewConsoleVerificationJWKS string, byID map[string]map[string]any) ([]any, string, error) {
 	prodTemplate, _ := workload["template"].(map[string]any)
 	namespace, _, _ := nestedString(prodTemplate, "metadata", "namespace")
 	if namespace == "" {
@@ -211,7 +222,16 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 	pvcName := "${schema.spec.name}-dev-" + name
 	labels := devLabels(templateName)
 
-	devDeployment, selector, mountedWorkspace, err := synthesizeDevDeployment(name, comp, prodTemplate, devImage, agentImage, workingDir, pvcName)
+	devDeployment, selector, mountedWorkspace, err := synthesizeDevDeployment(
+		name,
+		comp,
+		prodTemplate,
+		devImage,
+		agentImage,
+		previewConsoleVerificationJWKS,
+		workingDir,
+		pvcName,
+	)
 	if err != nil {
 		return nil, "", err
 	}
@@ -241,7 +261,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 	}
 
 	controlService := map[string]any{
-		"id": name + "DevControlService",
+		"id":          name + "DevControlService",
 		"includeWhen": []any{devModeCondition},
 		"template": map[string]any{
 			"apiVersion": "v1",
@@ -277,7 +297,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 // wiring (server-side apply rejects duplicate port/mountPath entries; caught
 // by the dev-mode e2e on sandbox-runner). mountedWorkspace reports whether the
 // overlay added the workspace mount (and so needs the per-component PVC).
-func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopmentComponent, prodTemplate map[string]any, devImage, agentImage, workingDir, pvcName string) (dev, selector map[string]any, mountedWorkspace bool, err error) {
+func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopmentComponent, prodTemplate map[string]any, devImage, agentImage, previewConsoleVerificationJWKS, workingDir, pvcName string) (dev, selector map[string]any, mountedWorkspace bool, err error) {
 	tmplCopy, err := deepCopyMap(prodTemplate)
 	if err != nil {
 		return nil, nil, false, err
@@ -353,8 +373,7 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	}
 	container["volumeMounts"] = mounts
 
-	initContainers, _ := podSpec["initContainers"].([]any)
-	initContainers = append(initContainers, map[string]any{
+	initContainer := map[string]any{
 		"name":  "kedge-dev-agent",
 		"image": agentImage,
 		// The default-for-:latest Always policy would force a registry pull
@@ -370,7 +389,15 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 			"allowPrivilegeEscalation": false,
 			"capabilities":             map[string]any{"drop": []any{"ALL"}},
 		},
-	})
+	}
+	if previewConsoleVerificationJWKS != "" {
+		initContainer["env"] = []any{map[string]any{
+			"name":  "KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS",
+			"value": previewConsoleVerificationJWKS,
+		}}
+	}
+	initContainers, _ := podSpec["initContainers"].([]any)
+	initContainers = append(initContainers, initContainer)
 	podSpec["initContainers"] = initContainers
 
 	volumes, _ := podSpec["volumes"].([]any)

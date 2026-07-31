@@ -40,6 +40,7 @@ const (
 	dataPlaneVerbRestart = "restart"
 	dataPlaneVerbProxy   = "proxy"
 	dataPlaneVerbEnv     = "env"
+	dataPlaneVerbProcess = "process"
 
 	dataPlaneCallTimeout = 30 * time.Second
 )

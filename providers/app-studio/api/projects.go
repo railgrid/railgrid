@@ -41,11 +41,13 @@ import (
 )
 
 type CreateProjectRequest struct {
-	Name          string `json:"name,omitempty"`
-	DisplayName   string `json:"displayName,omitempty"`
-	Description   string `json:"description,omitempty"`
-	Prompt        string `json:"prompt,omitempty"`
-	ConnectionRef string `json:"connectionRef,omitempty"`
+	Name                     string `json:"name,omitempty"`
+	DisplayName              string `json:"displayName,omitempty"`
+	Description              string `json:"description,omitempty"`
+	Prompt                   string `json:"prompt,omitempty"`
+	TemplateName             string `json:"templateName,omitempty"`
+	InferDevelopmentTemplate bool   `json:"inferDevelopmentTemplate,omitempty"`
+	ConnectionRef            string `json:"connectionRef,omitempty"`
 
 	// ExistingRepositoryRef imports an existing Code Repository instead of
 	// creating one: the project adopts the repository (claims it, never
@@ -206,6 +208,7 @@ type projectToolCallStreamEvent struct {
 	FollowUp   *projectAssistantFollowUp   `json:"followUp,omitempty"`
 	Checkpoint *projectAssistantCheckpoint `json:"checkpoint,omitempty"`
 	Mutation   *projectAssistantMutation   `json:"mutation,omitempty"`
+	Sequence   int                         `json:"sequence,omitempty"`
 }
 
 type projectAssistantMutation struct {
@@ -229,6 +232,7 @@ const projectMessagePersistTimeout = 5 * time.Second
 var errProjectAssistantMessageNotFound = errors.New("project assistant message not found")
 
 type projectCreationStatusFunc func(string) error
+type projectCreatePreflightGenerator func(context.Context, *asclient.Client, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error)
 
 func writeProjectError(w http.ResponseWriter, err error) {
 	if isProjectAPIInitializingError(err) {
@@ -314,8 +318,17 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
 	req.Description = strings.TrimSpace(req.Description)
 	req.Prompt = strings.TrimSpace(req.Prompt)
+	req.TemplateName = strings.TrimSpace(req.TemplateName)
 	req.ConnectionRef = strings.TrimSpace(req.ConnectionRef)
 	req.ExistingRepositoryRef = strings.TrimSpace(req.ExistingRepositoryRef)
+	var selectedTemplate *projectTemplateInfo
+	if req.TemplateName != "" {
+		info, err := resolveProjectCreateTemplate(ctx, c, req.TemplateName, false)
+		if err != nil {
+			return nil, err
+		}
+		selectedTemplate = info
+	}
 	// Repository import resolves the repository up front: the claim guard
 	// runs before anything is created, and the display name can default to
 	// the repository's HOST name (spec.name) — "import my repo" shouldn't
@@ -336,18 +349,41 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 		req.DisplayName = preflight.Naming.DisplayName
 		repoBase = preflight.Naming.RepositoryName
 	} else if req.Prompt != "" {
-		if err := emitProjectCreationStatus(onStatus, "Naming project"); err != nil {
+		if err := emitProjectCreationStatus(onStatus, "Planning project"); err != nil {
 			return nil, err
 		}
-		naming, err := s.generateProjectNaming(ctx, c, req.Prompt)
+		var templates []projectDevelopmentTemplateView
+		if selectedTemplate == nil && req.InferDevelopmentTemplate {
+			var err error
+			templates, err = listDevelopmentTemplateViews(ctx, c)
+			if err != nil {
+				// The request explicitly authorized eager provisioning. Do
+				// not silently degrade that contract when the tenant catalog
+				// is unavailable or the caller cannot read it.
+				return nil, err
+			}
+		}
+		generatePreflight := s.generateProjectCreatePreflight
+		if s.projectCreatePreflight != nil {
+			generatePreflight = s.projectCreatePreflight
+		}
+		generated, err := generatePreflight(ctx, c, req.Prompt, templates)
 		if err != nil {
 			return nil, err
 		}
-		req.DisplayName = naming.DisplayName
-		repoBase = naming.RepositoryName
+		preflight = &generated
+		req.DisplayName = generated.Naming.DisplayName
+		repoBase = generated.Naming.RepositoryName
 	}
 	if req.DisplayName == "" {
 		return nil, newValidationError("displayName is required")
+	}
+	if selectedTemplate == nil && req.InferDevelopmentTemplate && preflight != nil && strings.TrimSpace(preflight.TemplateName) != "" {
+		info, err := resolveProjectCreateTemplate(ctx, c, preflight.TemplateName, true)
+		if err != nil {
+			return nil, err
+		}
+		selectedTemplate = info
 	}
 	if err := emitProjectCreationStatus(onStatus, "Preparing project"); err != nil {
 		return nil, err
@@ -378,6 +414,11 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 			Phase:     aiv1alpha1.ProjectPhaseReady,
 			UpdatedAt: &now,
 		},
+	}
+	if selectedTemplate != nil {
+		if err := applyProjectDevelopmentTemplate(p, *selectedTemplate); err != nil {
+			return nil, err
+		}
 	}
 	if err := emitProjectCreationStatus(onStatus, "Creating project"); err != nil {
 		return nil, err
@@ -438,6 +479,40 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 		}
 	}
 	return updated, nil
+}
+
+func resolveProjectCreateTemplate(ctx context.Context, c *asclient.Client, name string, inferred bool) (*projectTemplateInfo, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, nil
+	}
+	info, err := fetchProjectTemplate(ctx, c, name)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			if inferred {
+				// The model chose from a catalog snapshot that raced deletion.
+				// Fall back unbound so the full assistant can clarify.
+				klog.V(1).Infof("inferred development template %q disappeared before project creation; creating project without a template", name)
+				return nil, nil
+			}
+			return nil, newValidationError(fmt.Sprintf("development template %q was not found", name))
+		}
+		// Authentication, authorization, transport, and API availability
+		// failures are operational errors, not evidence that an inferred
+		// choice is invalid. Surface them instead of silently losing eager
+		// provisioning.
+		return nil, err
+	}
+	if err := validateProjectDevelopmentTemplate(info); err != nil {
+		if inferred {
+			// A malformed or no-longer-development-capable catalog entry is
+			// not safe to provision. Preserve the unbound fallback.
+			klog.V(1).Infof("inferred development template %q is not development-capable; creating project without a template: %v", name, err)
+			return nil, nil
+		}
+		return nil, newValidationError(fmt.Sprintf("development template %q cannot back a development environment: %v", name, err))
+	}
+	return &info, nil
 }
 
 func emitProjectCreationStatus(onStatus projectCreationStatusFunc, status string) error {
@@ -1152,6 +1227,12 @@ func (s *Server) updateProjectAssistantPermissionMessage(
 		delete(metadata, projectMessageMetadataStatus)
 		delete(metadata, projectMessageMetadataAssistantInterrupt)
 	}
+	if response.Progress != nil {
+		metadata[projectAssistantMetadataProgress] = *response.Progress
+	}
+	if displayStatus := projectAssistantRunDisplayStatus(response.Status, ""); displayStatus != "" {
+		metadata[projectAssistantMetadataWorkingStatus] = displayStatus
+	}
 	content := msg.Content
 	if strings.TrimSpace(response.AssistantContent) != "" {
 		content = response.AssistantContent
@@ -1383,6 +1464,9 @@ func mergeProjectAssistantActionFeedItem(existing, next projectAssistantActionFe
 	if next.GroupTitle == "" {
 		next.GroupTitle = existing.GroupTitle
 	}
+	if next.Sequence == 0 {
+		next.Sequence = existing.Sequence
+	}
 	if next.Diagnostic == nil {
 		next.Diagnostic = existing.Diagnostic
 	}
@@ -1454,6 +1538,9 @@ func mergeProjectToolCallStreamEvent(existing, next projectToolCallStreamEvent) 
 	}
 	if next.Checkpoint == nil {
 		next.Checkpoint = existing.Checkpoint
+	}
+	if next.Sequence == 0 {
+		next.Sequence = existing.Sequence
 	}
 	if next.Mutation == nil {
 		next.Mutation = existing.Mutation

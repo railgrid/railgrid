@@ -53,6 +53,17 @@ func envOr(key, def string) string {
 	return def
 }
 
+func previewConsoleEnvironmentConfig() (bool, string, string) {
+	enabled := !strings.EqualFold(strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_CONSOLE_ENABLED")), "false")
+	privateKey := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY"))
+	keyID := strings.TrimSpace(os.Getenv("APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID"))
+	if enabled && privateKey == "" && keyID == "" {
+		log.Print("preview console requested but unavailable: signing key and key ID are not configured")
+		enabled = false
+	}
+	return enabled, privateKey, keyID
+}
+
 // loadProviderConfig loads the provider kubeconfig used for the kcp front-proxy
 // host + TLS only (the tenant client drops its credential and authenticates as
 // the caller). Resolution order matches the other providers.
@@ -151,6 +162,14 @@ func runServe() {
 			os.Getenv("KEDGE_HUB_INSECURE") == "true",
 	)
 	apiServer.SetPreviewInsecureSkipTLSVerify(os.Getenv("APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY") == "true")
+	previewConsoleEnabled, previewConsoleSigningKey, previewConsoleSigningKeyID := previewConsoleEnvironmentConfig()
+	if err := apiServer.ConfigurePreviewConsole(
+		previewConsoleEnabled,
+		previewConsoleSigningKey,
+		previewConsoleSigningKeyID,
+	); err != nil {
+		log.Fatalf("preview console: %v", err)
+	}
 	// App Studio holds no runtime-cluster kubeconfig: the development data
 	// plane (logs/sync/restart) is served by the infrastructure provider as
 	// subresources on the template instance, reached through the hub as the

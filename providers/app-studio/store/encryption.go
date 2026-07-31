@@ -97,7 +97,8 @@ func decodeBase64Key(encoded string) ([]byte, error) {
 }
 
 // NewEncryptedStore wraps an existing Store with AES-GCM encryption for
-// message content at rest. Passing no keys returns the underlying store.
+// message content and metadata at rest. Passing no keys returns the underlying
+// store.
 func NewEncryptedStore(inner Store, keys []EncryptionKey) (Store, error) {
 	if inner == nil {
 		return nil, fmt.Errorf("store is required")
@@ -153,20 +154,78 @@ func (s *encryptedStore) AppendMessage(ctx context.Context, scope Scope, msg Mes
 }
 
 func (s *encryptedStore) encryptMessage(scope Scope, msg Message) (Message, error) {
-	if msg.Content == "" || msg.ContentEncrypted {
-		return msg, nil
+	if msg.Content != "" && !msg.ContentEncrypted {
+		aead := s.keys[s.active]
+		nonce := make([]byte, aead.NonceSize())
+		if _, err := io.ReadFull(cryptoRand.Reader, nonce); err != nil {
+			return Message{}, fmt.Errorf("generate message nonce: %w", err)
+		}
+		ciphertext := aead.Seal(nil, nonce, []byte(msg.Content), messageAAD(scope, msg))
+		payload := append(nonce, ciphertext...)
+		msg.Content = base64.RawStdEncoding.EncodeToString(payload)
+		msg.ContentEncrypted = true
+		msg.ContentKeyID = s.active
+	}
+	if err := s.encryptMessageMetadata(scope, &msg); err != nil {
+		return Message{}, err
+	}
+	return msg, nil
+}
+
+const encryptedMessageMetadataKey = "__appStudioEncryptedMetadata"
+
+type encryptedMessageMetadata struct {
+	Version int    `json:"version"`
+	KeyID   string `json:"keyID"`
+	Payload string `json:"payload"`
+}
+
+func (s *encryptedStore) encryptMessageMetadata(scope Scope, msg *Message) error {
+	if msg == nil || len(msg.Metadata) == 0 {
+		return nil
+	}
+	if _, encrypted := parseEncryptedMessageMetadata(msg.Metadata); encrypted {
+		return nil
+	}
+	plaintext, err := json.Marshal(msg.Metadata)
+	if err != nil {
+		return fmt.Errorf("encode message %q metadata: %w", msg.ID, err)
 	}
 	aead := s.keys[s.active]
 	nonce := make([]byte, aead.NonceSize())
 	if _, err := io.ReadFull(cryptoRand.Reader, nonce); err != nil {
-		return Message{}, fmt.Errorf("generate message nonce: %w", err)
+		return fmt.Errorf("generate message metadata nonce: %w", err)
 	}
-	ciphertext := aead.Seal(nil, nonce, []byte(msg.Content), messageAAD(scope, msg))
+	ciphertext := aead.Seal(nil, nonce, plaintext, messageMetadataAAD(scope, *msg))
 	payload := append(nonce, ciphertext...)
-	msg.Content = base64.RawStdEncoding.EncodeToString(payload)
-	msg.ContentEncrypted = true
-	msg.ContentKeyID = s.active
-	return msg, nil
+	msg.Metadata = map[string]any{
+		encryptedMessageMetadataKey: encryptedMessageMetadata{
+			Version: 1,
+			KeyID:   s.active,
+			Payload: base64.RawStdEncoding.EncodeToString(payload),
+		},
+	}
+	return nil
+}
+
+func parseEncryptedMessageMetadata(metadata map[string]any) (encryptedMessageMetadata, bool) {
+	if len(metadata) != 1 {
+		return encryptedMessageMetadata{}, false
+	}
+	rawEnvelope, exists := metadata[encryptedMessageMetadataKey]
+	if !exists {
+		return encryptedMessageMetadata{}, false
+	}
+	encodedEnvelope, err := json.Marshal(rawEnvelope)
+	if err != nil {
+		return encryptedMessageMetadata{}, false
+	}
+	var envelope encryptedMessageMetadata
+	if err := json.Unmarshal(encodedEnvelope, &envelope); err != nil ||
+		envelope.Version != 1 || envelope.KeyID == "" || envelope.Payload == "" {
+		return encryptedMessageMetadata{}, false
+	}
+	return envelope, true
 }
 
 func (s *encryptedStore) ListMessages(ctx context.Context, scope Scope, limit int, cursor string) (Page, error) {
@@ -676,28 +735,73 @@ func (s *encryptedStore) Close() error {
 }
 
 func (s *encryptedStore) decryptMessage(scope Scope, msg *Message) error {
-	if msg == nil || !msg.ContentEncrypted {
+	if msg == nil {
 		return nil
 	}
-	aead := s.keys[msg.ContentKeyID]
-	if aead == nil {
-		return fmt.Errorf("message %q uses unknown encryption key %q", msg.ID, msg.ContentKeyID)
+	if msg.ContentEncrypted {
+		aead := s.keys[msg.ContentKeyID]
+		if aead == nil {
+			return fmt.Errorf("message %q uses unknown encryption key %q", msg.ID, msg.ContentKeyID)
+		}
+		payload, err := base64.RawStdEncoding.DecodeString(msg.Content)
+		if err != nil {
+			return fmt.Errorf("decode encrypted message %q: %w", msg.ID, err)
+		}
+		if len(payload) < aead.NonceSize() {
+			return fmt.Errorf("encrypted message %q is too short", msg.ID)
+		}
+		nonce := payload[:aead.NonceSize()]
+		ciphertext := payload[aead.NonceSize():]
+		plaintext, err := aead.Open(nil, nonce, ciphertext, messageAAD(scope, *msg))
+		if err != nil {
+			return fmt.Errorf("decrypt message %q: %w", msg.ID, err)
+		}
+		msg.Content = string(plaintext)
+		msg.ContentEncrypted = false
 	}
-	payload, err := base64.RawStdEncoding.DecodeString(msg.Content)
+	return s.decryptMessageMetadata(scope, msg)
+}
+
+func (s *encryptedStore) decryptMessageMetadata(scope Scope, msg *Message) error {
+	if msg == nil || len(msg.Metadata) == 0 {
+		return nil
+	}
+	_, exists := msg.Metadata[encryptedMessageMetadataKey]
+	if !exists {
+		return nil
+	}
+	if len(msg.Metadata) != 1 {
+		return fmt.Errorf("encrypted message %q metadata envelope contains plaintext fields", msg.ID)
+	}
+	envelope, ok := parseEncryptedMessageMetadata(msg.Metadata)
+	if !ok {
+		return fmt.Errorf("encrypted message %q metadata envelope is invalid", msg.ID)
+	}
+	aead := s.keys[envelope.KeyID]
+	if aead == nil {
+		return fmt.Errorf("message %q metadata uses unknown encryption key %q", msg.ID, envelope.KeyID)
+	}
+	payload, err := base64.RawStdEncoding.DecodeString(envelope.Payload)
 	if err != nil {
-		return fmt.Errorf("decode encrypted message %q: %w", msg.ID, err)
+		return fmt.Errorf("decode encrypted message %q metadata: %w", msg.ID, err)
 	}
 	if len(payload) < aead.NonceSize() {
-		return fmt.Errorf("encrypted message %q is too short", msg.ID)
+		return fmt.Errorf("encrypted message %q metadata is too short", msg.ID)
 	}
-	nonce := payload[:aead.NonceSize()]
-	ciphertext := payload[aead.NonceSize():]
-	plaintext, err := aead.Open(nil, nonce, ciphertext, messageAAD(scope, *msg))
+	plaintext, err := aead.Open(
+		nil,
+		payload[:aead.NonceSize()],
+		payload[aead.NonceSize():],
+		messageMetadataAAD(scope, *msg),
+	)
 	if err != nil {
-		return fmt.Errorf("decrypt message %q: %w", msg.ID, err)
+		return fmt.Errorf("decrypt message %q metadata: %w", msg.ID, err)
 	}
-	msg.Content = string(plaintext)
-	msg.ContentEncrypted = false
+	var metadata map[string]any
+	if err := json.Unmarshal(plaintext, &metadata); err != nil {
+		return fmt.Errorf("decode message %q metadata: %w", msg.ID, err)
+	}
+	msg.Metadata = metadata
 	return nil
 }
 
@@ -710,6 +814,10 @@ func messageAAD(scope Scope, msg Message) []byte {
 		msg.ID,
 		msg.Role,
 	}, "\x00"))
+}
+
+func messageMetadataAAD(scope Scope, msg Message) []byte {
+	return append(messageAAD(scope, msg), []byte("\x00metadata")...)
 }
 
 type encryptedAssistantRunCheckpoint struct {

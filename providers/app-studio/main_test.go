@@ -165,3 +165,36 @@ func TestOpenMessageStoreAllowsInMemoryStore(t *testing.T) {
 		t.Fatal("openMessageStore returned nil store")
 	}
 }
+
+func TestPreviewConsoleEnvironmentConfigDefaultsOnWhenConfigured(t *testing.T) {
+	t.Setenv("APP_STUDIO_PREVIEW_CONSOLE_ENABLED", "")
+	t.Setenv("APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY", " private-key ")
+	t.Setenv("APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID", " current ")
+
+	enabled, privateKey, keyID := previewConsoleEnvironmentConfig()
+	if !enabled || privateKey != "private-key" || keyID != "current" {
+		t.Fatalf("config = (%v, %q, %q), want enabled trimmed configuration", enabled, privateKey, keyID)
+	}
+}
+
+func TestPreviewConsoleEnvironmentConfigCanBeExplicitlyDisabled(t *testing.T) {
+	t.Setenv("APP_STUDIO_PREVIEW_CONSOLE_ENABLED", "false")
+	t.Setenv("APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY", "private-key")
+	t.Setenv("APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID", "current")
+
+	enabled, _, _ := previewConsoleEnvironmentConfig()
+	if enabled {
+		t.Fatal("config enabled with explicit false")
+	}
+}
+
+func TestPreviewConsoleEnvironmentConfigSoftDisablesWithoutSigningMaterial(t *testing.T) {
+	t.Setenv("APP_STUDIO_PREVIEW_CONSOLE_ENABLED", "")
+	t.Setenv("APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY", "")
+	t.Setenv("APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID", "")
+
+	enabled, _, _ := previewConsoleEnvironmentConfig()
+	if enabled {
+		t.Fatal("config enabled without signing material")
+	}
+}

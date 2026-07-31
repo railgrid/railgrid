@@ -13,7 +13,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -72,6 +77,7 @@ func TestMatchReloadRules(t *testing.T) {
 
 func TestInstallSelf(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv(previewConsoleJWKSEnv, testPreviewConsoleJWKS())
 	if err := installSelf(dir); err != nil {
 		t.Fatalf("installSelf: %v", err)
 	}
@@ -88,6 +94,79 @@ func TestInstallSelf(t *testing.T) {
 	if info.Size() != selfInfo.Size() {
 		t.Errorf("installed binary size %d != executable size %d", info.Size(), selfInfo.Size())
 	}
+
+	plugin, err := os.ReadFile(filepath.Join(dir, previewConsolePluginName))
+	if err != nil {
+		t.Fatalf("read installed plugin: %v", err)
+	}
+	if !bytes.Equal(plugin, previewConsolePlugin) {
+		t.Error("installed preview console plugin differs from embedded asset")
+	}
+	rawJWKS, err := os.ReadFile(filepath.Join(dir, previewConsoleJWKSName))
+	if err != nil {
+		t.Fatalf("read installed JWKS: %v", err)
+	}
+	if strings.Contains(string(rawJWKS), `"d"`) {
+		t.Errorf("installed JWKS contains private material: %s", rawJWKS)
+	}
+	for _, name := range []string{previewConsolePluginName, previewConsoleJWKSName} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if info.Mode().Perm() != 0o644 {
+			t.Errorf("%s mode = %v, want 0644", name, info.Mode())
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read install dir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Errorf("temporary install file was not cleaned up: %s", entry.Name())
+		}
+	}
+}
+
+func TestInstallSelfInvalidJWKSFailsOpenAndRemovesStaleConfig(t *testing.T) {
+	for _, raw := range []string{"", `{"keys":[{"kty":"EC","crv":"P-256","kid":"attacker","x":"x","y":"y","d":"private"}]}`} {
+		t.Run(raw, func(t *testing.T) {
+			dir := t.TempDir()
+			stale := filepath.Join(dir, previewConsoleJWKSName)
+			if err := os.WriteFile(stale, []byte(testPreviewConsoleJWKS()), 0o644); err != nil {
+				t.Fatalf("write stale config: %v", err)
+			}
+			t.Setenv(previewConsoleJWKSEnv, raw)
+			if err := installSelf(dir); err != nil {
+				t.Fatalf("installSelf should leave app available: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, previewConsolePluginName)); err != nil {
+				t.Errorf("plugin was not installed: %v", err)
+			}
+			if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("stale JWKS still exists: %v", err)
+			}
+		})
+	}
+}
+
+func TestNormalizePreviewConsoleJWKSRejectsPrivateOrMalformedKeys(t *testing.T) {
+	for _, raw := range []string{
+		`{"keys":[]}`,
+		`{"keys":[{"kty":"EC","crv":"P-256","kid":"a","x":"x","y":"y","d":"private"}]}`,
+		`{"keys":[{"kty":"RSA","kid":"a","x":"x","y":"y"}]}`,
+		`{"keys":[{"kty":"EC","crv":"P-256","kid":"a","x":"eA","y":"eQ"}]}`,
+	} {
+		if _, err := normalizePreviewConsoleJWKS([]byte(raw)); err == nil {
+			t.Errorf("normalizePreviewConsoleJWKS(%s) succeeded, want rejection", raw)
+		}
+	}
+}
+
+func testPreviewConsoleJWKS() string {
+	coordinate := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	return `{"keys":[{"kty":"EC","crv":"P-256","kid":"current","x":"` + coordinate + `","y":"` + coordinate + `","alg":"ES256","use":"sig"}]}`
 }
 
 func newTestAgent(t *testing.T, cfg *agentConfig) *agentServer {
@@ -183,6 +262,102 @@ func TestControlAuth(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != 401 {
 		t.Errorf("bad token: status = %d, want 401", rec.Code)
+	}
+}
+
+func TestRingLogScopesOutputToCurrentProcessAttempt(t *testing.T) {
+	logs := newRingLog(10)
+	first := logs.beginAttempt()
+	logs.appendAttempt(first, `npm error Missing script: "dev"`)
+	second := logs.beginAttempt()
+	logs.appendAttempt(first, "late output from stopped process")
+	logs.appendAttempt(second, "server listening")
+
+	if got := logs.lines(); !slices.Equal(got, []string{"server listening"}) {
+		t.Fatalf("current attempt logs = %#v", got)
+	}
+}
+
+func TestReloadCannotWriteAcrossRestartEpoch(t *testing.T) {
+	workdir := t.TempDir()
+	started := filepath.Join(workdir, "reload-started")
+	release := filepath.Join(workdir, "reload-release")
+	srv := newTestAgent(t, &agentConfig{
+		WorkDir:      workdir,
+		StartCommand: "echo current-process; sleep 60",
+	})
+	if err := srv.supervisor.start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = srv.supervisor.stop() }()
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		reloadDone <- srv.supervisor.runReloadCommands(context.Background(), []string{
+			"touch " + started + "; while [ ! -f " + release + " ]; do sleep 0.01; done; echo old-reload-output",
+		})
+	}()
+	waitFor(t, func() bool {
+		_, err := os.Stat(started)
+		return err == nil
+	})
+
+	restartDone := make(chan error, 1)
+	go func() { restartDone <- srv.supervisor.restart(context.Background()) }()
+	select {
+	case err := <-restartDone:
+		t.Fatalf("restart completed before reload serialization boundary: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := os.WriteFile(release, []byte("go"), 0o644); err != nil {
+		t.Fatalf("release reload: %v", err)
+	}
+	if err := <-reloadDone; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if err := <-restartDone; err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	waitFor(t, func() bool {
+		return slices.Contains(srv.logs.lines(), "current-process")
+	})
+	for _, line := range srv.logs.lines() {
+		if strings.Contains(line, "old-reload-output") {
+			t.Fatalf("old reload output crossed restart epoch: %#v", srv.logs.lines())
+		}
+	}
+}
+
+func TestStatusReportsCurrentAttemptAndDeclaredPortReadiness(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	srv := newTestAgent(t, &agentConfig{
+		StartCommand: "sleep 60",
+		Port:         fmt.Sprint(port),
+	})
+	if err := srv.supervisor.start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = srv.supervisor.stop() }()
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req.Header.Set(controlTokenHeader, "test-token")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got processStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if got.AttemptID != 1 || got.AttemptStartedUnixMilli == 0 || !got.Configured || !got.Running || !got.PortReachable || got.Port != fmt.Sprint(port) {
+		t.Fatalf("status = %+v", got)
 	}
 }
 

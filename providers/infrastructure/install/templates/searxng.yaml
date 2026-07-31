@@ -638,4 +638,3 @@ spec:
       # opted into exposure and is simply absent otherwise. That is exactly
       # the wanted semantics: no URL that is only sometimes real.
       url: ${"https://" + httpRoute.spec.hostnames[0] + "${kedge.appPublicPort}"}
-

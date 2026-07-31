@@ -331,7 +331,9 @@ spec:
   # same single-line/no-double-quote constraints do NOT apply here — this
   # lands in a Deployment env value — but the shim itself is proven, so it is
   # carried verbatim): it forces server.host + server.allowedHosts so the dev
-  # server accepts the proxied preview Host header.
+  # server accepts the proxied preview Host header, and dynamically loads the
+  # platform preview-console plugin when trusted keys are installed. Missing
+  # plugin/config fails open and leaves the ordinary preview intact.
   development:
     components:
       frontend:
@@ -339,7 +341,7 @@ spec:
         imageInput: frontendImage
         devImage: "${kedge.devImage.node}"
         workingDir: /workspace
-        startCommand: "SHIM=.kedge-vite.config.mjs; printf '%s' 'ZXhwb3J0IGRlZmF1bHQgYXN5bmMgKGVudikgPT4gewogIGNvbnN0IGZvcmNlZCA9IHsgc2VydmVyOiB7IGhvc3Q6IHRydWUsIGFsbG93ZWRIb3N0czogdHJ1ZSB9IH0KICBsZXQgbG9hZENvbmZpZ0Zyb21GaWxlLCBtZXJnZUNvbmZpZwogIHRyeSB7CiAgICAoeyBsb2FkQ29uZmlnRnJvbUZpbGUsIG1lcmdlQ29uZmlnIH0gPSBhd2FpdCBpbXBvcnQoJ3ZpdGUnKSkKICB9IGNhdGNoIChlKSB7CiAgICByZXR1cm4gZm9yY2VkCiAgfQogIGxldCBiYXNlID0ge30KICB0cnkgewogICAgY29uc3QgbG9hZGVkID0gYXdhaXQgbG9hZENvbmZpZ0Zyb21GaWxlKGVudiwgdW5kZWZpbmVkLCBwcm9jZXNzLmN3ZCgpKQogICAgaWYgKGxvYWRlZCAmJiBsb2FkZWQuY29uZmlnKSBiYXNlID0gbG9hZGVkLmNvbmZpZwogIH0gY2F0Y2ggKGUpIHsKICAgIGNvbnNvbGUuZXJyb3IoJ1trZWRnZV0gY291bGQgbm90IGxvYWQgcHJvamVjdCB2aXRlIGNvbmZpZzonLCBlKQogIH0KICByZXR1cm4gbWVyZ2VDb25maWcoYmFzZSwgZm9yY2VkKQp9Cg==' | base64 -d > $SHIM; grep -qxF $SHIM .gitignore 2>/dev/null || echo $SHIM >> .gitignore; if [ -f package.json ]; then (npm run dev -- --host 0.0.0.0 --port $PORT --config $SHIM || npm run dev -- --host 0.0.0.0 --port $PORT || npm start); else npx --yes vite --host 0.0.0.0 --port $PORT --config $SHIM || npx --yes vite --host 0.0.0.0 --port $PORT; fi"
+        startCommand: "SHIM=.kedge-vite.config.mjs; printf '%s' 'ZXhwb3J0IGRlZmF1bHQgYXN5bmMgKGVudikgPT4gewogIGNvbnN0IGZvcmNlZCA9IHsgc2VydmVyOiB7IGhvc3Q6IHRydWUsIGFsbG93ZWRIb3N0czogdHJ1ZSB9IH0KICB0cnkgewogICAgY29uc3QgeyBkZWZhdWx0OiBwcmV2aWV3Q29uc29sZVBsdWdpbiB9ID0gYXdhaXQgaW1wb3J0KCdmaWxlOi8vL2tlZGdlL2Jpbi9wcmV2aWV3LWNvbnNvbGUtcGx1Z2luLm1qcycpCiAgICBmb3JjZWQucGx1Z2lucyA9IFtwcmV2aWV3Q29uc29sZVBsdWdpbigpXQogIH0gY2F0Y2ggKGUpIHsKICAgIC8vIE9wdGlvbmFsIGluc3RydW1lbnRhdGlvbiBpcyBkaXNhYmxlZCBvciB1bmF2YWlsYWJsZS4KICB9CiAgbGV0IGxvYWRDb25maWdGcm9tRmlsZSwgbWVyZ2VDb25maWcKICB0cnkgewogICAgKHsgbG9hZENvbmZpZ0Zyb21GaWxlLCBtZXJnZUNvbmZpZyB9ID0gYXdhaXQgaW1wb3J0KCd2aXRlJykpCiAgfSBjYXRjaCAoZSkgewogICAgcmV0dXJuIGZvcmNlZAogIH0KICBsZXQgYmFzZSA9IHt9CiAgdHJ5IHsKICAgIGNvbnN0IGxvYWRlZCA9IGF3YWl0IGxvYWRDb25maWdGcm9tRmlsZShlbnYsIHVuZGVmaW5lZCwgcHJvY2Vzcy5jd2QoKSkKICAgIGlmIChsb2FkZWQgJiYgbG9hZGVkLmNvbmZpZykgYmFzZSA9IGxvYWRlZC5jb25maWcKICB9IGNhdGNoIChlKSB7CiAgICBjb25zb2xlLmVycm9yKCdba2VkZ2VdIGNvdWxkIG5vdCBsb2FkIHByb2plY3Qgdml0ZSBjb25maWc6JywgZSkKICB9CiAgcmV0dXJuIG1lcmdlQ29uZmlnKGJhc2UsIGZvcmNlZCkKfQo=' | base64 -d > $SHIM; grep -qxF $SHIM .gitignore 2>/dev/null || echo $SHIM >> .gitignore; if [ -f package.json ]; then (npm run dev -- --host 0.0.0.0 --port $PORT --config $SHIM || npm run dev -- --host 0.0.0.0 --port $PORT || npm start); else npx --yes vite --host 0.0.0.0 --port $PORT --config $SHIM || npx --yes vite --host 0.0.0.0 --port $PORT; fi"
         port: frontend
         reload:
           strategy: process
@@ -361,7 +363,7 @@ spec:
 
   # ── Data plane (development mode) ─────────────────────────────────────
   # Per-component control verbs, served as
-  # …/applications/<name>/components/{frontend,backend}/{sync,restart,log,env}.
+  # …/applications/<name>/components/{frontend,backend}/{sync,restart,log,env,process}.
   # The status paths they resolve through (status.components.*, controlSecretRef,
   # runtimeNamespace) are published by the synthesized dev overlay, so in
   # production mode these verbs answer 409 instance-not-ready — the data plane
@@ -396,6 +398,11 @@ spec:
             upstreamPath: /logs
             methods: ["GET"]
             stream: true
+          process:
+            servicePath: status.components.frontend.controlServiceRef
+            port: control
+            upstreamPath: /status
+            methods: ["GET"]
       backend:
         endpoints:
           sync:
@@ -419,6 +426,11 @@ spec:
             upstreamPath: /logs
             methods: ["GET"]
             stream: true
+          process:
+            servicePath: status.components.backend.controlServiceRef
+            port: control
+            upstreamPath: /status
+            methods: ["GET"]
 
   # ── backendConfig: the kro resource graph ─────────────────────────────
   # Interpreted by the kro backend. Every resource sets namespace: default —

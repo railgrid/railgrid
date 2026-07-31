@@ -41,5 +41,6 @@ test('renders only allowlisted structured failure diagnostics', async () => {
   }))
   assert.match(html, /Technical details/)
   assert.match(html, /Failed:/)
+  assert.doesNotMatch(html, /aria-controls="app-studio-assistant-actions-assistant-2-failed-1-diagnostic"/)
   assert.doesNotMatch(html, /rawError|arguments/)
 })

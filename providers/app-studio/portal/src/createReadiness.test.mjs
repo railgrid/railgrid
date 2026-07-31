@@ -139,3 +139,10 @@ test('new-project route has one setup surface and a stable create button label',
   assert.match(appSource, /if \(gitConnectionCreateReady\.value && llmConfigured\.value\) return true\s+error\.value = null\s+return false/)
   assert.match(appSource, />\s*Create and send\s*</)
 })
+
+test('new-project prompt explicitly authorizes eager development-template inference', () => {
+  assert.match(
+    appSource,
+    /api\.createProject\(props\.ctx,\s*\{[\s\S]*prompt:\s*content,[\s\S]*inferDevelopmentTemplate:\s*true,[\s\S]*\}\)/,
+  )
+})

@@ -337,24 +337,73 @@ func TestProjectEinoAssistantCompletionBarrierLeavesVerifiedAndReadOnlyModelsUnw
 	}
 }
 
+func TestProjectEinoAssistantRepairForcesToolChoiceUntilMutation(t *testing.T) {
+	base := &projectEinoAssistantCompletionBarrierTestModel{
+		message: schema.AssistantMessage("I could not finish.", nil),
+	}
+	runState := newProjectEinoAssistantRunState()
+	runState.RecordSourceMutation()
+	runState.RecordDevelopmentVerificationResult(
+		`{"checkedMutationRevision":1,"status":"not_ready","blockers":["Missing script: dev"]}`,
+	)
+	middleware := &projectEinoAssistantPhaseFilterMiddleware{
+		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
+		runState:                     runState,
+		phase:                        projectEinoAssistantPhaseRepair,
+	}
+
+	wrapped, err := middleware.WrapModel(context.Background(), base, &adk.ModelContext{
+		Tools: []*schema.ToolInfo{
+			{Name: projectToolApplyPatch},
+			{Name: projectToolAskFollowUp},
+		},
+	})
+	if err != nil {
+		t.Fatalf("WrapModel returned error: %v", err)
+	}
+	if _, ok := wrapped.(*projectEinoAssistantForcedToolModel); !ok {
+		t.Fatalf("repair model = %T, want forced-tool wrapper", wrapped)
+	}
+	if _, err := wrapped.Generate(context.Background(), nil); err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if base.toolChoice == nil || *base.toolChoice != schema.ToolChoiceForced {
+		t.Fatalf("tool choice = %#v, want forced", base.toolChoice)
+	}
+
+	runState.RecordSourceMutation()
+	wrapped, err = middleware.WrapModel(context.Background(), base, &adk.ModelContext{
+		Tools: []*schema.ToolInfo{{Name: projectToolVerifyDevelopmentRuntime}},
+	})
+	if err != nil {
+		t.Fatalf("WrapModel after repair mutation returned error: %v", err)
+	}
+	if _, ok := wrapped.(*projectEinoAssistantCompletionBarrierModel); !ok {
+		t.Fatalf("post-mutation repair model = %T, want completion-verification barrier", wrapped)
+	}
+}
+
 type projectEinoAssistantCompletionBarrierTestModel struct {
-	message *schema.Message
-	stream  []*schema.Message
+	message    *schema.Message
+	stream     []*schema.Message
+	toolChoice *schema.ToolChoice
 }
 
 func (m *projectEinoAssistantCompletionBarrierTestModel) Generate(
-	context.Context,
-	[]*schema.Message,
-	...einomodel.Option,
+	_ context.Context,
+	_ []*schema.Message,
+	opts ...einomodel.Option,
 ) (*schema.Message, error) {
+	m.toolChoice = einomodel.GetCommonOptions(nil, opts...).ToolChoice
 	return m.message, nil
 }
 
 func (m *projectEinoAssistantCompletionBarrierTestModel) Stream(
-	context.Context,
-	[]*schema.Message,
-	...einomodel.Option,
+	_ context.Context,
+	_ []*schema.Message,
+	opts ...einomodel.Option,
 ) (*schema.StreamReader[*schema.Message], error) {
+	m.toolChoice = einomodel.GetCommonOptions(nil, opts...).ToolChoice
 	if m.stream != nil {
 		return schema.StreamReaderFromArray(m.stream), nil
 	}
@@ -602,7 +651,7 @@ func TestProjectEinoAssistantPhaseMiddlewareFiltersTools(t *testing.T) {
 				"read_workspace", projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep,
 				projectToolAskFollowUp, projectToolWriteFile, projectToolApplyPatch,
 				projectToolGetRuntimeStatus, projectToolRestartRuntime, projectToolSetRuntimeEnv,
-				projectToolVerifyDevelopmentRuntime, projectEinoAssistantWriteTodosTool,
+				projectEinoAssistantWriteTodosTool,
 			},
 		},
 		{
@@ -2086,6 +2135,57 @@ func TestProjectEinoAssistantPhasePreMutationGateReevaluatesAtInvocation(t *test
 	}
 	if result != `{"status":"not_ready"}` || calls != 1 {
 		t.Fatalf("post-mutation verify = %q calls=%d", result, calls)
+	}
+}
+
+func TestProjectEinoAssistantPhaseRepairVerificationGateReevaluatesAtInvocation(t *testing.T) {
+	plan := projectAssistantApprovedPlan{Steps: []string{"repair", "verify"}}
+	runState := newProjectEinoAssistantRunState()
+	runState.ApprovePlan(plan)
+	runState.RecordSourceMutation()
+	runState.RecordDevelopmentVerificationResult(
+		`{"checkedMutationRevision":1,"status":"not_ready","blockers":["Missing script: dev"]}`,
+	)
+	verifyTool := projectEinoAssistantPhaseToolInfo(
+		projectToolVerifyDevelopmentRuntime,
+		projectAssistantToolRiskRead,
+		projectAssistantToolBundleRuntime,
+	)
+	middleware := &projectEinoAssistantPhaseFilterMiddleware{
+		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
+		runState:                     runState,
+		phase:                        projectEinoAssistantPhaseRepair,
+		approvedPlan:                 &plan,
+		toolInfos:                    []*schema.ToolInfo{verifyTool},
+	}
+	calls := 0
+	wrapped, err := middleware.WrapInvokableToolCall(
+		context.Background(),
+		func(context.Context, string, ...einotool.Option) (string, error) {
+			calls++
+			return `{"checkedMutationRevision":2,"status":"ready"}`, nil
+		},
+		&adk.ToolContext{Name: projectToolVerifyDevelopmentRuntime},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := wrapped(context.Background(), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "Tool call denied: verify_development_runtime is unavailable until a repair source mutation succeeds" ||
+		calls != 0 {
+		t.Fatalf("pre-repair verify = %q calls=%d", result, calls)
+	}
+
+	runState.RecordSourceMutation()
+	result, err = wrapped(context.Background(), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != `{"checkedMutationRevision":2,"status":"ready"}` || calls != 1 {
+		t.Fatalf("post-repair verify = %q calls=%d", result, calls)
 	}
 }
 

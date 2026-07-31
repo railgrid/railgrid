@@ -408,6 +408,194 @@ func TestProjectAssistantDurableMetadataFromExistingPreservesPlanAcrossTransitio
 	}
 }
 
+func TestProjectAssistantProgressMetadataIsBoundedAndPreserved(t *testing.T) {
+	valid := projectAssistantProgressSnapshot{
+		Version:          1,
+		Messages:         []string{"I found the existing structure.", "I’m verifying the finished change."},
+		WorkedDurationMS: 83_400,
+	}
+	for _, tt := range []struct {
+		name     string
+		progress any
+		want     bool
+	}{
+		{name: "typed snapshot", progress: valid, want: true},
+		{name: "generic postgres map", progress: map[string]any{
+			"version":          float64(1),
+			"messages":         []any{"I found the existing structure."},
+			"workedDurationMs": float64(1_250),
+		}, want: true},
+		{name: "unknown version", progress: map[string]any{"version": 2, "messages": []any{"Update"}, "workedDurationMs": 1}},
+		{name: "unknown field", progress: map[string]any{"version": 1, "messages": []any{"Update"}, "workedDurationMs": 1, "raw": "secret"}},
+		{name: "empty messages", progress: map[string]any{"version": 1, "messages": []any{}, "workedDurationMs": 1}},
+		{name: "control text", progress: map[string]any{"version": 1, "messages": []any{"unsafe\u0000text"}, "workedDurationMs": 1}},
+		{name: "oversized text", progress: map[string]any{"version": 1, "messages": []any{strings.Repeat("x", projectEinoAssistantProgressMaxBytes+1)}, "workedDurationMs": 1}},
+		{name: "oversized duration", progress: map[string]any{"version": 1, "messages": []any{"Update"}, "workedDurationMs": projectAssistantWorkedDurationMaxMS + 1}},
+		{name: "mismatched message sequences", progress: map[string]any{"version": 1, "messages": []any{"Update"}, "messageSequences": []any{1, 2}, "workedDurationMs": 1}},
+		{name: "zero message sequence", progress: map[string]any{"version": 1, "messages": []any{"Update"}, "messageSequences": []any{0}, "workedDurationMs": 1}},
+		{name: "unordered message sequences", progress: map[string]any{"version": 1, "messages": []any{"First", "Second"}, "messageSequences": []any{2, 1}, "workedDurationMs": 1}},
+		{name: "oversized message sequence", progress: map[string]any{"version": 1, "messages": []any{"Update"}, "messageSequences": []any{projectAssistantTraceMaxSequence + 1}, "workedDurationMs": 1}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := projectAssistantProgressSnapshotFromMetadata(tt.progress)
+			if ok != tt.want {
+				t.Fatalf("progress = %#v accepted = %t, want %t", got, ok, tt.want)
+			}
+		})
+	}
+
+	metadata := projectAssistantDurableMetadataFromExisting(
+		store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusCompleted, Revision: 4},
+		"Completed",
+		false,
+		map[string]any{projectAssistantMetadataProgress: valid},
+	)
+	if got := metadata[projectAssistantMetadataProgress]; !reflect.DeepEqual(got, valid) {
+		t.Fatalf("preserved progress = %#v, want %#v", got, valid)
+	}
+}
+
+func TestProjectAssistantProgressSnapshotTracksActiveWorkOnly(t *testing.T) {
+	started := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	state := &projectAssistantDurableMetadataState{
+		progressMessages:   []string{"I’m inspecting the project."},
+		workedDuration:     40 * time.Second,
+		workSegmentStarted: started,
+	}
+	progress := state.progressSnapshot(started.Add(43*time.Second + 400*time.Millisecond))
+	if progress == nil || progress.Version != 1 || progress.WorkedDurationMS != 83_400 {
+		t.Fatalf("progress = %#v, want 83.4 seconds of active work", progress)
+	}
+}
+
+func TestProjectAssistantProgressSnapshotOrdersProseAndActionLifecycle(t *testing.T) {
+	state := &projectAssistantDurableMetadataState{}
+	if !state.appendProgress("I’m mapping the project structure.") {
+		t.Fatal("first progress update was not accepted")
+	}
+	state.upsertToolCall(projectToolCallStreamEvent{
+		ID:     "call-read",
+		Name:   projectToolReadFile,
+		Status: "running",
+	})
+	state.upsertToolCall(projectToolCallStreamEvent{
+		ID:     "call-read",
+		Name:   projectToolReadFile,
+		Status: "succeeded",
+	})
+	if !state.appendProgress("I found the implementation seam.") {
+		t.Fatal("second progress update was not accepted")
+	}
+	state.upsertToolCall(projectToolCallStreamEvent{
+		ID:     "call-write",
+		Name:   projectToolApplyPatch,
+		Status: "succeeded",
+	})
+
+	progress := state.progressSnapshot(time.Now().UTC())
+	if progress == nil || !reflect.DeepEqual(progress.MessageSequences, []int{1, 3}) {
+		t.Fatalf("progress sequences = %#v, want [1 3]", progress)
+	}
+	actions := projectAssistantActionFeedFromToolCalls(state.toolCalls)
+	if len(actions) != 2 || actions[0].Sequence != 2 || actions[1].Sequence != 4 {
+		t.Fatalf("action sequences = %#v, want stable lifecycle sequence 2 then 4", actions)
+	}
+}
+
+func TestProjectAssistantProgressSnapshotContinuesOrderingAfterResume(t *testing.T) {
+	state := &projectAssistantDurableMetadataState{}
+	state.restoreTrace(
+		&projectAssistantProgressSnapshot{
+			Version:          1,
+			Messages:         []string{"Initial commentary."},
+			MessageSequences: []int{1},
+			WorkedDurationMS: 2_000,
+		},
+		[]projectAssistantActionFeedItem{{
+			ID:       projectAssistantActionPublicID("call-existing"),
+			Kind:     projectAssistantActionFeedItemInspect,
+			Status:   projectAssistantActionFeedStatusSucceeded,
+			Title:    "Read file",
+			Severity: projectAssistantActionFeedSeverityNormal,
+			Sequence: 2,
+		}},
+	)
+	state.upsertToolCall(projectToolCallStreamEvent{
+		ID:     "call-existing",
+		Name:   projectToolReadFile,
+		Status: "succeeded",
+	})
+	if !state.appendProgress("Resumed commentary.") {
+		t.Fatal("resumed progress update was not accepted")
+	}
+	state.upsertToolCall(projectToolCallStreamEvent{
+		ID:     "call-new",
+		Name:   projectToolApplyPatch,
+		Status: "succeeded",
+	})
+
+	progress := state.progressSnapshot(time.Now().UTC())
+	if progress == nil || !reflect.DeepEqual(progress.MessageSequences, []int{1, 3}) {
+		t.Fatalf("resumed progress sequences = %#v, want [1 3]", progress)
+	}
+	actions := projectAssistantActionFeedFromToolCalls(state.toolCalls)
+	if len(actions) != 2 || actions[0].Sequence != 2 || actions[1].Sequence != 4 {
+		t.Fatalf("resumed action sequences = %#v, want existing 2 then new 4", actions)
+	}
+}
+
+func TestProjectAssistantProgressSnapshotKeepsHiddenActionSequenceWhenItFails(t *testing.T) {
+	state := &projectAssistantDurableMetadataState{}
+	state.upsertToolCall(projectToolCallStreamEvent{
+		ID:     "call-custom",
+		Name:   "custom_tool",
+		Status: "running",
+	})
+	if actions := projectAssistantActionFeedFromToolCalls(state.toolCalls); len(actions) != 0 {
+		t.Fatalf("running custom action = %#v, want hidden", actions)
+	}
+	if !state.appendProgress("The custom operation needs another look.") {
+		t.Fatal("progress update was not accepted")
+	}
+	state.upsertToolCall(projectToolCallStreamEvent{
+		ID:     "call-custom",
+		Name:   "custom_tool",
+		Status: "failed",
+		Error:  "operation failed",
+	})
+
+	actions := projectAssistantActionFeedFromToolCalls(state.toolCalls)
+	if len(actions) != 1 || actions[0].Sequence != 1 || actions[0].Status != projectAssistantActionFeedStatusFailed {
+		t.Fatalf("failed custom action = %#v, want original sequence 1", actions)
+	}
+	progress := state.progressSnapshot(time.Now().UTC())
+	if progress == nil || !reflect.DeepEqual(progress.MessageSequences, []int{2}) {
+		t.Fatalf("progress sequences = %#v, want [2]", progress)
+	}
+}
+
+func TestProjectAssistantProgressSnapshotFallsBackWhenOrderingIsExhausted(t *testing.T) {
+	state := &projectAssistantDurableMetadataState{nextTraceSequence: projectAssistantTraceMaxSequence}
+	if !state.appendProgress("The work update remains visible.") {
+		t.Fatal("progress update was not accepted at sequence exhaustion")
+	}
+	state.upsertToolCall(projectToolCallStreamEvent{
+		ID:     "call-after-limit",
+		Name:   projectToolReadFile,
+		Status: "succeeded",
+	})
+
+	progress := state.progressSnapshot(time.Now().UTC())
+	if progress == nil || !reflect.DeepEqual(progress.Messages, []string{"The work update remains visible."}) ||
+		len(progress.MessageSequences) != 0 {
+		t.Fatalf("progress = %#v, want preserved prose with legacy ordering fallback", progress)
+	}
+	actions := projectAssistantActionFeedFromToolCalls(state.toolCalls)
+	if len(actions) != 1 || actions[0].Sequence != 0 {
+		t.Fatalf("actions = %#v, want preserved unsequenced action", actions)
+	}
+}
+
 func TestProjectAssistantDurableMetadataFromExistingDecodesOnlyValidPlanSnapshots(t *testing.T) {
 	valid := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "in_progress"}}}
 	tooMany := projectAssistantPlanSnapshot{Steps: make([]projectAssistantPlanStep, projectEinoAssistantTodoProgressMaxItems+1)}
@@ -475,6 +663,22 @@ func TestProjectAssistantDurableFinalContentUsesReturnedReplyWithoutDuplicatingP
 				t.Fatalf("durable final content = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAppendProjectAssistantStreamBlockSeparatesAcceptedUpdates(t *testing.T) {
+	var content strings.Builder
+	if got := appendProjectAssistantStreamBlock(&content, "  I found the existing structure.  "); got != "I found the existing structure." {
+		t.Fatalf("first block = %q", got)
+	}
+	if got := appendProjectAssistantStreamBlock(&content, "I’m moving into verification now."); got != "I found the existing structure.\n\nI’m moving into verification now." {
+		t.Fatalf("joined blocks = %q", got)
+	}
+	if got := appendProjectAssistantStreamBlock(&content, "I’m moving into verification now."); got != "I found the existing structure.\n\nI’m moving into verification now." {
+		t.Fatalf("duplicate block = %q", got)
+	}
+	if got := appendProjectAssistantStreamBlock(&content, " \n "); got != content.String() {
+		t.Fatalf("blank block changed content: %q", got)
 	}
 }
 

@@ -70,6 +70,7 @@ type projectAssistantActionFeedItem struct {
 	Severity   string                            `json:"severity"`
 	GroupKey   string                            `json:"groupKey,omitempty"`
 	GroupTitle string                            `json:"groupTitle,omitempty"`
+	Sequence   int                               `json:"sequence,omitempty"`
 	Diagnostic *projectAssistantActionDiagnostic `json:"diagnostic,omitempty"`
 }
 
@@ -80,7 +81,7 @@ type projectAssistantActionDiagnostic struct {
 }
 
 func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEvent) projectAssistantActionFeedItem {
-	return presentProjectAssistantAction(
+	item := presentProjectAssistantAction(
 		toolCall.ID,
 		toolCall.Name,
 		toolCall.Status,
@@ -88,6 +89,8 @@ func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEv
 		toolCall.Summary,
 		toolCall.Error,
 	)
+	item.Sequence = toolCall.Sequence
+	return item
 }
 
 func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssistantToolCall) projectAssistantActionFeedItem {
@@ -190,6 +193,12 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 		if count, ok := projectAssistantSummaryCount(summary, "log line(s)"); ok {
 			item.Count = count
 			item.Outcome = projectAssistantCountOutcome(count, "log line", "log lines")
+		}
+	case projectToolGetPreviewConsoleLogs:
+		item.Title = projectAssistantActionLifecycleTitle(status, "Reviewing preview console", "Reviewed preview console", "Preview console review failed")
+		if count, ok := projectAssistantSummaryCount(summary, "browser console event(s)"); ok {
+			item.Count = count
+			item.Outcome = projectAssistantCountOutcome(count, "console event", "console events")
 		}
 	case projectToolRestartRuntime:
 		item.Title = projectAssistantActionLifecycleTitle(status, "Restarting development runtime", "Restarted development runtime", "Runtime restart failed")

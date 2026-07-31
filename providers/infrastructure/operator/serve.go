@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
@@ -102,6 +103,12 @@ func EnsureProviderServe(
 	// values fall back to the in-binary defaults (node toolchain + agent).
 	if cr.Spec.Development.AgentImage != "" {
 		env = append(env, corev1.EnvVar{Name: "KEDGE_DEV_AGENT_IMAGE", Value: cr.Spec.Development.AgentImage})
+	}
+	if verificationJWKS := strings.TrimSpace(os.Getenv("KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS")); verificationJWKS != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS",
+			Value: verificationJWKS,
+		})
 	}
 	for _, toolchain := range slices.Sorted(maps.Keys(cr.Spec.Development.Images)) {
 		if image := cr.Spec.Development.Images[toolchain]; image != "" {

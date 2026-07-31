@@ -177,7 +177,9 @@ func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 }
 
 func TestDevOverlayDevDeploymentShape(t *testing.T) {
-	rgd, err := buildRGD(devTestTemplate(t), devTestTokens())
+	tokens := devTestTokens()
+	tokens[previewConsoleVerificationJWKSConfigKey] = `{"keys":[{"kid":"current","kty":"EC"}]}`
+	rgd, err := buildRGD(devTestTemplate(t), tokens)
 	if err != nil {
 		t.Fatalf("buildRGD: %v", err)
 	}
@@ -236,6 +238,17 @@ func TestDevOverlayDevDeploymentShape(t *testing.T) {
 	inits, _ := podSpec["initContainers"].([]any)
 	if len(inits) != 1 {
 		t.Fatalf("dev deployment initContainers = %d, want 1 (agent injector)", len(inits))
+	}
+	init, _ := inits[0].(map[string]any)
+	initEnv, _ := init["env"].([]any)
+	if len(initEnv) != 1 {
+		t.Fatalf("agent injector env = %v, want the public verification JWKS", initEnv)
+	}
+	if name, _, _ := nestedString(initEnv[0].(map[string]any), "name"); name != "KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS" {
+		t.Errorf("agent injector env name = %q", name)
+	}
+	if value, _, _ := nestedString(initEnv[0].(map[string]any), "value"); value != tokens[previewConsoleVerificationJWKSConfigKey] {
+		t.Errorf("agent injector JWKS = %q, want configured public JWKS", value)
 	}
 	if !strings.Contains(tmplJSON, `"claimName":"${schema.spec.name}-dev-backend"`) {
 		t.Error("dev deployment does not mount the per-component workspace PVC")

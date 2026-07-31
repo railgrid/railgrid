@@ -129,7 +129,7 @@ async function copyDiagnostic(item: typeof rows.value[number]) {
             type="button"
             class="ml-auto inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
             :aria-expanded="openDiagnosticID === item.id"
-            :aria-controls="`${panelID}-${item.id}-diagnostic`"
+            :aria-controls="openDiagnosticID === item.id ? `${panelID}-${item.id}-diagnostic` : undefined"
             @click="openDiagnosticID = openDiagnosticID === item.id ? null : item.id"
           >
             <CircleAlert class="h-3.5 w-3.5" :stroke-width="1.75" />

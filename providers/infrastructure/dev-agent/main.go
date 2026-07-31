@@ -32,7 +32,8 @@ You may obtain a copy of the License at
 //     POST /sync     write/delete workspace files; restart: ""|"auto"|"always".
 //     POST /restart  stop + start the dev process.
 //     POST /env      set non-secret env for the dev process; optional restart.
-//     GET  /logs     buffered dev-process output (text/plain).
+//     GET  /logs     current dev-process attempt output (text/plain).
+//     GET  /status   current child-process and declared-port readiness (JSON).
 //
 // Every endpoint except /healthz requires X-Sandbox-Control-Token (constant-
 // time compared against KEDGE_DEV_CONTROL_TOKEN, read once then cleared).
@@ -50,12 +51,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -74,7 +78,14 @@ const (
 	defaultControlAddr = ":7070"
 	controlTokenHeader = "X-Sandbox-Control-Token"
 	agentBinaryName    = "kedge-dev-agent"
+
+	previewConsolePluginName = "preview-console-plugin.mjs"
+	previewConsoleJWKSName   = "preview-console-jwks.json"
+	previewConsoleJWKSEnv    = "KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS"
 )
+
+//go:embed preview-console-plugin.mjs
+var previewConsolePlugin []byte
 
 // reloadRule mirrors TemplateDevelopmentReloadRule: changed-path globs that
 // require a command before the process restarts.
@@ -131,9 +142,14 @@ func main() {
 	_ = httpSrv.Shutdown(shutdown)
 }
 
-// installSelf copies the agent's own executable into dir (the shared emptyDir
-// the dev container mounts at /kedge/bin). Plain copy — the image may be
-// scratch, so no shell or cp is assumed anywhere.
+// installSelf atomically installs the agent executable, the platform-owned
+// preview-console Vite plugin, and (when configured) its trusted public JWKS
+// into dir, the shared emptyDir the dev container mounts at /kedge/bin. Plain
+// copies are used because the injector image may be scratch.
+//
+// Missing or invalid verification configuration disables the optional browser
+// bridge without blocking the application. Any stale JWKS is removed so an old
+// platform key set cannot be trusted accidentally after a bad rollout.
 func installSelf(dir string) error {
 	self, err := os.Executable()
 	if err != nil {
@@ -147,24 +163,139 @@ func installSelf(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	target := filepath.Join(dir, agentBinaryName)
-	tmp := target + ".tmp"
-	dst, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err := atomicInstall(dir, agentBinaryName, 0o755, src); err != nil {
+		return fmt.Errorf("install agent: %w", err)
+	}
+	if err := atomicInstall(dir, previewConsolePluginName, 0o644, bytes.NewReader(previewConsolePlugin)); err != nil {
+		return fmt.Errorf("install preview console plugin: %w", err)
+	}
+
+	jwksPath := filepath.Join(dir, previewConsoleJWKSName)
+	rawJWKS := strings.TrimSpace(os.Getenv(previewConsoleJWKSEnv))
+	if rawJWKS == "" {
+		if err := os.Remove(jwksPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale preview console JWKS: %w", err)
+		}
+		log.Printf("preview console bridge disabled: %s is unset", previewConsoleJWKSEnv)
+	} else if jwks, err := normalizePreviewConsoleJWKS([]byte(rawJWKS)); err != nil {
+		if removeErr := os.Remove(jwksPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("remove stale preview console JWKS after invalid configuration: %w", removeErr)
+		}
+		log.Printf("preview console bridge disabled: invalid %s: %v", previewConsoleJWKSEnv, err)
+	} else if err := atomicInstall(dir, previewConsoleJWKSName, 0o644, bytes.NewReader(jwks)); err != nil {
+		return fmt.Errorf("install preview console JWKS: %w", err)
+	}
+
+	if dirHandle, err := os.Open(dir); err == nil {
+		_ = dirHandle.Sync()
+		_ = dirHandle.Close()
+	}
+	log.Printf("installed %s and %s", filepath.Join(dir, agentBinaryName), filepath.Join(dir, previewConsolePluginName))
+	return nil
+}
+
+func atomicInstall(dir, name string, mode os.FileMode, src io.Reader) (retErr error) {
+	target := filepath.Join(dir, name)
+	tmp, err := os.CreateTemp(dir, "."+name+".tmp-*")
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(dst, src); err != nil {
-		_ = dst.Close()
+	tmpName := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		if retErr != nil {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(mode); err != nil {
 		return err
 	}
-	if err := dst.Close(); err != nil {
+	if _, err := io.Copy(tmp, src); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, target); err != nil {
+	if err := tmp.Sync(); err != nil {
 		return err
 	}
-	log.Printf("installed %s", target)
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, target); err != nil {
+		return err
+	}
 	return nil
+}
+
+type publicVerificationJWK struct {
+	Kty string `json:"kty"`
+	Crv string `json:"crv"`
+	Kid string `json:"kid"`
+	X   string `json:"x"`
+	Y   string `json:"y"`
+	Alg string `json:"alg"`
+	Use string `json:"use"`
+}
+
+func normalizePreviewConsoleJWKS(raw []byte) ([]byte, error) {
+	var document struct {
+		Keys []map[string]json.RawMessage `json:"keys"`
+	}
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return nil, fmt.Errorf("decode JWKS: %w", err)
+	}
+	if len(document.Keys) < 1 || len(document.Keys) > 2 {
+		return nil, fmt.Errorf("want current key and optional previous key, got %d", len(document.Keys))
+	}
+
+	seen := map[string]bool{}
+	keys := make([]publicVerificationJWK, 0, len(document.Keys))
+	for i, fields := range document.Keys {
+		if _, private := fields["d"]; private {
+			return nil, fmt.Errorf("keys[%d] contains private key material", i)
+		}
+		var key publicVerificationJWK
+		for name, dst := range map[string]*string{
+			"kty": &key.Kty,
+			"crv": &key.Crv,
+			"kid": &key.Kid,
+			"x":   &key.X,
+			"y":   &key.Y,
+			"alg": &key.Alg,
+			"use": &key.Use,
+		} {
+			value, ok := fields[name]
+			if !ok {
+				continue
+			}
+			if err := json.Unmarshal(value, dst); err != nil {
+				return nil, fmt.Errorf("keys[%d].%s must be a string", i, name)
+			}
+		}
+		if key.Kty != "EC" || key.Crv != "P-256" || strings.TrimSpace(key.Kid) == "" {
+			return nil, fmt.Errorf("keys[%d] must be a named EC P-256 key", i)
+		}
+		if key.Alg != "" && key.Alg != "ES256" {
+			return nil, fmt.Errorf("keys[%d].alg must be ES256", i)
+		}
+		if key.Use != "" && key.Use != "sig" {
+			return nil, fmt.Errorf("keys[%d].use must be sig", i)
+		}
+		if seen[key.Kid] {
+			return nil, fmt.Errorf("duplicate key id %q", key.Kid)
+		}
+		seen[key.Kid] = true
+		for name, coordinate := range map[string]string{"x": key.X, "y": key.Y} {
+			decoded, err := base64.RawURLEncoding.DecodeString(coordinate)
+			if err != nil || len(decoded) != 32 {
+				return nil, fmt.Errorf("keys[%d].%s must be a 32-byte base64url coordinate", i, name)
+			}
+		}
+		key.Alg = "ES256"
+		key.Use = "sig"
+		keys = append(keys, key)
+	}
+	return json.Marshal(struct {
+		Keys []publicVerificationJWK `json:"keys"`
+	}{Keys: keys})
 }
 
 // envOr reads the first non-empty of the KEDGE_DEV_* name and its SANDBOX_*
@@ -312,6 +443,7 @@ func newAgentServer(ctx context.Context, cfg *agentConfig) *agentServer {
 	mux.HandleFunc("/restart", s.handleRestart)
 	mux.HandleFunc("/env", s.handleEnv)
 	mux.HandleFunc("/logs", s.handleLogs)
+	mux.HandleFunc("/status", s.handleStatus)
 	s.mux = mux
 	return s
 }
@@ -525,6 +657,26 @@ func (s *agentServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, strings.Join(s.logs.lines(), "\n"))
 }
 
+type processStatusResponse struct {
+	AttemptID               uint64 `json:"attemptID"`
+	AttemptStartedUnixMilli int64  `json:"attemptStartedUnixMilli,omitempty"`
+	Configured              bool   `json:"configured"`
+	Running                 bool   `json:"running"`
+	Port                    string `json:"port,omitempty"`
+	PortReachable           bool   `json:"portReachable,omitempty"`
+}
+
+func (s *agentServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorizeControl(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.supervisor.status())
+}
+
 func (s *agentServer) authorizeControl(w http.ResponseWriter, r *http.Request) bool {
 	token := strings.TrimSpace(s.config.ControlToken)
 	if token == "" {
@@ -568,12 +720,14 @@ func cleanWorkspacePath(raw string) (string, error) {
 }
 
 type supervisor struct {
-	config *agentConfig
-	logs   *ringLog
-	ctx    context.Context
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	done   chan struct{}
+	config         *agentConfig
+	logs           *ringLog
+	ctx            context.Context
+	mu             sync.Mutex
+	cmd            *exec.Cmd
+	done           chan struct{}
+	attempt        uint64
+	attemptStarted time.Time
 	// customEnv holds non-secret environment variables set at runtime via
 	// /env, merged over the process environment on the next (re)start.
 	customEnv map[string]string
@@ -682,11 +836,18 @@ func (s *supervisor) restart(_ context.Context) error {
 // logging their output into the same ring buffer as the dev process so the
 // caller sees "npm install" progress in /logs. Fails on the first error.
 func (s *supervisor) runReloadCommands(ctx context.Context, commands []string) error {
+	// Serialize reload work with start/restart. A successful restart begins a
+	// new log epoch; allowing an older reload command to keep writing after
+	// that boundary would reintroduce stale failures into the current attempt.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	childEnv := make(map[string]string, len(s.customEnv))
+	maps.Copy(childEnv, s.customEnv)
 	for _, command := range commands {
 		s.logs.append("[kedge reload] " + command)
 		cmd := exec.CommandContext(ctx, "/bin/sh", "-lc", command)
 		cmd.Dir = s.config.WorkDir
-		cmd.Env = mergeChildEnv(os.Environ(), s.snapshotEnv(), s.config.Port)
+		cmd.Env = mergeChildEnv(os.Environ(), childEnv, s.config.Port)
 		out, err := cmd.CombinedOutput()
 		for line := range strings.SplitSeq(strings.TrimRight(string(out), "\n"), "\n") {
 			if line != "" {
@@ -701,14 +862,6 @@ func (s *supervisor) runReloadCommands(ctx context.Context, commands []string) e
 	return nil
 }
 
-func (s *supervisor) snapshotEnv() map[string]string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make(map[string]string, len(s.customEnv))
-	maps.Copy(out, s.customEnv)
-	return out
-}
-
 func (s *supervisor) hasCommand() bool {
 	return strings.TrimSpace(s.config.StartCommand) != ""
 }
@@ -716,11 +869,37 @@ func (s *supervisor) hasCommand() bool {
 func (s *supervisor) isRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cmd == nil || s.done == nil {
+	return processRunning(s.done, s.cmd)
+}
+
+func (s *supervisor) status() processStatusResponse {
+	s.mu.Lock()
+	status := processStatusResponse{
+		AttemptID:  s.attempt,
+		Configured: strings.TrimSpace(s.config.StartCommand) != "",
+		Running:    processRunning(s.done, s.cmd),
+		Port:       strings.TrimSpace(s.config.Port),
+	}
+	if !s.attemptStarted.IsZero() {
+		status.AttemptStartedUnixMilli = s.attemptStarted.UnixMilli()
+	}
+	s.mu.Unlock()
+	if status.Running && status.Port != "" {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", status.Port), 250*time.Millisecond)
+		if err == nil {
+			status.PortReachable = true
+			_ = conn.Close()
+		}
+	}
+	return status
+}
+
+func processRunning(done chan struct{}, cmd *exec.Cmd) bool {
+	if cmd == nil || done == nil {
 		return false
 	}
 	select {
-	case <-s.done:
+	case <-done:
 		return false
 	default:
 		return true
@@ -752,15 +931,18 @@ func (s *supervisor) startLocked(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	attempt := s.logs.beginAttempt()
 	s.cmd = cmd
+	s.attempt = attempt
+	s.attemptStarted = time.Now()
 	done := make(chan struct{})
 	s.done = done
-	go s.scanOutput(stdout)
-	go s.scanOutput(stderr)
+	go s.scanOutput(attempt, stdout)
+	go s.scanOutput(attempt, stderr)
 	go func() {
 		err := cmd.Wait()
 		if err != nil && ctx.Err() == nil {
-			s.logs.append("process exited: " + err.Error())
+			s.logs.appendAttempt(attempt, "process exited: "+err.Error())
 		}
 		close(done)
 	}()
@@ -840,16 +1022,17 @@ func (s *supervisor) stopLocked() error {
 	return nil
 }
 
-func (s *supervisor) scanOutput(r io.Reader) {
+func (s *supervisor) scanOutput(attempt uint64, r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		s.logs.append(scanner.Text())
+		s.logs.appendAttempt(attempt, scanner.Text())
 	}
 }
 
 type ringLog struct {
 	mu       sync.Mutex
 	limit    int
+	attempt  uint64
 	linesBuf []string
 }
 
@@ -860,6 +1043,27 @@ func newRingLog(limit int) *ringLog {
 func (r *ringLog) append(line string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.appendLocked(line)
+}
+
+func (r *ringLog) beginAttempt() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.attempt++
+	r.linesBuf = nil
+	return r.attempt
+}
+
+func (r *ringLog) appendAttempt(attempt uint64, line string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if attempt != r.attempt {
+		return
+	}
+	r.appendLocked(line)
+}
+
+func (r *ringLog) appendLocked(line string) {
 	r.linesBuf = append(r.linesBuf, line)
 	if len(r.linesBuf) > r.limit {
 		copy(r.linesBuf, r.linesBuf[len(r.linesBuf)-r.limit:])

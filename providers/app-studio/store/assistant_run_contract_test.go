@@ -541,9 +541,12 @@ func TestEncryptedStoreEncryptsDurableAssistantRunSnapshots(t *testing.T) {
 	run.Audit = json.RawMessage(`{"result":"new secret"}`)
 	run.UpdatedAt = createdAt.Add(time.Minute)
 	snapshotMessage := Message{
-		ID:        run.ActiveMessageID,
-		Role:      "assistant",
-		Content:   "snapshot secret",
+		ID:      run.ActiveMessageID,
+		Role:    "assistant",
+		Content: "snapshot secret",
+		Metadata: map[string]any{
+			"assistantProgress": map[string]any{"messages": []any{"snapshot progress secret"}},
+		},
 		CreatedAt: createdAt,
 		UpdatedAt: run.UpdatedAt,
 	}
@@ -564,12 +567,22 @@ func TestEncryptedStoreEncryptsDurableAssistantRunSnapshots(t *testing.T) {
 	if rawMessages.Items[0].Content == snapshotMessage.Content || !rawMessages.Items[0].ContentEncrypted {
 		t.Fatalf("encrypted snapshot persisted plaintext assistant message: %#v", rawMessages.Items[0])
 	}
+	rawMetadata, err := json.Marshal(rawMessages.Items[0].Metadata)
+	if err != nil {
+		t.Fatalf("marshal raw snapshot metadata: %v", err)
+	}
+	if bytes.Contains(rawMetadata, []byte("snapshot progress secret")) {
+		t.Fatalf("encrypted snapshot persisted plaintext assistant metadata: %s", rawMetadata)
+	}
 	page, err := durable.ListMessages(context.Background(), scope, 10, "")
 	if err != nil {
 		t.Fatalf("ListMessages after snapshot: %v", err)
 	}
 	if page.Items[0].Content != snapshotMessage.Content || page.Items[0].ContentEncrypted {
 		t.Fatalf("encrypted snapshot message read = %#v, want decrypted snapshot", page.Items[0])
+	}
+	if !reflect.DeepEqual(page.Items[0].Metadata, snapshotMessage.Metadata) {
+		t.Fatalf("snapshot metadata round trip = %#v, want %#v", page.Items[0].Metadata, snapshotMessage.Metadata)
 	}
 	got, err = durable.GetAssistantRun(context.Background(), scope, run.ID)
 	if err != nil {

@@ -161,6 +161,41 @@ func TestProjectTemplateDevBinding(t *testing.T) {
 	}
 }
 
+func TestApplyProjectDevelopmentTemplateBuildsInitialBindingIdempotently(t *testing.T) {
+	p := &aiv1alpha1.Project{}
+	p.Name = "shop"
+	p.Spec = defaultProjectSpec("shop", "Shop", "", nil)
+	p.Spec.Environments[0].Bindings = append(p.Spec.Environments[0].Bindings, aiv1alpha1.ProjectProviderBindingSpec{
+		Name:     "unrelated",
+		Provider: "other",
+	})
+	info, err := projectTemplateInfoFromUnstructured(applicationTemplateObject())
+	if err != nil {
+		t.Fatalf("template info: %v", err)
+	}
+
+	if err := applyProjectDevelopmentTemplate(p, info); err != nil {
+		t.Fatalf("applyProjectDevelopmentTemplate: %v", err)
+	}
+	if p.Spec.Template == nil || p.Spec.Template.Name != "application" {
+		t.Fatalf("spec.template = %+v, want application", p.Spec.Template)
+	}
+	if got := len(p.Spec.Environments[0].Bindings); got != 2 {
+		t.Fatalf("development bindings = %d, want unrelated + template binding", got)
+	}
+	if binding := p.Spec.Environments[0].Bindings[1]; binding.Name != projectDevelopmentBindingName ||
+		binding.ResourceRef == nil || binding.ResourceRef.Name != "shop-dev" {
+		t.Fatalf("template binding = %+v, want shop-dev", binding)
+	}
+
+	if err := applyProjectDevelopmentTemplate(p, info); err != nil {
+		t.Fatalf("second applyProjectDevelopmentTemplate: %v", err)
+	}
+	if got := len(p.Spec.Environments[0].Bindings); got != 2 {
+		t.Fatalf("development bindings after second apply = %d, want idempotent 2", got)
+	}
+}
+
 func TestDevelopmentTemplateViews(t *testing.T) {
 	withDev := applicationTemplateObject()
 	_ = unstructured.SetNestedField(withDev.Object, "Web application", "spec", "displayName")

@@ -762,6 +762,16 @@ local_resource(
 
 # --- providers-app-studio ---
 local_resource(
+    'app-studio-preview-console-key',
+    cmd='make app-studio-preview-console-dev-key',
+    deps=[
+        'Makefile',
+        'providers/app-studio/hack/preview-console-dev-keys.mjs',
+    ],
+    labels=['providers-app-studio'],
+)
+
+local_resource(
     'app-studio-db',
     cmd='make app-studio-db-up',
     deps=[
@@ -806,6 +816,7 @@ local_resource(
         'kedge-hub',
         'app-studio-db',
         'dev-agent-image',
+        'app-studio-preview-console-key',
     ],
     readiness_probe=probe(
         period_secs=5,
@@ -1017,7 +1028,7 @@ local_resource(
     ],
     # kedge-hub for the CatalogEntry registration target; infrastructure-operator
     # for the workspace bootstrap + kro install the serve process depends on.
-    resource_deps=['kedge-hub', 'infrastructure-operator'],
+    resource_deps=['kedge-hub', 'infrastructure-operator', 'app-studio-preview-console-key'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8082, path='/healthz'),
@@ -1097,7 +1108,7 @@ local_resource(
         'providers/infrastructure/go.mod',
         'providers/infrastructure/go.sum',
     ],
-    resource_deps=['kedge-hub', 'infrastructure-register'],
+    resource_deps=['kedge-hub', 'infrastructure-register', 'app-studio-preview-console-key'],
     labels=['providers-kro'],
 )
 

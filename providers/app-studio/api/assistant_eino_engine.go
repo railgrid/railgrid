@@ -44,7 +44,7 @@ const (
 	projectEinoAssistantSummaryContextTokens    = 24000
 	projectEinoAssistantClosingEvidenceMaxItems = 64
 	projectEinoAssistantSummaryInstruction      = "Summarize this App Studio project session for the next builder turn. Preserve user requirements, accepted plans, files touched or inspected, unresolved questions, repository/runtime state, and any constraints. Keep it concise and operational."
-	projectEinoAssistantDeepInstruction         = "Use only the currently exposed App Studio tools; do not assume shell, browser, host filesystem, or subagent access. For a new project's initial build, first call define_initial_project_plan; this internal plan is auto-authorized and must include concrete acceptance criteria. Source mutations require an approved target-path grant and successful development verification before commit. For multi-step source work, use write_todos to keep the visible execution-plan progress current; never create todo.md or todos.md for execution tracking. Keep exactly one step in progress, mark every step complete only when its outcome is satisfied, never include secrets or raw tool data, and remember that todos track progress but grant no authority. Do not add repository commit or handoff as a todo step; App Studio enters a dedicated commit phase after runtime verification. Runtime, infrastructure, and repository effects use their exact tools and approval boundaries. Never tell the user to approve or authorize a phase unless you have actually called a permission-bearing tool and App Studio created a pending permission request. Repair defects found by verification inside the same objective; do not invent a next phase for unfinished work. Keep changes minimal and focused on the user's request. After initial project creation, write_file may create new paths but must not replace existing files; read each existing target in the current turn and use apply_patch for exact, localized changes. Treat successful whole-file writes as authoritative; do not reread them unless a later result shows a conflict or failure. Batch independent reads, inspect existing content before editing, and report blockers honestly instead of calling unrelated tools. Finish with a concise evidence-based result."
+	projectEinoAssistantDeepInstruction         = "Use only the currently exposed App Studio tools; do not assume shell, browser, host filesystem, or subagent access. " + projectAssistantBrowserConsoleTrustInstruction + "You still cannot see, screenshot, navigate, or interact with the browser. For a new project's initial build, first call define_initial_project_plan; this internal plan is auto-authorized and must include concrete acceptance criteria. Source mutations require an approved target-path grant and successful development verification before commit. For multi-step source work, use write_todos to keep the visible execution-plan progress current; never create todo.md or todos.md for execution tracking. Keep exactly one step in progress, mark every step complete only when its outcome is satisfied, never include secrets or raw tool data, and remember that todos track progress but grant no authority. Do not add repository commit or handoff as a todo step; App Studio enters a dedicated commit phase after runtime verification. Runtime, infrastructure, and repository effects use their exact tools and approval boundaries. Never tell the user to approve or authorize a phase unless you have actually called a permission-bearing tool and App Studio created a pending permission request. Repair defects found by verification inside the same objective; do not invent a next phase for unfinished work. Keep changes minimal and focused on the user's request. After initial project creation, write_file may create new paths but must not replace existing files; read each existing target in the current turn and use apply_patch for exact, localized changes. Treat successful whole-file writes as authoritative; do not reread them unless a later result shows a conflict or failure. Batch independent reads, inspect existing content before editing, and report blockers honestly instead of calling unrelated tools. Finish with a concise evidence-based result."
 	projectEinoAssistantNoOutputFallback        = "I couldn't produce a response for that turn. Please try again or rephrase the request, and I can continue from the current project context."
 )
 
@@ -346,6 +346,10 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 	chatModel, err := e.newModel(ctx, req, runState)
 	if err != nil {
 		return nil, err
+	}
+	chatModel = &projectEinoAssistantTransientEvidenceModel{
+		BaseChatModel: chatModel,
+		runState:      runState,
 	}
 	staticTools, dynamicTools, err := projectEinoAssistantToolSearchSets(ctx, tools)
 	if err != nil {
@@ -795,6 +799,7 @@ func projectEinoAssistantMessageOutput(
 		return nil, nil
 	}
 	if !output.IsStreaming {
+		projectEinoAssistantPublishAcceptedContent(output.Role, output.Message, streamCallbacks)
 		return output.Message, nil
 	}
 	if output.MessageStream == nil {
@@ -840,10 +845,31 @@ func projectEinoAssistantMessageOutput(
 		resetProvisional()
 		return nil, err
 	}
-	if output.Role == schema.Assistant && streamCallbacks.OnChunk != nil && msg.Content != "" {
-		streamCallbacks.OnChunk(msg.Content)
-	}
+	projectEinoAssistantPublishAcceptedContent(output.Role, msg, streamCallbacks)
 	return msg, nil
+}
+
+func projectEinoAssistantPublishAcceptedContent(
+	role schema.RoleType,
+	message *schema.Message,
+	streamCallbacks projectAssistantStreamCallbacks,
+) {
+	if message == nil || strings.TrimSpace(message.Content) == "" {
+		return
+	}
+	if role == "" {
+		role = message.Role
+	}
+	if role != schema.Assistant {
+		return
+	}
+	if len(message.ToolCalls) > 0 && streamCallbacks.OnProgress != nil {
+		streamCallbacks.OnProgress(message.Content)
+		return
+	}
+	if streamCallbacks.OnChunk != nil {
+		streamCallbacks.OnChunk(message.Content)
+	}
 }
 
 func projectEinoAssistantStreamText(msg *schema.Message) string {

@@ -290,6 +290,16 @@ local_resource(
 
 # --- providers-app-studio ---
 local_resource(
+    'app-studio-preview-console-key',
+    cmd='make app-studio-preview-console-dev-key',
+    deps=[
+        'Makefile',
+        'providers/app-studio/hack/preview-console-dev-keys.mjs',
+    ],
+    labels=['providers-app-studio'],
+)
+
+local_resource(
     'app-studio-db',
     cmd='make app-studio-db-up',
     deps=[
@@ -323,7 +333,7 @@ local_resource(
         'providers/app-studio/deploy/chart/values.yaml',
         'providers/app-studio/.env',
     ],
-    resource_deps=['hub', 'app-studio-db', 'dev-agent-image'],
+    resource_deps=['hub', 'app-studio-db', 'dev-agent-image', 'app-studio-preview-console-key'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8085, path='/healthz'),
@@ -609,7 +619,7 @@ local_resource(
     # backend cluster the catalog reads from. Both must be green
     # before the provider starts; otherwise it boots in stub mode
     # which is fine but confusing for the dev who just ran `tilt up`.
-    resource_deps=['hub', 'kro-mgmt-up'],
+    resource_deps=['hub', 'kro-mgmt-up', 'app-studio-preview-console-key'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8082, path='/healthz'),

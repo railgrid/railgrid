@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -134,9 +135,14 @@ func TestEncryptedStoreEncryptsAtRestAndDecryptsOnRead(t *testing.T) {
 
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal", ProjectUID: "project-1"}
 	msg := Message{
-		ID:        "msg-1",
-		Role:      "user",
-		Content:   "deploy the customer portal",
+		ID:      "msg-1",
+		Role:    "user",
+		Content: "deploy the customer portal",
+		Metadata: map[string]any{
+			"assistantProgress": map[string]any{
+				"messages": []any{"Inspecting customer token secret-progress-value"},
+			},
+		},
 		CreatedAt: time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC),
 	}
@@ -154,6 +160,16 @@ func TestEncryptedStoreEncryptsAtRestAndDecryptsOnRead(t *testing.T) {
 	if rawPage.Items[0].Content == msg.Content || !rawPage.Items[0].ContentEncrypted || rawPage.Items[0].ContentKeyID != "primary" {
 		t.Fatalf("message was not encrypted at rest: %#v", rawPage.Items[0])
 	}
+	rawMetadata, err := json.Marshal(rawPage.Items[0].Metadata)
+	if err != nil {
+		t.Fatalf("marshal raw metadata: %v", err)
+	}
+	if bytes.Contains(rawMetadata, []byte("secret-progress-value")) {
+		t.Fatalf("message metadata remained plaintext at rest: %s", rawMetadata)
+	}
+	if _, ok := rawPage.Items[0].Metadata[encryptedMessageMetadataKey]; !ok || len(rawPage.Items[0].Metadata) != 1 {
+		t.Fatalf("message metadata did not use the encrypted envelope: %#v", rawPage.Items[0].Metadata)
+	}
 
 	page, err := store.ListMessages(context.Background(), scope, 10, "")
 	if err != nil {
@@ -164,6 +180,85 @@ func TestEncryptedStoreEncryptsAtRestAndDecryptsOnRead(t *testing.T) {
 	}
 	if page.Items[0].Content != msg.Content || page.Items[0].ContentEncrypted {
 		t.Fatalf("message was not decrypted on read: %#v", page.Items[0])
+	}
+	if !reflect.DeepEqual(page.Items[0].Metadata, msg.Metadata) {
+		t.Fatalf("message metadata round trip = %#v, want %#v", page.Items[0].Metadata, msg.Metadata)
+	}
+}
+
+func TestEncryptedStoreEncryptsMetadataWhenMessageContentIsEmpty(t *testing.T) {
+	base := NewMemoryStore()
+	store, err := NewEncryptedStore(base, []EncryptionKey{{
+		ID:    "primary",
+		Value: []byte("0123456789abcdef0123456789abcdef"),
+	}})
+	if err != nil {
+		t.Fatalf("NewEncryptedStore: %v", err)
+	}
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal", ProjectUID: "project-1"}
+	msg := Message{
+		ID:   "assistant-progress-1",
+		Role: "assistant",
+		Metadata: map[string]any{"assistantProgress": map[string]any{
+			"messages": []any{"Reading a sensitive project file"},
+		}},
+		CreatedAt: time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC),
+	}
+	if err := store.AppendMessage(context.Background(), scope, msg); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	rawPage, err := base.ListMessages(context.Background(), scope, 10, "")
+	if err != nil {
+		t.Fatalf("raw ListMessages: %v", err)
+	}
+	rawMetadata, err := json.Marshal(rawPage.Items[0].Metadata)
+	if err != nil {
+		t.Fatalf("marshal raw metadata: %v", err)
+	}
+	if bytes.Contains(rawMetadata, []byte("sensitive project file")) {
+		t.Fatalf("empty-content message metadata remained plaintext: %s", rawMetadata)
+	}
+	tampered := rawPage.Items[0]
+	tampered.Role = "user"
+	if err := store.(*encryptedStore).decryptMessage(scope, &tampered); err == nil {
+		t.Fatal("metadata encrypted for one message identity decrypted after the role changed")
+	}
+	page, err := store.ListMessages(context.Background(), scope, 10, "")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if !reflect.DeepEqual(page.Items[0].Metadata, msg.Metadata) {
+		t.Fatalf("metadata round trip = %#v, want %#v", page.Items[0].Metadata, msg.Metadata)
+	}
+}
+
+func TestEncryptedStoreReadsLegacyPlaintextMetadata(t *testing.T) {
+	base := NewMemoryStore()
+	store, err := NewEncryptedStore(base, []EncryptionKey{{
+		ID:    "primary",
+		Value: []byte("0123456789abcdef0123456789abcdef"),
+	}})
+	if err != nil {
+		t.Fatalf("NewEncryptedStore: %v", err)
+	}
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal", ProjectUID: "project-1"}
+	legacy := Message{
+		ID:        "legacy-1",
+		Role:      "assistant",
+		Metadata:  map[string]any{"assistantStatus": "Completed"},
+		CreatedAt: time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC),
+	}
+	if err := base.AppendMessage(context.Background(), scope, legacy); err != nil {
+		t.Fatalf("AppendMessage legacy record: %v", err)
+	}
+	page, err := store.ListMessages(context.Background(), scope, 10, "")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if !reflect.DeepEqual(page.Items[0].Metadata, legacy.Metadata) {
+		t.Fatalf("legacy metadata = %#v, want %#v", page.Items[0].Metadata, legacy.Metadata)
 	}
 }
 

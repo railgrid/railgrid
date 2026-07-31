@@ -74,6 +74,13 @@ development:
   # The injector image carrying the static kedge-dev-agent binary
   # (KEDGE_DEV_AGENT_IMAGE).
   agentImage: ""
+  # Public ES256 JSON Web Key Set used by the injected preview-console bridge
+  # to verify short-lived capabilities issued by App Studio. Configure the
+  # current key and, during rotation, the previous key. Never put a private
+  # signing key here. Empty disables the optional bridge without preventing
+  # development applications from starting.
+  previewConsole:
+    verificationJWKS: ""
   # Toolchain image per ${kedge.devImage.<toolchain>} token — each key K maps
   # to KEDGE_DEV_IMAGE_<K>. A template referencing an unconfigured toolchain
   # (other than node) fails setup with a pointer to the missing env var.

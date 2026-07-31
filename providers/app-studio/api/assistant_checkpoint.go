@@ -117,6 +117,7 @@ type projectAssistantResumeResponse struct {
 	Permission       *projectAssistantPermission        `json:"-"`
 	FollowUp         *projectAssistantFollowUp          `json:"-"`
 	Checkpoint       *projectAssistantCheckpoint        `json:"-"`
+	Progress         *projectAssistantProgressSnapshot  `json:"-"`
 	AssistantContent string                             `json:"-"`
 	Result           string                             `json:"-"`
 	SuspensionReason string                             `json:"-"`
@@ -718,7 +719,17 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	}
 	assistantContent := &strings.Builder{}
 	accumulator := s.projectAssistantSupervisor().accumulatorFor(messageScope, run.ID)
-	metadataState := &projectAssistantDurableMetadataState{status: "Working"}
+	metadataState := &projectAssistantDurableMetadataState{
+		status:             "Working",
+		workSegmentStarted: time.Now().UTC(),
+	}
+	if existingMessage, findErr := s.findProjectMessage(ctx, messageScope, assistantID); findErr == nil {
+		if progress, ok := projectAssistantProgressSnapshotFromMetadata(existingMessage.Metadata[projectAssistantMetadataProgress]); ok {
+			metadataState.restoreTrace(progress, projectAssistantActionFeedFromMetadata(existingMessage.Metadata[projectMessageMetadataAssistantActionFeed]))
+		} else {
+			metadataState.restoreTrace(nil, projectAssistantActionFeedFromMetadata(existingMessage.Metadata[projectMessageMetadataAssistantActionFeed]))
+		}
+	}
 	var snapshotErr error
 	var snapshotErrMu sync.Mutex
 	recordSnapshotErr := func(err error) {
@@ -756,7 +767,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 			if event.Permission != nil && event.Permission.ToolCallID != "" {
 				pendingPermissionToolCallID = event.Permission.ToolCallID
 				out.Permission = event.Permission
-				metadataState.toolCalls = upsertProjectToolCallStreamEvent(metadataState.toolCalls, projectToolCallStreamEvent{
+				metadataState.upsertToolCall(projectToolCallStreamEvent{
 					ID:         event.Permission.ToolCallID,
 					Name:       event.Permission.ToolName,
 					Status:     "permission_required",
@@ -768,14 +779,14 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 			if event.Checkpoint != nil {
 				out.Checkpoint = event.Checkpoint
 				if pendingPermissionToolCallID != "" {
-					metadataState.toolCalls = upsertProjectToolCallStreamEvent(metadataState.toolCalls, projectToolCallStreamEvent{
+					metadataState.upsertToolCall(projectToolCallStreamEvent{
 						ID:         pendingPermissionToolCallID,
 						Status:     "permission_required",
 						Checkpoint: event.Checkpoint,
 					})
 				}
 				if pendingFollowUpToolCallID != "" {
-					metadataState.toolCalls = upsertProjectToolCallStreamEvent(metadataState.toolCalls, projectToolCallStreamEvent{
+					metadataState.upsertToolCall(projectToolCallStreamEvent{
 						ID:         pendingFollowUpToolCallID,
 						Status:     "input_required",
 						Checkpoint: event.Checkpoint,
@@ -786,7 +797,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 			if event.FollowUp != nil && event.FollowUp.ToolCallID != "" {
 				pendingFollowUpToolCallID = event.FollowUp.ToolCallID
 				out.FollowUp = event.FollowUp
-				metadataState.toolCalls = upsertProjectToolCallStreamEvent(metadataState.toolCalls, projectToolCallStreamEvent{
+				metadataState.upsertToolCall(projectToolCallStreamEvent{
 					ID:       event.FollowUp.ToolCallID,
 					Name:     projectToolAskFollowUp,
 					Status:   "input_required",
@@ -801,7 +812,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		if toolCall.ID == "" || toolCall.Status == "" {
 			return
 		}
-		metadataState.toolCalls = upsertProjectToolCallStreamEvent(metadataState.toolCalls, toolCall)
+		metadataState.upsertToolCall(toolCall)
 	}
 	resumeRun := run
 	engineReq := projectAssistantRunRequest{
@@ -826,9 +837,19 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 				if callbacksClosed {
 					return
 				}
-				assistantContent.WriteString(chunk)
+				content := appendProjectAssistantStreamBlock(assistantContent, chunk)
 				if accumulator != nil {
-					recordSnapshotErr(accumulator.UpdateText(ctx, assistantContent.String(), false))
+					recordSnapshotErr(accumulator.UpdateText(ctx, content, false))
+				}
+			},
+			OnProgress: func(message string) {
+				callbackMu.Lock()
+				defer callbackMu.Unlock()
+				if callbacksClosed {
+					return
+				}
+				if metadataState.appendProgress(message) {
+					persistMetadata(ctx, nil)
 				}
 			},
 			OnProvisionalText: func(string) {
@@ -906,7 +927,9 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	callbacksClosed = true
 	assistantText := assistantContent.String()
 	metadataToolCalls := append([]projectToolCallStreamEvent(nil), metadataState.toolCalls...)
+	out.Progress = metadataState.progressSnapshot(time.Now().UTC())
 	callbackMu.Unlock()
+	persistMetadata(ctx, nil)
 	if persistErr := getSnapshotErr(); persistErr != nil {
 		return projectAssistantResumeResponse{}, fmt.Errorf("persist resumed assistant snapshot: %w", persistErr)
 	}
@@ -960,13 +983,11 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 				if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, assistantMessageID, messageUpdate); err != nil {
 					return projectAssistantResumeResponse{}, err
 				}
-				if strings.TrimSpace(out.AssistantContent) != "" {
-					assistantMessage, err := s.resumedPendingProjectAssistantMessage(persistCtx, messageScope, assistantMessageID, assistantID, out, metadataToolCalls)
-					if err != nil {
-						return projectAssistantResumeResponse{}, err
-					}
-					out.AssistantMessage = assistantMessage
+				assistantMessage, err := s.resumedPendingProjectAssistantMessage(persistCtx, messageScope, assistantMessageID, assistantID, out, metadataToolCalls)
+				if err != nil {
+					return projectAssistantResumeResponse{}, err
 				}
+				out.AssistantMessage = assistantMessage
 				return out, nil
 			}
 			return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, currentToolCall, err)
@@ -1008,13 +1029,11 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, assistantMessageID, messageUpdate); err != nil {
 			return projectAssistantResumeResponse{}, err
 		}
-		if strings.TrimSpace(out.AssistantContent) != "" {
-			assistantMessage, err := s.resumedPendingProjectAssistantMessage(persistCtx, messageScope, assistantMessageID, assistantID, out, metadataToolCalls)
-			if err != nil {
-				return projectAssistantResumeResponse{}, err
-			}
-			out.AssistantMessage = assistantMessage
+		assistantMessage, err := s.resumedPendingProjectAssistantMessage(persistCtx, messageScope, assistantMessageID, assistantID, out, metadataToolCalls)
+		if err != nil {
+			return projectAssistantResumeResponse{}, err
 		}
+		out.AssistantMessage = assistantMessage
 		return out, nil
 	}
 
@@ -1040,7 +1059,20 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
-	if assistantMessage, err := s.appendResumedProjectAssistantMessageFromContent(persistCtx, messageScope, assistantID, resultContent, streamedContent, projectAssistantMessageMetadata("", metadataToolCalls)); err != nil {
+	messageMetadata := projectAssistantMessageMetadata("", metadataToolCalls)
+	displayStatus := projectAssistantRunDisplayStatus(out.Status, "")
+	if displayStatus != "" || out.Progress != nil {
+		if messageMetadata == nil {
+			messageMetadata = map[string]any{}
+		}
+	}
+	if displayStatus != "" {
+		messageMetadata[projectAssistantMetadataWorkingStatus] = displayStatus
+	}
+	if out.Progress != nil {
+		messageMetadata[projectAssistantMetadataProgress] = *out.Progress
+	}
+	if assistantMessage, err := s.appendResumedProjectAssistantMessageFromContent(persistCtx, messageScope, assistantID, resultContent, streamedContent, messageMetadata); err != nil {
 		return projectAssistantResumeResponse{}, err
 	} else if assistantMessage != nil {
 		out.AssistantMessage = assistantMessage
@@ -1102,14 +1134,23 @@ func (s *Server) resumedPendingProjectAssistantMessage(
 	response projectAssistantResumeResponse,
 	toolCalls []projectToolCallStreamEvent,
 ) (*aiv1alpha1.ProjectMessage, error) {
-	if strings.TrimSpace(response.AssistantContent) == "" {
-		return nil, nil
-	}
-	if candidateID != "" {
-		msg, err := s.findProjectMessage(ctx, scope, candidateID)
+	seen := map[string]struct{}{}
+	for _, id := range []string{candidateID, fallbackID} {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		msg, err := s.findProjectMessage(ctx, scope, id)
 		if err == nil {
 			interrupt := projectAssistantUIInterruptFromMetadata(msg.Metadata[projectMessageMetadataAssistantInterrupt])
-			if msg.Role == aiv1alpha1.ProjectMessageRoleAssistant && msg.Content == response.AssistantContent && projectAssistantPermissionMessageMatchesResume(msg.Metadata, interrupt, response) {
+			contentMatches := strings.TrimSpace(response.AssistantContent) == "" ||
+				msg.Content == response.AssistantContent
+			if msg.Role == aiv1alpha1.ProjectMessageRoleAssistant &&
+				contentMatches &&
+				projectAssistantPermissionMessageMatchesResume(msg.Metadata, interrupt, response) {
 				apiMessage := projectMessageToAPI(msg)
 				return &apiMessage, nil
 			}
@@ -1117,7 +1158,20 @@ func (s *Server) resumedPendingProjectAssistantMessage(
 			return nil, err
 		}
 	}
-	return s.appendResumedProjectAssistantMessage(ctx, scope, fallbackID, response.AssistantContent, projectAssistantMessageMetadata(string(response.Status), toolCalls))
+	metadata := projectAssistantMessageMetadata(string(response.Status), toolCalls)
+	if response.Progress != nil {
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata[projectAssistantMetadataProgress] = *response.Progress
+	}
+	return s.appendResumedProjectAssistantMessage(
+		ctx,
+		scope,
+		fallbackID,
+		response.AssistantContent,
+		metadata,
+	)
 }
 
 func (s *Server) completeClaimedProjectAssistantRunAfterResumeError(

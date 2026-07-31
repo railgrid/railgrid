@@ -100,6 +100,13 @@ type projectEinoAssistantRunState struct {
 	actionBatchObserved       bool
 	actionBatchMadeProgress   bool
 	modelCallOrdinal          int
+	transientToolResults      map[string]string
+	transientToolResultCount  uint64
+	// Progress suppression is intentionally run-local. Resuming after user
+	// approval or input starts a new visible work interval and may report the
+	// current phase again.
+	progressPhases      map[projectEinoAssistantPhase]bool
+	lastProgressMessage string
 }
 
 type projectEinoAssistantLineRange struct {
@@ -131,8 +138,139 @@ func newProjectEinoAssistantRunState() *projectEinoAssistantRunState {
 		completedReadCalls:      map[string]uint64{},
 		readFileCoverage:        map[string][]projectEinoAssistantLineRange{},
 		successfulMutationPaths: map[string]struct{}{},
+		transientToolResults:    map[string]string{},
+		progressPhases:          map[projectEinoAssistantPhase]bool{},
 		turnPolicy:              projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDiscussion),
 	}
+}
+
+func (s *projectEinoAssistantRunState) AcceptProgressMessage(message string) bool {
+	if s == nil {
+		return true
+	}
+	message = strings.TrimSpace(message)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if message == "" || message == s.lastProgressMessage {
+		return false
+	}
+	s.lastProgressMessage = message
+	return true
+}
+
+func (s *projectEinoAssistantRunState) ReserveProgressPhase(phase projectEinoAssistantPhase) bool {
+	if s == nil || phase == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.progressPhases == nil {
+		s.progressPhases = map[projectEinoAssistantPhase]bool{}
+	}
+	if s.progressPhases[phase] {
+		return false
+	}
+	s.progressPhases[phase] = true
+	return true
+}
+
+func (s *projectEinoAssistantRunState) ReleaseProgressPhase(phase projectEinoAssistantPhase) {
+	if s == nil || phase == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.progressPhases, phase)
+}
+
+func (s *projectEinoAssistantRunState) ProgressReported(phase projectEinoAssistantPhase) bool {
+	if s == nil || phase == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.progressPhases[phase]
+}
+
+func (s *projectEinoAssistantRunState) RegisterTransientToolResult(name, result string) string {
+	persistent := projectEinoAssistantPersistentToolResult(name, result)
+	if s == nil || projectToolBaseName(name) != projectToolGetPreviewConsoleLogs {
+		return persistent
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.transientToolResultCount++
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s", s.transientToolResultCount, result)))
+	reference := hex.EncodeToString(digest[:16])
+	if s.transientToolResults == nil {
+		s.transientToolResults = map[string]string{}
+	} else if len(s.transientToolResults) >= 8 {
+		// Transient evidence exists only to bridge the immediately following
+		// model call. Older snapshots remain as safe placeholders.
+		s.transientToolResults = map[string]string{}
+	}
+	s.transientToolResults[reference] = result
+
+	var placeholder map[string]any
+	if err := json.Unmarshal([]byte(persistent), &placeholder); err != nil {
+		placeholder = map[string]any{
+			"status":         "unavailable",
+			"summary":        "transient preview console result omitted from persistence",
+			"transientEvent": true,
+		}
+	}
+	placeholder["transientReference"] = reference
+	encoded, err := json.Marshal(placeholder)
+	if err != nil {
+		return `{"status":"unavailable","summary":"transient preview console result omitted from persistence"}`
+	}
+	return string(encoded)
+}
+
+func (s *projectEinoAssistantRunState) ExpandTransientToolMessages(input []*schema.Message) []*schema.Message {
+	if s == nil || len(input) == 0 {
+		return input
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.transientToolResults) == 0 {
+		return input
+	}
+
+	var expanded []*schema.Message
+	for index, message := range input {
+		if message == nil || message.Role != schema.Tool {
+			continue
+		}
+		toolName := message.ToolName
+		if strings.TrimSpace(toolName) == "" {
+			toolName = message.Name
+		}
+		if projectToolBaseName(toolName) != projectToolGetPreviewConsoleLogs {
+			continue
+		}
+		var placeholder struct {
+			TransientReference string `json:"transientReference"`
+		}
+		if err := json.Unmarshal([]byte(message.Content), &placeholder); err != nil {
+			continue
+		}
+		result, ok := s.transientToolResults[strings.TrimSpace(placeholder.TransientReference)]
+		if !ok {
+			continue
+		}
+		if expanded == nil {
+			expanded = append([]*schema.Message(nil), input...)
+		}
+		cloned := *message
+		cloned.Content = result
+		expanded[index] = &cloned
+	}
+	if expanded == nil {
+		return input
+	}
+	return expanded
 }
 
 func (s *projectEinoAssistantRunState) SetTurnProfile(profile projectAssistantTurnProfile) {
@@ -964,9 +1102,19 @@ func (s *projectEinoAssistantRunState) RecordModelInput(messages []chatMessage) 
 	if s == nil {
 		return
 	}
+	messages = cloneChatMessages(messages)
+	for index := range messages {
+		if messages[index].Role == "tool" &&
+			projectToolBaseName(messages[index].Name) == projectToolGetPreviewConsoleLogs {
+			messages[index].Content = projectEinoAssistantPersistentToolResult(
+				messages[index].Name,
+				messages[index].Content,
+			)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = cloneChatMessages(messages)
+	s.messages = messages
 }
 
 func (s *projectEinoAssistantRunState) RecordAssistantReply(reply projectAssistantReply) {

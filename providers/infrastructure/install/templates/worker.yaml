@@ -109,7 +109,7 @@ spec:
 
   # ── Data plane (development mode) ─────────────────────────────────────
   # Per-component control verbs, served as
-  # …/workers/<name>/components/worker/{sync,restart,log,env}. Production
+  # …/workers/<name>/components/worker/{sync,restart,log,env,process}. Production
   # mode answers 409 instance-not-ready — the data plane is a
   # development-mode surface.
   dataPlane:
@@ -142,6 +142,11 @@ spec:
             upstreamPath: /logs
             methods: ["GET"]
             stream: true
+          process:
+            servicePath: status.components.worker.controlServiceRef
+            port: control
+            upstreamPath: /status
+            methods: ["GET"]
 
   # ── backendConfig: the kro resource graph ─────────────────────────────
   # namespace: default is remapped to the per-tenant namespace on the runtime

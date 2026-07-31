@@ -28,7 +28,7 @@ import (
 
 func TestProjectAssistantTerminalFailureContentIsVisibleAndResumable(t *testing.T) {
 	content := projectAssistantTerminalFailureContent(adk.ErrExceedMaxIterations)
-	if !strings.Contains(content, "bounded action limit") || !strings.Contains(content, "Continue") {
+	if !strings.Contains(content, "bounded action limit") || !strings.Contains(content, "Send another message") {
 		t.Fatalf("content = %q, want bounded resumable failure", content)
 	}
 }
@@ -37,7 +37,7 @@ func TestProjectAssistantTerminalFailureContentPreservesPartialOutputWithGuidanc
 	content := projectAssistantContentWithTerminalFailure("I inspected the project and", adk.ErrExceedMaxIterations)
 	if !strings.HasPrefix(content, "I inspected the project and") ||
 		!strings.Contains(content, "bounded action limit") ||
-		!strings.Contains(content, "Continue") {
+		!strings.Contains(content, "Send another message") {
 		t.Fatalf("content = %q, want partial output followed by resumable failure", content)
 	}
 }
@@ -46,7 +46,7 @@ func TestProjectAssistantTerminalFailureContentExplainsNoProgress(t *testing.T) 
 	err := fmt.Errorf("%w: phase approval made no progress", errProjectAssistantNoProgress)
 	content := projectAssistantTerminalFailureContent(err)
 	if !strings.Contains(content, "did not make implementation progress") ||
-		!strings.Contains(content, "Continue") {
+		!strings.Contains(content, "Send another message") {
 		t.Fatalf("content = %q, want resumable no-progress failure", content)
 	}
 	if !projectEinoAssistantNoProgressExceeded(err) {

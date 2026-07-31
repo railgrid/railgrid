@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -118,6 +119,26 @@ func projectAssistantDurableTerminalContent(reply, streamed string, err error) s
 		return projectAssistantContentWithTerminalFailure(content, err)
 	}
 	return content
+}
+
+// appendProjectAssistantStreamBlock keeps complete assistant updates readable
+// while a tool-driven turn is running. These are accepted assistant prose
+// blocks, not token deltas or reasoning content; the final returned response
+// remains authoritative for the durable terminal message.
+func appendProjectAssistantStreamBlock(content *strings.Builder, block string) string {
+	block = strings.TrimSpace(block)
+	if block == "" {
+		return content.String()
+	}
+	current := strings.TrimSpace(content.String())
+	if current == block || strings.HasSuffix(current, "\n\n"+block) {
+		return content.String()
+	}
+	if content.Len() > 0 {
+		content.WriteString("\n\n")
+	}
+	content.WriteString(block)
+	return content.String()
 }
 
 // startProjectAssistantRunDurably is the one start boundary for every new
@@ -321,7 +342,18 @@ const (
 	projectAssistantMetadataPreviewRefreshNeeded = "previewRefreshNeeded"
 	projectAssistantMetadataPlan                 = "assistantPlan"
 	projectAssistantMetadataInitialBuild         = "assistantInitialBuild"
+	projectAssistantMetadataProgress             = "assistantProgress"
+	projectAssistantProgressMaxMessages          = 32
+	projectAssistantWorkedDurationMaxMS          = int64((7 * 24 * time.Hour) / time.Millisecond)
+	projectAssistantTraceMaxSequence             = 10_000
 )
+
+type projectAssistantProgressSnapshot struct {
+	Version          int      `json:"version"`
+	Messages         []string `json:"messages"`
+	MessageSequences []int    `json:"messageSequences,omitempty"`
+	WorkedDurationMS int64    `json:"workedDurationMs"`
+}
 
 func projectAssistantDurableMetadataForTransition(run store.AssistantRun, status string, provisional, preview bool, toolCalls []projectToolCallStreamEvent, plan *projectAssistantPlanSnapshot) map[string]any {
 	metadata := projectAssistantMessageMetadata(status, sanitizeProjectToolCallStreamEventsForMetadata(toolCalls))
@@ -350,6 +382,9 @@ func projectAssistantDurableMetadataFromExisting(run store.AssistantRun, status 
 	if initialBuild, _ := existing[projectAssistantMetadataInitialBuild].(bool); initialBuild {
 		metadata[projectAssistantMetadataInitialBuild] = true
 	}
+	if progress, ok := projectAssistantProgressSnapshotFromMetadata(existing[projectAssistantMetadataProgress]); ok {
+		metadata[projectAssistantMetadataProgress] = *progress
+	}
 	preview, _ := existing[projectAssistantMetadataPreviewRefreshNeeded].(bool)
 	metadata[projectAssistantMetadataRunID] = run.ID
 	metadata[projectAssistantMetadataRevision] = run.Revision
@@ -357,6 +392,52 @@ func projectAssistantDurableMetadataFromExisting(run store.AssistantRun, status 
 	metadata[projectAssistantMetadataProvisional] = provisional
 	metadata[projectAssistantMetadataPreviewRefreshNeeded] = preview
 	return metadata
+}
+
+func projectAssistantProgressSnapshotFromMetadata(value any) (*projectAssistantProgressSnapshot, bool) {
+	if value == nil {
+		return nil, false
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var progress projectAssistantProgressSnapshot
+	if err := decoder.Decode(&progress); err != nil ||
+		progress.Version != 1 ||
+		len(progress.Messages) == 0 ||
+		len(progress.Messages) > projectAssistantProgressMaxMessages ||
+		progress.WorkedDurationMS < 0 ||
+		progress.WorkedDurationMS > projectAssistantWorkedDurationMaxMS {
+		return nil, false
+	}
+	for _, message := range progress.Messages {
+		if message == "" ||
+			message != strings.TrimSpace(message) ||
+			len(message) > projectEinoAssistantProgressMaxBytes ||
+			!utf8.ValidString(message) ||
+			strings.IndexFunc(message, unicode.IsControl) >= 0 {
+			return nil, false
+		}
+	}
+	if len(progress.MessageSequences) > 0 {
+		if len(progress.MessageSequences) != len(progress.Messages) {
+			return nil, false
+		}
+		previous := 0
+		for _, sequence := range progress.MessageSequences {
+			if sequence <= 0 || sequence > projectAssistantTraceMaxSequence {
+				return nil, false
+			}
+			if sequence <= previous {
+				return nil, false
+			}
+			previous = sequence
+		}
+	}
+	return &progress, true
 }
 
 // projectAssistantPlanSnapshotFromMetadata is the durable metadata boundary
@@ -447,11 +528,139 @@ func projectAssistantPlanLabelValid(label string, required bool) bool {
 }
 
 type projectAssistantDurableMetadataState struct {
-	status       string
-	provisional  bool
-	toolCalls    []projectToolCallStreamEvent
-	plan         *projectAssistantPlanSnapshot
-	initialBuild bool
+	status             string
+	provisional        bool
+	toolCalls          []projectToolCallStreamEvent
+	plan               *projectAssistantPlanSnapshot
+	initialBuild       bool
+	progressMessages   []string
+	progressSequences  []int
+	actionSequences    map[string]int
+	nextTraceSequence  int
+	workedDuration     time.Duration
+	workSegmentStarted time.Time
+}
+
+func (s *projectAssistantDurableMetadataState) appendProgress(message string) bool {
+	if s == nil {
+		return false
+	}
+	message, reason := projectEinoAssistantProgressMessage(message)
+	if reason != "" {
+		return false
+	}
+	if len(s.progressMessages) > 0 && s.progressMessages[len(s.progressMessages)-1] == message {
+		return false
+	}
+	if len(s.progressMessages) >= projectAssistantProgressMaxMessages {
+		return false
+	}
+	s.progressMessages = append(s.progressMessages, message)
+	s.progressSequences = append(s.progressSequences, s.nextSequence())
+	return true
+}
+
+func (s *projectAssistantDurableMetadataState) restoreTrace(progress *projectAssistantProgressSnapshot, actions []projectAssistantActionFeedItem) {
+	if s == nil {
+		return
+	}
+	s.actionSequences = map[string]int{}
+	if progress != nil {
+		s.progressMessages = append([]string(nil), progress.Messages...)
+		if len(progress.MessageSequences) == len(progress.Messages) {
+			s.progressSequences = append([]int(nil), progress.MessageSequences...)
+		} else {
+			s.progressSequences = make([]int, len(progress.Messages))
+		}
+		for _, sequence := range s.progressSequences {
+			if sequence > s.nextTraceSequence {
+				s.nextTraceSequence = sequence
+			}
+		}
+		s.workedDuration = time.Duration(progress.WorkedDurationMS) * time.Millisecond
+	}
+	for _, action := range actions {
+		if action.ID == "" || action.Sequence <= 0 || action.Sequence > projectAssistantTraceMaxSequence {
+			continue
+		}
+		s.actionSequences[action.ID] = action.Sequence
+		if action.Sequence > s.nextTraceSequence {
+			s.nextTraceSequence = action.Sequence
+		}
+	}
+}
+
+func (s *projectAssistantDurableMetadataState) upsertToolCall(event projectToolCallStreamEvent) {
+	if s == nil || event.ID == "" {
+		return
+	}
+	// Ordering is owned by the durable callback boundary. Ignore any sequence
+	// carried by an upstream event and recover only from server state.
+	event.Sequence = 0
+	publicID := projectAssistantActionPublicID(event.ID)
+	if s.actionSequences != nil {
+		event.Sequence = s.actionSequences[publicID]
+	}
+	if event.Sequence == 0 {
+		for _, existing := range s.toolCalls {
+			if existing.ID == event.ID && existing.Sequence > 0 {
+				event.Sequence = existing.Sequence
+				break
+			}
+		}
+	}
+	if event.Sequence == 0 {
+		event.Sequence = s.nextSequence()
+	}
+	if event.Sequence > 0 {
+		if s.actionSequences == nil {
+			s.actionSequences = map[string]int{}
+		}
+		s.actionSequences[publicID] = event.Sequence
+	}
+	s.toolCalls = upsertProjectToolCallStreamEvent(s.toolCalls, event)
+}
+
+func (s *projectAssistantDurableMetadataState) nextSequence() int {
+	if s == nil || s.nextTraceSequence >= projectAssistantTraceMaxSequence {
+		return 0
+	}
+	s.nextTraceSequence++
+	return s.nextTraceSequence
+}
+
+func (s *projectAssistantDurableMetadataState) progressSnapshot(now time.Time) *projectAssistantProgressSnapshot {
+	if s == nil || len(s.progressMessages) == 0 {
+		return nil
+	}
+	duration := s.workedDuration
+	if !s.workSegmentStarted.IsZero() && now.After(s.workSegmentStarted) {
+		duration += now.Sub(s.workSegmentStarted)
+	}
+	durationMS := duration.Milliseconds()
+	if durationMS < 0 {
+		durationMS = 0
+	}
+	if durationMS > projectAssistantWorkedDurationMaxMS {
+		durationMS = projectAssistantWorkedDurationMaxMS
+	}
+	messageSequences := append([]int(nil), s.progressSequences...)
+	if len(messageSequences) != len(s.progressMessages) {
+		messageSequences = nil
+	} else {
+		for _, sequence := range messageSequences {
+			if sequence <= 0 {
+				messageSequences = nil
+				break
+			}
+		}
+	}
+	return &projectAssistantProgressSnapshot{
+		Version:          1,
+		Messages:         append([]string(nil), s.progressMessages...),
+		MessageSequences: messageSequences,
+		WorkedDurationMS: durationMS,
+	}
 }
 
 func projectAssistantRunDisplayStatus(status store.AssistantRunStatus, fallback string) string {
@@ -514,6 +723,11 @@ func (s *Server) persistProjectAssistantDurableMetadata(ctx context.Context, acc
 			metadata[projectAssistantMetadataInitialBuild] = true
 		} else if initialBuild, _ := message.Metadata[projectAssistantMetadataInitialBuild].(bool); initialBuild {
 			metadata[projectAssistantMetadataInitialBuild] = true
+		}
+		if progress := state.progressSnapshot(time.Now().UTC()); progress != nil {
+			metadata[projectAssistantMetadataProgress] = *progress
+		} else if progress, ok := projectAssistantProgressSnapshotFromMetadata(message.Metadata[projectAssistantMetadataProgress]); ok {
+			metadata[projectAssistantMetadataProgress] = *progress
 		}
 		message.Metadata = metadata
 	})
@@ -603,11 +817,13 @@ func (s *Server) startProjectAssistantRun(w http.ResponseWriter, r *http.Request
 
 func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *projectAssistantSnapshotAccumulator, request *http.Request, id identity, c *asclient.Client, project *aiv1alpha1.Project, run store.AssistantRun, start *projectAssistantStreamStart) {
 	content := &strings.Builder{}
+	workSegmentStarted := time.Now().UTC()
 	state := &projectAssistantDurableMetadataState{
 		status: "Working",
 		initialBuild: start != nil &&
 			start.InitialApprovedPlan != nil &&
 			strings.TrimSpace(start.InitialApprovedPlan.Goal) != "",
+		workSegmentStarted: workSegmentStarted,
 	}
 	workspaceScope := projectWorkspaceScope(id, project.Name)
 	persistMetadata := func(ctx context.Context, runStatus *store.AssistantRunStatus) error {
@@ -630,6 +846,9 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 			)
 			if initialBuild {
 				message.Metadata[projectAssistantMetadataInitialBuild] = true
+			}
+			if progress := state.progressSnapshot(time.Now().UTC()); progress != nil {
+				message.Metadata[projectAssistantMetadataProgress] = *progress
 			}
 		})
 	}
@@ -666,8 +885,17 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 			if callbacksClosed {
 				return
 			}
-			content.WriteString(chunk)
-			recordSnapshotErr(accumulator.UpdateText(ctx, content.String(), false))
+			recordSnapshotErr(accumulator.UpdateText(ctx, appendProjectAssistantStreamBlock(content, chunk), false))
+		},
+		OnProgress: func(message string) {
+			callbackMu.Lock()
+			defer callbackMu.Unlock()
+			if callbacksClosed {
+				return
+			}
+			if state.appendProgress(message) {
+				recordSnapshotErr(persistMetadata(ctx, nil))
+			}
 		},
 		OnProvisionalText: func(_ string) {
 			callbackMu.Lock()
@@ -711,7 +939,7 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 			if callbacksClosed {
 				return
 			}
-			state.toolCalls = upsertProjectToolCallStreamEvent(state.toolCalls, event)
+			state.upsertToolCall(event)
 			recordSnapshotErr(persistMetadata(ctx, nil))
 		},
 		OnAssistantEvent: func(event projectAssistantEvent) {
@@ -721,10 +949,10 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 				return
 			}
 			if event.Permission != nil && event.Permission.ToolCallID != "" {
-				state.toolCalls = upsertProjectToolCallStreamEvent(state.toolCalls, projectToolCallStreamEvent{ID: event.Permission.ToolCallID, Name: event.Permission.ToolName, Status: "permission_required", Summary: event.Permission.Reason, Permission: event.Permission})
+				state.upsertToolCall(projectToolCallStreamEvent{ID: event.Permission.ToolCallID, Name: event.Permission.ToolName, Status: "permission_required", Summary: event.Permission.Reason, Permission: event.Permission})
 			}
 			if event.FollowUp != nil && event.FollowUp.ToolCallID != "" {
-				state.toolCalls = upsertProjectToolCallStreamEvent(state.toolCalls, projectToolCallStreamEvent{ID: event.FollowUp.ToolCallID, Name: projectToolAskFollowUp, Status: "input_required", Summary: event.FollowUp.Prompt, FollowUp: event.FollowUp})
+				state.upsertToolCall(projectToolCallStreamEvent{ID: event.FollowUp.ToolCallID, Name: projectToolAskFollowUp, Status: "input_required", Summary: event.FollowUp.Prompt, FollowUp: event.FollowUp})
 			}
 			if event.Checkpoint != nil {
 				for i := range state.toolCalls {
@@ -995,12 +1223,12 @@ func projectAssistantWorkItemFailureReason(err error) string {
 
 func projectAssistantTerminalFailureContent(err error) string {
 	if projectEinoAssistantNoProgressExceeded(err) {
-		return "I stopped because this run did not make implementation progress within the current phase. Your project changes are preserved; Continue can retry from the current project state."
+		return "I stopped because this run did not make implementation progress within the current phase. Your project changes are preserved. Send another message with what you want me to do next."
 	}
 	if projectEinoAssistantMaxIterationsExceeded(err) {
-		return "I stopped after reaching the bounded action limit. Your project changes are preserved; Continue can resume from the current state."
+		return "I stopped after reaching the bounded action limit. Your project changes are preserved. Send another message with what you want me to do next."
 	}
-	return "The assistant run stopped before it could finish. Your project changes are preserved; Continue can retry from the current state."
+	return "The assistant run stopped before it could finish. Your project changes are preserved. Send another message with what you want me to do next."
 }
 
 func projectAssistantContentWithTerminalFailure(content string, err error) string {

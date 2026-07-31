@@ -296,6 +296,60 @@ func projectTemplateDevBinding(p *aiv1alpha1.Project, info projectTemplateInfo) 
 	}, nil
 }
 
+func validateProjectDevelopmentTemplate(info projectTemplateInfo) error {
+	if strings.TrimSpace(info.Name) == "" {
+		return fmt.Errorf("template name is required")
+	}
+	if len(info.Components) == 0 {
+		return fmt.Errorf("template %q declares no development components; it cannot back a development environment", info.Name)
+	}
+	return nil
+}
+
+// applyProjectDevelopmentTemplate mutates only the Project spec. It is shared
+// by initial creation (before the Project exists) and the explicit
+// select/switch path, so both produce the exact same template and binding
+// contract.
+func applyProjectDevelopmentTemplate(p *aiv1alpha1.Project, info projectTemplateInfo) error {
+	if p == nil {
+		return fmt.Errorf("project is required")
+	}
+	if err := validateProjectDevelopmentTemplate(info); err != nil {
+		return err
+	}
+	binding, err := projectTemplateDevBinding(p, info)
+	if err != nil {
+		return err
+	}
+
+	p.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: info.Name}
+	replaced := false
+	for i := range p.Spec.Environments {
+		env := &p.Spec.Environments[i]
+		if strings.TrimSpace(env.Name) != projectDevelopmentEnvironmentName {
+			continue
+		}
+		kept := env.Bindings[:0]
+		for _, existing := range env.Bindings {
+			if strings.TrimSpace(existing.Name) == projectDevelopmentBindingName {
+				continue
+			}
+			kept = append(kept, existing)
+		}
+		env.Bindings = append(kept, binding)
+		replaced = true
+	}
+	if !replaced {
+		p.Spec.Environments = append(p.Spec.Environments, aiv1alpha1.ProjectEnvironmentSpec{
+			Name:      projectDevelopmentEnvironmentName,
+			Mode:      aiv1alpha1.ProjectEnvironmentModeLive,
+			Promotion: aiv1alpha1.ProjectPromotionManual,
+			Bindings:  []aiv1alpha1.ProjectProviderBindingSpec{binding},
+		})
+	}
+	return nil
+}
+
 // selectProjectTemplate switches the Project's development environment onto
 // the named Template (docs/app-studio-template-sandboxes.md §4.3, minus the
 // git re-hydrate that lands with the Code provider checkout):
@@ -311,8 +365,8 @@ func (s *Server) selectProjectTemplate(ctx context.Context, c *asclient.Client, 
 	if err != nil {
 		return nil, projectTemplateInfo{}, err
 	}
-	if len(info.Components) == 0 {
-		return nil, projectTemplateInfo{}, fmt.Errorf("template %q declares no development components; it cannot back a development environment", info.Name)
+	if err := validateProjectDevelopmentTemplate(info); err != nil {
+		return nil, projectTemplateInfo{}, err
 	}
 	if p.Spec.Template != nil && strings.TrimSpace(p.Spec.Template.Name) == info.Name {
 		// Already selected — reconcile and return (idempotent re-select).
@@ -323,11 +377,6 @@ func (s *Server) selectProjectTemplate(ctx context.Context, c *asclient.Client, 
 		return next, info, nil
 	}
 
-	binding, err := projectTemplateDevBinding(p, info)
-	if err != nil {
-		return nil, projectTemplateInfo{}, err
-	}
-
 	// Tear down the previous development instance before rewriting the spec:
 	// after the update its binding is gone from the Project, and nothing
 	// would ever delete it.
@@ -336,30 +385,8 @@ func (s *Server) selectProjectTemplate(ctx context.Context, c *asclient.Client, 
 	}
 
 	next := p.DeepCopy()
-	next.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: info.Name}
-	replaced := false
-	for i := range next.Spec.Environments {
-		env := &next.Spec.Environments[i]
-		if strings.TrimSpace(env.Name) != projectDevelopmentEnvironmentName {
-			continue
-		}
-		kept := env.Bindings[:0]
-		for _, b := range env.Bindings {
-			if strings.TrimSpace(b.Name) == projectDevelopmentBindingName {
-				continue
-			}
-			kept = append(kept, b)
-		}
-		env.Bindings = append(kept, binding)
-		replaced = true
-	}
-	if !replaced {
-		next.Spec.Environments = append(next.Spec.Environments, aiv1alpha1.ProjectEnvironmentSpec{
-			Name:      projectDevelopmentEnvironmentName,
-			Mode:      aiv1alpha1.ProjectEnvironmentModeLive,
-			Promotion: aiv1alpha1.ProjectPromotionManual,
-			Bindings:  []aiv1alpha1.ProjectProviderBindingSpec{binding},
-		})
+	if err := applyProjectDevelopmentTemplate(next, info); err != nil {
+		return nil, projectTemplateInfo{}, err
 	}
 
 	updated, err := c.Projects().Update(ctx, next, metav1.UpdateOptions{})
@@ -477,7 +504,7 @@ func (s *Server) listDevelopmentTemplates(w http.ResponseWriter, r *http.Request
 // serveDevelopmentTemplates is the client-independent part of the handler,
 // split from the auth plumbing so tests can drive it over HTTP.
 func serveDevelopmentTemplates(w http.ResponseWriter, r *http.Request, c *asclient.Client) {
-	list, err := c.Resource(templateResource, "").List(r.Context(), metav1.ListOptions{})
+	templates, err := listDevelopmentTemplateViews(r.Context(), c)
 	if err != nil {
 		// Same mapping as the other /api/projects handlers: workspace
 		// initialization gets 503 + Retry-After, kcp API errors keep their
@@ -485,7 +512,15 @@ func serveDevelopmentTemplates(w http.ResponseWriter, r *http.Request, c *asclie
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"templates": developmentTemplateViews(list.Items)})
+	writeJSON(w, http.StatusOK, map[string]any{"templates": templates})
+}
+
+func listDevelopmentTemplateViews(ctx context.Context, c *asclient.Client) ([]projectDevelopmentTemplateView, error) {
+	list, err := c.Resource(templateResource, "").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return developmentTemplateViews(list.Items), nil
 }
 
 // developmentTemplateViews filters the raw Template list down to templates

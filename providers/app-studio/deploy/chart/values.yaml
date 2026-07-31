@@ -46,6 +46,18 @@ assistant:
   #     deployments whose users should not see implementation detail.
   toolDisclosure: ""
 
+# Browser-console sharing starts automatically while the embedded preview is
+# open. Until both signing fields are configured, App Studio stays available
+# but reports console instrumentation as unavailable.
+# The private key signs short-lived iframe capabilities. Its matching current
+# and previous public JWKs are deployed independently with the preview bridge.
+previewConsole:
+  enabled: true
+  signingKeyID: ""
+  signingKeySecretRef:
+    name: ""
+    key: private-key.pem
+
 # App Studio no longer holds a kubeconfig to the runtime cluster. The
 # development data plane (sync, logs, restart, preview readiness) is served by
 # the infrastructure provider as subresources on the project's template

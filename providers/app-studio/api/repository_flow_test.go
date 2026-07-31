@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -743,7 +744,10 @@ func TestProjectAssistantWorkspaceInspectPromptUsesCanonicalReads(t *testing.T) 
 	if !strings.Contains(prompt, "provider-code only as the git-source boundary") {
 		t.Fatalf("prompt missing provider-code boundary guidance:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "brief milestone updates") || !strings.Contains(prompt, "Do not narrate each tool call") {
+	if !strings.Contains(prompt, "brief natural-language progress updates") ||
+		!strings.Contains(prompt, "meaningful phase finishes") ||
+		!strings.Contains(prompt, "Do not name tools, expose hidden reasoning") ||
+		!strings.Contains(prompt, "Do not narrate each tool call") {
 		t.Fatalf("prompt missing milestone and per-tool narration guidance:\n%s", prompt)
 	}
 	if !strings.Contains(strings.ToLower(prompt), "before") || !strings.Contains(strings.ToLower(prompt), "inspect") {
@@ -1854,6 +1858,9 @@ func TestResumeProjectAssistantRunApprovesPendingTool(t *testing.T) {
 	if _, ok := updatedMessage.Metadata[projectMessageMetadataStatus]; ok {
 		t.Fatalf("assistant metadata = %#v, want pending status cleared", updatedMessage.Metadata)
 	}
+	if got := updatedMessage.Metadata[projectAssistantMetadataWorkingStatus]; got != "Completed" {
+		t.Fatalf("assistant status = %#v, want completed terminal message metadata", got)
+	}
 	if _, ok := updatedMessage.Metadata["toolCalls"]; ok {
 		t.Fatalf("assistant metadata = %#v, should not persist raw toolCalls", updatedMessage.Metadata)
 	}
@@ -2085,8 +2092,12 @@ func TestResumeProjectAssistantRunAnswersFollowUpAndUpdatesMessage(t *testing.T)
 	if err != nil {
 		t.Fatalf("resumeProjectAssistantRun returned error: %v", err)
 	}
-	if resp.Status != store.AssistantRunStatusPendingPermission || resp.AssistantMessage == nil || resp.AssistantMessage.Content != "Thanks, I can build that. " {
+	if resp.Status != store.AssistantRunStatusPendingPermission || resp.AssistantMessage == nil || resp.AssistantMessage.Content != "" {
 		t.Fatalf("resume response = %#v, want plan approval after follow-up", resp)
+	}
+	progress, ok := projectAssistantProgressSnapshotFromMetadata(resp.AssistantMessage.Metadata[projectAssistantMetadataProgress])
+	if !ok || !reflect.DeepEqual(progress.Messages, []string{"Thanks, I can build that."}) {
+		t.Fatalf("resume progress = %#v, want preserved follow-up update", progress)
 	}
 	updatedMsg, err := server.findProjectMessage(context.Background(), messageScope, assistantMessageID)
 	if err != nil {
@@ -2581,15 +2592,16 @@ func TestResumeProjectAssistantRunPersistsAssistantTextBeforeNextPause(t *testin
 			if err != nil {
 				t.Fatalf("resumeProjectAssistantRun returned error: %v", err)
 			}
-			if resp.Status != store.AssistantRunStatusPendingPermission || resp.AssistantMessage == nil || resp.AssistantMessage.Content != "First change applied. " {
+			if resp.Status != store.AssistantRunStatusPendingPermission || resp.AssistantMessage == nil || resp.AssistantMessage.Content != "" {
 				t.Fatalf("resume response = %#v, want pending permission with preserved assistant text", resp)
 			}
 			updatedMessage, err := server.findProjectMessage(context.Background(), messageScope, resp.AssistantMessage.ID)
 			if err != nil {
 				t.Fatalf("findProjectMessage returned error: %v", err)
 			}
-			if updatedMessage.Content != "First change applied. " {
-				t.Fatalf("assistant content = %q, want preserved resumed text", updatedMessage.Content)
+			progress, ok := projectAssistantProgressSnapshotFromMetadata(updatedMessage.Metadata[projectAssistantMetadataProgress])
+			if updatedMessage.Content != "" || !ok || !reflect.DeepEqual(progress.Messages, []string{"First change applied."}) {
+				t.Fatalf("assistant content = %q progress = %#v, want progress separate from final content", updatedMessage.Content, progress)
 			}
 			if tt.wantFresh && updatedMessage.ID == assistantMessageID {
 				t.Fatalf("assistant message id = %q, want fresh message for stale resume id", updatedMessage.ID)

@@ -55,6 +55,7 @@ type Server struct {
 	assistantSupervisor          *projectAssistantSupervisor
 	developmentSyncLocks         map[string]*sync.Mutex
 	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string)
+	projectCreatePreflight       projectCreatePreflightGenerator
 	// developmentSyncFailures records the most recent post-mutation sync
 	// failure per project so verify_development_runtime can report it. A
 	// failed background sync means the assistant's edits never reached the
@@ -63,9 +64,12 @@ type Server struct {
 	developmentSyncFailures map[string]string
 	// previewEdgeProbe + edgeReadyURLs implement the preview edge-readiness
 	// gate (see preview_edge.go). Nil probe → the real HTTPS probe.
-	previewEdgeProbe func(context.Context, string) error
-	edgeReadyURLs    edgeReadyURLsCache
-	mu               sync.Mutex
+	previewEdgeProbe      func(context.Context, string) error
+	edgeReadyURLs         edgeReadyURLsCache
+	previewConsoleEnabled bool
+	previewConsoleStore   *previewConsoleStore
+	previewConsoleSigner  *previewConsoleCapabilitySigner
+	mu                    sync.Mutex
 }
 
 // New constructs a Server.
@@ -149,6 +153,7 @@ func (s *Server) developmentSyncLock(id identity, projectName string) *sync.Mute
 // Register mounts the project routes onto r. The hub backend proxy strips the
 // /services/providers/app-studio prefix, so paths are registered bare.
 func (s *Server) Register(r *mux.Router) {
+	r.HandleFunc("/metrics", s.previewConsoleMetrics).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects", s.listProjects).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects", s.createProject).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/create-readiness", s.getProjectCreateReadiness).Methods(http.MethodGet)
@@ -171,6 +176,9 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/development-logs", s.logsProjectDevelopment).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/development-status", s.statusProjectDevelopment).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/authorize-development-preview", s.authorizeProjectDevelopmentPreview).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/preview-console/sessions", s.createProjectPreviewConsoleSession).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/preview-console/sessions/{session}/events", s.appendProjectPreviewConsoleEvents).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/preview-console/sessions/{session}", s.deleteProjectPreviewConsoleSession).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/resume", s.resumeProjectAssistant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/stop", s.stopProjectAssistant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/undo", s.undoProjectAssistantRun).Methods(http.MethodPost)

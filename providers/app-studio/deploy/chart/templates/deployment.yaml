@@ -112,6 +112,17 @@ spec:
             - name: APP_STUDIO_TOOL_DISCLOSURE
               value: {{ . | quote }}
             {{- end }}
+            - name: APP_STUDIO_PREVIEW_CONSOLE_ENABLED
+              value: {{ .Values.previewConsole.enabled | quote }}
+            {{- if and .Values.previewConsole.enabled (or .Values.previewConsole.signingKeyID .Values.previewConsole.signingKeySecretRef.name) }}
+            - name: APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID
+              value: {{ required "previewConsole.signingKeyID is required when previewConsole.enabled=true" .Values.previewConsole.signingKeyID | quote }}
+            - name: APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "previewConsole.signingKeySecretRef.name is required when previewConsole.enabled=true" .Values.previewConsole.signingKeySecretRef.name }}
+                  key: {{ .Values.previewConsole.signingKeySecretRef.key | default "private-key.pem" }}
+            {{- end }}
             {{- if .Values.store.messageRetention }}
             - name: APP_STUDIO_MESSAGE_RETENTION
               value: {{ .Values.store.messageRetention | quote }}

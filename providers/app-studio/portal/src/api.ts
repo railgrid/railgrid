@@ -22,6 +22,7 @@ import type {
   ProviderItem,
 } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
+import type { PreviewConsoleEvent, PreviewConsoleSession } from './previewConsole'
 import { readTenant, serviceBase, tenantHeaders } from './portalkit/tenant'
 
 interface TenantSelection {
@@ -171,6 +172,8 @@ export const api = {
       displayName?: string
       description?: string
       prompt?: string
+      templateName?: string
+      inferDevelopmentTemplate?: boolean
       connectionRef?: string
       existingRepositoryRef?: string
     },
@@ -397,5 +400,46 @@ export const api = {
 
   async getMemory(ctx: KedgeContext | null, name: string): Promise<ProjectMemory> {
     return request<ProjectMemory>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/memory`)
+  },
+
+  async createPreviewConsoleSession(
+    ctx: KedgeContext | null,
+    name: string,
+    generation: string,
+  ): Promise<PreviewConsoleSession> {
+    return request<PreviewConsoleSession>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions`,
+      { generation, protocolVersion: 1 },
+    )
+  },
+
+  async uploadPreviewConsoleEvents(
+    ctx: KedgeContext | null,
+    name: string,
+    sessionID: string,
+    generation: string,
+    events: PreviewConsoleEvent[],
+    droppedCount: number,
+  ): Promise<void> {
+    await request<unknown>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions/${encodeURIComponent(sessionID)}/events`,
+      { generation, protocolVersion: 1, droppedCount, events },
+    )
+  },
+
+  async deletePreviewConsoleSession(
+    ctx: KedgeContext | null,
+    name: string,
+    sessionID: string,
+  ): Promise<void> {
+    await request<unknown>(
+      ctx,
+      'DELETE',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions/${encodeURIComponent(sessionID)}`,
+    )
   },
 }
