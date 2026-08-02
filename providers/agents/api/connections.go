@@ -9,6 +9,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
 	"github.com/faroshq/provider-agents/channels"
+	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/llm"
 )
 
@@ -66,11 +68,22 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
 	}
+	out, err := s.applyConnectionCreate(r.Context(), c, &req)
+	if err != nil {
+		writeUpdateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// applyConnectionCreate writes the credential Secret and creates the
+// Connection. Shared by the REST handler and the MCP create_connection tool.
+// The pasted secret is write-only — it is never read back on any surface.
+func (s *Server) applyConnectionCreate(ctx context.Context, c *agentsclient.Client, req *createConnectionRequest) (*agentsv1alpha1.Connection, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.Type = strings.TrimSpace(req.Type)
 	if req.Name == "" || req.Type == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "name and type are required")
-		return
+		return nil, errBadRequest("name and type are required")
 	}
 	switch req.Type {
 	case agentsv1alpha1.ConnectionTypeGitHub, agentsv1alpha1.ConnectionTypeMCP,
@@ -79,8 +92,7 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 		agentsv1alpha1.ConnectionTypeTelegram, agentsv1alpha1.ConnectionTypeSlack,
 		agentsv1alpha1.ConnectionTypeSMTP, agentsv1alpha1.ConnectionTypeDiscord:
 	default:
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "unsupported connection type "+req.Type)
-		return
+		return nil, errBadRequest("unsupported connection type " + req.Type)
 	}
 
 	secretRef := connectionSecretName(req.Name)
@@ -106,8 +118,7 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 			// Allowed when the operator configured a platform OAuth app for this
 			// provider (mirrors the code provider's env-configured app).
 			if !platformApp {
-				writeStatus(w, http.StatusBadRequest, "BadRequest", "oauth connections need clientID and clientSecret, or a platform OAuth app configured for "+provider)
-				return
+				return nil, errBadRequest("oauth connections need clientID and clientSecret, or a platform OAuth app configured for " + provider)
 			}
 		} else {
 			secretData["client_id"] = strings.TrimSpace(req.ClientID)
@@ -121,9 +132,8 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 			Type:       corev1.SecretTypeOpaque,
 			StringData: secretData,
 		}
-		if _, err := c.ApplySecret(r.Context(), sec); err != nil {
-			writeResourceError(w, err)
-			return
+		if _, err := c.ApplySecret(ctx, sec); err != nil {
+			return nil, err
 		}
 	}
 
@@ -145,17 +155,11 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 			provider = "github"
 		}
 		if provider == "" {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "oauthProvider is required (github, google, or slack)")
-			return
+			return nil, errBadRequest("oauthProvider is required (github, google, or slack)")
 		}
 		conn.Spec.OAuth = &agentsv1alpha1.ConnectionOAuth{Provider: provider, Scopes: req.OAuthScopes}
 	}
-	out, err := c.Connections().Create(r.Context(), conn, metav1.CreateOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
+	return c.Connections().Create(ctx, conn, metav1.CreateOptions{})
 }
 
 // updateConnectionRequest patches an existing connection. Pointer fields mean
@@ -174,16 +178,27 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := r.PathValue("name")
-	conn, err := c.Connections().Get(r.Context(), name, metav1.GetOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
 	var req updateConnectionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
+	}
+	out, err := applyConnectionUpdate(r.Context(), c, r.PathValue("name"), &req)
+	if err != nil {
+		writeUpdateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// applyConnectionUpdate patches the connection and, when a new secret is given,
+// rotates the credential in place. Shared by the REST handler and the MCP
+// update_connection tool.
+func applyConnectionUpdate(ctx context.Context, c *agentsclient.Client, name string, req *updateConnectionRequest) (*agentsv1alpha1.Connection, error) {
+	name = strings.TrimSpace(name)
+	conn, err := c.Connections().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
 	}
 	if req.DisplayName != nil {
 		conn.Spec.DisplayName = strings.TrimSpace(*req.DisplayName)
@@ -197,16 +212,15 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 	if req.Config != nil {
 		conn.Spec.Config = *req.Config
 	}
-	out, err := c.Connections().Update(r.Context(), conn, metav1.UpdateOptions{})
+	out, err := c.Connections().Update(ctx, conn, metav1.UpdateOptions{})
 	if err != nil {
-		writeResourceError(w, err)
-		return
+		return nil, err
 	}
 	// Rotate the token when a new secret is provided, preserving any other keys
 	// already in the Secret (e.g. OAuth client_id/client_secret).
 	if req.Secret != nil && strings.TrimSpace(*req.Secret) != "" {
 		data := map[string]string{"token": strings.TrimSpace(*req.Secret)}
-		if existing, gerr := c.GetSecret(r.Context(), llm.SecretNamespace, connectionSecretName(name)); gerr == nil {
+		if existing, gerr := c.GetSecret(ctx, llm.SecretNamespace, connectionSecretName(name)); gerr == nil {
 			for k, v := range existing.Data {
 				if k != "token" {
 					data[k] = string(v)
@@ -219,12 +233,11 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 			Type:       corev1.SecretTypeOpaque,
 			StringData: data,
 		}
-		if _, serr := c.ApplySecret(r.Context(), sec); serr != nil {
-			writeResourceError(w, serr)
-			return
+		if _, serr := c.ApplySecret(ctx, sec); serr != nil {
+			return nil, serr
 		}
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 // testConnection sends a test message through a messaging connection
@@ -234,36 +247,44 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := r.PathValue("name")
-	conn, err := c.Connections().Get(r.Context(), name, metav1.GetOptions{})
-	if err != nil {
-		writeResourceError(w, err)
+	if err := sendConnectionTest(r.Context(), c, r.PathValue("name")); err != nil {
+		writeUpdateError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
+}
+
+// sendConnectionTest delivers a test message through a messaging connection so
+// the user can verify the credential works. Shared by the REST handler and the
+// MCP test_connection tool.
+func sendConnectionTest(ctx context.Context, c *agentsclient.Client, name string) error {
+	name = strings.TrimSpace(name)
+	conn, err := c.Connections().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
 	}
 	switch conn.Spec.Type {
 	case agentsv1alpha1.ConnectionTypeTelegram, agentsv1alpha1.ConnectionTypeSlack,
 		agentsv1alpha1.ConnectionTypeSMTP, agentsv1alpha1.ConnectionTypeDiscord:
 	default:
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "test send is only for messaging connections (telegram, slack, smtp, discord)")
-		return
+		return errBadRequest("test send is only for messaging connections (telegram, slack, smtp, discord)")
 	}
 	token := ""
-	if sec, serr := c.GetSecret(r.Context(), llm.SecretNamespace, connectionSecretName(name)); serr == nil {
+	if sec, serr := c.GetSecret(ctx, llm.SecretNamespace, connectionSecretName(name)); serr == nil {
 		if v, okk := sec.Data["token"]; okk {
 			token = string(v)
 		}
 	}
-	if err := channels.Send(r.Context(), channels.Message{
+	if err := channels.Send(ctx, channels.Message{
 		Type:   conn.Spec.Type,
 		Token:  token,
 		Target: conn.Spec.Channel,
 		Config: conn.Spec.Config,
 		Text:   "✅ Test message from your kedge agents — this connection works.",
 	}); err != nil {
-		writeStatus(w, http.StatusBadGateway, "SendFailed", err.Error())
-		return
+		return &requestError{http.StatusBadGateway, "SendFailed", err.Error()}
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
+	return nil
 }
 
 func (s *Server) deleteConnection(w http.ResponseWriter, r *http.Request) {
@@ -271,12 +292,21 @@ func (s *Server) deleteConnection(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := r.PathValue("name")
-	if err := c.Connections().Delete(r.Context(), name, metav1.DeleteOptions{}); err != nil {
-		writeResourceError(w, err)
+	if err := deleteConnectionAndSecret(r.Context(), c, r.PathValue("name")); err != nil {
+		writeUpdateError(w, err)
 		return
 	}
-	// Best-effort delete of the credential Secret.
-	_ = c.DeleteSecret(r.Context(), llm.SecretNamespace, connectionSecretName(name))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteConnectionAndSecret removes the Connection and, best-effort, its
+// credential Secret. Shared by the REST handler and the MCP delete_connection
+// tool so a credential is never orphaned by one surface.
+func deleteConnectionAndSecret(ctx context.Context, c *agentsclient.Client, name string) error {
+	name = strings.TrimSpace(name)
+	if err := c.Connections().Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+		return err
+	}
+	_ = c.DeleteSecret(ctx, llm.SecretNamespace, connectionSecretName(name))
+	return nil
 }

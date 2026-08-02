@@ -96,11 +96,68 @@ func TestMCPToolsList(t *testing.T) {
 		got[tool.Name] = true
 	}
 	for _, want := range []string{
-		"list_agents", "get_agent", "update_agent",
-		"list_model_credentials", "list_connections", "list_toolsets", "list_schedules",
+		// agents
+		"list_agents", "get_agent", "create_agent", "update_agent", "delete_agent",
+		// schedules
+		"list_schedules", "create_schedule", "update_schedule", "delete_schedule", "run_schedule",
+		// triggers
+		"list_triggers", "create_trigger", "update_trigger", "delete_trigger", "run_trigger",
+		// toolsets
+		"list_toolsets", "create_toolset", "update_toolset", "delete_toolset",
+		// connections
+		"list_connections", "create_connection", "update_connection", "delete_connection", "test_connection",
+		// model credentials
+		"list_model_credentials", "save_model_credential", "delete_model_credential", "test_model_credential",
+		// discovery
+		"list_tool_families",
 	} {
 		if !got[want] {
 			t.Errorf("tools/list missing %q (got %v)", want, out.Tools)
+		}
+	}
+}
+
+// TestMCPToolInputSchemas asserts every tool advertises an input schema whose
+// required fields are actually required — a tool whose schema regresses to an
+// empty object silently becomes uncallable for a model.
+func TestMCPToolInputSchemas(t *testing.T) {
+	result := mcpRPC(t, "/mcp", "tools/list", map[string]any{})
+	var out struct {
+		Tools []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			InputSchema struct {
+				Properties map[string]any `json:"properties"`
+				Required   []string       `json:"required"`
+			} `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(result, &out); err != nil {
+		t.Fatal(err)
+	}
+	wantRequired := map[string][]string{
+		"update_schedule": {"name"},
+		"create_schedule": {"name", "agentRef", "type"},
+		"create_trigger":  {"name", "agentRef", "source"},
+		"delete_trigger":  {"name"},
+		"create_agent":    {"name"},
+	}
+	for _, tool := range out.Tools {
+		if strings.TrimSpace(tool.Description) == "" {
+			t.Errorf("tool %q has no description", tool.Name)
+		}
+		want, ok := wantRequired[tool.Name]
+		if !ok {
+			continue
+		}
+		have := map[string]bool{}
+		for _, f := range tool.InputSchema.Required {
+			have[f] = true
+		}
+		for _, f := range want {
+			if !have[f] {
+				t.Errorf("tool %q should require %q (required: %v)", tool.Name, f, tool.InputSchema.Required)
+			}
 		}
 	}
 }

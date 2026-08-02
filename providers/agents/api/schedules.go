@@ -9,6 +9,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/faroshq/provider-agents/client"
 )
 
 func (s *Server) listSchedules(w http.ResponseWriter, r *http.Request) {
@@ -57,27 +59,35 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
 	}
+	out, err := applyScheduleCreate(r.Context(), c, &req)
+	if err != nil {
+		writeUpdateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// applyScheduleCreate validates the request and creates the schedule. Shared by
+// the REST handler and the MCP create_schedule tool so both surfaces validate
+// identically.
+func applyScheduleCreate(ctx context.Context, c *agentsclient.Client, req *createScheduleRequest) (*agentsv1alpha1.Schedule, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.AgentRef = strings.TrimSpace(req.AgentRef)
 	req.Type = strings.TrimSpace(req.Type)
 	if req.Name == "" || req.AgentRef == "" || req.Type == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "name, agentRef, and type are required")
-		return
+		return nil, errBadRequest("name, agentRef, and type are required")
 	}
 	switch req.Type {
 	case agentsv1alpha1.ScheduleTypeCron, agentsv1alpha1.ScheduleTypeHeartbeat:
 		if strings.TrimSpace(req.Schedule) == "" {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "a cron schedule is required for cron/heartbeat types")
-			return
+			return nil, errBadRequest("a cron schedule is required for cron/heartbeat types")
 		}
 	case agentsv1alpha1.ScheduleTypeWakeup:
 		if strings.TrimSpace(req.RunAt) == "" {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "runAt is required for wakeup type")
-			return
+			return nil, errBadRequest("runAt is required for wakeup type")
 		}
 	default:
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "type must be cron, wakeup, or heartbeat")
-		return
+		return nil, errBadRequest("type must be cron, wakeup, or heartbeat")
 	}
 
 	sched := &agentsv1alpha1.Schedule{
@@ -96,18 +106,12 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
 	if req.RunAt != "" {
 		t, err := time.Parse(time.RFC3339, req.RunAt)
 		if err != nil {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "runAt must be RFC3339 (e.g. 2026-07-13T09:00:00Z): "+err.Error())
-			return
+			return nil, errBadRequest("runAt must be RFC3339 (e.g. 2026-07-13T09:00:00Z): " + err.Error())
 		}
 		mt := metav1.NewTime(t)
 		sched.Spec.RunAt = &mt
 	}
-	out, err := c.Schedules().Create(r.Context(), sched, metav1.CreateOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
+	return c.Schedules().Create(ctx, sched, metav1.CreateOptions{})
 }
 
 // updateScheduleRequest patches an existing schedule. Pointer fields let the
@@ -127,16 +131,27 @@ func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := r.PathValue("name")
-	sched, err := c.Schedules().Get(r.Context(), name, metav1.GetOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
 	var req updateScheduleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
+	}
+	out, err := applyScheduleUpdate(r.Context(), c, r.PathValue("name"), &req)
+	if err != nil {
+		writeUpdateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// applyScheduleUpdate reads the schedule, applies the patch fields that are
+// present, and writes it back. Shared by the REST handler and the MCP
+// update_schedule tool so both surfaces have identical semantics: absent fields
+// are untouched, and an empty runAt clears the one-shot fire time.
+func applyScheduleUpdate(ctx context.Context, c *agentsclient.Client, name string, req *updateScheduleRequest) (*agentsv1alpha1.Schedule, error) {
+	sched, err := c.Schedules().Get(ctx, strings.TrimSpace(name), metav1.GetOptions{})
+	if err != nil {
+		return nil, err
 	}
 	if req.Schedule != nil {
 		sched.Spec.Schedule = strings.TrimSpace(*req.Schedule)
@@ -160,8 +175,7 @@ func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request) {
 		if v := strings.TrimSpace(*req.RunAt); v != "" {
 			t, perr := time.Parse(time.RFC3339, v)
 			if perr != nil {
-				writeStatus(w, http.StatusBadRequest, "BadRequest", "runAt must be RFC3339: "+perr.Error())
-				return
+				return nil, errBadRequest("runAt must be RFC3339: " + perr.Error())
 			}
 			mt := metav1.NewTime(t)
 			sched.Spec.RunAt = &mt
@@ -169,12 +183,7 @@ func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request) {
 			sched.Spec.RunAt = nil
 		}
 	}
-	out, err := c.Schedules().Update(r.Context(), sched, metav1.UpdateOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
+	return c.Schedules().Update(ctx, sched, metav1.UpdateOptions{})
 }
 
 func (s *Server) deleteSchedule(w http.ResponseWriter, r *http.Request) {

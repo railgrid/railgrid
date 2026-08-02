@@ -21,6 +21,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/llm"
 )
 
@@ -85,33 +86,43 @@ func (s *Server) createCredential(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
 	}
+	out, err := applyCredentialUpsert(r.Context(), c, &req)
+	if err != nil {
+		writeUpdateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// applyCredentialUpsert writes the named model-credential Secret
+// (create-or-update), preserving an existing key when none is supplied. Shared
+// by the REST handler and the MCP save_model_credential tool. The returned view
+// never carries the key.
+func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *modelCredential) (*modelCredential, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.Provider = strings.TrimSpace(req.Provider)
 	req.BaseURL = strings.TrimSpace(req.BaseURL)
 	req.Model = strings.TrimSpace(req.Model)
 	req.APIKey = strings.TrimSpace(req.APIKey)
 	if req.Name == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "name is required")
-		return
+		return nil, errBadRequest("name is required")
 	}
 	if req.Provider == "" {
 		req.Provider = llm.ProviderOpenAICompatible
 	}
 	if req.Model == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "model is required")
-		return
+		return nil, errBadRequest("model is required")
 	}
 	// Preserve an existing key when updating without a new one.
 	apiKey := req.APIKey
 	if apiKey == "" {
-		if existing, err := c.GetSecret(r.Context(), llm.SecretNamespace, llm.CredentialSecretName(req.Name)); err == nil {
+		if existing, err := c.GetSecret(ctx, llm.SecretNamespace, llm.CredentialSecretName(req.Name)); err == nil {
 			if v, okk := existing.Data["apiKey"]; okk {
 				apiKey = string(v)
 			}
 		}
 		if apiKey == "" {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "apiKey is required")
-			return
+			return nil, errBadRequest("apiKey is required")
 		}
 	}
 	sec := &corev1.Secret{
@@ -120,13 +131,12 @@ func (s *Server) createCredential(w http.ResponseWriter, r *http.Request) {
 		Type:       corev1.SecretTypeOpaque,
 		StringData: map[string]string{"provider": req.Provider, "baseURL": req.BaseURL, "model": req.Model, "apiKey": apiKey},
 	}
-	if _, err := c.ApplySecret(r.Context(), sec); err != nil {
-		writeResourceError(w, err)
-		return
+	if _, err := c.ApplySecret(ctx, sec); err != nil {
+		return nil, err
 	}
-	writeJSON(w, http.StatusCreated, modelCredential{
+	return &modelCredential{
 		Name: req.Name, Provider: req.Provider, BaseURL: req.BaseURL, Model: req.Model, HasAPIKey: true,
-	})
+	}, nil
 }
 
 // credentialTestResult is the outcome of a live credential health probe.

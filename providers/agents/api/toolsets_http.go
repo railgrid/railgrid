@@ -9,6 +9,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/faroshq/provider-agents/client"
 )
 
 // Toolsets are workspace-shared bundles of tool grants (families + connections
@@ -53,10 +55,20 @@ func (s *Server) createToolset(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
 	}
+	out, err := applyToolsetCreate(r.Context(), c, &req)
+	if err != nil {
+		writeUpdateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// applyToolsetCreate validates the request and creates the toolset. Shared by
+// the REST handler and the MCP create_toolset tool.
+func applyToolsetCreate(ctx context.Context, c *agentsclient.Client, req *toolsetRequest) (*agentsv1alpha1.Toolset, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "name is required")
-		return
+		return nil, errBadRequest("name is required")
 	}
 	ts := &agentsv1alpha1.Toolset{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
@@ -68,12 +80,7 @@ func (s *Server) createToolset(w http.ResponseWriter, r *http.Request) {
 			RequireApproval: req.RequireApproval,
 		},
 	}
-	out, err := c.Toolsets().Create(r.Context(), ts, metav1.CreateOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
+	return c.Toolsets().Create(ctx, ts, metav1.CreateOptions{})
 }
 
 // updateToolsetRequest patches an existing toolset; pointer fields let the
@@ -91,16 +98,26 @@ func (s *Server) updateToolset(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := r.PathValue("name")
-	ts, err := c.Toolsets().Get(r.Context(), name, metav1.GetOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
 	var req updateToolsetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
+	}
+	out, err := applyToolsetUpdate(r.Context(), c, r.PathValue("name"), &req)
+	if err != nil {
+		writeUpdateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// applyToolsetUpdate reads the toolset, applies the patch fields that are
+// present, and writes it back. Shared by the REST handler and the MCP
+// update_toolset tool; list fields replace wholesale.
+func applyToolsetUpdate(ctx context.Context, c *agentsclient.Client, name string, req *updateToolsetRequest) (*agentsv1alpha1.Toolset, error) {
+	ts, err := c.Toolsets().Get(ctx, strings.TrimSpace(name), metav1.GetOptions{})
+	if err != nil {
+		return nil, err
 	}
 	if req.DisplayName != nil {
 		ts.Spec.DisplayName = strings.TrimSpace(*req.DisplayName)
@@ -117,12 +134,7 @@ func (s *Server) updateToolset(w http.ResponseWriter, r *http.Request) {
 	if req.RequireApproval != nil {
 		ts.Spec.RequireApproval = *req.RequireApproval
 	}
-	out, err := c.Toolsets().Update(r.Context(), ts, metav1.UpdateOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
+	return c.Toolsets().Update(ctx, ts, metav1.UpdateOptions{})
 }
 
 func (s *Server) deleteToolset(w http.ResponseWriter, r *http.Request) {

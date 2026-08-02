@@ -200,10 +200,20 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
 	}
+	out, err := s.applyAgentCreate(r.Context(), c, &req)
+	if err != nil {
+		writeUpdateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// applyAgentCreate validates the request and creates the agent. Shared by the
+// REST handler and the MCP create_agent tool.
+func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, req *createAgentRequest) (*agentsv1alpha1.Agent, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "name is required")
-		return
+		return nil, errBadRequest("name is required")
 	}
 	if strings.TrimSpace(req.DisplayName) == "" {
 		req.DisplayName = req.Name
@@ -229,21 +239,14 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	if len(req.Channels) > 0 {
 		chans, err := normalizeChannels(req.Channels)
 		if err != nil {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-			return
+			return nil, errBadRequest(err.Error())
 		}
-		if err := s.validateChannelUniqueness(r.Context(), c, req.Name, chans); err != nil {
-			writeStatus(w, http.StatusConflict, "Conflict", err.Error())
-			return
+		if err := s.validateChannelUniqueness(ctx, c, req.Name, chans); err != nil {
+			return nil, errConflict(err.Error())
 		}
 		a.Spec.Channels = chans
 	}
-	out, err := c.Agents().Create(r.Context(), a, metav1.CreateOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
+	return c.Agents().Create(ctx, a, metav1.CreateOptions{})
 }
 
 // knownToolFamilies are the grantable built-in families (core is always on).

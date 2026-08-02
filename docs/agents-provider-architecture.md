@@ -90,9 +90,10 @@ and tools are edited inside the agent, next to a live chat playground.
 - **Tool loop** — agents call tools mid-conversation via a real tool-call loop
   in the engine (bind → call → observe → continue, bounded by
   `limits.maxToolTurns`, default 16). Families shipped:
-  - `core`: `memory_save/list`, `schedule_create` (cron/wakeup — agents
-    schedule *themselves*), `schedules_list`, `notify`, `ask` (posts a question
-    to the inbox + channel).
+  - `core`: `memory_save/list`, `schedule_create`/`schedule_update`/
+    `schedule_delete`/`schedules_list` (cron/wakeup — agents schedule and
+    re-schedule *themselves*; update/delete are scoped to the calling agent's
+    own schedules), `notify`, `ask` (posts a question to the inbox + channel).
   - `web`: `web_fetch` (SSRF-guarded at dial time — blocks private/loopback,
     defeats DNS rebinding) and `web_search`, backed by a `websearch`
     Connection speaking either a **self-hosted SearXNG instance** (no API key —
@@ -157,11 +158,31 @@ and tools are edited inside the agent, next to a live chat playground.
   calling user. Interactive runs only (background runs have no user token).
 - **Own MCP surface** — the provider serves `/mcp` (streamable HTTP,
   stateless, per-request identity), which the hub aggregate federates as
-  `agents__*` tools: `list_agents`/`get_agent`/`update_agent` (settings
-  read/edit sharing the REST `applyAgentUpdate` path) plus read-only
-  `list_model_credentials`/`list_connections`/`list_toolsets`/
-  `list_schedules`. This is how an agent — or any MCP client on the
-  aggregate — edits agent settings without the portal.
+  `agents__*` tools. It covers the **whole configuration surface** — whatever
+  the portal's settings screens can do, an MCP client can do:
+
+  | Resource | Tools |
+  | --- | --- |
+  | Agents | `list_agents`, `get_agent`, `create_agent`, `update_agent`, `delete_agent` |
+  | Schedules | `list_schedules`, `create_schedule`, `update_schedule`, `delete_schedule`, `run_schedule` |
+  | Triggers | `list_triggers`, `create_trigger`, `update_trigger`, `delete_trigger`, `run_trigger` |
+  | Toolsets | `list_toolsets`, `create_toolset`, `update_toolset`, `delete_toolset` |
+  | Connections | `list_connections`, `create_connection`, `update_connection`, `delete_connection`, `test_connection` |
+  | Model credentials | `list_model_credentials`, `save_model_credential`, `delete_model_credential`, `test_model_credential` |
+  | Discovery | `list_tool_families` |
+
+  Every mutating tool delegates to the same `apply*` helper as the REST
+  handler (`applyAgentUpdate`, `applyScheduleCreate`/`Update`,
+  `applyTriggerCreate`/`Update`, `applyToolsetCreate`/`Update`,
+  `applyConnectionCreate`/`Update`, `applyCredentialUpsert`), so a change made
+  over MCP is indistinguishable from the same change made in the portal:
+  absent fields are untouched, list fields replace wholesale. Secrets are
+  write-only on every tool — tokens and API keys can be set or rotated, never
+  read back. Two things deliberately stay portal-only: the **OAuth Connect
+  flow** (it needs a browser) and **resolving approval requests** (an agent
+  must not be able to approve its own gated tool call). This is how an agent —
+  or any MCP client on the aggregate — configures the whole system without the
+  portal.
 
 ### Priority 0 — validate before building more
 

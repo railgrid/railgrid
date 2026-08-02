@@ -45,16 +45,25 @@ func (s *Server) MCPHandler() http.Handler {
 				Version: "0.1.0",
 				Title:   "kedge agents provider",
 			}, &mcp.ServerOptions{
-				Instructions: "This MCP endpoint manages the AI agents hosted in your kedge " +
-					"tenant workspace: their settings (system prompt, model credential, " +
-					"autonomy, tool grants, channels, budgets, limits) plus the schedules, " +
-					"connections, toolsets, and model credentials they reference. Use " +
-					"list_agents / get_agent to inspect configuration and update_agent to " +
-					"change it — only the fields you pass change, list fields replace " +
-					"wholesale. Names for modelCredential, connections, and toolsets must " +
-					"come from the corresponding list_* tool. Tenant identity is taken from " +
-					"your bearer token — never ask the user for a tenant path. Creating " +
-					"agents and pasting credentials stay in the portal.",
+				Instructions: "This MCP endpoint is the full configuration surface for the AI " +
+					"agents hosted in your kedge tenant workspace — everything the portal's " +
+					"settings screens can do. Agents: list_agents / get_agent / create_agent / " +
+					"update_agent / delete_agent (settings, prompts, autonomy, tool grants, " +
+					"channels, budgets, limits). Schedules: list_schedules / create_schedule / " +
+					"update_schedule / delete_schedule / run_schedule. Triggers: list_triggers / " +
+					"create_trigger / update_trigger / delete_trigger / run_trigger. Toolsets, " +
+					"connections, and model credentials each have list + create/update + delete, " +
+					"plus test_connection and test_model_credential. list_tool_families explains " +
+					"the grantable families. Two rules govern every update tool: only the fields " +
+					"you pass change, and list fields replace the stored list wholesale — so read " +
+					"the resource first when appending. Prefer updating over delete-and-recreate; " +
+					"to stop something temporarily use suspend=true. Names referenced by one " +
+					"resource (modelCredential, connections, toolsets, agentRef) must come from " +
+					"the corresponding list_* tool. Secrets are write-only: tokens and API keys " +
+					"can be set or rotated, never read back. Tenant identity is taken from your " +
+					"bearer token — never ask the user for a tenant path. Two things stay in the " +
+					"portal: the OAuth Connect flow (it needs a browser) and resolving approval " +
+					"requests.",
 			})
 			s.registerMCPTools(srv, r)
 			return srv
@@ -206,22 +215,66 @@ type listToolsetsOutput struct {
 }
 
 type scheduleSummary struct {
-	Name     string `json:"name"`
-	AgentRef string `json:"agentRef"`
-	Type     string `json:"type"`
-	Schedule string `json:"schedule,omitempty"`
-	TimeZone string `json:"timeZone,omitempty"`
-	Task     string `json:"task,omitempty"`
-	Suspend  bool   `json:"suspend,omitempty"`
-	NextRun  string `json:"nextRun,omitempty"`
-	LastRun  string `json:"lastRun,omitempty"`
+	Name       string `json:"name"`
+	AgentRef   string `json:"agentRef"`
+	Type       string `json:"type"`
+	Schedule   string `json:"schedule,omitempty"`
+	TimeZone   string `json:"timeZone,omitempty"`
+	RunAt      string `json:"runAt,omitempty"`
+	Task       string `json:"task,omitempty"`
+	Checklist  string `json:"checklist,omitempty"`
+	ChannelRef string `json:"channelRef,omitempty"`
+	// Suspend has no omitempty: an update that resumes a schedule must show
+	// suspend=false rather than silently dropping the field.
+	Suspend bool   `json:"suspend"`
+	NextRun string `json:"nextRun,omitempty"`
+	LastRun string `json:"lastRun,omitempty"`
 }
 
 type listSchedulesOutput struct {
 	Schedules []scheduleSummary `json:"schedules"`
 }
 
+// createScheduleInput mirrors createScheduleRequest.
+type createScheduleInput struct {
+	Name       string `json:"name" jsonschema:"Lowercase schedule name, e.g. daily-news"`
+	AgentRef   string `json:"agentRef" jsonschema:"Name of the agent this schedule runs (see list_agents)"`
+	Type       string `json:"type" jsonschema:"cron (recurring), wakeup (one-shot), or heartbeat (recurring checklist)"`
+	Schedule   string `json:"schedule,omitempty" jsonschema:"5-field cron expression for cron/heartbeat types, e.g. 0 9 * * *"`
+	TimeZone   string `json:"timeZone,omitempty" jsonschema:"IANA time zone the cron is evaluated in, e.g. Europe/Vilnius; empty means UTC"`
+	RunAt      string `json:"runAt,omitempty" jsonschema:"RFC3339 fire time for wakeup type, e.g. 2026-08-02T09:00:00Z"`
+	Task       string `json:"task,omitempty" jsonschema:"The prompt the agent runs when the schedule fires (cron/wakeup)"`
+	Checklist  string `json:"checklist,omitempty" jsonschema:"Standing markdown checklist reviewed on each pulse (heartbeat type)"`
+	Suspend    bool   `json:"suspend,omitempty" jsonschema:"Create the schedule paused"`
+	ChannelRef string `json:"channelRef,omitempty" jsonschema:"Agent channel name this schedule's output is delivered to; empty means the primary channel"`
+}
+
+// updateScheduleInput mirrors updateScheduleRequest: only fields present in the
+// call are applied.
+type updateScheduleInput struct {
+	Name       string  `json:"name" jsonschema:"Name of the schedule to update (see list_schedules)"`
+	Schedule   *string `json:"schedule,omitempty" jsonschema:"New 5-field cron expression, e.g. 0 9 * * * for daily at 09:00"`
+	TimeZone   *string `json:"timeZone,omitempty" jsonschema:"New IANA time zone; empty string means UTC"`
+	RunAt      *string `json:"runAt,omitempty" jsonschema:"New RFC3339 fire time for wakeup schedules; empty string clears it"`
+	Task       *string `json:"task,omitempty" jsonschema:"New prompt to run when the schedule fires"`
+	Checklist  *string `json:"checklist,omitempty" jsonschema:"New standing checklist for heartbeat schedules"`
+	Suspend    *bool   `json:"suspend,omitempty" jsonschema:"true pauses the schedule without deleting it, false resumes it"`
+	ChannelRef *string `json:"channelRef,omitempty" jsonschema:"Agent channel name for this schedule's output; empty string means the primary channel"`
+}
+
+type deleteScheduleInput struct {
+	Name string `json:"name" jsonschema:"Name of the schedule to delete"`
+}
+
+type deleteScheduleOutput struct {
+	Deleted string `json:"deleted"`
+}
+
 func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
+	// The rest of the configuration surface (triggers, toolsets, connections,
+	// credentials, agent lifecycle, discovery) lives in mcp_config.go.
+	s.registerConfigMCPTools(srv, r)
+
 	yes := true
 	no := false
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &yes}
@@ -416,24 +469,95 @@ func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
 		}
 		out := listSchedulesOutput{Schedules: make([]scheduleSummary, 0, len(list.Items))}
 		for i := range list.Items {
-			sch := &list.Items[i]
-			row := scheduleSummary{
-				Name:     sch.Name,
-				AgentRef: sch.Spec.AgentRef,
-				Type:     sch.Spec.Type,
-				Schedule: sch.Spec.Schedule,
-				TimeZone: sch.Spec.TimeZone,
-				Task:     sch.Spec.Task,
-				Suspend:  sch.Spec.Suspend,
-			}
-			if sch.Status.NextRun != nil {
-				row.NextRun = sch.Status.NextRun.UTC().Format("2006-01-02T15:04:05Z")
-			}
-			if sch.Status.LastRun != nil {
-				row.LastRun = sch.Status.LastRun.UTC().Format("2006-01-02T15:04:05Z")
-			}
-			out.Schedules = append(out.Schedules, row)
+			out.Schedules = append(out.Schedules, scheduleView(&list.Items[i]))
 		}
 		return nil, out, nil
 	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:  "create_schedule",
+		Title: "Create a schedule",
+		Description: "Create a schedule that runs an agent autonomously: a recurring cron task, a one-shot wakeup at a given time, or a recurring heartbeat checklist. " +
+			"Names must be unique — to retime or edit an existing schedule use update_schedule, not this tool.",
+		Annotations: mutating,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in createScheduleInput) (*mcp.CallToolResult, scheduleSummary, error) {
+		c, err := s.mcpClient(r)
+		if err != nil {
+			return nil, scheduleSummary{}, err
+		}
+		req := createScheduleRequest{
+			Name: in.Name, AgentRef: in.AgentRef, Type: in.Type,
+			Schedule: in.Schedule, TimeZone: in.TimeZone, RunAt: in.RunAt,
+			Task: in.Task, Checklist: in.Checklist, Suspend: in.Suspend, ChannelRef: in.ChannelRef,
+		}
+		sch, err := applyScheduleCreate(ctx, c, &req)
+		if err != nil {
+			return nil, scheduleSummary{}, err
+		}
+		return nil, scheduleView(sch), nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:  "update_schedule",
+		Title: "Update a schedule",
+		Description: "Retime or edit an existing schedule in place: change its cron expression or time zone, rewrite its task, move a wakeup, or pause/resume it with suspend. " +
+			"Only the fields you pass change. Use this instead of deleting and recreating.",
+		Annotations: mutating,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in updateScheduleInput) (*mcp.CallToolResult, scheduleSummary, error) {
+		c, err := s.mcpClient(r)
+		if err != nil {
+			return nil, scheduleSummary{}, err
+		}
+		req := updateScheduleRequest{
+			Schedule: in.Schedule, TimeZone: in.TimeZone, RunAt: in.RunAt,
+			Task: in.Task, Checklist: in.Checklist, Suspend: in.Suspend, ChannelRef: in.ChannelRef,
+		}
+		sch, err := applyScheduleUpdate(ctx, c, in.Name, &req)
+		if err != nil {
+			return nil, scheduleSummary{}, err
+		}
+		return nil, scheduleView(sch), nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "delete_schedule",
+		Title:       "Delete a schedule",
+		Description: "Permanently delete a schedule. To stop it temporarily, prefer update_schedule with suspend=true.",
+		Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &yes, OpenWorldHint: &yes},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in deleteScheduleInput) (*mcp.CallToolResult, deleteScheduleOutput, error) {
+		c, err := s.mcpClient(r)
+		if err != nil {
+			return nil, deleteScheduleOutput{}, err
+		}
+		name := strings.TrimSpace(in.Name)
+		if err := c.Schedules().Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			return nil, deleteScheduleOutput{}, err
+		}
+		return nil, deleteScheduleOutput{Deleted: name}, nil
+	})
+}
+
+// scheduleView is the one row shape every schedule tool returns.
+func scheduleView(sch *agentsv1alpha1.Schedule) scheduleSummary {
+	row := scheduleSummary{
+		Name:       sch.Name,
+		AgentRef:   sch.Spec.AgentRef,
+		Type:       sch.Spec.Type,
+		Schedule:   sch.Spec.Schedule,
+		TimeZone:   sch.Spec.TimeZone,
+		Task:       sch.Spec.Task,
+		Checklist:  sch.Spec.Checklist,
+		ChannelRef: sch.Spec.ChannelRef,
+		Suspend:    sch.Spec.Suspend,
+	}
+	if sch.Spec.RunAt != nil {
+		row.RunAt = sch.Spec.RunAt.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	if sch.Status.NextRun != nil {
+		row.NextRun = sch.Status.NextRun.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	if sch.Status.LastRun != nil {
+		row.LastRun = sch.Status.LastRun.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	return row
 }

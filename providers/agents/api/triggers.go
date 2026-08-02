@@ -85,18 +85,28 @@ func (s *Server) createTrigger(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
 	}
+	out, err := s.applyTriggerCreate(r.Context(), c, id.clusterID, &req)
+	if err != nil {
+		writeUpdateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// applyTriggerCreate validates the request, creates the trigger, and mints its
+// inbound webhook URL. Shared by the REST handler and the MCP create_trigger
+// tool. clusterID may be empty (no webhook URL is minted then).
+func (s *Server) applyTriggerCreate(ctx context.Context, c *agentsclient.Client, clusterID string, req *createTriggerRequest) (*agentsv1alpha1.Trigger, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.AgentRef = strings.TrimSpace(req.AgentRef)
 	req.Source = strings.TrimSpace(req.Source)
 	if req.Name == "" || req.AgentRef == "" || req.Source == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "name, agentRef, and source are required")
-		return
+		return nil, errBadRequest("name, agentRef, and source are required")
 	}
 	switch req.Source {
 	case agentsv1alpha1.TriggerSourceWebhook, agentsv1alpha1.TriggerSourceGitHub:
 	default:
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "unsupported source "+req.Source)
-		return
+		return nil, errBadRequest("unsupported source " + req.Source + " (use webhook or github)")
 	}
 	trig := &agentsv1alpha1.Trigger{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
@@ -110,34 +120,27 @@ func (s *Server) createTrigger(w http.ResponseWriter, r *http.Request) {
 			ChannelRef:    strings.TrimSpace(req.ChannelRef),
 		},
 	}
-	out, err := c.Triggers().Create(r.Context(), trig, metav1.CreateOptions{})
+	out, err := c.Triggers().Create(ctx, trig, metav1.CreateOptions{})
 	if err != nil {
-		writeResourceError(w, err)
-		return
+		return nil, err
 	}
 	// Webhook-style sources get a token-guarded inbound URL (HMAC over
 	// cluster/name — no state to store). Best-effort status write; the token
 	// only works once the background executor is running.
-	if req.Source == agentsv1alpha1.TriggerSourceWebhook || req.Source == agentsv1alpha1.TriggerSourceGitHub {
-		if _, ok := s.requireIdentityCluster(w, id); ok {
-			if token := s.webhookToken(id.clusterID, req.Name); token != "" {
-				out.Status.WebhookPath = "/services/providers/agents/webhooks/triggers/" + id.clusterID + "/" + req.Name + "/" + token
-				if updated, uerr := c.Triggers().UpdateStatus(r.Context(), out, metav1.UpdateOptions{}); uerr == nil {
-					out = updated
-				}
+	if clusterID != "" {
+		if token := s.webhookToken(clusterID, req.Name); token != "" {
+			out.Status.WebhookPath = webhookPath(clusterID, req.Name, token)
+			if updated, uerr := c.Triggers().UpdateStatus(ctx, out, metav1.UpdateOptions{}); uerr == nil {
+				out = updated
 			}
 		}
 	}
-	writeJSON(w, http.StatusCreated, out)
+	return out, nil
 }
 
-// requireIdentityCluster is a small guard so webhook URLs are only minted when
-// the request carries a resolved cluster.
-func (s *Server) requireIdentityCluster(_ http.ResponseWriter, id identity) (string, bool) {
-	if id.clusterID == "" {
-		return "", false
-	}
-	return id.clusterID, true
+// webhookPath is the inbound URL a webhook-style trigger listens on.
+func webhookPath(clusterID, name, token string) string {
+	return "/services/providers/agents/webhooks/triggers/" + clusterID + "/" + name + "/" + token
 }
 
 // updateTriggerRequest patches an existing trigger. All fields are optional
@@ -157,16 +160,27 @@ func (s *Server) updateTrigger(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := r.PathValue("name")
-	trig, err := c.Triggers().Get(r.Context(), name, metav1.GetOptions{})
-	if err != nil {
-		writeResourceError(w, err)
-		return
-	}
 	var req updateTriggerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
+	}
+	out, err := s.applyTriggerUpdate(r.Context(), c, id.clusterID, r.PathValue("name"), &req)
+	if err != nil {
+		writeUpdateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// applyTriggerUpdate reads the trigger, applies the patch fields that are
+// present, writes it back, and keeps the inbound webhook URL in sync. Shared by
+// the REST handler and the MCP update_trigger tool.
+func (s *Server) applyTriggerUpdate(ctx context.Context, c *agentsclient.Client, clusterID, name string, req *updateTriggerRequest) (*agentsv1alpha1.Trigger, error) {
+	name = strings.TrimSpace(name)
+	trig, err := c.Triggers().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
 	}
 	if req.Task != nil {
 		trig.Spec.Task = *req.Task
@@ -189,35 +203,31 @@ func (s *Server) updateTrigger(w http.ResponseWriter, r *http.Request) {
 		case agentsv1alpha1.TriggerSourceWebhook, agentsv1alpha1.TriggerSourceGitHub:
 			trig.Spec.Source = src
 		default:
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "unsupported source "+src)
-			return
+			return nil, errBadRequest("unsupported source " + src + " (use webhook or github)")
 		}
 	}
-	out, err := c.Triggers().Update(r.Context(), trig, metav1.UpdateOptions{})
+	out, err := c.Triggers().Update(ctx, trig, metav1.UpdateOptions{})
 	if err != nil {
-		writeResourceError(w, err)
-		return
+		return nil, err
 	}
 	// Keep the inbound webhook URL in sync: webhook-style sources need one; a
 	// source changed away from them should drop it.
 	wantsWebhook := out.Spec.Source == agentsv1alpha1.TriggerSourceWebhook || out.Spec.Source == agentsv1alpha1.TriggerSourceGitHub
 	switch {
-	case wantsWebhook && out.Status.WebhookPath == "":
-		if _, okc := s.requireIdentityCluster(w, id); okc {
-			if token := s.webhookToken(id.clusterID, name); token != "" {
-				out.Status.WebhookPath = "/services/providers/agents/webhooks/triggers/" + id.clusterID + "/" + name + "/" + token
-				if updated, uerr := c.Triggers().UpdateStatus(r.Context(), out, metav1.UpdateOptions{}); uerr == nil {
-					out = updated
-				}
+	case wantsWebhook && out.Status.WebhookPath == "" && clusterID != "":
+		if token := s.webhookToken(clusterID, name); token != "" {
+			out.Status.WebhookPath = webhookPath(clusterID, name, token)
+			if updated, uerr := c.Triggers().UpdateStatus(ctx, out, metav1.UpdateOptions{}); uerr == nil {
+				out = updated
 			}
 		}
 	case !wantsWebhook && out.Status.WebhookPath != "":
 		out.Status.WebhookPath = ""
-		if updated, uerr := c.Triggers().UpdateStatus(r.Context(), out, metav1.UpdateOptions{}); uerr == nil {
+		if updated, uerr := c.Triggers().UpdateStatus(ctx, out, metav1.UpdateOptions{}); uerr == nil {
 			out = updated
 		}
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 func (s *Server) deleteTrigger(w http.ResponseWriter, r *http.Request) {

@@ -36,6 +36,19 @@ func (a clientCR) CreateSchedule(ctx context.Context, s *agentsv1alpha1.Schedule
 	return err
 }
 
+func (a clientCR) GetSchedule(ctx context.Context, name string) (*agentsv1alpha1.Schedule, error) {
+	return a.c.Schedules().Get(ctx, name, metav1.GetOptions{})
+}
+
+func (a clientCR) UpdateSchedule(ctx context.Context, s *agentsv1alpha1.Schedule) error {
+	_, err := a.c.Schedules().Update(ctx, s, metav1.UpdateOptions{})
+	return err
+}
+
+func (a clientCR) DeleteSchedule(ctx context.Context, name string) error {
+	return a.c.Schedules().Delete(ctx, name, metav1.DeleteOptions{})
+}
+
 func (a clientCR) ListSchedules(ctx context.Context) ([]agentsv1alpha1.Schedule, error) {
 	list, err := a.c.Schedules().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -82,6 +95,28 @@ func (a vwCR) CreateSchedule(ctx context.Context, s *agentsv1alpha1.Schedule) er
 	}
 	_, err = a.dyn.Resource(agentsclient.ScheduleGVR).Create(ctx, &unstructured.Unstructured{Object: obj}, metav1.CreateOptions{})
 	return err
+}
+
+func (a vwCR) GetSchedule(ctx context.Context, name string) (*agentsv1alpha1.Schedule, error) {
+	u, err := a.dyn.Resource(agentsclient.ScheduleGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return fromU[agentsv1alpha1.Schedule](u)
+}
+
+func (a vwCR) UpdateSchedule(ctx context.Context, s *agentsv1alpha1.Schedule) error {
+	s.TypeMeta = metav1.TypeMeta{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "Schedule"}
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(s)
+	if err != nil {
+		return err
+	}
+	_, err = a.dyn.Resource(agentsclient.ScheduleGVR).Update(ctx, &unstructured.Unstructured{Object: obj}, metav1.UpdateOptions{})
+	return err
+}
+
+func (a vwCR) DeleteSchedule(ctx context.Context, name string) error {
+	return a.dyn.Resource(agentsclient.ScheduleGVR).Delete(ctx, name, metav1.DeleteOptions{})
 }
 
 func (a vwCR) ListSchedules(ctx context.Context) ([]agentsv1alpha1.Schedule, error) {

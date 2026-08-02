@@ -26,6 +26,11 @@ type fakeCR struct{ conns []agentsv1alpha1.Connection }
 
 func (f fakeCR) GetAgent(context.Context, string) (*agentsv1alpha1.Agent, error) { return nil, nil }
 func (f fakeCR) CreateSchedule(context.Context, *agentsv1alpha1.Schedule) error  { return nil }
+func (f fakeCR) UpdateSchedule(context.Context, *agentsv1alpha1.Schedule) error  { return nil }
+func (f fakeCR) DeleteSchedule(context.Context, string) error                    { return nil }
+func (f fakeCR) GetSchedule(context.Context, string) (*agentsv1alpha1.Schedule, error) {
+	return nil, nil
+}
 func (f fakeCR) ListSchedules(context.Context) ([]agentsv1alpha1.Schedule, error) {
 	return nil, nil
 }

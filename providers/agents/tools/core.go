@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
@@ -51,6 +52,28 @@ func Core(d Deps) []engine.Tool {
 		})
 	}
 	return out
+}
+
+// ownSchedule resolves a schedule by name and refuses it unless it belongs to
+// the running agent. Schedules are cluster-scoped in the tenant workspace, so
+// without this an agent could retime or delete another agent's schedule — the
+// self-scheduling tools are explicitly about the agent managing *itself*.
+func (d Deps) ownSchedule(ctx context.Context, name string) (*agentsv1alpha1.Schedule, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	sched, err := d.CR.GetSchedule(ctx, name)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("no schedule named %q — use schedules_list to see your schedules", name)
+		}
+		return nil, err
+	}
+	if sched.Spec.AgentRef != d.Agent.Name {
+		return nil, fmt.Errorf("schedule %q belongs to agent %q, not you", name, sched.Spec.AgentRef)
+	}
+	return sched, nil
 }
 
 func coreTools(d Deps) []engine.Tool {
@@ -127,7 +150,7 @@ func coreTools(d Deps) []engine.Tool {
 		},
 		{
 			Name: "schedule_create",
-			Desc: "Create a schedule for yourself: a recurring cron task or a one-shot wakeup. Cron is 5-field (minute hour day month weekday).",
+			Desc: "Create a NEW schedule for yourself: a recurring cron task or a one-shot wakeup. Cron is 5-field (minute hour day month weekday). To retime, rewrite, or pause a schedule that already exists, use schedule_update instead — this tool fails on a name that is already taken.",
 			Params: map[string]engine.Param{
 				"name":     {Type: "string", Desc: "lowercase identifier, e.g. daily-digest", Required: true},
 				"type":     {Type: "string", Desc: "schedule type", Required: true, Enum: []string{"cron", "wakeup"}},
@@ -168,9 +191,96 @@ func coreTools(d Deps) []engine.Tool {
 					return "", fmt.Errorf("type must be cron or wakeup")
 				}
 				if err := d.CR.CreateSchedule(ctx, sched); err != nil {
+					if apierrors.IsAlreadyExists(err) || strings.Contains(strings.ToLower(err.Error()), "already exists") {
+						return "", fmt.Errorf("a schedule named %q already exists — use schedule_update to change it instead of creating a new one", name)
+					}
 					return "", err
 				}
 				return fmt.Sprintf("schedule %q created (%s)", name, typ), nil
+			},
+		},
+		{
+			Name: "schedule_update",
+			Desc: "Change one of your existing schedules in place: retime the cron, move a wakeup, rewrite the task, or pause/resume it. Only the fields you pass change. Use schedules_list first to get the exact name.",
+			Params: map[string]engine.Param{
+				"name":     {Type: "string", Desc: "the schedule's name, as shown by schedules_list", Required: true},
+				"schedule": {Type: "string", Desc: "new 5-field cron expression, e.g. 0 9 * * * for daily at 09:00"},
+				"timeZone": {Type: "string", Desc: "new IANA time zone the cron is evaluated in, e.g. Europe/Vilnius"},
+				"runAt":    {Type: "string", Desc: "new RFC3339 fire time (wakeup schedules)"},
+				"task":     {Type: "string", Desc: "new prompt to run when it fires"},
+				"suspend":  {Type: "boolean", Desc: "true pauses the schedule without deleting it, false resumes it"},
+			},
+			Exec: func(ctx context.Context, argsJSON string) (string, error) {
+				args, err := parseArgs(argsJSON)
+				if err != nil {
+					return "", err
+				}
+				sched, err := d.ownSchedule(ctx, argString(args, "name"))
+				if err != nil {
+					return "", err
+				}
+				changed := []string{}
+				if v, ok := args["schedule"]; ok {
+					sched.Spec.Schedule = strings.TrimSpace(fmt.Sprint(v))
+					changed = append(changed, "schedule="+sched.Spec.Schedule)
+				}
+				if v, ok := args["timeZone"]; ok {
+					sched.Spec.TimeZone = strings.TrimSpace(fmt.Sprint(v))
+					changed = append(changed, "timeZone="+sched.Spec.TimeZone)
+				}
+				if v, ok := args["runAt"]; ok {
+					raw := strings.TrimSpace(fmt.Sprint(v))
+					if raw == "" {
+						sched.Spec.RunAt = nil
+					} else {
+						t, perr := time.Parse(time.RFC3339, raw)
+						if perr != nil {
+							return "", fmt.Errorf("runAt must be RFC3339 (e.g. 2026-07-14T09:00:00Z): %v", perr)
+						}
+						mt := metav1.NewTime(t)
+						sched.Spec.RunAt = &mt
+					}
+					changed = append(changed, "runAt="+raw)
+				}
+				if _, ok := args["task"]; ok {
+					sched.Spec.Task = argString(args, "task")
+					changed = append(changed, "task")
+				}
+				if _, ok := args["suspend"]; ok {
+					sched.Spec.Suspend = argBool(args, "suspend")
+					changed = append(changed, fmt.Sprintf("suspend=%v", sched.Spec.Suspend))
+				}
+				if len(changed) == 0 {
+					return "", fmt.Errorf("nothing to update — pass at least one of schedule, timeZone, runAt, task, suspend")
+				}
+				if sched.Spec.Type == agentsv1alpha1.ScheduleTypeCron && strings.TrimSpace(sched.Spec.Schedule) == "" {
+					return "", fmt.Errorf("a cron schedule cannot have an empty cron expression")
+				}
+				if err := d.CR.UpdateSchedule(ctx, sched); err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("schedule %q updated (%s)", sched.Name, strings.Join(changed, ", ")), nil
+			},
+		},
+		{
+			Name: "schedule_delete",
+			Desc: "Delete one of your schedules permanently. To stop it only temporarily, prefer schedule_update with suspend=true.",
+			Params: map[string]engine.Param{
+				"name": {Type: "string", Desc: "the schedule's name, as shown by schedules_list", Required: true},
+			},
+			Exec: func(ctx context.Context, argsJSON string) (string, error) {
+				args, err := parseArgs(argsJSON)
+				if err != nil {
+					return "", err
+				}
+				sched, err := d.ownSchedule(ctx, argString(args, "name"))
+				if err != nil {
+					return "", err
+				}
+				if err := d.CR.DeleteSchedule(ctx, sched.Name); err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("schedule %q deleted", sched.Name), nil
 			},
 		},
 		{

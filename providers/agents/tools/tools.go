@@ -32,6 +32,9 @@ import (
 type CRAccess interface {
 	GetAgent(ctx context.Context, name string) (*agentsv1alpha1.Agent, error)
 	CreateSchedule(ctx context.Context, s *agentsv1alpha1.Schedule) error
+	GetSchedule(ctx context.Context, name string) (*agentsv1alpha1.Schedule, error)
+	UpdateSchedule(ctx context.Context, s *agentsv1alpha1.Schedule) error
+	DeleteSchedule(ctx context.Context, name string) error
 	ListSchedules(ctx context.Context) ([]agentsv1alpha1.Schedule, error)
 	ListConnections(ctx context.Context) ([]agentsv1alpha1.Connection, error)
 	GetConnection(ctx context.Context, name string) (*agentsv1alpha1.Connection, error)
@@ -161,6 +164,19 @@ func argInt(args map[string]any, key string) int {
 		return n
 	}
 	return 0
+}
+
+// argBool reads a boolean argument, tolerating the "true"/"false" strings some
+// models emit instead of a JSON boolean. Returns false when absent.
+func argBool(args map[string]any, key string) bool {
+	switch v := args[key].(type) {
+	case bool:
+		return v
+	case string:
+		b, _ := strconv.ParseBool(strings.TrimSpace(v))
+		return b
+	}
+	return false
 }
 
 func clip(s string, n int) string {

@@ -244,9 +244,12 @@ func (s *Server) expandToolsets(ctx context.Context, deps tools.Deps, grant agen
 // approvalExempt lists tools that never require approval: they only talk to
 // the user or the agent's own memory, so gating them (e.g. under
 // autonomy=suggest's "*") would make the agent unable to even ask.
+// The read-only schedules_list belongs here (it was misspelled "schedule_list"
+// and so was never actually exempt); the mutating schedule_create/update/delete
+// deliberately stay gated.
 var approvalExempt = map[string]bool{
 	"memory_save": true, "memory_list": true, "notify": true, "ask": true,
-	"wait": true, "schedule_list": true,
+	"wait": true, "schedules_list": true,
 }
 
 // wrapTool normalizes every tool onto one audited execution path (ExecRich —
