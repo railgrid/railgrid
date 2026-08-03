@@ -133,6 +133,26 @@ export interface ProjectAssistantActionDiagnostic {
   referenceID: string
 }
 
+/** Server-owned, bounded disclosure for the live development exec tool. */
+export interface ProjectAssistantExecDisclosure {
+  component?: string
+  argv?: string[]
+  workdir?: string
+  timeoutSeconds?: number
+  authorityProfile?: string
+  networkProfile?: string
+  writebackPolicy?: string
+  status?: string
+  summary?: string
+  exitCode?: number | null
+  durationMs?: number
+  stdout?: string[]
+  stderr?: string[]
+  outputTruncated?: boolean
+  detail?: string
+  detailURL?: string
+}
+
 export interface ProjectAssistantActionFeedItem {
   id: string
   kind: ProjectAssistantActionKind
@@ -146,6 +166,7 @@ export interface ProjectAssistantActionFeedItem {
   groupTitle?: string
   sequence: number
   diagnostic?: ProjectAssistantActionDiagnostic
+  exec?: ProjectAssistantExecDisclosure
 }
 
 export interface ProjectAssistantUIComponent {
@@ -175,10 +196,12 @@ export interface ProjectAssistantUIInterruptRequest {
   description?: string
   questions?: Array<ProjectAssistantFollowUpQuestion | string>
   status?: 'pending' | 'resolved'
+  exec?: ProjectAssistantExecDisclosure
   action?: {
     runId: string
     requestId: string
     assistantMessageId?: string
+    exec?: ProjectAssistantExecDisclosure
   }
 }
 

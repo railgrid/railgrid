@@ -114,6 +114,16 @@ func TestResolveComponentVerbs(t *testing.T) {
 	}
 }
 
+func TestResolveComponentExecUsesDedicatedServicePort(t *testing.T) {
+	target, err := ResolveComponentExecTarget(applicationContract(), applicationInstance("runtime"), "backend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.ServiceName != "shop-backend-control" || target.ServicePort != "exec" || target.UpstreamPath != "/exec" {
+		t.Fatalf("exec target = %+v, want backend control Service named port exec at /exec", target)
+	}
+}
+
 func TestResolveComponentUnknown(t *testing.T) {
 	contract := applicationContract()
 	instance := applicationInstance("ns")

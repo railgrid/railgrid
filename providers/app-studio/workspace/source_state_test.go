@@ -86,6 +86,55 @@ func TestFileStoreUncommittedPathsPersistUnionClearAndProjectUIDIsolation(t *tes
 	}
 }
 
+func TestFileStoreSourceRevisionAdvancesForSourceMutationsOnly(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
+	if got, err := store.SourceRevision(ctx, scope); err != nil || got != 1 {
+		t.Fatalf("initial source revision = %d, err=%v, want 1", got, err)
+	}
+	if err := store.ApplyFiles(ctx, scope, []File{{Path: "app.txt", Content: "one\n"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.SourceRevision(ctx, scope); got != 2 {
+		t.Fatalf("revision after initial write = %d, want 2", got)
+	}
+	if err := store.ApplyFiles(ctx, scope, []File{{Path: "app.txt", Content: "one\n"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.SourceRevision(ctx, scope); got != 2 {
+		t.Fatalf("revision after no-op write = %d, want unchanged 2", got)
+	}
+	if _, err := store.AddUncommittedPaths(ctx, scope, []string{"app.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.SourceRevision(ctx, scope); got != 2 {
+		t.Fatalf("revision after dirty-state bookkeeping = %d, want unchanged 2", got)
+	}
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "hydrate.txt", Content: "hydrated\n"}); err != nil {
+		t.Fatalf("WriteFile hydrate-style mutation: %v", err)
+	}
+	if got, _ := store.SourceRevision(ctx, scope); got != 3 {
+		t.Fatalf("revision after direct hydrate-style write = %d, want 3", got)
+	}
+	if _, err := store.ApplyPatch(ctx, scope, PatchOptions{Patch: "*** Begin Patch\n*** Update File: app.txt\n@@\n-one\n+two\n*** End Patch"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.SourceRevision(ctx, scope); got != 4 {
+		t.Fatalf("revision after patch = %d, want 4", got)
+	}
+	if err := store.ClearUncommittedPaths(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.SourceRevision(ctx, scope); got != 4 {
+		t.Fatalf("revision after clearing dirty state = %d, want unchanged 4", got)
+	}
+	reopened := NewFileStore(store.Root())
+	if got, err := reopened.SourceRevision(ctx, scope); err != nil || got != 4 {
+		t.Fatalf("reopened source revision = %d, err=%v, want 4", got, err)
+	}
+}
+
 func TestFileStoreCommitSettlementPersistsAndReconcilesAfterReopen(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

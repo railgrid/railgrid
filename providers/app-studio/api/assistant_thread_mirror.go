@@ -189,6 +189,31 @@ func (s *Server) mirrorAssistantRunIntoThread(scope store.Scope, threadID string
 	}
 	updates, unsubscribe, err := s.projectAssistantSupervisor().Subscribe(scope, run.ID, 0)
 	if err != nil {
+		if errors.Is(err, store.ErrAssistantRunNotFound) {
+			// A very fast worker can terminalize and be removed from the
+			// in-memory supervisor before this goroutine reaches Subscribe. The
+			// durable run/message pair is still sufficient to finish the thread
+			// projection, and the event stream/state reload keeps this fallback
+			// idempotent when a prior mirror already committed the terminal event.
+			currentRun, runErr := s.store.GetAssistantRun(ctx, scope, run.ID)
+			if runErr != nil {
+				s.reportAssistantThreadMirrorFailure(scope, turn, runErr)
+				return
+			}
+			activeMessageID := strings.TrimSpace(currentRun.ActiveMessageID)
+			if activeMessageID == "" {
+				activeMessageID = strings.TrimSpace(run.ActiveMessageID)
+			}
+			message, messageErr := s.findProjectMessage(ctx, scope, activeMessageID)
+			if messageErr != nil {
+				s.reportAssistantThreadMirrorFailure(scope, turn, messageErr)
+				return
+			}
+			if projectionErr := s.projectAssistantThreadSnapshotWithRetry(ctx, scope, threadID, turn, currentRun, &state, projectAssistantRunSnapshot{Run: currentRun, Message: message}); projectionErr != nil {
+				s.reportAssistantThreadMirrorFailure(scope, turn, projectionErr)
+			}
+			return
+		}
 		s.reportAssistantThreadMirrorFailure(scope, turn, err)
 		return
 	}
@@ -202,6 +227,51 @@ func (s *Server) mirrorAssistantRunIntoThread(scope store.Scope, threadID string
 			return
 		}
 	}
+}
+
+// startAssistantThreadMirror owns one live provider-to-thread projection per
+// turn. A thread start, approval resume, and input resume can all observe the
+// same run; only the first caller should subscribe. The durable event stream
+// remains the idempotency boundary, while this in-process guard avoids
+// duplicate subscribers and the resulting retry churn. The guard is released
+// when the mirror reaches a terminal event or otherwise stops, allowing a
+// later restart/recovery attempt to reattach it.
+func (s *Server) startAssistantThreadMirror(scope store.Scope, threadID string, turn store.AssistantTurn, run store.AssistantRun) {
+	threadID = strings.TrimSpace(threadID)
+	if s == nil || threadID == "" || strings.TrimSpace(turn.ID) == "" || strings.TrimSpace(run.ID) == "" {
+		return
+	}
+	key := assistantThreadMirrorKey(scope, threadID, turn.ID)
+	s.mu.Lock()
+	if s.assistantThreadMirrors == nil {
+		s.assistantThreadMirrors = map[string]struct{}{}
+	}
+	if _, exists := s.assistantThreadMirrors[key]; exists {
+		s.mu.Unlock()
+		return
+	}
+	s.assistantThreadMirrors[key] = struct{}{}
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			delete(s.assistantThreadMirrors, key)
+			s.mu.Unlock()
+		}()
+		s.mirrorAssistantRunIntoThread(scope, threadID, turn, run)
+	}()
+}
+
+func assistantThreadMirrorKey(scope store.Scope, threadID, turnID string) string {
+	return fmt.Sprintf("%d:%s%d:%s%d:%s%d:%s%d:%s%d:%s",
+		len(scope.OrgUUID), scope.OrgUUID,
+		len(scope.WorkspaceUUID), scope.WorkspaceUUID,
+		len(scope.ProjectName), scope.ProjectName,
+		len(scope.ProjectUID), scope.ProjectUID,
+		len(threadID), threadID,
+		len(turnID), turnID,
+	)
 }
 
 func (s *Server) loadAssistantThreadMirrorStateWithRetry(ctx context.Context, scope store.Scope, threadID, activeMessageID, turnID string) (assistantThreadMirrorState, error) {

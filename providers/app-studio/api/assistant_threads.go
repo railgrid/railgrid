@@ -296,7 +296,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 			}); err != nil {
 				return err
 			}
-			go s.mirrorAssistantRunIntoThread(scope, thread.ID, canonicalTurn, created)
+			s.startAssistantThreadMirror(scope, thread.ID, canonicalTurn, created)
 			return nil
 		})
 	if err != nil {

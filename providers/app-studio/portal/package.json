@@ -14,6 +14,7 @@
     "test:create-readiness": "node --test src/createReadiness.test.mjs",
     "test:llm-settings": "node --test src/llmSettingsValidation.test.mjs",
     "test:assistant-actions": "node --test src/assistantActionFeed.test.mjs src/assistantActionLog.test.mjs",
+    "test:assistant-exec": "node --test src/assistantExecDisclosure.test.mjs src/assistantInterrupt.test.mjs src/assistantActionFeed.test.mjs src/assistantActionLog.test.mjs",
     "test:assistant-plan": "node --test src/assistantPlan.test.mjs",
     "test:assistant-plan-popover": "node --test src/assistantPlanPopover.test.mjs",
     "test:assistant-progress": "node --test src/assistantProgress.test.mjs src/assistantThreadProjection.test.mjs",

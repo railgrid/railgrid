@@ -258,9 +258,10 @@ func TestHandlerNamespaceEscapeIsConflict(t *testing.T) {
 func TestHandlerUnknownVerb(t *testing.T) {
 	h := newTestHandler(t, &fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeRuntime{host: "http://unused"})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("exec"))
-	// exec is undeclared: MethodAllowed returns false => 405.
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("status = %d, want 405", rec.Code)
+	// exec is a reserved component-only capability and never falls through to
+	// the generic endpoint method resolver.
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
 
@@ -338,6 +339,7 @@ func TestParsePath(t *testing.T) {
 		},
 		{path: PathPrefix + "clusters/ws/sandboxrunners/r1", ok: false},               // no verb
 		{path: "/other/clusters/ws/sandboxrunners/r1/log", ok: false},                 // wrong prefix
+		{path: PathPrefix + "ws/sandboxrunners/r1/log", ok: false},                    // required clusters segment
 		{path: PathPrefix + "clusters//sandboxrunners/r1/log", ok: false},             // empty ws
 		{path: PathPrefix + "clusters/ws/applications/shop/components/", ok: false},   // no component
 		{path: PathPrefix + "clusters/ws/applications/shop/components/be", ok: false}, // component without verb

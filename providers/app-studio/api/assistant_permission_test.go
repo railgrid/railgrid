@@ -21,11 +21,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
 	einotool "github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
+	einoschema "github.com/cloudwego/eino/schema"
 
 	"github.com/faroshq/provider-app-studio/store"
 )
@@ -641,17 +644,21 @@ func TestProjectAssistantRuntimeGraphToolsRespectApprovalMode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			admitMutation := func(context.Context) error { return nil }
-			for _, mode := range []store.AssistantApprovalMode{
-				store.AssistantApprovalModeOnRequest,
-				store.AssistantApprovalModeAutoApprove,
-				store.AssistantApprovalModeNever,
+			for _, mode := range []struct {
+				mode    store.AssistantApprovalMode
+				wantAsk bool
+			}{
+				{mode: store.AssistantApprovalModeOnRequest, wantAsk: false},
+				{mode: store.AssistantApprovalModeAutoApprove, wantAsk: false},
+				{mode: store.AssistantApprovalModeNever, wantAsk: false},
 			} {
-				autoTool, err := tt.new(projectAssistantWorkflowRunContext{ApprovalMode: mode})
+				autoTool, err := tt.new(projectAssistantWorkflowRunContext{ApprovalMode: mode.mode})
 				if err != nil {
-					t.Fatalf("create %s tool: %v", mode, err)
+					t.Fatalf("create %s tool: %v", mode.mode, err)
 				}
-				if _, wrapped := autoTool.(approvaltool.InvokableApprovableTool); wrapped {
-					t.Fatalf("%s runtime tool retained an approval wrapper", mode)
+				_, wrapped := autoTool.(approvaltool.InvokableApprovableTool)
+				if wrapped != mode.wantAsk {
+					t.Fatalf("%s runtime approval wrapper = %t, want %t", mode.mode, wrapped, mode.wantAsk)
 				}
 			}
 
@@ -693,6 +700,162 @@ func TestProjectAssistantRuntimeGraphToolsRespectApprovalMode(t *testing.T) {
 				t.Fatalf("approval inner tool = %T, want ledger inside approval boundary", approval.InvokableTool)
 			}
 		})
+	}
+}
+
+type projectAssistantCountingGraphTool struct {
+	calls *int
+}
+
+func (t projectAssistantCountingGraphTool) Info(context.Context) (*einoschema.ToolInfo, error) {
+	return &einoschema.ToolInfo{
+		Name: projectToolExecCommand,
+		Desc: "counting graph tool",
+	}, nil
+}
+
+func (t projectAssistantCountingGraphTool) InvokableRun(context.Context, string, ...einotool.Option) (string, error) {
+	*t.calls++
+	return `{"status":"executed"}`, nil
+}
+
+func TestProjectAssistantNeverGraphPermissionDoesNotInvokeBackend(t *testing.T) {
+	calls := 0
+	mutationAdmissions := 0
+	tool, err := applyProjectAssistantGraphToolPermission(
+		projectAssistantCountingGraphTool{calls: &calls},
+		projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRuntime},
+		projectAssistantWorkflowRunContext{
+			ApprovalMode: store.AssistantApprovalModeNever,
+			AdmitMutation: func(context.Context) error {
+				mutationAdmissions++
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("apply graph permission: %v", err)
+	}
+	info, err := tool.Info(context.Background())
+	if err != nil || info.Name != projectToolExecCommand {
+		t.Fatalf("denied graph info = %#v, err=%v; want discoverable exec schema", info, err)
+	}
+	invokable, ok := tool.(einotool.InvokableTool)
+	if !ok {
+		t.Fatalf("denied graph tool = %T, want InvokableTool", tool)
+	}
+	result, err := invokable.InvokableRun(context.Background(), `{"component":"backend","argv":["go","test"]}`)
+	if err != nil {
+		t.Fatalf("denied graph invocation error = %v", err)
+	}
+	if !strings.Contains(result, "permission denied") {
+		t.Fatalf("denied graph result = %q, want model-visible permission denial", result)
+	}
+	if calls != 0 || mutationAdmissions != 0 {
+		t.Fatalf("denied graph side effects: backend calls=%d mutation admissions=%d", calls, mutationAdmissions)
+	}
+}
+
+type projectAssistantGraphCheckpointStore struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func (s *projectAssistantGraphCheckpointStore) Get(_ context.Context, id string) ([]byte, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, ok := s.data[id]
+	if !ok {
+		return nil, false, nil
+	}
+	return append([]byte(nil), value...), true, nil
+}
+
+func (s *projectAssistantGraphCheckpointStore) Set(_ context.Context, id string, value []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data == nil {
+		s.data = map[string][]byte{}
+	}
+	s.data[id] = append([]byte(nil), value...)
+	return nil
+}
+
+func TestProjectAssistantAlwaysAskExecGraphInterruptsAndResumesEachCommand(t *testing.T) {
+	calls := 0
+	baseTool := projectAssistantCountingGraphTool{calls: &calls}
+	wrapped, err := applyProjectAssistantGraphToolPermission(
+		baseTool,
+		projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRuntime},
+		projectAssistantWorkflowRunContext{ApprovalMode: store.AssistantApprovalModeAlwaysAsk},
+	)
+	if err != nil {
+		t.Fatalf("apply graph permission: %v", err)
+	}
+	if _, ok := wrapped.(approvaltool.InvokableApprovableTool); !ok {
+		t.Fatalf("always-ask exec graph = %T, want approval wrapper", wrapped)
+	}
+	toolsNode, err := compose.NewToolNode(context.Background(), &compose.ToolsNodeConfig{
+		Tools:               []einotool.BaseTool{wrapped},
+		ExecuteSequentially: true,
+	})
+	if err != nil {
+		t.Fatalf("new tools node: %v", err)
+	}
+	graph := compose.NewGraph[*einoschema.Message, []*einoschema.Message]()
+	if err := graph.AddToolsNode("tools", toolsNode); err != nil {
+		t.Fatalf("add tools node: %v", err)
+	}
+	if err := graph.AddEdge(compose.START, "tools"); err != nil {
+		t.Fatalf("add start edge: %v", err)
+	}
+	if err := graph.AddEdge("tools", compose.END); err != nil {
+		t.Fatalf("add end edge: %v", err)
+	}
+	compiled, err := graph.Compile(context.Background(),
+		compose.WithGraphName("app-studio-always-ask-exec"),
+		compose.WithCheckPointStore(&projectAssistantGraphCheckpointStore{}),
+	)
+	if err != nil {
+		t.Fatalf("compile graph: %v", err)
+	}
+	input := einoschema.AssistantMessage("", []einoschema.ToolCall{
+		{ID: "exec-call-1", Type: "function", Function: einoschema.FunctionCall{Name: projectToolExecCommand, Arguments: `{"component":"backend","argv":["go","test"]}`}},
+		{ID: "exec-call-2", Type: "function", Function: einoschema.FunctionCall{Name: projectToolExecCommand, Arguments: `{"component":"frontend","argv":["npm","test"]}`}},
+	})
+	const checkpointID = "app-studio-always-ask-exec"
+	_, err = compiled.Invoke(context.Background(), input, compose.WithCheckPointID(checkpointID))
+	if err == nil {
+		t.Fatal("initial exec batch completed without approval interrupts")
+	}
+	first, ok := compose.ExtractInterruptInfo(err)
+	if !ok || len(first.InterruptContexts) != 2 {
+		t.Fatalf("initial interrupts = %#v, err=%v; want one per command", first, err)
+	}
+	if calls != 0 {
+		t.Fatalf("initial backend calls = %d, want no execution before approval", calls)
+	}
+
+	resumeFirst := compose.ResumeWithData(context.Background(), first.InterruptContexts[0].ID, &approvaltool.ApprovalResult{Approved: true})
+	_, err = compiled.Invoke(resumeFirst, input, compose.WithCheckPointID(checkpointID))
+	if err == nil {
+		t.Fatal("first approval resume completed without the second command interrupt")
+	}
+	second, ok := compose.ExtractInterruptInfo(err)
+	if !ok || len(second.InterruptContexts) != 1 {
+		t.Fatalf("second interrupts = %#v, err=%v; want the remaining command", second, err)
+	}
+	if calls != 1 {
+		t.Fatalf("backend calls after first resume = %d, want one approved command", calls)
+	}
+
+	resumeSecond := compose.ResumeWithData(context.Background(), second.InterruptContexts[0].ID, &approvaltool.ApprovalResult{Approved: true})
+	output, err := compiled.Invoke(resumeSecond, input, compose.WithCheckPointID(checkpointID))
+	if err != nil {
+		t.Fatalf("second approval resume error: %v", err)
+	}
+	if len(output) != 2 || calls != 2 {
+		t.Fatalf("resumed output/calls = (%#v, %d), want two results and two backend calls", output, calls)
 	}
 }
 

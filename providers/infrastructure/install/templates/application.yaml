@@ -363,7 +363,7 @@ spec:
 
   # ── Data plane (development mode) ─────────────────────────────────────
   # Per-component control verbs, served as
-  # …/applications/<name>/components/{frontend,backend}/{sync,restart,log,env,process}.
+  # …/applications/<name>/components/{frontend,backend}/{sync,restart,log,env,process,exec}.
   # The status paths they resolve through (status.components.*, controlSecretRef,
   # runtimeNamespace) are published by the synthesized dev overlay, so in
   # production mode these verbs answer 409 instance-not-ready — the data plane
@@ -376,6 +376,9 @@ spec:
         fromStatus: true
     components:
       frontend:
+        exec:
+          maxTimeoutSeconds: 120
+          maxOutputBytes: 262144
         endpoints:
           sync:
             servicePath: status.components.frontend.controlServiceRef
@@ -404,6 +407,9 @@ spec:
             upstreamPath: /status
             methods: ["GET"]
       backend:
+        exec:
+          maxTimeoutSeconds: 120
+          maxOutputBytes: 262144
         endpoints:
           sync:
             servicePath: status.components.backend.controlServiceRef

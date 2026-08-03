@@ -74,6 +74,7 @@ type projectAssistantActionFeedItem struct {
 	GroupTitle string                            `json:"groupTitle,omitempty"`
 	Sequence   int                               `json:"sequence,omitempty"`
 	Diagnostic *projectAssistantActionDiagnostic `json:"diagnostic,omitempty"`
+	Exec       *projectAssistantExecMetadata     `json:"exec,omitempty"`
 }
 
 type projectAssistantActionDiagnostic struct {
@@ -91,12 +92,17 @@ func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEv
 		toolCall.Summary,
 		toolCall.Error,
 	)
+	var permissionExec *projectAssistantExecMetadata
+	if toolCall.Permission != nil {
+		permissionExec = toolCall.Permission.Exec
+	}
+	item.Exec = mergeProjectAssistantExecMetadata(permissionExec, toolCall.Exec)
 	item.Sequence = toolCall.Sequence
 	return item
 }
 
 func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssistantToolCall) projectAssistantActionFeedItem {
-	return presentProjectAssistantAction(
+	item := presentProjectAssistantAction(
 		toolCall.ID,
 		toolCall.Name,
 		toolCall.Status,
@@ -104,10 +110,12 @@ func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssista
 		toolCall.Summary,
 		toolCall.Error,
 	)
+	item.Exec = cloneProjectAssistantExecMetadata(toolCall.Exec)
+	return item
 }
 
 func projectAssistantActionFeedItemFromPermission(permission projectAssistantPermission) projectAssistantActionFeedItem {
-	return presentProjectAssistantAction(
+	item := presentProjectAssistantAction(
 		permission.ToolCallID,
 		permission.ToolName,
 		"permission_required",
@@ -115,6 +123,8 @@ func projectAssistantActionFeedItemFromPermission(permission projectAssistantPer
 		permission.Reason,
 		"",
 	)
+	item.Exec = cloneProjectAssistantExecMetadata(permission.Exec)
+	return item
 }
 
 func projectAssistantActionFeedItemFromFollowUp(followUp projectAssistantFollowUp) projectAssistantActionFeedItem {
@@ -217,6 +227,11 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 			item.Count = count
 			item.Outcome = projectAssistantCountOutcome(count, "environment variable", "environment variables")
 		}
+	case projectToolExecCommand:
+		item.Title = projectAssistantActionLifecycleTitle(status, "Running command", "Ran command", "Command failed")
+		if component := projectToolString(args["component"]); component != "" {
+			item.Target = projectAssistantActionSafeTarget(component)
+		}
 	case projectToolCommitFiles, projectToolCommitProjectFiles:
 		item.Title = projectAssistantActionLifecycleTitle(status, "Committing changes", "Committed changes", "Commit failed")
 		paths := projectToolFilePaths(args["files"])
@@ -267,7 +282,7 @@ func projectAssistantActionFeedItemKind(name string) string {
 	case base == projectToolCheckProjectReadiness || base == projectToolPrepareProjectDeployment ||
 		base == projectToolVerifyDevelopmentRuntime || base == projectToolGetRuntimeStatus ||
 		base == projectToolGetPreviewURL || base == projectToolInspectDevelopmentPreview || base == projectToolGetRuntimeLogs ||
-		base == projectToolRestartRuntime || base == projectToolSetRuntimeEnv:
+		base == projectToolRestartRuntime || base == projectToolSetRuntimeEnv || base == projectToolExecCommand:
 		return projectAssistantActionFeedItemRun
 	case base == projectToolCommitProjectFiles || base == projectToolCommitFiles:
 		return projectAssistantActionFeedItemCommit
@@ -356,7 +371,7 @@ func projectAssistantActionFeedGrouping(item *projectAssistantActionFeedItem, ba
 		item.GroupTitle = "Updated files"
 	case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment,
 		projectToolVerifyDevelopmentRuntime, projectToolGetRuntimeStatus,
-		projectToolGetPreviewURL, projectToolInspectDevelopmentPreview, projectToolGetRuntimeLogs, projectToolRestartRuntime:
+		projectToolGetPreviewURL, projectToolInspectDevelopmentPreview, projectToolGetRuntimeLogs, projectToolRestartRuntime, projectToolExecCommand:
 		item.GroupKey = "run:checks"
 		item.GroupTitle = "Ran checks"
 	}

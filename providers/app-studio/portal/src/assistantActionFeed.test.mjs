@@ -1,13 +1,10 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import ts from 'typescript'
+import { createServer } from 'vite'
 
-const source = await readFile(new URL('./assistantActionFeed.ts', import.meta.url), 'utf8')
-const { outputText } = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
-})
-const feed = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
+const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/kedge-vite-assistant-action-feed', configFile: false, server: { middlewareMode: true } })
+const feed = await vite.ssrLoadModule('/src/assistantActionFeed.ts')
+test.after(async () => vite.close())
 
 const action = (overrides = {}) => ({
   id: 'action-1',
@@ -32,6 +29,28 @@ test('parses only the fresh allowlisted action feed contract', () => {
   )
   assert.deepEqual(feed.parseAssistantActionFeed([action({ tool: 'read_file' })]), [])
   assert.deepEqual(feed.parseAssistantActionFeed([action({ arguments: 'offset=200 limit=50' })]), [])
+})
+
+test('parses bounded exec disclosures and rejects unknown execution metadata', () => {
+  const exec = {
+    component: 'backend',
+    argv: ['go', 'test', './...'],
+    workdir: 'internal',
+    timeoutSeconds: 30,
+    authorityProfile: 'application-container',
+    networkProfile: 'application-runtime',
+    writebackPolicy: 'runtime-workspace-only',
+    status: 'succeeded',
+    exitCode: 0,
+    durationMs: 1234,
+    stdout: ['ok'],
+    stderr: [],
+    outputTruncated: false,
+  }
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ kind: 'run', exec })])[0].exec, exec)
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ kind: 'run', exec: { ...exec, workdir: '../secrets' } })]), [])
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ kind: 'run', exec: { ...exec, rawArguments: 'secret' } })]), [])
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ kind: 'run', exec: { ...exec, argv: [''] } })]), [])
 })
 
 test('suppresses plan events and rejects malformed diagnostics', () => {
@@ -94,6 +113,22 @@ test('never groups failures, rejected actions, diagnostics, or milestones', () =
   assert.equal(feed.assistantActionStatusLabel('failed'), 'Failed')
   assert.equal(feed.assistantActionStatusLabel('rejected'), 'Rejected')
   assert.equal(feed.assistantActionStatusLabel('skipped'), 'Skipped')
+})
+
+test('keeps exec activity rows separate so expanded details are not collapsed into a check group', () => {
+  const grouped = feed.groupAssistantActions([
+    action({ id: 'check', kind: 'run', groupKey: 'run:checks', groupTitle: 'Ran checks' }),
+    action({
+      id: 'exec',
+      kind: 'run',
+      title: 'Ran command',
+      groupKey: 'run:checks',
+      groupTitle: 'Ran checks',
+      exec: { component: 'frontend', argv: ['npm', 'test'], status: 'succeeded', exitCode: 0, durationMs: 90 },
+    }),
+  ])
+  assert.equal(grouped.length, 2)
+  assert.equal(grouped[1].exec.component, 'frontend')
 })
 
 test('bounds collapsed summaries while preserving grouped count', () => {

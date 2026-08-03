@@ -88,9 +88,10 @@ type projectAssistantUIInterruptRequest struct {
 }
 
 type projectAssistantUIInterruptAction struct {
-	RunID              string `json:"runId"`
-	RequestID          string `json:"requestId"`
-	AssistantMessageID string `json:"assistantMessageId,omitempty"`
+	RunID              string                        `json:"runId"`
+	RequestID          string                        `json:"requestId"`
+	AssistantMessageID string                        `json:"assistantMessageId,omitempty"`
+	Exec               *projectAssistantExecMetadata `json:"exec,omitempty"`
 }
 
 func projectAssistantUIDataUpdateEvent(surfaceID, key, value string) projectAssistantUIEvent {
@@ -137,6 +138,7 @@ func projectAssistantUIInterruptRequestFromPermissionCheckpoint(surfaceID string
 			RunID:              checkpoint.ID,
 			RequestID:          permission.ID,
 			AssistantMessageID: surfaceID,
+			Exec:               cloneProjectAssistantExecMetadata(permission.Exec),
 		},
 	}
 }

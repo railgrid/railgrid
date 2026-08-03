@@ -88,7 +88,7 @@ onBeforeUnmount(() => {
         <ShieldCheck class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
         <span class="min-w-0 flex-1">
           <span class="block text-[13px] font-medium text-text-primary">Ask when needed</span>
-          <span class="mt-0.5 block text-[12px] leading-4 text-text-muted">Allow routine workspace actions and ask before consequential external effects.</span>
+          <span class="mt-0.5 block text-[12px] leading-4 text-text-muted">Allow routine workspace actions; bounded compiler, test, and lint commands run automatically, while consequential external effects still ask.</span>
         </span>
         <Check v-if="mode === 'on_request'" class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
       </button>

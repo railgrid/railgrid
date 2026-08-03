@@ -476,6 +476,34 @@ type TemplateDataPlaneComponent struct {
 	// +required
 	// +kubebuilder:validation:MinProperties=1
 	Endpoints map[string]TemplateDataPlaneEndpoint `json:"endpoints"`
+
+	// Exec declares the bounded, non-interactive command capability for this
+	// component. Exec is deliberately separate from Endpoints: endpoint
+	// Upgrade is an HTTP proxy feature and must never implicitly grant command
+	// execution or Kubernetes SPDY exec access.
+	// +optional
+	Exec *TemplateDataPlaneExec `json:"exec,omitempty"`
+}
+
+// TemplateDataPlaneExec describes the server-enforced ceilings for a
+// component command execution request. The provider still applies its own
+// hard upper bounds when it serves the contract; these values only reduce
+// those bounds for a particular platform-owned Template.
+type TemplateDataPlaneExec struct {
+	// MaxTimeoutSeconds is the maximum wall-clock duration for one command.
+	// Zero uses the provider default. Values above the provider maximum are
+	// rejected when the Template contract is resolved.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=120
+	MaxTimeoutSeconds int32 `json:"maxTimeoutSeconds,omitempty"`
+
+	// MaxOutputBytes is the combined stdout/stderr response ceiling. Zero uses
+	// the provider default. Values above the provider maximum are rejected.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=262144
+	MaxOutputBytes int32 `json:"maxOutputBytes,omitempty"`
 }
 
 // TemplateDataPlaneEndpoint describes one data-plane verb: either a value served

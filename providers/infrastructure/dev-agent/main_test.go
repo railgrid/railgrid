@@ -248,6 +248,131 @@ func TestSyncRejectsEscapes(t *testing.T) {
 	}
 }
 
+func TestAuthoritativeSyncConvergesManagedDeletesAndReturnsEvidence(t *testing.T) {
+	workdir := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+	first := []syncFile{{Path: "main.go", Content: "package main\n"}, {Path: "old.go", Content: "old\n"}}
+	digest, err := digestSyncFiles(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, resp := doSync(t, srv, syncRequest{Files: first, SourceRevision: 1, SourceDigest: digest})
+	if rec.Code != http.StatusOK || resp.SourceRevision != 1 || resp.SourceDigest != digest {
+		t.Fatalf("first sync = status %d response %+v", rec.Code, resp)
+	}
+	firstDigest := digest
+	if err := os.MkdirAll(filepath.Join(workdir, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "node_modules", "generated.js"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "runtime.log"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := []syncFile{{Path: "main.go", Content: "package main\nfunc main() {}\n"}}
+	digest, err = digestSyncFiles(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, resp = doSync(t, srv, syncRequest{Files: second, SourceRevision: 2, SourceDigest: digest})
+	if rec.Code != http.StatusOK || resp.SourceRevision != 2 || !slices.Equal(resp.Deleted, []string{"old.go"}) {
+		t.Fatalf("second sync = status %d response %+v", rec.Code, resp)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "old.go")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old managed file still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "node_modules", "generated.js")); err != nil {
+		t.Fatalf("runtime-generated file was deleted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "runtime.log")); err != nil {
+		t.Fatalf("unmanaged runtime file was deleted: %v", err)
+	}
+
+	// A same-revision retry verifies actual bytes before treating the request
+	// as an idempotent no-op; an app-side mutation is repaired from the source.
+	if err := os.WriteFile(filepath.Join(workdir, "main.go"), []byte("tampered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ = doSync(t, srv, syncRequest{Files: second, SourceRevision: 2, SourceDigest: digest})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("same-revision repair status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	got, err := os.ReadFile(filepath.Join(workdir, "main.go"))
+	if err != nil || string(got) != second[0].Content {
+		t.Fatalf("same-revision repair content = %q err=%v", got, err)
+	}
+
+	rec, _ = doSync(t, srv, syncRequest{Files: first, SourceRevision: 1, SourceDigest: firstDigest})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale revision status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAuthoritativeSyncRebuildsInvalidManifestWithoutBroadDeletes(t *testing.T) {
+	workdir := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+	if err := os.WriteFile(filepath.Join(workdir, workspaceManifestName), []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "runtime-generated.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "stale.txt"), []byte("remove"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files := []syncFile{{Path: "main.go", Content: "package main\n"}}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := doSync(t, srv, syncRequest{Files: files, DeletePaths: []string{"stale.txt"}, SourceRevision: 1, SourceDigest: digest})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rebuild status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "runtime-generated.txt")); err != nil {
+		t.Fatalf("unknown path was deleted while rebuilding manifest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "stale.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("explicit stale path was not converged: %v", err)
+	}
+	manifest, found, err := readWorkspaceManifest(mustOpenWorkspaceRoot(t, workdir))
+	if err != nil || !found || manifest.SourceRevision != 1 {
+		t.Fatalf("rebuilt manifest = %+v found=%t err=%v", manifest, found, err)
+	}
+}
+
+func TestAuthoritativeSyncRejectsSymlinkWrite(t *testing.T) {
+	workdir := t.TempDir()
+	outside := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{WorkDir: workdir})
+	if err := os.Symlink(outside, filepath.Join(workdir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	files := []syncFile{{Path: "link/main.go", Content: "package main\n"}}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := doSync(t, srv, syncRequest{Files: files, SourceRevision: 1, SourceDigest: digest})
+	if rec.Code != http.StatusConflict && rec.Code != http.StatusBadRequest {
+		t.Fatalf("symlink sync status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(outside, "main.go")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("symlink target was written: %v", err)
+	}
+}
+
+func mustOpenWorkspaceRoot(t *testing.T, workdir string) *os.Root {
+	t.Helper()
+	root, err := os.OpenRoot(workdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	return root
+}
+
 func TestControlAuth(t *testing.T) {
 	srv := newTestAgent(t, &agentConfig{})
 	req := httptest.NewRequest("GET", "/logs", nil)

@@ -380,6 +380,199 @@ func TestAssistantThreadProjectionLockIsReclaimed(t *testing.T) {
 	}
 }
 
+func TestAssistantThreadMirrorReattachesAfterRestartAndCompletesWaitingExec(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, nil, "", false)
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Now().UTC()
+	threadID := "thread-restart-mirror"
+	runID := "run-restart-mirror"
+	assistantID := "assistant-restart-mirror"
+	requestID := "approval-restart-mirror"
+	if _, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{ID: threadID, ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
+		t.Fatal(err)
+	}
+	run := store.AssistantRun{
+		ID:              runID,
+		Mode:            store.AssistantRunModeDefault,
+		ApprovalMode:    store.AssistantApprovalModeOnRequest,
+		Status:          store.AssistantRunStatusPendingPermission,
+		ClientRequestID: "client-restart-mirror",
+		UserMessageID:   "user-restart-mirror",
+		ActiveMessageID: assistantID,
+		RequestID:       requestID,
+		Revision:        1,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	waiting := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID: "exec-restart-mirror", Name: projectToolExecCommand, Status: "permission_required",
+		Summary: "command is waiting for approval",
+	})
+	assistant := store.Message{
+		ID:        assistantID,
+		Role:      "assistant",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Metadata: projectAssistantDurableMetadataForTransition(
+			run, "Working", false, false, nil, nil,
+		),
+	}
+	assistant.Metadata[projectMessageMetadataAssistantActionFeed] = []projectAssistantActionFeedItem{waiting}
+	assistant.Metadata[projectMessageMetadataAssistantInterrupt] = projectAssistantUIInterruptRequest{
+		InterruptID: requestID,
+		Kind:        projectAssistantInterruptTypePermission,
+		Status:      "pending",
+		Action: &projectAssistantUIInterruptAction{
+			RunID:              runID,
+			RequestID:          requestID,
+			AssistantMessageID: assistantID,
+		},
+	}
+	user := store.Message{ID: run.UserMessageID, Role: "user", ActorID: "alice", Content: "run it", CreatedAt: now, UpdatedAt: now}
+	if _, err := messages.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
+		t.Fatal(err)
+	}
+	turn := store.AssistantTurn{
+		ID:                  runID,
+		ThreadID:            threadID,
+		ActorID:             "alice",
+		ClientUserMessageID: run.ClientRequestID,
+		Mode:                run.Mode,
+		ApprovalMode:        run.ApprovalMode,
+		Status:              store.AssistantTurnStatusInProgress,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+	if _, err := messages.CreateAssistantTurn(ctx, scope, turn, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh Server models the provider process after restart: the durable run
+	// and action are present, while the supervisor and mirror registry are new.
+	if _, err := server.projectAssistantSupervisor().Attach(scope, run, assistant); err != nil {
+		t.Fatal(err)
+	}
+	server.startAssistantThreadMirror(scope, threadID, turn, run)
+	server.startAssistantThreadMirror(scope, threadID, turn, run)
+	waitEvents := func(want func([]store.AssistantThreadEvent) bool) []store.AssistantThreadEvent {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			events, err := messages.ListAssistantThreadEvents(ctx, scope, threadID, 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want(events) {
+				return events
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for assistant thread mirror events: %#v", events)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	dynamicItemID := assistantThreadDynamicToolItemID(assistantID, waiting.ID)
+	waitEvents(func(events []store.AssistantThreadEvent) bool {
+		return countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemStarted, dynamicItemID) == 1
+	})
+
+	accumulator := server.projectAssistantSupervisor().accumulatorFor(scope, runID)
+	if accumulator == nil {
+		t.Fatal("restarted run has no supervisor accumulator")
+	}
+	if err := accumulator.UpdateSnapshot(ctx, func(current *store.AssistantRun, message *store.Message) {
+		current.Status = store.AssistantRunStatusCompleted
+		current.RequestID = ""
+		message.Content = "Command completed."
+		message.Metadata = cloneAnyMap(message.Metadata)
+		actions := projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed])
+		if len(actions) == 1 {
+			actions[0].Status = projectAssistantActionFeedStatusSucceeded
+			actions[0].Title = "Ran command"
+			actions[0].Severity = projectAssistantActionFeedSeverityNormal
+			message.Metadata[projectMessageMetadataAssistantActionFeed] = actions
+		}
+		delete(message.Metadata, projectMessageMetadataAssistantInterrupt)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	events := waitEvents(func(events []store.AssistantThreadEvent) bool {
+		return countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemCompleted, dynamicItemID) == 1 &&
+			countAssistantThreadMirrorTestEvents(events, assistantThreadEventTurnCompleted, "") == 1
+	})
+	if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemStarted, dynamicItemID); got != 1 {
+		t.Fatalf("waiting exec started events = %d, want one: %#v", got, events)
+	}
+	if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemCompleted, dynamicItemID); got != 1 {
+		t.Fatalf("completed exec events = %d, want one: %#v", got, events)
+	}
+	if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventApprovalRequested, requestID); got != 1 {
+		t.Fatalf("approval requested events = %d, want one: %#v", got, events)
+	}
+	if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventApprovalResolved, requestID); got != 1 {
+		t.Fatalf("approval resolved events = %d, want one: %#v", got, events)
+	}
+	items := materializeAssistantThreadItems(events)
+	var reloadedExec *assistantThreadItem
+	for i := range items {
+		if items[i].ID == dynamicItemID {
+			reloadedExec = &items[i]
+			break
+		}
+	}
+	if reloadedExec == nil || reloadedExec.Status != "completed" {
+		t.Fatalf("reloaded exec item = %#v, want completed", reloadedExec)
+	}
+	var reloadedAction projectAssistantActionFeedItem
+	if err := json.Unmarshal(reloadedExec.Data, &reloadedAction); err != nil {
+		t.Fatalf("decode reloaded exec action: %v", err)
+	}
+	if reloadedAction.Status != projectAssistantActionFeedStatusSucceeded {
+		t.Fatalf("reloaded exec action status = %q, want succeeded", reloadedAction.Status)
+	}
+
+	// The mirror unregisters after terminalization, so a later recovery call is
+	// allowed to re-enter but must observe the durable terminal event and append
+	// nothing new.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		server.mu.Lock()
+		_, active := server.assistantThreadMirrors[assistantThreadMirrorKey(scope, threadID, turn.ID)]
+		server.mu.Unlock()
+		if !active {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("terminal mirror did not release its registry entry")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	eventCount := len(events)
+	server.startAssistantThreadMirror(scope, threadID, turn, run)
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		server.mu.Lock()
+		_, active := server.assistantThreadMirrors[assistantThreadMirrorKey(scope, threadID, turn.ID)]
+		server.mu.Unlock()
+		if !active {
+			reloaded, err := messages.ListAssistantThreadEvents(ctx, scope, threadID, 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(reloaded) != eventCount {
+				t.Fatalf("terminal mirror re-entry appended events: before=%d after=%d events=%#v", eventCount, len(reloaded), reloaded)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("terminal mirror re-entry did not release its registry entry")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestProjectAssistantThreadMirrorReconcilesAmbiguousAppendCommit(t *testing.T) {
 	inner := store.NewMemoryStore()
 	failing := &failingAssistantThreadProjectionStore{Store: inner, appendAfterCommitFailures: 1, reloadFailuresAfterAppend: 1}

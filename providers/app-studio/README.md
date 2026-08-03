@@ -228,8 +228,10 @@ state.
 Approval defaults to `on_request`: routine workspace work proceeds, while
 consequential external effects and repository commits ask. `always_ask` asks
 before every state-changing/external action, and `never` denies actions that
-need authority. A plan communicates intended work and progress; it never grants
-permission. Default collaboration mode has no structured follow-up tool, while
+need authority. Bounded compiler, test, and lint commands run automatically in
+the synchronized development runtime under `on_request`; they never write back
+to App Studio source. A plan communicates intended work and progress; it never
+grants permission. Default collaboration mode has no structured follow-up tool, while
 Plan mode may request structured input and remains read-only.
 
 Lifecycle logs contain only organization, workspace, project, run, revision,

@@ -261,6 +261,87 @@ func TestDevOverlayDevDeploymentShape(t *testing.T) {
 	}
 }
 
+func TestDevOverlayExecWorkerIsolationAndServicePort(t *testing.T) {
+	rgd, err := buildRGD(devTestTemplate(t), devTestTokens())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := rgdResources(t, rgd)
+	dep := byID["backendDevDeployment"]["template"].(map[string]any)
+	podSpec, _, _ := nestedMap(dep, "spec", "template", "spec")
+	if podSpec["shareProcessNamespace"] != false {
+		t.Fatalf("shareProcessNamespace = %v, want false", podSpec["shareProcessNamespace"])
+	}
+	containers := podSpec["containers"].([]any)
+	if len(containers) != 2 {
+		t.Fatalf("containers = %d, want app + exec worker", len(containers))
+	}
+	worker := containers[1].(map[string]any)
+	raw, _ := json.Marshal(worker)
+	workerJSON := string(raw)
+	for _, want := range []string{
+		`"name":"kedge-exec-worker"`, `"image":"docker.io/library/python:3.12"`,
+		`"--exec-worker"`, `"containerPort":7071`, `"mountPath":"/tmp"`,
+		`"mountPath":"/var/run/secrets/kubernetes.io/serviceaccount"`,
+		`"mountPath":"/workspace/.kedge-platform"`, `"subPath":".kedge-platform"`,
+		`"SETUID"`, `"SETGID"`,
+	} {
+		if !strings.Contains(workerJSON, want) {
+			t.Errorf("worker lacks %s: %s", want, workerJSON)
+		}
+	}
+	for _, forbidden := range []string{"DATABASE_URL", "envFrom", "dbCredentials", "kedge-dev-tmp"} {
+		if strings.Contains(workerJSON, forbidden) {
+			t.Errorf("worker copied application authority %q: %s", forbidden, workerJSON)
+		}
+	}
+	appJSON, _ := json.Marshal(containers[0])
+	if !strings.Contains(string(appJSON), `"KEDGE_DEV_DROP_CHILD_GROUPS"`) || !strings.Contains(string(appJSON), `"subPath":".kedge-platform"`) {
+		t.Fatalf("app control container lacks protected metadata/drop-group wiring: %s", appJSON)
+	}
+	svcRaw, _ := json.Marshal(byID["backendDevControlService"]["template"])
+	if !strings.Contains(string(svcRaw), `"name":"exec","port":7071,"targetPort":7071`) {
+		t.Fatalf("control Service lacks exec port: %s", svcRaw)
+	}
+}
+
+func TestDevOverlayProtectedMetadataTracksPreservedWorkspaceSubPath(t *testing.T) {
+	tmpl := devTestTemplate(t)
+	var backend map[string]any
+	if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
+		t.Fatal(err)
+	}
+	resources := backend["resources"].([]any)
+	deployment := resources[1].(map[string]any)["template"].(map[string]any)
+	podSpec, _, _ := nestedMap(deployment, "spec", "template", "spec")
+	container := podSpec["containers"].([]any)[0].(map[string]any)
+	container["volumeMounts"] = []any{map[string]any{
+		"name": "existing-workspace", "mountPath": "/workspace", "subPath": "components/backend",
+	}}
+	podSpec["volumes"] = []any{map[string]any{
+		"name": "existing-workspace", "persistentVolumeClaim": map[string]any{"claimName": "existing"},
+	}}
+	raw, _ := json.Marshal(backend)
+	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: raw}
+
+	rgd, err := buildRGD(tmpl, devTestTokens())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := rgdResources(t, rgd)
+	dep := byID["backendDevDeployment"]["template"].(map[string]any)
+	devPod, _, _ := nestedMap(dep, "spec", "template", "spec")
+	for _, rawContainer := range devPod["containers"].([]any) {
+		encoded, _ := json.Marshal(rawContainer)
+		if !strings.Contains(string(encoded), `"mountPath":"/workspace/.kedge-platform","name":"existing-workspace","subPath":"components/backend/.kedge-platform"`) {
+			t.Fatalf("container metadata subPath does not follow preserved workspace subPath: %s", encoded)
+		}
+	}
+	if _, generated := byID["backendDevWorkspace"]; generated {
+		t.Fatal("overlay generated a second workspace PVC for preserved subPath mount")
+	}
+}
+
 func TestDevOverlayStatusAdditions(t *testing.T) {
 	rgd, err := buildRGD(devTestTemplate(t), devTestTokens())
 	if err != nil {

@@ -142,6 +142,14 @@ func (s *FileStore) applyUnifiedPatch(ctx context.Context, scope Scope, opts Pat
 	if err := s.verifyPatchBaselines(ctx, scope, states); err != nil {
 		return MutationResult{}, err
 	}
+	// Reserve the next durable source revision before applying any bytes. A
+	// later write failure or incomplete rollback therefore cannot leave source
+	// content under an older authority; a revision gap is safe to reconcile.
+	if len(states) > 0 {
+		if err := s.bumpSourceRevision(ctx, scope); err != nil {
+			return MutationResult{}, err
+		}
+	}
 
 	applied := make([]*patchFileState, 0, len(states))
 	for _, operation := range prepared {

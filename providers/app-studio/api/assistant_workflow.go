@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 
+	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
 	"github.com/cloudwego/eino-examples/adk/common/tool/graphtool"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
@@ -250,6 +251,8 @@ type projectAssistantWorkflowRunContext struct {
 	Project        *aiv1alpha1.Project
 	Repository     *ProjectRepositoryView
 	WorkspaceScope workspace.Scope
+	Workspace      *workspace.FileStore
+	AssistantRunID string
 	RunState       *projectEinoAssistantRunState
 	ApprovalMode   store.AssistantApprovalMode
 	EventLedger    *projectAssistantRunEventLedger
@@ -271,6 +274,8 @@ func projectAssistantWorkflowRunContextForRequest(server *Server, req projectAss
 		Project:          req.Project,
 		Repository:       req.Repository,
 		WorkspaceScope:   req.WorkspaceScope,
+		Workspace:        req.Workspace,
+		AssistantRunID:   projectAssistantRunID(req),
 		RunState:         runState,
 		ApprovalMode:     req.ApprovalMode,
 		EventLedger:      req.eventLedger,
@@ -291,6 +296,8 @@ func (c projectAssistantWorkflowRunContext) current() projectAssistantWorkflowRu
 	c.Project = req.Project
 	c.Repository = req.Repository
 	c.WorkspaceScope = req.WorkspaceScope
+	c.Workspace = req.Workspace
+	c.AssistantRunID = projectAssistantRunID(req)
 	c.ApprovalMode = req.ApprovalMode
 	c.EventLedger = req.eventLedger
 	c.Identity = req.Identity
@@ -368,6 +375,12 @@ func projectAssistantWorkflowToolSpecs() []projectAssistantToolSpec {
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"env":{"type":"object","additionalProperties":{"type":"string"},"minProperties":1,"maxProperties":32,"description":"Non-secret environment variables to set, keyed by name."},"restart":{"type":"boolean","description":"Whether to restart the dev process so the new environment takes effect. Defaults to true."}},"required":["env"]}`),
 			Risk:        projectAssistantToolRiskRuntime,
 		},
+		{
+			Name:        projectToolExecCommand,
+			Description: "Run one approved compiler, test, or lint command in the synchronized live development runtime for exactly one application component. Pass argv tokens rather than a shell string; App Studio forwards no credentials or environment overrides, the command uses the runtime's application network profile, and it cannot write back to App Studio source. Workdir is relative to the selected component workspace and timeout is bounded.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"component":{"type":"string","minLength":1,"maxLength":64,"description":"The single development component to execute in (for example, backend or frontend)."},"argv":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":256},"description":"Executable and argument tokens passed directly without an implicit shell."},"workdir":{"type":"string","maxLength":256,"description":"Optional relative directory under the selected component workspace; defaults to the component root."},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":120,"description":"Maximum execution time in seconds (default 30)."}},"required":["component","argv"],"additionalProperties":false}`),
+			Risk:        projectAssistantToolRiskRuntime,
+		},
 	}
 }
 
@@ -395,18 +408,98 @@ func newProjectAssistantGraphWorkflowTools(ctx context.Context, runCtx projectAs
 		if err := annotateProjectAssistantGraphTool(ctx, graphTool, spec); err != nil {
 			return nil, err
 		}
-		// Runtime-effect workflows install this wrapper inside their approval
-		// boundary. Read workflows have no interrupt boundary, so wrapping them
-		// here records the call before any live source is consulted.
-		if runCtx.EventLedger != nil && spec.Risk == projectAssistantToolRiskRead {
-			graphTool, err = newProjectAssistantDurableGraphTool(graphTool, spec, runCtx.EventLedger, runCtx.AdmitMutation)
-			if err != nil {
-				return nil, err
-			}
-		}
 		out = append(out, graphTool)
 	}
 	return out, nil
+}
+
+// applyProjectAssistantGraphToolPermission is the single permission boundary
+// for Eino-native graph tools. It deliberately applies the decision after the
+// graph has been constructed so every branch preserves discovery metadata and
+// the exact graph input schema. Effectful tools place the durable ledger inside
+// the approval wrapper: a pending AlwaysAsk interrupt cannot look like a
+// dispatched backend call, while Allow still records the call before invoke.
+func applyProjectAssistantGraphToolPermission(
+	graphTool einotool.BaseTool,
+	spec projectAssistantToolSpec,
+	runCtx projectAssistantWorkflowRunContext,
+) (einotool.BaseTool, error) {
+	invokable, ok := graphTool.(einotool.InvokableTool)
+	if !ok {
+		return nil, fmt.Errorf("project assistant graph tool %q is not invokable", spec.Name)
+	}
+	decision := projectAssistantPermissionForV2(spec, runCtx.ApprovalMode, runCtx.RunState, nil, false)
+
+	// Deny must never enter the mutation authority or durable graph wrapper:
+	// both are execution-adjacent boundaries and would make a fail-closed mode
+	// appear to have admitted work. The denied adapter records a failed,
+	// model-visible result directly when a ledger is available.
+	if decision == projectAssistantPermissionDeny {
+		return projectAssistantDeniedGraphTool{
+			InvokableTool: invokable,
+			Spec:          spec,
+			RunState:      runCtx.RunState,
+			Ledger:        runCtx.EventLedger,
+		}, nil
+	}
+
+	wrapped := invokable
+	if runCtx.EventLedger != nil {
+		durable, err := newProjectAssistantDurableGraphTool(invokable, spec, runCtx.EventLedger, runCtx.AdmitMutation)
+		if err != nil {
+			return nil, err
+		}
+		wrapped = durable.(einotool.InvokableTool)
+	}
+	if decision == projectAssistantPermissionAsk {
+		return approvaltool.InvokableApprovableTool{InvokableTool: wrapped}, nil
+	}
+	return wrapped, nil
+}
+
+// projectAssistantDeniedGraphTool keeps a denied graph tool discoverable while
+// making execution a deterministic model-visible permission failure. It never
+// invokes the embedded graph, AdmitMutation callback, or Infrastructure data
+// plane. The ledger path mirrors other durable tool failures for replay and
+// audit; a missing tool-call ID is limited to direct/unit invocations and
+// safely returns the same denial without attempting an unkeyed ledger append.
+type projectAssistantDeniedGraphTool struct {
+	einotool.InvokableTool
+	Spec     projectAssistantToolSpec
+	RunState *projectEinoAssistantRunState
+	Ledger   *projectAssistantRunEventLedger
+}
+
+func (t projectAssistantDeniedGraphTool) InvokableRun(
+	ctx context.Context,
+	argumentsInJSON string,
+	opts ...einotool.Option,
+) (string, error) {
+	args, _ := projectEinoToolArguments(argumentsInJSON)
+	if args == nil {
+		args = map[string]any{}
+	}
+	reason := projectAssistantPermissionDenialReason(t.Spec, t.RunState, args, false)
+	result := projectEinoAssistantSafeToolFailureResult(projectToolBaseName(t.Spec.Name), errors.New(reason))
+	if t.Ledger == nil {
+		return result, nil
+	}
+	callID := strings.TrimSpace(compose.GetToolCallID(ctx))
+	if callID == "" {
+		return result, nil
+	}
+	decision, err := t.Ledger.BeginToolCall(ctx, callID, t.Spec, args)
+	if err != nil {
+		return "", err
+	}
+	if decision.Replay != nil {
+		return decision.Replay.Result, nil
+	}
+	outcome, err := t.Ledger.FinishToolCall(ctx, decision.Token, result, errors.New(reason))
+	if err != nil {
+		return "", err
+	}
+	return outcome.Result, nil
 }
 
 func newProjectAssistantGraphWorkflowTool(spec projectAssistantToolSpec, runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
@@ -431,6 +524,8 @@ func newProjectAssistantGraphWorkflowTool(spec projectAssistantToolSpec, runCtx 
 		return newProjectAssistantRestartRuntimeGraphTool(runCtx)
 	case projectToolSetRuntimeEnv:
 		return newProjectAssistantSetRuntimeEnvGraphTool(runCtx)
+	case projectToolExecCommand:
+		return newProjectAssistantExecCommandGraphTool(runCtx)
 	default:
 		return nil, fmt.Errorf("project assistant tool %q is not an Eino graph workflow", spec.Name)
 	}
@@ -546,12 +641,20 @@ func newProjectAssistantPlanningGraphTool(runCtx projectAssistantWorkflowRunCont
 	workflow.AddLambdaNode("format-plan", compose.InvokableLambda(formatProjectAssistantWorkflowPlan)).
 		AddInput("read-context")
 	workflow.End().AddInput("format-plan")
-	return graphtool.NewInvokableGraphTool[*projectAssistantWorkflowToolInput, *projectAssistantWorkflowPlan](
+	graphTool, err := graphtool.NewInvokableGraphTool[*projectAssistantWorkflowToolInput, *projectAssistantWorkflowPlan](
 		workflow,
 		projectToolPlanProjectChanges,
 		"Create a deterministic read-only plan for project changes from project memory, repository status, and the current workspace file list.",
 		compose.WithGraphName("app-studio-plan-project-changes"),
 	)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolPlanProjectChanges)
+	if !ok {
+		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolPlanProjectChanges)
+	}
+	return applyProjectAssistantGraphToolPermission(graphTool, spec, runCtx)
 }
 
 func newProjectAssistantReadinessGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
@@ -563,12 +666,20 @@ func newProjectAssistantReadinessGraphTool(runCtx projectAssistantWorkflowRunCon
 	workflow.AddLambdaNode("format-readiness", compose.InvokableLambda(formatProjectAssistantReadinessWorkflowResult)).
 		AddInput("read-context")
 	workflow.End().AddInput("format-readiness")
-	return graphtool.NewInvokableGraphTool[*projectAssistantWorkflowToolInput, *projectAssistantReadinessWorkflowResult](
+	graphTool, err := graphtool.NewInvokableGraphTool[*projectAssistantWorkflowToolInput, *projectAssistantReadinessWorkflowResult](
 		workflow,
 		projectToolCheckProjectReadiness,
 		"Check deterministic App Studio project readiness from memory, repository status, and workspace context before edits, verification, or commit.",
 		compose.WithGraphName("app-studio-check-project-readiness"),
 	)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolCheckProjectReadiness)
+	if !ok {
+		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolCheckProjectReadiness)
+	}
+	return applyProjectAssistantGraphToolPermission(graphTool, spec, runCtx)
 }
 
 func newProjectAssistantPrepareDeploymentGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
@@ -580,12 +691,20 @@ func newProjectAssistantPrepareDeploymentGraphTool(runCtx projectAssistantWorkfl
 	workflow.AddLambdaNode("format-deployment-preparation", compose.InvokableLambda(formatProjectAssistantDeploymentPreparationResult)).
 		AddInput("read-context")
 	workflow.End().AddInput("format-deployment-preparation")
-	return graphtool.NewInvokableGraphTool[*projectAssistantWorkflowToolInput, *projectAssistantDeploymentPreparationResult](
+	graphTool, err := graphtool.NewInvokableGraphTool[*projectAssistantWorkflowToolInput, *projectAssistantDeploymentPreparationResult](
 		workflow,
 		projectToolPrepareProjectDeployment,
 		"Prepare deterministic App Studio deployment handoff context from project memory, repository status, workspace files, build checks, and runtime handoff constraints.",
 		compose.WithGraphName("app-studio-prepare-project-deployment"),
 	)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolPrepareProjectDeployment)
+	if !ok {
+		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolPrepareProjectDeployment)
+	}
+	return applyProjectAssistantGraphToolPermission(graphTool, spec, runCtx)
 }
 
 func newProjectAssistantInspectDevelopmentTemplatesGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
@@ -595,12 +714,20 @@ func newProjectAssistantInspectDevelopmentTemplatesGraphTool(runCtx projectAssis
 	workflow.AddLambdaNode("filter-development-templates", compose.InvokableLambda(filterProjectAssistantDevelopmentTemplates)).
 		AddInput("list-development-templates")
 	workflow.End().AddInput("filter-development-templates")
-	return graphtool.NewInvokableGraphTool(
+	graphTool, err := graphtool.NewInvokableGraphTool(
 		workflow,
 		projectToolInspectDevelopmentTemplates,
 		"Inspect every development-capable infrastructure template available to this project in one read. This does not bind or change a template.",
 		compose.WithGraphName("app-studio-inspect-development-templates"),
 	)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolInspectDevelopmentTemplates)
+	if !ok {
+		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolInspectDevelopmentTemplates)
+	}
+	return applyProjectAssistantGraphToolPermission(graphTool, spec, runCtx)
 }
 
 func listProjectAssistantDevelopmentTemplates(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantTemplateInspectionToolInput) (*projectAssistantTemplateCatalog, error) {
@@ -794,12 +921,20 @@ func newProjectAssistantRuntimeStatusGraphTool(runCtx projectAssistantWorkflowRu
 	workflow.AddLambdaNode("format-runtime-status", compose.InvokableLambda(formatProjectAssistantRuntimeStatusResult)).
 		AddInput("normalize")
 	workflow.End().AddInput("format-runtime-status")
-	return graphtool.NewInvokableGraphTool[*projectAssistantRuntimeStatusToolInput, *projectAssistantRuntimeWorkflowResult](
+	graphTool, err := graphtool.NewInvokableGraphTool[*projectAssistantRuntimeStatusToolInput, *projectAssistantRuntimeWorkflowResult](
 		workflow,
 		projectToolGetRuntimeStatus,
 		"Return a structured not-configured App Studio runtime status until a runtime provider state reader is configured.",
 		compose.WithGraphName("app-studio-get-runtime-status"),
 	)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolGetRuntimeStatus)
+	if !ok {
+		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolGetRuntimeStatus)
+	}
+	return applyProjectAssistantGraphToolPermission(graphTool, spec, runCtx)
 }
 
 func newProjectAssistantPreviewURLGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
@@ -809,12 +944,20 @@ func newProjectAssistantPreviewURLGraphTool(runCtx projectAssistantWorkflowRunCo
 	workflow.AddLambdaNode("format-preview-url", compose.InvokableLambda(formatProjectAssistantPreviewURLResult)).
 		AddInput("normalize")
 	workflow.End().AddInput("format-preview-url")
-	return graphtool.NewInvokableGraphTool[*projectAssistantRuntimeStatusToolInput, *projectAssistantRuntimeWorkflowResult](
+	graphTool, err := graphtool.NewInvokableGraphTool[*projectAssistantRuntimeStatusToolInput, *projectAssistantRuntimeWorkflowResult](
 		workflow,
 		projectToolGetPreviewURL,
 		"Return a structured not-configured App Studio preview URL result until a runtime provider state reader is configured.",
 		compose.WithGraphName("app-studio-get-preview-url"),
 	)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolGetPreviewURL)
+	if !ok {
+		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolGetPreviewURL)
+	}
+	return applyProjectAssistantGraphToolPermission(graphTool, spec, runCtx)
 }
 
 func marshalProjectAssistantWorkflowPlan(plan projectAssistantWorkflowPlan) ([]byte, error) {

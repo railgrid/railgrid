@@ -42,6 +42,9 @@ func (s *TemplateSpec) ValidateDevelopment() error {
 			if !componentNameRE.MatchString(name) {
 				return fmt.Errorf("spec.dataPlane.components key %q must match %s", name, componentNameRE)
 			}
+			if s.DataPlane.Components[name].Exec != nil && s.Development == nil {
+				return fmt.Errorf("spec.dataPlane.components[%s].exec requires spec.development.components", name)
+			}
 		}
 	}
 

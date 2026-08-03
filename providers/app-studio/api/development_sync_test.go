@@ -68,6 +68,25 @@ func TestRouteProjectSyncFilesCountsRoutedFiles(t *testing.T) {
 	}
 }
 
+func TestRouteProjectSyncDeletedPathsAndComponentDigest(t *testing.T) {
+	components := devComponentPaths(map[string]string{"backend": "api", "frontend": "web", "root": "."})
+	deleted := routeProjectSyncDeletedPaths([]string{"api/old.go", "web/old.tsx", "README.md"}, components)
+	if got := strings.Join(deleted["backend"], ","); got != "old.go" {
+		t.Fatalf("backend deleted paths = %q, want old.go", got)
+	}
+	if got := strings.Join(deleted["frontend"], ","); got != "old.tsx" {
+		t.Fatalf("frontend deleted paths = %q, want old.tsx", got)
+	}
+	if got := strings.Join(deleted["root"], ","); got != "README.md,api/old.go,web/old.tsx" {
+		t.Fatalf("root deleted paths = %q, want sorted workspace paths", got)
+	}
+	first := projectSandboxSyncDigest([]projectSandboxSyncFile{{Path: "b.txt", Content: "b"}, {Path: "a.txt", Content: "a"}})
+	second := projectSandboxSyncDigest([]projectSandboxSyncFile{{Path: "a.txt", Content: "a"}, {Path: "b.txt", Content: "b"}})
+	if first == "" || first != second {
+		t.Fatalf("component digest = %q/%q, want stable sorted digest", first, second)
+	}
+}
+
 func TestComponentWorkspacePathSummary(t *testing.T) {
 	target := projectDevelopmentSyncTargetInfo{
 		Components: devComponentPaths(map[string]string{"frontend": "web", "backend": "api"}),

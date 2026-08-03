@@ -1665,6 +1665,20 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("resume status = %d, want %d: %s", response.Code, http.StatusAccepted, response.Body.String())
 	}
+	mirrorKey := assistantThreadMirrorKey(scope, "thread-1", run.ID)
+	deadline := time.Now().Add(time.Second)
+	for {
+		server.mu.Lock()
+		_, mirrorActive := server.assistantThreadMirrors[mirrorKey]
+		server.mu.Unlock()
+		if mirrorActive {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("thread resume did not launch its assistant mirror")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	select {
 	case <-engine.published:
 	case <-time.After(time.Second):
@@ -1693,7 +1707,7 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 
 	close(engine.release)
 	var terminal store.AssistantRun
-	deadline := time.Now().Add(time.Second)
+	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		terminal, err = memoryStore.GetAssistantRun(context.Background(), scope, run.ID)
 		if err == nil && terminal.Status == store.AssistantRunStatusCompleted {

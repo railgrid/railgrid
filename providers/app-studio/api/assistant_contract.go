@@ -184,22 +184,24 @@ const (
 )
 
 type projectAssistantToolCall struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Status    string          `json:"status,omitempty"`
-	Arguments string          `json:"arguments,omitempty"`
-	Summary   string          `json:"summary,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	Result    json.RawMessage `json:"result,omitempty"`
+	ID        string                        `json:"id"`
+	Name      string                        `json:"name"`
+	Status    string                        `json:"status,omitempty"`
+	Arguments string                        `json:"arguments,omitempty"`
+	Summary   string                        `json:"summary,omitempty"`
+	Error     string                        `json:"error,omitempty"`
+	Input     json.RawMessage               `json:"input,omitempty"`
+	Result    json.RawMessage               `json:"result,omitempty"`
+	Exec      *projectAssistantExecMetadata `json:"exec,omitempty"`
 }
 
 type projectAssistantPermission struct {
-	ID         string          `json:"id"`
-	ToolCallID string          `json:"toolCallID,omitempty"`
-	ToolName   string          `json:"toolName,omitempty"`
-	Reason     string          `json:"reason,omitempty"`
-	Input      json.RawMessage `json:"input,omitempty"`
+	ID         string                        `json:"id"`
+	ToolCallID string                        `json:"toolCallID,omitempty"`
+	ToolName   string                        `json:"toolName,omitempty"`
+	Reason     string                        `json:"reason,omitempty"`
+	Input      json.RawMessage               `json:"input,omitempty"`
+	Exec       *projectAssistantExecMetadata `json:"exec,omitempty"`
 }
 
 type projectAssistantFollowUp struct {

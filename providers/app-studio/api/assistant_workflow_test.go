@@ -29,7 +29,9 @@ import (
 	"testing"
 	"time"
 
+	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
 	einotool "github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
 	einoschema "github.com/cloudwego/eino/schema"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -54,6 +56,19 @@ func (t projectAssistantFailingGraphTool) Info(context.Context) (*einoschema.Too
 func (t projectAssistantFailingGraphTool) InvokableRun(context.Context, string, ...einotool.Option) (string, error) {
 	*t.calls++
 	return "", t.err
+}
+
+type projectAssistantLegacyExecTool struct {
+	calls *int
+}
+
+func (t projectAssistantLegacyExecTool) Info(context.Context) (*einoschema.ToolInfo, error) {
+	return &einoschema.ToolInfo{Name: projectToolExecCommand}, nil
+}
+
+func (t projectAssistantLegacyExecTool) InvokableRun(context.Context, string, ...einotool.Option) (string, error) {
+	*t.calls++
+	return "legacy exec tool unexpectedly ran", nil
 }
 
 func TestProjectAssistantDurableGraphToolFailureIsExactModelFeedback(t *testing.T) {
@@ -90,6 +105,270 @@ func TestProjectAssistantDurableGraphToolFailureIsExactModelFeedback(t *testing.
 	}
 	if !payload.Failed || payload.Result != result || payload.Error != backendErr.Error() {
 		t.Fatalf("durable graph failure = %#v", payload)
+	}
+}
+
+func TestProjectAssistantExecCommandRejectsOversizedArgvBeforeApproval(t *testing.T) {
+	for _, mode := range []store.AssistantApprovalMode{
+		store.AssistantApprovalModeOnRequest,
+		store.AssistantApprovalModeAlwaysAsk,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			runID := "run-exec-preflight-" + string(mode)
+			messages, scope := newAssistantRunEventLedgerTestStore(t, runID)
+			tool, err := newProjectAssistantExecCommandGraphTool(projectAssistantWorkflowRunContext{
+				ApprovalMode: mode,
+				EventLedger:  newProjectAssistantRunEventLedger(messages, scope, runID),
+				AdmitMutation: func(context.Context) error {
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("create exec tool: %v", err)
+			}
+			node, err := compose.NewToolNode(context.Background(), &compose.ToolsNodeConfig{
+				Tools:               []einotool.BaseTool{tool},
+				ExecuteSequentially: true,
+			})
+			if err != nil {
+				t.Fatalf("create tool node: %v", err)
+			}
+			arguments, err := json.Marshal(map[string]any{
+				"component": "backend",
+				"argv":      []string{"node", "-e", strings.Repeat("x", 313)},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			output, err := node.Invoke(context.Background(), einoschema.AssistantMessage("", []einoschema.ToolCall{{
+				ID:   "exec-invalid",
+				Type: "function",
+				Function: einoschema.FunctionCall{
+					Name:      projectToolExecCommand,
+					Arguments: string(arguments),
+				},
+			}}))
+			if err != nil {
+				t.Fatalf("invalid exec invocation interrupted: %v", err)
+			}
+			if len(output) != 1 || !strings.Contains(output[0].Content, "invalid arguments") || !strings.Contains(output[0].Content, "argv token 3") {
+				t.Fatalf("invalid exec output = %#v, want model-visible validation failure", output)
+			}
+			events := listAssistantRunEventLedgerEvents(t, messages, scope, runID)
+			if len(events) != 2 || events[0].Type != projectAssistantRunToolRequestEventType || events[1].Type != projectAssistantRunToolResultEventType {
+				t.Fatalf("invalid exec ledger events = %#v, want request and failed result without approval/admission", events)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantExecCommandPreflightPreservesApprovalWithCanonicalArguments(t *testing.T) {
+	for _, mode := range []store.AssistantApprovalMode{
+		store.AssistantApprovalModeAlwaysAsk,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			runID := "run-exec-approval-" + string(mode)
+			messages, scope := newAssistantRunEventLedgerTestStore(t, runID)
+			tool, err := newProjectAssistantExecCommandGraphTool(projectAssistantWorkflowRunContext{
+				ApprovalMode: mode,
+				EventLedger:  newProjectAssistantRunEventLedger(messages, scope, runID),
+				AdmitMutation: func(context.Context) error {
+					t.Fatal("runtime admission must not run before approval")
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("create exec tool: %v", err)
+			}
+			node, err := compose.NewToolNode(context.Background(), &compose.ToolsNodeConfig{
+				Tools:               []einotool.BaseTool{tool},
+				ExecuteSequentially: true,
+			})
+			if err != nil {
+				t.Fatalf("create tool node: %v", err)
+			}
+			arguments := `{"component":"backend","argv":["go","test"]}`
+			graph := compose.NewGraph[*einoschema.Message, []*einoschema.Message]()
+			if err := graph.AddToolsNode("exec", node); err != nil {
+				t.Fatalf("add exec node: %v", err)
+			}
+			if err := graph.AddEdge(compose.START, "exec"); err != nil {
+				t.Fatalf("add graph start: %v", err)
+			}
+			if err := graph.AddEdge("exec", compose.END); err != nil {
+				t.Fatalf("add graph end: %v", err)
+			}
+			runner, err := graph.Compile(context.Background())
+			if err != nil {
+				t.Fatalf("compile exec graph: %v", err)
+			}
+			_, err = runner.Invoke(context.Background(), einoschema.AssistantMessage("", []einoschema.ToolCall{{
+				ID:   "exec-valid",
+				Type: "function",
+				Function: einoschema.FunctionCall{
+					Name:      projectToolExecCommand,
+					Arguments: arguments,
+				},
+			}}))
+			if err == nil {
+				t.Fatal("valid exec invocation completed without approval")
+			}
+			interrupt, ok := compose.ExtractInterruptInfo(err)
+			if !ok || interrupt == nil {
+				t.Fatalf("valid exec error = %v, want approval interrupt", err)
+			}
+			var approval *approvaltool.ApprovalInfo
+			for _, context := range interrupt.InterruptContexts {
+				if context == nil {
+					continue
+				}
+				switch info := context.Info.(type) {
+				case *approvaltool.ApprovalInfo:
+					approval = info
+				case approvaltool.ApprovalInfo:
+					approval = &info
+				}
+				if approval != nil {
+					break
+				}
+			}
+			if approval == nil || approval.ToolName != projectToolExecCommand {
+				t.Fatalf("approval info = %#v, want exec_command approval", approval)
+			}
+			var canonical map[string]any
+			if err := json.Unmarshal([]byte(approval.ArgumentsInJSON), &canonical); err != nil {
+				t.Fatalf("approval arguments = %q: %v", approval.ArgumentsInJSON, err)
+			}
+			if canonical["component"] != "backend" || canonical["timeoutSeconds"] != float64(projectAssistantExecDefaultTimeout) {
+				t.Fatalf("approval canonical arguments = %#v, want default timeout %d", canonical, projectAssistantExecDefaultTimeout)
+			}
+			argv, ok := canonical["argv"].([]any)
+			if !ok || len(argv) != 2 || argv[0] != "go" || argv[1] != "test" {
+				t.Fatalf("approval canonical argv = %#v, want [go test]", canonical["argv"])
+			}
+			events := listAssistantRunEventLedgerEvents(t, messages, scope, runID)
+			if len(events) != 0 {
+				t.Fatalf("approval-pending exec ledger events = %#v, want no runtime admission before approval", events)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantExecCommandPreflightResumesLegacyInvalidApproval(t *testing.T) {
+	for _, approved := range []bool{false, true} {
+		t.Run(fmt.Sprintf("approved_%t", approved), func(t *testing.T) {
+			checkpointStore := newProjectEinoAssistantCheckpointStore()
+			legacyCalls := 0
+			legacyApproval := approvaltool.InvokableApprovableTool{InvokableTool: projectAssistantLegacyExecTool{calls: &legacyCalls}}
+			legacyNode, err := compose.NewToolNode(context.Background(), &compose.ToolsNodeConfig{
+				Tools:               []einotool.BaseTool{legacyApproval},
+				ExecuteSequentially: true,
+			})
+			if err != nil {
+				t.Fatalf("create legacy tool node: %v", err)
+			}
+			legacyGraph := compose.NewGraph[*einoschema.Message, []*einoschema.Message]()
+			if err := legacyGraph.AddToolsNode("exec", legacyNode); err != nil {
+				t.Fatalf("add legacy exec node: %v", err)
+			}
+			if err := legacyGraph.AddEdge(compose.START, "exec"); err != nil {
+				t.Fatalf("add legacy graph start: %v", err)
+			}
+			if err := legacyGraph.AddEdge("exec", compose.END); err != nil {
+				t.Fatalf("add legacy graph end: %v", err)
+			}
+			legacyRunner, err := legacyGraph.Compile(context.Background(),
+				compose.WithGraphName("legacy-exec-approval"),
+				compose.WithCheckPointStore(checkpointStore),
+			)
+			if err != nil {
+				t.Fatalf("compile legacy graph: %v", err)
+			}
+			invalidArguments := `{"component":"backend","argv":["node","-e","` + strings.Repeat("x", 313) + `"]}`
+			_, err = legacyRunner.Invoke(context.Background(), einoschema.AssistantMessage("", []einoschema.ToolCall{{
+				ID:   "legacy-exec-invalid",
+				Type: "function",
+				Function: einoschema.FunctionCall{
+					Name:      projectToolExecCommand,
+					Arguments: invalidArguments,
+				},
+			}}), compose.WithCheckPointID("legacy-exec-checkpoint"))
+			if err == nil {
+				t.Fatal("legacy approval invocation completed without interrupt")
+			}
+			interrupt, ok := compose.ExtractInterruptInfo(err)
+			if !ok || interrupt == nil {
+				t.Fatalf("legacy approval error = %v, want approval interrupt", err)
+			}
+			var approvalID string
+			for _, context := range interrupt.InterruptContexts {
+				if context == nil {
+					continue
+				}
+				switch context.Info.(type) {
+				case *approvaltool.ApprovalInfo, approvaltool.ApprovalInfo:
+					approvalID = context.ID
+				}
+				if approvalID != "" {
+					break
+				}
+			}
+			if approvalID == "" {
+				t.Fatalf("legacy approval interrupts = %#v, want approval info", interrupt.InterruptContexts)
+			}
+
+			messages, scope := newAssistantRunEventLedgerTestStore(t, "run-legacy-exec-approval")
+			newTool, err := newProjectAssistantExecCommandGraphTool(projectAssistantWorkflowRunContext{
+				ApprovalMode: store.AssistantApprovalModeAlwaysAsk,
+				EventLedger:  newProjectAssistantRunEventLedger(messages, scope, "run-legacy-exec-approval"),
+				AdmitMutation: func(context.Context) error {
+					t.Fatal("legacy invalid approval resumed into runtime admission")
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("create current exec tool: %v", err)
+			}
+			currentNode, err := compose.NewToolNode(context.Background(), &compose.ToolsNodeConfig{
+				Tools:               []einotool.BaseTool{newTool},
+				ExecuteSequentially: true,
+			})
+			if err != nil {
+				t.Fatalf("create current tool node: %v", err)
+			}
+			currentGraph := compose.NewGraph[*einoschema.Message, []*einoschema.Message]()
+			if err := currentGraph.AddToolsNode("exec", currentNode); err != nil {
+				t.Fatalf("add current exec node: %v", err)
+			}
+			if err := currentGraph.AddEdge(compose.START, "exec"); err != nil {
+				t.Fatalf("add current graph start: %v", err)
+			}
+			if err := currentGraph.AddEdge("exec", compose.END); err != nil {
+				t.Fatalf("add current graph end: %v", err)
+			}
+			currentRunner, err := currentGraph.Compile(context.Background(),
+				compose.WithGraphName("legacy-exec-approval"),
+				compose.WithCheckPointStore(checkpointStore),
+			)
+			if err != nil {
+				t.Fatalf("compile current graph: %v", err)
+			}
+			resumeCtx := compose.ResumeWithData(context.Background(), approvalID, &approvaltool.ApprovalResult{Approved: approved})
+			output, err := currentRunner.Invoke(resumeCtx, nil, compose.WithCheckPointID("legacy-exec-checkpoint"))
+			if err != nil {
+				t.Fatalf("resume legacy invalid approval (approved=%t): %v", approved, err)
+			}
+			if len(output) != 1 || !strings.Contains(output[0].Content, "invalid arguments") || !strings.Contains(output[0].Content, "argv token 3") {
+				t.Fatalf("legacy invalid approval output (approved=%t) = %#v, want validation failure", approved, output)
+			}
+			if legacyCalls != 0 {
+				t.Fatalf("legacy tool calls = %d, want no execution", legacyCalls)
+			}
+			events := listAssistantRunEventLedgerEvents(t, messages, scope, "run-legacy-exec-approval")
+			if len(events) != 2 || events[0].Type != projectAssistantRunToolRequestEventType || events[1].Type != projectAssistantRunToolResultEventType {
+				t.Fatalf("legacy invalid approval ledger events = %#v, want request and failed result", events)
+			}
+		})
 	}
 }
 

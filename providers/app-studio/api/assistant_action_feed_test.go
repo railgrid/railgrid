@@ -247,3 +247,33 @@ func TestProjectAssistantActionFeedMinimalDisclosureHidesTargetAndOutcome(t *tes
 		t.Fatalf("minimal item = %#v, want only generic presentation", item)
 	}
 }
+
+func TestProjectAssistantActionFeedExecCarriesStructuredResultWithoutOutput(t *testing.T) {
+	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID:     "exec-1",
+		Name:   projectToolExecCommand,
+		Status: "failed",
+		Exec: &projectAssistantExecMetadata{
+			Component:       "backend",
+			Argv:            []string{"go", "test", "./..."},
+			Workdir:         "internal",
+			TimeoutSeconds:  30,
+			NetworkProfile:  "application-runtime",
+			WritebackPolicy: "runtime-workspace-only",
+			Status:          "failed",
+			Summary:         "Command failed in component \"backend\".",
+			ExitCode:        func() *int { value := 2; return &value }(),
+			DurationMS:      123,
+		},
+	})
+	if item.Exec == nil || item.Exec.Component != "backend" || item.Exec.Status != "failed" || item.Exec.ExitCode == nil || *item.Exec.ExitCode != 2 || item.Exec.DurationMS != 123 {
+		t.Fatalf("exec action item = %#v", item)
+	}
+	data, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "stdout") || strings.Contains(string(data), "stderr") {
+		t.Fatalf("exec action item exposed raw output fields: %s", data)
+	}
+}

@@ -60,11 +60,23 @@ func buildDataPlaneHandler(kcpConfig *rest.Config) *dataplane.Handler {
 		return nil
 	}
 
+	factory := tenant.NewClientFactory(kcpConfig)
+	options := []dataplane.HandlerOption{}
+	// Persistent component execution is the only executor: a dedicated worker
+	// container owns lifecycle state while sharing the component PVC/toolchain.
+	executor, execErr := dataplane.NewPersistentExecutor(runtime)
+	if execErr != nil {
+		log.Printf("data plane exec: disabled: %v", execErr)
+	} else {
+		options = append(options, dataplane.WithExec(executor, dataplane.NewCallerExecAuthorizer(factory)))
+	}
+
 	log.Printf("data plane: enabled (runtime cluster: %s)", src)
 	return dataplane.NewHandler(
-		&tenantInstanceGetter{factory: tenant.NewClientFactory(kcpConfig)},
+		&tenantInstanceGetter{factory: factory},
 		dataplane.NewTemplateContractGetter(providerDyn),
 		runtime,
+		options...,
 	)
 }
 

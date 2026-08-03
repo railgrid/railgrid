@@ -27,13 +27,10 @@ import (
 	"strings"
 	"time"
 
-	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
 	"github.com/cloudwego/eino-examples/adk/common/tool/graphtool"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/faroshq/provider-app-studio/store"
 )
 
 const (
@@ -143,12 +140,20 @@ func newProjectAssistantRuntimeLogsGraphTool(runCtx projectAssistantWorkflowRunC
 	workflow.AddLambdaNode("fetch-runtime-logs", compose.InvokableLambda(fetchProjectAssistantRuntimeLogs(runCtx))).
 		AddInput(compose.START)
 	workflow.End().AddInput("fetch-runtime-logs")
-	return graphtool.NewInvokableGraphTool(
+	graphTool, err := graphtool.NewInvokableGraphTool(
 		workflow,
 		projectToolGetRuntimeLogs,
 		"Return recent development runtime logs from the live sandbox so the assistant can diagnose why the app is not building or serving traffic.",
 		compose.WithGraphName("app-studio-get-runtime-logs"),
 	)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolGetRuntimeLogs)
+	if !ok {
+		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolGetRuntimeLogs)
+	}
+	return applyProjectAssistantGraphToolPermission(graphTool, spec, runCtx)
 }
 
 func newProjectAssistantVerifyRuntimeGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
@@ -166,12 +171,20 @@ func newProjectAssistantVerifyRuntimeGraphTool(runCtx projectAssistantWorkflowRu
 	workflow.AddLambdaNode("format-runtime-verification", compose.InvokableLambda(formatProjectAssistantRuntimeVerification)).
 		AddInput("collect-project-readiness")
 	workflow.End().AddInput("format-runtime-verification")
-	return graphtool.NewInvokableGraphTool(
+	graphTool, err := graphtool.NewInvokableGraphTool(
 		workflow,
 		projectToolVerifyDevelopmentRuntime,
 		"Run post-edit operational verification in one read: current workspace synchronization, live process and log health, and preview reachability, with advisory browser-console evidence for supported browser apps. This does not independently verify rendered content, interactions, data flow, application behavior, or acceptance criteria.",
 		compose.WithGraphName("app-studio-verify-project-runtime"),
 	)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolVerifyDevelopmentRuntime)
+	if !ok {
+		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolVerifyDevelopmentRuntime)
+	}
+	return applyProjectAssistantGraphToolPermission(graphTool, spec, runCtx)
 }
 
 type projectAssistantRuntimeVerificationContext struct {
@@ -961,30 +974,11 @@ func newProjectAssistantRestartRuntimeGraphTool(runCtx projectAssistantWorkflowR
 	if err != nil {
 		return nil, err
 	}
-	var approvedTool einotool.InvokableTool = innerTool
-	if runCtx.EventLedger != nil {
-		spec, ok := projectAssistantWorkflowToolSpec(projectToolRestartRuntime)
-		if !ok {
-			return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolRestartRuntime)
-		}
-		durable, err := newProjectAssistantDurableGraphTool(innerTool, spec, runCtx.EventLedger, runCtx.AdmitMutation)
-		if err != nil {
-			return nil, err
-		}
-		approvedTool = durable.(einotool.InvokableTool)
-	}
-	if !projectAssistantRuntimeGraphToolRequiresApproval(projectToolRestartRuntime, runCtx.ApprovalMode) {
-		return approvedTool, nil
-	}
-	return approvaltool.InvokableApprovableTool{InvokableTool: approvedTool}, nil
-}
-
-func projectAssistantRuntimeGraphToolRequiresApproval(name string, mode store.AssistantApprovalMode) bool {
-	spec, ok := projectAssistantWorkflowToolSpec(name)
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolRestartRuntime)
 	if !ok {
-		return true
+		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolRestartRuntime)
 	}
-	return projectAssistantPermissionForV2(spec, mode, nil, nil, false) == projectAssistantPermissionAsk
+	return applyProjectAssistantGraphToolPermission(innerTool, spec, runCtx)
 }
 
 func restartProjectAssistantRuntime(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeRestartToolInput) (*projectAssistantRuntimeWorkflowResult, error) {
@@ -1072,22 +1066,11 @@ func newProjectAssistantSetRuntimeEnvGraphTool(runCtx projectAssistantWorkflowRu
 	if err != nil {
 		return nil, err
 	}
-	var approvedTool einotool.InvokableTool = innerTool
-	if runCtx.EventLedger != nil {
-		spec, ok := projectAssistantWorkflowToolSpec(projectToolSetRuntimeEnv)
-		if !ok {
-			return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolSetRuntimeEnv)
-		}
-		durable, err := newProjectAssistantDurableGraphTool(innerTool, spec, runCtx.EventLedger, runCtx.AdmitMutation)
-		if err != nil {
-			return nil, err
-		}
-		approvedTool = durable.(einotool.InvokableTool)
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolSetRuntimeEnv)
+	if !ok {
+		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolSetRuntimeEnv)
 	}
-	if !projectAssistantRuntimeGraphToolRequiresApproval(projectToolSetRuntimeEnv, runCtx.ApprovalMode) {
-		return approvedTool, nil
-	}
-	return approvaltool.InvokableApprovableTool{InvokableTool: approvedTool}, nil
+	return applyProjectAssistantGraphToolPermission(innerTool, spec, runCtx)
 }
 
 func setProjectAssistantRuntimeEnv(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeEnvToolInput) (*projectAssistantRuntimeWorkflowResult, error) {

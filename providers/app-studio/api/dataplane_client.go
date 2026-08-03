@@ -41,6 +41,7 @@ const (
 	dataPlaneVerbProxy   = "proxy"
 	dataPlaneVerbEnv     = "env"
 	dataPlaneVerbProcess = "process"
+	dataPlaneVerbExec    = "exec"
 
 	dataPlaneCallTimeout = 30 * time.Second
 )
@@ -109,6 +110,17 @@ func (s *Server) sandboxDataPlaneClient(timeout time.Duration) *http.Client {
 // status code. The caller maps non-2xx to an error so the runtime's own
 // response surfaces to the UI.
 func (s *Server) dataPlanePost(ctx context.Context, id identity, ref dataPlaneRef, verb string, payload []byte) ([]byte, int, error) {
+	return s.dataPlanePostBounded(ctx, id, ref, verb, payload, 16<<20)
+}
+
+// dataPlanePostBounded sends a POST verb while applying a caller-selected
+// response bound. Exec output is intentionally much smaller than the generic
+// control-plane bound so a noisy process cannot consume the assistant context.
+func (s *Server) dataPlanePostBounded(ctx context.Context, id identity, ref dataPlaneRef, verb string, payload []byte, maxBytes int64) ([]byte, int, error) {
+	return s.dataPlanePostBoundedWithHeaders(ctx, id, ref, verb, payload, maxBytes, nil)
+}
+
+func (s *Server) dataPlanePostBoundedWithHeaders(ctx context.Context, id identity, ref dataPlaneRef, verb string, payload []byte, maxBytes int64, headers http.Header) ([]byte, int, error) {
 	callCtx, cancel := context.WithTimeout(ctx, dataPlaneCallTimeout)
 	defer cancel()
 	req, err := s.newDataPlaneRequest(callCtx, http.MethodPost, id, ref, verb, "", strings.NewReader(string(payload)))
@@ -116,12 +128,20 @@ func (s *Server) dataPlanePost(ctx context.Context, id identity, ref dataPlaneRe
 		return nil, 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for key, values := range headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 	resp, err := s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("development data plane %s: %w", verb, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if maxBytes <= 0 {
+		maxBytes = 16 << 20
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}

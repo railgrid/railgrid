@@ -112,6 +112,7 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 		"verify_development_runtime",
 		"restart_runtime",
 		"set_runtime_env",
+		"exec_command",
 		"ask_follow_up",
 		"apply_patch",
 		"commit_project_files",
@@ -209,6 +210,7 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 		"verify_development_runtime",
 		"restart_runtime",
 		"set_runtime_env",
+		"exec_command",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("tool names = %v, want %v", got, want)

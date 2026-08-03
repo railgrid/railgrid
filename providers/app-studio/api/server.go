@@ -53,6 +53,7 @@ type Server struct {
 	assistantRunManager          *projectAssistantRunManager
 	assistantSupervisor          *projectAssistantSupervisor
 	assistantProjectionLocks     map[string]*assistantThreadProjectionLockEntry
+	assistantThreadMirrors       map[string]struct{}
 	developmentSyncLocks         map[string]*sync.Mutex
 	developmentSyncTails         map[string]chan struct{}
 	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string) error

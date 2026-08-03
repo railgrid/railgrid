@@ -28,6 +28,7 @@ test('provides the Codex-style choices and responsive popover placement', async 
   assert.match(source, /choose\('on_request'\)/)
   assert.match(source, /choose\('always_ask'\)/)
   assert.match(source, /choose\('never'\)/)
+  assert.match(source, /bounded compiler, test, and lint commands run automatically/)
   assert.match(source, /role="dialog"/)
   assert.match(source, /:aria-pressed="mode === 'always_ask'"/)
   assert.match(source, /if \(!open\.value \|\| event\.key !== 'Escape'\) return/)

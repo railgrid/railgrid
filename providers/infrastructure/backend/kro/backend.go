@@ -179,6 +179,22 @@ func devImageTokens() map[string]string {
 	return out
 }
 
+// ResolveDevelopmentImageToken resolves the platform-owned image token from a
+// Template development component using the same environment/default mapping
+// used when synthesizing the development overlay. Callers must never accept a
+// tenant-provided image string; only the reserved token family is valid.
+func ResolveDevelopmentImageToken(token string) (string, error) {
+	token = strings.TrimSpace(token)
+	if !strings.HasPrefix(token, devImageTokenPrefix) || !strings.HasSuffix(token, "}") {
+		return "", fmt.Errorf("development image %q is not a reserved platform token", token)
+	}
+	image := strings.TrimSpace(devImageTokens()[token])
+	if image == "" {
+		return "", fmt.Errorf("development image token %q is not configured", token)
+	}
+	return image, nil
+}
+
 // Name returns "kro".
 func (b *Backend) Name() string { return Name }
 

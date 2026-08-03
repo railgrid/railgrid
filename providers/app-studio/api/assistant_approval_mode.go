@@ -72,7 +72,7 @@ func (s *Server) patchProjectAssistantApprovalMode(w http.ResponseWriter, r *htt
 		return
 	}
 	mode, err := store.NormalizeAssistantApprovalMode(request.Mode)
-	if err != nil || strings.TrimSpace(string(request.Mode)) == "" {
+	if err != nil || strings.TrimSpace(string(request.Mode)) == "" || mode == store.AssistantApprovalModeAutoApprove {
 		writeProjectError(w, newValidationError("mode must be on_request, always_ask, or never"))
 		return
 	}

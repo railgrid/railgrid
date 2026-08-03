@@ -8,6 +8,7 @@ import {
   summarizeAssistantActions,
 } from './assistantActionFeed'
 import type { ProjectAssistantActionFeedItem, ProjectAssistantActionStatus } from './types'
+import AssistantExecDetails from './AssistantExecDetails.vue'
 
 const props = defineProps<{ messageId: string; items: ProjectAssistantActionFeedItem[] }>()
 const expanded = ref(false)
@@ -136,6 +137,11 @@ async function copyDiagnostic(item: typeof rows.value[number]) {
             Technical details
           </button>
         </div>
+        <AssistantExecDetails
+          v-if="item.exec"
+          :exec="item.exec"
+          variant="activity"
+        />
         <div
           v-if="item.diagnostic && openDiagnosticID === item.id"
           :id="`${panelID}-${item.id}-diagnostic`"

@@ -12,9 +12,12 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"path"
 	"sort"
@@ -103,8 +106,17 @@ type projectSandboxSyncFile struct {
 }
 
 type projectSandboxSyncRequest struct {
-	Files   []projectSandboxSyncFile `json:"files"`
-	Restart string                   `json:"restart,omitempty"`
+	Files          []projectSandboxSyncFile `json:"files"`
+	DeletedPaths   []string                 `json:"deletePaths,omitempty"`
+	SourceRevision uint64                   `json:"sourceRevision"`
+	SourceDigest   string                   `json:"sourceDigest"`
+	Restart        string                   `json:"restart,omitempty"`
+}
+
+type projectWorkspaceSyncSnapshot struct {
+	Files          []projectSandboxSyncFile
+	DeletedPaths   []string
+	SourceRevision uint64
 }
 
 type projectDevelopmentSyncResponse struct {
@@ -219,10 +231,11 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	if s.workspaces == nil {
 		return nil, fmt.Errorf("project workspace store is not configured")
 	}
-	files, err := s.projectWorkspaceSyncFiles(ctx, projectWorkspaceScope(id, p))
+	snapshot, err := s.projectWorkspaceSyncFiles(ctx, projectWorkspaceScope(id, p))
 	if err != nil {
 		return nil, err
 	}
+	files := snapshot.Files
 	// Validate the instance exists in the workspace first (clear 404 vs proxy err).
 	if err := s.validateDevelopmentInstance(ctx, c, target); err != nil {
 		return nil, err
@@ -232,6 +245,7 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	// by workspacePath prefix (docs/app-studio-template-sandboxes.md §4.2).
 	// Files outside every component (README, docs) sync nowhere.
 	routed := routeProjectSyncFiles(files, target.Components)
+	routedDeleted := routeProjectSyncDeletedPaths(snapshot.DeletedPaths, target.Components)
 	// A populated workspace whose files all fall outside every component
 	// directory would "succeed" while shipping nothing to the sandbox — the
 	// app never starts and nothing explains why. Fail with the expected
@@ -249,7 +263,14 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	}
 	results := map[string]json.RawMessage{}
 	for _, component := range target.sortedComponents() {
-		payload, err := json.Marshal(projectSandboxSyncRequest{Files: routed[component], Restart: "auto"})
+		componentFiles := routed[component]
+		payload, err := json.Marshal(projectSandboxSyncRequest{
+			Files:          componentFiles,
+			DeletedPaths:   routedDeleted[component],
+			SourceRevision: snapshot.SourceRevision,
+			SourceDigest:   projectSandboxSyncDigest(componentFiles),
+			Restart:        "auto",
+		})
 		if err != nil {
 			return nil, fmt.Errorf("encode %s sync payload: %w", component, err)
 		}
@@ -303,6 +324,31 @@ func routeProjectSyncFiles(files []projectSandboxSyncFile, components map[string
 				})
 			}
 		}
+	}
+	return out
+}
+
+// routeProjectSyncDeletedPaths mirrors routeProjectSyncFiles for paths that
+// disappeared from the provider-owned workspace. The infrastructure agent
+// uses these only as an explicit deletion hint; its managed manifest remains
+// authoritative and never removes runtime-generated directories.
+func routeProjectSyncDeletedPaths(paths []string, components map[string]projectTemplateComponent) map[string][]string {
+	out := make(map[string][]string, len(components))
+	for component, comp := range components {
+		wp := path.Clean(strings.TrimSpace(comp.WorkspacePath))
+		if wp == "." {
+			out[component] = append([]string(nil), paths...)
+			sort.Strings(out[component])
+			continue
+		}
+		prefix := wp + "/"
+		for _, raw := range paths {
+			clean := path.Clean(strings.TrimSpace(raw))
+			if strings.HasPrefix(clean, prefix) {
+				out[component] = append(out[component], strings.TrimPrefix(clean, prefix))
+			}
+		}
+		sort.Strings(out[component])
 	}
 	return out
 }
@@ -457,23 +503,73 @@ func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c
 	return s.templateDevelopmentPreview(ctx, c, target)
 }
 
-func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.Scope) ([]projectSandboxSyncFile, error) {
+func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.Scope) (projectWorkspaceSyncSnapshot, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		revisionBefore, err := s.workspaces.SourceRevision(ctx, scope)
+		if err != nil {
+			return projectWorkspaceSyncSnapshot{}, err
+		}
+		snapshot, err := s.projectWorkspaceSyncFilesOnce(ctx, scope, revisionBefore)
+		if err != nil {
+			return projectWorkspaceSyncSnapshot{}, err
+		}
+		revisionAfter, err := s.workspaces.SourceRevision(ctx, scope)
+		if err != nil {
+			return projectWorkspaceSyncSnapshot{}, err
+		}
+		if revisionBefore == revisionAfter {
+			return snapshot, nil
+		}
+	}
+	return projectWorkspaceSyncSnapshot{}, errors.New("workspace changed while preparing development synchronization")
+}
+
+func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope workspace.Scope, revision uint64) (projectWorkspaceSyncSnapshot, error) {
 	list, err := s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{Limit: workspace.MaxListLimit})
 	if err != nil {
-		return nil, err
+		return projectWorkspaceSyncSnapshot{}, err
 	}
 	files := make([]projectSandboxSyncFile, 0, len(list.Files))
 	for _, f := range list.Files {
 		read, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: f.Path, MaxBytes: workspace.MaxWriteBytes})
 		if err != nil {
-			return nil, err
+			return projectWorkspaceSyncSnapshot{}, err
 		}
 		if read.Binary || read.Truncated {
 			continue
 		}
 		files = append(files, projectSandboxSyncFile{Path: read.Path, Content: read.Content})
 	}
-	return files, nil
+	changed, err := s.workspaces.UncommittedPaths(ctx, scope)
+	if err != nil {
+		return projectWorkspaceSyncSnapshot{}, err
+	}
+	deleted := make([]string, 0)
+	for _, changedPath := range changed {
+		if _, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: changedPath, MaxBytes: workspace.MaxWriteBytes}); errors.Is(err, fs.ErrNotExist) {
+			deleted = append(deleted, changedPath)
+		} else if err != nil {
+			return projectWorkspaceSyncSnapshot{}, err
+		}
+	}
+	sort.Strings(deleted)
+	return projectWorkspaceSyncSnapshot{Files: files, DeletedPaths: deleted, SourceRevision: revision}, nil
+}
+
+// projectSandboxSyncDigest is the component-local source identity shared with
+// the infrastructure development agent: sorted path\0content\0 entries,
+// without the App Studio workspacePath prefix.
+func projectSandboxSyncDigest(files []projectSandboxSyncFile) string {
+	entries := append([]projectSandboxSyncFile(nil), files...)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	hash := sha256.New()
+	for _, file := range entries {
+		_, _ = hash.Write([]byte(file.Path))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(file.Content))
+		_, _ = hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func (s *Server) projectAssistantPreviewRefreshNeeded(_ context.Context, _ workspace.Scope, _ string, _ bool, toolCalls []projectToolCallStreamEvent) bool {

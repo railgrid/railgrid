@@ -53,6 +53,9 @@ func projectAssistantPermissionForV2(
 	args map[string]any,
 	templateBootstrapAllowed bool,
 ) projectAssistantPermissionDecision {
+	if strings.TrimSpace(string(mode)) == "" {
+		mode = store.AssistantApprovalModeOnRequest
+	}
 	switch spec.Risk {
 	case projectAssistantToolRiskRead, projectAssistantToolRiskInput:
 		return projectAssistantPermissionAllow
@@ -68,13 +71,17 @@ func projectAssistantPermissionForV2(
 		}
 		return projectAssistantPermissionAsk
 	case projectAssistantToolRiskRuntime:
+		// Never is a fail-closed mode for every runtime effect, including
+		// bounded compiler/test/lint execution. Keep this check before the
+		// on-request exception list so a newly-automatic runtime action cannot
+		// accidentally become executable under Never.
+		if mode == store.AssistantApprovalModeNever {
+			return projectAssistantPermissionDeny
+		}
 		if projectAssistantOnRequestRequiresApproval(spec.Name) {
-			if mode == store.AssistantApprovalModeNever {
-				return projectAssistantPermissionDeny
-			}
 			return projectAssistantPermissionAsk
 		}
-		if mode == store.AssistantApprovalModeOnRequest || mode == store.AssistantApprovalModeAutoApprove || mode == store.AssistantApprovalModeNever {
+		if mode == store.AssistantApprovalModeOnRequest || mode == store.AssistantApprovalModeAutoApprove {
 			return projectAssistantPermissionAllow
 		}
 		return projectAssistantPermissionAsk

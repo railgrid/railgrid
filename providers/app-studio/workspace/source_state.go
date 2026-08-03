@@ -31,11 +31,19 @@ import (
 
 const (
 	workspaceSourceStateFile      = "source-state.json"
+	workspaceSourceRevisionFile   = "source-revision.json"
 	workspaceCommitSettlementFile = "commit-settlement.json"
 )
 
 type workspaceSourceState struct {
 	UncommittedPaths []string `json:"uncommittedPaths"`
+}
+
+// workspaceSourceRevision is deliberately separate from source-state.json:
+// repository settlement may clear the dirty-path set, but the development
+// data-plane still needs a monotonic revision to reject stale syncs.
+type workspaceSourceRevision struct {
+	Revision uint64 `json:"revision"`
 }
 
 type workspaceCommitSettlement struct {
@@ -98,6 +106,101 @@ func (s *FileStore) AddUncommittedPaths(ctx context.Context, scope Scope, paths 
 		return nil, fmt.Errorf("persist workspace source state: %w", err)
 	}
 	return merged, nil
+}
+
+// SourceRevision returns the durable source revision for this project
+// incarnation. A missing revision is the initial revision and is represented
+// as one so the infrastructure agent can reject an omitted/zero authority.
+func (s *FileStore) SourceRevision(ctx context.Context, scope Scope) (uint64, error) {
+	if s == nil {
+		return 0, errors.New("project workspace store is not configured")
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	return s.sourceRevision(ctx, scope)
+}
+
+func (s *FileStore) sourceRevision(ctx context.Context, scope Scope) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	_, revisionPath, err := s.sourceRevisionPath(scope)
+	if err != nil {
+		return 0, err
+	}
+	raw, err := os.ReadFile(revisionPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 1, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read workspace source revision: %w", err)
+	}
+	var state workspaceSourceRevision
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return 0, fmt.Errorf("decode workspace source revision: %w", err)
+	}
+	if state.Revision == 0 {
+		return 1, nil
+	}
+	return state.Revision, nil
+}
+
+func (s *FileStore) bumpSourceRevision(ctx context.Context, scope Scope) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	dir, revisionPath, err := s.sourceRevisionPath(scope)
+	if err != nil {
+		return err
+	}
+	current, err := s.sourceRevision(ctx, scope)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(workspaceSourceRevision{Revision: current + 1})
+	if err != nil {
+		return fmt.Errorf("encode workspace source revision: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create workspace source revision directory: %w", err)
+	}
+	if err := writeFileAtomically(dir, revisionPath, raw, 0o600, false); err != nil {
+		return fmt.Errorf("persist workspace source revision: %w", err)
+	}
+	return nil
+}
+
+// ClearUncommittedPaths removes the pending source set after the complete set
+// has been committed successfully through the repository bridge.
+func (s *FileStore) ClearUncommittedPaths(ctx context.Context, scope Scope) error {
+	if s == nil {
+		return errors.New("project workspace store is not configured")
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, statePath, err := s.sourceStatePath(scope)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(statePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("clear workspace source state: %w", err)
+	}
+	return nil
+}
+
+// RemoveUncommittedPaths removes only the paths successfully persisted by a
+// repository commit. Other durable dirty paths remain available to later turns.
+func (s *FileStore) RemoveUncommittedPaths(ctx context.Context, scope Scope, paths []string) error {
+	if s == nil {
+		return errors.New("project workspace store is not configured")
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+
+	return s.removeUncommittedPaths(ctx, scope, paths)
 }
 
 func (s *FileStore) removeUncommittedPaths(ctx context.Context, scope Scope, paths []string) error {
@@ -185,6 +288,45 @@ func (s *FileStore) RecordCommitSettlement(ctx context.Context, scope Scope, wor
 		return fmt.Errorf("persist workspace commit settlement: %w", err)
 	}
 	return nil
+}
+
+// PendingCommitSettlement returns a durable post-commit cleanup receipt.
+func (s *FileStore) PendingCommitSettlement(ctx context.Context, scope Scope) (string, []string, bool, error) {
+	if s == nil {
+		return "", nil, false, errors.New("project workspace store is not configured")
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", nil, false, err
+	}
+	_, settlementPath, err := s.commitSettlementPath(scope)
+	if err != nil {
+		return "", nil, false, err
+	}
+	raw, err := os.ReadFile(settlementPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil, false, nil
+	}
+	if err != nil {
+		return "", nil, false, fmt.Errorf("read workspace commit settlement: %w", err)
+	}
+	var settlement workspaceCommitSettlement
+	if err := json.Unmarshal(raw, &settlement); err != nil {
+		return "", nil, false, fmt.Errorf("decode workspace commit settlement: %w", err)
+	}
+	pathSet := make(map[string]struct{}, len(settlement.Paths))
+	for _, rawPath := range settlement.Paths {
+		clean, err := cleanProjectPath(rawPath)
+		if err != nil {
+			return "", nil, false, fmt.Errorf("invalid workspace commit settlement: %w", err)
+		}
+		pathSet[clean] = struct{}{}
+	}
+	if settlement.WorkspaceDigest == "" || len(pathSet) == 0 {
+		return "", nil, false, errors.New("invalid workspace commit settlement")
+	}
+	return settlement.WorkspaceDigest, sortedWorkspaceSourcePaths(pathSet), true, nil
 }
 
 // ReconcileCommitSettlement clears committed paths and the matching receipt in
@@ -313,6 +455,14 @@ func (s *FileStore) sourceStatePath(scope Scope) (string, string, error) {
 		return "", "", err
 	}
 	return dir, filepath.Join(dir, workspaceSourceStateFile), nil
+}
+
+func (s *FileStore) sourceRevisionPath(scope Scope) (string, string, error) {
+	dir, err := s.snapshotProjectDir(scope)
+	if err != nil {
+		return "", "", err
+	}
+	return dir, filepath.Join(dir, workspaceSourceRevisionFile), nil
 }
 
 func (s *FileStore) commitSettlementPath(scope Scope) (string, string, error) {

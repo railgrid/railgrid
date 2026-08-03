@@ -218,6 +218,31 @@ spec:
                             for this component.
                           minProperties: 1
                           type: object
+                        exec:
+                          description: |-
+                            Exec declares the bounded, non-interactive command capability for this
+                            component. Exec is deliberately separate from Endpoints: endpoint
+                            Upgrade is an HTTP proxy feature and must never implicitly grant command
+                            execution or Kubernetes SPDY exec access.
+                          properties:
+                            maxOutputBytes:
+                              description: |-
+                                MaxOutputBytes is the combined stdout/stderr response ceiling. Zero uses
+                                the provider default. Values above the provider maximum are rejected.
+                              format: int32
+                              maximum: 262144
+                              minimum: 0
+                              type: integer
+                            maxTimeoutSeconds:
+                              description: |-
+                                MaxTimeoutSeconds is the maximum wall-clock duration for one command.
+                                Zero uses the provider default. Values above the provider maximum are
+                                rejected when the Template contract is resolved.
+                              format: int32
+                              maximum: 120
+                              minimum: 0
+                              type: integer
+                          type: object
                       required:
                       - endpoints
                       type: object

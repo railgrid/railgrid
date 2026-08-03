@@ -54,6 +54,7 @@ const (
 	// devAgentPort is the control port the kedge-dev-agent serves on, in every
 	// dev-mode component (same port the sandbox runner used).
 	devAgentPort = 7070
+	devExecPort  = 7071
 
 	// devAgentBinDir is where the injector init container installs the agent
 	// binary and the dev container executes it from.
@@ -276,11 +277,10 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 				// Reachable while the dev server is still installing deps.
 				"publishNotReadyAddresses": true,
 				"selector":                 selector,
-				"ports": []any{map[string]any{
-					"name":       "control",
-					"port":       int64(devAgentPort),
-					"targetPort": int64(devAgentPort),
-				}},
+				"ports": []any{
+					map[string]any{"name": "control", "port": int64(devAgentPort), "targetPort": int64(devAgentPort)},
+					map[string]any{"name": "exec", "port": int64(devExecPort), "targetPort": int64(devExecPort)},
+				},
 			},
 		},
 	}
@@ -338,7 +338,7 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	delete(container, "startupProbe")
 	container["securityContext"] = map[string]any{
 		"allowPrivilegeEscalation": false,
-		"capabilities":             map[string]any{"drop": []any{"ALL"}},
+		"capabilities":             map[string]any{"drop": []any{"ALL"}, "add": []any{"SETGID"}},
 	}
 
 	env, _ := container["env"].([]any)
@@ -371,7 +371,52 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 		mounts = append(mounts, map[string]any{"name": "kedge-dev-tmp", "mountPath": "/tmp"})
 		extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-tmp", "emptyDir": map[string]any{}})
 	}
+	workspaceMount := mountForPath(mounts, workingDir, true)
+	if workspaceMount == nil {
+		return nil, nil, false, fmt.Errorf("development workspace mount is unavailable")
+	}
+	agentBinMount := mountForPath(mounts, devAgentBinDir, false)
+	if agentBinMount == nil {
+		return nil, nil, false, fmt.Errorf("development agent-bin mount is unavailable")
+	}
+	metadataMount := protectedMetadataMount(workspaceMount, workingDir)
+	mounts = append(mounts, metadataMount)
 	container["volumeMounts"] = mounts
+
+	workerWorkspaceMount := copyVolumeMount(workspaceMount, workingDir)
+	workerMetadataMount := protectedMetadataMount(workspaceMount, workingDir)
+	worker := map[string]any{
+		"name":            "kedge-exec-worker",
+		"image":           devImage,
+		"imagePullPolicy": "IfNotPresent",
+		"command":         []any{devAgentBinDir + "/kedge-dev-agent", "--exec-worker"},
+		"workingDir":      workingDir,
+		"ports":           []any{map[string]any{"name": "kedge-exec", "containerPort": int64(devExecPort)}},
+		"env": []any{
+			map[string]any{"name": "KEDGE_DEV_WORKDIR", "value": workingDir},
+			map[string]any{"name": "KEDGE_DEV_CONTROL_TOKEN", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "${kedgeDevControlSecret.metadata.name}", "key": "token"}}},
+			map[string]any{"name": "HOME", "value": "/tmp/kedge-home"},
+		},
+		"volumeMounts": []any{
+			workerWorkspaceMount,
+			workerMetadataMount,
+			map[string]any{"name": agentBinMount["name"], "mountPath": devAgentBinDir, "readOnly": true},
+			map[string]any{"name": "kedge-exec-tmp", "mountPath": "/tmp"},
+			map[string]any{"name": "kedge-exec-no-serviceaccount", "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount", "readOnly": true},
+		},
+		"securityContext": map[string]any{
+			"runAsNonRoot":             true,
+			"runAsUser":                int64(1001),
+			"runAsGroup":               int64(1000),
+			"allowPrivilegeEscalation": false,
+			"readOnlyRootFilesystem":   true,
+			"capabilities":             map[string]any{"drop": []any{"ALL"}, "add": []any{"SETUID", "SETGID"}},
+		},
+	}
+	containers = append(containers, worker)
+	podSpec["containers"] = containers
+	extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-exec-tmp", "emptyDir": map[string]any{}})
+	extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-exec-no-serviceaccount", "emptyDir": map[string]any{}})
 
 	initContainer := map[string]any{
 		"name":  "kedge-dev-agent",
@@ -381,13 +426,16 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 		// if the registry copy is missing. Production pins digests via
 		// KEDGE_DEV_AGENT_IMAGE, where IfNotPresent is equivalent.
 		"imagePullPolicy": "IfNotPresent",
-		"command":         []any{"/kedge-dev-agent", "--install", devAgentBinDir},
+		"command":         []any{"/kedge-dev-agent", "--install", devAgentBinDir, "--prepare-workspace", workingDir},
 		"volumeMounts": []any{
 			map[string]any{"name": "kedge-dev-agent-bin", "mountPath": devAgentBinDir},
+			copyVolumeMount(workspaceMount, workingDir),
 		},
 		"securityContext": map[string]any{
 			"allowPrivilegeEscalation": false,
-			"capabilities":             map[string]any{"drop": []any{"ALL"}},
+			"runAsNonRoot":             false,
+			"runAsUser":                int64(0),
+			"capabilities":             map[string]any{"drop": []any{"ALL"}, "add": []any{"CHOWN"}},
 		},
 	}
 	if previewConsoleVerificationJWKS != "" {
@@ -405,17 +453,60 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 
 	// The workspace PVC must be writable by the non-root dev process.
 	podSpec["securityContext"] = map[string]any{
-		"runAsNonRoot": true,
-		"runAsUser":    int64(1000),
-		"runAsGroup":   int64(1000),
-		"fsGroup":      int64(1000),
+		"runAsNonRoot":       true,
+		"runAsUser":          int64(1000),
+		"runAsGroup":         int64(1000),
+		"fsGroup":            int64(1000),
+		"supplementalGroups": []any{int64(2000)},
 	}
+	podSpec["shareProcessNamespace"] = false
 
 	return map[string]any{
 		"id":          name + "DevDeployment",
 		"includeWhen": []any{devModeCondition},
 		"template":    tmplCopy,
 	}, selectorLabels, mountedWorkspace, nil
+}
+
+func mountForPath(mounts []any, target string, matchExpressions bool) map[string]any {
+	var expressionMatch map[string]any
+	for _, raw := range mounts {
+		mount, _ := raw.(map[string]any)
+		mountPath, _ := mount["mountPath"].(string)
+		if mountPath == target {
+			return mount
+		}
+		if matchExpressions && strings.Contains(mountPath, "${") {
+			if expressionMatch != nil {
+				return nil
+			}
+			expressionMatch = mount
+		}
+	}
+	return expressionMatch
+}
+
+func copyVolumeMount(source map[string]any, mountPath string) map[string]any {
+	result := map[string]any{"name": source["name"], "mountPath": mountPath}
+	for _, key := range []string{"subPath", "subPathExpr"} {
+		if value, ok := source[key]; ok {
+			result[key] = value
+		}
+	}
+	return result
+}
+
+func protectedMetadataMount(workspaceMount map[string]any, workingDir string) map[string]any {
+	result := map[string]any{"name": workspaceMount["name"], "mountPath": workingDir + "/.kedge-platform"}
+	switch {
+	case workspaceMount["subPath"] != nil:
+		result["subPath"] = strings.TrimSuffix(workspaceMount["subPath"].(string), "/") + "/.kedge-platform"
+	case workspaceMount["subPathExpr"] != nil:
+		result["subPathExpr"] = strings.TrimSuffix(workspaceMount["subPathExpr"].(string), "/") + "/.kedge-platform"
+	default:
+		result["subPath"] = ".kedge-platform"
+	}
+	return result
 }
 
 // hasContainerPort reports whether the container already declares the numeric
@@ -469,6 +560,7 @@ func devAgentEnv(comp infrav1alpha1.TemplateDevelopmentComponent, workingDir str
 	env := []any{
 		map[string]any{"name": "KEDGE_DEV_WORKDIR", "value": workingDir},
 		map[string]any{"name": "KEDGE_DEV_START_COMMAND", "value": comp.StartCommand},
+		map[string]any{"name": "KEDGE_DEV_DROP_CHILD_GROUPS", "value": "true"},
 	}
 	if port := firstContainerPort(container); port != "" {
 		env = append(env, map[string]any{"name": "KEDGE_DEV_PORT", "value": port})

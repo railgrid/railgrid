@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import vue from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
 import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 let vite
 test.before(async () => {
-  vite = await createServer({ appType: 'custom', server: { middlewareMode: true } })
+  vite = await createServer({ appType: 'custom', cacheDir: '/tmp/kedge-vite-assistant-action-log', configFile: false, plugins: [vue()], server: { hmr: false, middlewareMode: true } })
 })
 test.after(async () => vite?.close())
 

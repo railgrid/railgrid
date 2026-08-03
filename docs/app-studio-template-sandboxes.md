@@ -150,8 +150,10 @@ dev mode every declared component runs it as PID 1 wrapping the component's
   platform image into a shared `emptyDir` — so `devImage` can be *any*
   toolchain image (node, python, go, jdk) with no kedge-specific baking.
 - Serves the same control verbs per component: `/sync`, `/restart`, `/logs`,
-  `/env`, plus `/exec` later. Executes the Template-declared reload rules
-  (§1) on sync: match changed paths → run rule command → restart process.
+  `/env`, and revision-bound `/exec`. The exec endpoint reuses the live
+  component workspace and therefore has the development container's authority;
+  see `docs/app-studio-sandboxed-exec.md`. Executes the Template-declared reload
+  rules (§1) on sync: match changed paths → run rule command → restart process.
 - Auth stays the per-instance control token (`X-Sandbox-Control-Token`),
   shared across the instance's components.
 

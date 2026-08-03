@@ -6,6 +6,7 @@ import type {
   ProjectAssistantActionStatus,
   ProjectAssistantDiagnosticCategory,
 } from './types'
+import { parseAssistantExecDisclosure } from './assistantExecDisclosure'
 
 export interface AssistantActionLogItem extends ProjectAssistantActionFeedItem {
   sourceIDs: string[]
@@ -15,7 +16,7 @@ const kinds = new Set<ProjectAssistantActionKind>(['inspect', 'clarify', 'edit',
 const statuses = new Set<ProjectAssistantActionStatus>(['running', 'waiting', 'succeeded', 'skipped', 'failed', 'rejected'])
 const severities = new Set<ProjectAssistantActionSeverity>(['normal', 'attention', 'error'])
 const diagnosticCategories = new Set<ProjectAssistantDiagnosticCategory>(['timeout', 'permission', 'validation', 'runtime', 'provider', 'unknown'])
-const itemKeys = new Set(['id', 'kind', 'status', 'title', 'target', 'outcome', 'count', 'severity', 'groupKey', 'groupTitle', 'sequence', 'diagnostic'])
+const itemKeys = new Set(['id', 'kind', 'status', 'title', 'target', 'outcome', 'count', 'severity', 'groupKey', 'groupTitle', 'sequence', 'diagnostic', 'exec'])
 const diagnosticKeys = new Set(['category', 'message', 'referenceID'])
 const textEncoder = new TextEncoder()
 
@@ -62,6 +63,8 @@ function parseFeedItem(value: unknown): ProjectAssistantActionFeedItem | undefin
   }
   const diagnostic = value.diagnostic === undefined ? undefined : parseDiagnostic(value.diagnostic)
   if (value.diagnostic !== undefined && !diagnostic) return undefined
+  const exec = value.exec === undefined ? undefined : parseAssistantExecDisclosure(value.exec)
+  if (value.exec !== undefined && !exec) return undefined
   return {
     id: value.id,
     kind: value.kind as ProjectAssistantActionKind,
@@ -75,6 +78,7 @@ function parseFeedItem(value: unknown): ProjectAssistantActionFeedItem | undefin
     ...(value.groupTitle ? { groupTitle: value.groupTitle as string } : {}),
     sequence: value.sequence as number,
     ...(diagnostic ? { diagnostic } : {}),
+    ...(exec ? { exec } : {}),
   }
 }
 
@@ -97,6 +101,7 @@ function canGroup(item: ProjectAssistantActionFeedItem): boolean {
     && Boolean(item.groupKey && item.groupTitle)
     && item.kind !== 'commit'
     && item.kind !== 'clarify'
+    && !item.exec
 }
 
 export function groupAssistantActions(items: ProjectAssistantActionFeedItem[]): AssistantActionLogItem[] {

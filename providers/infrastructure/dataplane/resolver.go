@@ -41,6 +41,34 @@ import (
 	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 )
 
+// ResolveComponentExecTarget resolves the control Service used by a live
+// development component's /exec endpoint. Exec is a typed capability rather
+// than a normal endpoint, so templates do not repeat the Service reference;
+// the required sync endpoint supplies the Service and token boundary, while
+// the upstream path is forced to /exec.
+func ResolveComponentExecTarget(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured, component string) (ResolvedTarget, error) {
+	if contract == nil || instance == nil {
+		return ResolvedTarget{}, fmt.Errorf("template contract and instance are required")
+	}
+	comp, ok := contract.Components[component]
+	if !ok {
+		return ResolvedTarget{}, fmt.Errorf("data-plane component %q is not declared by this template", component)
+	}
+	endpoint, ok := comp.Endpoints["sync"]
+	if !ok || endpoint.FromStatus {
+		return ResolvedTarget{}, fmt.Errorf("component %q must declare a proxy sync endpoint for exec", component)
+	}
+	target, err := resolveEndpoint(contract, instance, endpoint, component+"/sync")
+	if err != nil {
+		return ResolvedTarget{}, err
+	}
+	target.UpstreamPath = "/exec"
+	target.ServicePort = "exec"
+	target.Stream = false
+	target.Upgrade = false
+	return target, nil
+}
+
 // ResolvedTarget is the concrete runtime endpoint a data-plane verb resolves
 // to. ServiceNamespace/ServiceName/ServicePort name the Service the provider
 // reverse-proxies to via the runtime cluster's services/proxy subresource;

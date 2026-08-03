@@ -16,6 +16,8 @@ package api
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/faroshq/provider-app-studio/store"
@@ -76,5 +78,22 @@ func TestProjectAssistantApprovalModeDefaultsToOnRequest(t *testing.T) {
 	}
 	if got := projectAssistantApprovalModeFromRun(store.AssistantRun{}); got != store.AssistantApprovalModeOnRequest {
 		t.Fatalf("legacy run default approval mode = %q, want on-request fallback", got)
+	}
+}
+
+func TestProjectAssistantApprovalModeRouteRejectsLegacyAutoApprove(t *testing.T) {
+	router, messages, scope, _ := newAssistantReviewHTTPTest(t)
+	request := assistantReviewHTTPTestRequest(http.MethodPatch, "/api/projects/demo/assistant/approval-mode", `{"mode":"auto_approve"}`)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("legacy approval mode PATCH status = %d, want %d: %s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	preference, err := messages.GetAssistantApprovalPreference(context.Background(), scope, "test-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preference.Mode != store.AssistantApprovalModeOnRequest {
+		t.Fatalf("legacy approval mode PATCH changed preference to %q, want unchanged on_request", preference.Mode)
 	}
 }

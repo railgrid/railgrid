@@ -34,11 +34,12 @@ const (
 )
 
 type projectEinoPermissionInterruptInfo struct {
-	ToolCallID      string                   `json:"toolCallID,omitempty"`
-	ToolName        string                   `json:"toolName,omitempty"`
-	ArgumentsInJSON string                   `json:"argumentsInJSON,omitempty"`
-	Reason          string                   `json:"reason,omitempty"`
-	Risk            projectAssistantToolRisk `json:"risk,omitempty"`
+	ToolCallID      string                        `json:"toolCallID,omitempty"`
+	ToolName        string                        `json:"toolName,omitempty"`
+	ArgumentsInJSON string                        `json:"argumentsInJSON,omitempty"`
+	Reason          string                        `json:"reason,omitempty"`
+	Risk            projectAssistantToolRisk      `json:"risk,omitempty"`
+	Exec            *projectAssistantExecMetadata `json:"exec,omitempty"`
 }
 
 type projectEinoPermissionInterruptState struct {
@@ -234,6 +235,7 @@ func init() {
 	schema.RegisterName[*projectEinoFollowUpInterruptInfo]("faros_app_studio_eino_follow_up_interrupt_info")
 	schema.RegisterName[*projectEinoFollowUpInterruptState]("faros_app_studio_eino_follow_up_interrupt_state")
 	schema.RegisterName[*projectEinoFollowUpResumeData]("faros_app_studio_eino_follow_up_resume_data")
+	schema.RegisterName[*projectAssistantExecCommandInput]("faros_app_studio_exec_command_input")
 }
 
 func projectAssistantFollowUpPrompt(questions []projectAssistantFollowUpQuestion) string {

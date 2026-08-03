@@ -145,6 +145,17 @@ func TestValidateDevelopment(t *testing.T) {
 			wantErr: "no matching spec.development.components entry",
 		},
 		{
+			name: "exec requires development component",
+			spec: TemplateSpec{
+				DataPlane: &TemplateDataPlane{
+					Components: map[string]TemplateDataPlaneComponent{
+						"backend": {Endpoints: map[string]TemplateDataPlaneEndpoint{"sync": {ServicePath: "status.x", Port: "control"}}, Exec: &TemplateDataPlaneExec{}},
+					},
+				},
+			},
+			wantErr: "exec requires spec.development.components",
+		},
+		{
 			name: "data-plane with neither endpoints nor components",
 			spec: TemplateSpec{
 				DataPlane: &TemplateDataPlane{},

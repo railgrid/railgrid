@@ -40,8 +40,14 @@ import {
   type ProjectCreateReadiness,
 } from './createReadiness'
 import { parseAssistantActionFeed } from './assistantActionFeed'
+import {
+  assistantInterruptAllowsApproval,
+  parseAssistantInterrupt,
+  type ProjectAssistantInterruptView,
+} from './assistantInterrupt'
 import { validateLLMBaseURL } from './llmSettingsValidation'
 import AssistantActionLog from './AssistantActionLog.vue'
+import AssistantExecDetails from './AssistantExecDetails.vue'
 import { activeAssistantPlanMessage, assistantPlanProgress, parseAssistantPlan, type AssistantPlan } from './assistantPlan'
 import { formatAssistantWorkedDuration, parseAssistantProgress, type AssistantProgress } from './assistantProgress'
 import { buildAssistantTrace, type AssistantTraceBlock } from './assistantTrace'
@@ -174,16 +180,16 @@ type ProjectMessageView = ProjectMessage & {
   actionFeed?: ProjectAssistantActionFeedItem[]
   progress?: AssistantProgress
   surface?: ProjectAssistantSurface
-  interrupt?: ProjectAssistantUIInterruptRequest
+  interrupt?: ProjectAssistantInterruptView
 }
 interface PendingApprovalView {
   message: ProjectMessageView
-  interrupt: ProjectAssistantUIInterruptRequest
+  interrupt: ProjectAssistantInterruptView
 }
 
 interface PendingFollowUpView {
   message: ProjectMessageView
-  interrupt: ProjectAssistantUIInterruptRequest
+  interrupt: ProjectAssistantInterruptView
 }
 
 interface ProjectDevelopmentPreviewAuthorization {
@@ -3089,16 +3095,10 @@ function projectMessageActionFeed(message: ProjectMessage): ProjectAssistantActi
   return parseAssistantActionFeed(message.metadata?.assistantActionFeed)
 }
 
-function projectMessageInterrupt(message: ProjectMessage): ProjectAssistantUIInterruptRequest | undefined {
+function projectMessageInterrupt(message: ProjectMessage): ProjectAssistantInterruptView | undefined {
   if (message.role !== 'assistant') return undefined
   const raw = message.metadata?.assistantInterrupt
-  return isProjectAssistantInterrupt(raw) ? raw : undefined
-}
-
-function isProjectAssistantInterrupt(value: unknown): value is ProjectAssistantUIInterruptRequest {
-  if (!value || typeof value !== 'object') return false
-  const item = value as Partial<ProjectAssistantUIInterruptRequest>
-  return typeof item.interruptId === 'string'
+  return parseAssistantInterrupt(raw)
 }
 
 function isAbortError(err: unknown): boolean {
@@ -4197,6 +4197,19 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                     <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
                       {{ pendingApproval.interrupt.description || 'Review this action before it runs.' }}
                     </div>
+                    <AssistantExecDetails
+                      v-if="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
+                      :exec="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
+                      variant="approval"
+                    />
+                    <div
+                      v-if="pendingApproval.interrupt.execDisclosureInvalid"
+                      class="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-danger"
+                      role="alert"
+                    >
+                      <TriangleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="2" aria-hidden="true" />
+                      <span>Command details are unavailable, so allowing this request is disabled. Deny it and retry.</span>
+                    </div>
                   </div>
                 </div>
                 <div v-if="permissionError(pendingApproval.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
@@ -4206,7 +4219,8 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                   <button
                     type="button"
                     class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                    :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
+                    :disabled="!assistantInterruptAllowsApproval(pendingApproval.interrupt) || !!permissionBusyState(pendingApproval.interrupt)"
+                    :title="pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable; deny this request.' : 'Allow'"
                     @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
                   >
                     <Loader2
@@ -4815,14 +4829,27 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 <div class="mt-1 text-[12px] leading-5 text-text-secondary">
                   {{ pendingApproval.interrupt.description || 'Review this action before it runs.' }}
                 </div>
+                <AssistantExecDetails
+                  v-if="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
+                  :exec="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
+                  variant="approval"
+                />
+                <div
+                  v-if="pendingApproval.interrupt.execDisclosureInvalid"
+                  class="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-danger"
+                  role="alert"
+                >
+                  <TriangleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="2" aria-hidden="true" />
+                  <span>Command details are unavailable, so allowing this request is disabled. Deny it and retry.</span>
+                </div>
               </div>
             </div>
             <div class="flex flex-wrap gap-2">
               <button
                 type="button"
                 class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
-                title="Allow"
+                :disabled="!assistantInterruptAllowsApproval(pendingApproval.interrupt) || !!permissionBusyState(pendingApproval.interrupt)"
+                :title="pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable; deny this request.' : 'Allow'"
                 @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
               >
                 <Loader2 v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />

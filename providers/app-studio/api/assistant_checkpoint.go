@@ -387,6 +387,7 @@ func projectAssistantPermissionForEinoInterrupt(requestID string, tc chatToolCal
 	if reason := strings.TrimSpace(info.Reason); reason != "" {
 		permission.Reason = reason
 	}
+	permission.Exec = cloneProjectAssistantExecMetadata(info.Exec)
 	return permission
 }
 
@@ -428,6 +429,12 @@ func projectAssistantPermissionReasonForArguments(spec projectAssistantToolSpec,
 			return fmt.Sprintf("Set %d non-secret development runtime environment variable(s) and apply the requested restart behavior.", count)
 		}
 		return "Change non-secret development runtime environment variables and apply the requested restart behavior."
+	case projectToolExecCommand:
+		component := projectToolString(args["component"])
+		if component == "" {
+			return "Run one bounded compiler, test, or lint command in the synchronized live development runtime."
+		}
+		return fmt.Sprintf("Run the approved bounded argv in live development component %q using application-container authority and the application network; no App Studio source writeback is allowed.", component)
 	case projectToolRebuildProject:
 		if ref := projectToolString(args["ref"]); ref != "" {
 			return fmt.Sprintf("Re-run this project's build workflow for branch or ref %q without changing code.", ref)
@@ -504,13 +511,15 @@ func projectAssistantPermissionForCall(requestID string, tc chatToolCall, spec p
 	} else {
 		_ = json.Unmarshal(permissionInput, &args)
 	}
-	return projectAssistantPermission{
+	permission := projectAssistantPermission{
 		ID:         requestID,
 		ToolCallID: tc.ID,
 		ToolName:   spec.Name,
 		Reason:     projectAssistantPermissionReasonForArguments(spec, args),
 		Input:      permissionInput,
 	}
+	permission.Exec = projectAssistantExecMetadataForToolArguments(spec.Name, args, "", "permission_required")
+	return permission
 }
 
 func preflightProjectAssistantResume(

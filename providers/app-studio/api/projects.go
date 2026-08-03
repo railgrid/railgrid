@@ -145,17 +145,18 @@ type ProjectRepositoryCommitView struct {
 }
 
 type projectToolCallStreamEvent struct {
-	ID         string                      `json:"id"`
-	Name       string                      `json:"name,omitempty"`
-	Status     string                      `json:"status"`
-	Arguments  string                      `json:"arguments,omitempty"`
-	Summary    string                      `json:"summary,omitempty"`
-	Error      string                      `json:"error,omitempty"`
-	Permission *projectAssistantPermission `json:"permission,omitempty"`
-	FollowUp   *projectAssistantFollowUp   `json:"followUp,omitempty"`
-	Checkpoint *projectAssistantCheckpoint `json:"checkpoint,omitempty"`
-	Mutation   *projectAssistantMutation   `json:"mutation,omitempty"`
-	Sequence   int                         `json:"sequence,omitempty"`
+	ID         string                        `json:"id"`
+	Name       string                        `json:"name,omitempty"`
+	Status     string                        `json:"status"`
+	Arguments  string                        `json:"arguments,omitempty"`
+	Summary    string                        `json:"summary,omitempty"`
+	Error      string                        `json:"error,omitempty"`
+	Exec       *projectAssistantExecMetadata `json:"exec,omitempty"`
+	Permission *projectAssistantPermission   `json:"permission,omitempty"`
+	FollowUp   *projectAssistantFollowUp     `json:"followUp,omitempty"`
+	Checkpoint *projectAssistantCheckpoint   `json:"checkpoint,omitempty"`
+	Mutation   *projectAssistantMutation     `json:"mutation,omitempty"`
+	Sequence   int                           `json:"sequence,omitempty"`
 }
 
 type projectAssistantMutation struct {
@@ -797,6 +798,7 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 			s.writeAssistantThreadError(w, turnErr)
 			return
 		}
+		s.startAssistantThreadMirror(scope, threadID, turn, run)
 		writeJSON(w, http.StatusAccepted, turn)
 		return
 	}
@@ -1186,6 +1188,7 @@ func mergeProjectAssistantActionFeedItem(existing, next projectAssistantActionFe
 	if next.Diagnostic == nil {
 		next.Diagnostic = existing.Diagnostic
 	}
+	next.Exec = mergeProjectAssistantExecMetadata(existing.Exec, next.Exec)
 	return next
 }
 
@@ -1209,7 +1212,35 @@ func finalizeProjectAssistantActionFeed(actions []projectAssistantActionFeedItem
 		}
 		actions[i].Title = projectAssistantActionFeedItemTitle(actions[i].Kind, actions[i].Status)
 	}
+	if assistantRunTerminal(runStatus) {
+		for i := range actions {
+			if actions[i].Exec == nil {
+				continue
+			}
+			if projectAssistantExecStatusTerminal(actions[i].Exec.Status) {
+				continue
+			}
+			switch actions[i].Status {
+			case projectAssistantActionFeedStatusSucceeded:
+				actions[i].Exec.Status = "succeeded"
+			case projectAssistantActionFeedStatusFailed, projectAssistantActionFeedStatusRejected:
+				// The public exec contract intentionally uses failed for both a
+				// command failure and a user rejection; "rejected" is not a
+				// terminal process state exposed by the portal disclosure parser.
+				actions[i].Exec.Status = "failed"
+			}
+		}
+	}
 	return filterProjectAssistantActionFeedItems(actions)
+}
+
+func projectAssistantExecStatusTerminal(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "succeeded", "failed", "timed_out", "canceled", "cancelled", "blocked", "error":
+		return true
+	default:
+		return false
+	}
 }
 
 func sanitizeProjectToolCallStreamEventsForMetadata(events []projectToolCallStreamEvent) []projectToolCallStreamEvent {
@@ -1251,6 +1282,19 @@ func mergeProjectToolCallStreamEvent(existing, next projectToolCallStreamEvent) 
 	if next.Error == "" {
 		next.Error = existing.Error
 	}
+	// Permission callbacks carry their execution disclosure on Permission.Exec,
+	// while terminal tool callbacks carry it directly on Exec. Normalize both
+	// locations before merging so checkpoint resume cannot drop the approved
+	// argv/authority contract even when the terminal callback has no arguments.
+	existingExec := existing.Exec
+	if existingExec == nil && existing.Permission != nil {
+		existingExec = existing.Permission.Exec
+	}
+	nextExec := next.Exec
+	if nextExec == nil && next.Permission != nil {
+		nextExec = next.Permission.Exec
+	}
+	next.Exec = mergeProjectAssistantExecMetadata(existingExec, nextExec)
 	if next.Permission == nil {
 		next.Permission = existing.Permission
 	}

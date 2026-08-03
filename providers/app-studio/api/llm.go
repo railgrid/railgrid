@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,6 +121,7 @@ const (
 	projectToolGetPreviewConsoleLogs          = "get_preview_console_logs"
 	projectToolRestartRuntime                 = "restart_runtime"
 	projectToolSetRuntimeEnv                  = "set_runtime_env"
+	projectToolExecCommand                    = "exec_command"
 	projectToolAskFollowUp                    = "ask_follow_up"
 	projectToolDefineInitialProjectPlan       = "define_initial_project_plan"
 	projectToolApplyPatch                     = "apply_patch"
@@ -912,6 +914,25 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 			return truncateProjectToolInfo(fmt.Sprintf("%d variable(s): %s", len(names), summarizeProjectToolList(names, 5)))
 		}
 		return ""
+	case projectToolExecCommand:
+		parts := []string{}
+		if component := projectToolString(args["component"]); component != "" {
+			parts = append(parts, "component "+component)
+		}
+		if argv, ok := args["argv"].([]any); ok && len(argv) > 0 {
+			program := projectToolString(argv[0])
+			if program != "" {
+				parts = append(parts, "program "+path.Base(program))
+			}
+			parts = append(parts, fmt.Sprintf("%d argv token(s)", len(argv)))
+		}
+		if workdir := projectToolString(args["workdir"]); workdir != "" {
+			parts = append(parts, "workdir "+workdir)
+		}
+		if timeout := projectToolString(args["timeoutSeconds"]); timeout != "" {
+			parts = append(parts, "timeout "+timeout+"s")
+		}
+		return truncateProjectToolInfo(strings.Join(parts, "; "))
 	case projectToolAskFollowUp:
 		if questions, err := projectAssistantFollowUpQuestionsFromArguments(args["questions"]); err == nil {
 			labels := make([]string, 0, len(questions))
@@ -979,6 +1000,13 @@ func summarizeProjectToolResult(name, result string) string {
 			return summarizeProjectReadinessWorkflowResult(decoded)
 		case projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolRestartRuntime, projectToolSetRuntimeEnv:
 			return summarizeProjectRuntimeWorkflowResult(decoded)
+		case projectToolExecCommand:
+			if summary := projectToolString(decoded["summary"]); summary != "" {
+				return truncateProjectToolInfo(summary)
+			}
+			if status := projectToolString(decoded["status"]); status != "" {
+				return "command " + status
+			}
 		case projectToolInspectDevelopmentPreview:
 			if summary := projectToolString(decoded["summary"]); summary != "" {
 				return truncateProjectToolInfo(summary)
