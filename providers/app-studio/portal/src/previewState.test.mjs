@@ -31,7 +31,7 @@ test('reports synced files without claiming preview refresh when route binding i
   )
 })
 
-test('development preview uses the folded sandbox runner binding', () => {
+test('development preview uses the selected Template binding', () => {
   assert.equal(
     appSource.includes("PREVIEW_ROUTE_BINDING_NAME = 'preview-route'"),
     false,
@@ -71,7 +71,7 @@ test('keeps readiness detail when sync succeeds before preview is ready', () => 
   )
 })
 
-test('keeps preview badge pending when runner is ready but preview route is missing', () => {
+test('keeps preview badge pending when the development instance has no URL', () => {
   assert.equal(
     developmentPreviewDisplayPhase({
       previewURL: '',
@@ -101,28 +101,26 @@ test('marks preview badge error when authorization failed', () => {
   )
 })
 
-test('refreshes a pending sandbox when the browser wakes', () => {
+test('refreshes a pending development instance when the browser wakes', () => {
   assert.equal(
     developmentPreviewShouldRefreshOnWake({
       needsAuthorization: true,
       authorizing: false,
       previewURL: '',
       authorizationError: '',
-      tokenExpiresAt: '',
-    }, Date.now(), 5 * 60 * 1000),
+    }),
     true,
   )
 })
 
-test('refreshes an errored sandbox when the browser wakes', () => {
+test('refreshes an errored development instance when the browser wakes', () => {
   assert.equal(
     developmentPreviewShouldRefreshOnWake({
       needsAuthorization: true,
       authorizing: false,
       previewURL: '',
       authorizationError: 'temporary gateway failure',
-      tokenExpiresAt: '',
-    }, Date.now(), 5 * 60 * 1000),
+    }),
     true,
   )
 })
@@ -134,23 +132,8 @@ test('does not reauthorize a ready tokenless template preview on every wake', ()
       authorizing: false,
       previewURL: 'https://preview.example.com/',
       authorizationError: '',
-      tokenExpiresAt: '',
-    }, Date.now(), 5 * 60 * 1000),
+    }),
     false,
-  )
-})
-
-test('refreshes an expiring signed preview token when the browser wakes', () => {
-  const now = Date.parse('2026-08-02T12:00:00Z')
-  assert.equal(
-    developmentPreviewShouldRefreshOnWake({
-      needsAuthorization: true,
-      authorizing: false,
-      previewURL: 'https://preview.example.com/',
-      authorizationError: '',
-      tokenExpiresAt: '2026-08-02T12:04:00Z',
-    }, now, 5 * 60 * 1000),
-    true,
   )
 })
 

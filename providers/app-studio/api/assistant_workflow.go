@@ -853,17 +853,6 @@ func marshalProjectAssistantWorkflowPlan(plan projectAssistantWorkflowPlan) ([]b
 	return json.Marshal(minimal)
 }
 
-func marshalProjectAssistantWorkflowJSON(value any) ([]byte, error) {
-	raw, err := json.Marshal(value)
-	if err != nil || len(raw) <= projectAssistantWorkflowMaxResultBytes {
-		return raw, err
-	}
-	return json.Marshal(map[string]any{
-		"status":  "bounded",
-		"summary": "Project assistant workflow result was bounded for assistant context.",
-	})
-}
-
 func boundedProjectAssistantWorkflowRepo(repo *projectAssistantWorkflowRepo) *projectAssistantWorkflowRepo {
 	if repo == nil {
 		return nil

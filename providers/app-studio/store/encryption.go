@@ -614,17 +614,6 @@ func (s *encryptedStore) CreateAssistantRun(ctx context.Context, scope Scope, us
 	return created, nil
 }
 
-func (s *encryptedStore) RequestAssistantRunStop(ctx context.Context, scope Scope, runID string, expectedRunRevision int64, now time.Time) (AssistantRun, error) {
-	run, err := s.inner.RequestAssistantRunStop(ctx, scope, runID, expectedRunRevision, now)
-	if err != nil {
-		return AssistantRun{}, err
-	}
-	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
-		return AssistantRun{}, err
-	}
-	return run, nil
-}
-
 func (s *encryptedStore) RequestAssistantRunStopWithAssistantMessage(ctx context.Context, scope Scope, runID string, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error) {
 	if err := scope.validate(); err != nil {
 		return AssistantRun{}, err

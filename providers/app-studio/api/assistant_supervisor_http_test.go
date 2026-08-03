@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -85,15 +84,6 @@ func TestProjectAssistantPublicRunSnapshotsOmitInternalExecutionState(t *testing
 		}
 	}
 
-	recorder := httptest.NewRecorder()
-	if err := writeProjectAssistantSnapshotSSE(recorder, recorder, snapshot); err != nil {
-		t.Fatal(err)
-	}
-	for _, forbidden := range []string{"checkpoint", "audit", "expectedGrantRevision", "secret prompt", "secret result"} {
-		if strings.Contains(recorder.Body.String(), forbidden) {
-			t.Fatalf("SSE snapshot contains internal value %q: %s", forbidden, recorder.Body.String())
-		}
-	}
 }
 
 func TestProjectAssistantRunViewIncludesStructuredTerminalFields(t *testing.T) {
@@ -140,177 +130,6 @@ func TestProjectAssistantTerminalContentDoesNotRewriteModelProse(t *testing.T) {
 	)
 	if got != want {
 		t.Fatalf("terminal content = %q, want unmodified model prose", got)
-	}
-}
-
-func TestProjectAssistantPreviewEvidenceDoesNotRewriteModelProse(t *testing.T) {
-	const want = "The preview is verified."
-	got := projectAssistantGroundPreviewTerminalContent(
-		want,
-		[]projectToolCallStreamEvent{{
-			ID:     "inspect-1",
-			Name:   projectToolInspectDevelopmentPreview,
-			Status: "failed",
-		}},
-	)
-	if got != want {
-		t.Fatalf("terminal content = %q, want unmodified model prose", got)
-	}
-}
-
-func TestProjectAssistantSuccessfulPreviewDoesNotAppendBoilerplate(t *testing.T) {
-	const want = "The app is fully functional."
-	got := projectAssistantGroundPreviewTerminalContent(
-		want,
-		[]projectToolCallStreamEvent{{
-			ID:     "inspect-1",
-			Name:   projectToolInspectDevelopmentPreview,
-			Status: "succeeded",
-		}},
-	)
-	if got != want {
-		t.Fatalf("terminal content = %q, want unmodified model prose", got)
-	}
-}
-
-func TestProjectAssistantTerminalPlanUsesExplicitCompletionEvidence(t *testing.T) {
-	plan := &projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
-		{Content: "Verify development runtime and inspect preview", Status: "pending"},
-		{Content: "Commit finished files", Status: "pending"},
-	}}
-	evidence := projectAssistantCompletionEvidence{PlanComplete: false, LatestMutationVerified: true, LatestMutationCommitted: true}
-	failedInspection := []projectToolCallStreamEvent{{
-		ID: "inspect-1", Name: projectToolInspectDevelopmentPreview, Status: "failed",
-	}}
-	if projectAssistantTerminalPlanGrounded(plan, failedInspection, evidence) {
-		t.Fatal("plan completed without explicit completion evidence")
-	}
-	succeededInspection := append(failedInspection, projectToolCallStreamEvent{
-		ID: "inspect-2", Name: projectToolInspectDevelopmentPreview, Status: "succeeded",
-	})
-	evidence.PlanComplete = true
-	if !projectAssistantTerminalPlanGrounded(plan, succeededInspection, evidence) {
-		t.Fatal("explicitly completed plan was not accepted")
-	}
-	evidence.LatestMutationCommitted = false
-	if !projectAssistantTerminalPlanGrounded(plan, succeededInspection, evidence) {
-		t.Fatal("keyword-derived commit state overrode explicit completion evidence")
-	}
-}
-
-func TestProjectAssistantEffectAwareTerminalContentDisclosesSuccessfulNonSourceMutations(t *testing.T) {
-	tests := []struct {
-		name   string
-		tool   string
-		result string
-	}{
-		{name: "runtime restart", tool: projectToolRestartRuntime, result: `{"status":"ready"}`},
-		{name: "runtime environment", tool: projectToolSetRuntimeEnv, result: `{"status":"ok"}`},
-		{name: "template selection", tool: projectToolSelectTemplate, result: `{"template":"application"}`},
-		{name: "infrastructure provision", tool: projectToolInfrastructureProvision, result: `{"name":"database"}`},
-		{name: "repository commit", tool: projectToolCommitProjectFiles, result: `{"phase":"Succeeded","commitSHA":"abc123"}`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			runID := "run-terminal-" + strings.ReplaceAll(tt.name, " ", "-")
-			messageStore, scope := newAssistantRunEventLedgerTestStore(t, runID)
-			registry := projectAssistantLocalToolRegistry(nil)
-			spec, ok := registry.Spec(tt.tool)
-			if !ok {
-				spec, ok = projectAssistantMCPToolSpec(projectMCPTool{Name: tt.tool})
-			}
-			if !ok {
-				t.Fatalf("tool spec %q is not configured", tt.tool)
-			}
-			ledger := newProjectAssistantRunEventLedger(messageStore, scope, runID)
-			decision, err := ledger.BeginToolCall(context.Background(), "call-effect", spec, map[string]any{})
-			if err != nil {
-				t.Fatalf("BeginToolCall: %v", err)
-			}
-			if _, err := ledger.FinishToolCall(context.Background(), decision.Token, tt.result, nil); err != nil {
-				t.Fatalf("FinishToolCall: %v", err)
-			}
-
-			server := &Server{store: messageStore}
-			effect, err := server.projectAssistantSuccessfulNonSourceRunEffect(context.Background(), scope, runID)
-			if err != nil {
-				t.Fatalf("successful effect evidence: %v", err)
-			}
-			if !effect {
-				t.Fatal("durable successful non-source effect was not recognized")
-			}
-			got := server.projectAssistantRunTerminalContent(
-				context.Background(),
-				scope,
-				store.AssistantRun{ID: runID, Mode: store.AssistantRunModeDefault},
-				"Updated the project configuration and confirmed the checkout flow works.",
-				"",
-				nil,
-				projectAssistantCompletionEvidence{},
-				true,
-			)
-			if want := "Updated the project configuration and confirmed the checkout flow works."; got != want {
-				t.Fatalf("terminal content = %q, want unchanged model response %q", got, want)
-			}
-		})
-	}
-}
-
-func TestProjectAssistantSuccessfulNonSourceRunEffectRejectsNonMutationsAndFailedEffects(t *testing.T) {
-	tests := []struct {
-		name      string
-		spec      projectAssistantToolSpec
-		result    string
-		invokeErr error
-	}{
-		{
-			name:   "blocked runtime action",
-			spec:   projectAssistantToolSpec{Name: projectToolRestartRuntime, Risk: projectAssistantToolRiskRuntime},
-			result: `{"status":"blocked","summary":"No runtime is deployed."}`,
-		},
-		{
-			name:   "failed runtime action",
-			spec:   projectAssistantToolSpec{Name: projectToolSetRuntimeEnv, Risk: projectAssistantToolRiskRuntime},
-			result: "Tool call failed: runtime update failed",
-		},
-		{
-			name:      "errored runtime action",
-			spec:      projectAssistantToolSpec{Name: projectToolRestartRuntime, Risk: projectAssistantToolRiskRuntime},
-			result:    "runtime restart failed",
-			invokeErr: errors.New("runtime restart failed"),
-		},
-		{
-			name:   "plan approval",
-			spec:   projectAssistantToolSpec{Name: projectToolDefineInitialProjectPlan, Risk: projectAssistantToolRiskPlan},
-			result: `{"status":"approved"}`,
-		},
-		{
-			name:   "runtime read",
-			spec:   projectAssistantToolSpec{Name: projectToolGetRuntimeStatus, Risk: projectAssistantToolRiskRead},
-			result: `{"status":"ready"}`,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			runID := "run-terminal-rejected-" + strings.ReplaceAll(tt.name, " ", "-")
-			messageStore, scope := newAssistantRunEventLedgerTestStore(t, runID)
-			ledger := newProjectAssistantRunEventLedger(messageStore, scope, runID)
-			decision, err := ledger.BeginToolCall(context.Background(), "call-effect", tt.spec, map[string]any{})
-			if err != nil {
-				t.Fatalf("BeginToolCall: %v", err)
-			}
-			if _, err := ledger.FinishToolCall(context.Background(), decision.Token, tt.result, tt.invokeErr); err != nil {
-				t.Fatalf("FinishToolCall: %v", err)
-			}
-			server := &Server{store: messageStore}
-			effect, err := server.projectAssistantSuccessfulNonSourceRunEffect(context.Background(), scope, runID)
-			if err != nil {
-				t.Fatalf("successful effect evidence: %v", err)
-			}
-			if effect {
-				t.Fatal("non-mutation or unsuccessful effect was recognized as a successful mutation")
-			}
-		})
 	}
 }
 

@@ -300,10 +300,6 @@ func (s *projectEinoAssistantRunState) ExpandTransientToolMessages(input []*sche
 	return expanded
 }
 
-func (s *projectEinoAssistantRunState) SetTurnProfile(profile projectAssistantTurnProfile) {
-	s.SetTurnPolicy(projectAssistantTurnPolicyForProfile(profile))
-}
-
 func (s *projectEinoAssistantRunState) SetTurnPolicy(policy projectAssistantTurnPolicy) {
 	if s == nil {
 		return
@@ -931,18 +927,6 @@ func (s *projectEinoAssistantRunState) SourceMutationVerified() bool {
 		s.verifiedMutationRevision == s.sourceMutationRevision
 }
 
-func (s *projectEinoAssistantRunState) ConfigureCommitRequirement(required bool) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.commitRequired = required
-	if !required {
-		s.committedMutationRevision = 0
-	}
-}
-
 func (s *projectEinoAssistantRunState) RecordSourceCommit(workspaceDigest string) {
 	if s == nil {
 		return
@@ -1033,16 +1017,6 @@ func (s *projectEinoAssistantRunState) SourceMutationRevisions() (uint64, uint64
 	return s.sourceMutationRevision, s.verifiedMutationRevision
 }
 
-func (s *projectEinoAssistantRunState) RepeatedCompletedRead(name, arguments string) bool {
-	if s == nil {
-		return false
-	}
-	signature := projectEinoAssistantToolCallSignature(name, arguments)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.completedReadCalls[signature] == s.sourceMutationRevision+1
-}
-
 func (s *projectEinoAssistantRunState) RecordCompletedRead(name, arguments string) {
 	if s == nil {
 		return
@@ -1057,20 +1031,6 @@ func (s *projectEinoAssistantRunState) RecordCompletedRead(name, arguments strin
 		return
 	}
 	s.completedReadCalls[signature] = s.sourceMutationRevision + 1
-}
-
-func (s *projectEinoAssistantRunState) ReadFileRangeCovered(path string, start, end int) bool {
-	if s == nil || path == "" || start <= 0 || end < start {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, covered := range s.readFileCoverage[path] {
-		if start >= covered.start && end <= covered.end {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *projectEinoAssistantRunState) RecordReadFileRange(path string, start, end int) {
@@ -1109,20 +1069,6 @@ func (s *projectEinoAssistantRunState) RecordReadFileRange(path string, start, e
 	s.readFileCoverage[path] = merged
 }
 
-func (s *projectEinoAssistantRunState) ReopenReadFile(path string) {
-	if s == nil {
-		return
-	}
-	path, err := workspace.CleanProjectPath(path)
-	if err != nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.completedReadCalls = map[string]uint64{}
-	delete(s.readFileCoverage, path)
-}
-
 func (s *projectEinoAssistantRunState) InvalidateObservedReadFile(path string) {
 	if s == nil {
 		return
@@ -1136,23 +1082,6 @@ func (s *projectEinoAssistantRunState) InvalidateObservedReadFile(path string) {
 	s.completedReadCalls = map[string]uint64{}
 	delete(s.readFileCoverage, path)
 	delete(s.observedReadFilePaths, path)
-}
-
-func (s *projectEinoAssistantRunState) CompletedReadFilePaths() []string {
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	paths := make([]string, 0, len(s.readFileCoverage))
-	for path, ranges := range s.readFileCoverage {
-		if strings.TrimSpace(path) == "" || len(ranges) == 0 {
-			continue
-		}
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	return paths
 }
 
 func (s *projectEinoAssistantRunState) RecordObservedReadFile(path string) {
@@ -1208,19 +1137,6 @@ func (s *projectEinoAssistantRunState) SuccessfulMutationPaths() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return projectEinoAssistantObservedReadPaths(s.successfulMutationPaths)
-}
-
-func (s *projectEinoAssistantRunState) RecordPatchResult(successful bool) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if successful {
-		s.patchFailureCount = 0
-		return
-	}
-	s.patchFailureCount = min(s.patchFailureCount+1, projectEinoAssistantRepeatedActionLimit)
 }
 
 func (s *projectEinoAssistantRunState) PatchFingerprint(patch string) (string, uint64, bool) {
@@ -1289,20 +1205,6 @@ func projectEinoAssistantRestoreFailedPatchFingerprints(values map[string]uint64
 	return restored
 }
 
-func (s *projectEinoAssistantRunState) StartPatchRecovery(path string) {
-	if s == nil {
-		return
-	}
-	path, err := workspace.CleanProjectPath(path)
-	if err != nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.patchRecoveryPath = path
-	s.patchRecoveryReadComplete = false
-}
-
 func (s *projectEinoAssistantRunState) RecordPatchRecoveryRead(path string) {
 	if s == nil {
 		return
@@ -1318,47 +1220,12 @@ func (s *projectEinoAssistantRunState) RecordPatchRecoveryRead(path string) {
 	}
 }
 
-func (s *projectEinoAssistantRunState) ClearPatchRecovery(path string) {
-	if s == nil {
-		return
-	}
-	path, err := workspace.CleanProjectPath(path)
-	if err != nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if path == s.patchRecoveryPath {
-		s.patchRecoveryPath = ""
-		s.patchRecoveryReadComplete = false
-	}
-}
-
-func (s *projectEinoAssistantRunState) PatchRecovery() (string, bool) {
-	if s == nil {
-		return "", false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.patchRecoveryPath, s.patchRecoveryReadComplete
-}
-
 func (s *projectEinoAssistantRunState) RuntimeWarmupAttempts() int {
 	if s == nil {
 		return 0
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.runtimeWarmupAttempts
-}
-
-func (s *projectEinoAssistantRunState) BeginRuntimeWarmupModelCall() int {
-	if s == nil {
-		return 0
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.runtimeWarmupAttempts = min(s.runtimeWarmupAttempts+1, projectEinoAssistantRepeatedActionLimit)
 	return s.runtimeWarmupAttempts
 }
 
@@ -1414,15 +1281,6 @@ func (s *projectEinoAssistantRunState) RepeatedCompletedAction() (string, int) {
 		return "", s.noProgressModelCallCount
 	}
 	return s.repeatedActionToolName, s.repeatedActionCount
-}
-
-func (s *projectEinoAssistantRunState) ConsecutiveNoProgressModelCalls() (string, int) {
-	if s == nil {
-		return "", 0
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return "", s.noProgressModelCallCount
 }
 
 func (s *projectEinoAssistantRunState) NextModelCallOrdinal() int {

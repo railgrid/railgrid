@@ -74,9 +74,10 @@ provider B owns, A goes through **B's published API**, not B's backend:
 - **B's `APIExport` resources** — A binds B's `APIExport` (an `APIBinding`
   in the tenant workspace) and reads/writes B's CRs over the normal
   `/clusters/...` path. This is the control-plane channel (spec/status).
-- **B's VW subresources** on those resources (e.g.
-  `sandboxrunners/{name}/log`, `…/proxy/{path}`) — for data-plane verbs
-  (streams, proxies, shells) that aren't plain CRUD. B serves them against
+- **B's published data-plane subresources** on those resources (for example
+  `{template-resource}/{name}/log`, `…/proxy/{path}`, or a
+  component-scoped `…/{name}/components/{component}/sync`) — for streams,
+  proxies, and other verbs that aren't plain CRUD. B serves them against
   *its* backend; A never sees it.
 
 Both are invoked **as the caller** (forwarded bearer token, scoped to the
@@ -250,8 +251,8 @@ keeps only the CA, and authenticates with the **caller's** bearer token against
 
 | Interaction | Mechanism | Verdict |
 |----------|-----------|---------|
-| `app-studio` → `infrastructure` (sandbox data plane) | **Target:** `SandboxRunner` CR (control plane) + `sandboxrunners/{name}/{log,proxy,sync,restart}` VW subresources (data plane), called as the tenant user | ✅ Conforms (after runtime-decoupling) |
-| `app-studio` → runtime cluster (legacy) | held `APP_STUDIO_RUNTIME_KUBECONFIG`, a direct second credential into infrastructure's runtime cluster | ❌ The violation being removed — see [`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md) |
+| `app-studio` → `infrastructure` (Template development data plane) | Selected Template instance (control plane) + infrastructure provider data-plane subresources at `/dataplane/clusters/{workspace}/{resource}/{name}/…`, including component-scoped verbs, called as the tenant user | ✅ Conforms |
+| `app-studio` → runtime cluster (historical) | Formerly held `APP_STUDIO_RUNTIME_KUBECONFIG`, a direct second credential into infrastructure's runtime cluster | ❌ Removed anti-pattern; retained only as historical context in [`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md) |
 | `kuery` → `Edge`s | reads bound `Edge` CRs / engages clusters through the hub's edges-proxy as the caller, never the edge provider's backend | ✅ Conforms |
 
 The shape that conforms: address a **bound resource** (or a subresource on

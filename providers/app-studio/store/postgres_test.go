@@ -46,9 +46,6 @@ func TestAssistantSchemaIsV2Only(t *testing.T) {
 	if !strings.Contains(statements, "CHECK (mode IN ('default', 'plan', 'review'))") {
 		t.Fatal("assistant schema does not constrain runs to supported collaboration modes")
 	}
-	if messageSchemaVersion != "assistant-v2-only-v1" {
-		t.Fatalf("message schema version = %q", messageSchemaVersion)
-	}
 }
 
 func TestAssistantV2CutoverDropsRetiredStorageBeforeRecreate(t *testing.T) {
@@ -79,18 +76,10 @@ func TestAssistantV2CutoverSerializesMigrationChecks(t *testing.T) {
 	}
 }
 
-func TestAssistantConversationIdentityIsRunScopedAndMigratesExistingProjects(t *testing.T) {
+func TestAssistantConversationIdentityIsRunScoped(t *testing.T) {
 	initial := strings.Join(assistantConversationSchemaStatements(), "\n")
 	if !strings.Contains(initial, "PRIMARY KEY (org_uuid, workspace_uuid, project_name, project_uid, run_id, item_id)") {
 		t.Fatal("conversation schema does not make item identity run-scoped")
-	}
-	migration := strings.Join(assistantConversationIdentitySchemaStatements(), "\n")
-	if !strings.Contains(migration, "DROP CONSTRAINT") ||
-		!strings.Contains(migration, "ADD PRIMARY KEY (org_uuid, workspace_uuid, project_name, project_uid, run_id, item_id)") {
-		t.Fatal("conversation identity migration does not replace the legacy project-global key")
-	}
-	if assistantConversationIdentitySchemaVersion != "assistant-conversation-identity-v2" {
-		t.Fatalf("conversation identity schema version = %q", assistantConversationIdentitySchemaVersion)
 	}
 }
 
@@ -107,21 +96,6 @@ func TestAssistantConversationSequenceSchemaPreservesProjectHighWaterMark(t *tes
 	}
 	if assistantConversationSequenceSchemaVersion != "assistant-conversation-sequence-v1" {
 		t.Fatalf("conversation sequence schema version = %q", assistantConversationSequenceSchemaVersion)
-	}
-}
-
-func TestAssistantCodexTerminalMigrationDropsLegacyActiveIndexBeforeStatusRewrite(t *testing.T) {
-	statements := assistantCodexTerminalParitySchemaStatements()
-	if len(statements) < 2 {
-		t.Fatalf("terminal migration statements = %#v", statements)
-	}
-	if !strings.Contains(statements[0], "DROP INDEX IF EXISTS app_studio_runs_active_idx") {
-		t.Fatalf("first terminal migration statement = %q, want legacy active index dropped before status rewrites", statements[0])
-	}
-	for index, statement := range statements {
-		if strings.HasPrefix(strings.TrimSpace(statement), "UPDATE app_studio_assistant_runs") && index == 0 {
-			t.Fatalf("status rewrite ran before legacy active index removal: %#v", statements)
-		}
 	}
 }
 
@@ -317,76 +291,6 @@ func TestPostgresStoreV2ContractExternalDSN(t *testing.T) {
 		Type: "turn.completed", Payload: json.RawMessage(`{"turn":"turn-1"}`), CreatedAt: turn.UpdatedAt,
 	}, approval.Sequence); err != nil {
 		t.Fatalf("SaveAssistantTurnWithEvent: %v", err)
-	}
-}
-
-func TestAssistantCodexTerminalMigrationExternalDSN(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
-	if dsn == "" {
-		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")
-	}
-	ctx := context.Background()
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatalf("open postgres: %v", err)
-	}
-	defer db.Close()
-
-	schemaName := "app_studio_terminal_" + time.Now().UTC().Format("20060102150405_000000000")
-	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
-		t.Fatalf("create schema: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupDB, openErr := sql.Open("postgres", dsn)
-		if openErr != nil {
-			return
-		}
-		defer cleanupDB.Close()
-		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
-	})
-
-	schemaDB, err := sql.Open("postgres", postgresDSNWithSearchPath(t, dsn, schemaName))
-	if err != nil {
-		t.Fatalf("open migration schema: %v", err)
-	}
-	defer schemaDB.Close()
-	for _, statement := range []string{
-		`CREATE TABLE app_studio_assistant_runs (
-			org_uuid text NOT NULL, workspace_uuid text NOT NULL, project_name text NOT NULL, project_uid text NOT NULL,
-			run_id text NOT NULL, status text NOT NULL, terminal_error jsonb NOT NULL DEFAULT '{}'::jsonb,
-			abort_reason text NOT NULL DEFAULT '', PRIMARY KEY (org_uuid, workspace_uuid, project_name, project_uid, run_id)
-		)`,
-		`CREATE UNIQUE INDEX app_studio_runs_active_idx ON app_studio_assistant_runs
-			(org_uuid, workspace_uuid, project_name, project_uid) WHERE status NOT IN ('completed','aborted')`,
-		`INSERT INTO app_studio_assistant_runs
-			(org_uuid, workspace_uuid, project_name, project_uid, run_id, status, terminal_error)
-		VALUES
-			('org-a','ws-1','demo','uid-1','run-1','completed','{"message":"first failure"}'::jsonb),
-			('org-a','ws-1','demo','uid-1','run-2','completed','{"message":"second failure"}'::jsonb)`,
-	} {
-		if _, err := schemaDB.ExecContext(ctx, statement); err != nil {
-			t.Fatalf("seed legacy terminal schema: %v", err)
-		}
-	}
-	tx, err := schemaDB.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("begin terminal migration: %v", err)
-	}
-	for _, statement := range assistantCodexTerminalParitySchemaStatements() {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			_ = tx.Rollback()
-			t.Fatalf("apply terminal migration statement %q: %v", statement, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit terminal migration: %v", err)
-	}
-	var failed int
-	if err := schemaDB.QueryRowContext(ctx, `SELECT count(*) FROM app_studio_assistant_runs WHERE status = 'failed'`).Scan(&failed); err != nil {
-		t.Fatalf("inspect migrated terminal runs: %v", err)
-	}
-	if failed != 2 {
-		t.Fatalf("migrated failed runs = %d, want 2", failed)
 	}
 }
 

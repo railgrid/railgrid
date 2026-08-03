@@ -27,7 +27,7 @@ func TestFileStoreSnapshotDirectoryIsExcludedFromPublicTraversal(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(ctx, scope, []File{{Path: "src/App.tsx", Content: "visible source\n"}}); err != nil {
+	if err := writeTestFiles(ctx, store, scope, []File{{Path: "src/App.tsx", Content: "visible source\n"}}); err != nil {
 		t.Fatalf("ApplyFiles: %v", err)
 	}
 	dir, err := store.scopeDir(scope)
@@ -49,13 +49,6 @@ func TestFileStoreSnapshotDirectoryIsExcludedFromPublicTraversal(t *testing.T) {
 	if got := fileInfoPaths(list.Files); len(got) != 1 || got[0] != "src/App.tsx" {
 		t.Fatalf("listed paths = %v, want only public source", got)
 	}
-	search, err := store.SearchFiles(ctx, scope, SearchOptions{Query: "snapshot-only-needle", MaxResults: 20})
-	if err != nil {
-		t.Fatalf("SearchFiles: %v", err)
-	}
-	if search.TotalCount != 0 || len(search.Results) != 0 {
-		t.Fatalf("private snapshot leaked into search: %#v", search)
-	}
 }
 
 func TestFileStoreSnapshotDirectoryIsReservedFromPublicOperations(t *testing.T) {
@@ -74,44 +67,7 @@ func TestFileStoreSnapshotDirectoryIsReservedFromPublicOperations(t *testing.T) 
 	if _, err := store.ApplyPatch(ctx, scope, PatchOptions{Patch: patch}); err == nil {
 		t.Fatal("ApplyPatch accepted the reserved snapshot directory")
 	}
-	if err := store.ApplyFiles(ctx, scope, []File{{Path: "nested/" + workspaceSnapshotDirectory + "/entry.json", Content: "created\n"}}); err == nil {
+	if err := writeTestFiles(ctx, store, scope, []File{{Path: "nested/" + workspaceSnapshotDirectory + "/entry.json", Content: "created\n"}}); err == nil {
 		t.Fatal("ApplyFiles accepted a nested reserved snapshot directory")
-	}
-}
-
-func TestFileStoreInternalRestoreSnapshotStillWorksWithReservedDirectory(t *testing.T) {
-	ctx := context.Background()
-	store := NewFileStore(t.TempDir())
-	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(ctx, scope, []File{{Path: "src/App.tsx", Content: "before\n"}}); err != nil {
-		t.Fatalf("ApplyFiles: %v", err)
-	}
-	if _, err := store.ApplyPatch(ctx, scope, PatchOptions{
-		Patch:      singleLineUpdatePatch("src/App.tsx", "before", "after"),
-		SnapshotID: "run-restore",
-	}); err != nil {
-		t.Fatalf("ApplyPatch with snapshot: %v", err)
-	}
-	snapshotDir, err := store.snapshotDir(scope, "run-restore")
-	if err != nil {
-		t.Fatalf("snapshotDir: %v", err)
-	}
-	if entries, err := os.ReadDir(snapshotDir); err != nil || len(entries) != 1 {
-		t.Fatalf("internal snapshot entries = %v, err = %v", entries, err)
-	}
-
-	restored, err := store.RestoreSnapshot(ctx, scope, "run-restore")
-	if err != nil {
-		t.Fatalf("RestoreSnapshot: %v", err)
-	}
-	if len(restored.Files) != 1 || restored.Files[0].Path != "src/App.tsx" {
-		t.Fatalf("restore result = %#v", restored)
-	}
-	read, err := store.ReadFile(ctx, scope, ReadOptions{Path: "src/App.tsx"})
-	if err != nil {
-		t.Fatalf("ReadFile restored source: %v", err)
-	}
-	if read.Content != "before\n" {
-		t.Fatalf("restored content = %q, want before", read.Content)
 	}
 }

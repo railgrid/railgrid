@@ -237,15 +237,6 @@ func projectAssistantApprovedPlanHasCapability(plan *projectAssistantApprovedPla
 	return false
 }
 
-func projectAssistantPlanCanAuthorizeWriteTool(toolName string) bool {
-	switch strings.TrimSpace(toolName) {
-	case projectToolApplyPatch:
-		return true
-	default:
-		return false
-	}
-}
-
 // projectAssistantWriteTargetPaths returns every workspace path a mutation can
 // affect. Contextual apply_patch payloads may add, delete, update, or move more
 // than one file, so authorization must cover the complete parsed set rather

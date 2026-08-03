@@ -45,12 +45,8 @@ const (
 	MaxWriteBytes       = MaxReadMaxBytes
 	// MaxUnifiedPatchBytes bounds the complete model-authored patch envelope.
 	// Individual resulting files remain bounded by MaxWriteBytes.
-	MaxUnifiedPatchBytes      = MaxWriteBytes
-	DefaultSearchLimit        = 50
-	MaxSearchLimit            = 100
-	MaxSearchFragmentBytes    = 240
-	defaultSearchFragmentHits = 3
-	workspaceTempFilePrefix   = ".workspace-write-"
+	MaxUnifiedPatchBytes    = MaxWriteBytes
+	workspaceTempFilePrefix = ".workspace-write-"
 )
 
 var errStopWalk = errors.New("stop workspace walk")
@@ -120,8 +116,7 @@ type WriteOptions struct {
 
 // PatchOptions configures a contextual multi-file workspace patch.
 type PatchOptions struct {
-	Patch      string
-	SnapshotID string
+	Patch string
 }
 
 // FileContent is a bounded text-file read response.
@@ -133,31 +128,11 @@ type FileContent struct {
 	Truncated bool   `json:"truncated,omitempty"`
 }
 
-// SearchOptions configures text search over a project workspace.
-type SearchOptions struct {
-	Query      string
-	MaxResults int
-}
-
-// SearchMatch is one workspace file search hit.
-type SearchMatch struct {
-	Path      string   `json:"path"`
-	Fragments []string `json:"fragments,omitempty"`
-}
-
-// SearchResult reports bounded search hits.
-type SearchResult struct {
-	Query      string        `json:"query"`
-	TotalCount int           `json:"totalCount"`
-	Results    []SearchMatch `json:"results"`
-	Truncated  bool          `json:"truncated,omitempty"`
-	Limit      int           `json:"limit,omitempty"`
-}
-
 // FileStore stores workspaces under a root directory.
 type FileStore struct {
-	root       string
-	mutationMu sync.Mutex
+	root           string
+	mutationMu     sync.Mutex
+	patchWriteFile func(string, string, []byte, fs.FileMode, bool) error
 	// migrationMu serializes the one-time compatibility transition from the
 	// pre-ProjectUID layout. It is intentionally separate from mutationMu so
 	// path resolution can safely migrate data before a caller takes the
@@ -167,7 +142,10 @@ type FileStore struct {
 
 // NewFileStore returns a filesystem-backed project workspace store.
 func NewFileStore(root string) *FileStore {
-	return &FileStore{root: strings.TrimSpace(root)}
+	return &FileStore{
+		root:           strings.TrimSpace(root),
+		patchWriteFile: writeFileAtomically,
+	}
 }
 
 // CleanProjectPath returns the canonical workspace-relative path accepted by
@@ -179,16 +157,6 @@ func CleanProjectPath(raw string) (string, error) {
 // Root returns the filesystem root used by the store.
 func (s *FileStore) Root() string {
 	return s.root
-}
-
-// ApplyFiles writes files into the scoped project workspace.
-func (s *FileStore) ApplyFiles(ctx context.Context, scope Scope, files []File) error {
-	if s == nil {
-		return errors.New("project workspace store is not configured")
-	}
-	s.mutationMu.Lock()
-	defer s.mutationMu.Unlock()
-	return s.applyFiles(ctx, scope, files)
 }
 
 func (s *FileStore) applyFiles(ctx context.Context, scope Scope, files []File) error {
@@ -384,45 +352,6 @@ func (s *FileStore) ReadFile(ctx context.Context, scope Scope, opts ReadOptions)
 		return FileContent{Path: clean, Size: info.Size(), Binary: true, Truncated: truncated}, nil
 	}
 	return FileContent{Path: clean, Content: string(buf), Size: info.Size(), Truncated: truncated}, nil
-}
-
-// SearchFiles searches text files in the scoped project workspace.
-func (s *FileStore) SearchFiles(ctx context.Context, scope Scope, opts SearchOptions) (SearchResult, error) {
-	query := strings.TrimSpace(opts.Query)
-	if query == "" {
-		return SearchResult{}, errors.New("query is required")
-	}
-	dir, err := s.scopeDir(scope)
-	if err != nil {
-		return SearchResult{}, err
-	}
-	limit := boundedPositive(opts.MaxResults, DefaultSearchLimit, MaxSearchLimit)
-	result := SearchResult{Query: query, Limit: limit}
-	err = s.walkFiles(ctx, dir, func(file FileInfo) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		content, err := s.ReadFile(ctx, scope, ReadOptions{Path: file.Path, MaxBytes: DefaultReadMaxBytes})
-		if err != nil || content.Binary {
-			return nil
-		}
-		fragments := matchingFragments(content.Content, query, defaultSearchFragmentHits)
-		if len(fragments) == 0 {
-			return nil
-		}
-		result.TotalCount++
-		if len(result.Results) < limit {
-			result.Results = append(result.Results, SearchMatch{Path: file.Path, Fragments: fragments})
-		} else {
-			result.Truncated = true
-			return errStopWalk
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, errStopWalk) {
-		return SearchResult{}, err
-	}
-	return result, nil
 }
 
 func (s *FileStore) allFiles(ctx context.Context, dir string, maxFiles int) ([]FileInfo, error) {
@@ -682,27 +611,4 @@ func trimValidUTF8(buf []byte) []byte {
 
 func isBinary(buf []byte) bool {
 	return bytes.IndexByte(buf, 0) >= 0 || !utf8.Valid(buf)
-}
-
-func matchingFragments(content, query string, limit int) []string {
-	lines := strings.Split(content, "\n")
-	matches := []string{}
-	lowerQuery := strings.ToLower(query)
-	for _, line := range lines {
-		if strings.Contains(strings.ToLower(line), lowerQuery) {
-			matches = append(matches, truncateFragment(strings.TrimSpace(line)))
-			if len(matches) >= limit {
-				break
-			}
-		}
-	}
-	return matches
-}
-
-func truncateFragment(fragment string) string {
-	if len(fragment) <= MaxSearchFragmentBytes {
-		return fragment
-	}
-	buf := trimValidUTF8([]byte(fragment[:MaxSearchFragmentBytes]))
-	return string(buf) + "..."
 }

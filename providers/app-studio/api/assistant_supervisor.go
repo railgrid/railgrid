@@ -1006,10 +1006,6 @@ func (a *projectAssistantSnapshotAccumulator) SetStatus(ctx context.Context, sta
 	})
 }
 
-func (a *projectAssistantSnapshotAccumulator) SetMessageMetadata(ctx context.Context, metadata map[string]any) error {
-	return a.update(ctx, func(active *projectAssistantSupervisedRun) { active.message.Metadata = metadata }, true)
-}
-
 // UpdateSnapshot keeps run state and its durable assistant-message metadata in
 // one revisioned persistence transition. Callers that publish metadata derived
 // from the run must use this rather than separate status and metadata updates.

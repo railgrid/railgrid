@@ -14,8 +14,8 @@ test.after(async () => vite?.close())
 test('renders preview secondary actions behind an accessible overflow button', async () => {
   const { default: PreviewActionsMenu } = await vite.ssrLoadModule('/src/PreviewActionsMenu.vue')
   const html = await renderToString(createSSRApp(PreviewActionsMenu, {
-    templates: [{ name: 'sandbox-runner', displayName: 'Sandbox Runner' }],
-    currentTemplate: 'sandbox-runner',
+    templates: [{ name: 'application', displayName: 'Web application' }],
+    currentTemplate: 'application',
   }))
   assert.match(html, /aria-label="More preview actions"/)
   assert.match(html, /aria-haspopup="dialog"/)

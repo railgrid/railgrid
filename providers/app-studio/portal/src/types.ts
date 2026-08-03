@@ -122,13 +122,6 @@ export interface ProjectAssistantRunStart {
   assistant: ProjectMessage
 }
 
-export interface ProjectAssistantAbortResponse {
-  runID: string
-  requestID: string
-  status: ProjectAssistantRunStatus
-  decision?: 'allow' | 'deny'
-}
-
 export type ProjectAssistantActionKind = 'inspect' | 'clarify' | 'edit' | 'run' | 'commit' | 'plan' | 'other'
 export type ProjectAssistantActionStatus = 'running' | 'waiting' | 'succeeded' | 'skipped' | 'failed' | 'rejected'
 export type ProjectAssistantActionSeverity = 'normal' | 'attention' | 'error'
@@ -175,28 +168,6 @@ export interface ProjectAssistantUIComponent {
   }
 }
 
-export interface ProjectAssistantUIDataContent {
-  key: string
-  valueString?: string
-  append?: boolean
-}
-
-export interface ProjectAssistantUIEvent {
-  beginRendering?: {
-    surfaceId: string
-    root: string
-  }
-  surfaceUpdate?: {
-    surfaceId: string
-    components?: ProjectAssistantUIComponent[]
-  }
-  dataModelUpdate?: {
-    surfaceId: string
-    contents?: ProjectAssistantUIDataContent[]
-  }
-  interruptRequest?: ProjectAssistantUIInterruptRequest
-}
-
 export interface ProjectAssistantUIInterruptRequest {
   interruptId: string
   kind?: 'permission' | 'follow_up'
@@ -222,19 +193,6 @@ export interface ProjectAssistantFollowUpQuestion {
 export interface ProjectAssistantFollowUpQuestionOption {
   label: string
   description: string
-}
-
-export interface ProjectAssistantFollowUpAnswer {
-  answers: string[]
-}
-
-export interface ProjectAssistantResumeResponse {
-  runID: string
-  requestID: string
-  status: 'pending_permission' | 'pending_input' | 'running' | 'completed' | 'failed' | 'interrupted' | 'aborted'
-  decision?: 'allow' | 'deny'
-  uiEvents?: ProjectAssistantUIEvent[]
-  assistantMessage?: ProjectMessage
 }
 
 export interface Project {
@@ -285,11 +243,6 @@ export interface ProjectRepositoryCommit {
   fileCount?: number
   createdAt: string
   completedAt?: string
-}
-
-export interface ProjectMessagesPage {
-  items: ProjectMessage[]
-  nextCursor?: string
 }
 
 export interface ProjectLLMSettings {

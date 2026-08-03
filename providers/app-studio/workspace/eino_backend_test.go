@@ -33,10 +33,10 @@ func TestEinoReadOnlyBackendIsScopedToOneProject(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scopeA := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "alpha", ProjectUID: "test-project-uid"}
 	scopeB := Scope{OrgUUID: "org-b", WorkspaceUUID: "ws-2", ProjectName: "beta", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(context.Background(), scopeA, []File{{Path: "src/a.go", Content: "package alpha\n"}}); err != nil {
+	if err := writeTestFiles(context.Background(), store, scopeA, []File{{Path: "src/a.go", Content: "package alpha\n"}}); err != nil {
 		t.Fatalf("ApplyFiles scope A returned error: %v", err)
 	}
-	if err := store.ApplyFiles(context.Background(), scopeB, []File{{Path: "secret.txt", Content: "beta secret\n"}}); err != nil {
+	if err := writeTestFiles(context.Background(), store, scopeB, []File{{Path: "secret.txt", Content: "beta secret\n"}}); err != nil {
 		t.Fatalf("ApplyFiles scope B returned error: %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestEinoReadOnlyBackendRejectsStoreRootReplacedBySymlink(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "alpha", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(ctx, scope, []File{{Path: "inside.txt", Content: "inside\n"}}); err != nil {
+	if err := writeTestFiles(ctx, store, scope, []File{{Path: "inside.txt", Content: "inside\n"}}); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 	backend, err := NewEinoReadOnlyBackend(store, scope)
@@ -174,7 +174,7 @@ func TestEinoReadOnlyBackendRejectsCanonicalizedStoreRootReplacement(t *testing.
 			root := t.TempDir()
 			store := NewFileStore(root + suffix)
 			scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "alpha", ProjectUID: "test-project-uid"}
-			if err := store.ApplyFiles(ctx, scope, []File{{Path: "inside.txt", Content: "inside\n"}}); err != nil {
+			if err := writeTestFiles(ctx, store, scope, []File{{Path: "inside.txt", Content: "inside\n"}}); err != nil {
 				t.Fatalf("ApplyFiles returned error: %v", err)
 			}
 			backend, err := NewEinoReadOnlyBackend(store, scope)
@@ -205,7 +205,7 @@ func TestEinoReadOnlyBackendRejectsScopeReplacedBySymlink(t *testing.T) {
 		t.Run(component, func(t *testing.T) {
 			store := NewFileStore(t.TempDir())
 			scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "alpha", ProjectUID: "test-project-uid"}
-			if err := store.ApplyFiles(ctx, scope, []File{{Path: "inside.txt", Content: "inside\n"}}); err != nil {
+			if err := writeTestFiles(ctx, store, scope, []File{{Path: "inside.txt", Content: "inside\n"}}); err != nil {
 				t.Fatalf("ApplyFiles returned error: %v", err)
 			}
 			backend, err := NewEinoReadOnlyBackend(store, scope)
@@ -298,7 +298,7 @@ func TestEinoReadOnlyBackendRejectsUnsafePathsAndSymlinks(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "alpha", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(ctx, scope, []File{{Path: "safe.txt", Content: "safe\n"}}); err != nil {
+	if err := writeTestFiles(ctx, store, scope, []File{{Path: "safe.txt", Content: "safe\n"}}); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 	dir, err := store.scopeDir(scope)
@@ -340,7 +340,7 @@ func TestEinoReadOnlyBackendListsImmediateChildren(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(ctx, scope, []File{
+	if err := writeTestFiles(ctx, store, scope, []File{
 		{Path: "README.md", Content: "readme\n"},
 		{Path: "src/App.tsx", Content: "app\n"},
 		{Path: "src/components/Card.tsx", Content: "card\n"},
@@ -379,7 +379,7 @@ func TestEinoReadOnlyBackendReadsLinePages(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(ctx, scope, []File{
+	if err := writeTestFiles(ctx, store, scope, []File{
 		{Path: "src/App.tsx", Content: "line one\nline two\nline three\nline four\n"},
 		{Path: "empty.txt", Content: ""},
 	}); err != nil {
@@ -434,7 +434,7 @@ func TestEinoReadOnlyBackendGlobsProjectRelativePaths(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(ctx, scope, []File{
+	if err := writeTestFiles(ctx, store, scope, []File{
 		{Path: "README.md", Content: "readme\n"},
 		{Path: "src/App.tsx", Content: "app\n"},
 		{Path: "src/components/Card.tsx", Content: "card\n"},
@@ -469,7 +469,7 @@ func TestEinoReadOnlyBackendEnforcesBoundsAndBinaryRules(t *testing.T) {
 	for i := 0; i <= MaxListLimit; i++ {
 		files = append(files, File{Path: fmt.Sprintf("src/file-%03d.txt", i), Content: "x"})
 	}
-	if err := store.ApplyFiles(ctx, scope, files); err != nil {
+	if err := writeTestFiles(ctx, store, scope, files); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 	backend, err := NewEinoReadOnlyBackend(store, scope)
@@ -498,7 +498,7 @@ func TestEinoReadOnlyBackendNarrowsCandidatesInLargeProjects(t *testing.T) {
 		File{Path: "target/skip.txt", Content: "needle skip\n"},
 		File{Path: "target/view.jsx", Content: "needle view\n"},
 	)
-	if err := store.ApplyFiles(ctx, scope, files); err != nil {
+	if err := writeTestFiles(ctx, store, scope, files); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 	backend, err := NewEinoReadOnlyBackend(store, scope)
@@ -555,7 +555,7 @@ func TestEinoReadOnlyBackendGrep(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(ctx, scope, []File{
+	if err := writeTestFiles(ctx, store, scope, []File{
 		{Path: "src/App.tsx", Content: "first\nneedle alpha\nNeedle beta\nbefore\nbegin multi\nline match\nlast\n"},
 		{Path: "src/view.jsx", Content: "needle jsx\n"},
 		{Path: "docs/note.txt", Content: "needle docs\n"},
@@ -659,7 +659,7 @@ func TestEinoReadOnlyBackendGrepEnforcesBoundsAndCancellation(t *testing.T) {
 		for i := 0; i < 65; i++ {
 			files = append(files, File{Path: fmt.Sprintf("src/file-%03d.txt", i), Content: content})
 		}
-		if err := store.ApplyFiles(ctx, scope, files); err != nil {
+		if err := writeTestFiles(ctx, store, scope, files); err != nil {
 			t.Fatalf("ApplyFiles returned error: %v", err)
 		}
 		backend, err := NewEinoReadOnlyBackend(store, scope)
@@ -673,7 +673,7 @@ func TestEinoReadOnlyBackendGrepEnforcesBoundsAndCancellation(t *testing.T) {
 	t.Run("match count", func(t *testing.T) {
 		store := NewFileStore(t.TempDir())
 		scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "matches", ProjectUID: "test-project-uid"}
-		if err := store.ApplyFiles(ctx, scope, []File{{Path: "many.txt", Content: strings.Repeat("needle\n", maxEinoBackendMatches+1)}}); err != nil {
+		if err := writeTestFiles(ctx, store, scope, []File{{Path: "many.txt", Content: strings.Repeat("needle\n", maxEinoBackendMatches+1)}}); err != nil {
 			t.Fatalf("ApplyFiles returned error: %v", err)
 		}
 		backend, err := NewEinoReadOnlyBackend(store, scope)
@@ -687,7 +687,7 @@ func TestEinoReadOnlyBackendGrepEnforcesBoundsAndCancellation(t *testing.T) {
 	t.Run("canceled context", func(t *testing.T) {
 		store := NewFileStore(t.TempDir())
 		scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "canceled", ProjectUID: "test-project-uid"}
-		if err := store.ApplyFiles(ctx, scope, []File{{Path: "src/app.txt", Content: "needle\n"}}); err != nil {
+		if err := writeTestFiles(ctx, store, scope, []File{{Path: "src/app.txt", Content: "needle\n"}}); err != nil {
 			t.Fatalf("ApplyFiles returned error: %v", err)
 		}
 		backend, err := NewEinoReadOnlyBackend(store, scope)
@@ -858,7 +858,7 @@ func TestEinoReadOnlyBackendGrepValidatesGlobBeforeFiltering(t *testing.T) {
 		"zero path candidates": func(t *testing.T) *EinoReadOnlyBackend {
 			store := NewFileStore(t.TempDir())
 			scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-			if err := store.ApplyFiles(ctx, scope, []File{{Path: "src/app.go", Content: "package app\n"}}); err != nil {
+			if err := writeTestFiles(ctx, store, scope, []File{{Path: "src/app.go", Content: "package app\n"}}); err != nil {
 				t.Fatalf("ApplyFiles returned error: %v", err)
 			}
 			backend, err := NewEinoReadOnlyBackend(store, scope)
@@ -883,7 +883,7 @@ func TestEinoReadOnlyBackendGrepEnforcesFinalCapAcrossFiles(t *testing.T) {
 		t.Helper()
 		store := NewFileStore(t.TempDir())
 		scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "cap", ProjectUID: "test-project-uid"}
-		if err := store.ApplyFiles(ctx, scope, []File{
+		if err := writeTestFiles(ctx, store, scope, []File{
 			{Path: "a.txt", Content: strings.Repeat("needle\n", 500)},
 			{Path: "b.txt", Content: strings.Repeat("needle\n", secondCount)},
 		}); err != nil {
@@ -912,7 +912,7 @@ func TestEinoReadOnlyBackendGrepEnforcesFinalCapAcrossFiles(t *testing.T) {
 	t.Run("context overlap is deduplicated and ordered", func(t *testing.T) {
 		store := NewFileStore(t.TempDir())
 		scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "context", ProjectUID: "test-project-uid"}
-		if err := store.ApplyFiles(ctx, scope, []File{
+		if err := writeTestFiles(ctx, store, scope, []File{
 			{Path: "a.txt", Content: "zero\nneedle one\nneedle two\nthree\n"},
 			{Path: "b.txt", Content: "first\nneedle three\nlast\n"},
 		}); err != nil {
@@ -966,7 +966,7 @@ func TestEinoReadOnlyBackendRejectsMutations(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(ctx, scope, []File{{Path: "note.txt", Content: "before\n"}}); err != nil {
+	if err := writeTestFiles(ctx, store, scope, []File{{Path: "note.txt", Content: "before\n"}}); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 	backend, err := NewEinoReadOnlyBackend(store, scope)

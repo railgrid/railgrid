@@ -453,45 +453,6 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	return result, nil
 }
 
-func (s *Server) generateProjectNaming(ctx context.Context, c *asclient.Client, prompt string) (projectNamingResult, error) {
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" {
-		return projectNamingResult{}, newValidationError("prompt is required")
-	}
-	settings, err := readProjectLLMSettings(ctx, c)
-	if err != nil {
-		return projectNamingResult{}, err
-	}
-	if err := normalizeProjectLLMSettings(&settings); err != nil {
-		return projectNamingResult{}, err
-	}
-	if strings.TrimSpace(settings.APIKey) == "" {
-		return projectNamingResult{}, errProjectLLMNotConfigured
-	}
-
-	model, err := newProjectEinoChatModel(ctx, settings)
-	if err != nil {
-		return projectNamingResult{}, err
-	}
-	reply, err := model.Generate(ctx, []*einoschema.Message{
-		einoschema.SystemMessage("Generate concise app project names. Return only JSON with string fields displayName and repositoryName. " +
-			"displayName should be 2-5 words, human-readable, and no longer than 64 characters. " +
-			"repositoryName must be derived from displayName and must already satisfy DNS-1123 label rules: lowercase a-z, 0-9, hyphen only; starts and ends with alphanumeric; max 63 characters."),
-		einoschema.UserMessage("Prompt:\n" + prompt),
-	}, projectTemperatureOptions(settings.Model, 0.1)...)
-	if err != nil {
-		return projectNamingResult{}, err
-	}
-	if reply == nil {
-		return projectNamingResult{}, errors.New("LLM naming response was empty")
-	}
-	out, err := parseProjectNamingResult(reply.Content)
-	if err != nil {
-		return projectNamingResult{}, err
-	}
-	return normalizeProjectNamingResult(out)
-}
-
 // projectCreatePreflight carries the single model decision that precedes the
 // first assistant turn: a project/repository name and, when the caller
 // explicitly opts into eager development provisioning and the initial prompt
@@ -1364,54 +1325,6 @@ func summarizeProjectRuntimeWorkflowResult(decoded map[string]any) string {
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
 }
 
-func summarizeWorkspaceListResult(decoded map[string]any) string {
-	files := projectToolObjectPaths(decoded["files"])
-	parts := []string{}
-	parts = append(parts, fmt.Sprintf("%d path(s)", len(files)))
-	if len(files) > 0 {
-		parts = append(parts, summarizeProjectToolList(files, 5))
-	}
-	if projectToolBool(decoded["truncated"]) {
-		parts = append(parts, "truncated")
-	}
-	return truncateProjectToolInfo(strings.Join(parts, "; "))
-}
-
-func summarizeWorkspaceReadResult(decoded map[string]any) string {
-	parts := []string{}
-	if path := projectToolString(decoded["path"]); path != "" {
-		parts = append(parts, "file "+path)
-	}
-	if size, ok := projectToolNumber(decoded["size"]); ok {
-		parts = append(parts, fmt.Sprintf("%d bytes", size))
-	}
-	if projectToolBool(decoded["binary"]) {
-		parts = append(parts, "binary")
-	}
-	if projectToolBool(decoded["truncated"]) {
-		parts = append(parts, "truncated")
-	}
-	return truncateProjectToolInfo(strings.Join(parts, "; "))
-}
-
-func summarizeWorkspaceSearchResult(decoded map[string]any) string {
-	parts := []string{}
-	if total, ok := projectToolNumber(decoded["totalCount"]); ok {
-		parts = append(parts, fmt.Sprintf("%d match(es)", total))
-	}
-	paths := projectToolObjectPaths(decoded["results"])
-	if len(paths) > 0 {
-		parts = append(parts, summarizeProjectToolList(paths, 5))
-	}
-	if projectToolBool(decoded["incomplete"]) {
-		parts = append(parts, "incomplete")
-	}
-	if projectToolBool(decoded["truncated"]) {
-		parts = append(parts, "truncated")
-	}
-	return truncateProjectToolInfo(strings.Join(parts, "; "))
-}
-
 func projectToolCallResultStatus(name, result string) string {
 	baseName := projectToolBaseName(name)
 	decoded := map[string]any{}
@@ -1526,17 +1439,6 @@ func projectToolNumber(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func projectToolInt(value any) int {
-	n, ok := projectToolNumber(value)
-	if !ok || n <= 0 {
-		return 0
-	}
-	if n > int64(^uint(0)>>1) {
-		return int(^uint(0) >> 1)
-	}
-	return int(n)
 }
 
 func projectToolBool(value any) bool {
@@ -2266,10 +2168,6 @@ func projectMCPToolsFailurePrompt(err error) string {
 	return "External MCP tool discovery failed for this workspace: " + err.Error() + ". Tell the user that git-source tools are unavailable in this session, but App Studio workspace file tools may still be available."
 }
 
-func projectToolAllowed(name string) bool {
-	return projectLocalToolAllowed(name) || projectMCPToolAllowed(name)
-}
-
 func projectLocalToolAllowed(name string) bool {
 	return projectAssistantLocalToolRegistry(nil).Has(name)
 }
@@ -2281,19 +2179,6 @@ func projectMCPToolAllowed(name string) bool {
 
 func projectMCPCommitToolAvailable(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), projectToolCodeCommitFiles)
-}
-
-func projectMCPToolBaseName(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return ""
-	}
-	for _, sep := range []string{"__", ":", "/", "."} {
-		if idx := strings.LastIndex(name, sep); idx >= 0 && idx+len(sep) < len(name) {
-			name = name[idx+len(sep):]
-		}
-	}
-	return strings.TrimSpace(name)
 }
 
 func projectAssistantMCPToolsForSpecs(tools []projectMCPTool, skipTLSVerify ...bool) []projectAssistantTool {

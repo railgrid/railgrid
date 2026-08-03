@@ -1849,9 +1849,7 @@ func TestCommitProjectWorkspaceFilesReportsProviderFailure(t *testing.T) {
 
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "index.html", Content: "hello\n"}}); err != nil {
-		t.Fatalf("ApplyFiles returned error: %v", err)
-	}
+	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, []workspace.File{{Path: "index.html", Content: "hello\n"}})
 	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
 	_, err := server.commitProjectWorkspaceFiles(
 		context.Background(),
@@ -1901,12 +1899,10 @@ func TestCommitProjectWorkspaceFilesSendsDeletedPaths(t *testing.T) {
 	ctx := context.Background()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := workspaces.ApplyFiles(ctx, scope, []workspace.File{
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{
 		{Path: "src/old.ts", Content: "old\n"},
 		{Path: "src/new.ts", Content: "new\n"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, err := workspaces.ApplyPatch(ctx, scope, workspace.PatchOptions{Patch: "*** Begin Patch\n*** Delete File: src/old.ts\n*** End Patch"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1958,9 +1954,7 @@ func TestCommitProjectWorkspaceFilesRejectsRepositoryMismatch(t *testing.T) {
 
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "index.html", Content: "hello\n"}}); err != nil {
-		t.Fatalf("ApplyFiles returned error: %v", err)
-	}
+	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, []workspace.File{{Path: "index.html", Content: "hello\n"}})
 	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
 	_, err := server.commitProjectWorkspaceFiles(
 		context.Background(),
@@ -2097,9 +2091,7 @@ func runProjectAssistantStreamWithModelAndPrompt(t *testing.T, model *repository
 			Content: fmt.Sprintf("export const value%d = %d\n", i, i),
 		})
 	}
-	if err := workspaces.ApplyFiles(context.Background(), workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}, seedFiles); err != nil {
-		t.Fatalf("seed workspace files: %v", err)
-	}
+	writeTestWorkspaceFiles(t, context.Background(), workspaces, workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}, seedFiles)
 	server := NewWithWorkspace(nil, messages, workspaces, hubBase, false)
 	setProjectAssistantModelForTest(server, model)
 	project := projectWithRepository("demo-repo", "demo", "github")
@@ -2189,9 +2181,7 @@ func TestCommitProjectWorkspaceFilesBoundsPayloadBeforeProviderCode(t *testing.T
 		files = append(files, workspace.File{Path: path, Content: strings.Repeat("x", workspace.MaxWriteBytes)})
 		paths = append(paths, path)
 	}
-	if err := workspaces.ApplyFiles(context.Background(), scope, files); err != nil {
-		t.Fatalf("ApplyFiles returned error: %v", err)
-	}
+	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, files)
 	if _, err := server.commitProjectWorkspaceFiles(
 		context.Background(),
 		identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1"},

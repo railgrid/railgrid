@@ -188,10 +188,6 @@ func projectAssistantChatToolsForSpecs(specs []projectAssistantToolSpec) []chatT
 	return out
 }
 
-func newProjectEinoAssistantTool(tool projectAssistantTool, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) einotool.BaseTool {
-	return newProjectEinoAssistantServerTool(nil, tool, req, runState)
-}
-
 func newProjectEinoAssistantServerTool(server *Server, tool projectAssistantTool, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) einotool.BaseTool {
 	commitBridgeBound := false
 	if tool != nil {

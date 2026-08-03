@@ -30,7 +30,7 @@ import (
 func TestFileStoreAppliesAtomicMultiFileContextualPatch(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(context.Background(), scope, []File{
+	if err := writeTestFiles(context.Background(), store, scope, []File{
 		{Path: "src/app.go", Content: "package app\n\nfunc Theme() string {\n\treturn \"light\"\n}\n"},
 		{Path: "scripts/start.sh", Content: "#!/bin/sh\necho old\n"},
 		{Path: "obsolete.txt", Content: "remove me\n"},
@@ -59,7 +59,7 @@ func TestFileStoreAppliesAtomicMultiFileContextualPatch(t *testing.T) {
 +echo new
 *** Delete File: obsolete.txt
 *** End Patch`
-	result, err := store.ApplyPatch(context.Background(), scope, PatchOptions{Patch: patch, SnapshotID: "run-1"})
+	result, err := store.ApplyPatch(context.Background(), scope, PatchOptions{Patch: patch})
 	if err != nil {
 		t.Fatalf("ApplyPatch returned error: %v", err)
 	}
@@ -91,31 +91,63 @@ func TestFileStoreAppliesAtomicMultiFileContextualPatch(t *testing.T) {
 		t.Fatalf("moved file mode = %o, want 755", got)
 	}
 
-	if _, err := store.RestoreSnapshot(context.Background(), scope, "run-1"); err != nil {
-		t.Fatalf("RestoreSnapshot returned error: %v", err)
+}
+
+func TestFileStoreRollsBackAppliedFilesWhenLaterWriteFails(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
+	if err := writeTestFiles(context.Background(), store, scope, []File{
+		{Path: "a.txt", Content: "a before\n"},
+		{Path: "b.txt", Content: "b before\n"},
+	}); err != nil {
+		t.Fatalf("seed files: %v", err)
 	}
-	assertWorkspaceContent(t, store, scope, "scripts/start.sh", "#!/bin/sh\necho old\n")
-	restoredInfo, err := os.Stat(filepath.Join(dir, "scripts", "start.sh"))
-	if err != nil {
-		t.Fatalf("Stat restored move source returned error: %v", err)
+
+	writeFile := store.patchWriteFile
+	writes := 0
+	store.patchWriteFile = func(dir, target string, content []byte, mode fs.FileMode, createOnly bool) error {
+		writes++
+		if writes == 2 {
+			return errors.New("injected second write failure")
+		}
+		return writeFile(dir, target, content, mode, createOnly)
 	}
-	if got := restoredInfo.Mode().Perm(); got != 0o755 {
-		t.Fatalf("restored move source mode = %o, want 755", got)
+
+	result, err := store.ApplyPatch(context.Background(), scope, PatchOptions{Patch: `*** Begin Patch
+*** Update File: a.txt
+@@
+-a before
++a after
+*** Update File: b.txt
+@@
+-b before
++b after
+*** End Patch`})
+	if err == nil {
+		t.Fatal("ApplyPatch succeeded, want injected apply failure")
 	}
-	assertWorkspaceContent(t, store, scope, "obsolete.txt", "remove me\n")
-	if _, err := store.ReadFile(context.Background(), scope, ReadOptions{Path: "nested/new.txt"}); err == nil {
-		t.Fatal("restored add target still exists")
+	var patchErr *PatchError
+	if !errors.As(err, &patchErr) {
+		t.Fatalf("ApplyPatch error = %T %v, want *PatchError", err, err)
 	}
-	if _, err := store.ReadFile(context.Background(), scope, ReadOptions{Path: "scripts/run.sh"}); err == nil {
-		t.Fatal("restored move target still exists")
+	if patchErr.Code != PatchErrorApplyFailed {
+		t.Fatalf("patch error code = %q, want %q", patchErr.Code, PatchErrorApplyFailed)
 	}
+	if len(patchErr.ActualChanges) != 0 {
+		t.Fatalf("actual changes = %#v, want complete rollback", patchErr.ActualChanges)
+	}
+	if len(result.Files) != 0 || len(result.Paths) != 0 {
+		t.Fatalf("result = %#v, want no surviving mutations", result)
+	}
+	assertWorkspaceContent(t, store, scope, "a.txt", "a before\n")
+	assertWorkspaceContent(t, store, scope, "b.txt", "b before\n")
 }
 
 func TestContextualPatchUsesUniqueTieredMatchingAndPreservesLineEndings(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
 	before := "package demo\r\n\r\nfunc first() {\r\n  theme := \"light\"  \r\n}\r\n\r\nfunc second() {\r\n  label := “old”\r\n}"
-	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "app.go", Content: before}}); err != nil {
+	if err := writeTestFiles(context.Background(), store, scope, []File{{Path: "app.go", Content: before}}); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 	patch := `*** Begin Patch
@@ -152,7 +184,7 @@ func TestContextualPatchUsesUniqueTieredMatchingAndPreservesLineEndings(t *testi
 func TestContextualPatchNormalizesIndependentHunksIntoSourceOrder(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(context.Background(), scope, []File{{
+	if err := writeTestFiles(context.Background(), store, scope, []File{{
 		Path:    "app.txt",
 		Content: "header\nfirst old\nmiddle\nsecond old\nfooter\n",
 	}}); err != nil {
@@ -181,7 +213,7 @@ func TestContextualPatchNormalizesIndependentHunksIntoSourceOrder(t *testing.T) 
 func TestContextualPatchNormalizesRepeatedAnchorAgainstOriginalSnapshot(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(context.Background(), scope, []File{{
+	if err := writeTestFiles(context.Background(), store, scope, []File{{
 		Path:    "app.jsx",
 		Content: "<header>\n  <h1>Operations Dashboard</h1>\n  <p>Old subtitle</p>\n</header>\n",
 	}}); err != nil {
@@ -210,7 +242,7 @@ func TestContextualPatchNormalizesRepeatedAnchorAgainstOriginalSnapshot(t *testi
 func TestContextualPatchNormalizesRepeatedAnchorInSingleHunk(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(context.Background(), scope, []File{{
+	if err := writeTestFiles(context.Background(), store, scope, []File{{
 		Path:    "app.jsx",
 		Content: "<header>\n  <h1>Fleet Pulse</h1>\n  <p>Old subtitle</p>\n</header>\n",
 	}}); err != nil {
@@ -238,7 +270,7 @@ func TestContextualPatchNormalizesRepeatedAnchorInSingleHunk(t *testing.T) {
 func TestContextualPatchAcceptsUnprefixedExactContextLine(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(context.Background(), scope, []File{{
+	if err := writeTestFiles(context.Background(), store, scope, []File{{
 		Path:    "app.css",
 		Content: ".header-sub {\n  color: gray;\n  margin-top: 4px;\n}\n\n.kpi {\n  display: grid;\n}\n",
 	}}); err != nil {
@@ -265,7 +297,7 @@ func TestContextualPatchAcceptsUnprefixedExactContextLine(t *testing.T) {
 func TestContextualPatchRejectsAmbiguousAndMissingContextWithTypedErrors(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "app.txt", Content: "same\nsame\n"}}); err != nil {
+	if err := writeTestFiles(context.Background(), store, scope, []File{{Path: "app.txt", Content: "same\nsame\n"}}); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 	tests := []struct {
@@ -320,7 +352,7 @@ func TestContextualPatchRejectsAmbiguousAndMissingContextWithTypedErrors(t *test
 func TestContextualPatchBodyDisambiguatesRepeatedLiteralAnchor(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "app.txt", Content: "section\nfirst\nsection\nunique target\nafter\n"}}); err != nil {
+	if err := writeTestFiles(context.Background(), store, scope, []File{{Path: "app.txt", Content: "section\nfirst\nsection\nunique target\nafter\n"}}); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 
@@ -362,7 +394,7 @@ func TestContextualPatchAppliesAllHunksWhenLaterAnchorRepeats(t *testing.T) {
   );
 }
 `
-	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "App.jsx", Content: source}}); err != nil {
+	if err := writeTestFiles(context.Background(), store, scope, []File{{Path: "App.jsx", Content: source}}); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 
@@ -418,7 +450,7 @@ func TestContextualPatchAppliesAllHunksWhenLaterAnchorRepeats(t *testing.T) {
 func TestContextualPatchRejectsRepeatedLiteralAnchorWithoutBodyContext(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "app.txt", Content: "section\nfirst\nsection\nsecond\n"}}); err != nil {
+	if err := writeTestFiles(context.Background(), store, scope, []File{{Path: "app.txt", Content: "section\nfirst\nsection\nsecond\n"}}); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 
@@ -438,7 +470,7 @@ func TestContextualPatchRejectsRepeatedLiteralAnchorWithoutBodyContext(t *testin
 func TestContextualPatchRejectsNumericUnifiedDiffHunkHeader(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "app.txt", Content: "old\n"}}); err != nil {
+	if err := writeTestFiles(context.Background(), store, scope, []File{{Path: "app.txt", Content: "old\n"}}); err != nil {
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 
@@ -470,16 +502,13 @@ func TestContextualPatchPreflightsEveryOperationBeforeMutation(t *testing.T) {
 -old
 +new
 *** End Patch`
-	_, err := store.ApplyPatch(context.Background(), scope, PatchOptions{Patch: patch, SnapshotID: "run-preflight"})
+	_, err := store.ApplyPatch(context.Background(), scope, PatchOptions{Patch: patch})
 	var patchErr *PatchError
 	if !errors.As(err, &patchErr) || patchErr.Code != PatchErrorTargetNotFound || patchErr.Path != "missing.txt" {
 		t.Fatalf("error = %#v, want target_not_found for missing.txt", err)
 	}
 	if _, err := store.ReadFile(context.Background(), scope, ReadOptions{Path: "first.txt"}); err == nil {
 		t.Fatal("an earlier Add File was applied before preflight completed")
-	}
-	if _, err := store.RestoreSnapshot(context.Background(), scope, "run-preflight"); !errors.Is(err, ErrSnapshotNotFound) {
-		t.Fatalf("preflight-only patch created a snapshot: %v", err)
 	}
 }
 
@@ -590,7 +619,7 @@ func TestContextualPatchTreatsIndentedMarkerTextAsFileContent(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
 	before := "*** Move to: literal.txt\n*** Add File: literal.txt\n*** Update File: literal.txt\n*** Delete File: literal.txt\nold\n"
-	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "README.md", Content: before}}); err != nil {
+	if err := writeTestFiles(context.Background(), store, scope, []File{{Path: "README.md", Content: before}}); err != nil {
 		t.Fatal(err)
 	}
 	patch := `*** Begin Patch

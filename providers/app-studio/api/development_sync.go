@@ -113,20 +113,18 @@ type projectDevelopmentSyncResponse struct {
 }
 
 type projectDevelopmentPreviewAuthorizeResponse struct {
-	Target                projectDevelopmentSyncTargetInfo `json:"target"`
-	Ready                 bool                             `json:"ready"`
-	PreviewURL            string                           `json:"previewURL,omitempty"`
-	PreviewTokenExpiresAt string                           `json:"previewTokenExpiresAt,omitempty"`
-	Message               string                           `json:"message,omitempty"`
-	Reason                string                           `json:"reason,omitempty"`
+	Target     projectDevelopmentSyncTargetInfo `json:"target"`
+	Ready      bool                             `json:"ready"`
+	PreviewURL string                           `json:"previewURL,omitempty"`
+	Message    string                           `json:"message,omitempty"`
+	Reason     string                           `json:"reason,omitempty"`
 }
 
 type projectSandboxPreviewURLResponse struct {
-	Ready                 bool   `json:"ready"`
-	PreviewURL            string `json:"previewURL,omitempty"`
-	PreviewTokenExpiresAt string `json:"previewTokenExpiresAt,omitempty"`
-	Message               string `json:"message,omitempty"`
-	Reason                string `json:"reason,omitempty"`
+	Ready      bool   `json:"ready"`
+	PreviewURL string `json:"previewURL,omitempty"`
+	Message    string `json:"message,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // projectDevelopmentTarget resolves the Project's development data-plane
@@ -209,12 +207,11 @@ func (s *Server) authorizeProjectDevelopmentPreview(w http.ResponseWriter, r *ht
 		return
 	}
 	writeJSON(w, http.StatusOK, projectDevelopmentPreviewAuthorizeResponse{
-		Target:                target,
-		Ready:                 preview.Ready,
-		PreviewURL:            preview.PreviewURL,
-		PreviewTokenExpiresAt: preview.PreviewTokenExpiresAt,
-		Message:               preview.Message,
-		Reason:                preview.Reason,
+		Target:     target,
+		Ready:      preview.Ready,
+		PreviewURL: preview.PreviewURL,
+		Message:    preview.Message,
+		Reason:     preview.Reason,
 	})
 }
 

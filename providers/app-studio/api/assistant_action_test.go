@@ -25,43 +25,6 @@ import (
 	"github.com/faroshq/provider-app-studio/store"
 )
 
-func TestCreateProjectMessageCollaborationModeDefaultsToDefault(t *testing.T) {
-	mode, err := (CreateProjectMessageRequest{}).collaborationMode()
-	if err != nil {
-		t.Fatalf("collaborationMode: %v", err)
-	}
-	if mode != projectAssistantCollaborationModeDefault {
-		t.Fatalf("mode = %q, want default", mode)
-	}
-}
-
-func TestCreateProjectMessageCollaborationModeAcceptsOnlyLegacyPublicModes(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		req  CreateProjectMessageRequest
-		want projectAssistantCollaborationMode
-		ok   bool
-	}{
-		{name: "default", req: CreateProjectMessageRequest{CollaborationMode: "default"}, want: projectAssistantCollaborationModeDefault, ok: true},
-		{name: "plan", req: CreateProjectMessageRequest{CollaborationMode: "plan"}, want: projectAssistantCollaborationModePlan, ok: true},
-		{name: "review requires dedicated route", req: CreateProjectMessageRequest{CollaborationMode: "review"}},
-		{name: "unknown", req: CreateProjectMessageRequest{CollaborationMode: "adaptive"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := tc.req.collaborationMode()
-			if tc.ok {
-				if err != nil || got != tc.want {
-					t.Fatalf("collaborationMode = %q, %v; want %q, nil", got, err, tc.want)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatalf("collaborationMode = %q, nil; want validation error", got)
-			}
-		})
-	}
-}
-
 func TestAssistantThreadTurnPublicModeRejectsReview(t *testing.T) {
 	for _, mode := range []string{"review", " REVIEW "} {
 		_, err := (assistantThreadTurnCreateRequest{CollaborationMode: store.AssistantRunMode(mode)}).publicAssistantThreadTurnMode()
@@ -81,23 +44,6 @@ func TestAssistantCollaborationModeForRunAcceptsPersistedReview(t *testing.T) {
 	got, ok := projectAssistantCollaborationModeForRun(store.AssistantRun{Mode: store.AssistantRunModeReview})
 	if !ok || got != projectAssistantCollaborationModeReview {
 		t.Fatalf("persisted review mode = %q, %v; want review, true", got, ok)
-	}
-}
-
-func TestCreateProjectMessageStrictDecoderRejectsUnknownFields(t *testing.T) {
-	for _, payload := range []string{
-		`{"content":"hello","clientRequestID":"request-1","assistantAction":"auto"}`,
-		`{"content":"hello","clientRequestID":"request-1","role":"user"}`,
-	} {
-		recorder := httptest.NewRecorder()
-		request := httptest.NewRequest("POST", "/api/projects/demo/messages", strings.NewReader(payload))
-		var body CreateProjectMessageRequest
-		if decodeStrictJSON(recorder, request, &body) {
-			t.Fatalf("decodeStrictJSON accepted unknown field in %s", payload)
-		}
-		if recorder.Code != 400 {
-			t.Fatalf("status = %d, want 400", recorder.Code)
-		}
 	}
 }
 

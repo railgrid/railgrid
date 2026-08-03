@@ -25,7 +25,6 @@ import (
 // until a template is bound (assistant interview, portal picker, or PUT
 // /template). The legacy always-on SandboxRunner default is gone.
 func TestDefaultProjectDevelopmentEnvironmentHasNoBinding(t *testing.T) {
-	t.Setenv("APP_STUDIO_PREVIEW_BASE_DOMAIN", "")
 	env := defaultProjectDevelopmentEnvironment("todo")
 	if got, want := env.Name, "development"; got != want {
 		t.Fatalf("Name = %q, want %q", got, want)
@@ -68,7 +67,6 @@ func TestProjectAssistantRuntimePreviewURLPrefersDevelopment(t *testing.T) {
 }
 
 func TestCreateProjectSpecIncludesDevelopmentEnvironment(t *testing.T) {
-	t.Setenv("APP_STUDIO_PREVIEW_BASE_DOMAIN", "")
 	spec := defaultProjectSpec("todo", "Todo", "Tasks", &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "todo"})
 	if got := len(spec.Environments); got != 1 {
 		t.Fatalf("environments = %d, want 1", got)

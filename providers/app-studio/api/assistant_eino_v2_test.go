@@ -216,9 +216,7 @@ func TestEinoV2RejectsIdenticalFailedPatchAtSameRevision(t *testing.T) {
 func TestEinoV2MoveTracksSourceAndDestinationAsDirty(t *testing.T) {
 	h := newProjectAssistantV2ToolHarness(t, "v2-move-dirty-paths")
 	ctx := context.Background()
-	if err := h.workspaces.ApplyFiles(ctx, h.req.WorkspaceScope, []workspace.File{{Path: "src/old.ts", Content: "old\n"}}); err != nil {
-		t.Fatal(err)
-	}
+	writeTestWorkspaceFiles(t, ctx, h.workspaces, h.req.WorkspaceScope, []workspace.File{{Path: "src/old.ts", Content: "old\n"}})
 	backend, ok := h.server.projectAssistantToolRegistry().Get(projectToolApplyPatch)
 	if !ok {
 		t.Fatal("apply_patch missing")
@@ -492,9 +490,7 @@ func TestEinoV2CommitWorkspaceDigestRejectsPostApprovalChange(t *testing.T) {
 	ctx := context.Background()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	if err := workspaces.ApplyFiles(ctx, scope, []workspace.File{{Path: "src/App.tsx", Content: "before\n"}}); err != nil {
-		t.Fatal(err)
-	}
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{{Path: "src/App.tsx", Content: "before\n"}})
 	if _, err := workspaces.AddUncommittedPaths(ctx, scope, []string{"src/App.tsx"}); err != nil {
 		t.Fatal(err)
 	}
@@ -530,13 +526,11 @@ func TestEinoV2CommitUsesCompleteDirtyBundleAndRejectsMembershipChange(t *testin
 	ctx := context.Background()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	if err := workspaces.ApplyFiles(ctx, scope, []workspace.File{
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{
 		{Path: "src/App.tsx", Content: "app\n"},
 		{Path: "src/api.ts", Content: "api\n"},
 		{Path: "src/new.ts", Content: "new\n"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if _, err := workspaces.AddUncommittedPaths(ctx, scope, []string{"src/App.tsx", "src/api.ts"}); err != nil {
 		t.Fatal(err)
 	}
@@ -714,9 +708,7 @@ func TestEinoV2CommitSettlementClearsCompleteDirtyBundleAtToolBoundary(t *testin
 	ctx := context.Background()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	if err := workspaces.ApplyFiles(ctx, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}}); err != nil {
-		t.Fatal(err)
-	}
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}})
 	if _, err := workspaces.AddUncommittedPaths(ctx, scope, []string{"src/App.tsx"}); err != nil {
 		t.Fatal(err)
 	}
@@ -752,9 +744,7 @@ func TestEinoV2SuccessfulCommitReplayRepairsLocalSettlement(t *testing.T) {
 	ctx := context.Background()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	if err := workspaces.ApplyFiles(ctx, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}}); err != nil {
-		t.Fatal(err)
-	}
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}})
 	if _, err := workspaces.AddUncommittedPaths(ctx, scope, []string{"src/App.tsx"}); err != nil {
 		t.Fatal(err)
 	}
@@ -807,9 +797,7 @@ func TestEinoV2UnknownHandlerDynamicCommitSettlesAndReplaysExactlyOnce(t *testin
 	ctx := context.Background()
 	h := newProjectAssistantV2ToolHarness(t, "v2-dynamic-commit-settlement")
 	defer h.server.Shutdown(ctx)
-	if err := h.workspaces.ApplyFiles(ctx, h.req.WorkspaceScope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}}); err != nil {
-		t.Fatal(err)
-	}
+	writeTestWorkspaceFiles(t, ctx, h.workspaces, h.req.WorkspaceScope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}})
 	if _, err := h.workspaces.AddUncommittedPaths(ctx, h.req.WorkspaceScope, []string{"src/App.tsx"}); err != nil {
 		t.Fatal(err)
 	}
@@ -874,9 +862,7 @@ func TestEinoV2CommitSettlementFailureStopsAfterDurableCommitOutcome(t *testing.
 	root := t.TempDir()
 	workspaces := workspace.NewFileStore(root)
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	if err := workspaces.ApplyFiles(ctx, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}}); err != nil {
-		t.Fatal(err)
-	}
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}})
 	if _, err := workspaces.AddUncommittedPaths(ctx, scope, []string{"src/App.tsx"}); err != nil {
 		t.Fatal(err)
 	}
@@ -913,9 +899,7 @@ func TestEinoV2RestoresDurableDirtyBundleIntoCurrentMutationRevision(t *testing.
 	ctx := context.Background()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	if err := workspaces.ApplyFiles(ctx, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}}); err != nil {
-		t.Fatal(err)
-	}
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}})
 	if _, err := workspaces.AddUncommittedPaths(ctx, scope, []string{"src/App.tsx"}); err != nil {
 		t.Fatal(err)
 	}
@@ -940,9 +924,7 @@ func TestEinoV2RestoresCommitSettlementBeforeDirtyBundle(t *testing.T) {
 	ctx := context.Background()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	if err := workspaces.ApplyFiles(ctx, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}}); err != nil {
-		t.Fatal(err)
-	}
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}})
 	if _, err := workspaces.AddUncommittedPaths(ctx, scope, []string{"src/App.tsx"}); err != nil {
 		t.Fatal(err)
 	}
@@ -978,9 +960,7 @@ func TestEinoV2UsesPriorUncommittedPathsWithoutRestoringMutationRevision(t *test
 	ctx := context.Background()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	if err := workspaces.ApplyFiles(ctx, scope, []workspace.File{{Path: "package.json", Content: `{"name":"demo"}`}}); err != nil {
-		t.Fatal(err)
-	}
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{{Path: "package.json", Content: `{"name":"demo"}`}})
 	if _, err := workspaces.AddUncommittedPaths(ctx, scope, []string{"package.json"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1010,7 +990,7 @@ func TestEinoV2UsesPriorUncommittedPathsWithoutRestoringMutationRevision(t *test
 func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	ctx := context.Background()
 	h := newProjectAssistantV2ToolHarness(t, "v2-resume-run-local-grant")
-	if err := h.workspaces.ApplyFiles(ctx, h.req.WorkspaceScope, []workspace.File{{
+	writeTestWorkspaceFiles(t, ctx, h.workspaces, h.req.WorkspaceScope, []workspace.File{{
 		Path: "src/App.tsx",
 		Content: `export function App() {
   const greeting = "hello";
@@ -1018,9 +998,7 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
   return greeting + " " + audience;
 }
 `,
-	}}); err != nil {
-		t.Fatal(err)
-	}
+	}})
 
 	grant := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
 		Goal:               "Update the app greeting",

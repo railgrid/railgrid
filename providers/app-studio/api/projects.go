@@ -68,13 +68,6 @@ type PatchProjectMemoryRequest struct {
 	Constraints  *[]string `json:"constraints,omitempty"`
 }
 
-type CreateProjectMessageRequest struct {
-	Content           string `json:"content"`
-	ClientRequestID   string `json:"clientRequestID,omitempty"`
-	CollaborationMode string `json:"collaborationMode,omitempty"`
-	ExpectedRunID     string `json:"expectedRunID,omitempty"`
-}
-
 func projectInitialBootstrapPromptDigest(content string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(content)))
 	return fmt.Sprintf("%x", sum[:])
@@ -149,11 +142,6 @@ type ProjectRepositoryCommitView struct {
 	FileCount   int64      `json:"fileCount,omitempty"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
-}
-
-type ProjectMessagesResponse struct {
-	Items      []aiv1alpha1.ProjectMessage `json:"items"`
-	NextCursor string                      `json:"nextCursor,omitempty"`
 }
 
 type projectToolCallStreamEvent struct {
@@ -709,28 +697,6 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) listProjectMessages(w http.ResponseWriter, r *http.Request) {
-	_, id, p, ok := s.requireProjectWithClient(w, r)
-	if !ok {
-		return
-	}
-	msgStore, ok := s.requireStore(w)
-	if !ok {
-		return
-	}
-	limit := listLimitFromRequest(r)
-	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
-	page, err := msgStore.ListMessages(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, p), limit, cursor)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, ProjectMessagesResponse{
-		Items:      projectMessagesToAPI(page.Items),
-		NextCursor: page.NextCursor,
-	})
-}
-
 func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
@@ -837,74 +803,6 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusAccepted, projectAssistantRunSnapshotToAPI(projectAssistantRunSnapshot{Run: run, Message: message}))
 }
 
-func (s *Server) stopProjectAssistant(w http.ResponseWriter, r *http.Request) {
-	_, id, p, ok := s.requireProjectWithClient(w, r)
-	if !ok {
-		return
-	}
-	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
-	runID := mux.Vars(r)["run"]
-	var request struct {
-		ClientRequestID string `json:"clientRequestID"`
-	}
-	if !decodeStrictJSON(w, r, &request) {
-		return
-	}
-	request.ClientRequestID = strings.TrimSpace(request.ClientRequestID)
-	if request.ClientRequestID == "" {
-		writeProjectError(w, newValidationError("clientRequestID is required"))
-		return
-	}
-	existingRun, err := s.store.GetAssistantRun(r.Context(), scope, runID)
-	if err != nil || s.authorizeProjectAssistantRunActor(r.Context(), scope, existingRun, id.user, false) != nil {
-		writeStatus(w, http.StatusNotFound, "NotFound", "assistant run not found")
-		return
-	}
-	if existingRun.Status == store.AssistantRunStatusPendingPermission || existingRun.Status == store.AssistantRunStatusPendingInput {
-		if err := s.reattachProjectAssistantPendingRun(r.Context(), scope, existingRun); err != nil {
-			writeProjectError(w, err)
-			return
-		}
-	}
-	if found, bindErr := s.projectAssistantSupervisor().BindStopRequest(r.Context(), scope, runID, id.user, request.ClientRequestID); found {
-		if bindErr != nil {
-			writeProjectError(w, bindErr)
-			return
-		}
-	} else {
-		if err := bindProjectAssistantStopRequest(&existingRun, id.user, request.ClientRequestID); err != nil {
-			writeProjectError(w, err)
-			return
-		}
-		existingRun.UpdatedAt = time.Now().UTC()
-		if err := s.store.SaveAssistantRun(r.Context(), scope, existingRun); err != nil {
-			writeProjectError(w, err)
-			return
-		}
-	}
-	run, found, err := s.projectAssistantSupervisor().Stop(scope, runID)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	if !found {
-		run, err = s.store.GetAssistantRun(r.Context(), scope, runID)
-		if err != nil {
-			writeProjectError(w, err)
-			return
-		}
-		if !assistantRunTerminal(run.Status) {
-			writeStatus(w, http.StatusConflict, "Conflict", "assistant run is not active on this provider")
-			return
-		}
-	}
-	writeJSON(w, http.StatusAccepted, projectAssistantResumeResponse{
-		RunID:     run.ID,
-		RequestID: run.RequestID,
-		Status:    run.Status,
-	})
-}
-
 // reattachProjectAssistantPendingRun restores the in-memory lifecycle owner for
 // a durable checkpoint after a provider restart.
 func (s *Server) reattachProjectAssistantPendingRun(ctx context.Context, scope store.Scope, run store.AssistantRun) error {
@@ -978,56 +876,8 @@ func projectAssistantToolCallsRequireDevelopmentSync(toolCalls []projectToolCall
 	return false
 }
 
-func projectAssistantGenerationFailureMessage(err error) string {
-	detail := "assistant generation failed"
-	if err != nil {
-		detail = strings.TrimSpace(err.Error())
-	}
-	if projectAssistantLLMRateLimitError(detail) {
-		return "assistant generation failed: The LLM provider is rate limited. Please wait a moment and try again."
-	}
-	detail = projectAssistantStripEinoTrace(detail)
-	if detail == "" {
-		detail = "assistant generation failed"
-	}
-	if strings.HasPrefix(detail, "assistant generation failed") {
-		return detail
-	}
-	return "assistant generation failed: " + detail
-}
-
-func projectAssistantLLMRateLimitError(detail string) bool {
-	detail = strings.ToLower(detail)
-	return strings.Contains(detail, "429") ||
-		strings.Contains(detail, "too many requests") ||
-		strings.Contains(detail, "resource_exhausted") ||
-		strings.Contains(detail, "resource exhausted")
-}
-
-func projectAssistantStripEinoTrace(detail string) string {
-	detail = strings.TrimSpace(detail)
-	if before, _, found := strings.Cut(detail, "------------------------"); found {
-		detail = strings.TrimSpace(before)
-	}
-	detail = strings.TrimPrefix(detail, "[NodeRunError]")
-	return strings.TrimSpace(detail)
-}
-
-func shouldPersistInterruptedProjectAssistant(ctx context.Context, err, streamErr error, streamed string) bool {
-	return strings.TrimSpace(streamed) != "" && (streamErr != nil || errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled))
-}
-
 func detachedProjectPersistenceContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), projectMessagePersistTimeout)
-}
-
-func appendInterruptedProjectAssistantMessage(ctx context.Context, msgStore store.Store, scope store.Scope, id, content string) error {
-	if strings.TrimSpace(content) == "" {
-		return nil
-	}
-	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
-	defer cancel()
-	return appendProjectAssistantMessage(persistCtx, msgStore, scope, id, content, projectAssistantMessageMetadata(projectMessageStatusInterrupted, nil))
 }
 
 func appendProjectAssistantMessage(ctx context.Context, msgStore store.Store, scope store.Scope, id, content string, metadata map[string]any) error {
@@ -1374,24 +1224,6 @@ func sanitizeProjectToolCallStreamEventsForMetadata(events []projectToolCallStre
 			event.Permission = &permission
 		}
 		out = append(out, event)
-	}
-	return out
-}
-
-func projectToolCallStreamEventsFromMetadata(raw any) []projectToolCallStreamEvent {
-	if raw == nil {
-		return nil
-	}
-	if typed, ok := raw.([]projectToolCallStreamEvent); ok {
-		return append([]projectToolCallStreamEvent(nil), typed...)
-	}
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil
-	}
-	var out []projectToolCallStreamEvent
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil
 	}
 	return out
 }

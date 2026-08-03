@@ -100,39 +100,6 @@ func (s *FileStore) AddUncommittedPaths(ctx context.Context, scope Scope, paths 
 	return merged, nil
 }
 
-// ClearUncommittedPaths removes the pending source set after the complete set
-// has been committed successfully through the repository bridge.
-func (s *FileStore) ClearUncommittedPaths(ctx context.Context, scope Scope) error {
-	if s == nil {
-		return errors.New("project workspace store is not configured")
-	}
-	s.mutationMu.Lock()
-	defer s.mutationMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	_, statePath, err := s.sourceStatePath(scope)
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(statePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("clear workspace source state: %w", err)
-	}
-	return nil
-}
-
-// RemoveUncommittedPaths removes only the paths successfully persisted by a
-// repository commit. Other durable dirty paths remain available to later turns.
-func (s *FileStore) RemoveUncommittedPaths(ctx context.Context, scope Scope, paths []string) error {
-	if s == nil {
-		return errors.New("project workspace store is not configured")
-	}
-	s.mutationMu.Lock()
-	defer s.mutationMu.Unlock()
-
-	return s.removeUncommittedPaths(ctx, scope, paths)
-}
-
 func (s *FileStore) removeUncommittedPaths(ctx context.Context, scope Scope, paths []string) error {
 	current, err := s.uncommittedPaths(ctx, scope)
 	if err != nil {
@@ -218,45 +185,6 @@ func (s *FileStore) RecordCommitSettlement(ctx context.Context, scope Scope, wor
 		return fmt.Errorf("persist workspace commit settlement: %w", err)
 	}
 	return nil
-}
-
-// PendingCommitSettlement returns a durable post-commit cleanup receipt.
-func (s *FileStore) PendingCommitSettlement(ctx context.Context, scope Scope) (string, []string, bool, error) {
-	if s == nil {
-		return "", nil, false, errors.New("project workspace store is not configured")
-	}
-	s.mutationMu.Lock()
-	defer s.mutationMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return "", nil, false, err
-	}
-	_, settlementPath, err := s.commitSettlementPath(scope)
-	if err != nil {
-		return "", nil, false, err
-	}
-	raw, err := os.ReadFile(settlementPath)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil, false, nil
-	}
-	if err != nil {
-		return "", nil, false, fmt.Errorf("read workspace commit settlement: %w", err)
-	}
-	var settlement workspaceCommitSettlement
-	if err := json.Unmarshal(raw, &settlement); err != nil {
-		return "", nil, false, fmt.Errorf("decode workspace commit settlement: %w", err)
-	}
-	pathSet := make(map[string]struct{}, len(settlement.Paths))
-	for _, rawPath := range settlement.Paths {
-		clean, err := cleanProjectPath(rawPath)
-		if err != nil {
-			return "", nil, false, fmt.Errorf("invalid workspace commit settlement: %w", err)
-		}
-		pathSet[clean] = struct{}{}
-	}
-	if settlement.WorkspaceDigest == "" || len(pathSet) == 0 {
-		return "", nil, false, errors.New("invalid workspace commit settlement")
-	}
-	return settlement.WorkspaceDigest, sortedWorkspaceSourcePaths(pathSet), true, nil
 }
 
 // ReconcileCommitSettlement clears committed paths and the matching receipt in

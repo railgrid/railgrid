@@ -13,7 +13,6 @@ export interface DevelopmentPreviewDisplayPhaseState {
 export interface DevelopmentPreviewWakeState extends DevelopmentPreviewDisplayPhaseState {
   needsAuthorization: boolean
   authorizing: boolean
-  tokenExpiresAt: string
 }
 
 export function developmentPreviewDisplayPhase(state: DevelopmentPreviewDisplayPhaseState): string {
@@ -32,11 +31,7 @@ export function developmentPreviewSyncStatus(state: DevelopmentPreviewSyncState,
 
 export function developmentPreviewShouldRefreshOnWake(
   state: DevelopmentPreviewWakeState,
-  nowMs: number,
-  renewalSkewMs: number,
 ): boolean {
   if (!state.needsAuthorization || state.authorizing) return false
-  if (!state.previewURL || state.authorizationError) return true
-  const expiresMs = Date.parse(state.tokenExpiresAt)
-  return Number.isFinite(expiresMs) && expiresMs <= nowMs + renewalSkewMs
+  return !state.previewURL || !!state.authorizationError
 }

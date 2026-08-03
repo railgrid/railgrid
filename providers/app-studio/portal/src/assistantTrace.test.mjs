@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createServer } from 'vite'
 
-import { buildAssistantTrace } from './assistantTrace.ts'
+let vite
+test.before(async () => {
+  vite = await createServer({ appType: 'custom', server: { middlewareMode: true, hmr: false } })
+})
+test.after(async () => vite?.close())
 
 const action = (id, sequence) => ({
   id,
@@ -12,7 +17,8 @@ const action = (id, sequence) => ({
   sequence,
 })
 
-test('interleaves adjacent action groups between progress prose', () => {
+test('interleaves adjacent action groups between progress prose', async () => {
+  const { buildAssistantTrace } = await vite.ssrLoadModule('/src/assistantTrace.ts')
   assert.deepEqual(buildAssistantTrace({
     version: 1,
     messages: ['I’m mapping the project.', 'I found the edit seam.'],

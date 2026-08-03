@@ -22,16 +22,6 @@ import (
 	"time"
 )
 
-func TestApprovalModeSchemaMigrationIsAdditive(t *testing.T) {
-	statements := approvalModeSchemaStatements()
-	if len(statements) != 1 {
-		t.Fatalf("approval mode schema statements = %#v", statements)
-	}
-	if !strings.Contains(statements[0], "app_studio_assistant_approval_preferences") {
-		t.Fatalf("preference table statement = %q", statements[0])
-	}
-}
-
 func TestAssistantApprovalPolicySchemaMigrationPreservesLegacyPreferences(t *testing.T) {
 	joined := strings.Join(assistantApprovalPolicySchemaStatements(), "\n")
 	if strings.Contains(strings.ToUpper(joined), "DROP TABLE") {

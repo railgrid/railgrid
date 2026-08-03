@@ -93,21 +93,8 @@ type projectAssistantUIInterruptAction struct {
 	AssistantMessageID string `json:"assistantMessageId,omitempty"`
 }
 
-func projectAssistantUIBeginRenderingEvent(surfaceID string) projectAssistantUIEvent {
-	return projectAssistantUIEvent{
-		BeginRendering: &projectAssistantUIBeginRendering{
-			SurfaceID: surfaceID,
-			Root:      projectAssistantUIRootComponentID,
-		},
-	}
-}
-
 func projectAssistantUIDataUpdateEvent(surfaceID, key, value string) projectAssistantUIEvent {
 	return projectAssistantUIDataContentEvent(surfaceID, key, value, false)
-}
-
-func projectAssistantUIDataAppendEvent(surfaceID, key, value string) projectAssistantUIEvent {
-	return projectAssistantUIDataContentEvent(surfaceID, key, value, true)
 }
 
 func projectAssistantUIDataContentEvent(surfaceID, key, value string, appendValue bool) projectAssistantUIEvent {
@@ -123,86 +110,8 @@ func projectAssistantUIDataContentEvent(surfaceID, key, value string, appendValu
 	}
 }
 
-func projectAssistantUIMessageShellEvent(surfaceID string, rootChildren []string, cardID, colID, roleID, contentID, dataKey, roleLabel string) projectAssistantUIEvent {
-	return projectAssistantUIEvent{
-		SurfaceUpdate: &projectAssistantUISurfaceUpdate{
-			SurfaceID: surfaceID,
-			Components: []projectAssistantUIComponent{
-				projectAssistantUIColumnComponentNode(projectAssistantUIRootComponentID, append([]string(nil), rootChildren...)),
-				projectAssistantUICardComponentNode(cardID, []string{colID}),
-				projectAssistantUIColumnComponentNode(colID, []string{roleID, contentID}),
-				projectAssistantUITextComponentNode(roleID, roleLabel, "caption"),
-				projectAssistantUIBoundTextComponentNode(contentID, dataKey, "body"),
-			},
-		},
-	}
-}
-
-func projectAssistantUIStatusEvent(status string) projectAssistantUIEvent {
-	return projectAssistantUIEvent{
-		DataModelUpdate: &projectAssistantUIDataModelUpdate{
-			SurfaceID: "conversation",
-			Contents: []projectAssistantUIDataContent{{
-				Key:         "assistant.status",
-				ValueString: status,
-			}},
-		},
-	}
-}
-
 func projectAssistantUIDevelopmentPreviewRefreshEvent() projectAssistantUIEvent {
 	return projectAssistantUIDataUpdateEvent("conversation", projectAssistantUIDevelopmentPreviewRefreshKey, "true")
-}
-
-func projectAssistantUITextComponentNode(id, value, usageHint string) projectAssistantUIComponent {
-	return projectAssistantUIComponent{
-		ID: id,
-		Component: projectAssistantUIComponentValue{
-			Text: &projectAssistantUITextComponent{
-				Value:     value,
-				UsageHint: usageHint,
-			},
-		},
-	}
-}
-
-func projectAssistantUIBoundTextComponentNode(id, dataKey, usageHint string) projectAssistantUIComponent {
-	return projectAssistantUIComponent{
-		ID: id,
-		Component: projectAssistantUIComponentValue{
-			Text: &projectAssistantUITextComponent{
-				DataKey:   dataKey,
-				UsageHint: usageHint,
-			},
-		},
-	}
-}
-
-func projectAssistantUIColumnComponentNode(id string, children []string) projectAssistantUIComponent {
-	return projectAssistantUIComponent{
-		ID: id,
-		Component: projectAssistantUIComponentValue{
-			Column: &projectAssistantUIColumnComponent{Children: children},
-		},
-	}
-}
-
-func projectAssistantUICardComponentNode(id string, children []string) projectAssistantUIComponent {
-	return projectAssistantUIComponent{
-		ID: id,
-		Component: projectAssistantUIComponentValue{
-			Card: &projectAssistantUICardComponent{Children: children},
-		},
-	}
-}
-
-func projectAssistantUIRowComponentNode(id string, children []string) projectAssistantUIComponent {
-	return projectAssistantUIComponent{
-		ID: id,
-		Component: projectAssistantUIComponentValue{
-			Row: &projectAssistantUIRowComponent{Children: children},
-		},
-	}
 }
 
 func projectAssistantUIInterruptRequestEvent(surfaceID string, permission projectAssistantPermission, checkpoint projectAssistantCheckpoint) projectAssistantUIEvent {

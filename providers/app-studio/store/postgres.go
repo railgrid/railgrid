@@ -28,16 +28,9 @@ import (
 	"github.com/lib/pq"
 )
 
-const messageSchemaVersion = "assistant-v2-only-v1"
 const assistantV2CutoverSchemaVersion = "assistant-v2-destructive-cutover-v1"
-const approvalModeSchemaVersion = "approval-mode-v1"
 const bootstrapPermitSchemaVersion = "project-bootstrap-permit-v1"
-const assistantRunEventSchemaVersion = "assistant-run-event-v1"
-const assistantCodexTerminalSchemaVersion = "assistant-codex-terminal-v1"
-const assistantCodexTerminalParitySchemaVersion = "assistant-codex-terminal-v2"
 const assistantConversationSchemaVersion = "assistant-conversation-items-v1"
-const assistantConversationProjectStreamSchemaVersion = "assistant-conversation-project-stream-v1"
-const assistantConversationIdentitySchemaVersion = "assistant-conversation-identity-v2"
 const assistantConversationSequenceSchemaVersion = "assistant-conversation-sequence-v1"
 const assistantThreadSchemaVersion = "assistant-thread-turn-item-v1"
 const assistantApprovalPolicySchemaVersion = "assistant-approval-policy-v2"
@@ -110,31 +103,10 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	if err := ensureSchemaVersion(ctx, tx, assistantV2CutoverSchemaVersion, assistantV2CutoverSchemaStatements()...); err != nil {
 		return err
 	}
-	if err := ensureSchemaVersion(ctx, tx, messageSchemaVersion, assistantSchemaStatements()...); err != nil {
-		return err
-	}
-	if err := ensureSchemaVersion(ctx, tx, approvalModeSchemaVersion, approvalModeSchemaStatements()...); err != nil {
-		return err
-	}
 	if err := ensureSchemaVersion(ctx, tx, bootstrapPermitSchemaVersion, bootstrapPermitSchemaStatements()...); err != nil {
 		return err
 	}
-	if err := ensureSchemaVersion(ctx, tx, assistantRunEventSchemaVersion, assistantRunEventSchemaStatements()...); err != nil {
-		return err
-	}
-	if err := ensureSchemaVersion(ctx, tx, assistantCodexTerminalSchemaVersion, assistantCodexTerminalSchemaStatements()...); err != nil {
-		return err
-	}
-	if err := ensureSchemaVersion(ctx, tx, assistantCodexTerminalParitySchemaVersion, assistantCodexTerminalParitySchemaStatements()...); err != nil {
-		return err
-	}
 	if err := ensureSchemaVersion(ctx, tx, assistantConversationSchemaVersion, assistantConversationSchemaStatements()...); err != nil {
-		return err
-	}
-	if err := ensureSchemaVersion(ctx, tx, assistantConversationProjectStreamSchemaVersion, assistantConversationProjectStreamSchemaStatements()...); err != nil {
-		return err
-	}
-	if err := ensureSchemaVersion(ctx, tx, assistantConversationIdentitySchemaVersion, assistantConversationIdentitySchemaStatements()...); err != nil {
 		return err
 	}
 	if err := ensureSchemaVersion(ctx, tx, assistantConversationSequenceSchemaVersion, assistantConversationSequenceSchemaStatements()...); err != nil {
@@ -144,9 +116,6 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 		return err
 	}
 	if err := ensureSchemaVersion(ctx, tx, assistantApprovalPolicySchemaVersion, assistantApprovalPolicySchemaStatements()...); err != nil {
-		return err
-	}
-	if err := ensureSchemaVersion(ctx, tx, assistantReviewModeSchemaVersion, assistantReviewModeSchemaStatements()...); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -284,39 +253,6 @@ func assistantSchemaStatements() []string {
 	}
 }
 
-func assistantCodexTerminalParitySchemaStatements() []string {
-	return []string{
-		// The v1 partial index treats the new terminal values as active. Drop it
-		// before rewriting historical rows or multiple old terminal runs in one
-		// project can collide while the UPDATE is still in progress.
-		`DROP INDEX IF EXISTS app_studio_runs_active_idx`,
-		`UPDATE app_studio_assistant_runs SET status = 'failed' WHERE status = 'completed' AND terminal_error <> '{}'::jsonb`,
-		`UPDATE app_studio_assistant_runs SET status = 'failed' WHERE status = 'aborted' AND abort_reason = 'budget_limited'`,
-		`UPDATE app_studio_assistant_runs SET status = 'interrupted' WHERE status = 'aborted'`,
-		`CREATE UNIQUE INDEX app_studio_runs_active_idx ON app_studio_assistant_runs (org_uuid, workspace_uuid, project_name, project_uid) WHERE status NOT IN ('completed','failed','interrupted','aborted')`,
-	}
-}
-
-func assistantCodexTerminalSchemaStatements() []string {
-	return []string{
-		`ALTER TABLE app_studio_assistant_runs ADD COLUMN IF NOT EXISTS terminal_error jsonb NOT NULL DEFAULT '{}'::jsonb`,
-		`ALTER TABLE app_studio_assistant_runs ADD COLUMN IF NOT EXISTS abort_reason text NOT NULL DEFAULT ''`,
-		`UPDATE app_studio_assistant_runs SET terminal_error = jsonb_build_object('message', 'The assistant run failed before it could finish.'), status = 'completed' WHERE status = 'failed'`,
-		`UPDATE app_studio_assistant_runs SET abort_reason = 'interrupted', status = 'aborted' WHERE status = 'interrupted'`,
-		`DROP INDEX IF EXISTS app_studio_runs_active_idx`,
-		`CREATE UNIQUE INDEX app_studio_runs_active_idx ON app_studio_assistant_runs (org_uuid, workspace_uuid, project_name, project_uid) WHERE status NOT IN ('completed','aborted')`,
-	}
-}
-
-func approvalModeSchemaStatements() []string {
-	return []string{`CREATE TABLE IF NOT EXISTS app_studio_assistant_approval_preferences (
-		org_uuid text NOT NULL, workspace_uuid text NOT NULL, project_name text NOT NULL, project_uid text NOT NULL,
-		actor_id text NOT NULL, approval_mode text NOT NULL CHECK (approval_mode IN ('on_request', 'always_ask', 'never')),
-		updated_at timestamptz NOT NULL,
-		PRIMARY KEY (org_uuid, workspace_uuid, project_name, project_uid, actor_id)
-	)`}
-}
-
 func bootstrapPermitSchemaStatements() []string {
 	return []string{`CREATE TABLE IF NOT EXISTS app_studio_project_bootstrap_permits (
 		org_uuid text NOT NULL, workspace_uuid text NOT NULL, project_name text NOT NULL, project_uid text NOT NULL,
@@ -348,37 +284,6 @@ func assistantConversationSchemaStatements() []string {
 		UNIQUE (org_uuid, workspace_uuid, project_name, project_uid, sequence)
 	)`, `CREATE INDEX IF NOT EXISTS app_studio_assistant_conversation_items_scope_idx
 		ON app_studio_assistant_conversation_items (org_uuid, workspace_uuid, project_name, project_uid, sequence)`}
-}
-
-func assistantConversationProjectStreamSchemaStatements() []string {
-	return []string{`DO $$
-	DECLARE constraint_name text;
-	BEGIN
-		FOR constraint_name IN
-			SELECT conname FROM pg_constraint
-			WHERE conrelid = 'app_studio_assistant_conversation_items'::regclass AND contype = 'f'
-		LOOP
-			EXECUTE format('ALTER TABLE app_studio_assistant_conversation_items DROP CONSTRAINT %I', constraint_name);
-		END LOOP;
-	END $$`}
-}
-
-// assistantConversationIdentitySchemaStatements widens item identity from a
-// project-global item ID to (run ID, item ID). Existing rows remain valid and
-// keep their sequence; later runs may safely reuse synthetic item IDs.
-func assistantConversationIdentitySchemaStatements() []string {
-	return []string{`DO $$
-	DECLARE constraint_name text;
-	BEGIN
-		SELECT conname INTO constraint_name
-		FROM pg_constraint
-		WHERE conrelid = 'app_studio_assistant_conversation_items'::regclass AND contype = 'p';
-		IF constraint_name IS NOT NULL THEN
-			EXECUTE format('ALTER TABLE app_studio_assistant_conversation_items DROP CONSTRAINT %I', constraint_name);
-		END IF;
-		ALTER TABLE app_studio_assistant_conversation_items
-			ADD PRIMARY KEY (org_uuid, workspace_uuid, project_name, project_uid, run_id, item_id);
-	END $$`}
 }
 
 // assistantConversationSequenceSchemaStatements stores a project-scoped
@@ -904,10 +809,6 @@ func sanitizePostgresJSONBValue(value any) any {
 	default:
 		return typed
 	}
-}
-
-func (s *PostgresStore) RequestAssistantRunStop(ctx context.Context, scope Scope, runID string, expectedRunRevision int64, now time.Time) (AssistantRun, error) {
-	return s.requestAssistantRunStop(ctx, scope, runID, expectedRunRevision, Message{}, now)
 }
 
 func (s *PostgresStore) RequestAssistantRunStopWithAssistantMessage(ctx context.Context, scope Scope, runID string, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error) {

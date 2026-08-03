@@ -1,33 +1,30 @@
-# Every template can act as a sandbox
+# Every Template can provide a development environment
 
-Status: **Design accepted (open decisions resolved 2026-07-03), not implemented.**
+Status: **Implemented through Phases 0–4 (2026-07-04); remaining work is
+portal import/catalog polish and BYO-compute validation.** The design and
+future sections below remain a proposal for deferred capabilities; they do not
+override the current runtime contract in
+[`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md).
 Author: 2026-07-03
-Related: [`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md) (the data-plane contract this builds on), [`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md) (current single-runner model), [`application-template-architecture.md`](./application-template-architecture.md), [`code-provider-architecture.md`](./code-provider-architecture.md), `providers/infrastructure/install/templates/{sandbox-runner,application}.yaml`.
+Related: [`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md) (historical data-plane proposal), [`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md) (current Template/data-plane boundary), [`application-template-architecture.md`](./application-template-architecture.md), [`code-provider-architecture.md`](./code-provider-architecture.md), `providers/infrastructure/install/templates/{simple-webapp,application}.yaml`.
 
 ## Summary
 
-App Studio today serves every project through one fixed shape: the `sandbox-runner`
-Template — a single container running `npm run dev` against a PVC-mounted
-workspace. The project creation path hardcodes it
-(`defaultSandboxRunnerBinding`, `providers/app-studio/api/deployment_defaults.go`),
-the sync path assumes one control endpoint, and the assistant assumes one
-Vite-shaped process. A project that needs a backend, a database, or a message
-queue cannot be *developed* on the platform — the `application` Template can
-run such an app in production shape (built images), but there is no development
-mode for it.
+The original proposal started from one fixed `sandbox-runner` shape: a single
+container and one control endpoint. That fixture and its signed preview gateway
+were removed in Phase 4. The current implementation is Template-backed:
+Projects select an infrastructure Template, the Template declares development
+components and data-plane verbs, and App Studio provisions the selected
+development instance with `kedgeMode: development`.
 
-This document proposes inverting the relationship: **development mode becomes a
-capability any Template can declare**, instead of a Template of its own. A
-Template that declares a `development` block can have its instances provisioned
-in dev mode, where selected components (tiers) run **platform-managed dev
-images with a hot-reload agent** in place of the user's built images, each with
-its own file-sync target and reload behavior. The infrastructure provider owns
-that entire contract — dev images, reload steps, per-component data-plane
-verbs. App Studio owns the product flow: requirements interview at project
-creation, template selection, the workspace, git persistence, and the
-assistant. Because code is always persisted in the project's git repository,
-the chosen template is *swappable* — re-provision under a different Template,
-re-hydrate, re-sync — and existing git repos become importable.
+Development mode is therefore a capability any Template can declare. Selected
+components run platform-managed dev images with a hot-reload agent, each with
+its own file-sync target and reload behavior; the infrastructure provider owns
+that contract. App Studio owns template selection, the workspace, git
+persistence, and the assistant. Because code is persisted in the project's git
+repository, the Template is swappable: re-provision under a different Template,
+re-hydrate, and re-sync. The design sections below retain the future scaffold,
+idle-runtime, and promotion proposals around that implemented core.
 
 ## Design principles (from the product requirement)
 
@@ -49,13 +46,13 @@ re-hydrate, re-sync — and existing git repos become importable.
 
 ## Current state — what exists, what is missing
 
-| Principle | Already there | Missing |
+| Principle | Implemented | Remaining |
 |---|---|---|
-| 1. Any template as sandbox | Template API with per-template CRD, schema, kro backend, `${kedge.*}` token substitution (`providers/infrastructure/apis/v1alpha1/types_template.go`, `backend/kro/rgd.go`). `sandbox-runner` proves the dev-runner mechanics end to end. | No `development` contract on Template. `application` (frontend+backend+db+oauth) has no dev mode. Dev-runner logic (agent, PVC, control token) is welded into one template's YAML. |
-| 2. Requirements → template pick | Templates carry `agent` guidance + `view` metadata; assistant already has `infrastructure__list_templates` / `describe_template` / `provision` MCP tools (`providers/app-studio/api/llm.go`). | Project creation ignores all of it: `defaultProjectSpec` unconditionally binds `SandboxRunner`. No creation-time interview, no template choice recorded on the Project, no portal selection UI. |
-| 3. Git as source of truth | Code provider (Connection/Repository/RepositoryCommit + CommitBundle store); `commit_project_files` tool pushes workspace → git. Repo is created per project. | Export-only. No import/clone: workspace cannot be hydrated *from* the repo, so template switching and repo import have no code path. Workspace FS (`APP_STUDIO_WORKSPACE_ROOT`) is the de-facto durable copy. |
-| 4. Infra owns images/reload; multi-tier data plane | `Template.spec.dataPlane` + generic resolver + VW subresource handler (decoupling design, Phases 0–3 done). Runner image ownership already moved to infra (`${kedge.sandboxRunnerImage}`). | Data plane is flat: verbs resolve against *one* control/preview service per instance. No per-component addressing (`sync` the backend, `restart` the frontend). No declared reload steps (e.g. "run `npm install` when `package.json` changes"). Dev agent exists only inside the sandbox-runner image. |
-| 5. App Studio owns AI | Prompts, 9 local tools, profiles, Eino runtime all live in App Studio (`assistant_tool_registry.go`, `llm.go`). | Assistant and sync logic still assume the single-runner shape: whole-workspace sync to one endpoint, one log stream, one preview. No template-aware context injection at creation. |
+| 1. Any Template as a development environment | Template API, per-template CRD/schema, development contract, synthesized dev overlay, platform dev-agent, and `application`/`simple-webapp` development templates are implemented and e2e-tested. | Future Template coverage and additional toolchains remain incremental work. |
+| 2. Requirements → Template selection | `Project.spec.template`, live catalog selection, assistant `select_project_template`, development binding generation, and template-aware assistant context are implemented. | Portal creation-flow polish and a richer requirements interview remain product work. |
+| 3. Git as source of truth | Code-provider checkout plus App Studio `hydrate-workspace` make repositories recoverable; template switching re-hydrates and re-syncs. | Portal import/catalog UX remains. |
+| 4. Infra owns images/reload; multi-tier data plane | `Template.spec.dataPlane`, generic resolver/handler, component-scoped URLs, dev-agent reload rules, and caller-authenticated routing are implemented. | BYO-compute validation across a second infrastructure provider remains. |
+| 5. App Studio owns AI | Prompts, local tools, profiles, Eino runtime, template context, and component-aware sync all live in their owning modules. | Future scaffolds and additional assistant guidance can build on the contract. |
 
 ## 1. The Template development contract (infra-owned)
 
@@ -100,9 +97,8 @@ Rules:
   (database StatefulSet, oauth proxy) run exactly as in production mode — this
   is the point: a dev sandbox with a real Postgres next to it.
 - `devImage` values are **platform-managed** `${kedge.devImage.<toolchain>}`
-  tokens resolved by the infra provider from env/config, exactly like the
-  existing `${kedge.sandboxRunnerImage}` mechanism. Tenants never pick dev
-  images.
+  tokens resolved by the infrastructure provider from env/config. Tenants
+  never pick dev images.
 - `workspacePath` maps a workspace/repo subdirectory to the component. This is
   the contract App Studio uses to route file sync (§4) and is also the layout
   the scaffold and the assistant follow.
@@ -130,8 +126,9 @@ the `development` block, not two graphs. Rules the overlay must obey:
   are separate Deployments that may schedule to different nodes, so a shared
   RWO volume is not an option, and sync is routed per component anyway (§4.2).
   The production graph carries **no** code PVCs (data-service volumes like the
-  Postgres PVC are the template's own business and untouched). Re-expressing
-  `sandbox-runner` moves its PVC out of the template YAML into the overlay.
+  Postgres PVC are the Template's own business and untouched). Development
+  code PVCs are synthesized by the overlay rather than embedded in each
+  production graph.
 - **Everything except image and command is preserved.** The dev container
   keeps the production container's env (e.g. `DATABASE_URL` from the
   credentials Secret), ports, and volume wiring — a dev backend must reach the
@@ -144,8 +141,8 @@ the `development` block, not two graphs. Rules the overlay must obey:
 
 ## 2. The dev agent (infra-owned)
 
-`providers/infrastructure/sandbox-runner/main.go` (sync/restart/logs/env over
-`:7070`) is extracted into a standalone **`kedge-dev-agent`** static binary. In
+`providers/infrastructure/dev-agent/main.go` (sync/restart/logs/env over
+`:7070`) is the standalone **`kedge-dev-agent`** static binary. In
 dev mode every declared component runs it as PID 1 wrapping the component's
 `startCommand`:
 
@@ -159,9 +156,9 @@ dev mode every declared component runs it as PID 1 wrapping the component's
   shared across the instance's components.
 
 The platform dev images (`${kedge.devImage.*}`) are plain toolchain images the
-infra provider curates and pins — they replace today's single
-`kedge-sandbox-runner` image, which currently conflates "the agent" with "a
-node toolchain".
+infrastructure provider curates and pins. They keep the dev agent separate from
+the application toolchain instead of coupling every project to one runner
+image.
 
 ## 3. Multi-component data plane (infra-owned)
 
@@ -190,7 +187,7 @@ dataPlane:
       ...
 ```
 
-URL shape extends the existing handler:
+URL shape uses the generic data-plane handler:
 
 ```
 POST …/dataplane/clusters/{ws}/applications/{name}/components/backend/sync
@@ -199,10 +196,9 @@ POST …/dataplane/clusters/{ws}/applications/{name}/restart      (all component
 ```
 
 The generic resolver, namespace confinement, token injection, and
-authorize-as-caller flow from the decoupling design are unchanged — only the
-endpoint lookup gains one level. Existing flat URLs keep working for
-`sandbox-runner` until it is retired (§7). Instance-level verbs may fan out to
-all components (`restart` restarts every dev process).
+authorize-as-caller flow are implemented. Instance-level verbs may fan out to
+all components (`restart` restarts every dev process); no legacy fixed-runner
+compatibility path remains.
 
 The backend publishes per-component status refs
 (`status.components.<name>.{controlServiceRef,ready}`) alongside the existing
@@ -213,7 +209,7 @@ instance-level ones.
 ### 4.1 Project creation: requirements → template
 
 - `Project.spec` records the choice: a `template` reference (`{resource, kind,
-  version}`) replacing the implicit SandboxRunner assumption. The development
+  version}`) replacing the old fixed-runner assumption. The development
   environment's binding is generated from it with `kedgeMode: development`.
 - **Projects are created template-less; the first assistant conversation
   binds one.** Creation makes only the Project + repo + empty workspace — no
@@ -326,17 +322,17 @@ assistant hints) after hydration.
 
 | Phase | Deliverable | Risk |
 |---|---|---|
-| **0** | **DONE.** API: `Template.spec.development`, `dataPlane.components`, reserved `kedgeMode` schema injection; resolver + validation + unit tests. `sandbox-runner` annotated with its single-component development block (`runner` → `runnerDeployment`). No behavior change. | Low — additive |
+| **0** | **DONE.** API: `Template.spec.development`, `dataPlane.components`, reserved `kedgeMode` schema injection; resolver + validation + unit tests. Development-capable templates carry the component and data-plane contract. | Low — additive |
 | **1** | **DONE, e2e-validated on kind** (`TestE2EDevelopmentMode`, runs in the Infrastructure Template E2E workflow). `kedge-dev-agent` extracted (`providers/infrastructure/dev-agent/`, `--install` injection, reload rules, `KEDGE_DEV_*` env with `SANDBOX_*` fallback); `${kedge.devImage.*}` / `${kedge.devAgentImage}` tokens (env `KEDGE_DEV_IMAGE_<TOOLCHAIN>` / `KEDGE_DEV_AGENT_IMAGE`, chart + operator wired); backend-synthesized dev overlay (`backend/kro/devoverlay.go`); per-component data-plane URLs; `application` Template development block (node/node v1) + component dataPlane + CEL images-optional-in-dev rule. Both flagged kro assumptions validated live: `includeWhen` on two same-named Deployment variants is accepted and mode-splits correctly, and status expressions referencing mode-excluded resources stay unset in production and resolve in development. (Two apply-time gotchas the e2e caught, now handled in the overlay: env values need `${string(...)}` around int-typed CEL, and overlay ports/mounts must dedupe against what the workload already declares.) | ~~High~~ validated |
-| **2** | **Core DONE** (portal catalog UI + creation-flow polish outstanding). `Project.spec.template` names the backing Template; selection (PUT `/api/projects/{p}/template`, assistant tool `select_project_template`) reads the Template live from the tenant catalog, tears the old dev instance down, and generates the dev binding (`kedgeMode: development`). Sync/logs/restart/env route per component (workspacePath prefix → `…/components/<c>/<verb>`); template previews use the instance's own `status.url`. The assistant prompt carries the bound template (or interview guidance when none). The legacy `defaultSandboxRunnerBinding` creation default is REMOVED (2026-07-04): new projects have no development environment until a template is bound — by the assistant interview, the portal picker, or `PUT /template`. `select_project_template` sits in the workflow tool bundle so interview-profile turns can actually call it. | Medium |
+| **2** | **Core DONE** (portal catalog UI + creation-flow polish outstanding). `Project.spec.template` names the backing Template; selection (PUT `/api/projects/{p}/template`, assistant tool `select_project_template`) reads the Template live from the tenant catalog, tears the old dev instance down, and generates the dev binding (`kedgeMode: development`). Sync/logs/restart/env route per component (workspacePath prefix → `…/components/<c>/<verb>`); template previews use the instance's own `status.url`. The assistant prompt carries the bound Template (or interview guidance when none). The old fixed-runner creation default was removed (2026-07-04): new projects have no development environment until a Template is bound — by the assistant interview, the portal picker, or `PUT /template`. `select_project_template` sits in the workflow tool bundle so interview-profile turns can actually call it. | Medium |
 | **3** | **Core DONE** (repo-import-at-creation UX outstanding). Code provider: `RepositoryCheckout` CR + controller (the CommitBundle flow in reverse; GitHub `RepositoryReader` reads the text tree via commit→tree→blobs, binary/oversized files skipped and reported) + `checkout_repository` MCP tool returning files inline and reclaiming the bundle. App Studio: `POST /api/projects/{p}/hydrate-workspace` reads the project repository through `code__checkout_repository`, writes the tree into the workspace (overwrite semantics), and triggers a development sync — making git the recoverable source of truth for template switches and lost workspaces. Repository import: `CreateProjectRequest.existingRepositoryRef` adopts an existing Code Repository (claim + release semantics — an adopted repository is never deleted with the project) and hydrates the workspace from it at creation; the `hydrate_workspace` assistant tool covers recovery and post-switch re-hydration. Remaining: portal import/catalog UI. | Medium |
 | **4** | **DONE (2026-07-04).** All legacy sandbox-runner paths deleted outright (no migration, per the no-compat decision): the sandbox-runner template/image/Makefile targets/CI workflow, App Studio's sandbox target resolution and binding special-cases, the signed preview-URL flow and the whole preview-gateway stack (`previewgateway`/`previewtoken` packages, `preview-gateway` subcommand, chart workloads, Tilt wiring), and the `${kedge.sandboxPreviewBaseDomain}` token. Templates are the only development path; previews are the instance's own URL. `DefaultNodeDevImage` is now plain `node:22-bookworm` (agent injected). Existing sandbox projects are recreated — code lives in git. Remaining: BYO-compute validation with a dev-mode template on a second infra provider. | Low |
 
-Phases 0–1 are the de-risking core and live entirely in the infrastructure
-provider — App Studio keeps working against `sandbox-runner` untouched until
-Phase 2. Phase 3 is what makes principle 3 (git as truth, switchable
-templates) real; Phase 4 collapses the special case this design exists to
-remove.
+Phases 0–1 were the de-risking core and live entirely in the infrastructure
+provider. Phases 2–4 now provide the current Template-backed App Studio path;
+the old fixed-runner special case and signed preview gateway are gone. The
+remaining work listed above is intentionally limited to portal polish and
+BYO-compute validation.
 
 ## 8. Non-goals (deferred)
 
@@ -362,5 +358,5 @@ remove.
   [`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md) now apply
   to *every* dev-mode component, including ones sharing a graph with real data
   services (the dev backend can reach the instance's Postgres — intended, but
-  worth stating). NetworkPolicy egress rules from the sandbox-runner template
-  become part of the generated dev overlay.
+  worth stating). NetworkPolicy egress rules from each Template's development
+  overlay remain part of that generated graph.

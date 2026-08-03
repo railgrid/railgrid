@@ -86,11 +86,6 @@ func projectEinoAssistantLifecycleMiddleware(
 	return lifecycle
 }
 
-func projectEinoAssistantRepositoryCommitReady(repository *ProjectRepositoryView) bool {
-	return repository != nil && strings.TrimSpace(repository.Ref) != "" &&
-		(repository.Ready || repository.Status == projectRepositoryStatusReady)
-}
-
 func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 	ctx context.Context,
 	state *adk.ChatModelAgentState,
@@ -314,15 +309,6 @@ func (m *projectEinoAssistantLifecycle) rewriteLiveContext(ctx context.Context, 
 	return nil
 }
 
-func projectEinoAssistantDrainSteering(
-	steering <-chan projectAssistantSteeringInput,
-	runState *projectEinoAssistantRunState,
-	state *adk.ChatModelAgentState,
-) int {
-	drained, _ := projectEinoAssistantDrainSteeringAtBoundary(context.Background(), steering, runState, state, nil)
-	return drained
-}
-
 func projectEinoAssistantDrainSteeringAtBoundary(
 	ctx context.Context,
 	steering <-chan projectAssistantSteeringInput,
@@ -543,8 +529,4 @@ func projectEinoAssistantCommitTool(name string) bool {
 
 func projectEinoAssistantPendingPermissionResult(content string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(content)), "tool call skipped: waiting for approval")
-}
-
-func projectEinoAssistantVerificationReady(content string) bool {
-	return projectEinoAssistantVerificationContentReady(content)
 }

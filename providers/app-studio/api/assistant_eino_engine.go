@@ -135,37 +135,6 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	return result, e.finishProjectAssistantRunAudit(ctx, req, auditRecorder, runErr)
 }
 
-func projectEinoAssistantLatestPlanProgress(history []store.Message) (projectAssistantPlanSnapshot, bool) {
-	for index := len(history) - 1; index >= 0; index-- {
-		message := history[index]
-		if message.Metadata == nil {
-			continue
-		}
-		plan, ok := projectAssistantPlanSnapshotFromMetadata(message.Metadata[projectAssistantMetadataPlan])
-		if ok && plan != nil && len(plan.Steps) > 0 {
-			return cloneProjectAssistantPlanSnapshot(*plan), true
-		}
-	}
-	return projectAssistantPlanSnapshot{}, false
-}
-
-func projectEinoAssistantHistoryHasSourceMutation(history []store.Message) bool {
-	for index := len(history) - 1; index >= 0; index-- {
-		message := history[index]
-		if message.Metadata == nil {
-			continue
-		}
-		actions := projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed])
-		for _, action := range actions {
-			if action.Kind == projectAssistantActionFeedItemEdit &&
-				action.Status == projectAssistantActionFeedStatusSucceeded {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	ctx context.Context,
 	req projectAssistantRunRequest,

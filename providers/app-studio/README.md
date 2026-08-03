@@ -35,7 +35,7 @@ service-account escalation.
 | Typed client | `client/` — trimmed dynamic client for the Project resource |
 | Tenant client | `tenant/` — token-forwarding `ClientFactory` (host+TLS from the provider kubeconfig, caller token per request) |
 | Message store | `store/` — Postgres + in-memory + envelope-encryption implementations |
-| Sandbox runtime | `runner/` + `api/development_*` — project-scoped sync, restart, logs, status, and signed preview proxy for infrastructure-backed `SandboxRunner` workloads |
+| Development runtime | `api/development_*` + `api/dataplane_client.go` — template-selected development instances, component-aware sync, restart/log/status calls, and edge-checked preview authorization |
 | Portal | `portal/` — the Vue micro-frontend (`<kedge-provider-app-studio>`), embedded via `assets.go` |
 | Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.kedge.faros.sh`) + Code and Infrastructure provider dependencies + the Project APIResourceSchema + `secrets` claim |
 | Deploy | `deploy/chart/` — Helm chart (Deployment, Service, CatalogEntry) |
@@ -52,14 +52,6 @@ Environment variables consumed by the binary:
 | `KEDGE_HUB_TOKEN` | Bearer token for the heartbeat |
 | `KEDGE_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |
 | `KEDGE_PROVIDER_KUBECONFIG` | Provider kubeconfig (kcp front-proxy host + TLS only) |
-| `APP_STUDIO_PREVIEW_BASE_DOMAIN` | Optional DNS zone for companion Sandbox preview routing. |
-| `APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAME` | Gateway resource name to attach each preview `HTTPRoute` to. |
-| `APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAMESPACE` | Namespace of the parent Gateway (defaults to `kedge-preview`). |
-| `APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_SECTION_NAME` | Listener section name on the parent Gateway (defaults to `https`). |
-| `APP_STUDIO_PREVIEW_BACKEND_NAMESPACE` | Namespace for the shared preview gateway Service backend. The Helm chart sets this to the release namespace unless `previewGateway.backend.namespace` is configured. |
-| `APP_STUDIO_PREVIEW_BACKEND_SERVICE_NAME` | Shared preview gateway Service name. Defaults to the chart-created `preview-gateway` Service when unset. |
-| `APP_STUDIO_PREVIEW_BACKEND_SERVICE_PORT` | Shared preview gateway Service port (defaults to `8080`). |
-| `APP_STUDIO_PREVIEW_TOKEN_SECRET` | Optional shared signing secret for preview URLs; configure for multi-replica deployments |
 | `APP_STUDIO_DATABASE_URL` | Postgres DSN for the message store |
 | `APP_STUDIO_IN_MEMORY_MESSAGE_STORE` | `true` → non-durable in-memory store (dev) |
 | `APP_STUDIO_MESSAGE_ENCRYPTION_KEYS` | Comma-separated `key-id:base64-aes-key` entries for message content and metadata encryption at rest |
@@ -280,42 +272,22 @@ source in the same repository commit.
 
 ## Development runtime
 
-App Studio owns the project-facing development runtime API. It creates and
-deletes infrastructure-backed `SandboxRunner` resources in the caller's tenant
-workspace, syncs App Studio workspace files to the runner, and serves project
-preview URLs by minting signed, host-based URLs from the companion
-`SandboxPreviewHTTPRoute` status.
+App Studio owns the project-facing development API and workspace. A project
+selects an infrastructure `Template`; its development contract declares the
+component workspace paths and the instance resource to provision. App Studio
+creates or deletes that tenant-scoped instance, then routes file sync and
+runtime operations through the infrastructure provider's published data-plane
+subresources as the requesting user. App Studio never holds a credential for
+the infrastructure provider's runtime cluster. See
+[`docs/app-studio-sandbox-runtime.md`](../../docs/app-studio-sandbox-runtime.md)
+for the current boundary and
+[`docs/app-studio-runtime-decoupling.md`](../../docs/app-studio-runtime-decoupling.md)
+for the retained design proposal.
 
-Infrastructure owns the resource composition: the `sandbox-runner` Template uses
-KRO to create the runtime namespace, PVC, Deployment, Service, control Secret,
-and network policy. App Studio holds **no** kubeconfig to the runtime cluster:
-the live data plane (logs, file sync, restart, preview readiness) is served by
-the infrastructure provider as subresources on the `SandboxRunner` instance,
-which App Studio calls through the hub as the requesting user. See
-[`docs/app-studio-runtime-decoupling.md`](../../docs/app-studio-runtime-decoupling.md).
-
-This is the platform
-[provider-isolation rule](../../docs/providers.md#provider-isolation-the-cross-provider-boundary)
-in practice: App Studio reaches infrastructure-owned workloads only through
-the `SandboxRunner` CR and its published subresources — never into the
-infrastructure provider's runtime cluster — which is what lets a tenant be
-backed by a different infrastructure provider (BYO compute) with no App
-Studio change.
-
-When `APP_STUDIO_PREVIEW_BASE_DOMAIN` is set, App Studio also creates a
-`SandboxPreviewHTTPRoute` infrastructure resource beside each `SandboxRunner`.
-That companion template creates a Gateway API `HTTPRoute` that attaches to the
-configured parent Gateway and routes traffic to the shared preview-gateway
-Service.
-
-Preview browser traffic does not use the App Studio provider backend path. The
-browser goes to the preview host, the cluster Gateway routes to the
-preview-gateway Service, and the preview gateway validates the signed session
-before proxying to the sandbox Service.
-
-In the Helm chart, set `runtimeKubeconfig.secretName` to a Secret with key
-`kubeconfig` to enable those runtime data-plane APIs. Leaving it empty starts App
-Studio normally with sandbox runtime operations disabled.
-
-See `../../docs/app-studio-sandbox-runtime.md` for the current runtime boundary
-and caveats.
+`POST .../authorize-development-preview` reads the selected instance's
+`status.url` and probes the public edge. It returns `ready: true` and the URL
+only after DNS/TLS/routing is serving; the portal retries readiness while the
+edge is provisioning. The preview URL is the Template's normal public route,
+not an App Studio-signed preview token, and browser traffic goes directly to
+that route. `APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY` is only a local-dev
+override for the readiness probe.

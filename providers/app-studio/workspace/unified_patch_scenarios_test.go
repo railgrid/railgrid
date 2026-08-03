@@ -138,7 +138,7 @@ func TestUnifiedPatchCodexScenarioFixtures(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: scopeProject, ProjectUID: "scenario-uid"}
 			store := NewFileStore(t.TempDir())
-			if err := store.ApplyFiles(context.Background(), scope, scenario.initial); err != nil {
+			if err := writeTestFiles(context.Background(), store, scope, scenario.initial); err != nil {
 				t.Fatalf("seed workspace: %v", err)
 			}
 
@@ -191,7 +191,7 @@ func TestUnifiedPatchCodexScenarioFailureCodes(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "failure-project", ProjectUID: scenario.name}
 			store := NewFileStore(t.TempDir())
-			if err := store.ApplyFiles(context.Background(), scope, scenario.initial); err != nil {
+			if err := writeTestFiles(context.Background(), store, scope, scenario.initial); err != nil {
 				t.Fatalf("seed workspace: %v", err)
 			}
 			_, err := store.ApplyPatch(context.Background(), scope, PatchOptions{Patch: scenario.patch})

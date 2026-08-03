@@ -308,10 +308,6 @@ func validateUniqueAssistantRun(runs map[string]AssistantRun, run AssistantRun) 
 	return nil
 }
 
-func (s *MemoryStore) RequestAssistantRunStop(_ context.Context, scope Scope, runID string, expectedRunRevision int64, now time.Time) (AssistantRun, error) {
-	return s.requestAssistantRunStop(scope, runID, expectedRunRevision, Message{}, now)
-}
-
 func (s *MemoryStore) RequestAssistantRunStopWithAssistantMessage(_ context.Context, scope Scope, runID string, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error) {
 	return s.requestAssistantRunStop(scope, runID, expectedRunRevision, assistant, now)
 }

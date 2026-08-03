@@ -30,15 +30,22 @@ import (
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
+func writeTestWorkspaceFiles(t *testing.T, ctx context.Context, workspaces *workspace.FileStore, scope workspace.Scope, files []workspace.File) {
+	t.Helper()
+	for _, file := range files {
+		if _, err := workspaces.WriteFile(ctx, scope, workspace.WriteOptions{Path: file.Path, Content: file.Content}); err != nil {
+			t.Fatalf("write workspace file %q: %v", file.Path, err)
+		}
+	}
+}
+
 func TestAssistantApplyPatchUsesLiveWorkspaceAndReturnsDiff(t *testing.T) {
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{
+	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, []workspace.File{{
 		Path:    "src/app.js",
 		Content: "const theme = 'light'\n",
-	}}); err != nil {
-		t.Fatalf("ApplyFiles returned error: %v", err)
-	}
+	}})
 	patch, ok := projectAssistantLocalToolRegistry(&Server{workspaces: workspaces}).Get(projectToolApplyPatch)
 	if !ok {
 		t.Fatal("apply_patch tool was not registered")
@@ -80,9 +87,6 @@ func TestAssistantApplyPatchUsesLiveWorkspaceAndReturnsDiff(t *testing.T) {
 	})
 	if item.Outcome != "+1 -1" || strings.Contains(item.Outcome, "const theme") {
 		t.Fatalf("action outcome = %q, want counts only", item.Outcome)
-	}
-	if _, err := workspaces.RestoreSnapshot(context.Background(), scope, req.AssistantRunID); !errors.Is(err, workspace.ErrSnapshotNotFound) {
-		t.Fatalf("assistant patch snapshot error = %v, want ErrSnapshotNotFound", err)
 	}
 }
 

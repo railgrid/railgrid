@@ -348,9 +348,7 @@ func TestAssistantContextualPatchSupportsDeleteAndMove(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			workspaces := workspace.NewFileStore(t.TempDir())
 			scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-			if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "old.txt", Content: "old\n"}}); err != nil {
-				t.Fatal(err)
-			}
+			writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, []workspace.File{{Path: "old.txt", Content: "old\n"}})
 			tool, ok := projectAssistantLocalToolRegistry(&Server{workspaces: workspaces}).Get(projectToolApplyPatch)
 			if !ok {
 				t.Fatal("apply_patch tool was not registered")
@@ -377,9 +375,7 @@ func TestAssistantContextualPatchSupportsDeleteAndMove(t *testing.T) {
 func TestAssistantContextualPatchUsesLiveWorkspaceAndDoesNotCreateLegacySnapshot(t *testing.T) {
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
-	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "src/app.js", Content: "export const theme = 'light'\n"}}); err != nil {
-		t.Fatalf("ApplyFiles returned error: %v", err)
-	}
+	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, []workspace.File{{Path: "src/app.js", Content: "export const theme = 'light'\n"}})
 	tool, ok := projectAssistantLocalToolRegistry(&Server{workspaces: workspaces}).Get(projectToolApplyPatch)
 	if !ok {
 		t.Fatal("apply_patch tool was not registered")
@@ -408,9 +404,6 @@ func TestAssistantContextualPatchUsesLiveWorkspaceAndDoesNotCreateLegacySnapshot
 	if result.Operation != "apply_patch" || len(result.Files) != 2 || strings.Join(result.Paths, ",") != "src/app.js,src/new.js" {
 		t.Fatalf("mutation result = %#v", result)
 	}
-	if _, err := workspaces.RestoreSnapshot(context.Background(), scope, "run-patch"); !errors.Is(err, workspace.ErrSnapshotNotFound) {
-		t.Fatalf("RestoreSnapshot error = %v, want ErrSnapshotNotFound", err)
-	}
 	read, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "src/app.js"})
 	if err != nil || read.Content != "export const theme = 'dark'\n" {
 		t.Fatalf("patched source = %#v, err = %v", read, err)
@@ -438,8 +431,5 @@ func TestAssistantContextualPatchAllowsAddWithoutPriorRead(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Add File without prior read returned error: %v", err)
-	}
-	if _, err := workspaces.RestoreSnapshot(context.Background(), scope, "run-add"); err != nil && !errors.Is(err, workspace.ErrSnapshotNotFound) {
-		t.Fatalf("RestoreSnapshot returned error: %v", err)
 	}
 }

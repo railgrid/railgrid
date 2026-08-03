@@ -196,9 +196,11 @@ as three parts:
      binding to its `APIExport` (an `APIBinding` in the tenant workspace)
      and reading/writing its CRs over the normal `/clusters/...` path.
      Control-plane state (spec/status) flows this way.
-   - **Virtual-workspace subresources** on those resources — e.g.
-     `sandboxrunners/{name}/log`, `…/proxy/{path}`, `…/exec` — for
-     data-plane verbs (streams, proxies, shells) that aren't plain CRUD.
+   - **Virtual-workspace/data-plane subresources** on those resources — for
+     example `{template-resource}/{name}/log`,
+     `{template-resource}/{name}/proxy/{path}`, or a component-scoped
+     `{template-resource}/{name}/components/{component}/sync` — for streams,
+     proxies, and other verbs that aren't plain CRUD.
      The owning provider serves them against *its* backend; the caller
      never sees that backend.
 
@@ -226,10 +228,14 @@ as three parts:
 **Reference implementation.** App Studio used to hold
 `APP_STUDIO_RUNTIME_KUBECONFIG` — a direct credential into the
 infrastructure provider's runtime cluster. That is exactly the violation
-this rule forbids. The fix moves the sandbox data plane to **subresources
-on the `SandboxRunner` instance**, served by the infrastructure provider's
-VW; App Studio now calls `sandboxrunners/{name}/{log,proxy,sync,restart}`
-as the tenant user and carries no runtime credential. See
+this rule forbids. The current implementation selects an infrastructure
+Template, creates its development instance through the tenant API, and calls
+the infrastructure provider's published data-plane subresources as the tenant
+user (for example, `/dataplane/clusters/{workspace}/{resource}/{name}/` plus
+`components/{component}/sync`). App Studio carries no runtime credential and
+does not know the provider's backend topology. See the current boundary in
+[`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md) and the
+retained historical proposal in
 [`app-studio-runtime-decoupling.md`](./app-studio-runtime-decoupling.md).
 
 > Cross-provider *dependency resolution* (ordering, version-compatibility

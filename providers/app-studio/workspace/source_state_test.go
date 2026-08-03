@@ -18,6 +18,7 @@ package workspace
 
 import (
 	"context"
+	"os"
 	"reflect"
 	"testing"
 )
@@ -58,16 +59,6 @@ func TestFileStoreUncommittedPathsPersistUnionClearAndProjectUIDIsolation(t *tes
 	if want := []string{"package.json", "src/App.tsx", "src/theme.css"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("reopened paths = %v, want %v", got, want)
 	}
-	if err := reopened.RemoveUncommittedPaths(ctx, oldScope, []string{"src/App.tsx"}); err != nil {
-		t.Fatalf("RemoveUncommittedPaths: %v", err)
-	}
-	got, err = reopened.UncommittedPaths(ctx, oldScope)
-	if err != nil {
-		t.Fatalf("UncommittedPaths after remove: %v", err)
-	}
-	if want := []string{"package.json", "src/theme.css"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("paths after remove = %v, want %v", got, want)
-	}
 	got, err = reopened.UncommittedPaths(ctx, newScope)
 	if err != nil {
 		t.Fatalf("UncommittedPaths recreated project: %v", err)
@@ -76,8 +67,15 @@ func TestFileStoreUncommittedPathsPersistUnionClearAndProjectUIDIsolation(t *tes
 		t.Fatalf("recreated project inherited paths: %v", got)
 	}
 
-	if err := reopened.ClearUncommittedPaths(ctx, oldScope); err != nil {
-		t.Fatalf("ClearUncommittedPaths: %v", err)
+	digest, err := reopened.WorkspaceDigest(ctx, oldScope, []string{"package.json", "src/App.tsx", "src/theme.css"})
+	if err != nil {
+		t.Fatalf("WorkspaceDigest for clear: %v", err)
+	}
+	if err := reopened.RecordCommitSettlement(ctx, oldScope, digest, []string{"package.json", "src/App.tsx", "src/theme.css"}); err != nil {
+		t.Fatalf("RecordCommitSettlement for clear: %v", err)
+	}
+	if reconciled, err := reopened.ReconcileCommitSettlement(ctx, oldScope); err != nil || !reconciled {
+		t.Fatalf("ReconcileCommitSettlement for clear = %t, %v", reconciled, err)
 	}
 	got, err = reopened.UncommittedPaths(ctx, oldScope)
 	if err != nil {
@@ -98,7 +96,7 @@ func TestFileStoreCommitSettlementPersistsAndReconcilesAfterReopen(t *testing.T)
 		ProjectUID:    "project-uid",
 	}
 	store := NewFileStore(root)
-	if err := store.ApplyFiles(ctx, scope, []File{{Path: "src/App.tsx", Content: "app\n"}}); err != nil {
+	if err := writeTestFiles(ctx, store, scope, []File{{Path: "src/App.tsx", Content: "app\n"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.AddUncommittedPaths(ctx, scope, []string{"src/App.tsx", "src/theme.css"}); err != nil {
@@ -113,18 +111,18 @@ func TestFileStoreCommitSettlementPersistsAndReconcilesAfterReopen(t *testing.T)
 	}
 
 	reopened := NewFileStore(root)
-	gotDigest, paths, ok, err := reopened.PendingCommitSettlement(ctx, scope)
+	_, settlementPath, err := reopened.commitSettlementPath(scope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || gotDigest != digest || !reflect.DeepEqual(paths, []string{"src/App.tsx"}) {
-		t.Fatalf("pending settlement = (%q, %v, %t), want persisted receipt", gotDigest, paths, ok)
+	if _, err := os.Stat(settlementPath); err != nil {
+		t.Fatalf("persisted settlement stat: %v", err)
 	}
 	if reconciled, err := reopened.ReconcileCommitSettlement(ctx, scope); err != nil || !reconciled {
 		t.Fatal(err)
 	}
-	if _, _, ok, err := reopened.PendingCommitSettlement(ctx, scope); err != nil || ok {
-		t.Fatalf("pending settlement after reconcile = (%t, %v), want cleared", ok, err)
+	if _, err := os.Stat(settlementPath); !os.IsNotExist(err) {
+		t.Fatalf("settlement after reconcile stat = %v, want removed", err)
 	}
 	got, err := reopened.UncommittedPaths(ctx, scope)
 	if err != nil {
@@ -139,7 +137,7 @@ func TestFileStoreCommitSettlementDoesNotClearNewerMutation(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	if err := store.ApplyFiles(ctx, scope, []File{{Path: "src/App.tsx", Content: "committed\n"}}); err != nil {
+	if err := writeTestFiles(ctx, store, scope, []File{{Path: "src/App.tsx", Content: "committed\n"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.AddUncommittedPaths(ctx, scope, []string{"src/App.tsx"}); err != nil {
@@ -175,7 +173,7 @@ func TestFileStoreCommitSettlementTracksDeletedPath(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
-	if err := store.ApplyFiles(ctx, scope, []File{{Path: "src/old.ts", Content: "old\n"}}); err != nil {
+	if err := writeTestFiles(ctx, store, scope, []File{{Path: "src/old.ts", Content: "old\n"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ApplyPatch(ctx, scope, PatchOptions{Patch: "*** Begin Patch\n*** Delete File: src/old.ts\n*** End Patch"}); err != nil {
@@ -188,7 +186,7 @@ func TestFileStoreCommitSettlementTracksDeletedPath(t *testing.T) {
 	if err != nil || digest == "" {
 		t.Fatalf("deleted path digest = %q, err=%v", digest, err)
 	}
-	if err := store.ApplyFiles(ctx, scope, []File{{Path: "src/old.ts", Content: "<deleted>"}}); err != nil {
+	if err := writeTestFiles(ctx, store, scope, []File{{Path: "src/old.ts", Content: "<deleted>"}}); err != nil {
 		t.Fatal(err)
 	}
 	upsertDigest, err := store.WorkspaceDigest(ctx, scope, []string{"src/old.ts"})

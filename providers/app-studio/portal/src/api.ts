@@ -15,7 +15,6 @@ import type {
   ProjectAssistantThreadItem,
   ProjectAssistantTurn,
   ProjectLLMSettings,
-  ProjectMemory,
   ProjectCheckpoints,
   ProjectPromotionReadiness,
   ProjectPromoteResult,
@@ -300,10 +299,6 @@ export const api = {
     return request<ProjectAssistantThread>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads`, { title })
   },
 
-  async patchAssistantThread(ctx: KedgeContext | null, name: string, threadID: string, patch: { title?: string; archived?: boolean }): Promise<ProjectAssistantThread> {
-    return request<ProjectAssistantThread>(ctx, 'PATCH', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}`, patch)
-  },
-
   async listAssistantThreadItems(ctx: KedgeContext | null, name: string, threadID: string): Promise<ProjectAssistantThreadItem[]> {
     const body = await request<{ items: ProjectAssistantThreadItem[] }>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/items`)
     return body.items ?? []
@@ -360,10 +355,6 @@ export const api = {
       `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/approval-mode`,
       { mode },
     )
-  },
-
-  async getMemory(ctx: KedgeContext | null, name: string): Promise<ProjectMemory> {
-    return request<ProjectMemory>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/memory`)
   },
 
   async createPreviewConsoleSession(

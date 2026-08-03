@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -196,13 +195,6 @@ func TestProjectAssistantSupervisorPersistsAndQueuesSteeringOnActiveRun(t *testi
 		context.Background(), scope, "run-other", "test-user", "misdirected", "steer-other-run", store.AssistantRunModeDefault,
 	); handled || err != nil {
 		t.Fatalf("wrong-run steering handled=%v err=%v, want unhandled", handled, err)
-	}
-	recoveryServer := &Server{store: memoryStore}
-	recoveredRun, recoveredUser, recoveredAssistant, handled, err := recoveryServer.recoverProjectAssistantSteeringReplay(
-		context.Background(), scope, run.ID, "test-user", "also add tests", "steer-1", store.AssistantRunModeDefault,
-	)
-	if err != nil || !handled || recoveredRun.ID != run.ID || recoveredUser.ID != steeringMessage.ID || recoveredAssistant.ID != updated.ActiveMessageID {
-		t.Fatalf("durable steering replay run=%#v user=%#v assistant=%#v handled=%v err=%v", recoveredRun, recoveredUser, recoveredAssistant, handled, err)
 	}
 	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
 	supervisor.mu.Lock()
@@ -1071,71 +1063,6 @@ func TestConversationPersistenceFailureTerminalizesWorkerOwnedRun(t *testing.T) 
 	}
 	if persisted.Status != store.AssistantRunStatusFailed || len(persisted.Error) == 0 {
 		t.Fatalf("conversation persistence failure left nonterminal run: %#v", persisted)
-	}
-}
-
-func TestWriteProjectAssistantRunStartReturnsRunUserMessage(t *testing.T) {
-	memoryStore := store.NewMemoryStore()
-	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
-	now := time.Now().UTC()
-	user := store.Message{ID: "user-z", Role: "user", ActorID: "test-user", Content: "build a todo app", CreatedAt: now, UpdatedAt: now}
-	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
-	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
-	created, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := memoryStore.AppendMessage(context.Background(), scope, store.Message{ID: "user-a", Role: "user", ActorID: "test-user", Content: "an unrelated earlier-looking message", CreatedAt: now, UpdatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	recorder := httptest.NewRecorder()
-	server.writeProjectAssistantRunStart(recorder, http.StatusAccepted, scope, created)
-	if recorder.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusAccepted, recorder.Body.String())
-	}
-	var response projectAssistantRunStartResponse
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatal(err)
-	}
-	if response.User == nil || response.User.ID != user.ID || response.User.Content != user.Content {
-		t.Fatalf("response user = %#v, want %#v", response.User, projectMessageToAPI(user))
-	}
-}
-
-func TestWriteProjectAssistantRunStartFindsOriginatingUserBeyondFirstFiveHundredMessages(t *testing.T) {
-	memoryStore := store.NewMemoryStore()
-	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
-	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
-	now := time.Now().UTC()
-	user := store.Message{ID: "user-target", Role: "user", ActorID: "test-user", Content: "the intended prompt", CreatedAt: now, UpdatedAt: now}
-	assistant := store.Message{ID: "assistant-target", Role: "assistant", CreatedAt: now, UpdatedAt: now}
-	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusCompleted, ClientRequestID: "request-1", UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 2, CreatedAt: now, UpdatedAt: now}
-	if err := memoryStore.SaveAssistantRun(context.Background(), scope, run); err != nil {
-		t.Fatal(err)
-	}
-	if err := memoryStore.AppendMessage(context.Background(), scope, user); err != nil {
-		t.Fatal(err)
-	}
-	if err := memoryStore.AppendMessage(context.Background(), scope, assistant); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 550; i++ {
-		if err := memoryStore.AppendMessage(context.Background(), scope, store.Message{ID: fmt.Sprintf("noise-%03d", i), Role: "user", ActorID: "test-user", Content: "unrelated", CreatedAt: now, UpdatedAt: now}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	recorder := httptest.NewRecorder()
-	server.writeProjectAssistantRunStart(recorder, http.StatusAccepted, scope, run)
-	if recorder.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusAccepted, recorder.Body.String())
-	}
-	var response projectAssistantRunStartResponse
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatal(err)
-	}
-	if response.User == nil || response.User.ID != user.ID || response.Assistant.ID != assistant.ID {
-		t.Fatalf("response did not load exact long-history messages: %#v", response)
 	}
 }
 

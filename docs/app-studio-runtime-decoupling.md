@@ -1,25 +1,43 @@
 # Decoupling App Studio from the runtime cluster
 
-Status: **Design proposal, not implemented.**
+Status: **Design proposal / historical rationale.** The current runtime boundary
+is documented in [`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md);
+the sections below intentionally retain the proposed end state and alternatives
+and should not be read as the current API contract.
+References below to `SandboxRunner`, runner images, signed preview URLs, and
+`APP_STUDIO_RUNTIME_KUBECONFIG` describe the superseded implementation or a
+proposal alternative only.
 Author: 2026-06-27
-Related: [`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md) (current runtime contract), [`infrastructure-architecture.md`](./infrastructure-architecture.md) (the kcp-native infra provider this builds on), [`provider-connectivity-contract.md`](./provider-connectivity-contract.md) (the two data paths), `providers/infrastructure/install/templates/sandbox-runner.yaml`, `pkg/virtual/builder/edges_proxy_builder.go` (the proven VW-proxy pattern).
+Related: [`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md) (current runtime contract), [`infrastructure-architecture.md`](./infrastructure-architecture.md) (the kcp-native infra provider this builds on), [`provider-connectivity-contract.md`](./provider-connectivity-contract.md) (the two data paths), `providers/infrastructure/apis/v1alpha1/types_template.go`, `providers/infrastructure/dataplane/`, `pkg/virtual/builder/edges_proxy_builder.go` (the proven VW-proxy pattern).
 
 ## Summary
 
-App Studio today holds a **second kubeconfig** — `APP_STUDIO_RUNTIME_KUBECONFIG` — pointed at the Kubernetes cluster where `SandboxRunner` workloads actually run. It uses that credential directly for the live development data plane: stream logs, push file sync, restart, probe preview readiness, read the per-runner control-token Secret, proxy preview traffic, and delete the runtime namespace on teardown.
+The proposal was written against an earlier implementation in which App Studio
+held a **second kubeconfig** — `APP_STUDIO_RUNTIME_KUBECONFIG` — pointed at the
+Kubernetes cluster where `SandboxRunner` workloads ran. That historical baseline
+used the credential directly for logs, sync, restart, readiness, preview proxy,
+control-token reads, and namespace cleanup.
 
 That credential is the wrong coupling. It assumes App Studio and the infrastructure provider share one runtime cluster, owned by whoever deploys App Studio. It blocks **BYO compute**: a tenant whose workspace is backed by a *different* infrastructure provider (a different `InfrastructureProvider`, a different APIExport, a different runtime cluster) cannot be served, because App Studio only knows its own runtime kubeconfig.
 
-This document proposes removing App Studio's runtime credential entirely and moving the data plane to where the runtime cluster is already owned — the **infrastructure provider**. The infra provider exposes the data-plane operations as **subresources on the workload instance** (`sandboxrunners/{name}/log`, `…/proxy/{path}`, `…/sync`, `…/restart`), served by a virtual workspace. App Studio calls those subresources as the **tenant user**, over the same authenticated kcp path it already uses to create the `SandboxRunner`. Because the APIBinding routes the call to the provider that backs the workspace, BYO compute falls out for free — App Studio carries no per-provider logic and no runtime credential.
+This document proposed removing App Studio's runtime credential entirely and
+moving the data plane to where the runtime cluster is already owned — the
+**infrastructure provider**. The proposal described subresources on the
+Template-selected workload instance (`{resource}/{name}/log`,
+`…/proxy/{path}`, `…/sync`, `…/restart`) served by the owning provider. App
+Studio would call those subresources as the **tenant user** over the same
+authenticated kcp path used to create the instance. Because the binding routes
+the call to the provider that backs the workspace, BYO compute falls out for
+free — App Studio carries no per-provider logic or runtime credential.
 
 The contract of *which* data-plane verbs exist, and *how* each one resolves to a runtime Service/Secret/port, is declared **per Template** so it generalizes to any infrastructure workload, not just sandbox runners.
 
-## Restore-from-reboot summary
+## Historical proposal summary
 
-- **Today:** App Studio owns the runtime data plane and holds `APP_STUDIO_RUNTIME_KUBECONFIG`. The infra provider owns resource composition (the `sandbox-runner` Template + kro) and the runtime-cluster client, but exposes **no** data-plane access to the workloads it creates.
+- **Historical baseline:** App Studio owned the runtime data plane and held `APP_STUDIO_RUNTIME_KUBECONFIG`. The infra provider owned resource composition and the runtime-cluster client, but exposed **no** data-plane access to the workloads it created.
 - **Proposed:** the infra provider serves data-plane verbs as **VW subresources** on workload instances; App Studio calls them as the tenant user and drops its runtime kubeconfig.
 - **Why it's BYO-native:** routing is via APIBinding → APIExport → provider. The provider that backs a workspace serves that workspace's data plane against *its* runtime cluster. App Studio issues the same request regardless.
-- **Generality:** verbs + target-resolution are declared in `Template.spec.dataPlane`, resolved by one generic handler. SandboxRunner is the first consumer; a DB shell or app log tail is the next.
+- **Generality:** verbs + target-resolution are declared in `Template.spec.dataPlane`, resolved by one generic handler. A development-capable application instance is the reference consumer; a DB shell or app log tail is the next.
 - **Proven vehicle:** `edges_proxy_builder.go` already does service-proxy + exec/port-forward upgrades + WebSocket over a VW subresource path. The transport is not novel; only the contract is.
 - **Auth:** every data-plane call is authorized by a tenant-scoped `GET` on the instance CR using the caller's forwarded bearer token (kcp RBAC). No provider-wide credential gates the data plane.
 
@@ -139,7 +157,14 @@ The `/services/providers/infrastructure` prefix is the hub backend proxy; the pr
 
 Today the runtime-cluster client lives in the kro backend / operator. The data-plane handler runs in the provider **serve** process, which already gets the runtime kubeconfig mounted (the operator wires it). Add the runtime client to the server `Deps` so the handler can read the control Secret and reach the service-proxy. No new credential is introduced — it is the credential the provider already owns.
 
-## 5. App Studio after cutover — **DONE (Phase 3)**
+## 5. Proposed App Studio cutover (historical target)
+
+The following bullets describe the target cutover from the original design.
+The current implementation has already converged on the caller-authenticated
+Template/data-plane boundary described in
+[`app-studio-sandbox-runtime.md`](./app-studio-sandbox-runtime.md); keep this
+section as the proposal's rationale and migration checklist, not as a live
+contract.
 
 - **Delete** `runtimeConfig` / `runtimeClient` / `runtimeDynamic`, `loadRuntimeConfig`, `APP_STUDIO_RUNTIME_KUBECONFIG`, and the `runtimeKubeconfig` chart wiring.
 - **Rewrite** `api/development_runtime.go` / `api/development_sync.go` handlers to call the VW subresources as the tenant user (forwarding the caller's bearer token over App Studio's existing tenant kcp client) instead of the runtime cluster.
@@ -150,7 +175,10 @@ Today the runtime-cluster client lives in the kro backend / operator. The data-p
   - `status` → unchanged (already reads the CR status — control plane).
   - namespace GC → drop the explicit `Namespaces().Delete`; deleting the `SandboxRunner` CR + kro/finalizer GCs the namespace.
   - ReferenceGrant → folded into the Template's kro RGD (§6.2), removed from App Studio.
-- **Keep** signed preview URLs and preview-token signing — that is App Studio product logic. Only the runtime *probe* moves to the `/proxy` subresource.
+- **Proposal-only preview decision:** keep signed preview URLs and preview-token
+  signing if a future private-preview design requires them. The current
+  Template-backed preview returns the instance's ordinary `status.url` after
+  the App Studio edge probe; it does not mint a signed preview token.
 
 After this, App Studio's `SandboxRunner` values shrink to roughly `{projectRef}` (§6.2 moves the rest to infra).
 

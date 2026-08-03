@@ -19,9 +19,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,17 +40,6 @@ func projectMessageScope(orgUUID, workspaceUUID string, project *aiv1alpha1.Proj
 		ProjectName:   project.Name,
 		ProjectUID:    string(project.UID),
 	}
-}
-
-func projectMessagesToAPI(items []store.Message) []aiv1alpha1.ProjectMessage {
-	if len(items) == 0 {
-		return nil
-	}
-	out := make([]aiv1alpha1.ProjectMessage, 0, len(items))
-	for _, item := range items {
-		out = append(out, projectMessageToAPI(item))
-	}
-	return out
 }
 
 func projectMessageToAPI(item store.Message) aiv1alpha1.ProjectMessage {
@@ -101,20 +87,4 @@ func cloneAnyMap(src map[string]any) map[string]any {
 
 func metav1Time(t time.Time) metav1.Time {
 	return metav1.NewTime(t.UTC())
-}
-
-func listLimitFromRequest(r *http.Request) int {
-	limit := 50
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil {
-			limit = parsed
-		}
-	}
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 250 {
-		limit = 250
-	}
-	return limit
 }
